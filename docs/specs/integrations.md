@@ -58,8 +58,16 @@ the user-facing ids, timestamps, contexts, history, and checking that what it's 
    keeps them in between, matched by `unique_id`, so ids, areas, and names the user set survive.
    Nothing is removed unless the integration removes it (§5).
 
-**Isolation.** Built-in integrations run in their own task. The core never waits on an
-integration while holding its own state: operations reach the core through bounded queues;
+**Isolation.** Built-in integrations run in their own task, and **must never block**: no
+long computation, blocking I/O, or `std::thread::sleep`, in `run` or before it returns its
+future. Blocking one task blocks a shared worker, which no supervision can undo, so slow or
+blocking work belongs in `tokio::task::spawn_blocking` or its own thread. This is a rule rather
+than a guarantee because built-in integrations are first-party code, shipped and reviewed with
+the core; anyone else's code runs as a separate process, where the operating system enforces the
+boundary. Revisit if third-party code is ever allowed in-process (ROADMAP open question 7).
+
+The core never waits on an integration while holding its own state: operations reach the core
+through bounded queues;
 state reports for the same entity are merged so only the latest waits in line, and at most 4096
 entities' reports wait at once (further ones are dropped and logged); service calls time out
 after **10 seconds**. A panic while the integration is starting counts as a crash. Third-party code only runs as an external process, never in the

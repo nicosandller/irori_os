@@ -214,11 +214,13 @@ async fn supervise(
         tracing::error!(%extension, %reason, retry_in_secs = delay.as_secs_f64(), "extension failed; restarting it");
         core.set_status(&extension, ExtensionStatus::Failed { reason, retry_at });
         tokio::select! {
-            () = tokio::time::sleep(delay) => {}
+            // Stop first: when the wait and the stop are both ready, never start it again.
+            biased;
             _ = stop.wait_for(|stop| *stop) => {
                 core.set_status(&extension, ExtensionStatus::Disabled);
                 return;
             }
+            () = tokio::time::sleep(delay) => {}
         }
         // Saturating: a custom `Timing` with huge delays must not overflow and end supervision.
         delay = delay.saturating_mul(2).min(timing.max_retry);
