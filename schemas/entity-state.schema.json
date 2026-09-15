@@ -209,8 +209,24 @@
     "EntityId": {
       "description": "An entity id: `<kind>.<object_id>`, e.g. `light.hallway`. The object id uses lowercase letters a-z and digits in words separated by single `_`, 1-64 characters.",
       "type": "string",
-      "maxLength": 78,
-      "pattern": "^(light|switch|sensor|binary_sensor)\\.[a-z0-9]+(_[a-z0-9]+)*$"
+      "anyOf": [
+        {
+          "maxLength": 70,
+          "pattern": "^light\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^switch\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^sensor\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 78,
+          "pattern": "^binary_sensor\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        }
+      ]
     },
     "IntegrationId": {
       "description": "Format of a slug (integration id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
@@ -452,10 +468,10 @@
       ]
     },
     "Timestamp": {
-      "description": "RFC 3339 timestamp with an offset, e.g. 2026-09-15T22:04:31.120Z. Uppercase T and Z, at most 9 fractional digits, offset -23:59 to +23:59. Serialized in UTC.",
+      "description": "RFC 3339 timestamp with an offset, e.g. 2026-09-15T22:04:31.120Z. Uppercase T and Z, seconds 00-59 (no leap seconds), at most 9 fractional digits, offset -23:59 to +23:59. Serialized in UTC.",
       "type": "string",
       "format": "date-time",
-      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
     },
     "TokenId": {
       "description": "Format of a slug (token id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",

@@ -4,6 +4,7 @@
 
 mod context;
 mod id;
+mod int;
 mod kind;
 mod registry;
 mod schema;

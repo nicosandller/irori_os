@@ -334,8 +334,24 @@
     "EntityId": {
       "description": "An entity id: `<kind>.<object_id>`, e.g. `light.hallway`. The object id uses lowercase letters a-z and digits in words separated by single `_`, 1-64 characters.",
       "type": "string",
-      "maxLength": 78,
-      "pattern": "^(light|switch|sensor|binary_sensor)\\.[a-z0-9]+(_[a-z0-9]+)*$"
+      "anyOf": [
+        {
+          "maxLength": 70,
+          "pattern": "^light\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^switch\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^sensor\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 78,
+          "pattern": "^binary_sensor\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        }
+      ]
     },
     "IntegrationId": {
       "description": "Format of a slug (integration id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
