@@ -1,0 +1,1 @@
+entity `light.hallway` is a light, but its capabilities are for a switch

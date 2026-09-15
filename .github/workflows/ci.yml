@@ -43,6 +43,8 @@ jobs:
         run: cargo test --locked -p irori --no-default-features
       - name: dependency rules (ROADMAP §2.1)
         run: cargo xtask check-deps
+      - name: JSON Schemas match irori-types
+        run: cargo xtask schemas --check
 
   wasm:
     name: irori-types builds for wasm32

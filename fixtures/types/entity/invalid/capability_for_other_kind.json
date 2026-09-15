@@ -1,0 +1,10 @@
+{
+  "id": "switch.coffee_machine",
+  "integration": "mqtt",
+  "unique_id": "relay1",
+  "name": "Coffee machine",
+  "capabilities": {
+    "kind": "switch",
+    "brightness": true
+  }
+}

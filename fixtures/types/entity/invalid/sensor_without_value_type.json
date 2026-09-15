@@ -1,0 +1,10 @@
+{
+  "id": "sensor.hallway_lux",
+  "integration": "mqtt",
+  "unique_id": "lux",
+  "name": "Hallway illuminance",
+  "capabilities": {
+    "kind": "sensor",
+    "unit": "lx"
+  }
+}

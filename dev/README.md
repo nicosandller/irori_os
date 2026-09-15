@@ -56,8 +56,8 @@ link-time optimization, which the release build uses on purpose).
 ## Run the checks on Linux arm64
 
 `dev/pi check` runs the same checks as CI's `check` job (`rustfmt`, `clippy`, tests for the
-default and barebones builds, and `cargo xtask check-deps`), but inside the arm64 Linux
-toolchain container against your working tree. This catches problems that don't show up on
+default and barebones builds, `cargo xtask check-deps`, and `cargo xtask schemas --check`),
+but inside the arm64 Linux toolchain container against your working tree. This catches problems that don't show up on
 macOS, such as Linux-only code paths, `cfg(unix)` differences, and file system behavior.
 
 ```sh

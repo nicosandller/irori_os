@@ -1,0 +1,11 @@
+{
+  "id": "hallway_motion_sensor",
+  "integration": "mqtt",
+  "unique_id": "0x00158d0001a2b3c4",
+  "name": "Hallway motion sensor",
+  "manufacturer": "Aqara",
+  "model": "RTCGQ11LM",
+  "sw_version": "3000-0001",
+  "area_id": "hallway",
+  "via_device_id": "zigbee2mqtt_bridge"
+}
