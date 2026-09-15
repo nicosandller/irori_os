@@ -15,8 +15,8 @@ use std::time::Duration;
 use irori_integration::host::{Op, incoming_call};
 use irori_integration::{IncomingCall, Rejected, ServiceErrorCode};
 use irori_types::{
-    Context, Device, Entity, EntityId, EntityKind, EntityState, ExtensionId, IntegrationId,
-    ServiceCall, StateReport, Timestamp, Version,
+    Context, ContextId, Device, Entity, EntityId, EntityKind, EntityState, ExtensionId,
+    IntegrationId, ServiceCall, StateReport, Timestamp, Version,
 };
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc};
@@ -62,6 +62,23 @@ pub struct ExtensionOverview {
     pub rejected_reports: u64,
     /// Reports dropped because too many entities were waiting for the core.
     pub dropped_reports: u64,
+}
+
+/// Forgets a recorded call unless it was delivered, whatever ends the call: an error, a timeout,
+/// or the caller dropping the future.
+struct Delivery<'a> {
+    core: &'a Core,
+    integration: IntegrationId,
+    context_id: ContextId,
+    delivered: bool,
+}
+
+impl Drop for Delivery<'_> {
+    fn drop(&mut self) {
+        if !self.delivered {
+            self.core.forget_call(&self.integration, &self.context_id);
+        }
+    }
 }
 
 /// A handle to the core. Cheap to clone; all clones share the same home.
@@ -154,9 +171,15 @@ impl Core {
             .cloned()
             .ok_or_else(|| CallError::NotRunning(resolved.integration.clone()))?;
         // Recorded before sending: the integration may confirm (`caused_by`) before this task
-        // runs again. Forgotten below if the call never reaches it.
+        // runs again. The guard forgets it unless the call is delivered, including when the
+        // caller drops this future mid-send.
         write(&self.0.home).record_call(&resolved.integration, context.id.clone(), self.now());
-        let context_id = context.id.clone();
+        let mut delivery = Delivery {
+            core: self,
+            integration: resolved.integration.clone(),
+            context_id: context.id.clone(),
+            delivered: false,
+        };
 
         let called = Event::ServiceCalled {
             entity_id: entity_id.clone(),
@@ -173,12 +196,12 @@ impl Core {
 
         let sent = tokio::time::timeout_at(deadline, sender.send(incoming)).await;
         if !matches!(sent, Ok(Ok(()))) {
-            write(&self.0.home).forget_call(&integration, &context_id);
             return Err(match sent {
                 Err(_) => CallError::Timeout,
                 _ => CallError::NotRunning(integration),
             });
         }
+        delivery.delivered = true;
         // Only once the integration has it: a call that never went out wasn't made.
         self.publish(vec![called]);
 
@@ -193,6 +216,10 @@ impl Core {
                 "the integration dropped the call without answering".into(),
             )),
         }
+    }
+
+    fn forget_call(&self, integration: &IntegrationId, context_id: &ContextId) {
+        write(&self.0.home).forget_call(integration, context_id);
     }
 
     fn stamp(&self) -> Stamp {
@@ -343,5 +370,37 @@ impl Core {
                 status,
             }]);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Whatever ends a call before it's delivered (an error, a timeout, or the caller walking
+    /// away mid-send), the recorded context must not stay valid for `caused_by`.
+    #[test]
+    fn an_undelivered_call_is_forgotten() {
+        let core = Core::new(Arc::new(SystemClock));
+        let integration = IntegrationId::try_from("demo").expect("valid");
+        let context_id = context_id::new_context_id(core.now());
+        let record = || {
+            write(&core.0.home).record_call(&integration, context_id.clone(), core.now());
+            assert!(read(&core.0.home).knows_call(&integration, &context_id));
+        };
+        let guard = |delivered| Delivery {
+            core: &core,
+            integration: integration.clone(),
+            context_id: context_id.clone(),
+            delivered,
+        };
+
+        record();
+        drop(guard(false));
+        assert!(!read(&core.0.home).knows_call(&integration, &context_id));
+
+        record();
+        drop(guard(true));
+        assert!(read(&core.0.home).knows_call(&integration, &context_id));
     }
 }
