@@ -28,6 +28,10 @@ more than volume: one verified finding beats five guesses.
   doesn't exist.
 - CI's `push` trigger covers only `main`, on purpose: pull requests run through the
   `pull_request` trigger, so branches don't run twice.
+- JSON Schema `pattern`s follow ECMA-262, where `$` (no `m` flag) matches only at the end of
+  input, never before a trailing newline. Don't flag `$` anchors in `schemas/` or in the
+  schema code in `crates/irori-types`. Python's `re` behaves differently, but it isn't the
+  reference, and Rust rejects those inputs when data enters Irori anyway.
 
 ## What's most useful
 
