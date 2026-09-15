@@ -43,11 +43,17 @@ fn log(event: &Event) {
         } => {
             let state = serde_json::to_string(&new_state.state).unwrap_or_default();
             let origin = serde_json::to_string(&new_state.context.origin).unwrap_or_default();
+            let caused_by = new_state
+                .context
+                .parent_id
+                .as_ref()
+                .map_or_else(String::new, ToString::to_string);
             tracing::debug!(
                 entity = %entity_id,
                 availability = ?new_state.availability,
                 %state,
-                caused_by = %origin,
+                %origin,
+                %caused_by,
                 "state changed"
             );
         }
