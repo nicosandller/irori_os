@@ -26,7 +26,7 @@ Run irori like a Pi would:
   shell              open a shell inside the running container
 
 Run cargo inside Linux arm64:
-  check              everything CI's check job runs (fmt, clippy, tests, dependency rules)
+  check              everything CI's check job runs (fmt, clippy, tests, dependency rules, schemas)
   cargo <args>       any cargo command, e.g. dev/pi cargo test -p irori
 
 Review a pull request:
@@ -52,6 +52,7 @@ check() {
     cargo test --locked --workspace --all-features
     cargo test --locked -p irori --no-default-features
     cargo xtask check-deps
+    cargo xtask schemas --check
   '
 }
 

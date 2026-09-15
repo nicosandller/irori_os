@@ -1,0 +1,9 @@
+{
+  "id": "light.hallway",
+  "integration": "mqtt",
+  "unique_id": "bulb",
+  "name": "Hallway ceiling",
+  "capabilities": {
+    "kind": "switch"
+  }
+}

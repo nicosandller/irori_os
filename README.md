@@ -1,11 +1,15 @@
-# Irori
+<h1 align="center">
+  <img src="assets/irori-banner-a.svg" alt="IroriOS: a fast, modular, single-binary smart home core written in Rust" width="640">
+</h1>
 
-A fast, modular, single-binary smart home core written in Rust.
+<p align="center">
+  <a href="INSPIRATION.md"><b>Why and what</b></a> ·
+  <a href="ROADMAP.md"><b>How and when</b></a> ·
+  <a href="docs/specs/entities.md"><b>Entity model</b></a> ·
+  <a href="dev/README.md"><b>Try it on a Mac</b></a>
+</p>
 
-- **Why and what:** [INSPIRATION.md](INSPIRATION.md)
-- **How and when:** [ROADMAP.md](ROADMAP.md)
-
-> Status: Phase 0, milestone M0.1 (workspace and toolchain). Nothing here controls a home yet.
+> Status: Phase 0, milestone M0.2 (entity and registry model). Nothing here controls a home yet.
 
 ## Build and run
 
@@ -44,6 +48,7 @@ cargo clippy --locked -p irori --no-default-features --all-targets -- -D warning
 cargo test --locked --workspace --all-features
 cargo test --locked -p irori --no-default-features
 cargo xtask check-deps                # crate dependency rules, ROADMAP §2.1
+cargo xtask schemas --check           # schemas/ matches irori-types (run without --check to update)
 ```
 
 `dev/pi check` runs exactly this list on Linux arm64 in Docker.
@@ -67,6 +72,10 @@ CI runs on every pull request (and on every push to `main`). It builds `x86_64` 
 ## Layout
 
 ```
+assets/        brand: logo marks, banner, favicon, social card (see assets/README.md)
+docs/specs/    specifications (entities.md so far)
+schemas/       JSON Schemas generated from irori-types (`cargo xtask schemas`)
+fixtures/      golden examples, valid and invalid, checked by the tests
 crates/        irori-types, irori-core, irori-integration, irori-rules, irori-recorder,
                irori-config, irori-api, irori-client, irori-ui, irori (the binary)
 integrations/  irori-int-mqtt, irori-int-demo

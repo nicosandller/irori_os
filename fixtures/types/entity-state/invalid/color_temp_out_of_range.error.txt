@@ -1,0 +1,1 @@
+color_temp_kelvin 153 is out of range; it must be from 1000 to 20000

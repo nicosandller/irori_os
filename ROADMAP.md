@@ -38,6 +38,7 @@ Last revised: 2026-09-15. Based on the original `irori-project-plan.md`, revised
 | D17 | **Barebones default build:** core + CLI + minimal UI (Devices, Automations, Integrations, Settings). Only the MQTT and Demo integrations are compiled in by default; AI is **not** in the default build | "Robust at its smallest". A slim build with no integrations must still start and serve the UI. |
 | D18 | **Nerd friendly as a requirement:** plain-text config (`irori.toml`, `rules/*.json`, `integrations/*.toml`) as the source of truth; CLI can do everything the UI can, with `--json`; structured logs; `/metrics`; shell completions | Makes the system scriptable, diffable, and git-friendly. SQLite holds runtime data (history, traces, versions), not the config users author. |
 | D19 | **Performance budgets enforced in CI** (§4.3) | Otherwise "lightning fast" drifts. Benchmarks run on every PR; budget regressions fail the build. |
+| D20 | **Registry and state are separate; availability is its own field; unknown is `null`** | Refines the M0.2 draft (one `Entity` with `Unavailable`/`Unknown` as state values). Keeps state updates small, lets rules be checked against capabilities alone, and keeps the last known value through an outage. See [docs/specs/entities.md](docs/specs/entities.md) §9. |
 
 ### Review notes on the original plan (kept for context)
 
@@ -160,13 +161,19 @@ irori_os/
 
 Goal: the decisions that are expensive to change later are written down and prototyped. **Little product code, lots of leverage.**
 
-### M0.1 Workspace and toolchain
+### M0.1 Workspace and toolchain ✅
+
+> Done except the demo on a physical Raspberry Pi (CI covers it under QEMU).
+
 - Cargo workspace with the crates above as empty shells; `fmt`, `clippy -D warnings`, `test` in CI.
 - Hello-world binary that embeds a static page and opens a bundled SQLite DB, **cross-compiled to aarch64-musl and run on a Raspberry Pi** (or QEMU).
 - Dependency-rule check (§2.1) in CI (e.g. `cargo-deny` bans or a small script over `cargo metadata`).
 - **Demo:** `scp` the binary to a Pi, run it, open the page.
 
-### M0.2 Spec: entity and registry model → `docs/specs/entities.md`
+### M0.2 Spec: entity and registry model → `docs/specs/entities.md` ✅
+
+> Done: see the spec. It refines the draft below (D20); the spec is authoritative.
+
 - `Device { id, name, manufacturer, model, area_id, via (bridge) }`
 - `Area { id, name, floor }`
 - `Entity { id: "light.hallway", device_id, area_id?, kind, state: TypedState, attributes: Map, last_changed, last_updated, context }`

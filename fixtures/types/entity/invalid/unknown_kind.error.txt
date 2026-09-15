@@ -1,0 +1,1 @@
+invalid entity id "fan.bedroom": unknown kind before the `.`

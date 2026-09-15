@@ -1,0 +1,18 @@
+{
+  "entity_id": "sensor.hallway_lux",
+  "availability": "available",
+  "state": {
+    "kind": "sensor",
+    "value": 42
+  },
+  "last_changed": "2026-09-15T22:04:12Z",
+  "last_updated": "2026-09-15T22:04:12Z",
+  "last_reported": "2026-09-15T22:04:12Z",
+  "context": {
+    "id": "01K5B2Q7M0N1P2Q3R4S5T6V7W8",
+    "origin": {
+      "type": "device",
+      "integration": "mqtt"
+    }
+  }
+}

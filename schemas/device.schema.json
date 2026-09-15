@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Device",
+  "description": "A physical or virtual thing an integration talks to, e.g. a Zigbee motion sensor. A device\nhas one or more entities.",
+  "type": "object",
+  "properties": {
+    "area_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AreaId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "hw_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "id": {
+      "$ref": "#/$defs/DeviceId"
+    },
+    "integration": {
+      "description": "The integration that provides this device.",
+      "$ref": "#/$defs/IntegrationId"
+    },
+    "manufacturer": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "$ref": "#/$defs/Name"
+    },
+    "sw_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "unique_id": {
+      "description": "The integration's stable id for the device, e.g. the Zigbee IEEE address.",
+      "$ref": "#/$defs/UniqueId"
+    },
+    "via_device_id": {
+      "description": "The device this one is reached through, e.g. a Zigbee coordinator or a bridge.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DeviceId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "integration",
+    "unique_id",
+    "name"
+  ],
+  "$defs": {
+    "AreaId": {
+      "description": "Format of a slug (area id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "DeviceId": {
+      "description": "Format of a slug (device id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "IntegrationId": {
+      "description": "Format of a slug (integration id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "Name": {
+      "description": "A human-readable name. 1-100 characters, no leading or trailing whitespace.",
+      "type": "string",
+      "maxLength": 100,
+      "minLength": 1,
+      "pattern": "^[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F]([^\\u0000-\\u001F\\u007F-\\u009F]*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F])?$"
+    },
+    "UniqueId": {
+      "description": "Stable id assigned by the integration (e.g. a Zigbee IEEE address). Unique within the integration.",
+      "type": "string",
+      "maxLength": 255,
+      "minLength": 1,
+      "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+    }
+  }
+}

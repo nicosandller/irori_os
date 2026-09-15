@@ -1,0 +1,1 @@
+brightness 0 is invalid; brightness is 1-255 (use `on: false` for off)

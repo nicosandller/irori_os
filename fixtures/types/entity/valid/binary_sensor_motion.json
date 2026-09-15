@@ -1,0 +1,11 @@
+{
+  "id": "binary_sensor.hallway_motion",
+  "integration": "mqtt",
+  "unique_id": "0x00158d0001a2b3c4_occupancy",
+  "name": "Hallway motion",
+  "device_id": "hallway_motion_sensor",
+  "capabilities": {
+    "kind": "binary_sensor",
+    "device_class": "motion"
+  }
+}

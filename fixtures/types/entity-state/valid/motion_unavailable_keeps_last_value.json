@@ -1,0 +1,18 @@
+{
+  "entity_id": "binary_sensor.hallway_motion",
+  "availability": "unavailable",
+  "state": {
+    "kind": "binary_sensor",
+    "on": false
+  },
+  "last_changed": "2026-09-15T21:58:00Z",
+  "last_updated": "2026-09-15T21:58:00Z",
+  "last_reported": "2026-09-15T21:58:00Z",
+  "context": {
+    "id": "01K5B2P0000000000000000000",
+    "origin": {
+      "type": "device",
+      "integration": "mqtt"
+    }
+  }
+}

@@ -1,0 +1,1 @@
+color temperature range has min 6500 K above max 2200 K
