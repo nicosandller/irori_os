@@ -15,6 +15,7 @@ pub struct Floor {
     pub id: FloorId,
     pub name: Name,
     /// Ordering from lowest to highest; 0 is the entrance level, negative is below ground.
+    #[serde(deserialize_with = "crate::int::de")]
     pub level: i8,
 }
 
@@ -187,7 +188,9 @@ pub struct ColorTempRange {
 #[serde(deny_unknown_fields)]
 struct RawColorTempRange {
     // Wider than `u16` so out-of-range values get the range message, not "expected u16".
+    #[serde(deserialize_with = "crate::int::de")]
     min: i64,
+    #[serde(deserialize_with = "crate::int::de")]
     max: i64,
 }
 

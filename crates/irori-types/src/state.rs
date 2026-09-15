@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::int::Int;
 use crate::{AttributeKey, Context, EntityId, EntityKind, InvariantError, Timestamp};
 
 /// Free-form extra data from the integration, e.g. Zigbee link quality. Readable by rules, but
@@ -168,37 +169,38 @@ pub struct LightState {
 struct RawLightState {
     on: bool,
     // Wider than the real types so out-of-range values get a message naming the field.
+    // `Int` accepts whole numbers written as floats (`153.0`), like JSON Schema does.
     #[serde(default)]
-    brightness: Option<i64>,
+    brightness: Option<Int<i64>>,
     #[serde(default)]
     color_mode: Option<ColorMode>,
     #[serde(default)]
-    color_temp_kelvin: Option<i64>,
+    color_temp_kelvin: Option<Int<i64>>,
     #[serde(default)]
-    rgb: Option<[u8; 3]>,
+    rgb: Option<[Int<u8>; 3]>,
 }
 
 impl<'de> Deserialize<'de> for LightState {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error as _;
         let raw = RawLightState::deserialize(deserializer)?;
-        if raw.brightness == Some(0) {
+        if matches!(raw.brightness, Some(Int(0))) {
             return Err(D::Error::custom(BRIGHTNESS_ZERO));
         }
         let light = LightState {
             on: raw.on,
             brightness: raw
                 .brightness
-                .map(|b| crate::ranged("brightness", b, 1, 255))
+                .map(|Int(b)| crate::ranged("brightness", b, 1, 255))
                 .transpose()
                 .map_err(D::Error::custom)?,
             color_mode: raw.color_mode,
             color_temp_kelvin: raw
                 .color_temp_kelvin
-                .map(|k| crate::ranged("color_temp_kelvin", k, 1000, 20000))
+                .map(|Int(k)| crate::ranged("color_temp_kelvin", k, 1000, 20000))
                 .transpose()
                 .map_err(D::Error::custom)?,
-            rgb: raw.rgb,
+            rgb: raw.rgb.map(|rgb| rgb.map(|Int(c)| c)),
         };
         light.validate().map_err(D::Error::custom)?;
         Ok(light)

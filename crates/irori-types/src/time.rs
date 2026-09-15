@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 /// `2026-09-15T22:04:31.120Z`. Input with any offset is accepted and normalized to UTC.
 ///
 /// Parsing is strict so Rust and the JSON Schema accept exactly the same strings: uppercase `T`
-/// and `Z`, up to 9 fractional digits, and an offset from `-23:59` to `+23:59`.
+/// and `Z`, up to 9 fractional digits, and an offset from `-23:59` to `+23:59`. Leap seconds
+/// (`:60`) are rejected: they can't be represented, and accepting them would change the instant.
 ///
 /// Types never read the clock; producing timestamps is the job of the core's injected clock
 /// (ROADMAP D10).
@@ -18,7 +19,7 @@ pub struct Timestamp(jiff::Timestamp);
 
 /// The same shape [`check_shape`] enforces, for JSON Schema validators. Calendar validity
 /// (e.g. February 30) can't be expressed as a pattern; only Rust checks it.
-const PATTERN: &str = "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$";
+const PATTERN: &str = "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$";
 
 impl Timestamp {
     pub fn from_jiff(ts: jiff::Timestamp) -> Self {
@@ -49,7 +50,7 @@ impl std::str::FromStr for Timestamp {
             return Err(TimestampError(format!(
                 "invalid timestamp {s:?}: must be RFC 3339 with an offset, like \
                  2026-09-15T22:04:31Z or 2026-09-15T23:04:31.5+01:00 (uppercase T and Z, \
-                 at most 9 fractional digits, offset -23:59 to +23:59)"
+                 seconds 00-59, at most 9 fractional digits, offset -23:59 to +23:59)"
             )));
         }
         s.parse()
@@ -89,7 +90,7 @@ fn check_shape(s: &str) -> bool {
         || !(1..=31).contains(&day)
         || hour > 23
         || minute > 59
-        || second > 60
+        || second > 59
     {
         return false;
     }
@@ -140,7 +141,7 @@ impl JsonSchema for Timestamp {
             "format": "date-time",
             // `format` is only an annotation for most validators; the pattern does the checking.
             "pattern": PATTERN,
-            "description": "RFC 3339 timestamp with an offset, e.g. 2026-09-15T22:04:31.120Z. Uppercase T and Z, at most 9 fractional digits, offset -23:59 to +23:59. Serialized in UTC.",
+            "description": "RFC 3339 timestamp with an offset, e.g. 2026-09-15T22:04:31.120Z. Uppercase T and Z, seconds 00-59 (no leap seconds), at most 9 fractional digits, offset -23:59 to +23:59. Serialized in UTC.",
         })
     }
 }
@@ -167,7 +168,8 @@ mod tests {
             ("2026-09-15T22:04:31Z", true),
             ("2026-09-15T22:04:31.123456789Z", true),
             ("2026-09-15T22:04:31-23:59", true),
-            ("2026-09-15T22:04:60Z", true),
+            // jiff has no leap seconds and would silently turn :60 into :59.
+            ("2026-09-15T22:04:60Z", false),
             ("2026-09-15T22:04:31", false),
             ("2026-09-15T22:04:31+24:00", false),
             ("2026-09-15T22:04:31+99:99", false),

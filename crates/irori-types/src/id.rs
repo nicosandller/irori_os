@@ -252,12 +252,21 @@ impl JsonSchema for EntityId {
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        let kinds: Vec<&str> = EntityKind::ALL.iter().map(|k| k.domain()).collect();
+        // One branch per kind, so the 64-character limit applies to the object id whatever the
+        // kind's length (a single maxLength would let `light.` ids run 7 characters too long).
+        let branches: Vec<_> = EntityKind::ALL
+            .iter()
+            .map(|kind| {
+                json_schema!({
+                    "pattern": format!("^{}\\.[a-z0-9]+(_[a-z0-9]+)*$", kind.domain()),
+                    "maxLength": kind.domain().len() + 1 + SLUG_MAX_LEN,
+                })
+            })
+            .collect();
         json_schema!({
             "type": "string",
             "description": "An entity id: `<kind>.<object_id>`, e.g. `light.hallway`. The object id uses lowercase letters a-z and digits in words separated by single `_`, 1-64 characters.",
-            "pattern": format!("^({})\\.[a-z0-9]+(_[a-z0-9]+)*$", kinds.join("|")),
-            "maxLength": "binary_sensor.".len() + SLUG_MAX_LEN,
+            "anyOf": branches,
         })
     }
 }
@@ -482,5 +491,27 @@ mod tests {
         );
         let e = serde_json::from_str::<EntityId>("\"light.Hallway\"").expect_err("invalid");
         assert!(e.to_string().contains("invalid entity id"), "{e}");
+    }
+
+    /// The schema and Rust must agree at the length limit, for every kind.
+    #[test]
+    fn entity_id_schema_matches_rust_at_the_length_limit() {
+        let schema = EntityId::json_schema(&mut SchemaGenerator::default());
+        let validator = jsonschema::validator_for(schema.as_value()).expect("valid schema");
+        for kind in EntityKind::ALL {
+            for (len, expected) in [(64, true), (65, false)] {
+                let id = format!("{}.{}", kind.domain(), "a".repeat(len));
+                assert_eq!(
+                    EntityId::try_from(id.as_str()).is_ok(),
+                    expected,
+                    "rust {id}"
+                );
+                assert_eq!(
+                    validator.is_valid(&serde_json::Value::from(id.as_str())),
+                    expected,
+                    "schema {id}"
+                );
+            }
+        }
     }
 }
