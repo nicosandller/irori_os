@@ -55,6 +55,9 @@ struct SqliteHealth<'a> {
     journal_mode: &'a str,
 }
 
+/// Liveness: the process is up and serving. The `sqlite` fields describe the database as it was
+/// opened at startup; they are not a live check. Real database health (read-only, disk full)
+/// arrives with `irori-recorder` in M1.3, which keeps the connection open.
 async fn health(State(state): State<AppState>) -> Response {
     let inner = &state.0;
     Json(Health {

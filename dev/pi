@@ -2,9 +2,14 @@
 # Run and test Irori in a Raspberry Pi-like container. See dev/README.md.
 set -euo pipefail
 
-dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# `review` re-runs this script from a trusted copy outside the repo; these point it back.
+dev_dir="${_IRORI_REVIEW_DEV_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+# Where the host-side tooling (this script, compose.yaml, Dockerfile, smoke test) is read from.
+tooling_dir="${_IRORI_REVIEW_TOOLING_DIR:-$dev_dir}"
 repo_root="$(dirname "$dev_dir")"
-compose=(docker compose --project-directory "$dev_dir" -f "$dev_dir/compose.yaml")
+
+export IRORI_DOCKERFILE="$tooling_dir/Dockerfile"
+compose=(docker compose --project-directory "$dev_dir" -f "$tooling_dir/compose.yaml")
 port="${IRORI_PORT:-8480}"
 
 usage() {
@@ -54,6 +59,14 @@ toolchain() {
   "${compose[@]}" run --rm --build toolchain "$@"
 }
 
+smoke() {
+  if [[ -z "$("${compose[@]}" ps --quiet --status running pi 2>/dev/null)" ]]; then
+    echo "error: irori isn't running; start it with dev/pi up" >&2
+    exit 1
+  fi
+  "$tooling_dir/smoke-test.sh" "http://127.0.0.1:$port"
+}
+
 require_docker() {
   if ! docker info >/dev/null 2>&1; then
     echo "error: Docker isn't running (start Docker Desktop, OrbStack, or \`colima start\`)" >&2
@@ -88,13 +101,7 @@ case "$cmd" in
     curl -fsS "http://127.0.0.1:$port/api/health" && echo
     ;;
   logs) "${compose[@]}" logs --follow pi ;;
-  smoke)
-    if [[ -z "$("${compose[@]}" ps --quiet --status running pi 2>/dev/null)" ]]; then
-      echo "error: irori isn't running; start it with dev/pi up" >&2
-      exit 1
-    fi
-    "$dev_dir/smoke-test.sh" "http://127.0.0.1:$port"
-    ;;
+  smoke) smoke ;;
   shell) "${compose[@]}" exec pi bash ;;
   check) check ;;
   cargo) toolchain cargo "$@" ;;
@@ -104,15 +111,28 @@ case "$cmd" in
       echo "error: working tree has uncommitted changes; commit or stash them first" >&2
       exit 1
     fi
+    # After checkout, everything in the repo is the PR's. Copy the host-side tooling first so a
+    # PR can't change what runs on this machine, then continue from the copy.
+    trusted="$(mktemp -d "${TMPDIR:-/tmp}/irori-review.XXXXXX")"
+    cp "$tooling_dir/pi" "$tooling_dir/compose.yaml" "$tooling_dir/Dockerfile" \
+      "$tooling_dir/smoke-test.sh" "$trusted/"
+    echo "Using dev/ tooling from $(git -C "$repo_root" rev-parse --short HEAD); the PR's own dev/ changes are ignored."
+    exec env _IRORI_REVIEW_DEV_DIR="$dev_dir" _IRORI_REVIEW_TOOLING_DIR="$trusted" \
+      bash "$trusted/pi" _review "$pr"
+    ;;
+  _review)
+    pr="$1"
+    trap 'rm -rf "$tooling_dir"' EXIT
     (cd "$repo_root" && gh pr checkout "$pr")
+    # PR code runs only inside containers, and can't write to the checkout on this machine.
+    export IRORI_SRC_MOUNT=ro
     check
     up
-    "$dev_dir/smoke-test.sh" "http://127.0.0.1:$port"
+    smoke
     echo
     echo "PR #$pr passed checks and is running at http://127.0.0.1:$port"
     echo "Stop it with: dev/pi down"
     ;;
-  help | -h | --help) usage ;;
   *)
     usage >&2
     exit 1

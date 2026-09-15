@@ -86,6 +86,23 @@ git switch main
 
 `review` refuses to run with uncommitted changes, so it never clobbers your work.
 
+### How `review` keeps PR code off your Mac
+
+A pull request can change any file, including the tools in `dev/`. So `review`:
+
+- **Uses the `dev/` tooling from the commit you started on, not the PR's.** Before checking
+  out the PR, it copies `pi`, `compose.yaml`, `Dockerfile`, and `smoke-test.sh` to a temp
+  folder and runs from there. If a PR changes those files, review the diff first, then try
+  them with plain `dev/pi up` / `dev/pi check`.
+- **Runs the PR's code only inside containers.** That includes building it, its build scripts,
+  and its tests.
+- **Mounts your checkout read-only** in the container, so PR code can't plant files, such as
+  git hooks, that would later run on your Mac.
+
+It is not a full sandbox: the containers have network access, and they share the cargo
+caches with your normal `dev/pi` runs. Use it for PRs you'd reasonably run, like your own,
+Claude's, and collaborators'. Don't use it for code from strangers.
+
 ## Tuning the "Pi"
 
 Set these environment variables when running `dev/pi up`:

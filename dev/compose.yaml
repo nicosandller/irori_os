@@ -6,7 +6,8 @@ services:
   pi:
     build:
       context: ..
-      dockerfile: dev/Dockerfile
+      # dev/pi sets an absolute path so `review` can build with a trusted Dockerfile.
+      dockerfile: ${IRORI_DOCKERFILE:-dev/Dockerfile}
       target: pi
       args:
         FEATURES: ${IRORI_FEATURES:-}
@@ -25,14 +26,16 @@ services:
   toolchain:
     build:
       context: ..
-      dockerfile: dev/Dockerfile
+      # dev/pi sets an absolute path so `review` can build with a trusted Dockerfile.
+      dockerfile: ${IRORI_DOCKERFILE:-dev/Dockerfile}
       target: toolchain
     image: irori-dev/toolchain
     platform: linux/arm64
     profiles: [tools]
     working_dir: /src
     volumes:
-      - ..:/src
+      # Read-only during `dev/pi review`, so PR code can't modify the checkout on the host.
+      - ..:/src:${IRORI_SRC_MOUNT:-rw}
       - cargo-registry:/usr/local/cargo/registry
       - cargo-target:/target
 

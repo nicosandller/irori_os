@@ -39,10 +39,14 @@ See [dev/README.md](dev/README.md).
 
 ```sh
 cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo clippy --locked -p irori --no-default-features --all-targets -- -D warnings
+cargo test --locked --workspace --all-features
+cargo test --locked -p irori --no-default-features
 cargo xtask check-deps                # crate dependency rules, ROADMAP §2.1
 ```
+
+`dev/pi check` runs exactly this list on Linux arm64 in Docker.
 
 ## Static binary for a Raspberry Pi
 
