@@ -10,5 +10,9 @@ repository.workspace = true
 irori-types.workspace = true
 irori-integration.workspace = true
 
+schemars.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
 [lints]
 workspace = true

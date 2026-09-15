@@ -3,13 +3,16 @@
 mod banner;
 mod build_info;
 mod db;
+mod extensions;
 mod server;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
+use irori_core::{Core, ExtensionHost, SystemClock, Timing};
 
 #[derive(Debug, Parser)]
 #[command(name = "irori", version, about = "A fast, modular smart home core")]
@@ -33,6 +36,10 @@ enum Command {
         /// Temporary: removed when login and access tokens land (ROADMAP D12, M1.5).
         #[arg(long, env = "IRORI_ALLOW_UNAUTHENTICATED_LAN")]
         allow_unauthenticated_lan: bool,
+        /// How much to log: error, warn, info, debug, or trace. `debug` shows every device and
+        /// state change.
+        #[arg(long, env = "IRORI_LOG_LEVEL", default_value = "info")]
+        log_level: tracing::Level,
     },
     /// Print version and build information.
     Version {
@@ -49,7 +56,8 @@ fn main() -> anyhow::Result<()> {
             data,
             bind,
             allow_unauthenticated_lan,
-        } => serve(data, bind, allow_unauthenticated_lan),
+            log_level,
+        } => serve(data, bind, allow_unauthenticated_lan, log_level),
         Command::Version { json } => {
             let info = build_info::BuildInfo::current();
             if json {
@@ -62,13 +70,19 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn serve(data: PathBuf, bind: SocketAddr, allow_unauthenticated_lan: bool) -> anyhow::Result<()> {
+fn serve(
+    data: PathBuf,
+    bind: SocketAddr,
+    allow_unauthenticated_lan: bool,
+    log_level: tracing::Level,
+) -> anyhow::Result<()> {
     // Logs go to stdout, with no color codes when that's journald, Docker, or a file.
     let ansi = std::io::IsTerminal::is_terminal(&std::io::stdout());
     tracing_subscriber::fmt()
         .with_writer(std::io::stdout)
         .with_target(false)
         .with_ansi(ansi)
+        .with_max_level(log_level)
         .init();
 
     check_bind(bind, allow_unauthenticated_lan)?;
@@ -82,6 +96,7 @@ fn serve(data: PathBuf, bind: SocketAddr, allow_unauthenticated_lan: bool) -> an
 
     let db = db::open(&data)?;
     tracing::info!(path = %db.path.display(), journal_mode = %db.journal_mode, "database ready");
+    let builtins = extensions::builtins()?;
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -98,10 +113,18 @@ fn serve(data: PathBuf, bind: SocketAddr, allow_unauthenticated_lan: bool) -> an
                 version = build_info::VERSION,
                 "irori is ready"
             );
-            axum::serve(listener, server::router(server::AppState::new(db)))
+            let core = Core::new(Arc::new(SystemClock));
+            tokio::spawn(extensions::log_events(core.clone()));
+            let host = ExtensionHost::start(&core, builtins, Timing::default())
+                .map_err(anyhow::Error::msg)?;
+
+            let served = axum::serve(listener, server::router(server::AppState::new(db, core)))
                 .with_graceful_shutdown(shutdown_signal())
                 .await
-                .context("server error")
+                .context("server error");
+            // Give every extension its chance to stop cleanly, even if the server failed.
+            host.shutdown().await;
+            served
         })
 }
 

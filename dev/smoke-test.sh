@@ -3,8 +3,9 @@
 #
 #   dev/smoke-test.sh [BASE_URL] [TIMEOUT_SECONDS]
 #
-# Waits for /api/health, checks the database is in WAL mode, and checks `/` serves the
-# UI when the `ui` feature is compiled in (and a 404 when it isn't).
+# Waits for /api/health, checks the database is in WAL mode, checks `/` serves the UI when the
+# `ui` feature is compiled in (and a 404 when it isn't), and, with the demo extension compiled
+# in, that it's running and its devices are listed.
 set -euo pipefail
 
 base_url="${1:-http://127.0.0.1:8480}"
@@ -33,6 +34,16 @@ if grep -q '"features":\[[^]]*"ui"' <<<"$health"; then
 else
   [[ "$index" == 404* ]] || fail "expected 404 at / in a build without the ui feature (got: $index)"
   echo "ui: not compiled in, / returns 404 as expected"
+fi
+
+if grep -q '"features":\[[^]]*"int-demo"' <<<"$health"; then
+  until curl -fsS --max-time 2 "$base_url/api/dev/extensions" 2>/dev/null | grep -q '"demo":{"state":"running"}'; do
+    ((SECONDS < deadline)) || fail "the demo extension isn't running within ${timeout}s"
+    sleep 0.2
+  done
+  states="$(curl -fsS --max-time 5 "$base_url/api/dev/states")"
+  grep -q '"entity_id":"light.demo_lamp"' <<<"$states" || fail "no demo lamp in /api/dev/states"
+  echo "extensions: demo running, its devices are listed"
 fi
 
 echo "smoke test passed"

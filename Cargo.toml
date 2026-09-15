@@ -45,6 +45,7 @@ anyhow = "1.0.104"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 http-body-util = "0.1.5"
+getrandom = "0.4.3"
 jiff = { version = "0.2.37", default-features = false, features = ["std", "serde"] }
 jsonschema = { version = "0.56.0", default-features = false }
 mime_guess = { version = "2.0.5", default-features = false }
@@ -53,7 +54,7 @@ rust-embed = "8.12.0"
 schemars = { version = "1.2.2", features = ["jiff02"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "ansi", "std"] }

@@ -638,6 +638,7 @@ dependencies = [
  "irori-core",
  "irori-int-demo",
  "irori-int-mqtt",
+ "irori-integration",
  "mime_guess",
  "rusqlite",
  "rust-embed",
@@ -684,8 +685,14 @@ dependencies = [
 name = "irori-core"
 version = "0.0.0"
 dependencies = [
+ "getrandom 0.4.3",
  "irori-integration",
  "irori-types",
+ "jiff",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -694,6 +701,9 @@ version = "0.0.0"
 dependencies = [
  "irori-integration",
  "irori-types",
+ "schemars",
+ "serde",
+ "tokio",
 ]
 
 [[package]]
@@ -709,6 +719,11 @@ name = "irori-integration"
 version = "0.0.0"
 dependencies = [
  "irori-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
 ]
 
 [[package]]
