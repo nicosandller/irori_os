@@ -144,7 +144,7 @@ increase on update needs approval again (D23).
 | Field | Type | Grants |
 |---|---|---|
 | `lan` | bool | Devices on the local network: private and link-local addresses, and mDNS (`.local` names, service discovery) |
-| `network` | list of hosts, no repeats | These internet hosts. A lowercase hostname or IPv4 address (`api.switch-bot.com`), or `*.example.com` for every subdomain |
+| `network` | list of hosts, no repeats | These internet hosts. A lowercase hostname with a domain (`api.switch-bot.com`), or `*.example.com` for every subdomain. Not IP addresses or local-network names (`.local`, `.home.arpa`, `.internal`, `.lan`, `.home`), which need `lan`, so local access can't hide behind this permission |
 | `serial` | list of `/dev/…` paths, no repeats | These serial or USB devices, e.g. `/dev/ttyUSB0` |
 | `host_fs` | list of paths, no repeats | These files and folders. `$CONFIG` and `$DATA` (optionally `/sub/path`) are Irori's own folders; any absolute path (`/`, `/home/pi`) is outside them |
 | `host_shell` | bool | Running commands on the machine |
@@ -159,7 +159,9 @@ only the owner can approve it. A terminal app is honest about what it is instead
 
 **Enforcement.** In Phase 1, API scopes are enforced on the extension's token. `lan`, `network`,
 `serial`, and host access are recorded, shown, and approved, but only enforced where the OS
-makes it practical (ROADMAP M1.5). The UI must not suggest otherwise.
+makes it practical (ROADMAP M1.5). The UI must not suggest otherwise. When `network` is enforced,
+it has to check the addresses a name resolves to as well: a public-looking name can point at a
+local address.
 
 ## 8. Lifecycle
 
@@ -200,6 +202,7 @@ Same layers as [entities.md](entities.md) §7:
    fields, at most one integration, no repeated list items.
 2. **Rust types** (`irori-types`): everything above, plus what JSON Schema can't express: the
    `irori` upper bound must be above the lower (`*.schema-allows.toml` in the fixtures).
+   `description` is one line: no control characters and no Unicode line or paragraph separators.
 3. **When loading** (the core's extension host): the `irori` requirement matches this version;
    built-in extensions have no `run`, external ones do; `config_schema` exists and is a valid
    schema; the id isn't taken by another extension.

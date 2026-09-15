@@ -11,9 +11,6 @@
       "description": "The service's parameters. Leave out when there are none.",
       "type": "object"
     },
-    "entity_id": {
-      "$ref": "#/$defs/EntityId"
-    },
     "service": {
       "$ref": "#/$defs/ServiceName"
     },
@@ -38,9 +35,6 @@
         "properties": {
           "data": {
             "$ref": "#/$defs/LightTurnOn"
-          },
-          "entity_id": {
-            "pattern": "^light\\."
           }
         }
       }
@@ -61,9 +55,6 @@
           "data": {
             "type": "object",
             "maxProperties": 0
-          },
-          "entity_id": {
-            "pattern": "^light\\."
           }
         }
       }
@@ -84,9 +75,6 @@
           "data": {
             "type": "object",
             "maxProperties": 0
-          },
-          "entity_id": {
-            "pattern": "^switch\\."
           }
         }
       }
@@ -107,9 +95,6 @@
           "data": {
             "type": "object",
             "maxProperties": 0
-          },
-          "entity_id": {
-            "pattern": "^switch\\."
           }
         }
       }
@@ -117,7 +102,6 @@
   ],
   "required": [
     "service",
-    "entity_id",
     "unique_id",
     "context"
   ],
@@ -154,28 +138,6 @@
       "description": "A ULID: 26 characters, uppercase Crockford base32.",
       "type": "string",
       "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
-    },
-    "EntityId": {
-      "description": "An entity id: `<kind>.<object_id>`, e.g. `light.hallway`. The object id uses lowercase letters a-z and digits in words separated by single `_`, 1-64 characters.",
-      "type": "string",
-      "anyOf": [
-        {
-          "maxLength": 70,
-          "pattern": "^light\\.[a-z0-9]+(_[a-z0-9]+)*$"
-        },
-        {
-          "maxLength": 71,
-          "pattern": "^switch\\.[a-z0-9]+(_[a-z0-9]+)*$"
-        },
-        {
-          "maxLength": 71,
-          "pattern": "^sensor\\.[a-z0-9]+(_[a-z0-9]+)*$"
-        },
-        {
-          "maxLength": 78,
-          "pattern": "^binary_sensor\\.[a-z0-9]+(_[a-z0-9]+)*$"
-        }
-      ]
     },
     "IntegrationId": {
       "description": "Format of a slug (integration id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",

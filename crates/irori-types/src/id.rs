@@ -415,11 +415,12 @@ fn check_text(
 }
 
 /// The JSON Schema pattern for [`check_text`] (the length limit is a separate `maxLength`).
-fn text_pattern() -> String {
+/// `forbidden` adds characters that may not appear anywhere, as a regex class body.
+fn text_pattern(forbidden: &str) -> String {
     format!(
         "^[^{ws}{ctrl}]([^{ctrl}]*[^{ws}{ctrl}])?$",
         ws = NAME_SPACE_CLASS,
-        ctrl = "\\u0000-\\u001F\\u007F-\\u009F",
+        ctrl = format!("\\u0000-\\u001F\\u007F-\\u009F{forbidden}"),
     )
 }
 
@@ -432,7 +433,7 @@ impl JsonSchema for Name {
         json_schema!({
             "type": "string",
             "description": "A human-readable name. 1-100 characters, no leading or trailing whitespace.",
-            "pattern": text_pattern(),
+            "pattern": text_pattern(""),
             "minLength": 1,
             "maxLength": 100,
         })
@@ -445,12 +446,22 @@ impl JsonSchema for Name {
 #[serde(try_from = "String", into = "String")]
 pub struct Description(String);
 
-string_newtype!(Description, |v| check_text(
-    "description",
-    v,
-    500,
-    "must be at most 500 characters"
-));
+string_newtype!(Description, check_description);
+
+/// Unicode line and paragraph separators aren't control characters, but they break a line.
+const LINE_SEPARATORS: &str = "\\u2028\\u2029";
+
+fn check_description(value: &str) -> Result<(), IdError> {
+    check_text("description", value, 500, "must be at most 500 characters")?;
+    if value.contains(['\u{2028}', '\u{2029}']) {
+        return Err(err(
+            "description",
+            value,
+            "must be a single line (no line or paragraph separators)",
+        ));
+    }
+    Ok(())
+}
 
 impl JsonSchema for Description {
     fn schema_name() -> Cow<'static, str> {
@@ -461,7 +472,7 @@ impl JsonSchema for Description {
         json_schema!({
             "type": "string",
             "description": "A short description. 1-500 characters on one line, no leading or trailing whitespace.",
-            "pattern": text_pattern(),
+            "pattern": text_pattern(LINE_SEPARATORS),
             "minLength": 1,
             "maxLength": 500,
         })
@@ -614,6 +625,25 @@ mod tests {
             assert!(
                 validator.is_valid(&serde_json::Value::from(inner.as_str())),
                 "schema rejected {inner:?}"
+            );
+        }
+        // Descriptions are one line: no line or paragraph separators, even inside.
+        let description = Description::json_schema(&mut SchemaGenerator::default());
+        let description = jsonschema::validator_for(description.as_value()).expect("valid schema");
+        for (text, expected) in [
+            ("Devices over ESPHome's native API.", true),
+            ("First line\u{2028}second line", false),
+            ("First paragraph\u{2029}second", false),
+        ] {
+            assert_eq!(
+                Description::try_from(text).is_ok(),
+                expected,
+                "rust {text:?}"
+            );
+            assert_eq!(
+                description.is_valid(&serde_json::Value::from(text)),
+                expected,
+                "schema {text:?}"
             );
         }
         // Not whitespace in either: zero-width space.

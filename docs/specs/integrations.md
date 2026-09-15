@@ -192,10 +192,13 @@ What the integration receives. Schema: `schemas/service-call.schema.json`.
 | Field | Type | Notes |
 |---|---|---|
 | `service` | service name (§7.1) | |
-| `entity_id` | `EntityId` | For logs and messages. Its kind matches the service |
 | `unique_id` | `UniqueId` | Which entity, in the integration's terms |
 | `data` | object | The service's data; left out when empty |
 | `context` | `Context` | Why it's being called. Pass `context.id` back as `caused_by` when reporting the result |
+
+There's deliberately no `entity_id`: that's the user's name for the entity and can change at any
+time (§4). The core has already checked that the entity belongs to this integration and is of
+the service's kind.
 
 ### 7.3 Result
 

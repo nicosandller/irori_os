@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::num::{Num, whole};
 use crate::{
-    Attributes, Capabilities, Context, ContextId, EntityId, EntityKind, InvariantError, Name,
-    ObjectId, State, UniqueId,
+    Attributes, Capabilities, Context, ContextId, EntityKind, InvariantError, Name, ObjectId,
+    State, UniqueId,
 };
 
 /// A device as an integration describes it. The core adds it to the registry, or updates the
@@ -225,11 +225,13 @@ impl StateReport {
 /// The core asking an integration to act on one of its entities.
 ///
 /// By the time an integration receives a call, the core has checked that the entity exists,
-/// belongs to it, and supports what's asked (e.g. `brightness` only on a dimmable light).
+/// belongs to it, is of the service's kind, and supports what's asked (e.g. `brightness` only on
+/// a dimmable light).
+///
+/// There's no `entity_id`: that's the user's name for the entity and may change, while the
+/// integration only ever uses its own `unique_id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceCall {
-    /// For logs and messages. Its kind matches the service's.
-    pub entity_id: EntityId,
     /// Which entity, in the integration's own terms.
     pub unique_id: UniqueId,
     pub service: Service,
@@ -313,7 +315,6 @@ impl fmt::Display for ServiceName {
 #[serde(deny_unknown_fields)]
 struct RawServiceCall {
     service: ServiceName,
-    entity_id: EntityId,
     unique_id: UniqueId,
     // Present-but-null is an error, not "no data": the schema says `data` is an object.
     #[serde(
@@ -328,7 +329,24 @@ struct RawServiceCall {
 fn some_object<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, D::Error> {
-    serde_json::Map::deserialize(deserializer).map(Some)
+    match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Object(map) => Ok(Some(map)),
+        other => Err(serde::de::Error::custom(format!(
+            "`data` must be an object, not {}; leave `data` out when there's nothing to send",
+            json_type(&other)
+        ))),
+    }
+}
+
+fn json_type(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
+    }
 }
 
 impl Serialize for ServiceCall {
@@ -344,7 +362,6 @@ impl Serialize for ServiceCall {
         };
         RawServiceCall {
             service: self.service.name(),
-            entity_id: self.entity_id.clone(),
             unique_id: self.unique_id.clone(),
             data,
             context: self.context.clone(),
@@ -372,7 +389,6 @@ impl<'de> Deserialize<'de> for ServiceCall {
             ServiceName::SwitchTurnOff => Service::SwitchTurnOff,
         };
         let call = ServiceCall {
-            entity_id: raw.entity_id,
             unique_id: raw.unique_id,
             service,
             context: raw.context,
@@ -385,15 +401,6 @@ impl<'de> Deserialize<'de> for ServiceCall {
 impl ServiceCall {
     /// Deserialization runs this; call it yourself when building a call in code.
     pub fn validate(&self) -> Result<(), InvariantError> {
-        let name = self.service.name();
-        if name.kind() != self.entity_id.kind() {
-            return Err(InvariantError(format!(
-                "service `{name}` acts on a {}, but `{}` is a {}",
-                name.kind(),
-                self.entity_id,
-                self.entity_id.kind()
-            )));
-        }
         match &self.service {
             Service::LightTurnOn(data) => data.validate(),
             _ => Ok(()),
@@ -409,7 +416,7 @@ impl JsonSchema for ServiceCall {
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let no_data = json_schema!({ "type": "object", "maxProperties": 0 });
         let light_turn_on = generator.subschema_for::<LightTurnOn>();
-        // Per service: the entity's kind, and the shape of `data`.
+        // Per service: the shape of `data`.
         let rules: Vec<_> = ServiceName::ALL
             .iter()
             .map(|name| {
@@ -422,12 +429,7 @@ impl JsonSchema for ServiceCall {
                         "properties": { "service": { "const": name.as_str() } },
                         "required": ["service"],
                     },
-                    "then": {
-                        "properties": {
-                            "entity_id": { "pattern": format!("^{}\\.", name.kind().domain()) },
-                            "data": data,
-                        },
-                    },
+                    "then": { "properties": { "data": data } },
                 })
             })
             .collect();
@@ -436,12 +438,11 @@ impl JsonSchema for ServiceCall {
             "description": "The core asking an integration to act on one of its entities.",
             "properties": {
                 "service": generator.subschema_for::<ServiceName>(),
-                "entity_id": generator.subschema_for::<EntityId>(),
                 "unique_id": generator.subschema_for::<UniqueId>(),
                 "data": { "type": "object", "description": "The service's parameters. Leave out when there are none." },
                 "context": generator.subschema_for::<Context>(),
             },
-            "required": ["service", "entity_id", "unique_id", "context"],
+            "required": ["service", "unique_id", "context"],
             "additionalProperties": false,
             "allOf": rules,
         })

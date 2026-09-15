@@ -1,6 +1,5 @@
 {
   "service": "switch.turn_on",
-  "entity_id": "switch.desk_plug",
   "unique_id": "a4:cf:12:34:56:79-switch-relay",
   "data": {},
   "context": {
