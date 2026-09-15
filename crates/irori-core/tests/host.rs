@@ -115,6 +115,8 @@ impl Integration for Lamp {
             incoming.reply(Ok(()));
             ctx.report_state(light(on, Some(100), caused_by));
         }
+        // On the way out: the core must still take this in.
+        ctx.report_state(light(false, Some(7), None));
         Ok(())
     }
 }
@@ -180,9 +182,18 @@ async fn devices_appear_and_commands_round_trip_with_their_context() {
 
     host.shutdown().await;
     assert_eq!(status(&core, "lamp"), Some(ExtensionStatus::Disabled));
+    let state = core.state(&lamp_id()).expect("kept");
+    assert_eq!(state.availability, Availability::Unavailable);
+    // What it reported while shutting down was applied, and survives going offline.
     assert_eq!(
-        core.state(&lamp_id()).expect("kept").availability,
-        Availability::Unavailable
+        state.state,
+        Some(State::Light(LightState {
+            on: false,
+            brightness: Some(7),
+            color_mode: None,
+            color_temp_kelvin: None,
+            rgb: None,
+        }))
     );
 }
 
