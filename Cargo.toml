@@ -1,0 +1,73 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/irori-types",
+    "crates/irori-core",
+    "crates/irori-integration",
+    "crates/irori-rules",
+    "crates/irori-recorder",
+    "crates/irori-config",
+    "crates/irori-api",
+    "crates/irori-client",
+    "crates/irori-ui",
+    "crates/irori",
+    "integrations/irori-int-mqtt",
+    "integrations/irori-int-demo",
+    "extras/irori-assist",
+    "xtask",
+]
+default-members = ["crates/irori"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+# License is intentionally undecided (ROADMAP D7). Do not publish.
+publish = false
+repository = "https://github.com/nicosandller/irori_os"
+
+[workspace.dependencies]
+# Internal crates
+irori-types = { path = "crates/irori-types" }
+irori-core = { path = "crates/irori-core" }
+irori-integration = { path = "crates/irori-integration" }
+irori-rules = { path = "crates/irori-rules" }
+irori-recorder = { path = "crates/irori-recorder" }
+irori-config = { path = "crates/irori-config" }
+irori-api = { path = "crates/irori-api" }
+irori-client = { path = "crates/irori-client" }
+irori-ui = { path = "crates/irori-ui" }
+irori-int-mqtt = { path = "integrations/irori-int-mqtt" }
+irori-int-demo = { path = "integrations/irori-int-demo" }
+irori-assist = { path = "extras/irori-assist" }
+
+# External crates
+anyhow = "1.0.104"
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+http-body-util = "0.1.5"
+mime_guess = { version = "2.0.5", default-features = false }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+rust-embed = "8.12.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "ansi", "std"] }
+tempfile = "3.27.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+
+[profile.release]
+# Size and speed both matter (ROADMAP §4.3). Keep unwinding: the integration host
+# relies on catching panics to isolate a crashing integration (M1.1).
+lto = "fat"
+codegen-units = 1
+strip = true

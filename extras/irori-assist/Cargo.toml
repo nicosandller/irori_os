@@ -1,0 +1,14 @@
+[package]
+name = "irori-assist"
+description = "Opt-in AI features: LLM providers, rule authoring, explanations, dashboards."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+irori-types.workspace = true
+irori-client.workspace = true
+
+[lints]
+workspace = true

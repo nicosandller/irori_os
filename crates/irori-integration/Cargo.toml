@@ -1,0 +1,13 @@
+[package]
+name = "irori-integration"
+description = "The integration SDK: Integration trait, manifest, config schema, external-process protocol."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+irori-types.workspace = true
+
+[lints]
+workspace = true
