@@ -1,1 +1,1 @@
-brightness 300 is out of range; it must be 1-255
+brightness 300 is out of range; it must be from 1 to 255

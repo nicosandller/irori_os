@@ -8,8 +8,9 @@ terminal banner. B is kept as the alternative. Switching:
 - `README.md`: point the banner at `irori-banner-b.svg`.
 - `crates/irori/assets/`: replace `favicon.svg` with a copy of `favicon-b.svg`, and in
   `index.html` replace the inline mark A `<svg>` with mark B's geometry.
-- `crates/irori/src/banner.rs`: the terminal art is drawn in code from `irori-cli-art.txt`,
-  which only has mark A's square hearth. Mark B needs new terminal art first.
+- `crates/irori/src/banner.rs`: the terminal art is hand-drawn in code, based on
+  `irori-cli-art.txt` (a design reference, not read at runtime). That file only has mark A's
+  square hearth, so mark B needs new terminal art designed first, then copied into `banner.rs`.
 
 Naming: **IroriOS** is the brand (logo, wordmark); **Irori** / `irori` is the program.
 
@@ -24,7 +25,7 @@ Naming: **IroriOS** is the brand (logo, wordmark); **Irori** / `irori` is the pr
 | `irori-stacked-{a,b}.svg` | stacked lockup |
 | `irori-banner-{a,b}.svg` | README header, 1280×320 |
 | `irori-og-{a,b}.svg` | social / OG card, 1200×630 |
-| `irori-cli-art.txt` | terminal banner |
+| `irori-cli-art.txt` | terminal banner design (copied by hand into `crates/irori/src/banner.rs`) |
 
 Tokens: ink `#1c1714` · paper `#faf7f4` · ember `#c4552b` · muted `#9a8f86`.
 Type: IBM Plex Sans (wordmark, 500) and IBM Plex Mono (labels).

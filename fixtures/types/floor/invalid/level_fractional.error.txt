@@ -1,1 +1,1 @@
-expected a whole number, got 0.5
+level 0.5 is not a whole number; it must be from -128 to 127

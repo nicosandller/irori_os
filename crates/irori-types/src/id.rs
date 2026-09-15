@@ -365,6 +365,17 @@ pub struct Name(String);
 
 string_newtype!(Name, check_name);
 
+/// Whitespace for name boundaries: Unicode `White_Space` plus U+FEFF (BOM). ECMA-262 `\s`
+/// includes U+FEFF but Rust's doesn't, so both sides spell the set out instead of trusting `\s`.
+fn is_name_space(c: char) -> bool {
+    c.is_whitespace() || c == '\u{FEFF}'
+}
+
+/// [`is_name_space`] as a regex class body, minus the control characters the pattern already
+/// excludes (U+0009-U+000D, U+0085).
+const NAME_SPACE_CLASS: &str =
+    "\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF";
+
 fn check_name(value: &str) -> Result<(), IdError> {
     const WHAT: &str = "name";
     if value.is_empty() {
@@ -373,7 +384,7 @@ fn check_name(value: &str) -> Result<(), IdError> {
     if value.chars().count() > 100 {
         return Err(err(WHAT, value, "must be at most 100 characters"));
     }
-    if value.trim() != value {
+    if value.starts_with(is_name_space) || value.ends_with(is_name_space) {
         return Err(err(WHAT, value, "must not start or end with whitespace"));
     }
     if value.chars().any(char::is_control) {
@@ -391,7 +402,11 @@ impl JsonSchema for Name {
         json_schema!({
             "type": "string",
             "description": "A human-readable name. 1-100 characters, no leading or trailing whitespace.",
-            "pattern": "^[^\\s\\u0000-\\u001F\\u007F-\\u009F]([^\\u0000-\\u001F\\u007F-\\u009F]*[^\\s\\u0000-\\u001F\\u007F-\\u009F])?$",
+            "pattern": format!(
+                "^[^{ws}{ctrl}]([^{ctrl}]*[^{ws}{ctrl}])?$",
+                ws = NAME_SPACE_CLASS,
+                ctrl = "\\u0000-\\u001F\\u007F-\\u009F",
+            ),
             "minLength": 1,
             "maxLength": 100,
         })
@@ -513,5 +528,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Names at the whitespace boundary: Rust and the schema must agree on every character,
+    /// including U+FEFF, which ECMA-262 `\s` treats as whitespace and Rust doesn't.
+    #[test]
+    fn name_whitespace_matches_the_schema() {
+        let schema = Name::json_schema(&mut SchemaGenerator::default());
+        let validator = jsonschema::validator_for(schema.as_value()).expect("valid schema");
+        let spaces = [
+            '\u{0020}', '\u{00A0}', '\u{1680}', '\u{2000}', '\u{200A}', '\u{2028}', '\u{2029}',
+            '\u{202F}', '\u{205F}', '\u{3000}', '\u{FEFF}',
+        ];
+        for c in spaces {
+            for name in [format!("{c}Hallway"), format!("Hallway{c}")] {
+                assert!(
+                    Name::try_from(name.as_str()).is_err(),
+                    "rust accepted {name:?}"
+                );
+                assert!(
+                    !validator.is_valid(&serde_json::Value::from(name.as_str())),
+                    "schema accepted {name:?}"
+                );
+            }
+            let inner = format!("Hall{c}way");
+            assert!(
+                Name::try_from(inner.as_str()).is_ok(),
+                "rust rejected {inner:?}"
+            );
+            assert!(
+                validator.is_valid(&serde_json::Value::from(inner.as_str())),
+                "schema rejected {inner:?}"
+            );
+        }
+        // Not whitespace in either: zero-width space.
+        assert!(Name::try_from("\u{200B}Hallway").is_ok());
+        assert!(validator.is_valid(&serde_json::Value::from("\u{200B}Hallway")));
     }
 }

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::int::Int;
+use crate::num::{Num, whole};
 use crate::{AttributeKey, Context, EntityId, EntityKind, InvariantError, Timestamp};
 
 /// Free-form extra data from the integration, e.g. Zigbee link quality. Readable by rules, but
@@ -169,38 +169,48 @@ pub struct LightState {
 struct RawLightState {
     on: bool,
     // Wider than the real types so out-of-range values get a message naming the field.
-    // `Int` accepts whole numbers written as floats (`153.0`), like JSON Schema does.
+    // Numbers as written, so the checks below can name the field (see `crate::num`).
     #[serde(default)]
-    brightness: Option<Int<i64>>,
+    brightness: Option<Num>,
     #[serde(default)]
     color_mode: Option<ColorMode>,
     #[serde(default)]
-    color_temp_kelvin: Option<Int<i64>>,
+    color_temp_kelvin: Option<Num>,
     #[serde(default)]
-    rgb: Option<[Int<u8>; 3]>,
+    rgb: Option<[Num; 3]>,
 }
 
 impl<'de> Deserialize<'de> for LightState {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error as _;
         let raw = RawLightState::deserialize(deserializer)?;
-        if matches!(raw.brightness, Some(Int(0))) {
+        if matches!(raw.brightness, Some(Num::Int(0) | Num::UInt(0)))
+            || matches!(raw.brightness, Some(Num::Float(b)) if b == 0.0)
+        {
             return Err(D::Error::custom(BRIGHTNESS_ZERO));
         }
+        let rgb = match raw.rgb {
+            Some([r, g, b]) => Some([
+                whole("rgb[0]", r, 0, 255).map_err(D::Error::custom)?,
+                whole("rgb[1]", g, 0, 255).map_err(D::Error::custom)?,
+                whole("rgb[2]", b, 0, 255).map_err(D::Error::custom)?,
+            ]),
+            None => None,
+        };
         let light = LightState {
             on: raw.on,
             brightness: raw
                 .brightness
-                .map(|Int(b)| crate::ranged("brightness", b, 1, 255))
+                .map(|n| whole("brightness", n, 1, 255))
                 .transpose()
                 .map_err(D::Error::custom)?,
             color_mode: raw.color_mode,
             color_temp_kelvin: raw
                 .color_temp_kelvin
-                .map(|Int(k)| crate::ranged("color_temp_kelvin", k, 1000, 20000))
+                .map(|n| whole("color_temp_kelvin", n, 1000, 20000))
                 .transpose()
                 .map_err(D::Error::custom)?,
-            rgb: raw.rgb.map(|rgb| rgb.map(|Int(c)| c)),
+            rgb,
         };
         light.validate().map_err(D::Error::custom)?;
         Ok(light)
@@ -259,11 +269,28 @@ impl SensorState {
 }
 
 /// A sensor reading: a finite number or text, matching the sensor's `value_type`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SensorValue {
     Number(f64),
     Text(String),
+}
+
+impl JsonSchema for SensorValue {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "SensorValue".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        // Bounded to f64's range: a literal like `1e400` is valid JSON, but Rust can't read it.
+        schemars::json_schema!({
+            "description": "A sensor reading: a finite number or text, matching the sensor's `value_type`.",
+            "anyOf": [
+                { "type": "number", "minimum": f64::MIN, "maximum": f64::MAX },
+                { "type": "string" },
+            ],
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -293,7 +320,7 @@ mod tests {
         let bright = serde_json::from_str::<LightState>(r#"{"on": true, "brightness": 300}"#);
         assert!(bright.is_err_and(|e| {
             e.to_string()
-                .contains("brightness 300 is out of range; it must be 1-255")
+                .contains("brightness 300 is out of range; it must be from 1 to 255")
         }));
 
         assert!(
@@ -302,6 +329,19 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn sensor_value_schema_rejects_numbers_rust_cant_read() {
+        let schema = SensorValue::json_schema(&mut schemars::SchemaGenerator::default());
+        let validator = jsonschema::validator_for(schema.as_value()).expect("valid schema");
+        assert!(validator.is_valid(&serde_json::json!(f64::MAX)));
+        assert!(validator.is_valid(&serde_json::json!("rinse")));
+        // `1e400` can't even be held in a serde_json::Value, so check the bounds directly.
+        let number = &schema.as_value()["anyOf"][0];
+        assert_eq!(number["minimum"], serde_json::json!(f64::MIN));
+        assert_eq!(number["maximum"], serde_json::json!(f64::MAX));
+        assert!(serde_json::from_str::<SensorValue>("1e400").is_err());
     }
 
     #[test]
