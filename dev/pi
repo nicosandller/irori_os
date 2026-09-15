@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# Run and test Irori in a Raspberry Pi-like container. See dev/README.md.
+set -euo pipefail
+
+dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(dirname "$dev_dir")"
+compose=(docker compose --project-directory "$dev_dir" -f "$dev_dir/compose.yaml")
+port="${IRORI_PORT:-8480}"
+
+usage() {
+  cat <<EOF
+usage: dev/pi <command> [args]
+
+Run irori like a Pi would:
+  up [--barebones]   build the image and start irori at http://127.0.0.1:$port
+  down [--wipe]      stop it; --wipe also deletes its data volume
+  restart            rebuild from the current checkout and restart
+  status             container state and /api/health
+  logs               follow the server logs
+  smoke              smoke-test the running server
+  shell              open a shell inside the running container
+
+Run cargo inside Linux arm64:
+  check              everything CI's check job runs (fmt, clippy, tests, dependency rules)
+  cargo <args>       any cargo command, e.g. dev/pi cargo test -p irori
+
+Review a pull request:
+  review <pr>        gh pr checkout <pr>, then check, up, and smoke
+EOF
+}
+
+up() {
+  if [[ "${1:-}" == "--barebones" ]]; then
+    export IRORI_FEATURES="--no-default-features"
+  fi
+  "${compose[@]}" up --build --detach --wait pi
+  echo
+  echo "irori is running at http://127.0.0.1:$port"
+}
+
+check() {
+  toolchain bash -c '
+    set -euxo pipefail
+    cargo fmt --all --check
+    cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+    cargo clippy --locked -p irori --no-default-features --all-targets -- -D warnings
+    cargo test --locked --workspace --all-features
+    cargo test --locked -p irori --no-default-features
+    cargo xtask check-deps
+  '
+}
+
+toolchain() {
+  "${compose[@]}" run --rm --build toolchain "$@"
+}
+
+require_docker() {
+  if ! docker info >/dev/null 2>&1; then
+    echo "error: Docker isn't running (start Docker Desktop, OrbStack, or \`colima start\`)" >&2
+    exit 1
+  fi
+  if ! docker buildx version >/dev/null 2>&1; then
+    echo "error: docker buildx is required (dev/Dockerfile uses BuildKit cache mounts)." >&2
+    echo "       Homebrew + Colima: brew install docker-buildx, then see dev/README.md" >&2
+    exit 1
+  fi
+}
+
+cmd="${1:-help}"
+shift || true
+case "$cmd" in
+  help | -h | --help) ;;
+  *) require_docker ;;
+esac
+case "$cmd" in
+  up) up "$@" ;;
+  down)
+    if [[ "${1:-}" == "--wipe" ]]; then
+      "${compose[@]}" down --volumes
+    else
+      "${compose[@]}" down
+    fi
+    ;;
+  restart) up "$@" ;;
+  status)
+    "${compose[@]}" ps pi
+    curl -fsS "http://127.0.0.1:$port/api/health" && echo
+    ;;
+  logs) "${compose[@]}" logs --follow pi ;;
+  smoke)
+    if [[ -z "$("${compose[@]}" ps --quiet --status running pi 2>/dev/null)" ]]; then
+      echo "error: irori isn't running; start it with dev/pi up" >&2
+      exit 1
+    fi
+    "$dev_dir/smoke-test.sh" "http://127.0.0.1:$port"
+    ;;
+  shell) "${compose[@]}" exec pi bash ;;
+  check) check ;;
+  cargo) toolchain cargo "$@" ;;
+  review)
+    pr="${1:?usage: dev/pi review <pr>}"
+    if [[ -n "$(git -C "$repo_root" status --porcelain)" ]]; then
+      echo "error: working tree has uncommitted changes; commit or stash them first" >&2
+      exit 1
+    fi
+    (cd "$repo_root" && gh pr checkout "$pr")
+    check
+    up
+    "$dev_dir/smoke-test.sh" "http://127.0.0.1:$port"
+    echo
+    echo "PR #$pr passed checks and is running at http://127.0.0.1:$port"
+    echo "Stop it with: dev/pi down"
+    ;;
+  help | -h | --help) usage ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac

@@ -53,7 +53,12 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn serve(data: PathBuf, bind: SocketAddr) -> anyhow::Result<()> {
-    tracing_subscriber::fmt().with_target(false).init();
+    // No color codes when logs go to journald, Docker, or a file.
+    let ansi = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .with_ansi(ansi)
+        .init();
 
     let db = db::open(&data)?;
     tracing::info!(path = %db.path.display(), journal_mode = %db.journal_mode, "database ready");

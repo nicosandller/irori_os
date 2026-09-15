@@ -1,0 +1,42 @@
+# Raspberry Pi-like dev environment. Usually driven through `dev/pi`; see dev/README.md.
+name: irori-dev
+
+services:
+  # irori running like it would on a Pi: linux/arm64, static binary, small memory, one CPU's worth.
+  pi:
+    build:
+      context: ..
+      dockerfile: dev/Dockerfile
+      target: pi
+      args:
+        FEATURES: ${IRORI_FEATURES:-}
+    image: irori-dev/pi
+    platform: linux/arm64
+    ports:
+      - "127.0.0.1:${IRORI_PORT:-8480}:8480"
+    volumes:
+      - pi-data:/var/lib/irori
+    # One Apple Silicon core is roughly a whole Pi 4's CPU throughput; 1 GB is the smallest Pi 4.
+    cpus: ${IRORI_PI_CPUS:-1}
+    mem_limit: ${IRORI_PI_MEMORY:-1g}
+    stop_grace_period: 10s
+
+  # Cargo inside Linux arm64, against the live source tree. Only runs on demand.
+  toolchain:
+    build:
+      context: ..
+      dockerfile: dev/Dockerfile
+      target: toolchain
+    image: irori-dev/toolchain
+    platform: linux/arm64
+    profiles: [tools]
+    working_dir: /src
+    volumes:
+      - ..:/src
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-target:/target
+
+volumes:
+  pi-data:
+  cargo-registry:
+  cargo-target:

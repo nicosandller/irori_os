@@ -23,6 +23,18 @@ Barebones build, no integrations and no UI (must always build and run):
 cargo run --no-default-features -- serve
 ```
 
+## Run it like a Raspberry Pi (Docker)
+
+`dev/pi` runs Irori in a Pi-like `linux/arm64` Debian container and runs the CI checks on
+Linux arm64. It's the way to try a pull request on a Mac before approving it:
+
+```sh
+dev/pi up                             # http://127.0.0.1:8480
+dev/pi review <pr-number>             # checkout, check, run, smoke test
+```
+
+See [dev/README.md](dev/README.md).
+
 ## Checks (same as CI)
 
 ```sh
