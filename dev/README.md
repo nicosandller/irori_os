@@ -77,12 +77,15 @@ dev/pi review 12
 
 That checks out PR #12 with `gh`, runs `dev/pi check`, starts the Pi container from the PR's
 code, and runs the smoke test. If it all passes, open http://127.0.0.1:8480 and try the
-change by hand. When you're done:
+change by hand. When you're done, **switch back first, then stop it**:
 
 ```sh
-dev/pi down
-git switch main
+git switch main && dev/pi down
 ```
+
+The order matters. While your checkout is on the PR, `dev/pi` *is the PR's version* of the
+script, so running any `dev/pi` command there runs the PR's code on your Mac. `review` prints
+the exact command to return to the branch you started from.
 
 `review` refuses to run with uncommitted changes, so it never clobbers your work.
 

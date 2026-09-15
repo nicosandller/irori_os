@@ -117,12 +117,22 @@ case "$cmd" in
     cp "$tooling_dir/pi" "$tooling_dir/compose.yaml" "$tooling_dir/Dockerfile" \
       "$tooling_dir/smoke-test.sh" "$trusted/"
     echo "Using dev/ tooling from $(git -C "$repo_root" rev-parse --short HEAD); the PR's own dev/ changes are ignored."
+    # Remember where we started, so the cleanup instructions return there before running dev/pi.
+    if start="$(git -C "$repo_root" symbolic-ref --short --quiet HEAD)"; then
+      return_cmd="git switch $start"
+    else
+      return_cmd="git switch --detach $(git -C "$repo_root" rev-parse HEAD)"
+    fi
     exec env _IRORI_REVIEW_DEV_DIR="$dev_dir" _IRORI_REVIEW_TOOLING_DIR="$trusted" \
-      bash "$trusted/pi" _review "$pr"
+      _IRORI_REVIEW_RETURN_CMD="$return_cmd" bash "$trusted/pi" _review "$pr"
     ;;
   _review)
     pr="$1"
-    trap 'rm -rf "$tooling_dir"' EXIT
+    return_cmd="$_IRORI_REVIEW_RETURN_CMD"
+    # If anything below fails we're still on the PR branch; say how to get back safely.
+    trap 'status=$?; rm -rf "$tooling_dir"; if ((status != 0)); then
+      echo >&2; echo "Review failed. Switch back before running dev/pi again: $return_cmd && dev/pi down" >&2
+    fi' EXIT
     (cd "$repo_root" && gh pr checkout "$pr")
     # PR code runs only inside containers, and can't write to the checkout on this machine.
     export IRORI_SRC_MOUNT=ro
@@ -131,7 +141,11 @@ case "$cmd" in
     smoke
     echo
     echo "PR #$pr passed checks and is running at http://127.0.0.1:$port"
-    echo "Stop it with: dev/pi down"
+    echo
+    echo "Your checkout is now on the PR's code, and so is its dev/pi. When you're done, switch"
+    echo "back first, so you run your own dev/pi and not the PR's:"
+    echo
+    echo "  $return_cmd && dev/pi down"
     ;;
   *)
     usage >&2
