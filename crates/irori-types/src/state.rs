@@ -167,38 +167,52 @@ pub struct LightState {
 #[serde(deny_unknown_fields)]
 struct RawLightState {
     on: bool,
+    // Wider than the real types so out-of-range values get a message naming the field.
     #[serde(default)]
-    brightness: Option<u8>,
+    brightness: Option<i64>,
     #[serde(default)]
     color_mode: Option<ColorMode>,
     #[serde(default)]
-    color_temp_kelvin: Option<u16>,
+    color_temp_kelvin: Option<i64>,
     #[serde(default)]
     rgb: Option<[u8; 3]>,
 }
 
 impl<'de> Deserialize<'de> for LightState {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
         let raw = RawLightState::deserialize(deserializer)?;
+        if raw.brightness == Some(0) {
+            return Err(D::Error::custom(BRIGHTNESS_ZERO));
+        }
         let light = LightState {
             on: raw.on,
-            brightness: raw.brightness,
+            brightness: raw
+                .brightness
+                .map(|b| crate::ranged("brightness", b, 1, 255))
+                .transpose()
+                .map_err(D::Error::custom)?,
             color_mode: raw.color_mode,
-            color_temp_kelvin: raw.color_temp_kelvin,
+            color_temp_kelvin: raw
+                .color_temp_kelvin
+                .map(|k| crate::ranged("color_temp_kelvin", k, 1000, 20000))
+                .transpose()
+                .map_err(D::Error::custom)?,
             rgb: raw.rgb,
         };
-        light.validate().map_err(serde::de::Error::custom)?;
+        light.validate().map_err(D::Error::custom)?;
         Ok(light)
     }
 }
+
+const BRIGHTNESS_ZERO: &str =
+    "brightness 0 is invalid; brightness is 1-255 (use `on: false` for off)";
 
 impl LightState {
     /// Deserialization runs this; call it yourself when building a `LightState` in code.
     pub fn validate(&self) -> Result<(), InvariantError> {
         if self.brightness == Some(0) {
-            return Err(InvariantError(
-                "brightness 0 is invalid; brightness is 1-255 (use `on: false` for off)".into(),
-            ));
+            return Err(InvariantError(BRIGHTNESS_ZERO.into()));
         }
         if let Some(kelvin) = self.color_temp_kelvin
             && !(1000..=20000).contains(&kelvin)
@@ -272,6 +286,12 @@ mod tests {
         assert!(hot.is_err_and(|e| {
             e.to_string()
                 .contains("color_temp_kelvin 20001 is out of range")
+        }));
+
+        let bright = serde_json::from_str::<LightState>(r#"{"on": true, "brightness": 300}"#);
+        assert!(bright.is_err_and(|e| {
+            e.to_string()
+                .contains("brightness 300 is out of range; it must be 1-255")
         }));
 
         assert!(

@@ -72,7 +72,6 @@ fn serve(data: PathBuf, bind: SocketAddr, allow_unauthenticated_lan: bool) -> an
         .init();
 
     check_bind(bind, allow_unauthenticated_lan)?;
-    banner::print(bind);
     if !bind.ip().is_loopback() {
         tracing::warn!(
             %bind,
@@ -92,6 +91,8 @@ fn serve(data: PathBuf, bind: SocketAddr, allow_unauthenticated_lan: bool) -> an
             let listener = tokio::net::TcpListener::bind(bind)
                 .await
                 .with_context(|| format!("failed to listen on {bind}"))?;
+            // After binding, so `--bind ...:0` shows the port the OS actually picked.
+            banner::print(listener.local_addr()?);
             tracing::info!(
                 addr = %listener.local_addr()?,
                 version = build_info::VERSION,

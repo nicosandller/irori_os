@@ -186,16 +186,23 @@ pub struct ColorTempRange {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawColorTempRange {
-    min: u16,
-    max: u16,
+    // Wider than `u16` so out-of-range values get the range message, not "expected u16".
+    min: i64,
+    max: i64,
 }
 
 impl<'de> Deserialize<'de> for ColorTempRange {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = RawColorTempRange::deserialize(deserializer)?;
+        let (min, max) = (raw.min, raw.max);
+        if !(1000..=20000).contains(&min) || !(1000..=20000).contains(&max) {
+            return Err(serde::de::Error::custom(format!(
+                "color temperature range {min}-{max} K must be within 1000-20000 K"
+            )));
+        }
         let range = ColorTempRange {
-            min: raw.min,
-            max: raw.max,
+            min: u16::try_from(min).map_err(serde::de::Error::custom)?,
+            max: u16::try_from(max).map_err(serde::de::Error::custom)?,
         };
         range.validate().map_err(serde::de::Error::custom)?;
         Ok(range)
@@ -323,5 +330,11 @@ mod tests {
             r#"{"kind": "light", "color_temp_kelvin": {"min": 500, "max": 2200}}"#,
         );
         assert!(via_capabilities.is_err_and(|e| e.to_string().contains("within 1000-20000 K")));
+
+        let huge = serde_json::from_str::<ColorTempRange>(r#"{"min": 2200, "max": 70000}"#);
+        assert!(huge.is_err_and(|e| {
+            e.to_string()
+                .contains("2200-70000 K must be within 1000-20000 K")
+        }));
     }
 }
