@@ -6,10 +6,11 @@
   <a href="INSPIRATION.md"><b>Why and what</b></a> ·
   <a href="ROADMAP.md"><b>How and when</b></a> ·
   <a href="docs/specs/entities.md"><b>Entity model</b></a> ·
+  <a href="docs/specs/extensions.md"><b>Extensions</b></a> ·
   <a href="dev/README.md"><b>Try it on a Mac</b></a>
 </p>
 
-> Status: Phase 0, milestone M0.2 (entity and registry model). Nothing here controls a home yet.
+> Status: Phase 0, milestone M0.6 (extension manifest and integration contract). Next: the core's registry and extension host, a Devices page, and ESPHome devices (ROADMAP D26). Nothing here controls a home yet.
 
 ## Build and run
 
@@ -73,7 +74,7 @@ CI runs on every pull request (and on every push to `main`). It builds `x86_64` 
 
 ```
 assets/        brand: logo marks, banner, favicon, social card (see assets/README.md)
-docs/specs/    specifications (entities.md so far)
+docs/specs/    specifications: entities.md, extensions.md, integrations.md
 schemas/       JSON Schemas generated from irori-types (`cargo xtask schemas`)
 fixtures/      golden examples, valid and invalid, checked by the tests
 crates/        irori-types, irori-core, irori-integration, irori-rules, irori-recorder,

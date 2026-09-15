@@ -1,0 +1,336 @@
+# Spec: integration contract
+
+Status: **accepted for Phase 0** (M0.6, part B). Changes go through a PR that updates this file,
+the types in `crates/irori-types`, the generated `schemas/`, and the examples in
+`fixtures/types/` together; CI fails if the last three disagree.
+
+How an integration is packaged and declared is in [extensions.md](extensions.md) (part A). The
+vocabulary it speaks (devices, entities, state, context) is in [entities.md](entities.md).
+
+---
+
+## 1. Purpose
+
+An integration brings devices into Irori: ESPHome boards, MQTT devices, a cloud API. This spec
+is the **one contract** every integration follows, built-in (Rust, in the binary) or external
+(any language, its own process) (ROADMAP D15, D16). It has to be:
+
+- **Enough.** ESPHome, MQTT, and cloud APIs must fit without special cases in the core. If one
+  doesn't fit, the contract changes, never the core.
+- **Safe for the core.** A crashing, slow, or misbehaving integration can't take down the core or
+  other integrations, or corrupt the registry.
+- **Small.** An integration author learns a handful of operations, not the core's internals.
+
+## 2. At a glance
+
+```mermaid
+sequenceDiagram
+    participant C as Core
+    participant I as Integration (e.g. ESPHome)
+    C->>I: start, with its validated settings
+    I->>C: describe device "Desk lamp"
+    I->>C: describe entity "Lamp" (light, dimmable)
+    I->>C: report state: on, brightness 128
+    Note over C: assigns light.desk_lamp,<br/>adds timestamps and context
+    C->>I: service call light.turn_off
+    I-->>C: result: ok
+    I->>C: report state: off (caused by that call)
+    I->>C: set availability: unavailable (device lost Wi-Fi)
+```
+
+The integration only ever speaks in **its own ids** (`unique_id`). The core owns everything else:
+the user-facing ids, timestamps, contexts, history, and checking that what it's told makes sense.
+
+## 3. Lifecycle and supervision
+
+1. **Start.** The core reads the integration's settings (config spec, M0.7), checks them against
+   its config schema, and starts it with them. Invalid settings mean `failed` with the error, and
+   no start.
+2. **Running.** The integration connects to its devices, describes them, reports state, and
+   handles service calls until it's told to stop.
+3. **Stop.** When disabled or when Irori shuts down, the integration is told to stop and has
+   **5 seconds** to return. After that its task is cancelled, or its process killed.
+4. **Crash.** A panic, an error returned from `run`, or an exiting process marks it `failed`.
+   All its entities become `unavailable` and keep their last value. The core starts it again
+   after 1 s, then 2 s, 4 s, … up to 5 minutes between attempts; the delay resets after
+   10 minutes of running.
+5. **Restart.** A restarted integration describes its devices and entities again. The registry
+   keeps them in between, matched by `unique_id`, so ids, areas, and names the user set survive.
+   Nothing is removed unless the integration removes it (§5).
+
+**Isolation.** Built-in integrations run in their own task. The core never waits on an
+integration while holding its own state: operations reach the core through bounded queues;
+state reports for the same entity are merged so only the latest waits in line; service calls
+time out after **10 seconds**. Third-party code only runs as an external process, never in the
+core's process.
+
+## 4. Identity
+
+- The integration names each device and entity with a `unique_id` it chooses and **never
+  changes**: a MAC address, a Zigbee IEEE address, a cloud API's device id. It must be unique
+  within the integration.
+- The core assigns the ids people see (`DeviceId`, `EntityId`), from the integration's
+  suggestion (`suggested_object_id`) or from the names. The user may rename them; the
+  integration never notices, because it keeps using `unique_id`.
+- The integration id is the extension id (D25). Every device and entity it describes gets
+  `integration = <its id>`; it can't describe entries for another integration.
+
+## 5. Operations
+
+**What an integration can do:**
+
+| Operation | Data | Notes |
+|---|---|---|
+| Describe a device | `DeviceDescription` (§6.1) | Adds it, or updates the one with the same `unique_id` |
+| Describe an entity | `EntityDescription` (§6.2) | Same. Its device must be described first |
+| Remove a device | `unique_id` | Also removes its entities |
+| Remove an entity | `unique_id` | |
+| Report state | `StateReport` (§6.3) | A new value for one of its entities |
+| Set availability | entity `unique_id`s, or a device `unique_id` for all its entities; `available` \| `unavailable` | §6.4 |
+| Set health | `running`, or `degraded` with a reason | §6.5 |
+| Handle service calls | receives `ServiceCall` (§7), replies with a result | For its own entities only |
+| Store small data | key → JSON value, up to 64 KB each | Private to the integration, kept across restarts. E.g. pairing keys, a cloud token refresh |
+| Log | leveled, structured log lines | Tagged with the integration id |
+
+**What it can't do:** see or change other integrations' devices and entities (without the `api`
+permissions, [extensions.md](extensions.md) §7), touch rules, write history, or set timestamps and
+contexts itself.
+
+## 6. Messages from the integration
+
+JSON field names are `snake_case`; optional fields may be omitted. Unknown fields are rejected.
+Schemas: `schemas/device-description.schema.json`, `entity-description`, `state-report`.
+
+### 6.1 DeviceDescription
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `unique_id` | `UniqueId` | yes | |
+| `name` | `Name` | yes | Used when the device is new; after that, the user's name wins |
+| `manufacturer`, `model`, `sw_version`, `hw_version` | string | no | Informational, updated every time |
+| `suggested_area` | `Name` | no | An area name the device reports for itself (ESPHome's `area`). Used only when the device is new and has no area; the core matches it to an existing area by name |
+| `via_device_unique_id` | `UniqueId` | no | The bridge or hub it's reached through. Not its own `unique_id` |
+
+### 6.2 EntityDescription
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `unique_id` | `UniqueId` | yes | |
+| `name` | `Name` | if no device | Leave out for a device's main feature (a smart plug's relay): it then uses the device's name |
+| `device_unique_id` | `UniqueId` | if no name | The device it belongs to |
+| `suggested_object_id` | slug | no | The part after `.` in its entity id, when it's new. Otherwise derived from the names |
+| `capabilities` | `Capabilities` ([entities.md](entities.md) §4.4) | yes | `capabilities.kind` is the entity's kind, and must be one of the manifest's `entity_kinds` |
+
+Describing an existing entity again updates its capabilities and suggested name; it never
+changes its kind. A different kind needs a different `unique_id`.
+
+### 6.3 StateReport
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `unique_id` | `UniqueId` | yes | |
+| `state` | `State` ([entities.md](entities.md) §5.3), or `null` | yes, even when `null` | `null` when the device doesn't know (e.g. it just rebooted) |
+| `attributes` | map of `AttributeKey` → any JSON | no | Replaces all attributes; leave out to clear them |
+| `caused_by` | `ContextId` | no | The context of the service call this change answers |
+
+The core turns a report into the entity's `EntityState`: it sets `last_reported`, updates
+`last_changed` and `last_updated` if something changed, and sets the context:
+
+- with `caused_by`: a new context whose `parent_id` is that call's context, so "the lamp turned
+  off because rule X ran" is traceable;
+- without: a new context with `origin: device`.
+
+Report what the device says, when it says it. An integration shouldn't report a value it only
+asked for (optimistic state) unless the device can't report back; see open question 2.
+
+### 6.4 Availability
+
+Separate from state (ROADMAP D20). Entities start `available` when first described. When a
+device drops off the network, set it `unavailable` (per device, or per entity); the last value
+stays. When the integration itself stops or crashes, the core marks all its entities
+`unavailable`.
+
+### 6.5 Health
+
+What the integration says about itself, shown on the Extensions page:
+
+- `running`: everything's fine.
+- `degraded` + reason: working, with a problem worth showing. For example `2 of 5 devices
+  unreachable`, or `3 entities skipped: kinds not supported yet (select, number)`.
+
+`starting`, `failed`, and `disabled` are set by the core ([extensions.md](extensions.md) §8).
+
+## 7. Service calls
+
+### 7.1 Standard services
+
+Each entity kind has standard services. An integration handles the ones for every kind in its
+manifest's `entity_kinds`.
+
+| Service | `data` | Notes |
+|---|---|---|
+| `light.turn_on` | `brightness` 1–255, `color_temp_kelvin` 1000–20000, `rgb` `[r, g, b]`; all optional; not both color settings | No data: on at its last brightness and color |
+| `light.turn_off` | none | |
+| `switch.turn_on` | none | |
+| `switch.turn_off` | none | |
+
+`sensor` and `binary_sensor` have no services.
+
+**What the core resolves first,** so integrations don't have to:
+
+- **Toggle.** People and rules can call `light.toggle`; the core reads the current state and
+  sends `turn_on` or `turn_off`.
+- **Friendlier parameters.** `brightness_pct` from people becomes `brightness`.
+- **Capabilities.** A call asking for something the entity can't do (brightness on a
+  non-dimmable light, a color temperature outside its range) is rejected before it reaches the
+  integration.
+
+### 7.2 ServiceCall
+
+What the integration receives. Schema: `schemas/service-call.schema.json`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `service` | service name (§7.1) | |
+| `entity_id` | `EntityId` | For logs and messages. Its kind matches the service |
+| `unique_id` | `UniqueId` | Which entity, in the integration's terms |
+| `data` | object | The service's data; left out when empty |
+| `context` | `Context` | Why it's being called. Pass `context.id` back as `caused_by` when reporting the result |
+
+### 7.3 Result
+
+The integration replies once per call, **after the device accepted the command** (not after the
+new state is confirmed; that comes as a state report):
+
+- `ok`
+- `error` with a code and a message for people:
+  - `unavailable`: the device can't be reached right now;
+  - `failed`: the device or service refused or failed, e.g. the cloud API returned an error.
+
+The core adds `timeout` when there's no reply within 10 seconds. Errors go back to whoever made
+the call (the UI, the CLI, a rule's trace).
+
+## 8. What the core checks
+
+Beyond the types (layer 2), the core checks every operation against the registry and the
+manifest (layer 3), and rejects it with a message naming the problem:
+
+- an entity's kind is in the manifest's `entity_kinds`;
+- `device_unique_id` and `via_device_unique_id` refer to devices this integration described;
+  `via` chains have no cycles;
+- an entity isn't re-described with a different kind;
+- a state report's kind matches the entity's, and fits its capabilities (`brightness` only if
+  dimmable, a sensor value matching `value_type`);
+- `caused_by` is a context of a call made to this integration.
+
+A rejected describe returns the error to the integration. A rejected state report is logged and
+dropped, and the Extensions page shows how many were rejected.
+
+## 9. Built-in integrations (Rust)
+
+Built-in integrations implement a trait from the SDK (`irori-integration`). Roughly:
+
+```rust
+pub trait Integration: Send + 'static {
+    /// Its settings. The config schema is generated from this type.
+    type Config: DeserializeOwned + JsonSchema + Send;
+
+    /// The manifest, e.g. `include_str!("../irori-extension.toml")`.
+    const MANIFEST: &'static str;
+
+    /// Runs until told to stop. Returning an error, or panicking, marks it failed.
+    fn run(
+        config: Self::Config,
+        ctx: IntegrationContext,
+    ) -> impl Future<Output = Result<(), IntegrationError>> + Send;
+}
+```
+
+`IntegrationContext` offers exactly the operations in §5 and nothing else. Service calls arrive
+through it, and it ends when the integration should stop:
+
+```rust
+async fn run(config: Config, mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
+    let mut lamp = connect(&config.address).await?;
+    ctx.describe_device(lamp.device()).await?;
+    ctx.describe_entity(lamp.entity()).await?;
+    loop {
+        tokio::select! {
+            call = ctx.next_call() => match call {
+                Some(call) => call.reply(lamp.apply(&call.service).await),
+                None => return Ok(()), // told to stop
+            },
+            update = lamp.next_update() => ctx.report_state(update?),
+        }
+    }
+}
+```
+
+The exact API is settled in M1.1, with `irori-int-demo` as the reference integration to copy.
+
+## 10. External integrations
+
+External integrations are separate processes, in any language. They do the **same operations**,
+as JSON messages over a connection to the core, with the payloads defined in §6–§7:
+
+| Direction | Message | Payload |
+|---|---|---|
+| → core | `integration/hello` | extension id, version, and its token |
+| ← core | `integration/welcome` | its settings |
+| → core | `device/describe`, `entity/describe` | `DeviceDescription`, `EntityDescription` |
+| → core | `device/remove`, `entity/remove` | `unique_id` |
+| → core | `state/report` | `StateReport` |
+| → core | `availability/set` | `unique_id`s or a device `unique_id`; `available` \| `unavailable` |
+| → core | `health/set` | `running` \| `degraded` + reason |
+| ← core | `service/call` | `ServiceCall` |
+| → core | `service/result` | `ok` \| `error` + code + message |
+| → core | `store/get`, `store/set` | key, JSON value |
+| → core | `log` | level, message, fields |
+
+The core starts the process from the manifest's `run` and supervises it like a built-in one (§3).
+The message envelope, the transport (WebSocket, and maybe a Unix socket: ROADMAP open question 6),
+and the token handshake are specified with the API (M0.5) and built in M1.5. Built-in and external
+integrations must be indistinguishable from the UI and CLI.
+
+## 11. Not in this spec (on purpose)
+
+| Topic | Where it's decided |
+|---|---|
+| Where settings live, and hot reload | Config spec (M0.7) |
+| How people call services, including `toggle` and `brightness_pct` | API spec (M0.5) and rules spec (M0.3) |
+| Message envelope, transport, and tokens for external integrations | API spec (M0.5), M1.5 |
+| Entity kinds beyond v1 (cover, button, select, …) | Additive changes to [entities.md](entities.md) §4.4, as integrations need them |
+| Discovery (mDNS, HA MQTT Discovery) | Inside each integration; the contract only sees the resulting descriptions |
+
+## 12. Changes from the roadmap draft
+
+ROADMAP M0.6 sketched a trait with `setup`, `run(&mut self)`, and `handle_service(&self)`. This
+spec changes that:
+
+- **Service calls arrive through the context**, not a separate trait method. With `run` holding
+  `&mut self` for as long as the integration runs, `handle_service(&self)` couldn't be called at
+  the same time without every integration adding locks. One message loop is simpler, and it's
+  exactly how external integrations work.
+- **`setup` is folded into `run`.** The core checks settings before starting; a restart simply
+  calls `run` again.
+- **Integrations use `unique_id`s; the core assigns ids.** So users can rename entities without
+  the integration knowing, and a restarted integration maps back to the same entries.
+- **The manifest is the TOML file**, embedded with `include_str!`, instead of a `manifest()`
+  method, so built-in and external extensions share one format.
+- **Operations are named** (`describe`, `report`, `set availability`) and have typed payloads
+  with schemas and golden examples.
+
+## 13. Open questions
+
+1. **Custom services and events.** ESPHome devices have buttons and can fire events; cloud APIs
+   have actions like "reboot". Options: new entity kinds (`button`, `event`, already next in
+   [entities.md](entities.md) §4.4), or custom services under the integration's id
+   (`esphome.reboot`). Decide with the ESPHome integration, before rules (M0.3) need them.
+2. **Optimistic state.** For devices that can't report back (some IR or 433 MHz ones), should the
+   integration report the requested state, flagged as assumed? Decide when the first such
+   device appears.
+3. **Native toggle.** Some devices toggle atomically; resolving toggle in the core can race with
+   a physical button press. Pass `toggle` through when an entity declares it supports it?
+4. **Unsupported entities.** When a device has entities of kinds Irori doesn't have yet, should
+   the integration only mention them in its health, or describe them so the Devices page can list
+   "not supported yet"? The second makes gaps visible, which matters while testing in real homes.

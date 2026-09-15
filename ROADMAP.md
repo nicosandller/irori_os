@@ -44,6 +44,7 @@ Last revised: 2026-09-15. Based on the original `irori-project-plan.md`, revised
 | D23 | **Extension permissions are declared and approved:** API scopes, network hosts, serial/USB devices, host filesystem paths, host shell. Shown at install; any increase on update needs re-approval. `host_shell` and broad `host_fs` are marked *full access to this machine*, owner-only | A terminal or file explorer app is effectively root on the box; the model must say so plainly instead of hiding it inside a generic "plugin". |
 | D24 | **Integrations declare an `iot_class`** (`local_push`, `local_polling`, `cloud_push`, `cloud_polling`), shown as a badge in the UI and CLI | Protocols and vendor cloud APIs share one contract; local-first users still need to see at a glance what depends on the internet. |
 | D25 | **v1: an extension contributes at most one integration, and its `IntegrationId` equals its extension id** | Leaves the M0.2 entity model and existing code (`Device.integration`) unchanged. Can be relaxed later with namespaced ids if one extension ever needs several integrations. |
+| D26 | **Home-testing path before automations.** After the extension spec (M0.6): a trimmed M1.1 (registry, state, events, extension host, demo integration), then the Leptos vs Dioxus spike (M0.8) with a first Devices page, then the **ESPHome native API integration** (moved up from Phase 3, §8.3). The remaining specs (M0.3 rules, M0.4 traces, M0.5 API, M0.7 config) resume after. MQTT/Zigbee2MQTT and native Zigbee stay undecided | Owner's direction: see real devices (ESP32 test boards) on a real Devices page early, and learn from a real home before designing automations. ESPHome's native API needs no broker and runs alongside the existing Home Assistant + Zigbee2MQTT setup without touching it. |
 
 ### Review notes on the original plan (kept for context)
 
@@ -182,6 +183,8 @@ irori_os/
 
 Goal: the decisions that are expensive to change later are written down and prototyped. **Little product code, lots of leverage.**
 
+> **Current order (D26):** M0.1 ✅ → M0.2 ✅ → M0.6 ✅ → M1.1 (trimmed) → M0.8 UI spike + Devices page → ESPHome integration → M0.3, M0.4, M0.5, M0.7.
+
 ### M0.1 Workspace and toolchain ✅
 
 > Done except the demo on a physical Raspberry Pi (CI covers it under QEMU).
@@ -246,7 +249,9 @@ Must decide:
 - HTTP: health, static UI, token-authenticated REST mirrors of read endpoints.
 - Auth: first run prints a **one-time setup code** to stdout/log (so whoever reaches the wizard first on the LAN can't claim the instance). The wizard creates the owner account. Access tokens are for API, CLI, and external extensions (extension tokens are scoped to the permissions approved for their manifest, D23).
 
-### M0.6 Spec: extension manifest + integration contract (the most important specs for modularity)
+### M0.6 Spec: extension manifest + integration contract (the most important specs for modularity) ✅
+
+> Done: see [docs/specs/extensions.md](docs/specs/extensions.md) and [docs/specs/integrations.md](docs/specs/integrations.md). They refine the draft below (each has a "Changes from the roadmap draft" section); the specs are authoritative.
 
 **Part A — extension manifest → `docs/specs/extensions.md`** (D21–D25)
 - **Package:** a directory or signed archive with `irori-extension.toml`, plus per-architecture binaries (for process-backed contributions) and/or web assets. Built-in extensions embed the same manifest, compiled in.
@@ -507,7 +512,7 @@ The manifest and the integration, dashboard, and card contracts already exist an
   3. **Terminal** (`host_shell = true`): the canonical high-privilege example.
 
 ### 8.3 First new integrations (in order of value for tinkerers)
-1. **ESPHome native API** (ESPHome's default transport, not MQTT)
+1. **ESPHome native API** (ESPHome's default transport, not MQTT). *Moved up to the home-testing path (D26).*
 2. **Z-Wave** via `zwave-js-server` (external)
 3. **Matter** via `rs-matter` (built-in, opt-in feature)
 4. **One vendor cloud connector** (e.g. SwitchBot, which has a documented public API) to prove `cloud_polling`/`cloud_push`, credential handling via `secrets.toml`, and the cloud badge end to end
