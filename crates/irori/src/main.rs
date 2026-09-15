@@ -53,9 +53,10 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn serve(data: PathBuf, bind: SocketAddr) -> anyhow::Result<()> {
-    // No color codes when logs go to journald, Docker, or a file.
+    // Logs go to stdout, with no color codes when that's journald, Docker, or a file.
     let ansi = std::io::IsTerminal::is_terminal(&std::io::stdout());
     tracing_subscriber::fmt()
+        .with_writer(std::io::stdout)
         .with_target(false)
         .with_ansi(ansi)
         .init();

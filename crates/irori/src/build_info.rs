@@ -9,7 +9,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Debug, Serialize)]
 pub struct BuildInfo {
     pub version: &'static str,
-    pub target: String,
+    pub target: &'static str,
     pub features: Vec<&'static str>,
     pub sqlite_version: &'static str,
 }
@@ -18,7 +18,7 @@ impl BuildInfo {
     pub fn current() -> Self {
         Self {
             version: VERSION,
-            target: format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
+            target: env!("IRORI_TARGET"),
             features: enabled_features(),
             sqlite_version: rusqlite::version(),
         }

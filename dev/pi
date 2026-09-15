@@ -75,10 +75,11 @@ esac
 case "$cmd" in
   up) up "$@" ;;
   down)
+    "${compose[@]}" down
     if [[ "${1:-}" == "--wipe" ]]; then
-      "${compose[@]}" down --volumes
-    else
-      "${compose[@]}" down
+      # Only irori's data; the cargo caches used by `check` stay.
+      docker volume rm --force irori-dev_pi-data >/dev/null
+      echo "Deleted irori's data volume"
     fi
     ;;
   restart) up "$@" ;;

@@ -17,7 +17,7 @@ fail() {
 
 health=""
 deadline=$((SECONDS + timeout))
-until health="$(curl -fsS "$base_url/api/health" 2>/dev/null)"; do
+until health="$(curl -fsS --max-time 2 "$base_url/api/health" 2>/dev/null)"; do
   ((SECONDS < deadline)) || fail "no healthy response from $base_url/api/health within ${timeout}s"
   sleep 0.2
 done
@@ -26,7 +26,7 @@ echo "health: $health"
 grep -q '"status":"ok"' <<<"$health" || fail "status is not ok"
 grep -q '"journal_mode":"wal"' <<<"$health" || fail "database is not in WAL mode"
 
-index="$(curl -sS -o /dev/null -w '%{http_code} %{content_type}' "$base_url/")"
+index="$(curl -sS --max-time 5 -o /dev/null -w '%{http_code} %{content_type}' "$base_url/")"
 if grep -q '"features":\[[^]]*"ui"' <<<"$health"; then
   [[ "$index" == "200 text/html"* ]] || fail "expected the UI at / (got: $index)"
   echo "ui: served ($index)"

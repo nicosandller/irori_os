@@ -1,8 +1,9 @@
 name: Dev container
 
-# Keeps dev/ (the Raspberry Pi-like container) from rotting. Only runs when something it
-# depends on changes. Builds for the runner's native amd64 to stay fast; arm64 is what
-# developers run locally, and the arm64 binary itself is covered by ci.yml under QEMU.
+# Keeps dev/ (the Raspberry Pi-like container) from rotting. Runs when anything the image
+# builds from changes (skipped for docs-only changes). Builds for the runner's native amd64
+# to stay fast; arm64 is what developers run locally, and the arm64 binary itself is
+# covered by ci.yml under QEMU.
 on:
   push:
     branches: [main]
@@ -10,14 +11,24 @@ on:
       - "dev/**"
       - ".dockerignore"
       - "rust-toolchain.toml"
+      - "Cargo.toml"
       - "Cargo.lock"
+      - "crates/**"
+      - "integrations/**"
+      - "extras/**"
+      - "xtask/**"
       - ".github/workflows/dev-container.yml"
   pull_request:
     paths:
       - "dev/**"
       - ".dockerignore"
       - "rust-toolchain.toml"
+      - "Cargo.toml"
       - "Cargo.lock"
+      - "crates/**"
+      - "integrations/**"
+      - "extras/**"
+      - "xtask/**"
       - ".github/workflows/dev-container.yml"
 
 concurrency:
