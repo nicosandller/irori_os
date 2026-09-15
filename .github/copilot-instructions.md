@@ -32,6 +32,12 @@ more than volume: one verified finding beats five guesses.
   input, never before a trailing newline. Don't flag `$` anchors in `schemas/` or in the
   schema code in `crates/irori-types`. Python's `re` behaves differently, but it isn't the
   reference, and Rust rejects those inputs when data enters Irori anyway.
+- Numbers are compared as IEEE 754 doubles, the way mainstream JSON Schema validators (JS,
+  Python, Rust `jsonschema`) read them. Don't flag literals whose extra digits are lost in
+  that conversion (e.g. `1.0000000000000001` reading as `1`); Irori doesn't do
+  arbitrary-precision parsing.
+- **Check files before claiming what they contain.** Quote the actual line, for example the
+  value in a fixture, rather than inferring it.
 
 ## What's most useful
 
