@@ -126,6 +126,7 @@ case "$cmd" in
     exec env _IRORI_REVIEW_DEV_DIR="$dev_dir" _IRORI_REVIEW_TOOLING_DIR="$trusted" \
       _IRORI_REVIEW_RETURN_CMD="$return_cmd" bash "$trusted/pi" _review "$pr"
     ;;
+  help | -h | --help) usage ;;
   _review)
     pr="$1"
     return_cmd="$_IRORI_REVIEW_RETURN_CMD"

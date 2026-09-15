@@ -33,6 +33,10 @@ on:
       - "xtask/**"
       - ".github/workflows/dev-container.yml"
 
+# Least privilege: these jobs only read the repo.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -43,6 +47,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Build scripts and tests from the PR run in this job; don't leave a token on disk.
+          persist-credentials: false
       - uses: docker/setup-buildx-action@v3
       - name: Build and start (native platform)
         run: |

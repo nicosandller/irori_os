@@ -1,7 +1,9 @@
 //! Enforces the dependency rules from ROADMAP §2.1 over `cargo metadata`:
 //!
-//! - `irori-core` and `irori-rules` have no integration crate, no AI crate, and no protocol
-//!   library anywhere in their (non-dev) dependency tree.
+//! - `irori-core` and `irori-rules` have no integration implementation (`irori-int-*`), no AI
+//!   crate, and no protocol library anywhere in their (non-dev) dependency tree. The integration
+//!   SDK (`irori-integration`) is allowed: the core hosts integrations through its trait. Because
+//!   the check is transitive, the SDK can't bring in a protocol library either.
 //! - Crates may only depend on the workspace crates their layer allows (e.g. integrations
 //!   depend only on `irori-types` and `irori-integration`).
 
@@ -15,6 +17,7 @@ use serde::Deserialize;
 const PROTOCOL_FREE: &[&str] = &["irori-core", "irori-rules"];
 
 /// Never allowed in a protocol-free crate's tree. Prefix match with a trailing `*`.
+/// `irori-integration` (the SDK, not an integration) is deliberately absent.
 const BANNED_IN_PROTOCOL_FREE: &[&str] = &[
     "irori-int-*",
     "irori-assist",

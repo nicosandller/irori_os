@@ -121,7 +121,7 @@ irori_os/
 ```
 
 **Dependency rules (enforce in CI):**
-- `irori-core` and `irori-rules` depend on **no** integration crate and no protocol library (no `rumqttc` in the core's dependency tree).
+- `irori-core` and `irori-rules` depend on **no** integration implementation (`irori-int-*`), no AI crate, and no protocol library (no `rumqttc` in the core's dependency tree). The integration SDK (`irori-integration`) is allowed, and required: the core's integration host loads integrations through its `Integration` trait. The SDK itself must stay protocol-free.
 - Integrations depend only on `irori-integration` and `irori-types`.
 - `irori-assist` and external tools depend only on `irori-types` and `irori-client`.
 
