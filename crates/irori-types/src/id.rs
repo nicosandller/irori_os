@@ -142,7 +142,7 @@ macro_rules! slug_id {
                 json_schema!({
                     "type": "string",
                     "description": concat!(
-                        "A ", $what, ": lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters."
+                        "Format of a ", "slug (", $what, "): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters."
                     ),
                     "pattern": SLUG_PATTERN,
                     "minLength": 1,

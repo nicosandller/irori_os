@@ -1,9 +1,9 @@
 //! JSON Schema generation. `cargo xtask schemas` writes these to `schemas/`.
 
 use schemars::generate::SchemaSettings;
-use schemars::{JsonSchema, Schema, json_schema};
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 
-use crate::{Area, Device, Entity, EntityKind, EntityState, Floor};
+use crate::{Area, AttributeKey, Device, Entity, EntityKind, EntityState, Floor};
 
 /// One generated schema document.
 #[derive(Debug)]
@@ -66,4 +66,14 @@ pub(crate) fn entity_state_kind_match(schema: &mut Schema) {
             required.push(state);
         }
     }
+}
+
+/// `attributes`: keys follow the full `AttributeKey` rule (pattern *and* length). The default map
+/// schema only carries the key pattern.
+pub(crate) fn attributes_schema(generator: &mut SchemaGenerator) -> Schema {
+    json_schema!({
+        "type": "object",
+        "description": "Free-form extras from the integration, e.g. Zigbee link quality. Readable by rules but not type-checked.",
+        "propertyNames": generator.subschema_for::<AttributeKey>(),
+    })
 }

@@ -26,7 +26,7 @@
   ],
   "$defs": {
     "FloorId": {
-      "description": "A floor id: lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "description": "Format of a slug (floor id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
       "type": "string",
       "maxLength": 64,
       "minLength": 1,
