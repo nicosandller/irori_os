@@ -1,6 +1,5 @@
 {
   "service": "light.turn_on",
-  "entity_id": "light.desk_lamp",
   "unique_id": "lamp",
   "data": {
     "brightness_pct": 50

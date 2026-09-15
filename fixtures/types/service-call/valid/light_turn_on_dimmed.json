@@ -1,6 +1,5 @@
 {
   "service": "light.turn_on",
-  "entity_id": "light.desk_lamp",
   "unique_id": "a4:cf:12:34:56:78-light-lamp",
   "data": {
     "brightness": 128,

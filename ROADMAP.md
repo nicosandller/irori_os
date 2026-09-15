@@ -261,13 +261,12 @@ Must decide:
   id = "switchbot"                 # slug; also the IntegrationId (D25)
   name = "SwitchBot"
   version = "0.3.0"
-  irori = ">=0.4"                  # compatible core versions
+  irori = ">=0.4.0, <0.5.0"        # compatible core versions
   config_schema = "config.schema.json"
 
   [[contributes.integration]]      # Phase 1
   iot_class = "cloud_polling"      # D24
-  entity_kinds = ["switch", "sensor", "cover"]
-  services = ["switch.turn_on", "switch.turn_off", "cover.open", "cover.close"]
+  entity_kinds = ["switch", "sensor"]   # implies their standard services
   run = { command = "bin/switchbot" }   # omitted for built-in
 
   [[contributes.dashboard]]        # Phase 2c (reserved)
@@ -286,7 +285,7 @@ Must decide:
 
   [permissions]                    # D23
   network = ["api.switch-bot.com"]
-  # api = ["state:read", "services:call"], serial = [], host_fs = [], host_shell = false
+  # api = ["states:read", "services:call"], serial = [], host_fs = [], host_shell = false
   ```
 - **Specified fully in Phase 0:** `[extension]`, `[[contributes.integration]]`, `[permissions]`, compatibility and versioning rules, and how unknown contribution kinds are handled (an older core ignores them with a warning, never a hard error).
 - **Sketched only (reserved names and fields):** dashboard, card, app. Their detailed specs land in the phase that builds them.
@@ -352,7 +351,7 @@ Goal: a **barebones, fast, modular core** that a real home runs on for weeks wit
 
 ### M1.3 Recorder (≈2 wks)
 - SQLite in WAL mode; dedicated writer thread; batch commits (e.g. every 1s or 500 rows).
-- Tables: `states`, `events`, `rule_versions` (snapshots of each rule file version the engine loaded), `rule_runs`, `rule_steps`, `users`, `tokens`, `registry_*`, `extension_kv`. Authored config (rules, integration settings) stays in the config dir (D18).
+- Tables: `states`, `events`, `rule_versions` (snapshots of each rule file version the engine loaded), `rule_runs`, `rule_steps`, `users`, `tokens`, `registry_*`, `extension_kv`. Authored config (rules, extension config) stays in the config dir (D18).
 - Retention/purge job (default 10 days of states; configurable excludes for chatty sensors) to limit SD card wear.
 - History query API (entity, time range, downsampling for numeric sensors).
 - **Demo:** 48h of real home history queried and plotted as text or CSV.

@@ -54,7 +54,6 @@ impl ExtensionManifest {
     /// Checks the rules that span fields. Deserialization runs this; call it yourself when
     /// building a manifest in code.
     pub fn validate(&self) -> Result<(), InvariantError> {
-        self.extension.irori.validate()?;
         self.contributes.validate()?;
         self.permissions.validate()
     }
@@ -416,7 +415,7 @@ impl JsonSchema for Version {
 }
 
 /// Which versions of Irori an extension works with: `>=A.B.C`, or `>=A.B.C, <X.Y.Z` with
-/// the upper bound above the lower one.
+/// the upper bound above the lower one (checked here, but not by the JSON Schema).
 ///
 /// Deliberately narrower than Cargo's version requirements: one way to write each range.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -437,6 +436,14 @@ fn parse_requirement(value: &str) -> Result<(Release, Option<Release>), IdError>
     let upper = upper
         .map(|u| parse_release(u).ok_or_else(invalid))
         .transpose()?;
+    // Not expressible in JSON Schema, so only Rust checks it.
+    if upper.is_some_and(|upper| upper <= lower) {
+        return Err(err(
+            "Irori version requirement",
+            value,
+            "matches no version: the upper bound must be above the lower bound",
+        ));
+    }
     Ok((lower, upper))
 }
 
@@ -451,16 +458,6 @@ impl CoreRequirement {
         let (lower, upper) = self.bounds();
         let core = core.release();
         core >= lower && upper.is_none_or(|upper| core < upper)
-    }
-
-    /// Checked on deserialization, and not expressible in JSON Schema.
-    fn validate(&self) -> Result<(), InvariantError> {
-        match self.bounds() {
-            (lower, Some(upper)) if upper <= lower => Err(InvariantError(format!(
-                "irori = \"{self}\" matches no version: the upper bound must be above the lower bound"
-            ))),
-            _ => Ok(()),
-        }
     }
 }
 
@@ -629,8 +626,11 @@ impl JsonSchema for HostPath {
     }
 }
 
-/// An internet host an extension connects to: a hostname or IPv4 address (`api.switch-bot.com`),
-/// or every subdomain of one (`*.example.com`). Lowercase, so each host has one spelling.
+/// An internet host an extension connects to: a hostname (`api.switch-bot.com`), or every
+/// subdomain of one (`*.example.com`). Lowercase, so each host has one spelling.
+///
+/// Local-network targets are rejected so they can't hide behind this permission: IP addresses,
+/// single-label names, and names under local-only domains (`.local`, `.home.arpa`, …) need `lan`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct NetworkHost(String);
@@ -638,6 +638,12 @@ pub struct NetworkHost(String);
 string_newtype!(NetworkHost, check_network_host);
 
 const LABEL: &str = "[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?";
+/// The last label: starts with a letter, so an IP address never matches.
+const TOP_LABEL: &str = "[a-z]([a-z0-9-]{0,61}[a-z0-9])?";
+
+/// Domains that only exist on a local network: mDNS (`local`), RFC 6761 (`localhost`), RFC 8375
+/// (`home.arpa`), ICANN's private-use `internal`, and common router defaults (`lan`, `home`).
+const LOCAL_DOMAINS: [&str; 6] = ["local", "localhost", "home.arpa", "internal", "lan", "home"];
 
 fn check_network_host(value: &str) -> Result<(), IdError> {
     const WHAT: &str = "network host";
@@ -657,6 +663,24 @@ fn check_network_host(value: &str) -> Result<(), IdError> {
             "must be a lowercase hostname like `api.example.com` or `*.example.com` (labels of a-z, 0-9, `-`, up to 63 characters each, 253 in total)",
         ));
     }
+    let top = host.rsplit('.').next().unwrap_or(host);
+    if !host.contains('.') || !top.starts_with(|c: char| c.is_ascii_lowercase()) {
+        return Err(err(
+            WHAT,
+            value,
+            "must be an internet hostname with a domain, like `api.example.com`; for IP addresses and devices on your network, use `lan = true`",
+        ));
+    }
+    if LOCAL_DOMAINS
+        .iter()
+        .any(|d| host == *d || host.ends_with(&format!(".{d}")))
+    {
+        return Err(err(
+            WHAT,
+            value,
+            "is a local-network name; use `lan = true` for devices on your network",
+        ));
+    }
     Ok(())
 }
 
@@ -666,14 +690,16 @@ impl JsonSchema for NetworkHost {
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        let local = LOCAL_DOMAINS.map(|d| d.replace('.', "\\.")).join("|");
         // Two branches so the 253-character limit applies to the hostname, with or without `*.`.
         json_schema!({
             "type": "string",
-            "description": "A lowercase hostname or IPv4 address, e.g. `api.example.com`, or `*.example.com` for every subdomain.",
+            "description": "An internet hostname, e.g. `api.example.com`, or `*.example.com` for every subdomain. Not an IP address or a local-network name (`.local`, `.home.arpa`, `.internal`, `.lan`, `.home`): those need `lan`.",
             "anyOf": [
-                { "pattern": format!("^{LABEL}(\\.{LABEL})*$"), "maxLength": 253 },
-                { "pattern": format!("^\\*\\.{LABEL}(\\.{LABEL})*$"), "maxLength": 255 },
+                { "pattern": format!("^({LABEL}\\.)+{TOP_LABEL}$"), "maxLength": 253 },
+                { "pattern": format!("^\\*\\.({LABEL}\\.)+{TOP_LABEL}$"), "maxLength": 255 },
             ],
+            "not": { "pattern": format!("(^|\\.)({local})$") },
         })
     }
 }
@@ -741,6 +767,7 @@ mod tests {
         agree::<CoreRequirement>(&[
             (">=0.1.0", true),
             (">=0.1.0, <0.2.0", true),
+            (">=0.1.0, <0.1.1", true),
             (">=0.1", false),
             ("^0.1.0", false),
             (">=0.1.0,<0.2.0", false),
@@ -748,6 +775,11 @@ mod tests {
             (">=0.1.0-beta", false),
             ("0.1.0", false),
         ]);
+        // Ordering is checked on construction; the schema can't compare the bounds.
+        for empty in [">=0.2.0, <0.2.0", ">=0.2.0, <0.1.9"] {
+            let e = CoreRequirement::try_from(empty).expect_err("matches no version");
+            assert!(e.to_string().contains("matches no version"), "{e}");
+        }
         let req = CoreRequirement::try_from(">=0.2.0, <0.3.0").expect("valid");
         let v = |s: &str| Version::try_from(s).expect("valid");
         assert!(!req.matches(&v("0.1.9")));
@@ -799,8 +831,21 @@ mod tests {
         agree::<NetworkHost>(&[
             ("api.switch-bot.com", true),
             ("*.example.com", true),
-            ("192.168.1.20", true),
-            ("localhost", true),
+            ("1password.com", true),
+            ("local.example.com", true),
+            ("example.local.com", true),
+            ("192.168.1.20", false),
+            ("8.8.8.8", false),
+            ("example.123", false),
+            ("localhost", false),
+            ("nas", false),
+            ("esp32-desk.local", false),
+            ("*.local", false),
+            ("printer.home.arpa", false),
+            ("home.arpa", false),
+            ("vault.internal", false),
+            ("router.lan", false),
+            ("nas.home", false),
             (&host253, true),
             (&format!("*.{host253}"), true),
             (&host254, false),
@@ -810,6 +855,7 @@ mod tests {
             ("-api.example.com", false),
             ("api-.example.com", false),
             ("api..example.com", false),
+            ("*.com", false),
             ("*.", false),
             ("*", false),
             ("a.*.example.com", false),

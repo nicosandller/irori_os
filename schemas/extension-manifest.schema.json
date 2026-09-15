@@ -100,7 +100,7 @@
       "type": "string",
       "maxLength": 500,
       "minLength": 1,
-      "pattern": "^[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F]([^\\u0000-\\u001F\\u007F-\\u009F]*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F])?$"
+      "pattern": "^[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029]([^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029]*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029])?$"
     },
     "EntityKind": {
       "description": "What an entity is. The kind is also the domain part of its [`crate::EntityId`] and the\nprefix of its services (`light.turn_on`).",
@@ -256,18 +256,21 @@
       "pattern": "^[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F]([^\\u0000-\\u001F\\u007F-\\u009F]*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F])?$"
     },
     "NetworkHost": {
-      "description": "A lowercase hostname or IPv4 address, e.g. `api.example.com`, or `*.example.com` for every subdomain.",
+      "description": "An internet hostname, e.g. `api.example.com`, or `*.example.com` for every subdomain. Not an IP address or a local-network name (`.local`, `.home.arpa`, `.internal`, `.lan`, `.home`): those need `lan`.",
       "type": "string",
       "anyOf": [
         {
           "maxLength": 253,
-          "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$"
+          "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
         },
         {
           "maxLength": 255,
-          "pattern": "^\\*\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$"
+          "pattern": "^\\*\\.([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
         }
-      ]
+      ],
+      "not": {
+        "pattern": "(^|\\.)(local|localhost|home\\.arpa|internal|lan|home)$"
+      }
     },
     "PackagePath": {
       "description": "A path relative to the extension package root, e.g. `bin/esphome`. Segments use letters, digits, `.`, `_`, `-` and don't start with `.`.",
