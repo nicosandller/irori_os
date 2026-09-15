@@ -54,7 +54,7 @@ scp target/aarch64-unknown-linux-musl/release/irori pi@raspberrypi.local:
 ssh pi@raspberrypi.local ./irori serve --bind 0.0.0.0:8480
 ```
 
-CI builds `x86_64` and `aarch64` musl binaries on every push, smoke-tests the `aarch64` one under QEMU, and uploads them as workflow artifacts.
+CI runs on every pull request (and on every push to `main`). It builds `x86_64` and `aarch64` musl binaries, smoke-tests the `aarch64` one under QEMU, and uploads them as workflow artifacts.
 
 ## Layout
 
