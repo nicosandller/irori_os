@@ -1,0 +1,13 @@
+[package]
+name = "irori-ui"
+description = "Barebones web UI (Rust/WASM). Framework choice pending the M0.8 spike."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+irori-types.workspace = true
+
+[lints]
+workspace = true

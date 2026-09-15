@@ -1,0 +1,6 @@
+# Keep the Docker build context small (dev/Dockerfile uses the repo root).
+.git
+target
+data
+**/.DS_Store
+.claude

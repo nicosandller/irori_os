@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Irori</title>
+  <style>
+    :root { color-scheme: light dark; --fg: #1d1b18; --muted: #6b645c; --bg: #faf7f2; --ember: #d2572b; }
+    @media (prefers-color-scheme: dark) { :root { --fg: #efe9e1; --muted: #a39a90; --bg: #1a1714; } }
+    body { margin: 0; padding: 3rem 1rem; background: var(--bg); color: var(--fg);
+           font: 16px/1.5 system-ui, -apple-system, sans-serif; }
+    main { max-width: 36rem; margin: 0 auto; }
+    h1 { margin: 0 0 .25rem; font-size: 2rem; }
+    h1::before { content: ""; display: inline-block; width: .6em; height: .6em; margin-right: .4em;
+                 border-radius: 50%; background: var(--ember); box-shadow: 0 0 .6em var(--ember); }
+    p { color: var(--muted); margin: 0 0 2rem; }
+    pre { padding: 1rem; border-radius: .5rem; background: color-mix(in srgb, var(--fg) 6%, transparent);
+          overflow-x: auto; font-size: .875rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Irori</h1>
+    <p>The hearth is lit. This page is embedded in the binary; the health below comes from the API.</p>
+    <pre id="health">loading…</pre>
+  </main>
+  <script>
+    fetch("/api/health")
+      .then((r) => r.json())
+      .then((h) => { document.getElementById("health").textContent = JSON.stringify(h, null, 2); })
+      .catch((e) => { document.getElementById("health").textContent = "health check failed: " + e; });
+  </script>
+</body>
+</html>

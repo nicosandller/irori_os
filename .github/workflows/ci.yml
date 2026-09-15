@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: these jobs only read the repo.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  check:
+    name: fmt · clippy · test · dependency rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Build scripts and tests from the PR run in this job; don't leave a token on disk.
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+      - name: clippy (all features)
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: clippy (barebones, no default features)
+        run: cargo clippy --locked -p irori --no-default-features --all-targets -- -D warnings
+      - name: test (all features)
+        run: cargo test --locked --workspace --all-features
+      - name: test (barebones, no default features)
+        run: cargo test --locked -p irori --no-default-features
+      - name: dependency rules (ROADMAP §2.1)
+        run: cargo xtask check-deps
+
+  wasm:
+    name: irori-types builds for wasm32
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Build scripts and tests from the PR run in this job; don't leave a token on disk.
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo check --locked -p irori-types --target wasm32-unknown-unknown
+
+  cross:
+    name: static build · ${{ matrix.target }}${{ matrix.features == '--no-default-features' && ' · barebones' || '' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ""
+            features: ""
+          - target: aarch64-unknown-linux-musl
+            runner: qemu-aarch64-static
+            features: ""
+          - target: aarch64-unknown-linux-musl
+            runner: qemu-aarch64-static
+            features: --no-default-features
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Build scripts and tests from the PR run in this job; don't leave a token on disk.
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}${{ matrix.features }}
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+      - name: Install QEMU user-mode emulation
+        if: matrix.runner != ''
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+
+      - name: Build
+        run: |
+          rustup target add ${{ matrix.target }}
+          cargo zigbuild --locked --release -p irori --target ${{ matrix.target }} ${{ matrix.features }}
+
+      - name: Smoke test (version, serve, health, SIGTERM)
+        env:
+          RUNNER: ${{ matrix.runner }}
+          BIN: target/${{ matrix.target }}/release/irori
+        run: |
+          set -euo pipefail
+          file "$BIN"
+          $RUNNER "$BIN" version --json
+
+          data="$(mktemp -d)"
+          $RUNNER "$BIN" serve --data "$data" --bind 127.0.0.1:8480 &
+          pid=$!
+          dev/smoke-test.sh http://127.0.0.1:8480 30
+          kill -TERM "$pid"
+          wait "$pid"
+          test -f "$data/irori.db"
+
+      - name: Binary size summary
+        run: |
+          size=$(stat -c %s target/${{ matrix.target }}/release/irori)
+          echo "| ${{ matrix.target }} ${{ matrix.features }} | $(numfmt --to=iec-i --suffix=B $size) ($size bytes) |" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: irori-${{ matrix.target }}${{ matrix.features == '--no-default-features' && '-barebones' || '' }}
+          path: target/${{ matrix.target }}/release/irori
+          if-no-files-found: error
+          retention-days: 14
