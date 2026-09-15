@@ -153,15 +153,16 @@ async fn supervise(
         let (ctx, host_end) = connect();
         // Settings come from the config dir once it exists (M0.7); until then, defaults.
         let settings = serde_json::Value::Object(serde_json::Map::new());
-        // Only time spent actually running counts towards `healthy_after`; startup doesn't.
-        let mut started = Instant::now();
+        // Only time spent actually running counts towards `healthy_after`; startup doesn't, and
+        // a start that panics never ran at all.
+        let mut running_since: Option<Instant> = None;
         // `Integration::run` may do work before returning its future; a panic there is a crash
         // like any other, not the end of supervision.
         let reason = match catch_unwind(AssertUnwindSafe(|| builtin.start(settings, ctx))) {
             Ok(Ok(run)) => {
                 core.link(&integration, host_end.calls.clone());
                 let task = tokio::spawn(run);
-                started = Instant::now();
+                running_since = Some(Instant::now());
                 core.set_status(&extension, ExtensionStatus::Running);
                 tracing::info!(%extension, "extension started");
 
@@ -201,7 +202,7 @@ async fn supervise(
             }
             Err(payload) => format!("crashed while starting: {}", panic_message(payload)),
         };
-        if started.elapsed() >= timing.healthy_after {
+        if running_since.is_some_and(|since| since.elapsed() >= timing.healthy_after) {
             delay = timing.first_retry;
         }
         let retry_at = core
@@ -253,8 +254,7 @@ async fn pump(
                 drain(core, extension, integration, kinds, &mut ops, &reports);
                 return Outcome::Ended(describe_end(result));
             }
-            Some(op) = ops.recv() => core.apply_op(extension, integration, kinds, op),
-            batch = reports.next_batch() => core.apply_reports(extension, integration, batch, reports.take_dropped()),
+            () = serve(core, extension, integration, kinds, &mut ops, &reports) => {}
         }
     }
 
@@ -276,8 +276,25 @@ async fn pump(
                 drain(core, extension, integration, kinds, &mut ops, &reports);
                 return Outcome::Stopped;
             }
-            Some(op) = ops.recv() => core.apply_op(extension, integration, kinds, op),
-            batch = reports.next_batch() => core.apply_reports(extension, integration, batch, reports.take_dropped()),
+            () = serve(core, extension, integration, kinds, &mut ops, &reports) => {}
+        }
+    }
+}
+
+/// Applies the next thing the integration says. Operations and state reports are taken in no
+/// fixed order, so an integration busy with one can't starve the other.
+async fn serve(
+    core: &Core,
+    extension: &ExtensionId,
+    integration: &IntegrationId,
+    kinds: &[EntityKind],
+    ops: &mut mpsc::Receiver<Op>,
+    reports: &Reports,
+) {
+    tokio::select! {
+        Some(op) = ops.recv() => core.apply_op(extension, integration, kinds, op),
+        batch = reports.next_batch() => {
+            core.apply_reports(extension, integration, batch, reports.take_dropped());
         }
     }
 }
