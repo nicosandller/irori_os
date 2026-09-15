@@ -1,0 +1,1 @@
+has brightness 0; brightness is 1-255 (use `on: false` for off)

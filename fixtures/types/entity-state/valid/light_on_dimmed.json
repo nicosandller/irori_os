@@ -1,0 +1,26 @@
+{
+  "entity_id": "light.hallway",
+  "availability": "available",
+  "state": {
+    "kind": "light",
+    "on": true,
+    "brightness": 153,
+    "color_mode": "color_temp",
+    "color_temp_kelvin": 2700
+  },
+  "attributes": {
+    "linkquality": 142
+  },
+  "last_changed": "2026-09-15T22:04:31.120Z",
+  "last_updated": "2026-09-15T22:04:31.120Z",
+  "last_reported": "2026-09-15T22:05:01.004Z",
+  "context": {
+    "id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+    "parent_id": "01K5B2Q8R3M4N5P6Q7R8S9T0VW",
+    "origin": {
+      "type": "rule",
+      "rule_id": "hallway_motion_light",
+      "run_id": "01K5B2Q8ZZ0000000000000001"
+    }
+  }
+}

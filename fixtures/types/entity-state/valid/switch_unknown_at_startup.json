@@ -1,0 +1,14 @@
+{
+  "entity_id": "switch.coffee_machine",
+  "availability": "available",
+  "state": null,
+  "last_changed": "2026-09-15T06:00:00Z",
+  "last_updated": "2026-09-15T06:00:00Z",
+  "last_reported": "2026-09-15T06:00:00Z",
+  "context": {
+    "id": "01K59Z0000000000000000000S",
+    "origin": {
+      "type": "system"
+    }
+  }
+}

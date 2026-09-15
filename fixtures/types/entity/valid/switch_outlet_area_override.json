@@ -1,0 +1,12 @@
+{
+  "id": "switch.coffee_machine",
+  "integration": "mqtt",
+  "unique_id": "tasmota_A1B2C3_relay1",
+  "name": "Coffee machine",
+  "device_id": "kitchen_plug",
+  "area_id": "kitchen",
+  "capabilities": {
+    "kind": "switch",
+    "device_class": "outlet"
+  }
+}
