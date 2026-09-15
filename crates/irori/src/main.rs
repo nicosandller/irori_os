@@ -114,7 +114,8 @@ fn serve(
                 "irori is ready"
             );
             let core = Core::new(Arc::new(SystemClock));
-            tokio::spawn(extensions::log_events(core.clone()));
+            // Subscribe before any extension starts, so the log sees their first events.
+            tokio::spawn(extensions::log_events(core.subscribe()));
             let host = ExtensionHost::start(&core, builtins, Timing::default())
                 .map_err(anyhow::Error::msg)?;
 

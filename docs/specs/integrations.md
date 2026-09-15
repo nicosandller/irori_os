@@ -107,7 +107,7 @@ Schemas: `schemas/device-description.schema.json`, `entity-description`, `state-
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `unique_id` | `UniqueId` | yes | |
-| `name` | `Name` | yes | Used when the device is new; after that, the user's name wins |
+| `name` | `Name` | yes | Updated each time the device is described. Once people can rename devices (config spec, M0.7), a name they set wins |
 | `manufacturer`, `model`, `sw_version`, `hw_version` | string | no | Informational, updated every time |
 | `suggested_area` | `Name` | no | An area name the device reports for itself (ESPHome's `area`). Used only when the device is new and has no area; the core matches it to an existing area by name |
 | `via_device_unique_id` | `UniqueId` | no | The bridge or hub it's reached through. Not its own `unique_id` |
@@ -122,8 +122,10 @@ Schemas: `schemas/device-description.schema.json`, `entity-description`, `state-
 | `suggested_object_id` | slug | no | The part after `.` in its entity id, when it's new. Otherwise derived from the names |
 | `capabilities` | `Capabilities` ([entities.md](entities.md) §4.4) | yes | `capabilities.kind` is the entity's kind, and must be one of the manifest's `entity_kinds` |
 
-Describing an existing entity again updates its capabilities and suggested name; it never
-changes its kind. A different kind needs a different `unique_id`.
+Describing an existing entity again updates its name and capabilities (a nameless entity follows
+its device's name); it never changes its kind or its id. A different kind needs a different
+`unique_id`. If the new capabilities no longer fit the stored value, the value is forgotten
+(`null`) until the next report.
 
 ### 6.3 StateReport
 
@@ -148,7 +150,8 @@ asked for (optimistic state) unless the device can't report back; see open quest
 
 Separate from state (ROADMAP D20). Describing an entity marks it `available`: the integration is
 in touch with it, whether it's new or described again after a restart. When a device drops off the
-network, set it `unavailable` (per device, or per entity); the last value stays. When the
+network, set it `unavailable` (per device, or per entity); the last value stays. Setting the same
+availability again counts as hearing from the device (it moves `last_reported`). When the
 integration itself stops or crashes, the core marks all its entities `unavailable`.
 
 ### 6.5 Health

@@ -30,7 +30,20 @@ pub struct Demo;
 pub struct Config {
     /// Seconds between sensor readings.
     #[schemars(range(min = 1, max = 3600))]
+    #[serde(deserialize_with = "interval_secs")]
     pub sensor_interval_secs: u64,
+}
+
+/// Serde doesn't read the schema, so the range it advertises is checked here too.
+fn interval_secs<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    let secs = u64::deserialize(deserializer)?;
+    if (1..=3600).contains(&secs) {
+        Ok(secs)
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "sensor_interval_secs must be from 1 to 3600 (got {secs})"
+        )))
+    }
 }
 
 impl Default for Config {
@@ -76,8 +89,7 @@ async fn run(config: Config, mut ctx: IntegrationContext) -> Result<(), Integrat
         None,
     )?);
 
-    let mut readings =
-        tokio::time::interval(Duration::from_secs(config.sensor_interval_secs.max(1)));
+    let mut readings = tokio::time::interval(Duration::from_secs(config.sensor_interval_secs));
     let mut tick: u64 = 0;
     loop {
         tokio::select! {
@@ -241,6 +253,28 @@ mod tests {
         let builtin = irori_integration::builtin::<Demo>().expect("valid built-in");
         assert_eq!(builtin.manifest.extension.id.as_str(), "demo");
         assert!(builtin.manifest.warnings().is_empty());
+    }
+
+    #[tokio::test]
+    async fn settings_outside_the_advertised_range_are_refused() {
+        let builtin = irori_integration::builtin::<Demo>().expect("valid built-in");
+        for secs in [0, 3601] {
+            let (ctx, _host) = irori_integration::host::connect();
+            let err = builtin
+                .start(serde_json::json!({ "sensor_interval_secs": secs }), ctx)
+                .err()
+                .expect("out of range");
+            assert!(
+                err.contains("sensor_interval_secs must be from 1 to 3600"),
+                "{err}"
+            );
+        }
+        let (ctx, _host) = irori_integration::host::connect();
+        assert!(
+            builtin
+                .start(serde_json::json!({ "sensor_interval_secs": 60 }), ctx)
+                .is_ok()
+        );
     }
 
     #[test]

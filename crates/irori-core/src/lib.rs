@@ -141,7 +141,10 @@ impl Core {
             .get(&resolved.integration)
             .cloned()
             .ok_or_else(|| CallError::NotRunning(resolved.integration.clone()))?;
+        // Recorded before sending: the integration may confirm (`caused_by`) before this task
+        // runs again. Forgotten below if the call never reaches it.
         write(&self.0.home).record_call(&resolved.integration, context.id.clone());
+        let context_id = context.id.clone();
 
         let called = Event::ServiceCalled {
             entity_id: entity_id.clone(),
@@ -154,27 +157,30 @@ impl Core {
             context,
         });
         let integration = resolved.integration;
-        let call = async {
-            sender
-                .send(incoming)
-                .await
-                .map_err(|_| CallError::NotRunning(integration.clone()))?;
-            // Only once the integration has it: a call that never went out wasn't made.
-            self.publish(vec![called]);
-            match result.await {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(e)) => Err(match e.code {
-                    ServiceErrorCode::Unavailable => CallError::Unavailable(e.message),
-                    ServiceErrorCode::Failed => CallError::Failed(e.message),
-                }),
-                Err(_) => Err(CallError::Failed(
-                    "the integration dropped the call without answering".into(),
-                )),
-            }
-        };
-        tokio::time::timeout(SERVICE_CALL_TIMEOUT, call)
-            .await
-            .unwrap_or(Err(CallError::Timeout))
+        let deadline = tokio::time::Instant::now() + SERVICE_CALL_TIMEOUT;
+
+        let sent = tokio::time::timeout_at(deadline, sender.send(incoming)).await;
+        if !matches!(sent, Ok(Ok(()))) {
+            write(&self.0.home).forget_call(&integration, &context_id);
+            return Err(match sent {
+                Err(_) => CallError::Timeout,
+                _ => CallError::NotRunning(integration),
+            });
+        }
+        // Only once the integration has it: a call that never went out wasn't made.
+        self.publish(vec![called]);
+
+        match tokio::time::timeout_at(deadline, result).await {
+            Err(_) => Err(CallError::Timeout),
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(e))) => Err(match e.code {
+                ServiceErrorCode::Unavailable => CallError::Unavailable(e.message),
+                ServiceErrorCode::Failed => CallError::Failed(e.message),
+            }),
+            Ok(Err(_)) => Err(CallError::Failed(
+                "the integration dropped the call without answering".into(),
+            )),
+        }
     }
 
     fn stamp(&self) -> Stamp {
