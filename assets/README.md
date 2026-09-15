@@ -3,8 +3,13 @@
 Two marks: **A** (sunken hearth) and **B** (geometric flame). All SVG, no raster needed.
 
 **Mark A is the one in use**: README banner, web UI favicon and header, and the `irori serve`
-terminal banner. B is kept as the alternative; switching means swapping the `-a` files for
-`-b` in those places (`README.md`, `crates/irori/assets/`, `crates/irori/src/banner.rs`).
+terminal banner. B is kept as the alternative. Switching:
+
+- `README.md`: point the banner at `irori-banner-b.svg`.
+- `crates/irori/assets/`: replace `favicon.svg` with a copy of `favicon-b.svg`, and in
+  `index.html` replace the inline mark A `<svg>` with mark B's geometry.
+- `crates/irori/src/banner.rs`: the terminal art is drawn in code from `irori-cli-art.txt`,
+  which only has mark A's square hearth. Mark B needs new terminal art first.
 
 Naming: **IroriOS** is the brand (logo, wordmark); **Irori** / `irori` is the program.
 

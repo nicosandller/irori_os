@@ -1,1 +1,1 @@
-invalid value: integer `300`, expected u8
+brightness 300 is out of range; it must be 1-255
