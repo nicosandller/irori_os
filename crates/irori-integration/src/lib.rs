@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use irori_types::{
@@ -222,8 +223,9 @@ impl IntegrationContext {
     }
 
     /// Reports a new value for one of its entities. Never waits: if the core is behind, an
-    /// older report for the same entity that it hasn't read yet is replaced by this one.
-    /// Reports the core rejects are logged by the core.
+    /// older report for the same entity that it hasn't read yet is replaced by this one. At most
+    /// [`MAX_PENDING_ENTITIES`] entities' reports wait at once; reports for further entities are
+    /// dropped until the core catches up. The core logs dropped and rejected reports.
     pub fn report_state(&self, report: StateReport) {
         self.reports.push(report);
     }
@@ -248,19 +250,28 @@ impl IntegrationContext {
     }
 }
 
+/// How many entities can have a state report waiting for the core at once. Bounds the core's
+/// memory even if an integration reports for ever-new entities faster than the core keeps up.
+pub const MAX_PENDING_ENTITIES: usize = 4096;
+
 /// Pending state reports, one per entity: a newer report replaces an unread older one.
 #[derive(Debug, Default)]
 struct ReportQueue {
     pending: Mutex<BTreeMap<UniqueId, StateReport>>,
+    dropped: AtomicU64,
     ready: Notify,
 }
 
 impl ReportQueue {
     fn push(&self, report: StateReport) {
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(report.unique_id.clone(), report);
+        {
+            let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            if pending.len() >= MAX_PENDING_ENTITIES && !pending.contains_key(&report.unique_id) {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            pending.insert(report.unique_id.clone(), report);
+        }
         self.ready.notify_one();
     }
 
@@ -391,6 +402,12 @@ pub mod host {
         pub fn drain(&self) -> Vec<StateReport> {
             self.0.take()
         }
+
+        /// How many reports were dropped because too many entities were waiting, since the last
+        /// call.
+        pub fn take_dropped(&self) -> u64 {
+            self.0.dropped.swap(0, Ordering::Relaxed)
+        }
     }
 
     /// A connected pair: the context goes to the integration, the other end stays in the core.
@@ -446,6 +463,21 @@ mod tests {
         let batch = host.reports.next_batch().await;
         assert_eq!(batch, vec![report("a", false), report("b", true)]);
         assert!(host.reports.drain().is_empty());
+    }
+
+    #[tokio::test]
+    async fn waiting_reports_are_bounded() {
+        let (ctx, host) = host::connect();
+        for i in 0..MAX_PENDING_ENTITIES + 10 {
+            ctx.report_state(report(&format!("e{i}"), true));
+        }
+        // An entity that's already waiting can still be updated.
+        ctx.report_state(report("e0", false));
+        let batch = host.reports.drain();
+        assert_eq!(batch.len(), MAX_PENDING_ENTITIES);
+        assert!(batch.contains(&report("e0", false)));
+        assert_eq!(host.reports.take_dropped(), 10);
+        assert_eq!(host.reports.take_dropped(), 0);
     }
 
     #[tokio::test]

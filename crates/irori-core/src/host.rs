@@ -2,6 +2,7 @@
 //! them when they fail (`docs/specs/integrations.md` §3).
 
 use std::any::Any;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -129,9 +130,40 @@ async fn supervise(
         let (ctx, host_end) = connect();
         // Settings come from the config dir once it exists (M0.7); until then, defaults.
         let settings = serde_json::Value::Object(serde_json::Map::new());
-        let run = match builtin.start(settings, ctx) {
-            Ok(run) => run,
-            Err(reason) => {
+        let started = Instant::now();
+        // `Integration::run` may do work before returning its future; a panic there is a crash
+        // like any other, not the end of supervision.
+        let reason = match catch_unwind(AssertUnwindSafe(|| builtin.start(settings, ctx))) {
+            Ok(Ok(run)) => {
+                core.link(&integration, host_end.calls.clone());
+                let task = tokio::spawn(run);
+                core.set_status(&extension, ExtensionStatus::Running);
+                tracing::info!(%extension, "extension started");
+
+                let outcome = pump(
+                    &core,
+                    &extension,
+                    &integration,
+                    &kinds,
+                    host_end,
+                    task,
+                    &mut stop,
+                    timing,
+                )
+                .await;
+                core.unlink(&integration);
+                core.mark_unavailable(&integration);
+                match outcome {
+                    Outcome::Stopped => {
+                        tracing::info!(%extension, "extension stopped");
+                        core.set_status(&extension, ExtensionStatus::Disabled);
+                        return;
+                    }
+                    Outcome::Ended(reason) => reason,
+                }
+            }
+            Ok(Err(reason)) => {
+                // Invalid settings: retrying won't help until they change.
                 tracing::error!(%extension, %reason, "can't start extension");
                 core.set_status(
                     &extension,
@@ -142,34 +174,7 @@ async fn supervise(
                 );
                 return;
             }
-        };
-        core.link(&integration, host_end.calls.clone());
-        let started = Instant::now();
-        let task = tokio::spawn(run);
-        core.set_status(&extension, ExtensionStatus::Running);
-        tracing::info!(%extension, "extension started");
-
-        let outcome = pump(
-            &core,
-            &extension,
-            &integration,
-            &kinds,
-            host_end,
-            task,
-            &mut stop,
-            timing,
-        )
-        .await;
-        core.unlink(&integration);
-        core.mark_unavailable(&integration);
-
-        let reason = match outcome {
-            Outcome::Stopped => {
-                tracing::info!(%extension, "extension stopped");
-                core.set_status(&extension, ExtensionStatus::Disabled);
-                return;
-            }
-            Outcome::Ended(reason) => reason,
+            Err(payload) => format!("crashed while starting: {}", panic_message(payload)),
         };
         if started.elapsed() >= timing.healthy_after {
             delay = timing.first_retry;
@@ -223,11 +228,11 @@ async fn pump(
                 while let Ok(op) = ops.try_recv() {
                     core.apply_op(extension, integration, kinds, op);
                 }
-                core.apply_reports(extension, integration, reports.drain());
+                core.apply_reports(extension, integration, reports.drain(), reports.take_dropped());
                 return Outcome::Ended(describe_end(result));
             }
             Some(op) = ops.recv() => core.apply_op(extension, integration, kinds, op),
-            batch = reports.next_batch() => core.apply_reports(extension, integration, batch),
+            batch = reports.next_batch() => core.apply_reports(extension, integration, batch, reports.take_dropped()),
         }
     }
 
@@ -245,7 +250,7 @@ async fn pump(
                 return Outcome::Stopped;
             }
             Some(op) = ops.recv() => core.apply_op(extension, integration, kinds, op),
-            batch = reports.next_batch() => core.apply_reports(extension, integration, batch),
+            batch = reports.next_batch() => core.apply_reports(extension, integration, batch, reports.take_dropped()),
         }
     }
 }

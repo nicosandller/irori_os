@@ -142,12 +142,12 @@ impl Core {
             .cloned()
             .ok_or_else(|| CallError::NotRunning(resolved.integration.clone()))?;
         write(&self.0.home).record_call(&resolved.integration, context.id.clone());
-        self.publish(vec![Event::ServiceCalled {
+
+        let called = Event::ServiceCalled {
             entity_id: entity_id.clone(),
             service: resolved.service.name(),
             context: context.clone(),
-        }]);
-
+        };
         let (incoming, result) = incoming_call(ServiceCall {
             unique_id: resolved.unique_id,
             service: resolved.service,
@@ -159,6 +159,8 @@ impl Core {
                 .send(incoming)
                 .await
                 .map_err(|_| CallError::NotRunning(integration.clone()))?;
+            // Only once the integration has it: a call that never went out wasn't made.
+            self.publish(vec![called]);
             match result.await {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(e)) => Err(match e.code {
@@ -255,7 +257,15 @@ impl Core {
         extension: &ExtensionId,
         integration: &IntegrationId,
         reports: Vec<StateReport>,
+        dropped: u64,
     ) {
+        if dropped > 0 {
+            tracing::warn!(
+                %extension,
+                dropped,
+                "dropped state reports: too many entities were waiting for the core"
+            );
+        }
         for report in reports {
             if let Err(rejected) =
                 self.change(|home, stamp| home.report_state(integration, report, stamp))

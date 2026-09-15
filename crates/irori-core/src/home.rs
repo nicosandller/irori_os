@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use irori_integration::{AvailabilityTarget, Rejected};
 use irori_types::{
-    Availability, Capabilities, Context, ContextId, Device, DeviceDescription, DeviceId, Entity,
-    EntityDescription, EntityId, EntityKind, EntityState, IntegrationId, LightCapabilities,
+    Availability, Capabilities, ColorMode, Context, ContextId, Device, DeviceDescription, DeviceId,
+    Entity, EntityDescription, EntityId, EntityKind, EntityState, IntegrationId, LightCapabilities,
     LightTurnOn, Name, Origin, SLUG_MAX_LEN, SensorValue, SensorValueType, Service, State,
     StateReport, Timestamp, UniqueId,
 };
@@ -205,6 +205,29 @@ impl Home {
                     entity: entity.clone(),
                 }]
             };
+            // If its abilities shrank (e.g. a firmware update removed RGB), a stored value that
+            // no longer fits is forgotten: unknown until the integration reports again.
+            let entity = self.entities[&id].clone();
+            let old = self.states[&id].clone();
+            if old
+                .state
+                .as_ref()
+                .is_some_and(|state| fits(&entity, state).is_err())
+            {
+                let now = stamp.now.max(old.last_reported);
+                let mut new = old.clone();
+                new.state = None;
+                new.last_changed = now;
+                new.last_updated = now;
+                new.last_reported = now;
+                new.context = device_context(integration, stamp, None);
+                self.states.insert(id.clone(), new.clone());
+                events.push(Event::StateChanged {
+                    entity_id: id.clone(),
+                    old_state: Some(Box::new(old)),
+                    new_state: Box::new(new),
+                });
+            }
             // Being described means the integration is back in touch with it (e.g. after a
             // restart). If the device is still offline, the integration says so next.
             let context = device_context(integration, stamp, None);
@@ -569,6 +592,17 @@ fn fits(entity: &Entity, state: &State) -> Result<(), Rejected> {
             state.kind()
         )),
         (Capabilities::Light(caps), State::Light(light)) => {
+            match light.color_mode {
+                Some(ColorMode::ColorTemp) if caps.color_temp_kelvin.is_none() => {
+                    return reject(
+                        "it's in color_temp mode, but doesn't support color temperature".into(),
+                    );
+                }
+                Some(ColorMode::Rgb) if !caps.rgb => {
+                    return reject("it's in rgb mode, but doesn't support RGB color".into());
+                }
+                _ => {}
+            }
             let data = LightTurnOn {
                 brightness: light.brightness,
                 color_temp_kelvin: light.color_temp_kelvin,
@@ -985,6 +1019,66 @@ mod tests {
             .report_state(&integration(), report("nope", None), &stamp(1))
             .expect_err("unknown");
         assert!(err.0.contains("describe it first"), "{err}");
+    }
+
+    #[test]
+    fn color_mode_must_be_supported() {
+        let mut home = home_with_lamp();
+        let mut rgb_mode = light(true, None);
+        if let State::Light(l) = &mut rgb_mode {
+            l.color_mode = Some(ColorMode::Rgb);
+        }
+        let err = home
+            .report_state(
+                &integration(),
+                report("lamp-light", Some(rgb_mode)),
+                &stamp(1),
+            )
+            .expect_err("no rgb");
+        assert!(
+            err.0
+                .contains("it's in rgb mode, but doesn't support RGB color"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn narrowed_capabilities_forget_a_value_that_no_longer_fits() {
+        let mut home = home_with_lamp();
+        home.report_state(
+            &integration(),
+            report("lamp-light", Some(light(true, Some(80)))),
+            &stamp(1),
+        )
+        .expect("fits");
+        let not_dimmable = Capabilities::Light(LightCapabilities::default());
+        home.describe_entity(
+            &integration(),
+            &ALL,
+            entity("lamp-light", None, Some("lamp"), not_dimmable.clone()),
+            &stamp(2),
+        )
+        .expect("re-described");
+        assert_eq!(home.state(&lamp_id()).expect("state").state, None);
+
+        // A value that still fits is kept.
+        home.report_state(
+            &integration(),
+            report("lamp-light", Some(light(true, None))),
+            &stamp(3),
+        )
+        .expect("fits");
+        home.describe_entity(
+            &integration(),
+            &ALL,
+            entity("lamp-light", None, Some("lamp"), not_dimmable),
+            &stamp(4),
+        )
+        .expect("re-described");
+        assert_eq!(
+            home.state(&lamp_id()).expect("state").state,
+            Some(light(true, None))
+        );
     }
 
     #[test]
