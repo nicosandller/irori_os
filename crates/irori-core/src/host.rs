@@ -28,6 +28,28 @@ pub struct Timing {
     pub stop_grace: Duration,
 }
 
+impl Timing {
+    /// The longest any single timing may be. Keeps every computed time (e.g. `retry_at`)
+    /// representable, so a status never claims "no retry" while a retry is scheduled.
+    pub const MAX: Duration = Duration::from_secs(24 * 60 * 60);
+
+    fn validate(&self) -> Result<(), String> {
+        let named = [
+            ("first_retry", self.first_retry),
+            ("max_retry", self.max_retry),
+            ("healthy_after", self.healthy_after),
+            ("stop_grace", self.stop_grace),
+        ];
+        if let Some((name, _)) = named.iter().find(|(_, d)| *d > Self::MAX) {
+            return Err(format!("timing: {name} must be at most 24 hours"));
+        }
+        if self.first_retry.is_zero() || self.first_retry > self.max_retry {
+            return Err("timing: first_retry must be above zero and at most max_retry".into());
+        }
+        Ok(())
+    }
+}
+
 impl Default for Timing {
     fn default() -> Self {
         Self {
@@ -49,6 +71,7 @@ pub struct ExtensionHost {
 impl ExtensionHost {
     /// Starts every extension, each supervised in its own task. Fails if two share an id.
     pub fn start(core: &Core, builtins: Vec<Builtin>, timing: Timing) -> Result<Self, String> {
+        timing.validate()?;
         let mut ids: Vec<&ExtensionId> =
             builtins.iter().map(|b| &b.manifest.extension.id).collect();
         ids.sort();

@@ -229,7 +229,8 @@ manifest (layer 3), and rejects it with a message naming the problem:
 - an entity isn't re-described with a different kind;
 - a state report's kind matches the entity's, and fits its capabilities (`brightness` only if
   dimmable, a sensor value matching `value_type`);
-- `caused_by` is a context of a call made to this integration.
+- `caused_by` is the context of a call delivered to this integration in the last 5 minutes (the
+  core remembers up to 1024 per integration).
 
 A rejected describe returns the error to the integration. A rejected state report is logged and
 dropped, and the Extensions page shows how many were rejected.

@@ -52,6 +52,18 @@ pub enum ExtensionStatus {
     },
 }
 
+/// An extension as the Extensions page shows it: its status, and how many of its state reports
+/// were lost since Irori started.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExtensionOverview {
+    #[serde(flatten)]
+    pub status: ExtensionStatus,
+    /// Reports the core refused, e.g. a value that doesn't fit the entity. Each is logged.
+    pub rejected_reports: u64,
+    /// Reports dropped because too many entities were waiting for the core.
+    pub dropped_reports: u64,
+}
+
 /// A handle to the core. Cheap to clone; all clones share the same home.
 #[derive(Debug, Clone)]
 pub struct Core(Arc<Shared>);
@@ -64,7 +76,7 @@ struct Shared {
     home: RwLock<Home>,
     events: broadcast::Sender<Event>,
     links: RwLock<HashMap<IntegrationId, mpsc::Sender<IncomingCall>>>,
-    statuses: RwLock<BTreeMap<ExtensionId, ExtensionStatus>>,
+    extensions: RwLock<BTreeMap<ExtensionId, ExtensionOverview>>,
 }
 
 fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
@@ -90,7 +102,7 @@ impl Core {
             home: RwLock::default(),
             events: broadcast::channel(EVENT_BUFFER).0,
             links: RwLock::default(),
-            statuses: RwLock::default(),
+            extensions: RwLock::default(),
         }))
     }
 
@@ -124,8 +136,8 @@ impl Core {
         read(&self.0.home).state(entity_id).cloned()
     }
 
-    pub fn extensions(&self) -> BTreeMap<ExtensionId, ExtensionStatus> {
-        read(&self.0.statuses).clone()
+    pub fn extensions(&self) -> BTreeMap<ExtensionId, ExtensionOverview> {
+        read(&self.0.extensions).clone()
     }
 
     /// Asks an entity to do something, and waits for its integration's answer (at most
@@ -143,7 +155,7 @@ impl Core {
             .ok_or_else(|| CallError::NotRunning(resolved.integration.clone()))?;
         // Recorded before sending: the integration may confirm (`caused_by`) before this task
         // runs again. Forgotten below if the call never reaches it.
-        write(&self.0.home).record_call(&resolved.integration, context.id.clone());
+        write(&self.0.home).record_call(&resolved.integration, context.id.clone(), self.now());
         let context_id = context.id.clone();
 
         let called = Event::ServiceCalled {
@@ -272,12 +284,20 @@ impl Core {
                 "dropped state reports: too many entities were waiting for the core"
             );
         }
+        let mut rejected_count = 0;
         for report in reports {
             if let Err(rejected) =
                 self.change(|home, stamp| home.report_state(integration, report, stamp))
             {
                 tracing::warn!(%extension, %rejected, "rejected a state report");
+                rejected_count += 1;
             }
+        }
+        if (dropped > 0 || rejected_count > 0)
+            && let Some(overview) = write(&self.0.extensions).get_mut(extension)
+        {
+            overview.dropped_reports += dropped;
+            overview.rejected_reports += rejected_count;
         }
     }
 
@@ -296,8 +316,27 @@ impl Core {
     }
 
     fn set_status(&self, extension: &ExtensionId, status: ExtensionStatus) {
-        let changed = write(&self.0.statuses).insert(extension.clone(), status.clone())
-            != Some(status.clone());
+        let changed = {
+            let mut extensions = write(&self.0.extensions);
+            match extensions.get_mut(extension) {
+                Some(overview) if overview.status == status => false,
+                Some(overview) => {
+                    overview.status = status.clone();
+                    true
+                }
+                None => {
+                    extensions.insert(
+                        extension.clone(),
+                        ExtensionOverview {
+                            status: status.clone(),
+                            rejected_reports: 0,
+                            dropped_reports: 0,
+                        },
+                    );
+                    true
+                }
+            }
+        };
         if changed {
             self.publish(vec![Event::ExtensionStatusChanged {
                 extension_id: extension.clone(),

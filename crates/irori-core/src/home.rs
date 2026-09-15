@@ -24,8 +24,13 @@ pub(crate) struct Stamp {
 
 type Key = (IntegrationId, UniqueId);
 
-/// How many recent service-call contexts to remember per integration, to check `caused_by`.
-const RECENT_CALLS: usize = 64;
+/// How long a delivered service call can be named in `caused_by`: the window for a device to
+/// confirm a command, even when its integration is busy.
+const CALL_WINDOW: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// A memory bound per integration: past this many calls within the window, the oldest are
+/// forgotten. Far more than any home sends to one integration in five minutes.
+const MAX_RECENT_CALLS: usize = 1024;
 
 #[derive(Debug, Default)]
 pub(crate) struct Home {
@@ -36,7 +41,7 @@ pub(crate) struct Home {
     states: BTreeMap<EntityId, EntityState>,
     /// Entities described without a name, which use (and follow) their device's name.
     nameless: HashSet<EntityId>,
-    recent_calls: HashMap<IntegrationId, VecDeque<ContextId>>,
+    recent_calls: HashMap<IntegrationId, VecDeque<(ContextId, Timestamp)>>,
 }
 
 /// A service call resolved to the integration that handles it.
@@ -395,16 +400,17 @@ impl Home {
         }
         let parent = match &report.caused_by {
             Some(caused_by)
-                if self
-                    .recent_calls
-                    .get(integration)
-                    .is_some_and(|calls| calls.contains(caused_by)) =>
+                if self.recent_calls.get(integration).is_some_and(|calls| {
+                    calls
+                        .iter()
+                        .any(|(id, at)| id == caused_by && within_call_window(*at, stamp.now))
+                }) =>
             {
                 Some(caused_by.clone())
             }
             Some(caused_by) => {
                 return Err(Rejected(format!(
-                    "state report for `{unique_id}`: caused_by `{caused_by}` isn't a recent service call sent to this integration"
+                    "state report for `{unique_id}`: caused_by `{caused_by}` isn't a service call sent to this integration in the last 5 minutes"
                 )));
             }
             None => None,
@@ -588,18 +594,35 @@ impl Home {
     /// Forgets a call that never reached its integration.
     pub fn forget_call(&mut self, integration: &IntegrationId, context_id: &ContextId) {
         if let Some(calls) = self.recent_calls.get_mut(integration) {
-            calls.retain(|id| id != context_id);
+            calls.retain(|(id, _)| id != context_id);
         }
     }
 
-    /// Remembers a call's context, so a state report can say it was caused by it.
-    pub fn record_call(&mut self, integration: &IntegrationId, context_id: ContextId) {
+    /// Remembers a call's context for [`CALL_WINDOW`], so a state report can say it was caused
+    /// by it.
+    pub fn record_call(
+        &mut self,
+        integration: &IntegrationId,
+        context_id: ContextId,
+        now: Timestamp,
+    ) {
         let calls = self.recent_calls.entry(integration.clone()).or_default();
-        if calls.len() == RECENT_CALLS {
+        while calls
+            .front()
+            .is_some_and(|(_, at)| !within_call_window(*at, now))
+        {
             calls.pop_front();
         }
-        calls.push_back(context_id);
+        if calls.len() == MAX_RECENT_CALLS {
+            calls.pop_front();
+        }
+        calls.push_back((context_id, now));
     }
+}
+
+fn within_call_window(called_at: Timestamp, now: Timestamp) -> bool {
+    let age = now.as_jiff().duration_since(called_at.as_jiff());
+    age <= jiff::SignedDuration::try_from(CALL_WINDOW).unwrap_or(jiff::SignedDuration::MAX)
 }
 
 /// Whether a change comes from the integration saying something (it moves `last_reported`
@@ -1155,9 +1178,9 @@ mod tests {
         let err = home
             .report_state(&integration(), confirmed.clone(), &stamp(2))
             .expect_err("unknown call");
-        assert!(err.0.contains("isn't a recent service call"), "{err}");
+        assert!(err.0.contains("in the last 5 minutes"), "{err}");
 
-        home.record_call(&integration(), call.clone());
+        home.record_call(&integration(), call.clone(), stamp(1).now);
         home.report_state(&integration(), confirmed, &stamp(2))
             .expect("known call");
         assert_eq!(
@@ -1259,10 +1282,31 @@ mod tests {
     }
 
     #[test]
+    fn calls_can_be_confirmed_for_five_minutes_even_after_many_others() {
+        let mut home = home_with_lamp();
+        let call = stamp(100).context_id;
+        home.record_call(&integration(), call.clone(), stamp(100).now);
+        for i in 0..200 {
+            home.record_call(&integration(), stamp(101 + i).context_id, stamp(101).now);
+        }
+        let mut confirmed = report("lamp-light", Some(light(false, None)));
+        confirmed.caused_by = Some(call.clone());
+        home.report_state(&integration(), confirmed.clone(), &stamp(100 + 300))
+            .expect("within five minutes, after 200 other calls");
+
+        let mut late = confirmed;
+        late.state = Some(light(true, None));
+        let err = home
+            .report_state(&integration(), late, &stamp(100 + 301))
+            .expect_err("too late");
+        assert!(err.0.contains("in the last 5 minutes"), "{err}");
+    }
+
+    #[test]
     fn forgotten_calls_cant_be_blamed() {
         let mut home = home_with_lamp();
         let call = stamp(1).context_id;
-        home.record_call(&integration(), call.clone());
+        home.record_call(&integration(), call.clone(), stamp(1).now);
         home.forget_call(&integration(), &call);
         let mut confirmed = report("lamp-light", Some(light(false, None)));
         confirmed.caused_by = Some(call);
