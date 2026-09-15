@@ -60,8 +60,9 @@ the user-facing ids, timestamps, contexts, history, and checking that what it's 
 
 **Isolation.** Built-in integrations run in their own task. The core never waits on an
 integration while holding its own state: operations reach the core through bounded queues;
-state reports for the same entity are merged so only the latest waits in line; service calls
-time out after **10 seconds**. Third-party code only runs as an external process, never in the
+state reports for the same entity are merged so only the latest waits in line, and at most 4096
+entities' reports wait at once (further ones are dropped and logged); service calls time out
+after **10 seconds**. A panic while the integration is starting counts as a crash. Third-party code only runs as an external process, never in the
 core's process.
 
 ## 4. Identity

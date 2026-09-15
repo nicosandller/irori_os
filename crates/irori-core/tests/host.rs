@@ -264,6 +264,54 @@ async fn a_crashing_integration_is_restarted_with_growing_delays() {
     host.shutdown().await;
 }
 
+static EAGER_STARTS: AtomicUsize = AtomicUsize::new(0);
+
+/// Panics before it even returns its future.
+struct PanicsOnStart;
+impl Integration for PanicsOnStart {
+    type Config = NoSettings;
+    const MANIFEST: &'static str = r#"
+        [extension]
+        id = "eager"
+        name = "Eager"
+        version = "0.1.0"
+        irori = ">=0.0.0"
+
+        [[contributes.integration]]
+        iot_class = "local_push"
+        entity_kinds = ["light"]
+    "#;
+    #[allow(clippy::manual_async_fn)]
+    fn run(
+        _: NoSettings,
+        _: IntegrationContext,
+    ) -> impl std::future::Future<Output = Result<(), IntegrationError>> + Send {
+        EAGER_STARTS.fetch_add(1, Ordering::SeqCst);
+        panic!("bad wiring");
+        #[allow(unreachable_code)]
+        async {
+            Ok(())
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_panic_while_starting_is_a_crash_that_gets_retried() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = start(&core, builtin::<PanicsOnStart>().expect("valid"));
+    eventually("failed with a retry", || {
+        matches!(
+            status(&core, "eager"),
+            Some(ExtensionStatus::Failed { ref reason, retry_at: Some(_) })
+                if reason == "crashed while starting: bad wiring"
+        )
+    })
+    .await;
+    eventually("tried again", || EAGER_STARTS.load(Ordering::SeqCst) >= 2).await;
+    host.shutdown().await;
+    assert_eq!(status(&core, "eager"), Some(ExtensionStatus::Disabled));
+}
+
 // --- Stopping -----------------------------------------------------------------------------
 
 struct Stubborn;
