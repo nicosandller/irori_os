@@ -2,7 +2,7 @@
 //! a time. Pure and synchronous, so every rule of the contract is easy to test. The spec's "what
 //! the core checks" (`docs/specs/integrations.md` §8) lives here.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use irori_integration::{AvailabilityTarget, Rejected};
 use irori_types::{
@@ -34,6 +34,8 @@ pub(crate) struct Home {
     entities: BTreeMap<EntityId, Entity>,
     entity_keys: HashMap<Key, EntityId>,
     states: BTreeMap<EntityId, EntityState>,
+    /// Entities described without a name, which use (and follow) their device's name.
+    nameless: HashSet<EntityId>,
     recent_calls: HashMap<IntegrationId, VecDeque<ContextId>>,
 }
 
@@ -106,19 +108,32 @@ impl Home {
             }
             let device = self.devices.get_mut(&id).expect("keys and devices agree");
             let before = device.clone();
-            // The name is only used when the device is new; after that it's the user's.
+            // Nobody can rename devices in Irori yet (config spec, M0.7), so the integration's
+            // name is the only one. Once people can, a name they set wins.
+            device.name = description.name;
             device.manufacturer = description.manufacturer;
             device.model = description.model;
             device.sw_version = description.sw_version;
             device.hw_version = description.hw_version;
             device.via_device_id = via;
-            return Ok(if *device == before {
-                vec![]
-            } else {
-                vec![Event::DeviceUpdated {
-                    device: device.clone(),
-                }]
-            });
+            if *device == before {
+                return Ok(vec![]);
+            }
+            let device = device.clone();
+            let mut events = Vec::new();
+            if device.name != before.name {
+                for entity in self.entities.values_mut() {
+                    if entity.device_id.as_ref() == Some(&id) && self.nameless.contains(&entity.id)
+                    {
+                        entity.name = device.name.clone();
+                        events.push(Event::EntityUpdated {
+                            entity: entity.clone(),
+                        });
+                    }
+                }
+            }
+            events.insert(0, Event::DeviceUpdated { device });
+            return Ok(events);
         }
 
         let id = unique_id_for(&slugify(description.name.as_str()), "device", |c| {
@@ -196,6 +211,22 @@ impl Home {
                 )));
             }
             let before = entity.clone();
+            let name = match (description.name, device) {
+                (Some(name), _) => {
+                    self.nameless.remove(&id);
+                    name
+                }
+                (None, Some(device)) => {
+                    self.nameless.insert(id.clone());
+                    device.name.clone()
+                }
+                (None, None) => {
+                    unreachable!("EntityDescription::validate requires a name or a device")
+                }
+            };
+            let entity = self.entities.get_mut(&id).expect("keys and entities agree");
+            // As for devices: the integration's name, until people can rename entities (M0.7).
+            entity.name = name;
             entity.capabilities = description.capabilities;
             entity.device_id = device_id;
             let mut events = if *entity == before {
@@ -236,6 +267,7 @@ impl Home {
                 Availability::Available,
                 stamp.now,
                 context,
+                Reported::No,
             ));
             return Ok(events);
         }
@@ -275,6 +307,9 @@ impl Home {
             last_reported: stamp.now,
             context: device_context(integration, stamp, None),
         };
+        if description.name.is_none() {
+            self.nameless.insert(id.clone());
+        }
         self.entity_keys
             .insert((integration.clone(), description.unique_id), id.clone());
         self.entities.insert(id.clone(), entity.clone());
@@ -302,6 +337,7 @@ impl Home {
         })?;
         self.entities.remove(&id);
         self.states.remove(&id);
+        self.nameless.remove(&id);
         Ok(vec![Event::EntityRemoved { entity_id: id }])
     }
 
@@ -434,7 +470,7 @@ impl Home {
                 .collect::<Result<_, _>>()?,
         };
         let context = device_context(integration, stamp, None);
-        Ok(self.set_availability_of(ids, availability, stamp.now, context))
+        Ok(self.set_availability_of(ids, availability, stamp.now, context, Reported::Yes))
     }
 
     /// Marks every entity of an integration unavailable, e.g. because it crashed or stopped.
@@ -450,7 +486,13 @@ impl Home {
             parent_id: None,
             origin: Origin::System,
         };
-        self.set_availability_of(ids, Availability::Unavailable, stamp.now, context)
+        self.set_availability_of(
+            ids,
+            Availability::Unavailable,
+            stamp.now,
+            context,
+            Reported::No,
+        )
     }
 
     fn set_availability_of(
@@ -459,15 +501,21 @@ impl Home {
         availability: Availability,
         now: Timestamp,
         context: Context,
+        reported: Reported,
     ) -> Vec<Event> {
         let mut events = Vec::new();
         for id in ids {
-            let Some(old) = self.states.get(&id) else {
+            let Some(old) = self.states.get_mut(&id) else {
                 continue;
             };
             if old.availability == availability {
+                // Nothing changed, but hearing it again from the integration is a report.
+                if reported == Reported::Yes {
+                    old.last_reported = now.max(old.last_reported);
+                }
                 continue;
             }
+            let old = &*old;
             let now = now.max(old.last_reported);
             let mut new = old.clone();
             new.availability = availability;
@@ -535,6 +583,13 @@ impl Home {
         })
     }
 
+    /// Forgets a call that never reached its integration.
+    pub fn forget_call(&mut self, integration: &IntegrationId, context_id: &ContextId) {
+        if let Some(calls) = self.recent_calls.get_mut(integration) {
+            calls.retain(|id| id != context_id);
+        }
+    }
+
     /// Remembers a call's context, so a state report can say it was caused by it.
     pub fn record_call(&mut self, integration: &IntegrationId, context_id: ContextId) {
         let calls = self.recent_calls.entry(integration.clone()).or_default();
@@ -543,6 +598,14 @@ impl Home {
         }
         calls.push_back(context_id);
     }
+}
+
+/// Whether a change comes from the integration saying something (it moves `last_reported`
+/// even when nothing changed), or from the core, e.g. after a crash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reported {
+    Yes,
+    No,
 }
 
 fn device_context(
@@ -1127,6 +1190,67 @@ mod tests {
         assert_eq!(
             home.state(&lamp_id()).expect("state").availability,
             Availability::Available
+        );
+    }
+
+    #[test]
+    fn names_follow_the_integration_and_nameless_entities_follow_their_device() {
+        let mut home = home_with_lamp();
+        let events = home
+            .describe_device(&integration(), device("lamp", "Reading lamp"))
+            .expect("renamed");
+        assert_eq!(events.len(), 2, "device and its nameless entity updated");
+        let lamp = home.entities.get(&lamp_id()).expect("same id");
+        assert_eq!(lamp.name.as_str(), "Reading lamp");
+
+        home.describe_entity(
+            &integration(),
+            &ALL,
+            entity("lamp-light", Some("Bulb"), Some("lamp"), dimmable()),
+            &stamp(1),
+        )
+        .expect("named now");
+        home.describe_device(&integration(), device("lamp", "Desk lamp"))
+            .expect("renamed");
+        assert_eq!(home.entities[&lamp_id()].name.as_str(), "Bulb");
+    }
+
+    #[test]
+    fn repeated_availability_reports_count_as_reports_but_crashes_dont() {
+        let mut home = home_with_lamp();
+        let events = home
+            .set_availability(
+                &integration(),
+                AvailabilityTarget::Device(uid("lamp")),
+                Availability::Available,
+                &stamp(5),
+            )
+            .expect("device exists");
+        assert!(events.is_empty());
+        assert_eq!(
+            home.state(&lamp_id()).expect("state").last_reported,
+            stamp(5).now
+        );
+
+        home.mark_unavailable(&integration(), &stamp(6));
+        home.mark_unavailable(&integration(), &stamp(7));
+        assert_eq!(
+            home.state(&lamp_id()).expect("state").last_reported,
+            stamp(6).now
+        );
+    }
+
+    #[test]
+    fn forgotten_calls_cant_be_blamed() {
+        let mut home = home_with_lamp();
+        let call = stamp(1).context_id;
+        home.record_call(&integration(), call.clone());
+        home.forget_call(&integration(), &call);
+        let mut confirmed = report("lamp-light", Some(light(false, None)));
+        confirmed.caused_by = Some(call);
+        assert!(
+            home.report_state(&integration(), confirmed, &stamp(2))
+                .is_err()
         );
     }
 

@@ -1,9 +1,9 @@
 //! The built-in extensions compiled into this build (cargo features, ROADMAP D17), and a log of
 //! what they do.
 
-use irori_core::{Core, Event};
+use irori_core::Event;
 use irori_integration::Builtin;
-use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::broadcast::{Receiver, error::RecvError};
 
 /// Every built-in extension in this build. All of them run until the config dir (M0.7) lets
 /// people choose.
@@ -15,8 +15,7 @@ pub fn builtins() -> anyhow::Result<Vec<Builtin>> {
 }
 
 /// Logs the core's events: extension status at `info`, device and state changes at `debug`.
-pub async fn log_events(core: Core) {
-    let mut events = core.subscribe();
+pub async fn log_events(mut events: Receiver<Event>) {
     loop {
         match events.recv().await {
             Ok(event) => log(&event),
