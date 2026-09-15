@@ -1,0 +1,1 @@
+brightness 256 is out of range; it must be from 1 to 255

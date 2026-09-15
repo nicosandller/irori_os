@@ -1,0 +1,8 @@
+{
+  "unique_id": "a4:cf:12:34:56:79-switch-relay",
+  "state": {
+    "kind": "switch",
+    "on": true
+  },
+  "caused_by": "01K5B2Q9A1B2C3D4E5F6G7H8J9"
+}

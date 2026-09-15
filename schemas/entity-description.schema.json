@@ -1,0 +1,320 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EntityDescription",
+  "description": "An entity as an integration describes it. The core adds it to the registry, or updates the\nentry with the same `unique_id`.",
+  "type": "object",
+  "properties": {
+    "capabilities": {
+      "description": "What it can do. `capabilities.kind` is the entity's kind.",
+      "$ref": "#/$defs/Capabilities"
+    },
+    "device_unique_id": {
+      "description": "The `unique_id` of the device it belongs to. The device must be described first.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UniqueId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "name": {
+      "description": "Leave out for a device's main feature (e.g. the relay of a smart plug): the entity then\nuses its device's name, and must have `device_unique_id`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Name"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "suggested_object_id": {
+      "description": "What to call it after the `.` in its entity id, when it's new. Otherwise the core derives\none from the names.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ObjectId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "unique_id": {
+      "description": "The integration's permanent handle for the entity.",
+      "$ref": "#/$defs/UniqueId"
+    }
+  },
+  "additionalProperties": false,
+  "anyOf": [
+    {
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    {
+      "properties": {
+        "device_unique_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_unique_id"
+      ]
+    }
+  ],
+  "required": [
+    "unique_id",
+    "capabilities"
+  ],
+  "$defs": {
+    "BinarySensorClass": {
+      "type": "string",
+      "enum": [
+        "motion",
+        "occupancy",
+        "door",
+        "window",
+        "moisture",
+        "smoke",
+        "gas",
+        "vibration",
+        "plug",
+        "connectivity",
+        "problem",
+        "battery"
+      ]
+    },
+    "Capabilities": {
+      "description": "What an entity can do, per kind. Static facts that don't change with its state.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "brightness": {
+              "description": "Supports dimming.",
+              "type": "boolean",
+              "default": false
+            },
+            "color_temp_kelvin": {
+              "description": "Supports color temperature, within this range.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ColorTempRange"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "light"
+            },
+            "rgb": {
+              "description": "Supports RGB color.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "device_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SwitchClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "switch"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "device_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SensorClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "sensor"
+            },
+            "state_class": {
+              "description": "How numeric readings accumulate, for history and statistics.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StateClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "unit": {
+              "description": "Unit of numeric readings, e.g. `°C`, `lx`, `%`, `W`, `kWh`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "value_type": {
+              "description": "Whether readings are numbers or text. Rules are type-checked against this.",
+              "$ref": "#/$defs/SensorValueType"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value_type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "device_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/BinarySensorClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "binary_sensor"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "ColorTempRange": {
+      "description": "Supported color temperatures in kelvin, `min` (warmest) to `max` (coolest).",
+      "type": "object",
+      "properties": {
+        "max": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 20000,
+          "minimum": 1000
+        },
+        "min": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 20000,
+          "minimum": 1000
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "min",
+        "max"
+      ]
+    },
+    "Name": {
+      "description": "A human-readable name. 1-100 characters, no leading or trailing whitespace.",
+      "type": "string",
+      "maxLength": 100,
+      "minLength": 1,
+      "pattern": "^[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F]([^\\u0000-\\u001F\\u007F-\\u009F]*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F])?$"
+    },
+    "ObjectId": {
+      "description": "Format of a slug (object id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "SensorClass": {
+      "type": "string",
+      "enum": [
+        "temperature",
+        "humidity",
+        "illuminance",
+        "pressure",
+        "power",
+        "energy",
+        "voltage",
+        "current",
+        "battery",
+        "co2",
+        "pm25",
+        "signal_strength"
+      ]
+    },
+    "SensorValueType": {
+      "type": "string",
+      "enum": [
+        "number",
+        "text"
+      ]
+    },
+    "StateClass": {
+      "oneOf": [
+        {
+          "description": "A current value, e.g. temperature.",
+          "type": "string",
+          "const": "measurement"
+        },
+        {
+          "description": "A running total that can go up or down, e.g. net energy.",
+          "type": "string",
+          "const": "total"
+        },
+        {
+          "description": "A counter that only increases, resetting occasionally, e.g. a meter reading.",
+          "type": "string",
+          "const": "total_increasing"
+        }
+      ]
+    },
+    "SwitchClass": {
+      "type": "string",
+      "enum": [
+        "outlet",
+        "switch"
+      ]
+    },
+    "UniqueId": {
+      "description": "Stable id assigned by the integration (e.g. a Zigbee IEEE address). Unique within the integration.",
+      "type": "string",
+      "maxLength": 255,
+      "minLength": 1,
+      "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "unique_id": "a4:cf:12:34:56:78-light-lamp",
+  "name": "Lamp",
+  "device_unique_id": "a4:cf:12:34:56:78",
+  "suggested_object_id": "desk_lamp",
+  "capabilities": {
+    "kind": "light",
+    "brightness": true,
+    "color_temp_kelvin": {
+      "min": 2700,
+      "max": 6500
+    }
+  }
+}

@@ -1,0 +1,1 @@
+entity_kinds must list at least one entity kind

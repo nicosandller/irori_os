@@ -1,0 +1,10 @@
+{
+  "unique_id": "temp",
+  "state": {
+    "kind": "sensor",
+    "value": 21.5
+  },
+  "attributes": {
+    "WiFi": -61
+  }
+}

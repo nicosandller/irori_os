@@ -1,0 +1,10 @@
+{
+  "unique_id": "a4:cf:12:34:56:78-light-lamp",
+  "state": {
+    "kind": "light",
+    "on": true,
+    "brightness": 128,
+    "color_mode": "color_temp",
+    "color_temp_kelvin": 3000
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "unique_id": "sun-elevation",
+  "name": "Sun elevation",
+  "capabilities": {
+    "kind": "sensor",
+    "value_type": "number",
+    "unit": "°"
+  }
+}

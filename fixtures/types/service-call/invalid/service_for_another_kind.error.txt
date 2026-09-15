@@ -1,0 +1,1 @@
+service `switch.turn_on` acts on a switch, but `light.desk_lamp` is a light
