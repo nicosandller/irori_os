@@ -37,8 +37,11 @@ COPY --from=build /irori /usr/local/bin/irori
 # Fails the build if the binary isn't really static (it was built against musl, this is glibc).
 RUN irori version
 USER irori
+# Listening on all interfaces is needed inside a container. It stays private: compose publishes
+# the port on the host's 127.0.0.1 only. The flag goes away when auth lands (ROADMAP D12, M1.5).
 ENV IRORI_DATA=/var/lib/irori \
-    IRORI_BIND=0.0.0.0:8480
+    IRORI_BIND=0.0.0.0:8480 \
+    IRORI_ALLOW_UNAUTHENTICATED_LAN=true
 EXPOSE 8480
 HEALTHCHECK --interval=5s --timeout=2s --start-period=5s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8480/api/health || exit 1

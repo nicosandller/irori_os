@@ -13,7 +13,7 @@ Requires stable Rust (pinned via `rust-toolchain.toml`).
 
 ```sh
 cargo run -- serve                    # http://127.0.0.1:8480
-cargo run -- serve --bind 0.0.0.0:8480 --data /var/lib/irori
+cargo run -- serve --data /var/lib/irori
 cargo run -- version --json
 ```
 
@@ -55,8 +55,12 @@ cargo install cargo-zigbuild          # also needs zig on PATH
 rustup target add aarch64-unknown-linux-musl
 cargo zigbuild --release -p irori --target aarch64-unknown-linux-musl
 scp target/aarch64-unknown-linux-musl/release/irori pi@raspberrypi.local:
-ssh pi@raspberrypi.local ./irori serve --bind 0.0.0.0:8480
+ssh pi@raspberrypi.local ./irori serve --bind 0.0.0.0:8480 --allow-unauthenticated-lan
 ```
+
+Irori has no login yet, so it only listens on `127.0.0.1` unless you pass
+`--allow-unauthenticated-lan`. Anyone on your network can reach it while that flag is on.
+The flag goes away once authentication exists (ROADMAP D12, M1.5).
 
 CI runs on every pull request (and on every push to `main`). It builds `x86_64` and `aarch64` musl binaries, smoke-tests the `aarch64` one under QEMU, and uploads them as workflow artifacts.
 
