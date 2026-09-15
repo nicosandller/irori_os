@@ -194,7 +194,8 @@ async fn supervise(
                 return;
             }
         }
-        delay = (delay * 2).min(timing.max_retry);
+        // Saturating: a custom `Timing` with huge delays must not overflow and end supervision.
+        delay = delay.saturating_mul(2).min(timing.max_retry);
     }
 }
 

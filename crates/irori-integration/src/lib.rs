@@ -268,10 +268,11 @@ impl ReportQueue {
             let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
             if pending.len() >= MAX_PENDING_ENTITIES && !pending.contains_key(&report.unique_id) {
                 self.dropped.fetch_add(1, Ordering::Relaxed);
-                return;
+            } else {
+                pending.insert(report.unique_id.clone(), report);
             }
-            pending.insert(report.unique_id.clone(), report);
         }
+        // Wake the core for drops too, so it logs them even if nothing else is waiting.
         self.ready.notify_one();
     }
 
@@ -387,11 +388,12 @@ pub mod host {
     pub struct Reports(Arc<ReportQueue>);
 
     impl Reports {
-        /// Waits until at least one report is pending, then takes them all.
+        /// Waits until at least one report is pending or some were dropped, then takes the
+        /// pending ones (possibly none; check [`Reports::take_dropped`]).
         pub async fn next_batch(&self) -> Vec<StateReport> {
             loop {
                 let batch = self.0.take();
-                if !batch.is_empty() {
+                if !batch.is_empty() || self.0.dropped.load(Ordering::Relaxed) > 0 {
                     return batch;
                 }
                 self.0.ready.notified().await;
@@ -478,6 +480,18 @@ mod tests {
         assert!(batch.contains(&report("e0", false)));
         assert_eq!(host.reports.take_dropped(), 10);
         assert_eq!(host.reports.take_dropped(), 0);
+
+        // Drops alone still wake the core, so it can log them.
+        for i in 0..MAX_PENDING_ENTITIES + 1 {
+            ctx.report_state(report(&format!("f{i}"), true));
+        }
+        assert_eq!(host.reports.next_batch().await.len(), MAX_PENDING_ENTITIES);
+        let woke =
+            tokio::time::timeout(std::time::Duration::from_secs(1), host.reports.next_batch())
+                .await
+                .expect("woken by the drop alone");
+        assert!(woke.is_empty());
+        assert_eq!(host.reports.take_dropped(), 1);
     }
 
     #[tokio::test]
