@@ -1,0 +1,1 @@
+invalid object id "light.desk_lamp"

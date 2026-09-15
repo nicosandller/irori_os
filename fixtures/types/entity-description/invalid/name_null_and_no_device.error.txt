@@ -1,0 +1,1 @@
+entity `relay` has no name, so it must belong to a device

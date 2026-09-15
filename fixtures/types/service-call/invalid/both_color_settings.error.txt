@@ -1,0 +1,1 @@
+set `color_temp_kelvin` or `rgb`, not both

@@ -1,0 +1,5 @@
+[extension]
+id = "nothing_yet"
+name = "Nothing yet"
+version = "0.1.0"
+irori = ">=0.1.0, <0.2.0"

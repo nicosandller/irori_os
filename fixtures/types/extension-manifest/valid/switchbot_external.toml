@@ -1,0 +1,14 @@
+[extension]
+id = "switchbot"
+name = "SwitchBot"
+version = "0.3.0-beta.1"
+irori = ">=0.1.0"
+config_schema = "config.schema.json"
+
+[[contributes.integration]]
+iot_class = "cloud_polling"
+entity_kinds = ["switch", "sensor"]
+run = { command = "bin/switchbot", args = ["--log-format", "json"] }
+
+[permissions]
+network = ["api.switch-bot.com"]
