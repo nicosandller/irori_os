@@ -1,0 +1,8 @@
+{
+  "unique_id": "lamp",
+  "id": "light.desk_lamp",
+  "name": "Lamp",
+  "capabilities": {
+    "kind": "light"
+  }
+}

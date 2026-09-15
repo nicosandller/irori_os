@@ -1,0 +1,1 @@
+`light.turn_off` takes no data

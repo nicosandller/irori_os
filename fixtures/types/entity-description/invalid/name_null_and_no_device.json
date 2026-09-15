@@ -1,0 +1,7 @@
+{
+  "unique_id": "relay",
+  "name": null,
+  "capabilities": {
+    "kind": "switch"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "unique_id": "lamp",
+  "name": "Lamp",
+  "capabilities": {
+    "kind": "light",
+    "color_temp_kelvin": {
+      "min": 6500,
+      "max": 2700
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "unique_id": "a4:cf:12:34:56:79-switch-relay",
+  "device_unique_id": "a4:cf:12:34:56:79",
+  "capabilities": {
+    "kind": "switch",
+    "device_class": "outlet"
+  }
+}

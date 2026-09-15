@@ -1,0 +1,12 @@
+{
+  "unique_id": "a4:cf:12:34:56:80-sensor-temperature",
+  "name": "Temperature",
+  "device_unique_id": "a4:cf:12:34:56:80",
+  "capabilities": {
+    "kind": "sensor",
+    "value_type": "number",
+    "device_class": "temperature",
+    "unit": "°C",
+    "state_class": "measurement"
+  }
+}

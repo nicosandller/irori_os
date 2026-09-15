@@ -1,0 +1,361 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionManifest",
+  "description": "The contents of an extension's `irori-extension.toml`.",
+  "type": "object",
+  "properties": {
+    "contributes": {
+      "description": "What the extension adds to Irori, by contribution kind.",
+      "$ref": "#/$defs/Contributions"
+    },
+    "extension": {
+      "$ref": "#/$defs/ExtensionInfo"
+    },
+    "permissions": {
+      "description": "What the extension may access. Shown to the owner for approval at install.",
+      "$ref": "#/$defs/Permissions"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "extension"
+  ],
+  "$defs": {
+    "ApiScope": {
+      "description": "Access to the Irori API beyond the extension's own devices and entities.",
+      "oneOf": [
+        {
+          "description": "Read every device, entity, area, and floor.",
+          "type": "string",
+          "const": "registry:read"
+        },
+        {
+          "description": "Read every entity's current state.",
+          "type": "string",
+          "const": "states:read"
+        },
+        {
+          "description": "Subscribe to events, including state changes of every entity.",
+          "type": "string",
+          "const": "events:read"
+        },
+        {
+          "description": "Call services on any entity, e.g. turn on a light another integration provides.",
+          "type": "string",
+          "const": "services:call"
+        }
+      ]
+    },
+    "Contributions": {
+      "description": "The `[contributes]` table: one list per contribution kind.",
+      "type": "object",
+      "properties": {
+        "app": {
+          "description": "Reserved for Phase 3; read but ignored, with a warning.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "card": {
+          "description": "Reserved for Phase 2c; read but ignored, with a warning.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "dashboard": {
+          "description": "Reserved for Phase 2c; read but ignored, with a warning.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "integration": {
+          "description": "At most one per extension in this version (ROADMAP D25).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/IntegrationContribution"
+          },
+          "maxItems": 1
+        }
+      },
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      }
+    },
+    "CoreRequirement": {
+      "description": "Compatible Irori versions: `>=A.B.C`, or `>=A.B.C, <X.Y.Z`, e.g. `>=0.1.0, <0.2.0`.",
+      "type": "string",
+      "pattern": "^>=(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})(, <(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8}))?$"
+    },
+    "Description": {
+      "description": "A short description. 1-500 characters on one line, no leading or trailing whitespace.",
+      "type": "string",
+      "maxLength": 500,
+      "minLength": 1,
+      "pattern": "^[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029]([^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029]*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029])?$"
+    },
+    "EntityKind": {
+      "description": "What an entity is. The kind is also the domain part of its [`crate::EntityId`] and the\nprefix of its services (`light.turn_on`).",
+      "oneOf": [
+        {
+          "description": "On/off, optionally dimmable and colored.",
+          "type": "string",
+          "const": "light"
+        },
+        {
+          "description": "On/off, e.g. a smart plug or relay.",
+          "type": "string",
+          "const": "switch"
+        },
+        {
+          "description": "A numeric or text reading, e.g. temperature or illuminance.",
+          "type": "string",
+          "const": "sensor"
+        },
+        {
+          "description": "A two-state reading, e.g. motion or a door contact.",
+          "type": "string",
+          "const": "binary_sensor"
+        }
+      ]
+    },
+    "ExtensionId": {
+      "description": "Format of a slug (extension id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "ExtensionInfo": {
+      "description": "The `[extension]` table.",
+      "type": "object",
+      "properties": {
+        "config_schema": {
+          "description": "JSON Schema for the extension's settings, relative to the package root. External\nextensions only: a built-in extension's schema comes from its Rust config type.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PackagePath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Description"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "description": "Also the id of the integration it contributes, if any (ROADMAP D25).",
+          "$ref": "#/$defs/ExtensionId"
+        },
+        "irori": {
+          "description": "Which versions of Irori it works with, e.g. `>=0.1.0, <0.2.0`.",
+          "$ref": "#/$defs/CoreRequirement"
+        },
+        "name": {
+          "$ref": "#/$defs/Name"
+        },
+        "version": {
+          "$ref": "#/$defs/Version"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "version",
+        "irori"
+      ]
+    },
+    "HostPath": {
+      "description": "`$CONFIG`, `$DATA`, or an absolute path, optionally followed by `/`-separated names, e.g. `$CONFIG/rules` or `/home/pi`. Anything outside `$CONFIG` and `$DATA` means full access to the machine.",
+      "type": "string",
+      "maxLength": 255,
+      "pattern": "^((\\$CONFIG|\\$DATA)(/[A-Za-z0-9_][A-Za-z0-9._-]*)*|/|(/[A-Za-z0-9_][A-Za-z0-9._-]*)+)$"
+    },
+    "IntegrationContribution": {
+      "description": "A `[[contributes.integration]]` entry: the extension brings in devices and entities.",
+      "type": "object",
+      "properties": {
+        "entity_kinds": {
+          "description": "The kinds of entity it creates. It must handle the standard services of each kind.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityKind"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "iot_class": {
+          "description": "Where its devices live and how it hears about changes. Shown as a badge.",
+          "$ref": "#/$defs/IotClass"
+        },
+        "run": {
+          "description": "How to start it, for external extensions. Built-in extensions leave this out.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunCommand"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "iot_class",
+        "entity_kinds"
+      ]
+    },
+    "IotClass": {
+      "description": "Where an integration's devices live and how it learns about changes (ROADMAP D24).",
+      "oneOf": [
+        {
+          "description": "On the local network; devices report changes as they happen.",
+          "type": "string",
+          "const": "local_push"
+        },
+        {
+          "description": "On the local network; Irori asks for changes periodically.",
+          "type": "string",
+          "const": "local_polling"
+        },
+        {
+          "description": "Through a cloud service that reports changes as they happen.",
+          "type": "string",
+          "const": "cloud_push"
+        },
+        {
+          "description": "Through a cloud service that Irori asks periodically.",
+          "type": "string",
+          "const": "cloud_polling"
+        }
+      ]
+    },
+    "Name": {
+      "description": "A human-readable name. 1-100 characters, no leading or trailing whitespace.",
+      "type": "string",
+      "maxLength": 100,
+      "minLength": 1,
+      "pattern": "^[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F]([^\\u0000-\\u001F\\u007F-\\u009F]*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F])?$"
+    },
+    "NetworkHost": {
+      "description": "An internet hostname, e.g. `api.example.com`, or `*.example.com` for every subdomain. Not an IP address or a local-network name (`.local`, `.home.arpa`, `.internal`, `.lan`, `.home`): those need `lan`.",
+      "type": "string",
+      "anyOf": [
+        {
+          "maxLength": 253,
+          "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
+        },
+        {
+          "maxLength": 255,
+          "pattern": "^\\*\\.([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
+        }
+      ],
+      "not": {
+        "pattern": "(^|\\.)(local|localhost|home\\.arpa|internal|lan|home)$"
+      }
+    },
+    "PackagePath": {
+      "description": "A path relative to the extension package root, e.g. `bin/esphome`. Segments use letters, digits, `.`, `_`, `-` and don't start with `.`.",
+      "type": "string",
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9._-]*(/[A-Za-z0-9_][A-Za-z0-9._-]*)*$"
+    },
+    "Permissions": {
+      "description": "The `[permissions]` table (ROADMAP D23). Everything defaults to \"no access\".\n\nAn integration never needs a permission to manage its own devices and entities or to\nreceive service calls for them; these cover reaching anything beyond that.",
+      "type": "object",
+      "properties": {
+        "api": {
+          "description": "Irori API access beyond its own devices and entities.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApiScope"
+          },
+          "uniqueItems": true
+        },
+        "host_fs": {
+          "description": "Files and folders on the machine. `$CONFIG` and `$DATA` are Irori's own folders; any\nother path means full access to this machine.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HostPath"
+          },
+          "uniqueItems": true
+        },
+        "host_shell": {
+          "description": "Run commands on the machine. Means full access to this machine.",
+          "type": "boolean"
+        },
+        "lan": {
+          "description": "Devices on the local network: private and link-local addresses, and mDNS (`.local`).",
+          "type": "boolean"
+        },
+        "network": {
+          "description": "Internet hosts it connects to, e.g. `api.switch-bot.com` or `*.example.com`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NetworkHost"
+          },
+          "uniqueItems": true
+        },
+        "serial": {
+          "description": "Serial or USB devices, e.g. `/dev/ttyUSB0`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SerialPath"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "RunCommand": {
+      "description": "How the core starts an external extension's process.",
+      "type": "object",
+      "properties": {
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "command": {
+          "description": "The executable, relative to the package root, e.g. `bin/esphome`.",
+          "$ref": "#/$defs/PackagePath"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "command"
+      ]
+    },
+    "SerialPath": {
+      "description": "A serial or USB device path under /dev, e.g. `/dev/ttyUSB0`.",
+      "type": "string",
+      "maxLength": 255,
+      "pattern": "^/dev(/[A-Za-z0-9_][A-Za-z0-9._-]*)+$"
+    },
+    "Version": {
+      "description": "Semantic version MAJOR.MINOR.PATCH with an optional -pre-release, e.g. 1.4.0 or 0.3.0-beta.1. No build metadata. At most 64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$"
+    }
+  }
+}

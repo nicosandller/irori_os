@@ -1,9 +1,14 @@
-//! Shared types for Irori: the entity and registry model (`docs/specs/entities.md`), and later
-//! rules, traces, and API messages. Compiles to native and `wasm32`, so the server, CLI, and
+//! Shared types for Irori: the entity and registry model (`docs/specs/entities.md`), extension
+//! manifests (`docs/specs/extensions.md`), the integration contract (`docs/specs/integrations.md`),
+//! and later rules, traces, and API messages. Compiles to native and `wasm32`, so the server, CLI, and
 //! browser UI validate data with the same code.
 
-mod context;
+// `id` first: its `string_newtype!` macro is used by later modules.
 mod id;
+
+mod context;
+mod extension;
+mod integration;
 mod kind;
 mod num;
 mod registry;
@@ -12,9 +17,18 @@ mod state;
 mod time;
 
 pub use context::{Context, Origin};
+pub use extension::{
+    ApiScope, Contributions, CoreRequirement, ExtensionInfo, ExtensionManifest, HostPath,
+    IntegrationContribution, IotClass, NetworkHost, PackagePath, Permissions, ReservedContribution,
+    RunCommand, SerialPath, Version,
+};
 pub use id::{
-    AreaId, AttributeKey, ContextId, DeviceId, EntityId, FloorId, IdError, IntegrationId, Name,
-    RuleId, SLUG_MAX_LEN, TokenId, UniqueId, UserId,
+    AreaId, AttributeKey, ContextId, Description, DeviceId, EntityId, ExtensionId, FloorId,
+    IdError, IntegrationId, Name, ObjectId, RuleId, SLUG_MAX_LEN, TokenId, UniqueId, UserId,
+};
+pub use integration::{
+    DeviceDescription, EntityDescription, LightTurnOn, Service, ServiceCall, ServiceName,
+    StateReport,
 };
 pub use kind::EntityKind;
 pub use registry::{

@@ -1,0 +1,8 @@
+{
+  "unique_id": "a4:cf:12:34:56:78",
+  "name": "Desk lamp",
+  "manufacturer": "Espressif",
+  "model": "ESP32-C3",
+  "sw_version": "ESPHome 2026.8.1",
+  "suggested_area": "Office"
+}

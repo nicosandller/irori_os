@@ -1,0 +1,1 @@
+`data` must be an object, not null; leave `data` out when there's nothing to send

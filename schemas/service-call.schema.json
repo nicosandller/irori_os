@@ -1,0 +1,339 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ServiceCall",
+  "description": "The core asking an integration to act on one of its entities.",
+  "type": "object",
+  "properties": {
+    "context": {
+      "$ref": "#/$defs/Context"
+    },
+    "data": {
+      "description": "The service's parameters. Leave out when there are none.",
+      "type": "object"
+    },
+    "service": {
+      "$ref": "#/$defs/ServiceName"
+    },
+    "unique_id": {
+      "$ref": "#/$defs/UniqueId"
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "light.turn_on"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/LightTurnOn"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "light.turn_off"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "switch.turn_on"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "switch.turn_off"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    }
+  ],
+  "required": [
+    "service",
+    "unique_id",
+    "context"
+  ],
+  "$defs": {
+    "Context": {
+      "description": "Why something happened. Every state change and service call carries one, so any change can\nbe traced back to its cause (`docs/specs/entities.md` §6).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ContextId"
+        },
+        "origin": {
+          "$ref": "#/$defs/Origin"
+        },
+        "parent_id": {
+          "description": "The context that caused this one, e.g. the motion event that triggered a rule run.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContextId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "origin"
+      ]
+    },
+    "ContextId": {
+      "description": "A ULID: 26 characters, uppercase Crockford base32.",
+      "type": "string",
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "IntegrationId": {
+      "description": "Format of a slug (integration id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "LightTurnOn": {
+      "description": "Data for `light.turn_on`. Everything is optional: with no data, the light turns on at its\nlast brightness and color.",
+      "type": "object",
+      "properties": {
+        "brightness": {
+          "description": "1-255. Needs a dimmable light.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 1
+        },
+        "color_temp_kelvin": {
+          "description": "Needs color temperature support, within the light's range. Not together with `rgb`.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 20000,
+          "minimum": 1000
+        },
+        "rgb": {
+          "description": "Needs RGB support. Not together with `color_temp_kelvin`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0
+          },
+          "maxItems": 3,
+          "minItems": 3
+        }
+      },
+      "additionalProperties": false,
+      "not": {
+        "properties": {
+          "color_temp_kelvin": {
+            "type": "integer"
+          },
+          "rgb": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "color_temp_kelvin",
+          "rgb"
+        ]
+      }
+    },
+    "Origin": {
+      "description": "Where a context started.",
+      "oneOf": [
+        {
+          "description": "Reported by a device through an integration, e.g. someone pressed a physical switch.",
+          "type": "object",
+          "properties": {
+            "integration": {
+              "$ref": "#/$defs/IntegrationId"
+            },
+            "type": {
+              "type": "string",
+              "const": "device"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "integration"
+          ]
+        },
+        {
+          "description": "A person, through the UI or CLI.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "user"
+            },
+            "user_id": {
+              "$ref": "#/$defs/UserId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "user_id"
+          ]
+        },
+        {
+          "description": "A rule run.",
+          "type": "object",
+          "properties": {
+            "rule_id": {
+              "$ref": "#/$defs/RuleId"
+            },
+            "run_id": {
+              "$ref": "#/$defs/ContextId"
+            },
+            "type": {
+              "type": "string",
+              "const": "rule"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "rule_id",
+            "run_id"
+          ]
+        },
+        {
+          "description": "An API client authenticated with an access token.",
+          "type": "object",
+          "properties": {
+            "token_id": {
+              "$ref": "#/$defs/TokenId"
+            },
+            "type": {
+              "type": "string",
+              "const": "api"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "token_id"
+          ]
+        },
+        {
+          "description": "Irori itself, e.g. restoring state at startup or reloading config.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "system"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "RuleId": {
+      "description": "Format of a slug (rule id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "ServiceName": {
+      "description": "The name of a standard service: `<kind>.<action>`.",
+      "type": "string",
+      "enum": [
+        "light.turn_on",
+        "light.turn_off",
+        "switch.turn_on",
+        "switch.turn_off"
+      ]
+    },
+    "TokenId": {
+      "description": "Format of a slug (token id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "UniqueId": {
+      "description": "Stable id assigned by the integration (e.g. a Zigbee IEEE address). Unique within the integration.",
+      "type": "string",
+      "maxLength": 255,
+      "minLength": 1,
+      "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+    },
+    "UserId": {
+      "description": "Format of a slug (user id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    }
+  }
+}
