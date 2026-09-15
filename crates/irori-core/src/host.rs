@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use irori_integration::Builtin;
-use irori_integration::host::{HostEnd, connect};
+use irori_integration::host::{HostEnd, Op, Reports, connect};
 use irori_types::{EntityKind, ExtensionId, IntegrationId};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
 
@@ -248,11 +248,7 @@ async fn pump(
             biased;
             _ = stop.wait_for(|stop| *stop) => break,
             result = &mut task => {
-                // Apply what it said before it ended.
-                while let Ok(op) = ops.try_recv() {
-                    core.apply_op(extension, integration, kinds, op);
-                }
-                core.apply_reports(extension, integration, reports.drain(), reports.take_dropped());
+                drain(core, extension, integration, kinds, &mut ops, &reports);
                 return Outcome::Ended(describe_end(result));
             }
             Some(op) = ops.recv() => core.apply_op(extension, integration, kinds, op),
@@ -267,16 +263,41 @@ async fn pump(
     loop {
         tokio::select! {
             biased;
-            _ = &mut task => return Outcome::Stopped,
+            _ = &mut task => {
+                // Whatever it said on its way out still counts.
+                drain(core, extension, integration, kinds, &mut ops, &reports);
+                return Outcome::Stopped;
+            }
             () = &mut grace => {
                 tracing::warn!(%extension, "extension didn't stop in time; cancelling it");
                 task.abort();
+                drain(core, extension, integration, kinds, &mut ops, &reports);
                 return Outcome::Stopped;
             }
             Some(op) = ops.recv() => core.apply_op(extension, integration, kinds, op),
             batch = reports.next_batch() => core.apply_reports(extension, integration, batch, reports.take_dropped()),
         }
     }
+}
+
+/// Applies everything the integration said but the core hasn't read yet.
+fn drain(
+    core: &Core,
+    extension: &ExtensionId,
+    integration: &IntegrationId,
+    kinds: &[EntityKind],
+    ops: &mut mpsc::Receiver<Op>,
+    reports: &Reports,
+) {
+    while let Ok(op) = ops.try_recv() {
+        core.apply_op(extension, integration, kinds, op);
+    }
+    core.apply_reports(
+        extension,
+        integration,
+        reports.drain(),
+        reports.take_dropped(),
+    );
 }
 
 fn describe_end(
