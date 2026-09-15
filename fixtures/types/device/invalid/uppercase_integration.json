@@ -1,0 +1,6 @@
+{
+  "id": "demo_lamp",
+  "integration": "MQTT",
+  "unique_id": "lamp-1",
+  "name": "Demo lamp"
+}

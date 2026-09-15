@@ -149,7 +149,17 @@ mod tests {
         let (status, content_type, body) = get("/").await?;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(content_type.as_deref(), Some("text/html"));
-        assert!(String::from_utf8(body)?.contains("Irori"));
+        assert!(String::from_utf8(body)?.contains("IroriOS"));
+        Ok(())
+    }
+
+    #[cfg(feature = "ui")]
+    #[tokio::test]
+    async fn serves_svg_favicon() -> anyhow::Result<()> {
+        let (status, content_type, body) = get("/favicon.svg").await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(content_type.as_deref(), Some("image/svg+xml"));
+        assert!(String::from_utf8(body)?.starts_with("<svg"));
         Ok(())
     }
 

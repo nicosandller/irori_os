@@ -1,0 +1,9 @@
+{
+  "id": "fan.bedroom",
+  "integration": "mqtt",
+  "unique_id": "fan",
+  "name": "Bedroom fan",
+  "capabilities": {
+    "kind": "switch"
+  }
+}

@@ -1,0 +1,1 @@
+invalid name "Kitchen ": must not start or end with whitespace

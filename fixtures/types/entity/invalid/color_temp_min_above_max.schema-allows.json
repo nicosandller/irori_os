@@ -1,0 +1,14 @@
+{
+  "id": "light.hallway",
+  "integration": "mqtt",
+  "unique_id": "bulb",
+  "name": "Hallway ceiling",
+  "capabilities": {
+    "kind": "light",
+    "brightness": true,
+    "color_temp_kelvin": {
+      "min": 6500,
+      "max": 2200
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "entity_id": "light.living_room_strip",
+  "availability": "available",
+  "state": {
+    "kind": "light",
+    "on": true,
+    "brightness": 200.0,
+    "color_mode": "rgb",
+    "rgb": [255, 1.2e2, 0.0]
+  },
+  "last_changed": "2026-09-15T22:04:31Z",
+  "last_updated": "2026-09-15T22:04:31Z",
+  "last_reported": "2026-09-15T22:04:31Z",
+  "context": {
+    "id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+    "origin": {
+      "type": "device",
+      "integration": "mqtt"
+    }
+  }
+}

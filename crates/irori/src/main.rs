@@ -1,5 +1,6 @@
 //! `irori`: the single binary. Parses the CLI and wires the pieces together.
 
+mod banner;
 mod build_info;
 mod db;
 mod server;
@@ -90,6 +91,8 @@ fn serve(data: PathBuf, bind: SocketAddr, allow_unauthenticated_lan: bool) -> an
             let listener = tokio::net::TcpListener::bind(bind)
                 .await
                 .with_context(|| format!("failed to listen on {bind}"))?;
+            // After binding, so `--bind ...:0` shows the port the OS actually picked.
+            banner::print(listener.local_addr()?);
             tracing::info!(
                 addr = %listener.local_addr()?,
                 version = build_info::VERSION,
