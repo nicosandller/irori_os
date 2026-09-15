@@ -250,13 +250,14 @@ impl Home {
                 .as_ref()
                 .is_some_and(|state| fits(&entity, state).is_err())
             {
-                // Irori's own change, not a report: `last_reported` stays.
+                // Irori's own change, not a report: `last_reported` stays, and the context says
+                // the core did it (like marking entities unavailable after a crash).
                 let now = stamp.now.max(old.last_updated);
                 let mut new = old.clone();
                 new.state = None;
                 new.last_changed = now;
                 new.last_updated = now;
-                new.context = device_context(integration, stamp, None);
+                new.context = system_context(stamp);
                 self.states.insert(id.clone(), new.clone());
                 events.push(Event::StateChanged {
                     entity_id: id.clone(),
@@ -487,11 +488,7 @@ impl Home {
             .filter(|e| &e.integration == integration)
             .map(|e| e.id.clone())
             .collect();
-        let context = Context {
-            id: stamp.context_id.clone(),
-            parent_id: None,
-            origin: Origin::System,
-        };
+        let context = system_context(stamp);
         self.set_availability_of(
             ids,
             Availability::Unavailable,
@@ -598,6 +595,14 @@ impl Home {
         }
     }
 
+    /// Whether a report may name this call in `caused_by`.
+    #[cfg(test)]
+    pub fn knows_call(&self, integration: &IntegrationId, context_id: &ContextId) -> bool {
+        self.recent_calls
+            .get(integration)
+            .is_some_and(|calls| calls.iter().any(|(id, _)| id == context_id))
+    }
+
     /// Remembers a call's context for [`CALL_WINDOW`], so a state report can say it was caused
     /// by it.
     pub fn record_call(
@@ -617,6 +622,15 @@ impl Home {
             calls.pop_front();
         }
         calls.push_back((context_id, now));
+    }
+}
+
+/// A change Irori made itself, e.g. after an integration crashed.
+fn system_context(stamp: &Stamp) -> Context {
+    Context {
+        id: stamp.context_id.clone(),
+        parent_id: None,
+        origin: Origin::System,
     }
 }
 
@@ -1150,7 +1164,10 @@ mod tests {
             &stamp(2),
         )
         .expect("re-described");
-        assert_eq!(home.state(&lamp_id()).expect("state").state, None);
+        let state = home.state(&lamp_id()).expect("state");
+        assert_eq!(state.state, None);
+        // Irori forgot it; the device didn't report it.
+        assert!(matches!(state.context.origin, Origin::System));
 
         // A value that still fits is kept.
         home.report_state(

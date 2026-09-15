@@ -153,13 +153,15 @@ async fn supervise(
         let (ctx, host_end) = connect();
         // Settings come from the config dir once it exists (M0.7); until then, defaults.
         let settings = serde_json::Value::Object(serde_json::Map::new());
-        let started = Instant::now();
+        // Only time spent actually running counts towards `healthy_after`; startup doesn't.
+        let mut started = Instant::now();
         // `Integration::run` may do work before returning its future; a panic there is a crash
         // like any other, not the end of supervision.
         let reason = match catch_unwind(AssertUnwindSafe(|| builtin.start(settings, ctx))) {
             Ok(Ok(run)) => {
                 core.link(&integration, host_end.calls.clone());
                 let task = tokio::spawn(run);
+                started = Instant::now();
                 core.set_status(&extension, ExtensionStatus::Running);
                 tracing::info!(%extension, "extension started");
 
