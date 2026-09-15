@@ -622,7 +622,10 @@ impl Home {
 
 fn within_call_window(called_at: Timestamp, now: Timestamp) -> bool {
     let age = now.as_jiff().duration_since(called_at.as_jiff());
-    age <= jiff::SignedDuration::try_from(CALL_WINDOW).unwrap_or(jiff::SignedDuration::MAX)
+    let window = jiff::SignedDuration::try_from(CALL_WINDOW).unwrap_or(jiff::SignedDuration::MAX);
+    // A clock that steps back (an NTP correction) makes the age negative. Tolerate that by the
+    // same window, so a confirmation isn't refused, but nothing older stays valid for ever.
+    (-window..=window).contains(&age)
 }
 
 /// Whether a change comes from the integration saying something (it moves `last_reported`
@@ -1299,6 +1302,23 @@ mod tests {
         let err = home
             .report_state(&integration(), late, &stamp(100 + 301))
             .expect_err("too late");
+        assert!(err.0.contains("in the last 5 minutes"), "{err}");
+    }
+
+    #[test]
+    fn the_call_window_survives_a_clock_correction() {
+        let mut home = home_with_lamp();
+        let call = stamp(1_000).context_id;
+        home.record_call(&integration(), call.clone(), stamp(1_000).now);
+        let mut confirmed = report("lamp-light", Some(light(false, None)));
+        confirmed.caused_by = Some(call);
+        // The clock stepped back a minute between the call and its confirmation.
+        home.report_state(&integration(), confirmed.clone(), &stamp(940))
+            .expect("still within the window");
+        // A clock a day behind isn't a correction; that call isn't recent.
+        let err = home
+            .report_state(&integration(), confirmed, &stamp(1_000 - 86_400))
+            .expect_err("far outside the window");
         assert!(err.0.contains("in the last 5 minutes"), "{err}");
     }
 
