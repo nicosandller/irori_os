@@ -93,7 +93,7 @@ async fn eventually(what: &str, mut check: impl FnMut() -> bool) {
 fn status(core: &Core, id: &str) -> Option<ExtensionStatus> {
     core.extensions()
         .get(&ExtensionId::try_from(id).expect("valid"))
-        .cloned()
+        .map(|overview| overview.status.clone())
 }
 
 fn start(core: &Core, builtin: irori_integration::Builtin) -> ExtensionHost {
@@ -443,6 +443,64 @@ async fn incompatible_extensions_fail_without_retrying() {
         })
     );
     host.shutdown().await;
+}
+
+// --- Lost reports are counted ------------------------------------------------------------
+
+struct Confused;
+impl Integration for Confused {
+    type Config = NoSettings;
+    const MANIFEST: &'static str = r#"
+        [extension]
+        id = "confused"
+        name = "Confused"
+        version = "0.1.0"
+        irori = ">=0.0.0"
+
+        [[contributes.integration]]
+        iot_class = "local_push"
+        entity_kinds = ["light"]
+    "#;
+    async fn run(_: NoSettings, mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
+        // Reports for an entity it never described.
+        ctx.report_state(light(true, None, None));
+        ctx.stopped().await;
+        Ok(())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn rejected_reports_are_counted_per_extension() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = start(&core, builtin::<Confused>().expect("valid"));
+    let id = ExtensionId::try_from("confused").expect("valid");
+    eventually("the rejection is counted", || {
+        core.extensions()
+            .get(&id)
+            .is_some_and(|overview| overview.rejected_reports == 1)
+    })
+    .await;
+    let json = serde_json::to_value(&core.extensions()[&id]).expect("serializes");
+    assert_eq!(json["state"], "running");
+    assert_eq!(json["rejected_reports"], 1);
+    assert_eq!(json["dropped_reports"], 0);
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn unrepresentable_timings_are_refused() {
+    let core = Core::new(Arc::new(SystemClock));
+    let huge = Timing {
+        max_retry: Duration::MAX,
+        ..Timing::default()
+    };
+    let err = ExtensionHost::start(&core, vec![], huge).expect_err("too long");
+    assert_eq!(err, "timing: max_retry must be at most 24 hours");
+    let zero = Timing {
+        first_retry: Duration::ZERO,
+        ..Timing::default()
+    };
+    assert!(ExtensionHost::start(&core, vec![], zero).is_err());
 }
 
 #[test]

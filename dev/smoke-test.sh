@@ -38,7 +38,7 @@ fi
 
 if grep -q '"features":\[[^]]*"int-demo"' <<<"$health"; then
   # "Running" comes a moment before the demo has described its devices, so wait for both.
-  until curl -fsS --max-time 2 "$base_url/api/dev/extensions" 2>/dev/null | grep -q '"demo":{"state":"running"}' \
+  until curl -fsS --max-time 2 "$base_url/api/dev/extensions" 2>/dev/null | grep -q '"demo":{"state":"running"' \
     && curl -fsS --max-time 2 "$base_url/api/dev/states" 2>/dev/null | grep -q '"entity_id":"light.demo_lamp"'; do
     ((SECONDS < deadline)) || fail "the demo extension isn't running with its devices listed within ${timeout}s"
     sleep 0.2

@@ -34,14 +34,15 @@ pub struct Config {
     pub sensor_interval_secs: u64,
 }
 
-/// Serde doesn't read the schema, so the range it advertises is checked here too.
+/// Serde doesn't read the schema, so what it advertises is checked here too: a whole number from
+/// 1 to 3600, however it's written (`10` or `10.0`, as JSON Schema's `integer` allows).
 fn interval_secs<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
-    let secs = u64::deserialize(deserializer)?;
-    if (1..=3600).contains(&secs) {
-        Ok(secs)
+    let secs = f64::deserialize(deserializer)?;
+    if secs.fract() == 0.0 && (1.0..=3600.0).contains(&secs) {
+        Ok(secs as u64)
     } else {
         Err(serde::de::Error::custom(format!(
-            "sensor_interval_secs must be from 1 to 3600 (got {secs})"
+            "sensor_interval_secs must be a whole number from 1 to 3600 (got {secs})"
         )))
     }
 }
@@ -258,23 +259,26 @@ mod tests {
     #[tokio::test]
     async fn settings_outside_the_advertised_range_are_refused() {
         let builtin = irori_integration::builtin::<Demo>().expect("valid built-in");
-        for secs in [0, 3601] {
+        for secs in [
+            serde_json::json!(0),
+            serde_json::json!(3601),
+            serde_json::json!(1.5),
+        ] {
             let (ctx, _host) = irori_integration::host::connect();
             let err = builtin
                 .start(serde_json::json!({ "sensor_interval_secs": secs }), ctx)
                 .err()
-                .expect("out of range");
+                .expect("not a whole number from 1 to 3600");
             assert!(
-                err.contains("sensor_interval_secs must be from 1 to 3600"),
+                err.contains("must be a whole number from 1 to 3600"),
                 "{err}"
             );
         }
-        let (ctx, _host) = irori_integration::host::connect();
-        assert!(
-            builtin
-                .start(serde_json::json!({ "sensor_interval_secs": 60 }), ctx)
-                .is_ok()
-        );
+        for secs in [serde_json::json!(60), serde_json::json!(60.0)] {
+            let (ctx, _host) = irori_integration::host::connect();
+            let started = builtin.start(serde_json::json!({ "sensor_interval_secs": secs }), ctx);
+            assert!(started.is_ok());
+        }
     }
 
     #[test]
