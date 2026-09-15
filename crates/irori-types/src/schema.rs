@@ -59,4 +59,11 @@ pub(crate) fn entity_kind_match(schema: &mut Schema) {
 
 pub(crate) fn entity_state_kind_match(schema: &mut Schema) {
     require_kind_match(schema, "entity_id", "state");
+    // `state` may be null but must be present. schemars' `required` would also drop `null`.
+    if let Some(serde_json::Value::Array(required)) = schema.get_mut("required") {
+        let state = serde_json::Value::from("state");
+        if !required.contains(&state) {
+            required.push(state);
+        }
+    }
 }

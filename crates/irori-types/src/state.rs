@@ -21,7 +21,8 @@ pub struct EntityState {
     pub entity_id: EntityId,
     /// Whether the device is reachable. When `unavailable`, `state` keeps the last known value.
     pub availability: Availability,
-    /// The typed value, or `null` if the entity has never reported one ("unknown").
+    /// The typed value, or `null` if the entity has never reported one ("unknown"). Must be
+    /// present even when `null`, so a producer can't mark an entity unknown by forgetting it.
     pub state: Option<State>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attributes: Attributes,
@@ -40,6 +41,8 @@ pub struct EntityState {
 struct RawEntityState {
     entity_id: EntityId,
     availability: Availability,
+    // `deserialize_with` turns off serde's "missing Option means None", making the key required.
+    #[serde(deserialize_with = "Option::deserialize")]
     state: Option<State>,
     #[serde(default)]
     attributes: Attributes,

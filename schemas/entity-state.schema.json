@@ -36,7 +36,7 @@
       "$ref": "#/$defs/Timestamp"
     },
     "state": {
-      "description": "The typed value, or `null` if the entity has never reported one (\"unknown\").",
+      "description": "The typed value, or `null` if the entity has never reported one (\"unknown\"). Must be\npresent even when `null`, so a producer can't mark an entity unknown by forgetting it.",
       "anyOf": [
         {
           "$ref": "#/$defs/State"
@@ -148,7 +148,8 @@
     "last_changed",
     "last_updated",
     "last_reported",
-    "context"
+    "context",
+    "state"
   ],
   "$defs": {
     "Availability": {

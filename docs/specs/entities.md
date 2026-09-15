@@ -151,7 +151,7 @@ New classes are additive.
 |---|---|---|---|
 | `entity_id` | `EntityId` | yes | Its kind must match `state.kind` |
 | `availability` | `available` \| `unavailable` | yes | Is the device reachable? |
-| `state` | object tagged by `kind`, or `null` | yes | The typed value; `null` means **unknown** |
+| `state` | object tagged by `kind`, or `null` | yes, even when `null` | The typed value; `null` means **unknown** |
 | `attributes` | map of `AttributeKey` → any JSON | no | Integration extras; see §5.4 |
 | `last_changed` | `Timestamp` | yes | `state` or `availability` changed |
 | `last_updated` | `Timestamp` | yes | `state`, `availability`, or `attributes` changed |
