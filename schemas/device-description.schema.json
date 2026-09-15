@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeviceDescription",
+  "description": "A device as an integration describes it. The core adds it to the registry, or updates the\nentry with the same `unique_id`.",
+  "type": "object",
+  "properties": {
+    "hw_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "manufacturer": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "$ref": "#/$defs/Name"
+    },
+    "suggested_area": {
+      "description": "An area name the device reports for itself, e.g. ESPHome's `area`. The core uses it only\nwhen the device is new and the user hasn't assigned an area.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Name"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sw_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "unique_id": {
+      "description": "The integration's permanent handle for the device, e.g. its MAC address.",
+      "$ref": "#/$defs/UniqueId"
+    },
+    "via_device_unique_id": {
+      "description": "The `unique_id` of the bridge or hub this device is reached through.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UniqueId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "unique_id",
+    "name"
+  ],
+  "$defs": {
+    "Name": {
+      "description": "A human-readable name. 1-100 characters, no leading or trailing whitespace.",
+      "type": "string",
+      "maxLength": 100,
+      "minLength": 1,
+      "pattern": "^[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F]([^\\u0000-\\u001F\\u007F-\\u009F]*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F])?$"
+    },
+    "UniqueId": {
+      "description": "Stable id assigned by the integration (e.g. a Zigbee IEEE address). Unique within the integration.",
+      "type": "string",
+      "maxLength": 255,
+      "minLength": 1,
+      "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+    }
+  }
+}

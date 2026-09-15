@@ -1,0 +1,1 @@
+entity_kinds lists `light` more than once

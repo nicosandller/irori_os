@@ -1,0 +1,10 @@
+{
+  "unique_id": "a4:cf:12:34:56:80-sensor-temperature",
+  "state": {
+    "kind": "sensor",
+    "value": 21.5
+  },
+  "attributes": {
+    "wifi_signal_dbm": -61
+  }
+}

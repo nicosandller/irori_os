@@ -1,0 +1,7 @@
+{
+  "unique_id": "fan",
+  "name": "Fan",
+  "capabilities": {
+    "kind": "fan"
+  }
+}

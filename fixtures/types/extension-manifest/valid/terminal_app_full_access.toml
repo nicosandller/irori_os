@@ -1,0 +1,16 @@
+[extension]
+id = "terminal"
+name = "Terminal"
+version = "0.1.0"
+irori = ">=0.1.0, <0.2.0"
+
+[[contributes.app]]
+id = "terminal"
+title = "Terminal"
+run = { command = "bin/terminal" }
+
+[permissions]
+api = ["registry:read", "states:read"]
+host_fs = ["$CONFIG", "/"]
+host_shell = true
+serial = ["/dev/ttyUSB0"]

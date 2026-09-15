@@ -254,11 +254,11 @@ consumers; API versioning is part of the API spec (M0.5).
 
 | Topic | Where it's decided |
 |---|---|
-| Services (`light.turn_on` and its parameters) | Rules spec (M0.3) and integration contract (M0.6) |
+| Services (`light.turn_on` and its parameters) | [Integration contract](integrations.md) §7 (what integrations receive); API and rules specs (how people and rules call them) |
 | How rules treat `unavailable` and `null` state | Rules spec (M0.3) |
 | Run and trace ids and formats | Trace spec (M0.4) |
 | Registry and state over the API | API spec (M0.5) |
-| How integrations create and update entries | Integration contract (M0.6) |
+| How integrations create and update entries | [Integration contract](integrations.md) §5–§6 |
 | How users rename entities or assign areas in files | Config spec (M0.7) |
 | Renaming an entity `id` and rewriting rules that use it | Open question 1 |
 | Hidden/disabled entities, icons, entity categories | Later, when the UI needs them |

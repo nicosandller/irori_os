@@ -1,0 +1,4 @@
+{
+  "service": "light.turn_off",
+  "unique_id": "lamp"
+}

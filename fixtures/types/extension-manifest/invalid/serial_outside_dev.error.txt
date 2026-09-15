@@ -1,0 +1,1 @@
+invalid serial device "/tmp/ttyUSB0"

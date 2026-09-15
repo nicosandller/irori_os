@@ -5,7 +5,6 @@
 
 use std::borrow::Cow;
 use std::fmt;
-use std::str::FromStr;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
@@ -28,7 +27,7 @@ impl fmt::Display for IdError {
 
 impl std::error::Error for IdError {}
 
-fn err(what: &'static str, value: &str, reason: &'static str) -> IdError {
+pub(crate) fn err(what: &'static str, value: &str, reason: &'static str) -> IdError {
     IdError {
         what,
         value: value.to_owned(),
@@ -81,24 +80,24 @@ macro_rules! string_newtype {
         }
 
         impl TryFrom<String> for $name {
-            type Error = IdError;
-            fn try_from(value: String) -> Result<Self, IdError> {
-                let check: fn(&str) -> Result<(), IdError> = $check;
+            type Error = $crate::IdError;
+            fn try_from(value: String) -> Result<Self, $crate::IdError> {
+                let check: fn(&str) -> Result<(), $crate::IdError> = $check;
                 check(&value)?;
                 Ok(Self(value))
             }
         }
 
         impl TryFrom<&str> for $name {
-            type Error = IdError;
-            fn try_from(value: &str) -> Result<Self, IdError> {
+            type Error = $crate::IdError;
+            fn try_from(value: &str) -> Result<Self, $crate::IdError> {
                 Self::try_from(value.to_owned())
             }
         }
 
-        impl FromStr for $name {
-            type Err = IdError;
-            fn from_str(value: &str) -> Result<Self, IdError> {
+        impl ::std::str::FromStr for $name {
+            type Err = $crate::IdError;
+            fn from_str(value: &str) -> Result<Self, $crate::IdError> {
                 Self::try_from(value)
             }
         }
@@ -115,13 +114,15 @@ macro_rules! string_newtype {
             }
         }
 
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        impl ::std::fmt::Display for $name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 f.write_str(&self.0)
             }
         }
     };
 }
+
+pub(crate) use string_newtype;
 
 /// A slug identifier type: `^[a-z0-9]+(_[a-z0-9]+)*$`, 1–64 characters.
 macro_rules! slug_id {
@@ -169,9 +170,20 @@ slug_id!(
     "device id"
 );
 slug_id!(
-    /// Identifies an integration, e.g. `mqtt`.
+    /// Identifies an integration, e.g. `mqtt`. Equals the id of the extension that contributes
+    /// it (ROADMAP D25).
     IntegrationId,
     "integration id"
+);
+slug_id!(
+    /// Identifies an extension, e.g. `esphome`. See `docs/specs/extensions.md`.
+    ExtensionId,
+    "extension id"
+);
+slug_id!(
+    /// The part of an [`EntityId`] after the `.`, e.g. `hallway` in `light.hallway`.
+    ObjectId,
+    "object id"
 );
 slug_id!(
     /// Identifies a user.
@@ -377,20 +389,39 @@ const NAME_SPACE_CLASS: &str =
     "\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF";
 
 fn check_name(value: &str) -> Result<(), IdError> {
-    const WHAT: &str = "name";
+    check_text("name", value, 100, "must be at most 100 characters")
+}
+
+/// Shared by [`Name`] and [`Description`]: 1-`max` characters, trimmed, no control characters.
+fn check_text(
+    what: &'static str,
+    value: &str,
+    max: usize,
+    too_long: &'static str,
+) -> Result<(), IdError> {
     if value.is_empty() {
-        return Err(err(WHAT, value, "must not be empty"));
+        return Err(err(what, value, "must not be empty"));
     }
-    if value.chars().count() > 100 {
-        return Err(err(WHAT, value, "must be at most 100 characters"));
+    if value.chars().count() > max {
+        return Err(err(what, value, too_long));
     }
     if value.starts_with(is_name_space) || value.ends_with(is_name_space) {
-        return Err(err(WHAT, value, "must not start or end with whitespace"));
+        return Err(err(what, value, "must not start or end with whitespace"));
     }
     if value.chars().any(char::is_control) {
-        return Err(err(WHAT, value, "must not contain control characters"));
+        return Err(err(what, value, "must not contain control characters"));
     }
     Ok(())
+}
+
+/// The JSON Schema pattern for [`check_text`] (the length limit is a separate `maxLength`).
+/// `forbidden` adds characters that may not appear anywhere, as a regex class body.
+fn text_pattern(forbidden: &str) -> String {
+    format!(
+        "^[^{ws}{ctrl}]([^{ctrl}]*[^{ws}{ctrl}])?$",
+        ws = NAME_SPACE_CLASS,
+        ctrl = format!("\\u0000-\\u001F\\u007F-\\u009F{forbidden}"),
+    )
 }
 
 impl JsonSchema for Name {
@@ -402,13 +433,48 @@ impl JsonSchema for Name {
         json_schema!({
             "type": "string",
             "description": "A human-readable name. 1-100 characters, no leading or trailing whitespace.",
-            "pattern": format!(
-                "^[^{ws}{ctrl}]([^{ctrl}]*[^{ws}{ctrl}])?$",
-                ws = NAME_SPACE_CLASS,
-                ctrl = "\\u0000-\\u001F\\u007F-\\u009F",
-            ),
+            "pattern": text_pattern(""),
             "minLength": 1,
             "maxLength": 100,
+        })
+    }
+}
+
+/// A one-or-two sentence description, e.g. of an extension: 1–500 characters, no leading or
+/// trailing whitespace, no control characters (so no line breaks).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Description(String);
+
+string_newtype!(Description, check_description);
+
+/// Unicode line and paragraph separators aren't control characters, but they break a line.
+const LINE_SEPARATORS: &str = "\\u2028\\u2029";
+
+fn check_description(value: &str) -> Result<(), IdError> {
+    check_text("description", value, 500, "must be at most 500 characters")?;
+    if value.contains(['\u{2028}', '\u{2029}']) {
+        return Err(err(
+            "description",
+            value,
+            "must be a single line (no line or paragraph separators)",
+        ));
+    }
+    Ok(())
+}
+
+impl JsonSchema for Description {
+    fn schema_name() -> Cow<'static, str> {
+        "Description".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "description": "A short description. 1-500 characters on one line, no leading or trailing whitespace.",
+            "pattern": text_pattern(LINE_SEPARATORS),
+            "minLength": 1,
+            "maxLength": 500,
         })
     }
 }
@@ -559,6 +625,25 @@ mod tests {
             assert!(
                 validator.is_valid(&serde_json::Value::from(inner.as_str())),
                 "schema rejected {inner:?}"
+            );
+        }
+        // Descriptions are one line: no line or paragraph separators, even inside.
+        let description = Description::json_schema(&mut SchemaGenerator::default());
+        let description = jsonschema::validator_for(description.as_value()).expect("valid schema");
+        for (text, expected) in [
+            ("Devices over ESPHome's native API.", true),
+            ("First line\u{2028}second line", false),
+            ("First paragraph\u{2029}second", false),
+        ] {
+            assert_eq!(
+                Description::try_from(text).is_ok(),
+                expected,
+                "rust {text:?}"
+            );
+            assert_eq!(
+                description.is_valid(&serde_json::Value::from(text)),
+                expected,
+                "schema {text:?}"
             );
         }
         // Not whitespace in either: zero-width space.

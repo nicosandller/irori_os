@@ -1,0 +1,8 @@
+{
+  "unique_id": "lamp",
+  "state": {
+    "kind": "light",
+    "on": true,
+    "brightness": 0
+  }
+}
