@@ -245,12 +245,12 @@ impl Home {
                 .as_ref()
                 .is_some_and(|state| fits(&entity, state).is_err())
             {
-                let now = stamp.now.max(old.last_reported);
+                // Irori's own change, not a report: `last_reported` stays.
+                let now = stamp.now.max(old.last_updated);
                 let mut new = old.clone();
                 new.state = None;
                 new.last_changed = now;
                 new.last_updated = now;
-                new.last_reported = now;
                 new.context = device_context(integration, stamp, None);
                 self.states.insert(id.clone(), new.clone());
                 events.push(Event::StateChanged {
@@ -411,8 +411,8 @@ impl Home {
         };
 
         let old = self.states[&id].clone();
-        // Never let a clock step backwards break last_changed <= last_updated <= last_reported.
-        let now = stamp.now.max(old.last_reported);
+        // A clock that steps backwards never moves a timestamp back.
+        let now = stamp.now.max(old.last_updated).max(old.last_reported);
         let state_changed = old.state != report.state;
         let changed = state_changed || old.attributes != report.attributes;
         let mut new = old.clone();
@@ -516,12 +516,14 @@ impl Home {
                 continue;
             }
             let old = &*old;
-            let now = now.max(old.last_reported);
+            let now = now.max(old.last_updated);
             let mut new = old.clone();
             new.availability = availability;
             new.last_changed = now;
             new.last_updated = now;
-            new.last_reported = now;
+            if reported == Reported::Yes {
+                new.last_reported = now.max(old.last_reported);
+            }
             new.context = context.clone();
             events.push(Event::StateChanged {
                 entity_id: id.clone(),
@@ -1232,11 +1234,27 @@ mod tests {
             stamp(5).now
         );
 
+        // A crash changes availability, but nothing was heard: last_reported stays.
         home.mark_unavailable(&integration(), &stamp(6));
-        home.mark_unavailable(&integration(), &stamp(7));
+        let state = home.state(&lamp_id()).expect("state");
+        assert_eq!(state.availability, Availability::Unavailable);
+        assert_eq!(state.last_changed, stamp(6).now);
+        assert_eq!(state.last_reported, stamp(5).now);
+        state
+            .validate()
+            .expect("valid with last_reported before last_changed");
+
+        // The integration saying so itself is a report.
+        home.set_availability(
+            &integration(),
+            AvailabilityTarget::Device(uid("lamp")),
+            Availability::Available,
+            &stamp(8),
+        )
+        .expect("device exists");
         assert_eq!(
             home.state(&lamp_id()).expect("state").last_reported,
-            stamp(6).now
+            stamp(8).now
         );
     }
 

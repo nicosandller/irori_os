@@ -1,1 +1,1 @@
-timestamps must satisfy last_changed <= last_updated <= last_reported
+timestamps must satisfy last_changed <= last_updated
