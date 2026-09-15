@@ -1,0 +1,20 @@
+compact (banner on `irori serve`)
+
+  ┌───────┐
+  │  ███  │  IroriOS
+  │  ███  │  smart home core
+  └───────┘
+
+full
+
+  ┌─────────────────┐
+  │                 │
+  │      █████      │     I R O R I O S
+  │      █████      │     ─────────────
+  │      █████      │     the hearth at the
+  │                 │     center of the home
+  └─────────────────┘
+
+one-line prompt glyph
+
+  [▪] irori
