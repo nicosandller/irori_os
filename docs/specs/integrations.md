@@ -151,7 +151,8 @@ asked for (optimistic state) unless the device can't report back; see open quest
 Separate from state (ROADMAP D20). Describing an entity marks it `available`: the integration is
 in touch with it, whether it's new or described again after a restart. When a device drops off the
 network, set it `unavailable` (per device, or per entity); the last value stays. Setting the same
-availability again counts as hearing from the device (it moves `last_reported`). When the
+availability again counts as hearing from the device (it moves `last_reported`); the core marking
+entities unavailable after a crash doesn't, so "last heard from" stays true. When the
 integration itself stops or crashes, the core marks all its entities `unavailable`.
 
 ### 6.5 Health
