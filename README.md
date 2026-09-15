@@ -10,7 +10,7 @@
   <a href="dev/README.md"><b>Try it on a Mac</b></a>
 </p>
 
-> Status: Phase 0, milestone M0.6 (extension manifest and integration contract). Next: the core's registry and extension host, a Devices page, and ESPHome devices (ROADMAP D26). Nothing here controls a home yet.
+> Status: the core's registry, live state, and extension host run, with virtual demo devices (M1.1, trimmed). Next: a Devices page, then ESPHome devices (ROADMAP D26). Nothing here controls a real home yet.
 
 ## Build and run
 
@@ -18,7 +18,10 @@ Requires stable Rust (pinned via `rust-toolchain.toml`).
 
 ```sh
 cargo run -- serve                    # http://127.0.0.1:8480
+cargo run -- serve --log-level debug  # also log every device and state change
 cargo run -- serve --data /var/lib/irori
+curl -s http://127.0.0.1:8480/api/dev/states   # temporary read-only views: devices, entities,
+                                               # states, extensions
 cargo run -- version --json
 ```
 

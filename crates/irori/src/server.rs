@@ -1,5 +1,5 @@
-//! HTTP server for the hello-world build: health endpoint plus the embedded static page.
-//! Moves into `irori-api` with auth and the WS API in M1.5.
+//! HTTP server: health, a temporary read-only view of the core under `/api/dev/`, and the
+//! embedded static page. Moves into `irori-api` with auth and the WS API in M1.5.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -9,6 +9,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
+
+use irori_core::Core;
 
 use crate::build_info::{BuildInfo, VERSION};
 use crate::db::Database;
@@ -21,14 +23,16 @@ struct Inner {
     started: Instant,
     db: Database,
     build: BuildInfo,
+    core: Core,
 }
 
 impl AppState {
-    pub fn new(db: Database) -> Self {
+    pub fn new(db: Database, core: Core) -> Self {
         Self(Arc::new(Inner {
             started: Instant::now(),
             db,
             build: BuildInfo::current(),
+            core,
         }))
     }
 }
@@ -36,6 +40,23 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
+        // Unstable, read-only, for trying things out until the real API (M0.5, M1.5) exists.
+        .route(
+            "/api/dev/devices",
+            get(|State(s): State<AppState>| async move { Json(s.0.core.devices()) }),
+        )
+        .route(
+            "/api/dev/entities",
+            get(|State(s): State<AppState>| async move { Json(s.0.core.entities()) }),
+        )
+        .route(
+            "/api/dev/states",
+            get(|State(s): State<AppState>| async move { Json(s.0.core.states()) }),
+        )
+        .route(
+            "/api/dev/extensions",
+            get(|State(s): State<AppState>| async move { Json(s.0.core.extensions()) }),
+        )
         .fallback(get(ui::serve))
         .with_state(state)
 }
@@ -119,9 +140,20 @@ mod tests {
 
     use super::*;
 
+    fn core() -> Core {
+        Core::new(Arc::new(irori_core::SystemClock))
+    }
+
     async fn get(path: &str) -> anyhow::Result<(StatusCode, Option<String>, Vec<u8>)> {
+        get_from(core(), path).await
+    }
+
+    async fn get_from(
+        core: Core,
+        path: &str,
+    ) -> anyhow::Result<(StatusCode, Option<String>, Vec<u8>)> {
         let dir = tempfile::tempdir()?;
-        let app = router(AppState::new(crate::db::open(dir.path())?));
+        let app = router(AppState::new(crate::db::open(dir.path())?, core));
         let res = app.oneshot(Request::get(path).body(Body::empty())?).await?;
         let status = res.status();
         let content_type = res
@@ -160,6 +192,41 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(content_type.as_deref(), Some("image/svg+xml"));
         assert!(String::from_utf8(body)?.starts_with("<svg"));
+        Ok(())
+    }
+
+    /// The demo's virtual devices show up in the read-only view.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn dev_view_lists_demo_devices_and_states() -> anyhow::Result<()> {
+        let core = core();
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            crate::extensions::builtins()?,
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        for _ in 0..500 {
+            if core.states().iter().any(|s| s.state.is_some()) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let (status, _, body) = get_from(core.clone(), "/api/dev/states").await?;
+        assert_eq!(status, StatusCode::OK);
+        let states: serde_json::Value = serde_json::from_slice(&body)?;
+        let lamp = states
+            .as_array()
+            .and_then(|all| all.iter().find(|s| s["entity_id"] == "light.demo_lamp"))
+            .ok_or_else(|| anyhow::anyhow!("no demo lamp in {states}"))?;
+        assert_eq!(lamp["state"]["kind"], "light");
+
+        let (_, _, body) = get_from(core.clone(), "/api/dev/extensions").await?;
+        let extensions: serde_json::Value = serde_json::from_slice(&body)?;
+        assert_eq!(extensions["demo"]["state"], "running");
+
+        host.shutdown().await;
         Ok(())
     }
 

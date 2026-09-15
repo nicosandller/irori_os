@@ -145,10 +145,10 @@ asked for (optimistic state) unless the device can't report back; see open quest
 
 ### 6.4 Availability
 
-Separate from state (ROADMAP D20). Entities start `available` when first described. When a
-device drops off the network, set it `unavailable` (per device, or per entity); the last value
-stays. When the integration itself stops or crashes, the core marks all its entities
-`unavailable`.
+Separate from state (ROADMAP D20). Describing an entity marks it `available`: the integration is
+in touch with it, whether it's new or described again after a restart. When a device drops off the
+network, set it `unavailable` (per device, or per entity); the last value stays. When the
+integration itself stops or crashes, the core marks all its entities `unavailable`.
 
 ### 6.5 Health
 
