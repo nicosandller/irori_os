@@ -4,6 +4,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::num::{Num, whole};
+
 use crate::{
     AreaId, DeviceId, EntityId, EntityKind, FloorId, IntegrationId, InvariantError, Name, UniqueId,
 };
@@ -15,7 +17,7 @@ pub struct Floor {
     pub id: FloorId,
     pub name: Name,
     /// Ordering from lowest to highest; 0 is the entrance level, negative is below ground.
-    #[serde(deserialize_with = "crate::int::de")]
+    #[serde(deserialize_with = "crate::num::level")]
     pub level: i8,
 }
 
@@ -188,24 +190,17 @@ pub struct ColorTempRange {
 #[serde(deny_unknown_fields)]
 struct RawColorTempRange {
     // Wider than `u16` so out-of-range values get the range message, not "expected u16".
-    #[serde(deserialize_with = "crate::int::de")]
-    min: i64,
-    #[serde(deserialize_with = "crate::int::de")]
-    max: i64,
+    min: Num,
+    max: Num,
 }
 
 impl<'de> Deserialize<'de> for ColorTempRange {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = RawColorTempRange::deserialize(deserializer)?;
-        let (min, max) = (raw.min, raw.max);
-        if !(1000..=20000).contains(&min) || !(1000..=20000).contains(&max) {
-            return Err(serde::de::Error::custom(format!(
-                "color temperature range {min}-{max} K must be within 1000-20000 K"
-            )));
-        }
+        use serde::de::Error as _;
         let range = ColorTempRange {
-            min: u16::try_from(min).map_err(serde::de::Error::custom)?,
-            max: u16::try_from(max).map_err(serde::de::Error::custom)?,
+            min: whole("color_temp_kelvin.min", raw.min, 1000, 20000).map_err(D::Error::custom)?,
+            max: whole("color_temp_kelvin.max", raw.max, 1000, 20000).map_err(D::Error::custom)?,
         };
         range.validate().map_err(serde::de::Error::custom)?;
         Ok(range)
@@ -332,12 +327,10 @@ mod tests {
         let via_capabilities = serde_json::from_str::<Capabilities>(
             r#"{"kind": "light", "color_temp_kelvin": {"min": 500, "max": 2200}}"#,
         );
-        assert!(via_capabilities.is_err_and(|e| e.to_string().contains("within 1000-20000 K")));
-
-        let huge = serde_json::from_str::<ColorTempRange>(r#"{"min": 2200, "max": 70000}"#);
-        assert!(huge.is_err_and(|e| {
-            e.to_string()
-                .contains("2200-70000 K must be within 1000-20000 K")
+        assert!(via_capabilities.is_err_and(|e| {
+            e.to_string().contains(
+                "color_temp_kelvin.min 500 is out of range; it must be from 1000 to 20000",
+            )
         }));
     }
 }

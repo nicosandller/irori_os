@@ -1,4 +1,8 @@
-//! The terminal banner printed by `irori serve` (assets/irori-cli-art.txt, compact version).
+//! The terminal banner printed by `irori serve`.
+//!
+//! Hand-drawn here from the design in `assets/irori-cli-art.txt` (compact version), with the
+//! version and URL filled in. The text file is a design reference, not read at runtime: if the
+//! art changes, update this file to match.
 
 use std::io::{IsTerminal as _, Write as _};
 use std::net::{IpAddr, SocketAddr};
