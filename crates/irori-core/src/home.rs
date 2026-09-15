@@ -311,7 +311,8 @@ impl Home {
             last_changed: stamp.now,
             last_updated: stamp.now,
             last_reported: stamp.now,
-            context: device_context(integration, stamp, None),
+            // Irori creates this "nothing reported yet" entry; the device hasn't said anything.
+            context: system_context(stamp),
         };
         if description.name.is_none() {
             self.nameless.insert(id.clone());
@@ -926,10 +927,11 @@ mod tests {
         );
         // A nameless entity takes its device's name.
         assert_eq!(home.entities[&lamp_id()].name.as_str(), "Desk lamp");
-        // New entities start available and unknown.
+        // New entities start available and unknown, an entry Irori made itself.
         let state = home.state(&lamp_id()).expect("state");
         assert_eq!(state.availability, Availability::Available);
         assert_eq!(state.state, None);
+        assert!(matches!(state.context.origin, Origin::System));
     }
 
     #[test]
