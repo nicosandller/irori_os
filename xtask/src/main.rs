@@ -15,7 +15,11 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("check-deps") => deps::run(),
-        Some("schemas") => schemas::run(args.iter().any(|a| a == "--check")),
+        Some("schemas") => match &args[1..] {
+            [] => schemas::run(false),
+            [flag] if flag == "--check" => schemas::run(true),
+            other => bail!("unexpected arguments to `schemas`: {other:?}\n\n{USAGE}"),
+        },
         Some("-h" | "--help") => {
             println!("{USAGE}");
             Ok(())

@@ -147,7 +147,8 @@ impl Capabilities {
         }
     }
 
-    fn validate(&self) -> Result<(), InvariantError> {
+    /// Deserialization runs this; call it yourself when building `Capabilities` in code.
+    pub fn validate(&self) -> Result<(), InvariantError> {
         match self {
             Self::Light(LightCapabilities {
                 color_temp_kelvin: Some(range),
@@ -173,7 +174,7 @@ pub struct LightCapabilities {
 }
 
 /// Supported color temperatures in kelvin, `min` (warmest) to `max` (coolest).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ColorTempRange {
     #[schemars(range(min = 1000, max = 20000))]
@@ -182,8 +183,28 @@ pub struct ColorTempRange {
     pub max: u16,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawColorTempRange {
+    min: u16,
+    max: u16,
+}
+
+impl<'de> Deserialize<'de> for ColorTempRange {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = RawColorTempRange::deserialize(deserializer)?;
+        let range = ColorTempRange {
+            min: raw.min,
+            max: raw.max,
+        };
+        range.validate().map_err(serde::de::Error::custom)?;
+        Ok(range)
+    }
+}
+
 impl ColorTempRange {
-    fn validate(self) -> Result<(), InvariantError> {
+    /// Deserialization runs this; call it yourself when building a range in code.
+    pub fn validate(self) -> Result<(), InvariantError> {
         let valid = |k: u16| (1000..=20000).contains(&k);
         if !valid(self.min) || !valid(self.max) {
             return Err(InvariantError(format!(
@@ -287,4 +308,20 @@ pub enum BinarySensorClass {
     Connectivity,
     Problem,
     Battery,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_temp_range_is_checked_when_deserialized_on_its_own() {
+        let inverted = serde_json::from_str::<ColorTempRange>(r#"{"min": 6500, "max": 2200}"#);
+        assert!(inverted.is_err_and(|e| e.to_string().contains("min 6500 K above max 2200 K")));
+
+        let via_capabilities = serde_json::from_str::<Capabilities>(
+            r#"{"kind": "light", "color_temp_kelvin": {"min": 500, "max": 2200}}"#,
+        );
+        assert!(via_capabilities.is_err_and(|e| e.to_string().contains("within 1000-20000 K")));
+    }
 }

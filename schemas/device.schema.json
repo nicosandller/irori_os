@@ -73,21 +73,21 @@
   ],
   "$defs": {
     "AreaId": {
-      "description": "A area id: lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "description": "Format of a slug (area id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
       "type": "string",
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
     "DeviceId": {
-      "description": "A device id: lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "description": "Format of a slug (device id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
       "type": "string",
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
     "IntegrationId": {
-      "description": "A integration id: lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "description": "Format of a slug (integration id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
       "type": "string",
       "maxLength": 64,
       "minLength": 1,

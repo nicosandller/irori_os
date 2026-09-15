@@ -32,8 +32,11 @@ Type: IBM Plex Sans (wordmark, 500) and IBM Plex Mono (labels).
 
 ## Favicon
 
+The web UI embeds a copy of `favicon-a.svg` as `crates/irori/assets/favicon.svg`, served at
+`/favicon.svg`:
+
 ```html
-<link rel="icon" href="/favicon-a.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 ```
 
 ## Notes
