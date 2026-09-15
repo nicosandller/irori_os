@@ -1,4 +1,6 @@
 /target
+# Default runtime data dir of `irori serve` (SQLite database)
+/data
 **/*.rs.bk
 .DS_Store
 

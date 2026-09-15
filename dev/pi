@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# Run and test Irori in a Raspberry Pi-like container. See dev/README.md.
+set -euo pipefail
+
+# `review` re-runs this script from a trusted copy outside the repo; these point it back.
+dev_dir="${_IRORI_REVIEW_DEV_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+# Where the host-side tooling (this script, compose.yaml, Dockerfile, smoke test) is read from.
+tooling_dir="${_IRORI_REVIEW_TOOLING_DIR:-$dev_dir}"
+repo_root="$(dirname "$dev_dir")"
+
+export IRORI_DOCKERFILE="$tooling_dir/Dockerfile"
+compose=(docker compose --project-directory "$dev_dir" -f "$tooling_dir/compose.yaml")
+port="${IRORI_PORT:-8480}"
+
+usage() {
+  cat <<EOF
+usage: dev/pi <command> [args]
+
+Run irori like a Pi would:
+  up [--barebones]   build the image and start irori at http://127.0.0.1:$port
+  down [--wipe]      stop it; --wipe also deletes its data volume
+  restart            rebuild from the current checkout and restart
+  status             container state and /api/health
+  logs               follow the server logs
+  smoke              smoke-test the running server
+  shell              open a shell inside the running container
+
+Run cargo inside Linux arm64:
+  check              everything CI's check job runs (fmt, clippy, tests, dependency rules)
+  cargo <args>       any cargo command, e.g. dev/pi cargo test -p irori
+
+Review a pull request:
+  review <pr>        gh pr checkout <pr>, then check, up, and smoke
+EOF
+}
+
+up() {
+  if [[ "${1:-}" == "--barebones" ]]; then
+    export IRORI_FEATURES="--no-default-features"
+  fi
+  "${compose[@]}" up --build --detach --wait pi
+  echo
+  echo "irori is running at http://127.0.0.1:$port"
+}
+
+check() {
+  toolchain bash -c '
+    set -euxo pipefail
+    cargo fmt --all --check
+    cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+    cargo clippy --locked -p irori --no-default-features --all-targets -- -D warnings
+    cargo test --locked --workspace --all-features
+    cargo test --locked -p irori --no-default-features
+    cargo xtask check-deps
+  '
+}
+
+toolchain() {
+  "${compose[@]}" run --rm --build toolchain "$@"
+}
+
+smoke() {
+  if [[ -z "$("${compose[@]}" ps --quiet --status running pi 2>/dev/null)" ]]; then
+    echo "error: irori isn't running; start it with dev/pi up" >&2
+    exit 1
+  fi
+  "$tooling_dir/smoke-test.sh" "http://127.0.0.1:$port"
+}
+
+require_docker() {
+  if ! docker info >/dev/null 2>&1; then
+    echo "error: Docker isn't running (start Docker Desktop, OrbStack, or \`colima start\`)" >&2
+    exit 1
+  fi
+  if ! docker buildx version >/dev/null 2>&1; then
+    echo "error: docker buildx is required (dev/Dockerfile uses BuildKit cache mounts)." >&2
+    echo "       Homebrew + Colima: brew install docker-buildx, then see dev/README.md" >&2
+    exit 1
+  fi
+}
+
+cmd="${1:-help}"
+shift || true
+case "$cmd" in
+  help | -h | --help) ;;
+  *) require_docker ;;
+esac
+case "$cmd" in
+  up) up "$@" ;;
+  down)
+    "${compose[@]}" down
+    if [[ "${1:-}" == "--wipe" ]]; then
+      # Only irori's data; the cargo caches used by `check` stay.
+      docker volume rm --force irori-dev_pi-data >/dev/null
+      echo "Deleted irori's data volume"
+    fi
+    ;;
+  restart) up "$@" ;;
+  status)
+    "${compose[@]}" ps pi
+    curl -fsS "http://127.0.0.1:$port/api/health" && echo
+    ;;
+  logs) "${compose[@]}" logs --follow pi ;;
+  smoke) smoke ;;
+  shell) "${compose[@]}" exec pi bash ;;
+  check) check ;;
+  cargo) toolchain cargo "$@" ;;
+  review)
+    pr="${1:?usage: dev/pi review <pr>}"
+    if [[ -n "$(git -C "$repo_root" status --porcelain)" ]]; then
+      echo "error: working tree has uncommitted changes; commit or stash them first" >&2
+      exit 1
+    fi
+    # After checkout, everything in the repo is the PR's. Copy the host-side tooling first so a
+    # PR can't change what runs on this machine, then continue from the copy.
+    trusted="$(mktemp -d "${TMPDIR:-/tmp}/irori-review.XXXXXX")"
+    cp "$tooling_dir/pi" "$tooling_dir/compose.yaml" "$tooling_dir/Dockerfile" \
+      "$tooling_dir/smoke-test.sh" "$trusted/"
+    echo "Using dev/ tooling from $(git -C "$repo_root" rev-parse --short HEAD); the PR's own dev/ changes are ignored."
+    # Remember where we started, so the cleanup instructions return there before running dev/pi.
+    if start="$(git -C "$repo_root" symbolic-ref --short --quiet HEAD)"; then
+      return_cmd="git switch $start"
+    else
+      return_cmd="git switch --detach $(git -C "$repo_root" rev-parse HEAD)"
+    fi
+    exec env _IRORI_REVIEW_DEV_DIR="$dev_dir" _IRORI_REVIEW_TOOLING_DIR="$trusted" \
+      _IRORI_REVIEW_RETURN_CMD="$return_cmd" bash "$trusted/pi" _review "$pr"
+    ;;
+  help | -h | --help) usage ;;
+  _review)
+    pr="$1"
+    return_cmd="$_IRORI_REVIEW_RETURN_CMD"
+    # If anything below fails we're still on the PR branch; say how to get back safely.
+    trap 'status=$?; rm -rf "$tooling_dir"; if ((status != 0)); then
+      echo >&2; echo "Review failed. Switch back before running dev/pi again: $return_cmd && dev/pi down" >&2
+    fi' EXIT
+    (cd "$repo_root" && gh pr checkout "$pr")
+    # PR code runs only inside containers, and can't write to the checkout on this machine.
+    export IRORI_SRC_MOUNT=ro
+    check
+    up
+    smoke
+    echo
+    echo "PR #$pr passed checks and is running at http://127.0.0.1:$port"
+    echo
+    echo "Your checkout is now on the PR's code, and so is its dev/pi. When you're done, switch"
+    echo "back first, so you run your own dev/pi and not the PR's:"
+    echo
+    echo "  $return_cmd && dev/pi down"
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac

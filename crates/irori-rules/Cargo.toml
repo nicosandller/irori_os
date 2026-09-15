@@ -1,0 +1,13 @@
+[package]
+name = "irori-rules"
+description = "Deterministic rules engine: pure, with injected Clock and StateView."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+irori-types.workspace = true
+
+[lints]
+workspace = true

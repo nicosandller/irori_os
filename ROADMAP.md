@@ -30,7 +30,7 @@ Last revised: 2026-09-15. Based on the original `irori-project-plan.md`, revised
 | D9 | **Traces are emitted by the rules engine, stored separately from state history** | The visualizer needs "condition X read Y and evaluated false", which state history can't reconstruct. |
 | D10 | **Rules engine is deterministic: injected clock + state source** | Enables backtesting/replay (a key Phase 2 feature) and makes tests trivial. Costs nothing if done on day one, very expensive to retrofit. |
 | D11 | **The MQTT integration speaks HA MQTT Discovery** | Zigbee2MQTT, Tasmota, ESPHome-over-MQTT already publish it → zero-config device onboarding. |
-| D12 | **Auth exists from the first network-facing build** | Single owner + access tokens in Phase 1; multi-user in Phase 3. A LAN-exposed unauthenticated home controller is not acceptable, even in alpha. |
+| D12 | **Auth exists from the first network-facing build** | Single owner + access tokens in Phase 1; multi-user in Phase 3. A LAN-exposed unauthenticated home controller is not acceptable, even in alpha. Until auth lands (M1.5), `irori serve` refuses non-loopback binds unless `--allow-unauthenticated-lan` is passed; the flag is removed with auth. |
 | D13 | **AI features live in a separate crate that depends only on the public API client**, available behind an opt-in cargo feature (off in the barebones build, see D17) or as a separate process | Keeps "not part of core" enforced by the compiler; the core never pays for AI it doesn't use. |
 | D14 | **HA-familiar domain/service vocabulary** (`light.turn_on`, `binary_sensor`, …) with typed state | LLMs already know it; eases a future HA backend adapter and HA importer. |
 | D15 | **Protocols are integrations behind one interface; the core has no protocol code.** MQTT is the first integration, not part of the core | Replaces the original plan's "MQTT bundled in core". Building MQTT against the interface proves the interface is good enough for Zigbee/Matter/Z-Wave later. |
@@ -121,7 +121,7 @@ irori_os/
 ```
 
 **Dependency rules (enforce in CI):**
-- `irori-core` and `irori-rules` depend on **no** integration crate and no protocol library (no `rumqttc` in the core's dependency tree).
+- `irori-core` and `irori-rules` depend on **no** integration implementation (`irori-int-*`), no AI crate, and no protocol library (no `rumqttc` in the core's dependency tree). The integration SDK (`irori-integration`) is allowed, and required: the core's integration host loads integrations through its `Integration` trait. The SDK itself must stay protocol-free.
 - Integrations depend only on `irori-integration` and `irori-types`.
 - `irori-assist` and external tools depend only on `irori-types` and `irori-client`.
 
