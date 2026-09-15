@@ -3,32 +3,84 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Irori</title>
+  <title>IroriOS</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <style>
-    :root { color-scheme: light dark; --fg: #1d1b18; --muted: #6b645c; --bg: #faf7f2; --ember: #d2572b; }
-    @media (prefers-color-scheme: dark) { :root { --fg: #efe9e1; --muted: #a39a90; --bg: #1a1714; } }
-    body { margin: 0; padding: 3rem 1rem; background: var(--bg); color: var(--fg);
-           font: 16px/1.5 system-ui, -apple-system, sans-serif; }
+    /* Brand tokens (assets/README.md). Fonts are never downloaded: the core works offline. */
+    :root {
+      color-scheme: light dark;
+      --ink: #1c1714; --paper: #faf7f4; --ember: #c4552b; --muted: #6b625b;
+      --fg: var(--ink); --bg: var(--paper); --line: #e6dfd8; --card: #fffdfb;
+      --sans: "IBM Plex Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --fg: var(--paper); --bg: var(--ink); --muted: #a89e96; --line: #3a322d; --card: #241e1a; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 3rem 1rem; background: var(--bg); color: var(--fg); font: 16px/1.5 var(--sans); }
     main { max-width: 36rem; margin: 0 auto; }
-    h1 { margin: 0 0 .25rem; font-size: 2rem; }
-    h1::before { content: ""; display: inline-block; width: .6em; height: .6em; margin-right: .4em;
-                 border-radius: 50%; background: var(--ember); box-shadow: 0 0 .6em var(--ember); }
-    p { color: var(--muted); margin: 0 0 2rem; }
-    pre { padding: 1rem; border-radius: .5rem; background: color-mix(in srgb, var(--fg) 6%, transparent);
-          overflow-x: auto; font-size: .875rem; }
+    header { display: flex; align-items: center; gap: .85rem; margin-bottom: .5rem; }
+    header svg { width: 2.75rem; height: 2.75rem; flex: none; }
+    h1 { margin: 0; font-size: 2.25rem; font-weight: 500; letter-spacing: -0.02em; }
+    .tagline { margin: 0 0 2rem; color: var(--muted); }
+    .card { border: 1px solid var(--line); border-radius: .5rem; background: var(--card); padding: 1rem 1.25rem; }
+    .status { display: flex; align-items: center; gap: .6rem; margin: 0 0 .75rem; font-weight: 500; }
+    .dot { width: .6rem; height: .6rem; border-radius: 2px; background: var(--muted); }
+    .dot.ok { background: var(--ember); box-shadow: 0 0 .5rem var(--ember); }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1.25rem; margin: 0; }
+    dt { color: var(--muted); font: .75rem/1.9 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    dd { margin: 0; font-family: var(--mono); font-size: .9rem; overflow-wrap: anywhere; }
+    details { margin-top: 1rem; color: var(--muted); font-size: .875rem; }
+    pre { margin: .5rem 0 0; overflow-x: auto; font: .8rem/1.5 var(--mono); color: var(--fg); }
+    footer { margin-top: 2rem; color: var(--muted); font: .75rem var(--mono); letter-spacing: .08em; text-transform: uppercase; }
   </style>
 </head>
 <body>
   <main>
-    <h1>Irori</h1>
-    <p>The hearth is lit. This page is embedded in the binary; the health below comes from the API.</p>
-    <pre id="health">loading…</pre>
+    <header>
+      <!-- Mark A (assets/irori-mark-a-mono.svg), frame follows the text color, ember stays ember. -->
+      <svg viewBox="0 0 48 48" role="img" aria-label="IroriOS mark">
+        <rect x="2" y="2" width="44" height="44" rx="2.5" fill="none" stroke="currentColor" stroke-width="4"/>
+        <rect x="17" y="17" width="14" height="14" rx="1" fill="#c4552b"/>
+      </svg>
+      <h1>IroriOS</h1>
+    </header>
+    <p class="tagline">The hearth is lit. A fast, modular, single-binary smart home core.</p>
+
+    <section class="card" aria-live="polite">
+      <p class="status"><span class="dot" id="dot"></span><span id="status">Checking…</span></p>
+      <dl id="facts"></dl>
+      <details>
+        <summary>Raw health response</summary>
+        <pre id="raw"></pre>
+      </details>
+    </section>
+
+    <footer>Structured · Observable · Local-first</footer>
   </main>
   <script>
+    const el = (id) => document.getElementById(id);
     fetch("/api/health")
       .then((r) => r.json())
-      .then((h) => { document.getElementById("health").textContent = JSON.stringify(h, null, 2); })
-      .catch((e) => { document.getElementById("health").textContent = "health check failed: " + e; });
+      .then((h) => {
+        const ok = h.status === "ok";
+        el("dot").classList.toggle("ok", ok);
+        el("status").textContent = ok ? "Running" : "Status: " + h.status;
+        const facts = {
+          Version: h.version,
+          Features: h.features.length ? h.features.join(", ") : "none (barebones)",
+          Database: "SQLite " + h.sqlite.version + " · " + h.sqlite.journal_mode.toUpperCase(),
+          Uptime: Math.round(h.uptime_ms / 1000) + " s",
+        };
+        el("facts").replaceChildren(...Object.entries(facts).flatMap(([k, v]) => {
+          const dt = document.createElement("dt"); dt.textContent = k;
+          const dd = document.createElement("dd"); dd.textContent = v;
+          return [dt, dd];
+        }));
+        el("raw").textContent = JSON.stringify(h, null, 2);
+      })
+      .catch((e) => { el("status").textContent = "Health check failed: " + e; });
   </script>
 </body>
 </html>

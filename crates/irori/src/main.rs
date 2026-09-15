@@ -1,5 +1,6 @@
 //! `irori`: the single binary. Parses the CLI and wires the pieces together.
 
+mod banner;
 mod build_info;
 mod db;
 mod server;
@@ -71,6 +72,7 @@ fn serve(data: PathBuf, bind: SocketAddr, allow_unauthenticated_lan: bool) -> an
         .init();
 
     check_bind(bind, allow_unauthenticated_lan)?;
+    banner::print(bind);
     if !bind.ip().is_loopback() {
         tracing::warn!(
             %bind,
