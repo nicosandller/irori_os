@@ -97,6 +97,9 @@ struct HomeView {
     states: Vec<EntityState>,
     extensions: BTreeMap<ExtensionId, ExtensionOverview>,
     areas: Vec<Area>,
+    /// Devices a person keeps out of the home, so they can be let back in.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ignored: Vec<irori_core::IgnoredDevice>,
 }
 
 async fn home(State(state): State<AppState>) -> Json<HomeView> {
@@ -107,6 +110,7 @@ async fn home(State(state): State<AppState>) -> Json<HomeView> {
         states: core.states(),
         extensions: core.extensions(),
         areas: core.areas(),
+        ignored: core.ignored_devices(),
     })
 }
 
@@ -242,6 +246,9 @@ struct DeviceEdit {
     description: Patch<Description>,
     #[serde(default, deserialize_with = "patched")]
     area: Patch<WhereTo>,
+    /// `true` takes the device out of the home; `false` lets it back in.
+    #[serde(default)]
+    ignored: Option<bool>,
 }
 
 async fn edit_device(
@@ -250,7 +257,10 @@ async fn edit_device(
     Json(request): Json<DeviceEdit>,
 ) -> Response {
     let core = &state.0.core;
-    if !core.devices().iter().any(|device| device.id == id) {
+    // An ignored device isn't in the registry, but it's still one a person can let back in.
+    let known = core.devices().iter().any(|device| device.id == id)
+        || core.ignored_devices().iter().any(|device| device.id == id);
+    if !known {
         return refused(StatusCode::NOT_FOUND, format!("there's no device `{id}`"));
     }
     let edited = state
@@ -274,6 +284,9 @@ async fn edit_device(
             }
             if let Some(description) = request.description.clone() {
                 device.description = description;
+            }
+            if let Some(ignored) = request.ignored {
+                device.ignored = ignored;
             }
             if let Some(area) = area {
                 device.area = area;
@@ -1380,6 +1393,54 @@ mod tests {
             !server.config_dir().join("secrets.toml").exists(),
             "nothing was written"
         );
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Ignoring a device takes it out of everything the page shows, writes it down, and letting
+    /// it back in restores it with its entities.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn a_device_can_be_ignored_and_let_back_in() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"ignored": true}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let home = server.read("/api/dev/home").await?;
+        let listed = |key: &str, id: &str| {
+            home[key]
+                .as_array()
+                .is_some_and(|all| all.iter().any(|item| item["id"] == id))
+        };
+        assert!(!listed("devices", "demo_lamp"));
+        assert!(!listed("entities", "light.demo_lamp"));
+        assert!(listed("ignored", "demo_lamp"));
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(devices.contains("ignored = true"), "{devices}");
+
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"ignored": false}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let home = server.read("/api/dev/home").await?;
+        assert!(
+            home["entities"]
+                .as_array()
+                .is_some_and(|all| all.iter().any(|e| e["id"] == "light.demo_lamp"))
+        );
+        assert!(home.get("ignored").is_none(), "{home}");
+
         host.shutdown().await;
         Ok(())
     }

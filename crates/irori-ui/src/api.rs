@@ -28,6 +28,17 @@ pub struct Home {
     /// The rooms of the home, from the config directory. Empty until somebody makes one.
     #[serde(default)]
     pub areas: Vec<Area>,
+    /// Devices a person keeps out of the home.
+    #[serde(default)]
+    pub ignored: Vec<IgnoredDevice>,
+}
+
+/// A device kept out of the home: enough to recognise it and let it back in.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct IgnoredDevice {
+    pub id: DeviceId,
+    pub integration: String,
+    pub name: Name,
 }
 
 impl Home {
@@ -224,6 +235,9 @@ pub struct DeviceEdit {
     /// `None` leaves the room alone; `Some(None)` un-says it, letting the device suggest again.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub area: Option<Option<WhereTo>>,
+    /// `Some(true)` keeps the device out of the home; `Some(false)` lets it back in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ignored: Option<bool>,
 }
 
 /// The body of a refusal, which the core writes as a sentence.

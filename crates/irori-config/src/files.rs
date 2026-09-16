@@ -84,6 +84,8 @@ struct RawDevice {
     description: Option<Description>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     area: Option<RawPlacement>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    ignored: bool,
 }
 
 /// `area = "hall"` for a room, `area = false` for "not in one, and don't ask the device".
@@ -164,6 +166,7 @@ pub fn read_devices(text: &str) -> Result<BTreeMap<DeviceId, DeviceSettings>, St
                     name: raw.name,
                     description: raw.description,
                     area,
+                    ignored: raw.ignored,
                 },
             ))
         })
@@ -307,6 +310,7 @@ pub fn write(file: File, settings: &Settings) -> String {
                             name: device.name.clone(),
                             description: device.description.clone(),
                             area: RawPlacement::of(&device.area),
+                            ignored: device.ignored,
                         },
                     )
                 })
@@ -499,6 +503,7 @@ mod tests {
                     name: Some(name("Hallway radar")),
                     description: Some("By the door".parse().expect("valid")),
                     area: Placement::In(area_id("hall")),
+                    ignored: false,
                 },
             )]
             .into(),
@@ -541,6 +546,7 @@ mod tests {
                         name: Some(name("Plug")),
                         description: None,
                         area: Placement::Unsaid,
+                        ignored: false,
                     },
                 ),
             ]

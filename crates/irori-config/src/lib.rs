@@ -377,6 +377,7 @@ mod tests {
             name: Some(name(what)),
             description: None,
             area: irori_types::Placement::Unsaid,
+            ignored: false,
         }
     }
 

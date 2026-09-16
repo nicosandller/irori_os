@@ -8,6 +8,7 @@ use irori_types::{
     Entity, EntityId, EntityState, SensorCapabilities, SensorClass, SensorValue, State,
 };
 use leptos::prelude::*;
+use leptos::task::spawn_local;
 use leptos_router::components::A;
 
 use crate::api::Home;
@@ -206,6 +207,9 @@ pub fn Devices() -> impl IntoView {
                 Showing::Helpers => helpers(),
             }
         }}
+        // Outside the block above, which redraws on every reading: an opened list mustn't snap
+        // shut two seconds later (ROADMAP D33).
+        {move || (showing.get() == Showing::Devices).then(|| view! { <Ignored /> })}
     }
 }
 
@@ -422,6 +426,62 @@ pub fn icon(integration: &str, has_icon: bool) -> AnyView {
             .unwrap_or_default();
         view! { <span class="integration-icon letter" aria-hidden="true">{initial}</span> }
             .into_any()
+    }
+}
+
+/// Devices a person keeps out of the home, each with a way back in. Only shown when there are some.
+#[component]
+fn Ignored() -> impl IntoView {
+    let live = expect_context::<crate::Live>();
+    let ignored = Memo::new(move |_| live.home.get().ignored);
+    let trouble = RwSignal::new(None::<String>);
+    move || {
+        let all = ignored.get();
+        (!all.is_empty()).then(|| {
+            let count = all.len();
+            view! {
+                <details class="card ignored">
+                    <summary>
+                        {format!("{count} ignored device{}", if count == 1 { "" } else { "s" })}
+                    </summary>
+                    <p class="muted small">
+                        "Kept out of Irori. Their integrations may still talk to them; nothing "
+                        "they say reaches the home."
+                    </p>
+                    {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
+                    <ul class="room-devices">
+                        {all
+                            .into_iter()
+                            .map(|device| {
+                                let id = device.id.clone();
+                                let let_back = move |_| {
+                                    let id = id.clone();
+                                    spawn_local(async move {
+                                        let edit = crate::api::DeviceEdit {
+                                            ignored: Some(false),
+                                            ..Default::default()
+                                        };
+                                        match crate::api::edit_device(&id, &edit).await {
+                                            Ok(()) => crate::refresh(live),
+                                            Err(why) => trouble.set(Some(why)),
+                                        }
+                                    });
+                                };
+                                view! {
+                                    <li>
+                                        <span class="name">{device.name.to_string()}</span>
+                                        <span class="muted small">{device.integration.clone()}</span>
+                                        <button type="button" class="link" on:click=let_back>
+                                            "Let back in"
+                                        </button>
+                                    </li>
+                                }
+                            })
+                            .collect_view()}
+                    </ul>
+                </details>
+            }
+        })
     }
 }
 

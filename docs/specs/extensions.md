@@ -82,6 +82,7 @@ More, valid and invalid, in `fixtures/types/extension-manifest/`.
 | `irori` | requirement, see below | yes | Which versions of Irori it works with |
 | `description` | 1–500 chars, one line | no | |
 | `config_schema` | package path | no | JSON Schema (draft 2020-12) for its settings. External extensions only: a built-in extension's schema is generated from its Rust config type |
+| `icon` | package path | no | A square SVG shown beside the extension and its devices. Always displayed as an image (`<img>`, served with a no-script content policy), never inlined into a page. A built-in extension embeds the same file (`Integration::ICON`), and the two must agree |
 
 **Versions** are [Semantic Versioning](https://semver.org) `MAJOR.MINOR.PATCH` with an optional
 pre-release: `1.4.0`, `0.3.0-beta.1`. No build metadata (`+abc`), so two equal versions are
@@ -185,7 +186,7 @@ stateDiagram-v2
 
 | State | Meaning | Reason shown |
 |---|---|---|
-| `disabled` | Added but not enabled in `irori.toml` | — |
+| `disabled` | Turned off in `irori.toml` (`[extensions] disabled`) | — |
 | `starting` | Being set up | — |
 | `running` | Working | — |
 | `degraded` | Working, with a problem it reported, e.g. one of four devices unreachable | The integration's own message |
@@ -214,7 +215,7 @@ Warnings for ignored contribution kinds come from layer 2 (`ExtensionManifest::w
 | Topic | Where it's decided |
 |---|---|
 | Integration lifecycle, services, and messages | [integrations.md](integrations.md) |
-| Where `irori.toml` enables extensions, and where their settings and approved permissions live | Config spec (M0.7). Planned: `extensions/<id>.toml` (ROADMAP D18) |
+| Turning extensions off, and where their settings live | [config.md](config.md) §3.4–3.5. Approved permissions: planned for `extensions/<id>.toml` |
 | Signing, registry index, `install`/`update` | Phase 3 (ROADMAP §8.1) |
 | Dashboard, card, and app fields | The phases that build them (§6) |
 | Namespaced ids (`author.switchbot`) | ROADMAP open question 12, before the registry opens |

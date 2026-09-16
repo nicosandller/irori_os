@@ -85,8 +85,9 @@ core's process.
 - The integration names each device and entity with a `unique_id` it chooses and **never
   changes**: a MAC address, a Zigbee IEEE address, a cloud API's device id. It must be unique
   within the integration.
-- The core assigns the ids people see (`DeviceId`, `EntityId`), from the integration's
-  suggestion (`suggested_object_id`) or from the names. The user may rename them; the
+- The core assigns the ids people see. A `DeviceId` is the integration id and `unique_id` as a
+  slug, and an `EntityId` builds on its device's id (or on `suggested_object_id`) — never on a name
+  a person chose ([entities.md](entities.md) §4.3). People rename devices and entities; the
   integration never notices, because it keeps using `unique_id`.
 - The integration id is the extension id (D25). Every device and entity it describes gets
   `integration = <its id>`; it can't describe entries for another integration.

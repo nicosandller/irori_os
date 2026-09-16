@@ -38,7 +38,7 @@ step.
 
 ```
 config/
-  irori.toml      settings for Irori itself          (reserved; §7)
+  irori.toml      settings for Irori itself: address, log level, extensions turned off
   areas.toml      the rooms of the home
   devices.toml    what you have said about a device
   entities.toml   what you have said about an entity
@@ -65,13 +65,20 @@ name = "Kitchen"
 ### 3.2 `devices.toml`
 
 ```toml
-[devices."esphome/34:98:7a:2b:09:00"]
+[devices.esphome_34_98_7a_2b_09_00]
 name = "Hallway radar"
+description = "Above the front door, facing the stairs"
 area = "hall"          # a room's id, or `false` for "not in one"
 ```
 
-Both fields are optional: a device may be renamed without being placed, or placed without being
-renamed.
+Keyed by the device's id — the same id as its page's address and in the API (§4). Every field is
+optional. `name` and `description` are the device's **only** name and description: nothing else
+in Irori keeps a second one to fall out of step with (ROADMAP D36).
+
+`ignored = true` keeps the device out of the home altogether: it isn't listed, can't be switched,
+and nothing it reports is kept. Its integration may go on talking to it; Irori just doesn't let
+it in. What the integration says meanwhile is remembered, so taking `ignored` away puts the device
+back as it is now, without a restart.
 
 `area` has **three** states, not two, because "nobody has said" and "it isn't in a room" are
 different answers:
@@ -90,7 +97,7 @@ two have to be different types rather than different spellings. `area = true` is
 ### 3.3 `entities.toml`
 
 ```toml
-[entities."esphome/34:98:7a:2b:09:00-binary_sensor-1594977085"]
+[entities."esphome/34:98:7a:2b:09:00-binary_sensor-1594977085"]   # <integration>/<unique_id>
 name = "Hallway occupancy"
 ```
 
@@ -124,14 +131,40 @@ Handled as a secret throughout:
   `git add .` in the config directory can't pick it up by accident. An existing `.gitignore` is
   never touched.
 
+### 3.5 `irori.toml`
+
+Settings for Irori itself. Irori only ever reads this file: nothing it serves can write it, which
+matters while there's no sign-in, because `allow_unauthenticated_lan` is here.
+
+```toml
+[server]
+bind = "0.0.0.0:8480"
+allow_unauthenticated_lan = true
+log_level = "info"            # error, warn, info, debug, trace
+data = "/var/lib/irori"       # relative paths are relative to this directory
+
+[extensions]
+disabled = ["demo"]
+```
+
+A command-line flag, or its environment variable, wins over the file, and the file wins over the
+default. `[server]` is read at startup; changing it while Irori runs logs that a restart is
+needed. `[extensions] disabled` applies while Irori runs: naming an extension stops it, removing
+it starts it again.
+
 ## 4. What a decision is attached to
 
-The key is `<integration>/<unique_id>` — the integration's own permanent handle for the thing,
-which for an ESPHome device is its MAC address and for an entity is the id
-`docs/specs/integrations.md` §4 defines.
+**A device** is attached to its id. A device's id is made from its integration and the
+integration's permanent handle for it — `esphome_34_98_7a_2b_09_00` from `esphome` and the MAC
+address — and from nothing else, so it's the same after every restart and whatever the device is
+called. Handles that slug to the same id (differing only in case or punctuation) are refused
+rather than numbered in arrival order; a handle too long for an id keeps its start and gains a
+hash of the whole.
 
-It is deliberately **not** `DeviceId` or `EntityId`. Those are derived from names, so keying on
-them would mean a rename could lose the very setting that caused it.
+**An entity** is attached to `<integration>/<unique_id>`, which for an ESPHome entity is the id
+`docs/specs/integrations.md` §4 defines. An entity id is readable (`sensor.<device id>_temperature`)
+and built from what its integration calls it, so the integration's handle is the one thing that
+can't drift from it.
 
 An entry for something Irori has never seen is kept, not dropped: a device that is unplugged for
 a week comes back to the name it had. Nothing warns about it, because "the device is off right
@@ -141,7 +174,8 @@ now" and "this entry is stale" look identical from here.
 
 | Field | Wins |
 |---|---|
-| Device name | yours, else the integration's |
+| Device name | yours, else the integration's — shown alone, never beside the other |
+| Device description | yours; integrations don't set one |
 | Entity name | yours, else the integration's, else the device's name |
 | Device area | yours (a room, or a deliberate none), else an existing area whose name matches the device's `suggested_area` |
 
@@ -183,8 +217,7 @@ flat and boring.
 
 Named here so the layout has room for them, specified when they are built:
 
-- **`irori.toml`** — bind address, log level, which extensions are enabled, recorder retention.
-  Today these are command-line flags; moving them is M1.1's config loading.
+- **More of `irori.toml`** — location, recorder retention.
 - **`extensions/<id>.toml`** — per-extension settings that aren't secret, and approved
   permissions, validated against the extension's `config_schema` (`docs/specs/extensions.md`).
   Joined with the extension's table in `secrets.toml` (§3.4).
