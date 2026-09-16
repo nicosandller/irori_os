@@ -5,11 +5,10 @@
 //! file, then tell the core — so a save that fails leaves the core agreeing with the disk rather
 //! than showing a change that was never kept.
 
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use irori_config::{Problem, Store};
+use irori_config::{Problem, ServerSettings, Store};
 use irori_core::Core;
 use irori_types::{ExtensionSettings, Settings};
 use tokio::sync::Mutex;
@@ -22,6 +21,10 @@ const POLL: Duration = Duration::from_secs(2);
 /// time and never interleave with a reload.
 #[derive(Debug, Clone)]
 pub struct Config(Arc<Mutex<Store>>);
+
+/// What `[server]` said when Irori started, so an edit can be told apart from what's in force.
+#[derive(Debug)]
+struct Started(ServerSettings);
 
 /// Why an edit couldn't be made. Not an I/O failure — that's an `anyhow::Error`.
 #[derive(Debug)]
@@ -46,10 +49,8 @@ impl Config {
     ///
     /// A directory that isn't there, or files that don't parse, are logged and survived: Irori
     /// starting is not conditional on its config being perfect.
-    pub fn open(dir: impl AsRef<Path>, core: &Core) -> Self {
-        let mut store = Store::new(dir.as_ref());
-        let problems = store.reload();
-        report(&problems);
+    pub fn open(store: Store, problems: &[Problem], core: &Core) -> Self {
+        report(problems);
         tracing::info!(
             path = %store.dir().display(),
             areas = store.settings().areas.len(),
@@ -58,7 +59,20 @@ impl Config {
         );
         core.apply_settings(store.settings());
         core.apply_extension_settings(store.extension_settings());
+        let disabled = store.irori().extensions.disabled;
+        if !disabled.is_empty() {
+            tracing::info!(extensions = ?disabled, "turned off in irori.toml");
+        }
+        core.apply_disabled_extensions(disabled);
         Self(Arc::new(Mutex::new(store)))
+    }
+
+    /// For tests: a directory read from scratch.
+    #[cfg(test)]
+    pub fn open_dir(dir: impl AsRef<std::path::Path>, core: &Core) -> Self {
+        let mut store = Store::new(dir.as_ref());
+        let problems = store.reload();
+        Self::open(store, &problems, core)
     }
 
     /// Changes what the config says, writes it, and tells the core — in that order.
@@ -106,15 +120,27 @@ impl Config {
 
     /// Picks up edits made outside Irori. Runs until the process ends.
     pub async fn watch(self, core: Core) {
+        let started = Started(self.0.lock().await.irori().server);
+        let mut warned: Option<ServerSettings> = None;
         loop {
             tokio::time::sleep(POLL).await;
             let mut store = self.0.lock().await;
             let problems = store.reload();
             report(&problems);
-            // Both publish nothing when nothing changed, so this is free on the overwhelming
-            // majority of ticks.
+            // All of these publish nothing when nothing changed, so this is free on the
+            // overwhelming majority of ticks.
             core.apply_settings(store.settings());
             core.apply_extension_settings(store.extension_settings());
+            let irori = store.irori();
+            core.apply_disabled_extensions(irori.extensions.disabled);
+            // Where Irori listens and logs can't change under a running server. Say so, once per
+            // edit, rather than leaving someone wondering why their change did nothing.
+            if irori.server != started.0 && warned.as_ref() != Some(&irori.server) {
+                tracing::warn!(
+                    "irori.toml's [server] settings changed; they take effect when Irori restarts"
+                );
+                warned = Some(irori.server);
+            }
         }
     }
 }
@@ -156,7 +182,7 @@ mod tests {
     async fn an_edit_is_written_down_and_reaches_the_core() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let core = core();
-        let config = Config::open(dir.path(), &core);
+        let config = Config::open_dir(dir.path(), &core);
 
         config
             .edit(&core, |settings| {
@@ -177,7 +203,7 @@ mod tests {
     async fn a_refused_edit_leaves_everything_alone() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let core = core();
-        let config = Config::open(dir.path(), &core);
+        let config = Config::open_dir(dir.path(), &core);
 
         let result: Result<(), _> = config
             .edit(&core, |settings| {
@@ -198,7 +224,7 @@ mod tests {
     async fn an_edit_made_in_an_editor_is_picked_up_and_built_on() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let core = core();
-        let config = Config::open(dir.path(), &core);
+        let config = Config::open_dir(dir.path(), &core);
 
         std::fs::write(
             dir.path().join("areas.toml"),

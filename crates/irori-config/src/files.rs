@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 /// A file this crate reads and writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum File {
+    Irori,
     Areas,
     Devices,
     Entities,
@@ -24,13 +25,20 @@ pub enum File {
 
 impl File {
     /// Every file, in the order they're read.
-    pub const ALL: [File; 4] = [File::Areas, File::Devices, File::Entities, File::Secrets];
+    pub const ALL: [File; 5] = [
+        File::Irori,
+        File::Areas,
+        File::Devices,
+        File::Entities,
+        File::Secrets,
+    ];
 
     /// The files that make up [`Settings`], which are saved together.
     pub const SETTINGS: [File; 3] = [File::Areas, File::Devices, File::Entities];
 
     pub fn name(self) -> &'static str {
         match self {
+            File::Irori => "irori.toml",
             File::Areas => "areas.toml",
             File::Devices => "devices.toml",
             File::Entities => "entities.toml",
@@ -173,6 +181,55 @@ pub fn read_entities(text: &str) -> Result<BTreeMap<SettingsKey, EntitySettings>
         .collect()
 }
 
+/// Settings for Irori itself, from `irori.toml` (`docs/specs/config.md` §3.5).
+///
+/// Irori only ever reads this file. Nothing it serves can write it, which matters while there's no
+/// sign-in: `allow_unauthenticated_lan` lives here, and a page that could set it would let anyone
+/// who can reach Irori open it to the whole network.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IroriSettings {
+    #[serde(default)]
+    pub server: ServerSettings,
+    #[serde(default)]
+    pub extensions: ExtensionsSection,
+}
+
+/// `[server]`: what command-line flags also say. A flag, or its environment variable, wins over
+/// the file; the file wins over the default. Read at startup only.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerSettings {
+    pub bind: Option<std::net::SocketAddr>,
+    /// Relative to the config directory.
+    pub data: Option<std::path::PathBuf>,
+    pub allow_unauthenticated_lan: Option<bool>,
+    pub log_level: Option<LogLevel>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+/// `[extensions]`. Applied while Irori runs: disabling one stops it, enabling it starts it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionsSection {
+    /// Extensions that stay off. Every built-in extension is on unless it's named here.
+    #[serde(default)]
+    pub disabled: std::collections::BTreeSet<ExtensionId>,
+}
+
+pub fn read_irori(text: &str) -> Result<IroriSettings, String> {
+    toml::from_str(text).map_err(|e| e.to_string())
+}
+
 /// Each extension's table in `secrets.toml`.
 ///
 /// Parse errors say where, never what: TOML's own messages quote the offending line, and in
@@ -256,6 +313,7 @@ pub fn write(file: File, settings: &Settings) -> String {
                 .collect(),
         }),
         File::Secrets => unreachable!("secrets are written by `write_secrets`"),
+        File::Irori => unreachable!("irori.toml is only ever read"),
         File::Entities => toml::to_string_pretty(&EntitiesFile {
             entities: settings
                 .entities
@@ -289,6 +347,7 @@ fn preamble(file: File) -> String {
              # Each key is `<integration>/<the integration's own id for the entity>`."
         }
         File::Secrets => unreachable!("secrets have their own preamble"),
+        File::Irori => unreachable!("irori.toml is only ever read"),
     };
     format!(
         "# {what}\n\
@@ -312,6 +371,30 @@ mod tests {
 
     fn area_id(s: &str) -> AreaId {
         s.parse().expect("a valid area id")
+    }
+
+    #[test]
+    fn irori_toml_reads_the_shape_the_spec_shows() {
+        let settings = read_irori(
+            "[server]\nbind = \"0.0.0.0:8480\"\nlog_level = \"debug\"\n\
+             allow_unauthenticated_lan = true\ndata = \"/var/lib/irori\"\n\n\
+             [extensions]\ndisabled = [\"demo\"]\n",
+        )
+        .expect("valid");
+        assert_eq!(
+            settings.server.bind,
+            Some("0.0.0.0:8480".parse().expect("valid"))
+        );
+        assert_eq!(settings.server.log_level, Some(LogLevel::Debug));
+        assert!(
+            settings
+                .extensions
+                .disabled
+                .contains(&"demo".parse().expect("valid"))
+        );
+        assert_eq!(read_irori("").expect("empty"), IroriSettings::default());
+        assert!(read_irori("[server]\nlog_level = \"loud\"\n").is_err());
+        assert!(read_irori("[server]\nport = 80\n").is_err());
     }
 
     #[test]

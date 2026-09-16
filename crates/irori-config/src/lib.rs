@@ -23,7 +23,7 @@ use irori_types::{
     Area, DeviceId, DeviceSettings, EntitySettings, ExtensionSettings, Settings, SettingsKey,
 };
 
-pub use files::File;
+pub use files::{ExtensionsSection, File, IroriSettings, LogLevel, ServerSettings};
 
 /// Something wrong with one file, to be logged and shown. Never fatal: the file keeps whatever it
 /// last held.
@@ -66,6 +66,7 @@ impl<T: Default> Default for Part<T> {
 #[derive(Debug)]
 pub struct Store {
     dir: PathBuf,
+    irori: Part<IroriSettings>,
     areas: Part<Vec<Area>>,
     devices: Part<BTreeMap<DeviceId, DeviceSettings>>,
     entities: Part<BTreeMap<SettingsKey, EntitySettings>>,
@@ -78,6 +79,7 @@ impl Store {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self {
             dir: dir.into(),
+            irori: Part::default(),
             areas: Part::default(),
             devices: Part::default(),
             entities: Part::default(),
@@ -100,6 +102,11 @@ impl Store {
             devices: self.devices.value.clone(),
             entities: self.entities.value.clone(),
         }
+    }
+
+    /// Settings for Irori itself, from `irori.toml`.
+    pub fn irori(&self) -> IroriSettings {
+        self.irori.value.clone()
     }
 
     /// Each extension's settings: its table in `secrets.toml`.
@@ -141,6 +148,7 @@ impl Store {
             Err(e) => return Err(format!("can't read {}: {e}", path.display())),
         };
         match file {
+            File::Irori => self.irori.value = files::read_irori(&text)?,
             File::Areas => self.areas.value = files::read_areas(&text)?,
             File::Devices => self.devices.value = files::read_devices(&text)?,
             File::Entities => self.entities.value = files::read_entities(&text)?,
@@ -154,6 +162,7 @@ impl Store {
 
     fn seen(&self, file: File) -> Option<&Seen> {
         match file {
+            File::Irori => self.irori.seen.as_ref(),
             File::Areas => self.areas.seen.as_ref(),
             File::Devices => self.devices.seen.as_ref(),
             File::Entities => self.entities.seen.as_ref(),
@@ -163,6 +172,7 @@ impl Store {
 
     fn seen_mut(&mut self, file: File) -> &mut Option<Seen> {
         match file {
+            File::Irori => &mut self.irori.seen,
             File::Areas => &mut self.areas.seen,
             File::Devices => &mut self.devices.seen,
             File::Entities => &mut self.entities.seen,

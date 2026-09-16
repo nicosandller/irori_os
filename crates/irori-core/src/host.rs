@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use irori_integration::Builtin;
 use irori_integration::host::{HostEnd, Op, Reports, connect};
+use std::collections::BTreeSet;
+
 use irori_types::{EntityKind, ExtensionId, ExtensionSettings, IntegrationId};
 use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinError, JoinHandle};
@@ -107,6 +109,8 @@ enum Outcome {
     Stopped,
     /// Its settings changed, so it was stopped to be started again with them.
     Reconfigured,
+    /// A person turned it off.
+    Disabled,
     /// It ended on its own; why.
     Ended(String),
 }
@@ -180,8 +184,25 @@ async fn supervise(
     }
 
     let mut settings = core.extension_settings();
+    let mut disabled = core.disabled_extensions();
     let mut delay = timing.first_retry;
     loop {
+        // Turned off: stay off, without counting it as a failure, until it's turned back on.
+        if disabled.borrow_and_update().contains(&extension) {
+            core.set_status(&extension, ExtensionStatus::Disabled);
+            tokio::select! {
+                biased;
+                _ = stop.wait_for(|stop| *stop) => return,
+                result = disabled.wait_for(|disabled| !disabled.contains(&extension)) => {
+                    if result.is_err() {
+                        return;
+                    }
+                    tracing::info!(%extension, "turned on; starting extension");
+                    delay = timing.first_retry;
+                    continue;
+                }
+            }
+        }
         if *stop.borrow() {
             // Already stopping: don't start anything, not even the first time.
             core.set_status(&extension, ExtensionStatus::Disabled);
@@ -216,6 +237,7 @@ async fn supervise(
                     Watching {
                         stop: &mut stop,
                         settings: &mut settings,
+                        disabled: &mut disabled,
                         started_with: &started_with,
                     },
                     timing,
@@ -229,6 +251,10 @@ async fn supervise(
                         tracing::info!(%extension, "extension stopped");
                         core.set_status(&extension, ExtensionStatus::Disabled);
                         return;
+                    }
+                    Outcome::Disabled => {
+                        tracing::info!(%extension, "turned off; extension stopped");
+                        continue;
                     }
                     Outcome::Reconfigured => {
                         // Not a failure, so no backoff: somebody changed its settings and
@@ -259,6 +285,10 @@ async fn supervise(
                     }
                     () = settings_changed(&mut settings, &extension, &started_with) => {
                         tracing::info!(%extension, "settings changed; trying again");
+                        continue;
+                    }
+                    // Turned off while its settings were wrong: the top of the loop says so.
+                    Ok(_) = disabled.wait_for(|disabled| disabled.contains(&extension)) => {
                         continue;
                     }
                 }
@@ -294,6 +324,7 @@ async fn supervise(
 struct Watching<'a> {
     stop: &'a mut watch::Receiver<bool>,
     settings: &'a mut watch::Receiver<ExtensionSettings>,
+    disabled: &'a mut watch::Receiver<BTreeSet<ExtensionId>>,
     started_with: &'a serde_json::Value,
 }
 
@@ -312,6 +343,7 @@ async fn pump(
     let Watching {
         stop,
         settings,
+        disabled,
         started_with,
     } = watching;
     let HostEnd {
@@ -333,6 +365,9 @@ async fn pump(
             }
             () = settings_changed(settings, extension, started_with) => {
                 break Outcome::Reconfigured;
+            }
+            Ok(_) = disabled.wait_for(|disabled| disabled.contains(extension)) => {
+                break Outcome::Disabled;
             }
             () = serve(core, extension, integration, kinds, &mut ops, &reports) => {}
         }
