@@ -216,6 +216,8 @@
              margin: .25rem 0 .75rem; }
     .room-card { padding: .7rem .85rem; border: 1px solid var(--line); border-radius: .5rem;
                  background: var(--bg); }
+    .room-floor { display: block; color: var(--muted); font: .65rem var(--mono); letter-spacing: .08em;
+                  text-transform: uppercase; }
     .room-card h3 { margin: 0 0 .4rem; font-size: .95rem; font-weight: 500; }
     .room-card ul { margin: 0; padding: 0; list-style: none; font-size: .875rem; }
     .room-card li { padding: .1rem 0; overflow-wrap: anywhere; }
@@ -319,6 +321,13 @@
                      cursor: pointer; }
     .danger-button:hover { border-color: #b4342c; }
     details.ignored { margin-top: 1.5rem; }
+    details.floors summary { cursor: pointer; font-weight: 500; }
+    details.floors .inline-form { margin-top: .5rem; }
+    .inline-form input.level { width: 5rem; }
+    .floor-heading { margin: 1.75rem 0 .75rem; color: var(--muted); font: 500 .75rem var(--mono);
+                     letter-spacing: .08em; text-transform: uppercase; }
+    .floor-picker { padding: .3rem .5rem; font: inherit; font-size: .85rem; color: var(--fg);
+                    background: var(--card); border: 1px solid var(--line); border-radius: .4rem; }
     details.ignored summary { cursor: pointer; font-weight: 500; }
 
     .empty { color: var(--muted); }

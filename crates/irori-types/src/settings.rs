@@ -8,12 +8,15 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    Area, AreaId, Description, DeviceId, ExtensionId, IdError, IntegrationId, Name, UniqueId,
+    Area, AreaId, Description, DeviceId, ExtensionId, Floor, FloorId, IdError, IntegrationId, Name,
+    UniqueId,
 };
 
 /// Everything the config directory says.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
+    /// The levels of the home, ordered by id.
+    pub floors: Vec<Floor>,
     /// The rooms of the home, ordered by id.
     pub areas: Vec<Area>,
     /// By the device's id, which never changes (ROADMAP D36).
@@ -22,6 +25,10 @@ pub struct Settings {
 }
 
 impl Settings {
+    pub fn floor(&self, id: &FloorId) -> Option<&Floor> {
+        self.floors.iter().find(|floor| &floor.id == id)
+    }
+
     pub fn area(&self, id: &AreaId) -> Option<&Area> {
         self.areas.iter().find(|area| &area.id == id)
     }

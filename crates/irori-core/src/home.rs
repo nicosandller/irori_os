@@ -127,6 +127,10 @@ impl Home {
         &self.settings.areas
     }
 
+    pub fn floors(&self) -> &[irori_types::Floor] {
+        &self.settings.floors
+    }
+
     pub fn settings(&self) -> &Settings {
         &self.settings
     }
@@ -1300,6 +1304,15 @@ pub fn new_area_id(name: &Name, existing: &[Area]) -> AreaId {
     AreaId::try_from(id).expect("unique_id_for returns a slug")
 }
 
+/// An id for a new floor, by the same rules as a room's: from its name, never colliding.
+pub fn new_floor_id(name: &Name, existing: &[irori_types::Floor]) -> irori_types::FloorId {
+    let id = unique_id_for(&slugify(name.as_str()), "floor", |candidate| {
+        irori_types::FloorId::try_from(candidate)
+            .is_ok_and(|id| existing.iter().any(|existing| existing.id == id))
+    });
+    irori_types::FloorId::try_from(id).expect("unique_id_for returns a slug")
+}
+
 /// `base` (or `fallback` if empty), with `_2`, `_3`, … appended until `taken` says it's free.
 fn unique_id_for(base: &str, fallback: &str, taken: impl Fn(&str) -> bool) -> String {
     let base = if base.is_empty() { fallback } else { base };
@@ -1755,6 +1768,7 @@ mod tests {
         .expect("entity");
 
         home.settle(Settings {
+            floors: Vec::new(),
             devices: [(key("lamp"), called("Reading lamp"))].into(),
             entities: [(
                 entity_key("lamp-light"),
@@ -1889,6 +1903,7 @@ mod tests {
     fn a_device_that_arrives_later_is_named_and_placed_as_it_appears() {
         let mut home = Home::default();
         home.settle(Settings {
+            floors: Vec::new(),
             areas: vec![area("study", "Study")],
             devices: [(
                 key("lamp"),

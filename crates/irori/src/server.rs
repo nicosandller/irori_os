@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use irori_core::{CallError, Command, Core, Event, ExtensionOverview};
 use irori_types::{
     Area, AreaId, ContextId, Description, Device, DeviceId, Entity, EntityId, EntityState,
-    ExtensionId, LightTurnOn, Name, Origin, Placement, UserId,
+    ExtensionId, Floor, FloorId, LightTurnOn, Name, Origin, Placement, UserId,
 };
 use tokio::sync::broadcast;
 
@@ -78,6 +78,11 @@ pub fn router(state: AppState) -> Router {
         )
         // What a person has said about their home (`docs/specs/config.md`). These write files.
         .route("/api/dev/areas", get(areas).post(add_area))
+        .route("/api/dev/floors", get(floors).post(add_floor))
+        .route(
+            "/api/dev/floors/{id}",
+            patch(edit_floor).delete(remove_floor),
+        )
         .route("/api/dev/areas/{id}", patch(edit_area).delete(remove_area))
         .route("/api/dev/devices/{id}", patch(edit_device))
         .route("/api/dev/entities/{id}", patch(edit_entity))
@@ -97,6 +102,9 @@ struct HomeView {
     states: Vec<EntityState>,
     extensions: BTreeMap<ExtensionId, ExtensionOverview>,
     areas: Vec<Area>,
+    /// The levels of the home, lowest first. Empty for a home nobody has divided into floors.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    floors: Vec<Floor>,
     /// Devices a person keeps out of the home, so they can be let back in.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     ignored: Vec<irori_core::IgnoredDevice>,
@@ -110,6 +118,7 @@ async fn home(State(state): State<AppState>) -> Json<HomeView> {
         states: core.states(),
         extensions: core.extensions(),
         areas: core.areas(),
+        floors: core.floors(),
         ignored: core.ignored_devices(),
     })
 }
@@ -128,6 +137,28 @@ async fn areas(State(state): State<AppState>) -> Json<Vec<Area>> {
 #[serde(deny_unknown_fields)]
 struct AreaRequest {
     name: Name,
+    #[serde(default)]
+    floor: Option<FloorId>,
+}
+
+/// A change to a room: a new name, a floor (`null` for none), or both.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AreaEdit {
+    #[serde(default)]
+    name: Option<Name>,
+    #[serde(default, deserialize_with = "patched")]
+    floor: Patch<FloorId>,
+}
+
+/// A room on a floor that isn't there is refused; a room with no floor is fine.
+fn floor_exists(settings: &irori_types::Settings, floor: Option<&FloorId>) -> Result<(), Refused> {
+    match floor {
+        Some(floor) if settings.floor(floor).is_none() => {
+            Err(Refused(format!("there's no floor `{floor}`")))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Makes a room. Two rooms may share a name — homes have two bathrooms — so the id, not the
@@ -137,10 +168,11 @@ async fn add_area(State(state): State<AppState>, Json(request): Json<AreaRequest
         .0
         .config
         .edit(&state.0.core, |settings| {
+            floor_exists(settings, request.floor.as_ref())?;
             let area = Area {
                 id: irori_core::new_area_id(&request.name, &settings.areas),
                 name: request.name.clone(),
-                floor_id: None,
+                floor_id: request.floor.clone(),
             };
             settings.areas.push(area.clone());
             settings.areas.sort_by(|a, b| a.id.cmp(&b.id));
@@ -156,18 +188,26 @@ async fn add_area(State(state): State<AppState>, Json(request): Json<AreaRequest
 async fn edit_area(
     State(state): State<AppState>,
     Path(id): Path<AreaId>,
-    Json(request): Json<AreaRequest>,
+    Json(request): Json<AreaEdit>,
 ) -> Response {
     let renamed = state
         .0
         .config
         .edit(&state.0.core, |settings| {
+            if let Some(floor) = &request.floor {
+                floor_exists(settings, floor.as_ref())?;
+            }
             let area = settings
                 .areas
                 .iter_mut()
                 .find(|area| area.id == id)
                 .ok_or_else(|| Refused(format!("there's no room `{id}`")))?;
-            area.name = request.name.clone();
+            if let Some(name) = &request.name {
+                area.name = name.clone();
+            }
+            if let Some(floor) = &request.floor {
+                area.floor_id = floor.clone();
+            }
             Ok(area.clone())
         })
         .await;
@@ -188,6 +228,99 @@ async fn remove_area(State(state): State<AppState>, Path(id): Path<AreaId>) -> R
             settings.areas.retain(|area| area.id != id);
             if settings.areas.len() == before {
                 return Err(Refused(format!("there's no room `{id}`")));
+            }
+            Ok(())
+        })
+        .await;
+    match removed {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+async fn floors(State(state): State<AppState>) -> Json<Vec<Floor>> {
+    Json(state.0.core.floors())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FloorRequest {
+    name: Name,
+    /// 0 is the entrance level; negative is below ground.
+    #[serde(default)]
+    level: i8,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FloorEdit {
+    #[serde(default)]
+    name: Option<Name>,
+    #[serde(default)]
+    level: Option<i8>,
+}
+
+async fn add_floor(State(state): State<AppState>, Json(request): Json<FloorRequest>) -> Response {
+    let made = state
+        .0
+        .config
+        .edit(&state.0.core, |settings| {
+            let floor = Floor {
+                id: irori_core::new_floor_id(&request.name, &settings.floors),
+                name: request.name.clone(),
+                level: request.level,
+            };
+            settings.floors.push(floor.clone());
+            settings.floors.sort_by(|a, b| a.id.cmp(&b.id));
+            Ok(floor)
+        })
+        .await;
+    match made {
+        Ok(floor) => (StatusCode::CREATED, Json(floor)).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+async fn edit_floor(
+    State(state): State<AppState>,
+    Path(id): Path<FloorId>,
+    Json(request): Json<FloorEdit>,
+) -> Response {
+    let edited = state
+        .0
+        .config
+        .edit(&state.0.core, |settings| {
+            let floor = settings
+                .floors
+                .iter_mut()
+                .find(|floor| floor.id == id)
+                .ok_or_else(|| Refused(format!("there's no floor `{id}`")))?;
+            if let Some(name) = &request.name {
+                floor.name = name.clone();
+            }
+            if let Some(level) = request.level {
+                floor.level = level;
+            }
+            Ok(floor.clone())
+        })
+        .await;
+    match edited {
+        Ok(floor) => Json(floor).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+/// Removes a floor. Its rooms stay, on no floor; what they said about it is kept, so making the
+/// floor again puts them back — as with rooms and their devices.
+async fn remove_floor(State(state): State<AppState>, Path(id): Path<FloorId>) -> Response {
+    let removed = state
+        .0
+        .config
+        .edit(&state.0.core, |settings| {
+            let before = settings.floors.len();
+            settings.floors.retain(|floor| floor.id != id);
+            if settings.floors.len() == before {
+                return Err(Refused(format!("there's no floor `{id}`")));
             }
             Ok(())
         })
@@ -1177,6 +1310,83 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "`true` names no room");
 
         host.shutdown().await;
+        Ok(())
+    }
+
+    /// Floors are made, listed lowest first, and rooms go on them; removing a floor leaves its
+    /// rooms where they are, on no floor.
+    #[tokio::test]
+    async fn floors_hold_rooms_and_removing_one_keeps_them() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (status, upstairs) = server
+            .json(
+                "POST",
+                "/api/dev/floors",
+                serde_json::json!({"name": "Upstairs", "level": 1}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{upstairs}");
+        server
+            .json(
+                "POST",
+                "/api/dev/floors",
+                serde_json::json!({"name": "Ground floor"}),
+            )
+            .await?;
+        let (status, room) = server
+            .json(
+                "POST",
+                "/api/dev/areas",
+                serde_json::json!({"name": "Bedroom", "floor": "upstairs"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{room}");
+        assert_eq!(room["floor_id"], "upstairs");
+
+        let home = server.read("/api/dev/home").await?;
+        assert_eq!(
+            home["floors"][0]["id"], "ground_floor",
+            "lowest first: {home}"
+        );
+        let areas = std::fs::read_to_string(server.config_dir().join("areas.toml"))?;
+        assert!(
+            areas.contains("[floors.upstairs]") && areas.contains("floor = \"upstairs\""),
+            "{areas}"
+        );
+
+        let (status, _) = server
+            .json(
+                "POST",
+                "/api/dev/areas",
+                serde_json::json!({"name": "Attic", "floor": "nowhere"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let (status, _) = server
+            .json(
+                "DELETE",
+                "/api/dev/floors/upstairs",
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let home = server.read("/api/dev/home").await?;
+        assert_eq!(home["areas"][0]["name"], "Bedroom", "the room stayed");
+
+        let (status, moved) = server
+            .json(
+                "PATCH",
+                "/api/dev/areas/bedroom",
+                serde_json::json!({"floor": "ground_floor"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{moved}");
+        assert_eq!(moved["floor_id"], "ground_floor");
+        assert_eq!(
+            moved["name"], "Bedroom",
+            "a floor change leaves the name alone"
+        );
         Ok(())
     }
 

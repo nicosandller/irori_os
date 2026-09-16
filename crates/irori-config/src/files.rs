@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use irori_types::{
     Area, AreaId, Description, DeviceId, DeviceSettings, EntitySettings, ExtensionId,
-    ExtensionSettings, FloorId, Name, Placement, Settings, SettingsKey,
+    ExtensionSettings, Floor, FloorId, Name, Placement, Settings, SettingsKey,
 };
 use serde::{Deserialize, Serialize};
 
@@ -56,8 +56,19 @@ impl std::fmt::Display for File {
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AreasFile {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    floors: BTreeMap<FloorId, RawFloor>,
     #[serde(default)]
     areas: BTreeMap<AreaId, RawArea>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFloor {
+    name: Name,
+    /// 0 is the entrance level; negative is below ground.
+    #[serde(default)]
+    level: i8,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -138,9 +149,19 @@ struct RawEntity {
 }
 
 /// The areas in `areas.toml`, ordered by id.
-pub fn read_areas(text: &str) -> Result<Vec<Area>, String> {
+/// The floors and rooms in `areas.toml`, each ordered by id.
+pub fn read_areas(text: &str) -> Result<(Vec<Floor>, Vec<Area>), String> {
     let file: AreasFile = toml::from_str(text).map_err(|e| e.to_string())?;
-    Ok(file
+    let floors = file
+        .floors
+        .into_iter()
+        .map(|(id, raw)| Floor {
+            id,
+            name: raw.name,
+            level: raw.level,
+        })
+        .collect();
+    let areas = file
         .areas
         .into_iter()
         .map(|(id, raw)| Area {
@@ -148,7 +169,8 @@ pub fn read_areas(text: &str) -> Result<Vec<Area>, String> {
             name: raw.name,
             floor_id: raw.floor,
         })
-        .collect())
+        .collect();
+    Ok((floors, areas))
 }
 
 pub fn read_devices(text: &str) -> Result<BTreeMap<DeviceId, DeviceSettings>, String> {
@@ -284,6 +306,19 @@ pub fn write_secrets(secrets: &ExtensionSettings) -> String {
 pub fn write(file: File, settings: &Settings) -> String {
     let body = match file {
         File::Areas => toml::to_string_pretty(&AreasFile {
+            floors: settings
+                .floors
+                .iter()
+                .map(|floor| {
+                    (
+                        floor.id.clone(),
+                        RawFloor {
+                            name: floor.name.clone(),
+                            level: floor.level,
+                        },
+                    )
+                })
+                .collect(),
             areas: settings
                 .areas
                 .iter()
@@ -341,7 +376,7 @@ pub fn write(file: File, settings: &Settings) -> String {
 
 fn preamble(file: File) -> String {
     let what = match file {
-        File::Areas => "The rooms of your home.",
+        File::Areas => "The floors and rooms of your home.",
         File::Devices => {
             "What you've said about your devices: what each is called, what it's for, and which\n\
              # room it's in. Each key is the device's id, the same one its page and the API use."
@@ -431,9 +466,20 @@ mod tests {
 
     #[test]
     fn areas_read_from_the_shape_the_spec_shows() {
-        let areas =
-            read_areas("[areas.hall]\nname = \"Hall\"\n\n[areas.kitchen]\nname = \"Kitchen\"\n")
-                .expect("valid");
+        let (floors, areas) = read_areas(
+            "[floors.ground]\nname = \"Ground floor\"\nlevel = 0\n\n\
+             [floors.cellar]\nname = \"Cellar\"\nlevel = -1\n\n\
+             [areas.hall]\nname = \"Hall\"\nfloor = \"ground\"\n\n\
+             [areas.kitchen]\nname = \"Kitchen\"\n",
+        )
+        .expect("valid");
+        assert_eq!(floors.len(), 2);
+        assert_eq!(floors[0].id.as_str(), "cellar");
+        assert_eq!(floors[0].level, -1);
+        assert_eq!(
+            areas[0].floor_id.as_ref().map(FloorId::as_str),
+            Some("ground")
+        );
         assert_eq!(areas.len(), 2);
         assert_eq!(areas[0].id.as_str(), "hall");
         assert_eq!(areas[1].name.as_str(), "Kitchen");
@@ -461,7 +507,7 @@ mod tests {
 
     #[test]
     fn a_missing_file_and_an_empty_one_say_the_same_thing() {
-        assert!(read_areas("").expect("valid").is_empty());
+        assert_eq!(read_areas("").expect("valid"), (vec![], vec![]));
         assert!(read_devices("").expect("valid").is_empty());
         assert!(read_entities("").expect("valid").is_empty());
     }
@@ -490,10 +536,15 @@ mod tests {
     #[test]
     fn what_is_written_reads_back_the_same() {
         let settings = Settings {
+            floors: vec![Floor {
+                id: "ground".parse().expect("valid"),
+                name: name("Ground floor"),
+                level: 0,
+            }],
             areas: vec![Area {
                 id: area_id("hall"),
                 name: name("Hall"),
-                floor_id: None,
+                floor_id: Some("ground".parse().expect("valid")),
             }],
             devices: [(
                 "esphome_34_98_7a_2b_09_00"
@@ -518,7 +569,7 @@ mod tests {
 
         assert_eq!(
             read_areas(&write(File::Areas, &settings)).expect("valid"),
-            settings.areas
+            (settings.floors.clone(), settings.areas.clone())
         );
         assert_eq!(
             read_devices(&write(File::Devices, &settings)).expect("valid"),
