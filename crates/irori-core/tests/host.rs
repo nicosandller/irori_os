@@ -784,3 +784,51 @@ async fn new_settings_restart_only_their_own_extension_and_what_was_waiting_clea
     host.shutdown().await;
     assert_eq!(waiting(&core), 0);
 }
+
+/// Turning an extension off stops it and says so; turning it back on starts it again with its
+/// devices. Neither counts as a failure, and turning off one leaves the others alone.
+#[tokio::test(start_paused = true)]
+async fn an_extension_can_be_turned_off_and_on_while_irori_runs() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = ExtensionHost::start(
+        &core,
+        vec![builtin::<Lamp>().expect("valid")],
+        Timing::default(),
+    )
+    .expect("unique ids");
+    eventually("the lamp is on", || core.state(&lamp_id("lamp")).is_some()).await;
+
+    core.apply_disabled_extensions([ExtensionId::try_from("lamp").expect("valid")].into());
+    eventually("turned off", || {
+        status(&core, "lamp") == Some(ExtensionStatus::Disabled)
+            && core
+                .state(&lamp_id("lamp"))
+                .is_some_and(|state| state.availability == Availability::Unavailable)
+    })
+    .await;
+
+    core.apply_disabled_extensions(Default::default());
+    eventually("turned back on, and its lamp with it", || {
+        status(&core, "lamp") == Some(ExtensionStatus::Running)
+            && core
+                .state(&lamp_id("lamp"))
+                .is_some_and(|state| state.availability == Availability::Available)
+    })
+    .await;
+    host.shutdown().await;
+}
+
+/// An extension named in `irori.toml` never starts at all.
+#[tokio::test(start_paused = true)]
+async fn an_extension_turned_off_from_the_start_never_starts() {
+    let core = Core::new(Arc::new(SystemClock));
+    core.apply_disabled_extensions([ExtensionId::try_from("lamp").expect("valid")].into());
+    let host = start(&core, builtin::<Lamp>().expect("valid"));
+    eventually("disabled", || {
+        status(&core, "lamp") == Some(ExtensionStatus::Disabled)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert!(core.devices().is_empty(), "it described devices anyway");
+    host.shutdown().await;
+}

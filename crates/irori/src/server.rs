@@ -663,7 +663,7 @@ mod tests {
     impl Server {
         fn new(core: Core) -> anyhow::Result<Self> {
             let dir = tempfile::tempdir()?;
-            let config = Config::open(dir.path().join("config"), &core);
+            let config = Config::open_dir(dir.path().join("config"), &core);
             Ok(Self { dir, core, config })
         }
 

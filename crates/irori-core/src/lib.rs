@@ -8,7 +8,7 @@ mod home;
 mod host;
 mod services;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
@@ -164,6 +164,9 @@ struct Shared {
     /// Each extension's settings. A watch channel, because the host has to notice a change and
     /// restart the extension with it.
     extension_settings: watch::Sender<ExtensionSettings>,
+    /// Extensions a person has turned off (`irori.toml`). Watched like settings: turning one off
+    /// stops it, turning it back on starts it.
+    disabled: watch::Sender<BTreeSet<ExtensionId>>,
 }
 
 fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
@@ -192,6 +195,7 @@ impl Core {
             busy: Mutex::default(),
             extensions: RwLock::default(),
             extension_settings: watch::Sender::new(ExtensionSettings::default()),
+            disabled: watch::Sender::new(BTreeSet::new()),
         }))
     }
 
@@ -284,6 +288,22 @@ impl Core {
 
     pub(crate) fn extension_settings(&self) -> watch::Receiver<ExtensionSettings> {
         self.0.extension_settings.subscribe()
+    }
+
+    /// Which extensions stay off. One that's running and is now named here is stopped; one that
+    /// was named and no longer is starts.
+    pub fn apply_disabled_extensions(&self, disabled: BTreeSet<ExtensionId>) {
+        self.0.disabled.send_if_modified(|current| {
+            if *current == disabled {
+                return false;
+            }
+            *current = disabled;
+            true
+        });
+    }
+
+    pub(crate) fn disabled_extensions(&self) -> watch::Receiver<BTreeSet<ExtensionId>> {
+        self.0.disabled.subscribe()
     }
 
     /// Asks an entity to do something, and waits for its integration's answer (at most
