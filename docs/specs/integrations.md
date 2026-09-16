@@ -192,9 +192,15 @@ manifest's `entity_kinds`.
 **What the core resolves first,** so integrations don't have to:
 
 - **Toggle.** People and rules can call `light.toggle`; the core reads the current state and
-  sends `turn_on` or `turn_off`. Calls on one entity are handled one at a time, and until the
-  device reports back the core remembers what it last told the entity to be, so two toggles at
-  once cancel out instead of both doing the same thing.
+  sends `turn_on` or `turn_off`. Until the device reports back, the core remembers what it last
+  told the entity to be and resolves the next toggle against that, so two toggles at once cancel
+  out instead of both doing the same thing. That memory is cleared when the device reports, and
+  whenever a call fails, times out, is dropped, or the caller gives up.
+
+  Calls on one entity are also handled one at a time, but that's ordering, not a guarantee: a
+  caller who gives up mid-call releases its turn while the integration may still be working, so
+  two commands can briefly overlap at the device. Correctness rests on the remembered command
+  above, not on the ordering.
 - **Friendlier parameters.** `brightness_pct` from people becomes `brightness`.
 - **Capabilities.** A call asking for something the entity can't do (brightness on a
   non-dimmable light, a color temperature outside its range) is rejected before it reaches the

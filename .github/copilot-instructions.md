@@ -45,6 +45,11 @@ more than volume: one verified finding beats five guesses.
   entity is the integration telling Irori about it, and "has never reported a value" is already
   visible as `state: null` (`docs/specs/entities.md` §5.1). Don't propose making the field
   optional or adding a sentinel for entities that have only been described.
+- **The per-entity call turnstile is best-effort ordering, not mutual exclusion.** Two commands
+  can overlap at a device when a caller gives up mid-call. What keeps `toggle` correct is the
+  remembered command in `Home::commanded` (`docs/specs/integrations.md` §7.1), which survives a
+  cancelled caller. Don't propose moving call supervision off the caller's future to close that
+  window; the restructuring isn't worth it for a cancelled command arriving a moment early.
 - **Check files before claiming what they contain.** Quote the actual line, for example the
   value in a fixture, rather than inferring it.
 
