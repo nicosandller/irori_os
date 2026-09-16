@@ -11,6 +11,8 @@ pub fn builtins() -> anyhow::Result<Vec<Builtin>> {
     Ok(vec![
         #[cfg(feature = "int-demo")]
         irori_integration::builtin::<irori_int_demo::Demo>().map_err(anyhow::Error::msg)?,
+        #[cfg(feature = "int-esphome")]
+        irori_integration::builtin::<irori_int_esphome::Esphome>().map_err(anyhow::Error::msg)?,
     ])
 }
 

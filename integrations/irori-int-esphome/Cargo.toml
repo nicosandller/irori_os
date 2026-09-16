@@ -1,0 +1,23 @@
+[package]
+name = "irori-int-esphome"
+description = "Devices running ESPHome firmware, over ESPHome's native API."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+irori-types.workspace = true
+irori-integration.workspace = true
+
+esphome-client.workspace = true
+schemars.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

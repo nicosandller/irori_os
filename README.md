@@ -10,7 +10,7 @@
   <a href="dev/README.md"><b>Try it on a Mac</b></a>
 </p>
 
-> Status: the core's registry, live state, and extension host run, with virtual demo devices (M1.1, trimmed), and a Devices page that shows them and switches them (M0.8, M1.6 first slice). Next: ESPHome devices (ROADMAP D26). Nothing here controls a real home yet.
+> Status: the core's registry, live state, and extension host run; a Devices page shows everything and switches it (M0.8, M1.6 first slice); and **ESPHome devices on your network are found and connected automatically**, sensors and all (D26). No rules or automations yet, and no login, so it isn't running a home unattended.
 
 ## Build and run
 
@@ -36,6 +36,20 @@ cargo run -- serve                    # http://127.0.0.1:8480 now shows your dev
 
 See [crates/irori-ui/README.md](crates/irori-ui/README.md) for working on the UI itself (live
 reload, no binary rebuild). CI builds it, so downloaded release binaries always have it.
+
+### ESPHome devices
+
+Nothing to configure: Irori listens for ESPHome devices announcing themselves on the local
+network, connects to each one, and puts everything it has on the Devices page. Lights and
+switches can be switched from there.
+
+The one catch today is **encryption**: ESPHome's API can require a pre-shared key, and Irori has
+nowhere to keep one until the config dir lands (M0.7). Devices asking for an encrypted
+connection are named in the log and skipped. Until then, a device with a plain `api:` block (no
+`encryption:`) is picked up on its own.
+
+See [integrations/irori-int-esphome/README.md](integrations/irori-int-esphome/README.md), which
+also explains how to run a real ESPHome device on your laptop to try it without hardware.
 
 Barebones build, no integrations and no UI (must always build and run):
 
@@ -100,7 +114,7 @@ fixtures/      golden examples, valid and invalid, checked by the tests
 crates/        irori-types, irori-core, irori-integration, irori-rules, irori-recorder,
                irori-config, irori-api, irori-client, irori (the binary), and irori-ui
                (the Leptos web UI: wasm, built by `cargo xtask ui`, outside the workspace)
-integrations/  irori-int-mqtt, irori-int-demo
+integrations/  irori-int-mqtt, irori-int-demo, irori-int-esphome
 extras/        irori-assist (opt-in AI, never in the default build)
 xtask/         repository automation (`cargo xtask …`)
 ```

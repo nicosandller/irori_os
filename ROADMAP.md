@@ -46,6 +46,7 @@ Last revised: 2026-09-15. Based on the original `irori-project-plan.md`, revised
 | D25 | **v1: an extension contributes at most one integration, and its `IntegrationId` equals its extension id** | Leaves the M0.2 entity model and existing code (`Device.integration`) unchanged. Can be relaxed later with namespaced ids if one extension ever needs several integrations. |
 | D26 | **Home-testing path before automations.** After the extension spec (M0.6): a trimmed M1.1 (registry, state, events, extension host, demo integration), then the Leptos vs Dioxus spike (M0.8) with a first Devices page, then the **ESPHome native API integration** (moved up from Phase 3, §8.3). The remaining specs (M0.3 rules, M0.4 traces, M0.5 API, M0.7 config) resume after. MQTT/Zigbee2MQTT and native Zigbee stay undecided | Owner's direction: see real devices (ESP32 test boards) on a real Devices page early, and learn from a real home before designing automations. ESPHome's native API needs no broker and runs alongside the existing Home Assistant + Zigbee2MQTT setup without touching it. |
 | D27 | **The UI is built with Leptos** (0.8), not Dioxus | M0.8 spike: the same page in both, measured. Leptos downloads 119 KB brotli against Dioxus's 207 KB, with 203 crates against 363. Both were equally pleasant to write and both fit the §4.3 budget, but the barebones UI will grow past this page, and Dioxus's extra size buys desktop and mobile reach Irori doesn't need. See [crates/irori-ui/README.md](crates/irori-ui/README.md). |
+| D28 | **ESPHome's protocol comes from the `esphome-client` crate**, pinned to one API version, rather than hand-rolled | The architecture already puts protocol libraries in integrations (`rumqttc` for MQTT, §2.2), and this one is the client half: mDNS discovery, the protobuf messages, and the Noise transport encryption will need. Hand-rolling the Noise handshake and a protobuf subset would cost weeks for no behaviour. The crate is young (0.2.1), so the risk is deliberate and bounded: it is ~2k readable lines under MIT, only `irori-int-esphome` depends on it, and its version pin means an ESPHome release can't change what Irori compiles against. If it is abandoned, vendoring or replacing it touches one crate. |
 
 ### Review notes on the original plan (kept for context)
 
@@ -132,6 +133,7 @@ irori_os/
     irori/                   # binary: CLI + wiring + embedded assets; cargo features pick integrations
   integrations/              # first-party extensions whose contribution is an integration
     irori-int-mqtt/          # rumqttc, HA discovery → registry, command publishing, optional broker
+    irori-int-esphome/       # ESPHome's native API: mDNS discovery, entities, state, commands
     irori-int-demo/          # virtual lights/sensors/switches; the reference integration to copy
   extensions/                # (Phase 2c+) first-party dashboards, cards, apps (`irori-ext-*`)
   extras/
@@ -160,6 +162,7 @@ irori_os/
 | Async runtime | `tokio` | |
 | HTTP / WebSocket | `axum` | |
 | MQTT client | `rumqttc` | |
+| ESPHome client | `esphome-client` | Native API: mDNS discovery, protobuf, Noise. Pinned to one API version; only `irori-int-esphome` depends on it |
 | Embedded broker (optional) | `rumqttd` | Evaluate maturity in Phase 0; fall back to "requires external broker" |
 | Persistence | `rusqlite` with `bundled` | Sync API on a dedicated writer thread; simpler than `sqlx` and musl-friendly. WAL mode. |
 | Serialization / schema | `serde` + `schemars` | JSON Schema generated from Rust types |
@@ -185,7 +188,7 @@ irori_os/
 
 Goal: the decisions that are expensive to change later are written down and prototyped. **Little product code, lots of leverage.**
 
-> **Current order (D26):** M0.1 ✅ → M0.2 ✅ → M0.6 ✅ → M1.1 (trimmed) ✅ → M0.8 UI spike ✅ + Devices page ✅ → ESPHome integration → M0.3, M0.4, M0.5, M0.7.
+> **Current order (D26):** M0.1 ✅ → M0.2 ✅ → M0.6 ✅ → M1.1 (trimmed) ✅ → M0.8 UI spike ✅ + Devices page ✅ → ESPHome integration ✅ (plaintext; encrypted devices wait for M0.7) → M0.3, M0.4, M0.5, M0.7.
 
 ### M0.1 Workspace and toolchain ✅
 
@@ -524,7 +527,7 @@ The manifest and the integration, dashboard, and card contracts already exist an
   3. **Terminal** (`host_shell = true`): the canonical high-privilege example.
 
 ### 8.3 First new integrations (in order of value for tinkerers)
-1. **ESPHome native API** (ESPHome's default transport, not MQTT). *Moved up to the home-testing path (D26).*
+1. **ESPHome native API** (ESPHome's default transport, not MQTT). ✅ *Done early on the home-testing path (D26): `integrations/irori-int-esphome`, discovery and all four entity kinds. Encrypted devices wait for somewhere to keep a key (M0.7).*
 2. **Z-Wave** via `zwave-js-server` (external)
 3. **Matter** via `rs-matter` (built-in, opt-in feature)
 4. **One vendor cloud connector** (e.g. SwitchBot, which has a documented public API) to prove `cloud_polling`/`cloud_push`, credential handling via `secrets.toml`, and the cloud badge end to end
