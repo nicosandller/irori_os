@@ -200,6 +200,13 @@ fn toggle(
         move |_| controls.set_on.run((entity_id.clone(), wanted))
     };
     let label = format!("Turn {} {}", entity.name, if wanted { "on" } else { "off" });
+    // A screen reader is told what the knob shows. `mixed` is how ARIA says "neither", which is
+    // what an entity that has never reported is: saying `false` would claim it's off.
+    let pressed = match on {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "mixed",
+    };
     view! {
         <span class="reading">
             {brightness.map(|level| format!("{}%", (u16::from(level) * 100).div_ceil(255)))}
@@ -209,7 +216,7 @@ fn toggle(
             class="toggle"
             class:unknown=on.is_none()
             aria-label=label
-            aria-pressed=on.unwrap_or(false).to_string()
+            aria-pressed=pressed
             disabled=move || offline || busy()
             on:click=click
         >

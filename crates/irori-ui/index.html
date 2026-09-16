@@ -52,7 +52,9 @@
     .entity { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem 1rem;
               padding: .7rem 1rem; border-bottom: 1px solid var(--line); }
     .entity:last-child { border-bottom: none; }
-    .entity.offline .name { color: var(--muted); }
+    /* Offline: the whole row recedes, last known reading included, so a stale value can't read
+       as a live one. The switch is disabled separately. */
+    .entity.offline .name, .entity.offline .reading, .entity.offline .reading.on { color: var(--muted); }
     .names { min-width: 0; flex: 1; }
     .name { display: block; overflow-wrap: anywhere; }
     /* Ids are long and the name above already says which entity this is: one line, cut off

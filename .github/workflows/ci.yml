@@ -96,7 +96,8 @@ jobs:
             total=$((total + size))
           done
           echo "total: $total bytes brotli"
-          # The barebones UI must stay under 500 KB compressed on a slow home network.
+          # The barebones UI must stay under 500 KB compressed on a slow home network. The
+          # binary doesn't serve these compressed yet; see crates/irori-ui/README.md.
           [ "$total" -le 512000 ] || { echo "over the 500 KB budget"; exit 1; }
 
       # The binaries built below embed this, so a release carries the real UI, not the

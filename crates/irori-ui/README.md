@@ -52,7 +52,8 @@ cd crates/irori-ui && trunk serve --open # the page on 8080, API proxied to 8480
 **Not yet:** brightness and color for lights (the command API takes them; the page doesn't send
 them), areas and floors, any page other than Devices, and history. The page **polls**
 `/api/dev/home` every 2 seconds; the WebSocket API (M1.5) will push changes instead, and
-`src/api.rs` is what goes away then.
+`src/api.rs` is what goes away then. The binary also serves these files **uncompressed** (see the
+budget below).
 
 ## Why Leptos (ROADMAP D27)
 
@@ -72,5 +73,13 @@ mobile reach that a page served by the core doesn't need. The spikes are in the 
 `m0.8-ui-framework` branch; to re-measure, build both with `trunk build --release` and compare
 `dist/*.wasm` after `wasm-opt` and `brotli`.
 
+## The size budget, and what a browser really downloads
+
 **Budget (ROADMAP §4.3):** under 500 KB brotli for the barebones UI. CI checks it on every pull
-request. The Devices page is around 160 KB.
+request; the Devices page compresses to about 160 KB.
+
+That is the budget's unit, not yet what goes over the wire. `irori serve` hands these files out
+**as they are**, so a browser opening the page today downloads roughly **540 KB** — the wasm is
+most of it. Serving precompressed assets with `Accept-Encoding` negotiation is part of the plan
+(ROADMAP §2.2) and hasn't been done; until it is, read the 160 KB as "this fits, with room", not
+as the transfer. On a LAN the difference is a fraction of a second; over a slow link it isn't.
