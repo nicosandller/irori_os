@@ -244,11 +244,20 @@ impl Core {
             context: context.clone(),
         };
         let (incoming, result) = incoming_call(ServiceCall {
-            unique_id: resolved.unique_id,
-            service: resolved.service,
+            unique_id: resolved.unique_id.clone(),
+            service: resolved.service.clone(),
             context,
         });
-        let integration = resolved.integration;
+        let integration = resolved.integration.clone();
+        // The registry can change while a call is being prepared (an integration re-describing
+        // or removing the entity), so check again right before sending. A change after this
+        // point reaches the integration, which answers with an error like any other device
+        // trouble (`docs/specs/integrations.md` §7.3).
+        if !read(&self.0.home).still_dispatchable(entity_id, &resolved) {
+            return Err(CallError::NotSupported(format!(
+                "`{entity_id}` changed while the call was being prepared; try again"
+            )));
+        }
         let sent = tokio::time::timeout_at(deadline, sender.send(incoming)).await;
         if !matches!(sent, Ok(Ok(()))) {
             return Err(match sent {

@@ -273,12 +273,14 @@ impl Home {
             // Being described means the integration is back in touch with it (e.g. after a
             // restart). If the device is still offline, the integration says so next.
             let context = device_context(integration, stamp, None);
+            // Describing an entity is the integration telling Irori about it, so it counts as
+            // hearing from it (`docs/specs/entities.md` §5.1).
             events.extend(self.set_availability_of(
                 vec![id],
                 Availability::Available,
                 stamp.now,
                 context,
-                Reported::No,
+                Reported::Yes,
             ));
             return Ok(events);
         }
@@ -618,6 +620,25 @@ impl Home {
     /// Forgets what an entity was told to be, e.g. because the call failed.
     pub fn forget_command(&mut self, entity_id: &EntityId) {
         self.commanded.remove(entity_id);
+    }
+
+    /// Whether a resolved call still matches the registry: the same entity, still owned by that
+    /// integration under that `unique_id`, and still able to do what's asked.
+    pub fn still_dispatchable(&self, entity_id: &EntityId, resolved: &Resolved) -> bool {
+        self.entities.get(entity_id).is_some_and(|entity| {
+            entity.integration == resolved.integration
+                && entity.unique_id == resolved.unique_id
+                && match (&entity.capabilities, &resolved.service) {
+                    (Capabilities::Light(caps), Service::LightTurnOn(data)) => {
+                        light_supports(caps, data).is_ok()
+                    }
+                    (Capabilities::Light(_), Service::LightTurnOff)
+                    | (Capabilities::Switch(_), Service::SwitchTurnOn | Service::SwitchTurnOff) => {
+                        true
+                    }
+                    _ => false,
+                }
+        })
     }
 
     /// Remembers what an entity was just told to be, until it reports back.
@@ -1399,6 +1420,70 @@ mod tests {
                 .service,
             Service::LightTurnOff
         );
+    }
+
+    #[test]
+    fn a_call_is_refused_when_the_entity_changed_underneath_it() {
+        let mut home = home_with_lamp();
+        let resolved = home.resolve(&lamp_id(), Command::Toggle).expect("light");
+        assert!(home.still_dispatchable(&lamp_id(), &resolved));
+
+        // The lamp is re-described without dimming, and the brightness it was asked for is gone.
+        let bright = home
+            .resolve(
+                &lamp_id(),
+                Command::TurnOn(LightTurnOn {
+                    brightness: Some(200),
+                    ..LightTurnOn::default()
+                }),
+            )
+            .expect("dimmable for now");
+        home.describe_entity(
+            &integration(),
+            &ALL,
+            entity(
+                "lamp-light",
+                None,
+                Some("lamp"),
+                Capabilities::Light(LightCapabilities::default()),
+            ),
+            &stamp(2),
+        )
+        .expect("re-described");
+        assert!(!home.still_dispatchable(&lamp_id(), &bright));
+
+        // And once it's gone entirely.
+        home.remove_entity(&integration(), &uid("lamp-light"))
+            .expect("exists");
+        assert!(!home.still_dispatchable(&lamp_id(), &resolved));
+    }
+
+    #[test]
+    fn describing_an_entity_again_counts_as_hearing_from_it() {
+        let mut home = home_with_lamp();
+        home.report_state(
+            &integration(),
+            report("lamp-light", Some(light(true, None))),
+            &stamp(10),
+        )
+        .expect("fits");
+        home.mark_unavailable(&integration(), &stamp(20));
+        assert_eq!(
+            home.state(&lamp_id()).expect("state").last_reported,
+            stamp(10).now
+        );
+
+        // The integration restarts and describes it again: back online, and heard from.
+        home.describe_entity(
+            &integration(),
+            &ALL,
+            entity("lamp-light", None, Some("lamp"), dimmable()),
+            &stamp(30),
+        )
+        .expect("re-described");
+        let state = home.state(&lamp_id()).expect("state");
+        assert_eq!(state.availability, Availability::Available);
+        assert_eq!(state.last_reported, stamp(30).now);
     }
 
     #[test]
