@@ -99,6 +99,7 @@ pub fn Devices() -> impl IntoView {
     let filter = RwSignal::new(String::new());
     let adding = RwSignal::new(false);
     let as_table = RwSignal::new(remembered_view());
+    let waiting = crate::waiting::everything_waiting(live);
 
     Effect::new(move |_| remember_view(as_table.get()));
 
@@ -128,6 +129,22 @@ pub fn Devices() -> impl IntoView {
             </button>
         </div>
 
+        // Something found and waiting is worth saying even with the panel closed: it's the one
+        // thing on this page only a person can fix.
+        {move || {
+            let waiting = crate::waiting::count(&waiting.get());
+            (waiting > 0 && !adding.get()).then(|| view! {
+                <p class="nudge">
+                    {format!(
+                        "{waiting} device{} found that Irori can't use yet. ",
+                        if waiting == 1 { "" } else { "s" },
+                    )}
+                    <button type="button" class="link" on:click=move |_| adding.set(true)>
+                        "See what they need"
+                    </button>
+                </p>
+            })
+        }}
         {move || adding.get().then(|| view! { <AddDevice /> })}
 
         <input
@@ -305,13 +322,30 @@ fn remember_view(as_table: bool) {
 /// Where devices come from, and how to get more of them.
 ///
 /// There's no "scan now" button because there's nothing to scan on demand: integrations that
-/// find devices are always listening. And there's no way to adopt one device but not another
-/// yet — that needs somewhere to record the decision, which is the config dir (M0.7).
+/// find devices are always listening. What a person *can* do here is unlock what they found but
+/// couldn't use — a device waiting for its encryption key.
 #[component]
 fn AddDevice() -> impl IntoView {
     let live = expect_context::<crate::Live>();
+    // The extensions and how many devices each has — not the readings. A redraw on every sensor
+    // report would throw away a key being pasted into the form above (ROADMAP D33).
+    let extensions = Memo::new(move |_| {
+        let home = live.home.get();
+        home.extensions
+            .iter()
+            .map(|(id, extension)| {
+                let devices = home
+                    .devices
+                    .iter()
+                    .filter(|device| device.integration.as_str() == id.as_str())
+                    .count();
+                (extension.clone(), devices)
+            })
+            .collect::<Vec<_>>()
+    });
 
     view! {
+        <crate::waiting::Waiting />
         <section class="card add-device">
             <h2>"Where devices come from"</h2>
             <p class="muted">
@@ -320,15 +354,10 @@ fn AddDevice() -> impl IntoView {
             </p>
             <ul class="integrations">
                 {move || {
-                    let home = live.home.get();
-                    home.extensions
-                        .iter()
-                        .map(|(id, extension)| {
-                            let devices = home
-                                .devices
-                                .iter()
-                                .filter(|device| device.integration.as_str() == id.as_str())
-                                .count();
+                    extensions
+                        .get()
+                        .into_iter()
+                        .map(|(extension, devices)| {
                             let kinds = extension.entity_kinds.join(", ");
                             view! {
                                 <li>
@@ -356,9 +385,9 @@ fn AddDevice() -> impl IntoView {
             </ul>
             <p class="muted small">
                 "Devices appear on their own: an extension that can find them is always "
-                "listening, so flashing a board or plugging one in is all it takes. Choosing "
-                "which found devices to keep, giving one an address by hand, and holding the "
-                "keys encrypted devices need all wait for Irori's config dir (M0.7)."
+                "listening, so flashing a board or plugging one in is all it takes. A device that "
+                "encrypts its connection shows up above until it has its key. Choosing which "
+                "found devices to keep, and giving one an address by hand, are still to come."
             </p>
         </section>
     }

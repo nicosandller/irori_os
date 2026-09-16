@@ -10,6 +10,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use esphome_client::EspHomeClient;
+use esphome_client::error::ClientError;
 use esphome_client::types::{
     EspHomeMessage, LightCommandRequest, ListEntitiesRequest, PingResponse, SubscribeStatesRequest,
     SwitchCommandRequest,
@@ -23,6 +24,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::map;
+use crate::settings::Key;
 
 /// Which connection something came from. Addresses are reused — by the same device after a
 /// reconnect, by a different one after DHCP hands it on — so an address can't tell two
@@ -70,6 +72,9 @@ pub enum Event {
     /// Couldn't connect at all, and this device was never introduced. Logged, not registered:
     /// there's nothing to show yet.
     Unreachable { connection: Connection, why: String },
+    /// The device refused the encryption key it was given. The task has stopped, because trying
+    /// again with the same key can't go differently; new settings restart the integration.
+    Locked { connection: Connection, why: String },
 }
 
 /// How long to wait before trying a device again, doubling up to [`MAX_RETRY`]. A device that's
@@ -92,9 +97,11 @@ const PING_AFTER: Duration = Duration::from_secs(30);
 /// entity is the result; after this long it's a change that happened on its own.
 const CAUSED_BY_WINDOW: Duration = Duration::from_secs(10);
 
-/// Runs one device until the integration stops (its command channel closes).
+/// Runs one device until the integration stops (its command channel closes), or until it turns
+/// out to be locked. `key` is its encryption key, for a device that announced it wants one.
 pub async fn run(
     connection: Connection,
+    key: Option<Key>,
     events: mpsc::Sender<Event>,
     mut calls: mpsc::Receiver<IncomingCall>,
 ) {
@@ -111,6 +118,7 @@ pub async fn run(
         let mut connected = false;
         let ended = session(
             connection,
+            key.as_ref(),
             &events,
             &mut calls,
             &mut known,
@@ -121,6 +129,22 @@ pub async fn run(
         match ended {
             // The run loop dropped our command channel: the integration is stopping.
             Ok(Ended::Stopping) => break,
+            Ok(Ended::Locked(why)) => {
+                // A device that was here and has since been reflashed with a key is away now,
+                // like any other device that stopped answering; say so before saying why.
+                if let Some(device) = known.clone() {
+                    let left = Event::Left {
+                        connection,
+                        device,
+                        why: why.clone(),
+                    };
+                    if events.send(left).await.is_err() {
+                        break;
+                    }
+                }
+                let _ = events.send(Event::Locked { connection, why }).await;
+                break;
+            }
             Ok(Ended::Disconnected(why)) | Err(why) => {
                 let event = match known.clone() {
                     Some(device) => Event::Left {
@@ -179,11 +203,46 @@ enum Ended {
     Stopping,
     /// The device went away, with the reason to show.
     Disconnected(String),
+    /// It won't talk without the right key.
+    Locked(String),
+}
+
+/// Why opening a connection failed: locked, which retrying can't fix, or anything else.
+enum Opening {
+    Locked(String),
+    Failed(String),
+}
+
+impl From<String> for Opening {
+    fn from(why: String) -> Self {
+        Opening::Failed(why)
+    }
+}
+
+/// Tells a wrong key apart from every other way a connection can fail.
+///
+/// Only a wrong key. A device that wants encryption and gets a plaintext connection can't be
+/// recognised here: `esphome-client` 0.2.1's reader discards the "unexpected encryption" error
+/// and waits until the device hangs up, which looks like any other dropped connection. Firmware
+/// announces `api_encryption` over mDNS, so such a device is listed as waiting before anyone
+/// connects to it (`crate::arrive`); only firmware too old to announce it ends up unreachable.
+fn opening_failed(address: SocketAddr, keyed: bool, error: ClientError) -> Opening {
+    use esphome_client::error::ConnectionError;
+    match (&error, keyed) {
+        // The device refused the handshake, which with a pre-shared key means the key is wrong.
+        (ClientError::Connection(ConnectionError::NoiseHandshake { .. }), true)
+        | (ClientError::Authentication { .. }, true) => {
+            Opening::Locked("the encryption key doesn't match the one on the device".to_owned())
+        }
+        _ => Opening::Failed(format!("can't connect to {address}: {error}")),
+    }
 }
 
 /// One connection, from TCP to disconnection.
+#[allow(clippy::too_many_arguments)]
 async fn session(
     connection: Connection,
+    key: Option<&Key>,
     events: &mpsc::Sender<Event>,
     calls: &mut mpsc::Receiver<IncomingCall>,
     known: &mut Option<UniqueId>,
@@ -196,20 +255,25 @@ async fn session(
     // on, a firewall — would otherwise hold this task for the operating system's own TCP
     // timeout, which is minutes, saying nothing the whole time.
     let opening = async {
-        let mut client = EspHomeClient::builder()
-            .address(&address.to_string())
+        let mut builder = EspHomeClient::builder().address(&address.to_string());
+        if let Some(key) = key {
+            builder = builder.key(key.expose());
+        }
+        let mut client = builder
             .connect()
             .await
-            .map_err(|e| format!("can't connect to {address}: {e}"))?;
+            .map_err(|e| opening_failed(address, key.is_some(), e))?;
         let device = handshake(&mut client).await?;
         let device_unique_id = map::device_id(&device).map_err(|e| e.to_string())?;
         let description = map::device(&device).map_err(|e| e.to_string())?;
         let entities = list_entities(&mut client, &device_unique_id).await?;
-        Ok::<_, String>((client, device, device_unique_id, description, entities))
+        Ok::<_, Opening>((client, device, device_unique_id, description, entities))
     };
     let (mut client, device, device_unique_id, description, entities) =
         match tokio::time::timeout(SETUP_TIMEOUT, opening).await {
-            Ok(opened) => opened?,
+            Ok(Ok(opened)) => opened,
+            Ok(Err(Opening::Locked(why))) => return Ok(Ended::Locked(why)),
+            Ok(Err(Opening::Failed(why))) => return Err(why),
             Err(_) => {
                 return Err(format!(
                     "{address} didn't answer as an ESPHome device within {}s",
@@ -231,10 +295,11 @@ async fn session(
     let by_unique_id: HashMap<UniqueId, u32> =
         by_key.iter().map(|(key, id)| (id.clone(), *key)).collect();
 
-    if !*warned {
+    if !*warned && key.is_none() {
         *warned = true;
         // Said once per connection, not once per attempt: plain ESPHome has no authentication
-        // of its own, so this is a trust decision, not a detail.
+        // of its own, so this is a trust decision, not a detail. An encrypted connection has
+        // proved the device holds the key, so there's nothing to warn about.
         tracing::warn!(
             device = %device_unique_id,
             name = %description.name,
@@ -577,6 +642,76 @@ mod tests {
         (incoming, id, answer)
     }
 
+    /// Not a test: an encrypted fake device for a person to try the whole flow against, with
+    /// no hardware. Announce it the way firmware would, then paste `KEY` into the page:
+    ///
+    /// ```sh
+    /// cargo test -p irori-int-esphome -- --ignored --nocapture an_encrypted_device_to_try
+    /// dns-sd -P "Test lock" _esphomelib._tcp local <port> testlock.local 127.0.0.1 \
+    ///     mac=aabbccddeeff friendly_name="Test lock" api_encryption=Noise_NNpsk0_25519_ChaChaPoly_SHA256
+    /// ```
+    #[tokio::test]
+    #[ignore = "runs until stopped; for trying encrypted devices by hand"]
+    async fn an_encrypted_device_to_try() {
+        let (address, _) = fake_device::start_encrypted(KEY_BYTES).await;
+        println!(
+            "encrypted fake device on port {} with key {KEY}",
+            address.port()
+        );
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+    }
+
+    /// A 32-byte key, and the base64 an ESPHome YAML would hold for it.
+    const KEY_BYTES: [u8; 32] = [7; 32];
+    const KEY: &str = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=";
+    const OTHER_KEY: &str = "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg=";
+
+    /// What a device task says first, and whether it then stops of its own accord.
+    async fn first_word(key: Option<&str>) -> (Event, bool) {
+        let (address, _) = fake_device::start_encrypted(KEY_BYTES).await;
+        let (events_tx, mut events) = mpsc::channel(64);
+        let (_calls_tx, calls_rx) = mpsc::channel(8);
+        let key = key.map(|key| key.parse().expect("a valid key"));
+        let task = tokio::spawn(run(Connection { id: 1, address }, key, events_tx, calls_rx));
+        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("the task said something")
+            .expect("an event");
+        let stopped = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .is_ok();
+        (event, stopped)
+    }
+
+    /// The right key is a device like any other, with every message encrypted on the way.
+    #[tokio::test]
+    async fn the_right_key_opens_an_encrypted_device() {
+        let (event, _) = first_word(Some(KEY)).await;
+        let Event::Arrived {
+            device, entities, ..
+        } = event
+        else {
+            panic!("expected the device to arrive, got {event:?}");
+        };
+        assert_eq!(device.unique_id.as_str(), fake_device::MAC);
+        assert_eq!(entities.len(), 4);
+    }
+
+    /// The wrong key isn't "unreachable": the device answered, and retrying with the same key
+    /// can only fail the same way. It says so and stops.
+    #[tokio::test]
+    async fn the_wrong_key_is_reported_as_locked_and_not_retried() {
+        let (event, stopped) = first_word(Some(OTHER_KEY)).await;
+        let Event::Locked { why, .. } = event else {
+            panic!("expected locked, got {event:?}");
+        };
+        assert!(why.contains("doesn't match"), "{why}");
+        assert!(
+            stopped,
+            "the task should stop rather than retry a key that can't work"
+        );
+    }
+
     /// The whole conversation with a device, against a stand-in that speaks the real protocol:
     /// what it has, what it's doing, and doing what it's told.
     #[tokio::test]
@@ -585,7 +720,7 @@ mod tests {
         let (events_tx, mut events) = mpsc::channel(64);
         let (calls_tx, calls_rx) = mpsc::channel(8);
         let connection = Connection { id: 1, address };
-        let task = tokio::spawn(run(connection, events_tx, calls_rx));
+        let task = tokio::spawn(run(connection, None, events_tx, calls_rx));
 
         // What it has. The fake device also offers a fan, which Irori doesn't model yet.
         let Some(Event::Arrived {
@@ -712,7 +847,7 @@ mod tests {
         let (events_tx, mut events) = mpsc::channel(8);
         let (calls_tx, calls_rx) = mpsc::channel(8);
         let connection = Connection { id: 1, address };
-        let task = tokio::spawn(run(connection, events_tx, calls_rx));
+        let task = tokio::spawn(run(connection, None, events_tx, calls_rx));
 
         match events.recv().await {
             Some(Event::Unreachable { connection: at, .. }) => assert_eq!(at.address, address),

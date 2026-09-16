@@ -16,11 +16,11 @@ use irori_integration::host::{Op, incoming_call};
 use irori_integration::{IncomingCall, Rejected, ServiceErrorCode};
 use irori_types::{
     Area, Context, ContextId, Description, Device, DeviceId, Entity, EntityId, EntityKind,
-    EntityState, ExtensionId, IntegrationId, IotClass, Name, Origin, ServiceCall, Settings,
-    SettingsKey, StateReport, Timestamp, Version,
+    EntityState, ExtensionId, ExtensionSettings, IntegrationId, IotClass, Name, Origin,
+    ServiceCall, Settings, SettingsKey, StateReport, Timestamp, Version, Waiting,
 };
 use serde::Serialize;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 
 pub use clock::{Clock, SystemClock};
 pub use events::Event;
@@ -85,6 +85,10 @@ pub struct ExtensionOverview {
     pub rejected_reports: u64,
     /// Reports dropped because too many entities were waiting for the core.
     pub dropped_reports: u64,
+    /// What it has found but can't use until a person helps (`docs/specs/integrations.md`
+    /// §6.6). Empty while it isn't running: a list from a stopped integration is out of date.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub waiting: Vec<Waiting>,
 }
 
 /// Drops an entity's call lock from the map once nobody else is waiting for it, so the map
@@ -146,6 +150,9 @@ struct Shared {
     /// One lock per entity, so calls on the same entity happen one after another.
     busy: Mutex<HashMap<EntityId, Arc<tokio::sync::Mutex<()>>>>,
     extensions: RwLock<BTreeMap<ExtensionId, ExtensionOverview>>,
+    /// Each extension's settings. A watch channel, because the host has to notice a change and
+    /// restart the extension with it.
+    extension_settings: watch::Sender<ExtensionSettings>,
 }
 
 fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
@@ -173,6 +180,7 @@ impl Core {
             links: RwLock::default(),
             busy: Mutex::default(),
             extensions: RwLock::default(),
+            extension_settings: watch::Sender::new(ExtensionSettings::default()),
         }))
     }
 
@@ -249,6 +257,25 @@ impl Core {
     pub fn apply_settings(&self, settings: Settings) {
         let events = write(&self.0.home).apply_settings(settings);
         self.publish(events);
+    }
+
+    /// Replaces every extension's settings. An extension whose own settings changed is restarted
+    /// with the new ones; the rest aren't touched (`docs/specs/integrations.md` §3).
+    ///
+    /// Like [`Core::apply_settings`], this is how settings reach the core whether they were typed
+    /// into a file or sent from the UI; the core never reads the disk.
+    pub fn apply_extension_settings(&self, settings: ExtensionSettings) {
+        self.0.extension_settings.send_if_modified(|current| {
+            if *current == settings {
+                return false;
+            }
+            *current = settings;
+            true
+        });
+    }
+
+    pub(crate) fn extension_settings(&self) -> watch::Receiver<ExtensionSettings> {
+        self.0.extension_settings.subscribe()
     }
 
     /// Asks an entity to do something, and waits for its integration's answer (at most
@@ -418,6 +445,10 @@ impl Core {
                 }),
                 reply,
             ),
+            Op::SetWaiting(waiting) => {
+                self.set_waiting(extension, waiting);
+                return;
+            }
             Op::SetHealth(health) => {
                 self.set_status(
                     extension,
@@ -495,10 +526,31 @@ impl Core {
                         status: ExtensionStatus::Starting,
                         rejected_reports: 0,
                         dropped_reports: 0,
+                        waiting: Vec::new(),
                     },
                 );
             }
         }
+    }
+
+    /// Replaces what an extension says is waiting. A change is published as a status change, so
+    /// anything watching extensions sees it the same way.
+    pub(crate) fn set_waiting(&self, extension: &ExtensionId, waiting: Vec<Waiting>) {
+        let status = {
+            let mut extensions = write(&self.0.extensions);
+            let Some(overview) = extensions.get_mut(extension) else {
+                return;
+            };
+            if overview.waiting == waiting {
+                return;
+            }
+            overview.waiting = waiting;
+            overview.status.clone()
+        };
+        self.publish(vec![Event::ExtensionStatusChanged {
+            extension_id: extension.clone(),
+            status,
+        }]);
     }
 
     fn set_status(&self, extension: &ExtensionId, status: ExtensionStatus) {
@@ -518,6 +570,7 @@ impl Core {
                             status: status.clone(),
                             rejected_reports: 0,
                             dropped_reports: 0,
+                            waiting: Vec::new(),
                         },
                     );
                     true

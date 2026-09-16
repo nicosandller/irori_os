@@ -42,6 +42,7 @@ config/
   areas.toml      the rooms of the home
   devices.toml    what you have said about a device
   entities.toml   what you have said about an entity
+  secrets.toml    keys, passwords, tokens — one table per extension
 ```
 
 Every file is optional. A file that is absent means "nothing said".
@@ -92,6 +93,36 @@ two have to be different types rather than different spellings. `area = true` is
 [entities."esphome/34:98:7a:2b:09:00-binary_sensor-1594977085"]
 name = "Hallway occupancy"
 ```
+
+### 3.4 `secrets.toml`
+
+One table per extension, holding that extension's settings. Today every setting any extension
+has is a secret, so this is where extension settings live; ordinary settings get
+`extensions/<id>.toml` (§7) when one needs them, and the two tables are then joined, with the same
+key in both refused.
+
+```toml
+[esphome.keys]
+"00:11:22:33:44:55" = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=="
+```
+
+An extension receives exactly its own table, checks it against its own config type, and is
+restarted when that table changes ([integrations.md](integrations.md) §3). What's inside is the
+extension's business: the ESPHome extension's shape is in its README.
+
+Handled as a secret throughout:
+
+- **Irori writes it readable by its own user only** (`0600`), setting the permission before
+  writing a byte. A file a person created keeps their permissions until Irori next writes it.
+- **Nothing quotes it.** A parse error names the line, never its contents (TOML's own messages
+  would print the line). Settings types don't print their values in `Debug`. A value an
+  extension rejects is described without being repeated.
+- **The API writes it but never reads it back**, and writes only where an extension is asking
+  ([integrations.md](integrations.md) §6.6).
+- **Kept out of git.** The rest of the directory is meant to be committed; this file isn't. When
+  Irori writes `secrets.toml` into a directory with no `.gitignore`, it adds one naming it, so
+  `git add .` in the config directory can't pick it up by accident. An existing `.gitignore` is
+  never touched.
 
 ## 4. What a decision is attached to
 
@@ -154,10 +185,9 @@ Named here so the layout has room for them, specified when they are built:
 
 - **`irori.toml`** — bind address, log level, which extensions are enabled, recorder retention.
   Today these are command-line flags; moving them is M1.1's config loading.
-- **`extensions/<id>.toml`** — per-extension settings and approved permissions, validated against
-  the extension's `config_schema` (`docs/specs/extensions.md`).
-- **`secrets.toml`** — ESPHome encryption keys and anything else that must not be committed.
-  This is what closes D29.
+- **`extensions/<id>.toml`** — per-extension settings that aren't secret, and approved
+  permissions, validated against the extension's `config_schema` (`docs/specs/extensions.md`).
+  Joined with the extension's table in `secrets.toml` (§3.4).
 - **`rules/<id>.json`** — M0.3.
 - **Floors**, and an entity belonging to a different area than its device (`Entity.area_id`
   already allows it).

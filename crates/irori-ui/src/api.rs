@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use gloo_net::http::Request;
 use irori_types::{
-    Area, AreaId, Device, DeviceId, Entity, EntityId, EntityState, ExtensionId, Name,
+    Area, AreaId, Device, DeviceId, Entity, EntityId, EntityState, ExtensionId, Name, Waiting,
 };
 use serde::{Deserialize, Serialize};
 
@@ -94,6 +94,9 @@ pub struct Extension {
     /// State reports dropped because the core couldn't keep up.
     #[serde(default)]
     pub dropped_reports: u64,
+    /// What it found but can't use until someone helps, e.g. a device that needs its key.
+    #[serde(default)]
+    pub waiting: Vec<Waiting>,
 }
 
 /// The browser's own words for a failed request ("TypeError: Failed to fetch") say nothing a
@@ -282,6 +285,28 @@ pub async fn rename_area(id: &AreaId, name: Name) -> Result<(), String> {
 
 pub async fn remove_area(id: &AreaId) -> Result<(), String> {
     let response = Request::delete(&format!("{AREAS_URL}/{id}"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+#[derive(Serialize)]
+struct SecretGiven<'a> {
+    path: &'a [String],
+    value: &'a str,
+}
+
+/// Hands an extension a secret it asked for. Irori writes it to `secrets.toml`, restarts the
+/// extension with it, and never sends it back.
+pub async fn give_secret(
+    extension: &ExtensionId,
+    path: &[String],
+    value: &str,
+) -> Result<(), String> {
+    let response = Request::put(&format!("/api/dev/extensions/{extension}/secrets"))
+        .json(&SecretGiven { path, value })
+        .map_err(|e| e.to_string())?
         .send()
         .await
         .map_err(unreachable)?;

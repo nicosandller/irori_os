@@ -8,7 +8,8 @@
 use std::collections::BTreeMap;
 
 use irori_types::{
-    Area, AreaId, DeviceSettings, EntitySettings, FloorId, Name, Placement, Settings, SettingsKey,
+    Area, AreaId, DeviceSettings, EntitySettings, ExtensionId, ExtensionSettings, FloorId, Name,
+    Placement, Settings, SettingsKey,
 };
 use serde::{Deserialize, Serialize};
 
@@ -18,16 +19,22 @@ pub enum File {
     Areas,
     Devices,
     Entities,
+    Secrets,
 }
 
 impl File {
-    pub const ALL: [File; 3] = [File::Areas, File::Devices, File::Entities];
+    /// Every file, in the order they're read.
+    pub const ALL: [File; 4] = [File::Areas, File::Devices, File::Entities, File::Secrets];
+
+    /// The files that make up [`Settings`], which are saved together.
+    pub const SETTINGS: [File; 3] = [File::Areas, File::Devices, File::Entities];
 
     pub fn name(self) -> &'static str {
         match self {
             File::Areas => "areas.toml",
             File::Devices => "devices.toml",
             File::Entities => "entities.toml",
+            File::Secrets => "secrets.toml",
         }
     }
 }
@@ -164,6 +171,52 @@ pub fn read_entities(text: &str) -> Result<BTreeMap<SettingsKey, EntitySettings>
         .collect()
 }
 
+/// Each extension's table in `secrets.toml`.
+///
+/// Parse errors say where, never what: TOML's own messages quote the offending line, and in
+/// this file that line is somebody's key, on its way to a log.
+pub fn read_secrets(text: &str) -> Result<ExtensionSettings, String> {
+    let table: toml::Table = toml::from_str(text).map_err(|e| {
+        let at = e.span().map_or_else(String::new, |span| {
+            let line = text[..span.start.min(text.len())].lines().count().max(1);
+            format!(" on line {line}")
+        });
+        format!("isn't valid TOML{at}: {}", e.message())
+    })?;
+    let mut tables = std::collections::BTreeMap::new();
+    for (extension, value) in table {
+        let id: ExtensionId = extension
+            .parse()
+            .map_err(|e| format!("`[{extension}]` isn't an extension id: {e}"))?;
+        let toml::Value::Table(inner) = value else {
+            return Err(format!(
+                "`{extension}` has to be a table (`[{extension}]`), holding that extension's secrets"
+            ));
+        };
+        // TOML's types all have a JSON form apart from dates, which no secret is.
+        let serde_json::Value::Object(inner) = serde_json::to_value(inner)
+            .map_err(|_| format!("`[{extension}]` holds something that isn't a plain value"))?
+        else {
+            unreachable!("a TOML table becomes a JSON object");
+        };
+        tables.insert(id, inner);
+    }
+    Ok(ExtensionSettings::new(tables))
+}
+
+/// `secrets.toml`'s text, ready to write.
+pub fn write_secrets(secrets: &ExtensionSettings) -> String {
+    let body = toml::to_string_pretty(secrets.tables()).unwrap_or_default();
+    format!(
+        "# Secrets for extensions: encryption keys, passwords, tokens. One table per extension.\n\
+         #\n\
+         # Keep this file out of git, and out of anywhere else it could be read. Irori creates it\n\
+         # readable by its own user only.\n\
+         # Written by Irori, and yours to edit: changes are picked up within a couple of seconds.\n\
+         # See docs/specs/config.md.\n\n{body}"
+    )
+}
+
 /// One file's text, ready to write. Entries that say nothing are left out rather than written as
 /// empty tables.
 pub fn write(file: File, settings: &Settings) -> String {
@@ -199,6 +252,7 @@ pub fn write(file: File, settings: &Settings) -> String {
                 })
                 .collect(),
         }),
+        File::Secrets => unreachable!("secrets are written by `write_secrets`"),
         File::Entities => toml::to_string_pretty(&EntitiesFile {
             entities: settings
                 .entities
@@ -231,6 +285,7 @@ fn preamble(file: File) -> String {
             "What you've said about individual entities.\n\
              # Each key is `<integration>/<the integration's own id for the entity>`."
         }
+        File::Secrets => unreachable!("secrets have their own preamble"),
     };
     format!(
         "# {what}\n\
@@ -254,6 +309,34 @@ mod tests {
 
     fn area_id(s: &str) -> AreaId {
         s.parse().expect("a valid area id")
+    }
+
+    #[test]
+    fn secrets_are_one_table_per_extension() {
+        let secrets =
+            read_secrets("[esphome.keys]\n\"00:11:22:33:44:55\" = \"c2VjcmV0\"\n").expect("valid");
+        assert_eq!(
+            secrets.of(&"esphome".parse().expect("a valid id")),
+            serde_json::json!({"keys": {"00:11:22:33:44:55": "c2VjcmV0"}})
+        );
+        assert_eq!(
+            read_secrets(&write_secrets(&secrets)).expect("valid"),
+            secrets
+        );
+    }
+
+    #[test]
+    fn a_secret_outside_a_table_or_under_a_bad_id_is_refused() {
+        assert!(read_secrets("key = \"abc\"\n").is_err());
+        assert!(read_secrets("[Not_An_Id]\nkey = \"abc\"\n").is_err());
+    }
+
+    /// TOML's errors quote the line they're about, and in this file that line is a secret.
+    #[test]
+    fn a_broken_secrets_file_is_described_without_quoting_it() {
+        let error = read_secrets("[esphome.keys]\nmac = \"c2VjcmV0LWtleQ\n").expect_err("broken");
+        assert!(!error.contains("c2VjcmV0"), "{error}");
+        assert!(error.contains("line 2"), "{error}");
     }
 
     #[test]

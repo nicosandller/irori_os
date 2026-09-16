@@ -45,6 +45,9 @@ irori-assist = { path = "extras/irori-assist" }
 
 # External crates
 anyhow = "1.0.104"
+# Only to check an ESPHome encryption key is well-formed before handing it to `esphome-client`,
+# which already depends on this version.
+base64 = "0.22.1"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 # The ESPHome native API: mDNS discovery, the protobuf protocol, and its Noise transport.
@@ -60,6 +63,9 @@ rust-embed = "8.12.0"
 schemars = { version = "1.2.2", features = ["jiff02"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# Only for tests: the device side of ESPHome's Noise handshake, in the fake ESPHome device.
+# The same version `esphome-client` uses for the client side.
+snow = "0.10.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
 tracing = "0.1.44"

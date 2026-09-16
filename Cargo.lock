@@ -897,6 +897,7 @@ dependencies = [
  "mime_guess",
  "rusqlite",
  "rust-embed",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",
@@ -935,6 +936,7 @@ version = "0.0.0"
 dependencies = [
  "irori-types",
  "serde",
+ "serde_json",
  "tempfile",
  "toml",
 ]
@@ -947,6 +949,7 @@ dependencies = [
  "irori-integration",
  "irori-types",
  "jiff",
+ "schemars",
  "serde",
  "serde_json",
  "tokio",
@@ -969,12 +972,14 @@ dependencies = [
 name = "irori-int-esphome"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "esphome-client",
  "irori-integration",
  "irori-types",
  "schemars",
  "serde",
  "serde_json",
+ "snow",
  "tokio",
  "tracing",
 ]

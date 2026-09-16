@@ -84,6 +84,7 @@ config/
   areas.toml      the rooms of your home
   devices.toml    what you've called a device, and which room it's in
   entities.toml   what you've called an individual entity
+  secrets.toml    keys for devices that encrypt their connection — never commit this one
 ```
 
 Make rooms on the **Rooms** page; rename a device, or put it in a room, on its own page. Or open
@@ -102,16 +103,16 @@ Nothing to configure: Irori listens for ESPHome devices announcing themselves on
 network, connects to each one, and puts everything it has on the Devices page. Lights and
 switches can be switched from there.
 
-The one catch today is **encryption**: ESPHome's API can require a pre-shared key, and Irori has
-nowhere to keep a secret yet — the config dir exists, but `secrets.toml` is still to come (M0.7).
-Devices asking for an encrypted connection are named in the log and skipped. Until then, a device
-with a plain `api:` block (no `encryption:`) is picked up on its own.
+A device with **encryption** (`api: encryption: key:` in its YAML) is found but not connected to
+until Irori has its key. The Devices page says so; **Add device** lists it by name with a field
+for the key. Paste it and the device connects. The key goes into `secrets.toml`, readable only by
+Irori, and is never shown again.
 
 If your ESPHome config has an `area:`, Irori notices it but doesn't act on it by itself: make a
-room by that name and the device walks into it (see below).
+room by that name and the device walks into it (see above).
 
 See [integrations/irori-int-esphome/README.md](integrations/irori-int-esphome/README.md), which
-also explains how to run a real ESPHome device on your laptop to try it without hardware.
+also explains how to try both kinds of device without hardware.
 
 ## Run it like a Raspberry Pi (Docker)
 

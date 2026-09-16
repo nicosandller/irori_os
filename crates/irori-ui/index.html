@@ -222,6 +222,21 @@
                   color: var(--ember); background: none; border: none; cursor: pointer;
                   text-decoration: underline; }
 
+    /* Found, and waiting for a person: a key to paste, a code to enter. */
+    .waiting { border-color: var(--ember); }
+    .waiting-list { margin: 0; padding: 0; list-style: none; }
+    .waiting-list li { padding: .75rem 0; border-bottom: 1px solid var(--line); }
+    .waiting-list li:last-child { border-bottom: none; }
+    .waiting-list .id { display: inline; }
+    .waiting-list .inline-form { margin: .4rem 0 .2rem; }
+    .waiting-list .inline-form input { flex: 1 1 16rem; min-width: 0; font-family: var(--mono);
+                                       font-size: .85rem; }
+    .why-waiting { margin: .25rem 0 0; }
+    .waiting-list p { margin: .25rem 0 0; }
+    .nudge { margin: 0 0 1.25rem; padding: .6rem .8rem; border: 1px dashed var(--ember);
+             border-radius: .4rem; font-size: .9rem; }
+    .extensions li a.small { font-size: .8rem; }
+
     .empty { color: var(--muted); }
     .muted { color: var(--muted); }
     a { color: var(--ember); }

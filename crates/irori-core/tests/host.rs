@@ -650,3 +650,135 @@ fn duplicate_extension_ids_are_refused() {
         assert_eq!(err, "two extensions share the id `lamp`");
     });
 }
+
+// --- Settings, and what's waiting ----------------------------------------------------------
+
+/// Records every set of settings it was started with, and says what it's waiting for.
+struct Keyed;
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct KeyedSettings {
+    #[serde(default)]
+    key: Option<String>,
+}
+
+static STARTED_WITH: std::sync::Mutex<Vec<Option<String>>> = std::sync::Mutex::new(Vec::new());
+
+impl Integration for Keyed {
+    type Config = KeyedSettings;
+    const MANIFEST: &'static str = KEYED_MANIFEST;
+    async fn run(
+        settings: KeyedSettings,
+        mut ctx: IntegrationContext,
+    ) -> Result<(), IntegrationError> {
+        STARTED_WITH
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(settings.key.clone());
+        if settings.key.is_none() {
+            ctx.set_waiting(vec![irori_integration::types::Waiting {
+                unique_id: uid("locked"),
+                name: Name::try_from("Locked box")?,
+                reason: "it wants a key".into(),
+                secret: Some(irori_integration::types::SecretRequest {
+                    path: vec!["key".into()],
+                    label: "Key".into(),
+                    hint: None,
+                }),
+            }])
+            .await;
+        }
+        ctx.stopped().await;
+        Ok(())
+    }
+}
+const KEYED_MANIFEST: &str = r#"
+    [extension]
+    id = "keyed"
+    name = "Keyed"
+    version = "0.1.0"
+    irori = ">=0.0.0, <0.1.0"
+
+    [[contributes.integration]]
+    iot_class = "local_push"
+    entity_kinds = ["light"]
+"#;
+
+fn keyed_settings(
+    extension: &str,
+    table: serde_json::Value,
+) -> irori_integration::types::ExtensionSettings {
+    let serde_json::Value::Object(table) = table else {
+        panic!("a table");
+    };
+    irori_integration::types::ExtensionSettings::new(
+        [(ExtensionId::try_from(extension).expect("valid"), table)].into(),
+    )
+}
+
+fn waiting(core: &Core) -> usize {
+    core.extensions()
+        .get(&ExtensionId::try_from("keyed").expect("valid"))
+        .map_or(0, |overview| overview.waiting.len())
+}
+
+fn started_with() -> Vec<Option<String>> {
+    STARTED_WITH
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// The whole path a key takes: an extension says what it's waiting for, a key arrives in its
+/// settings, and it's restarted with the key and stops waiting — without anyone restarting Irori.
+/// A change to some other extension's settings doesn't disturb it.
+///
+/// One test rather than several because the recorder is shared, process-wide state.
+#[tokio::test(start_paused = true)]
+async fn new_settings_restart_only_their_own_extension_and_what_was_waiting_clears() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = start(&core, builtin::<Keyed>().expect("valid"));
+
+    eventually(
+        "it starts with no key and says what it's waiting for",
+        || started_with() == [None] && waiting(&core) == 1,
+    )
+    .await;
+
+    // Another extension's settings: no reason to restart this one.
+    core.apply_extension_settings(keyed_settings("demo", serde_json::json!({"x": "y"})));
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(
+        started_with(),
+        [None],
+        "restarted over somebody else's settings"
+    );
+
+    core.apply_extension_settings(keyed_settings("keyed", serde_json::json!({"key": "k"})));
+    eventually("it's restarted with the key and stops waiting", || {
+        started_with() == [None, Some("k".into())]
+            && waiting(&core) == 0
+            && status(&core, "keyed") == Some(ExtensionStatus::Running)
+    })
+    .await;
+
+    // Settings it can't accept: failed, not retried in a loop — and not given up on either.
+    core.apply_extension_settings(keyed_settings("keyed", serde_json::json!({"nope": 1})));
+    eventually("bad settings fail it", || {
+        matches!(
+            status(&core, "keyed"),
+            Some(ExtensionStatus::Failed { retry_at: None, .. })
+        )
+    })
+    .await;
+    core.apply_extension_settings(keyed_settings("keyed", serde_json::json!({"key": "k2"})));
+    eventually("fixing them starts it again", || {
+        started_with().last() == Some(&Some("k2".into()))
+            && status(&core, "keyed") == Some(ExtensionStatus::Running)
+    })
+    .await;
+
+    host.shutdown().await;
+    assert_eq!(waiting(&core), 0);
+}
