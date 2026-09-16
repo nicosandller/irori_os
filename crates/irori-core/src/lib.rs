@@ -95,13 +95,15 @@ struct Delivery<'a> {
     core: &'a Core,
     integration: IntegrationId,
     context_id: ContextId,
+    entity_id: EntityId,
     delivered: bool,
 }
 
 impl Drop for Delivery<'_> {
     fn drop(&mut self) {
         if !self.delivered {
-            self.core.forget_call(&self.integration, &self.context_id);
+            self.core
+                .forget_call(&self.integration, &self.context_id, &self.entity_id);
         }
     }
 }
@@ -193,9 +195,12 @@ impl Core {
         command: Command,
         context: Context,
     ) -> Result<(), CallError> {
+        // The whole call, queueing included, fits in SERVICE_CALL_TIMEOUT.
+        let deadline = tokio::time::Instant::now() + SERVICE_CALL_TIMEOUT;
+
         // One call at a time per entity: two toggles arriving together must not both read the
-        // same "off" and both turn it on. Held until the integration answers (at most
-        // `SERVICE_CALL_TIMEOUT`), so the second toggle sees the result of the first.
+        // same "off" and both turn it on. Held until the integration answers, so the second
+        // toggle sees the result of the first.
         let busy = Arc::clone(
             self.0
                 .busy
@@ -204,25 +209,32 @@ impl Core {
                 .entry(entity_id.clone())
                 .or_default(),
         );
-        let _turn = busy.lock().await;
         let _release = ReleaseWhenIdle {
             core: self,
             entity_id: entity_id.clone(),
         };
+        let _turn = tokio::time::timeout_at(deadline, busy.lock())
+            .await
+            .map_err(|_| CallError::Timeout)?;
 
         let resolved = read(&self.0.home).resolve(entity_id, command)?;
         let sender = read(&self.0.links)
             .get(&resolved.integration)
             .cloned()
             .ok_or_else(|| CallError::NotRunning(resolved.integration.clone()))?;
-        // Recorded before sending: the integration may confirm (`caused_by`) before this task
-        // runs again. The guard forgets it unless the call is delivered, including when the
-        // caller drops this future mid-send.
-        write(&self.0.home).record_call(&resolved.integration, context.id.clone(), self.now());
+        // Both recorded before sending, because the integration may answer and report before
+        // this task runs again. The guard undoes them unless the call is delivered, including
+        // when the caller drops this future mid-send.
+        {
+            let mut home = write(&self.0.home);
+            home.record_call(&resolved.integration, context.id.clone(), self.now());
+            home.record_command(entity_id, &resolved.service);
+        }
         let mut delivery = Delivery {
             core: self,
             integration: resolved.integration.clone(),
             context_id: context.id.clone(),
+            entity_id: entity_id.clone(),
             delivered: false,
         };
 
@@ -231,15 +243,12 @@ impl Core {
             service: resolved.service.name(),
             context: context.clone(),
         };
-        let service = resolved.service.clone();
         let (incoming, result) = incoming_call(ServiceCall {
             unique_id: resolved.unique_id,
             service: resolved.service,
             context,
         });
         let integration = resolved.integration;
-        let deadline = tokio::time::Instant::now() + SERVICE_CALL_TIMEOUT;
-
         let sent = tokio::time::timeout_at(deadline, sender.send(incoming)).await;
         if !matches!(sent, Ok(Ok(()))) {
             return Err(match sent {
@@ -248,13 +257,10 @@ impl Core {
             });
         }
         delivery.delivered = true;
-        // Remember what it was told to be, so a second toggle doesn't repeat the first while
-        // the device is still answering.
-        write(&self.0.home).record_command(entity_id, &service);
         // Only once the integration has it: a call that never went out wasn't made.
         self.publish(vec![called]);
 
-        match tokio::time::timeout_at(deadline, result).await {
+        let outcome = match tokio::time::timeout_at(deadline, result).await {
             Err(_) => Err(CallError::Timeout),
             Ok(Ok(Ok(()))) => Ok(()),
             Ok(Ok(Err(e))) => Err(match e.code {
@@ -264,11 +270,23 @@ impl Core {
             Ok(Err(_)) => Err(CallError::Failed(
                 "the integration dropped the call without answering".into(),
             )),
+        };
+        if outcome.is_err() {
+            // It didn't happen, so the entity is whatever it last reported.
+            write(&self.0.home).forget_command(entity_id);
         }
+        outcome
     }
 
-    fn forget_call(&self, integration: &IntegrationId, context_id: &ContextId) {
-        write(&self.0.home).forget_call(integration, context_id);
+    fn forget_call(
+        &self,
+        integration: &IntegrationId,
+        context_id: &ContextId,
+        entity_id: &EntityId,
+    ) {
+        let mut home = write(&self.0.home);
+        home.forget_call(integration, context_id);
+        home.forget_command(entity_id);
     }
 
     fn stamp(&self) -> Stamp {
@@ -441,6 +459,7 @@ mod tests {
             core: &core,
             integration: integration.clone(),
             context_id: context_id.clone(),
+            entity_id: EntityId::try_from("light.lamp").expect("valid"),
             delivered,
         };
 
