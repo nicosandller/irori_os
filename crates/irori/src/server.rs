@@ -208,6 +208,10 @@ fn refused(status: StatusCode, error: String) -> Response {
 struct Health<'a> {
     status: &'static str,
     version: &'static str,
+    /// What this binary was built from, so "am I running the version I just built?" has an
+    /// answer while every version number is still `0.0.0`.
+    commit: &'static str,
+    built_at: &'static str,
     uptime_ms: u128,
     features: &'a [&'static str],
     sqlite: SqliteHealth<'a>,
@@ -227,6 +231,8 @@ async fn health(State(state): State<AppState>) -> Response {
     Json(Health {
         status: "ok",
         version: VERSION,
+        commit: crate::build_info::COMMIT,
+        built_at: crate::build_info::BUILT_AT,
         uptime_ms: inner.started.elapsed().as_millis(),
         features: &inner.build.features,
         sqlite: SqliteHealth {

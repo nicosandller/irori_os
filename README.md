@@ -24,6 +24,16 @@ cargo xtask install                        # build the UI, install `irori`
 irori run                                  # http://127.0.0.1:8480
 ```
 
+`cargo xtask install` copies a binary; it isn't a link to the checkout. **After pulling or
+changing anything, run it again** — the running `irori` is whatever was installed last. Which
+build that is isn't a guess: every version is `0.0.0` until there are releases, so `irori
+version` and the Home page show the commit it was built from, with `-modified` when the tree had
+uncommitted changes.
+
+```sh
+irori version                              # irori 0.0.0 (359d176), built 2026-09-16 07:30 UTC
+```
+
 Or straight from the checkout, without installing:
 
 ```sh

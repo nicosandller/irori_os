@@ -63,7 +63,15 @@ pub fn Home() -> impl IntoView {
                 Some(health) => view! {
                     <dl>
                         <dt>"Version"</dt>
-                        <dd>{health.version}</dd>
+                        <dd>
+                            {health.version}
+                            {(!health.commit.is_empty())
+                                .then(|| format!(" · {}", health.commit))}
+                        </dd>
+                        {(!health.built_at.is_empty()).then(|| view! {
+                            <dt>"Built"</dt>
+                            <dd>{health.built_at.clone()}</dd>
+                        })}
                         <dt>"Uptime"</dt>
                         <dd>{uptime(health.uptime_ms)}</dd>
                         <dt>"Database"</dt>
