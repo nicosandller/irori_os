@@ -218,8 +218,11 @@ What the integration receives. Schema: `schemas/service-call.schema.json`.
 | `context` | `Context` | Why it's being called. Pass `context.id` back as `caused_by` when reporting the result |
 
 There's deliberately no `entity_id`: that's the user's name for the entity and can change at any
-time (§4). The core has already checked that the entity belongs to this integration and is of
-the service's kind.
+time (§4). The core has already checked that the entity belongs to this integration, is of the
+service's kind, and can do what's asked, and it checks again right before sending, in case the
+integration changed the entity meanwhile. A change in the last moment still reaches the
+integration, which answers with an error like any other device trouble (§7.3): the core never
+holds the registry while waiting on an integration (§3).
 
 ### 7.3 Result
 
