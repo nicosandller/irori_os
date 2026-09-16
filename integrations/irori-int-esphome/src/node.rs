@@ -24,14 +24,30 @@ use tokio::time::Instant;
 
 use crate::map;
 
+/// Which connection something came from. Addresses are reused — by the same device after a
+/// reconnect, by a different one after DHCP hands it on — so an address can't tell two
+/// connections apart. This can: it's handed out once per task and never repeats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Connection {
+    pub id: u64,
+    pub address: SocketAddr,
+}
+
+impl std::fmt::Display for Connection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.address)
+    }
+}
+
 /// What a device task tells the run loop.
 #[derive(Debug)]
 pub enum Event {
     /// Connected, and this is everything it has. Sent again after every reconnect, because the
     /// device may have been reflashed with different entities while it was away.
     Arrived {
-        /// Which task this is, so the run loop can send it commands.
-        address: SocketAddr,
+        /// Which connection this is, so the run loop can send it commands — and so anything
+        /// from a connection it has already replaced can be recognised and ignored.
+        connection: Connection,
         device: Box<DeviceDescription>,
         entities: Vec<EntityDescription>,
     },
@@ -39,7 +55,7 @@ pub enum Event {
     /// a report queued by a connection that has since been replaced can't overwrite the state
     /// the current one is reporting.
     Reported {
-        address: SocketAddr,
+        connection: Connection,
         device: UniqueId,
         report: Box<StateReport>,
     },
@@ -47,13 +63,13 @@ pub enum Event {
     /// address says which connection this is, so a goodbye from one that has already been
     /// replaced can be told apart from the real thing.
     Left {
-        address: SocketAddr,
+        connection: Connection,
         device: UniqueId,
         why: String,
     },
     /// Couldn't connect at all, and this device was never introduced. Logged, not registered:
     /// there's nothing to show yet.
-    Unreachable { address: SocketAddr, why: String },
+    Unreachable { connection: Connection, why: String },
 }
 
 /// How long to wait before trying a device again, doubling up to [`MAX_RETRY`]. A device that's
@@ -78,10 +94,11 @@ const CAUSED_BY_WINDOW: Duration = Duration::from_secs(10);
 
 /// Runs one device until the integration stops (its command channel closes).
 pub async fn run(
-    address: SocketAddr,
+    connection: Connection,
     events: mpsc::Sender<Event>,
     mut calls: mpsc::Receiver<IncomingCall>,
 ) {
+    let address = connection.address;
     let mut retry = FIRST_RETRY;
     // Who this address turned out to be. Kept once learned, across every reconnect: a device
     // that has introduced itself and then gone quiet is a device the home knows about, not an
@@ -93,7 +110,7 @@ pub async fn run(
     loop {
         let mut connected = false;
         let ended = session(
-            address,
+            connection,
             &events,
             &mut calls,
             &mut known,
@@ -107,11 +124,11 @@ pub async fn run(
             Ok(Ended::Disconnected(why)) | Err(why) => {
                 let event = match known.clone() {
                     Some(device) => Event::Left {
-                        address,
+                        connection,
                         device,
                         why,
                     },
-                    None => Event::Unreachable { address, why },
+                    None => Event::Unreachable { connection, why },
                 };
                 if events.send(event).await.is_err() {
                     break;
@@ -166,34 +183,36 @@ enum Ended {
 
 /// One connection, from TCP to disconnection.
 async fn session(
-    address: SocketAddr,
+    connection: Connection,
     events: &mpsc::Sender<Event>,
     calls: &mut mpsc::Receiver<IncomingCall>,
     known: &mut Option<UniqueId>,
     warned: &mut bool,
     connected: &mut bool,
 ) -> Result<Ended, String> {
-    let mut client = EspHomeClient::builder()
-        .address(&address.to_string())
-        .connect()
-        .await
-        .map_err(|e| format!("can't connect to {address}: {e}"))?;
-
-    // Bounded: everything up to "subscribed and listening" has to finish, or be given up on.
+    let address = connection.address;
+    // Bounded from the first packet: everything up to "connected and listening" has to finish
+    // or be given up on. An address that silently swallows packets — a device that has moved
+    // on, a firewall — would otherwise hold this task for the operating system's own TCP
+    // timeout, which is minutes, saying nothing the whole time.
     let opening = async {
+        let mut client = EspHomeClient::builder()
+            .address(&address.to_string())
+            .connect()
+            .await
+            .map_err(|e| format!("can't connect to {address}: {e}"))?;
         let device = handshake(&mut client).await?;
         let device_unique_id = map::device_id(&device).map_err(|e| e.to_string())?;
         let description = map::device(&device).map_err(|e| e.to_string())?;
         let entities = list_entities(&mut client, &device_unique_id).await?;
-        Ok::<_, String>((device, device_unique_id, description, entities))
+        Ok::<_, String>((client, device, device_unique_id, description, entities))
     };
-    let (device, device_unique_id, description, entities) =
+    let (mut client, device, device_unique_id, description, entities) =
         match tokio::time::timeout(SETUP_TIMEOUT, opening).await {
             Ok(opened) => opened?,
             Err(_) => {
                 return Err(format!(
-                    "{address} accepted the connection but didn't finish saying what it is \
-                     within {}s",
+                    "{address} didn't answer as an ESPHome device within {}s",
                     SETUP_TIMEOUT.as_secs()
                 ));
             }
@@ -235,7 +254,7 @@ async fn session(
     *connected = true;
     let sent = events
         .send(Event::Arrived {
-            address,
+            connection,
             device: Box::new(description),
             entities: entities.into_iter().map(|(_, entity)| entity).collect(),
         })
@@ -279,7 +298,7 @@ async fn session(
                     message => {
                         if let Some(report) = report(&message, &by_key, &lights, &mut commanded) {
                             let event = Event::Reported {
-                                address,
+                                connection,
                                 device: device_unique_id.clone(),
                                 report: Box::new(report),
                             };
@@ -565,7 +584,8 @@ mod tests {
         let (address, commanded) = fake_device::start().await;
         let (events_tx, mut events) = mpsc::channel(64);
         let (calls_tx, calls_rx) = mpsc::channel(8);
-        let task = tokio::spawn(run(address, events_tx, calls_rx));
+        let connection = Connection { id: 1, address };
+        let task = tokio::spawn(run(connection, events_tx, calls_rx));
 
         // What it has. The fake device also offers a fan, which Irori doesn't model yet.
         let Some(Event::Arrived {
@@ -691,10 +711,11 @@ mod tests {
         let address: SocketAddr = "127.0.0.1:1".parse().expect("a valid address");
         let (events_tx, mut events) = mpsc::channel(8);
         let (calls_tx, calls_rx) = mpsc::channel(8);
-        let task = tokio::spawn(run(address, events_tx, calls_rx));
+        let connection = Connection { id: 1, address };
+        let task = tokio::spawn(run(connection, events_tx, calls_rx));
 
         match events.recv().await {
-            Some(Event::Unreachable { address: at, .. }) => assert_eq!(at, address),
+            Some(Event::Unreachable { connection: at, .. }) => assert_eq!(at.address, address),
             other => panic!("expected an unreachable device, got {other:?}"),
         }
 

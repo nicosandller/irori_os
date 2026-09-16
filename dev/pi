@@ -52,6 +52,7 @@ check() {
     cargo test --locked --workspace --all-features
     cargo test --locked -p irori --no-default-features
     cargo xtask check-deps
+    cargo xtask check-docs
     cargo xtask schemas --check
   '
 }

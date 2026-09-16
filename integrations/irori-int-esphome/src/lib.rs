@@ -54,18 +54,21 @@ const STOP_GRACE: Duration = Duration::from_secs(2);
 /// A device task: the connection to one address, and the device it turned out to be.
 #[derive(Debug)]
 struct Task {
+    /// Which connection this is. Everything it says carries the same identity, so a message
+    /// from a connection that has since been replaced can be told apart from the one speaking
+    /// now — even when the replacement is at the same address.
+    connection: node::Connection,
     commands: mpsc::Sender<IncomingCall>,
-    /// Kept so shutdown (and a device that moved address) can stop it, rather than leaving it
-    /// running detached with a socket open.
+    /// Kept so shutdown can stop it, rather than leaving it running detached with a socket open.
     handle: tokio::task::JoinHandle<()>,
 }
 
 /// A device the home knows about, and the task currently speaking for it.
 #[derive(Debug)]
 struct Node {
-    /// Which connection owns this device. A device that moves to a new address is taken over by
-    /// the new task, and anything the old one says afterwards is ignored.
-    address: SocketAddr,
+    /// Which connection speaks for this device. A device that moves is taken over by its new
+    /// connection, and anything the old one says afterwards is ignored.
+    connection: node::Connection,
     commands: mpsc::Sender<IncomingCall>,
     /// Its entities, so calls can be routed and so a device that comes back with fewer entities
     /// can have the old ones removed.
@@ -86,6 +89,8 @@ struct Devices {
     /// Addresses that didn't answer, and why. Cleared when one finally does, so "couldn't be
     /// reached" counts devices rather than attempts.
     unreachable: BTreeMap<SocketAddr, String>,
+    /// Handed out to each new connection; never reused.
+    connections: u64,
 }
 
 async fn run(mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
@@ -110,9 +115,15 @@ async fn run(mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
                             continue;
                         }
                         tracing::info!(%address, "found an ESPHome device");
+                        devices.connections += 1;
+                        let connection = node::Connection { id: devices.connections, address };
                         let (commands, commands_rx) = mpsc::channel(COMMAND_QUEUE);
-                        let handle = tokio::spawn(node::run(address, events_tx.clone(), commands_rx));
-                        devices.tasks.insert(address, Task { commands, handle });
+                        let handle =
+                            tokio::spawn(node::run(connection, events_tx.clone(), commands_rx));
+                        devices.tasks.insert(
+                            address,
+                            Task { connection, commands, handle },
+                        );
                     }
                     // Discovery is how this integration finds anything, so losing it is not
                     // something to carry on quietly with: fail, and let the core restart us
@@ -208,6 +219,15 @@ async fn route(incoming: IncomingCall, nodes: &BTreeMap<UniqueId, Node>) {
     }
 }
 
+/// Whether this is still the connection running at its address, rather than one that has been
+/// replaced since it spoke.
+fn current(devices: &Devices, connection: node::Connection) -> bool {
+    devices
+        .tasks
+        .get(&connection.address)
+        .is_some_and(|task| task.connection == connection)
+}
+
 /// Applies what a device task reported to the core.
 async fn apply(
     event: node::Event,
@@ -216,15 +236,17 @@ async fn apply(
 ) -> Result<(), IntegrationError> {
     match event {
         node::Event::Arrived {
-            address,
+            connection,
             device,
             entities,
         } => {
             let device_id = device.unique_id.clone();
+            let address = connection.address;
             // A connection that has already been replaced can still have an arrival in the
-            // queue. Nothing it says should reach the core, or it would describe a device and
-            // then take ownership back from the connection that superseded it.
-            if !devices.tasks.contains_key(&address) {
+            // queue — and by now another one may be running at the very same address. Identity
+            // is what tells them apart: nothing from a connection that is no longer the one at
+            // this address should reach the core.
+            if !current(devices, connection) {
                 tracing::debug!(device = %device_id, %address,
                     "ignoring an arrival from a connection that has already ended");
                 return Ok(());
@@ -253,17 +275,16 @@ async fn apply(
                 }
                 // The same device answering from a new address: the old connection is stopped,
                 // so it can't go on reporting for a device it no longer speaks for.
-                let moved_from = previous.address;
-                if moved_from != address {
+                let moved_from = previous.connection.address;
+                if previous.connection != connection {
                     tracing::info!(device = %device_id, from = %moved_from, to = %address,
                         "the device moved address");
                     // Only if the address it left is still its own. Two devices can swap
                     // addresses, and the connection at the old one may already speak for
                     // somebody else — stopping that would disconnect a device that is fine.
-                    let taken_over = devices
-                        .nodes
-                        .iter()
-                        .any(|(id, node)| node.address == moved_from && *id != device_id);
+                    let taken_over = devices.nodes.iter().any(|(id, node)| {
+                        node.connection.address == moved_from && *id != device_id
+                    });
                     if taken_over {
                         tracing::debug!(%moved_from,
                             "leaving the old address alone; another device answers there now");
@@ -282,7 +303,7 @@ async fn apply(
             let displaced: Vec<UniqueId> = devices
                 .nodes
                 .iter()
-                .filter(|(id, node)| node.address == address && **id != device_id)
+                .filter(|(id, node)| node.connection.address == address && **id != device_id)
                 .map(|(id, _)| id.clone())
                 .collect();
             for id in displaced {
@@ -308,7 +329,7 @@ async fn apply(
             devices.nodes.insert(
                 device_id,
                 Node {
-                    address,
+                    connection,
                     commands,
                     entities: described,
                     online: true,
@@ -316,7 +337,7 @@ async fn apply(
             );
         }
         node::Event::Reported {
-            address,
+            connection,
             device,
             report,
         } => {
@@ -325,22 +346,22 @@ async fn apply(
             if devices
                 .nodes
                 .get(&device)
-                .is_none_or(|node| node.address == address)
+                .is_none_or(|node| node.connection == connection)
             {
                 ctx.report_state(*report);
             }
         }
         node::Event::Left {
-            address,
+            connection,
             device,
             why,
         } => {
             // A goodbye from a connection that has since been replaced says nothing about the
-            // device: the task that speaks for it now is connected.
+            // device: the one that speaks for it now is connected.
             let Some(node) = devices.nodes.get_mut(&device) else {
                 return Ok(());
             };
-            if node.address != address {
+            if node.connection != connection {
                 return Ok(());
             }
             if !node.online {
@@ -355,13 +376,14 @@ async fn apply(
             )
             .await?;
         }
-        node::Event::Unreachable { address, why } => {
+        node::Event::Unreachable { connection, why } => {
             // Not from a connection that has since been replaced: that address is somebody
             // else's business now, and counting it would leave this integration degraded over
             // a device that is perfectly well somewhere else.
-            if !devices.tasks.contains_key(&address) {
+            if !current(devices, connection) {
                 return Ok(());
             }
+            let address = connection.address;
             // One entry per address, whatever the number of attempts, so the count is of
             // devices rather than tries.
             if devices.unreachable.insert(address, why.clone()).is_none() {
@@ -474,7 +496,13 @@ mod tests {
 
         // Two connections, as discovery would leave behind when a device changes address.
         let mut stopped = Vec::new();
-        for address in [old_address, new_address] {
+        let mut connections = Vec::new();
+        for (id, address) in [old_address, new_address].into_iter().enumerate() {
+            let connection = node::Connection {
+                id: id as u64 + 1,
+                address,
+            };
+            connections.push(connection);
             let (commands, mut commands_rx) = mpsc::channel(1);
             let (ran_tx, ran_rx) = tokio::sync::oneshot::channel();
             stopped.push(ran_rx);
@@ -483,7 +511,14 @@ mod tests {
                 let _ = commands_rx.recv().await;
                 let _ = ran_tx.send(());
             });
-            devices.tasks.insert(address, Task { commands, handle });
+            devices.tasks.insert(
+                address,
+                Task {
+                    connection,
+                    commands,
+                    handle,
+                },
+            );
         }
 
         let device = irori_integration::types::DeviceDescription {
@@ -497,8 +532,8 @@ mod tests {
             via_device_unique_id: None,
         };
         let device_id = device.unique_id.clone();
-        let arrived = |address| node::Event::Arrived {
-            address,
+        let arrived = |connection| node::Event::Arrived {
+            connection,
             device: Box::new(device.clone()),
             entities: Vec::new(),
         };
@@ -507,20 +542,20 @@ mod tests {
         // what matters is which task the run loop keeps.
         let first = tokio::time::timeout(
             Duration::from_millis(200),
-            apply(arrived(old_address), &ctx, &mut devices),
+            apply(arrived(connections[0]), &ctx, &mut devices),
         )
         .await;
         assert!(first.is_ok(), "the first arrival is handled");
-        assert_eq!(devices.nodes[&device_id].address, old_address);
+        assert_eq!(devices.nodes[&device_id].connection, connections[0]);
 
         let second = tokio::time::timeout(
             Duration::from_millis(200),
-            apply(arrived(new_address), &ctx, &mut devices),
+            apply(arrived(connections[1]), &ctx, &mut devices),
         )
         .await;
         assert!(second.is_ok(), "the second arrival is handled");
         assert_eq!(
-            devices.nodes[&device_id].address, new_address,
+            devices.nodes[&device_id].connection, connections[1],
             "the new connection speaks for the device"
         );
         assert!(
@@ -533,7 +568,7 @@ mod tests {
             Duration::from_millis(200),
             apply(
                 node::Event::Left {
-                    address: old_address,
+                    connection: connections[0],
                     device: device_id.clone(),
                     why: "the old socket noticed".to_owned(),
                 },
@@ -577,12 +612,20 @@ mod tests {
         let handle = tokio::spawn(async move {
             let _ = commands_rx.recv().await;
         });
-        devices.tasks.insert(address, Task { commands, handle });
+        let connection = node::Connection { id: 1, address };
+        devices.tasks.insert(
+            address,
+            Task {
+                connection,
+                commands,
+                handle,
+            },
+        );
 
         let arrival = |mac: &str| {
             let unique_id = UniqueId::try_from(mac).expect("valid");
             node::Event::Arrived {
-                address,
+                connection,
                 device: Box::new(irori_integration::types::DeviceDescription {
                     unique_id,
                     name: irori_integration::types::Name::try_from("A device").expect("valid"),
@@ -638,6 +681,86 @@ mod tests {
         assert!(
             matches!(answered, Err(ref e) if e.code == irori_integration::ServiceErrorCode::Unavailable),
             "got {answered:?}"
+        );
+    }
+
+    /// The case an address alone can't catch: the old connection is replaced by a new one at
+    /// the *same* address, and the old one's arrival is still in the queue behind it.
+    #[tokio::test]
+    async fn an_arrival_from_a_replaced_connection_is_ignored() {
+        let (ctx, host) = irori_integration::host::connect();
+        let mut ops = host.ops;
+        let described = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&described);
+        tokio::spawn(async move {
+            while let Some(op) = ops.recv().await {
+                match op {
+                    irori_integration::host::Op::DescribeDevice(_, reply) => {
+                        counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let _ = reply.send(Ok(()));
+                    }
+                    irori_integration::host::Op::DescribeEntity(_, reply)
+                    | irori_integration::host::Op::RemoveDevice(_, reply)
+                    | irori_integration::host::Op::RemoveEntity(_, reply)
+                    | irori_integration::host::Op::SetAvailability(_, _, reply) => {
+                        let _ = reply.send(Ok(()));
+                    }
+                    irori_integration::host::Op::SetHealth(_) => {}
+                }
+            }
+        });
+
+        let mut devices = Devices::default();
+        let address: SocketAddr = "127.0.0.1:6053".parse().expect("valid");
+        let old = node::Connection { id: 1, address };
+        let new = node::Connection { id: 2, address };
+        // Only the newer connection is running: the older one was replaced a moment ago.
+        let (commands, mut commands_rx) = mpsc::channel(1);
+        let handle = tokio::spawn(async move {
+            let _ = commands_rx.recv().await;
+        });
+        devices.tasks.insert(
+            address,
+            Task {
+                connection: new,
+                commands,
+                handle,
+            },
+        );
+
+        let arrival = |connection| node::Event::Arrived {
+            connection,
+            device: Box::new(irori_integration::types::DeviceDescription {
+                unique_id: UniqueId::try_from("AA:BB:CC:DD:EE:FF").expect("valid"),
+                name: irori_integration::types::Name::try_from("A device").expect("valid"),
+                manufacturer: None,
+                model: None,
+                sw_version: None,
+                hw_version: None,
+                suggested_area: None,
+                via_device_unique_id: None,
+            }),
+            entities: Vec::new(),
+        };
+
+        apply(arrival(old), &ctx, &mut devices)
+            .await
+            .expect("a stale arrival is ignored, not an error");
+        assert!(
+            devices.nodes.is_empty(),
+            "the replaced connection doesn't get to introduce anything"
+        );
+
+        apply(arrival(new), &ctx, &mut devices)
+            .await
+            .expect("the running connection introduces its device");
+        assert_eq!(devices.nodes.len(), 1);
+        // Waiting for the describe to have gone through before counting it.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            described.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the core heard about the device once, from the connection that is actually running"
         );
     }
 

@@ -27,6 +27,10 @@ use crate::devices::Controls;
 /// (M1.5) pushes changes instead, and then this disappears.
 const REFRESH: Duration = Duration::from_secs(2);
 
+/// How many refreshes between asking Irori about itself. Its version and database don't change
+/// while it runs, and its uptime only needs to be roughly right.
+const HEALTH_EVERY: u32 = 15;
+
 /// What every page is given: the home as it currently stands, and whether the core is answering.
 #[derive(Debug, Clone, Copy)]
 pub struct Live {
@@ -62,6 +66,7 @@ fn App() -> impl IntoView {
     provide_context(controls);
 
     spawn_local(async move {
+        let mut ticks: u32 = 0;
         loop {
             match api::fetch_home().await {
                 Ok(mut fetched) => {
@@ -80,12 +85,18 @@ fn App() -> impl IntoView {
                 }
                 Err(why) => live.trouble.set(Some(why)),
             }
-            // What Irori itself is doing changes far less often than what the devices are.
-            if live.health.get_untracked().is_none()
+            // What Irori itself is doing changes far less often than what the devices are, so
+            // it's asked for less often — but it is asked again: the uptime moves, and a
+            // restart onto a different build should show, not sit there as the version the
+            // page happened to load with.
+            // A failure here changes nothing on purpose: the banner already says the core
+            // isn't answering, and the last known facts are better than a blank card.
+            if ticks.is_multiple_of(HEALTH_EVERY)
                 && let Ok(health) = api::fetch_health().await
             {
                 live.health.set(Some(health));
             }
+            ticks = ticks.wrapping_add(1);
             gloo_timers::future::sleep(REFRESH).await;
         }
     });
