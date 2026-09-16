@@ -50,6 +50,40 @@
            border-radius: .4rem; cursor: pointer; }
     .add:hover { border-color: var(--ember); color: var(--ember); }
 
+    /* The two ways of reading the list. */
+    .switcher { display: flex; border: 1px solid var(--line); border-radius: .4rem;
+                overflow: hidden; }
+    .switcher button { padding: .35rem .7rem; font: inherit; font-size: .85rem;
+                       color: var(--muted); background: transparent; border: none;
+                       cursor: pointer; }
+    .switcher button.chosen { color: var(--fg); background: var(--sunk); }
+    .switcher button:hover { color: var(--fg); }
+
+    /* A device per row: what it is, not what it's doing. */
+    .table-scroll { overflow-x: auto; margin-bottom: 1.5rem; border: 1px solid var(--line);
+                    border-radius: .5rem; background: var(--card); }
+    table.devices { width: 100%; border-collapse: collapse; font-size: .9rem; }
+    table.devices th, table.devices td { padding: .6rem .8rem; text-align: left;
+                                         border-bottom: 1px solid var(--line);
+                                         white-space: nowrap; }
+    table.devices thead th { color: var(--muted); font: .65rem var(--mono);
+                             letter-spacing: .08em; text-transform: uppercase;
+                             font-weight: 400; }
+    table.devices tbody tr:last-child th, table.devices tbody tr:last-child td {
+        border-bottom: none; }
+    table.devices tbody tr:hover { background: var(--sunk); }
+    table.devices th[scope="row"] { font-weight: 500; }
+    table.devices th[scope="row"] .id { display: block; color: var(--muted);
+                                        font: .7rem var(--mono); }
+    table.devices th[scope="row"] a { color: inherit; text-decoration: none; }
+    table.devices th[scope="row"] a:hover { color: var(--ember); }
+    table.devices .number, table.devices .battery { font-variant-numeric: tabular-nums;
+                                                    text-align: right; }
+
+    .crumb { margin: 0 0 .5rem; font-size: .85rem; }
+    .crumb a { color: var(--muted); text-decoration: none; }
+    .crumb a:hover { color: var(--ember); }
+
     .card { margin-bottom: 1.5rem; padding: 1rem 1.25rem; border: 1px solid var(--line);
             border-radius: .5rem; background: var(--card); }
     .card dl { display: grid; grid-template-columns: max-content 1fr; gap: .3rem 1.25rem;

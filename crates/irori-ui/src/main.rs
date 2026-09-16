@@ -7,6 +7,7 @@
 //! moving between pages doesn't refetch and the two can't disagree.
 
 mod api;
+mod device;
 mod devices;
 mod home;
 
@@ -114,6 +115,7 @@ fn App() -> impl IntoView {
                 <Routes fallback=NotFound>
                     <Route path=path!("/") view=home::Home />
                     <Route path=path!("/devices") view=devices::Devices />
+                    <Route path=path!("/devices/:id") view=device::DevicePage />
                 </Routes>
             </main>
         </Router>

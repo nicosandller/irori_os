@@ -41,7 +41,8 @@ cd crates/irori-ui && trunk serve --open # the page on 8080, API proxied to 8480
 | | |
 |---|---|
 | **Home** (`/`) | What Irori is looking after: how many devices and entities, which extensions are running and how many devices each brings in, and Irori's own version, uptime and database. |
-| **Devices** (`/devices`) | Everything in the home, grouped by device, with switches. **Add device** explains where devices come from — every installed integration, what it's for, and what it can provide — because nothing is typed in by hand yet. |
+| **Devices** (`/devices`) | Two ways to read the same home, remembered per browser: **Entities** groups everything by the device it came from, with switches; **Devices** is a row per device — what brought it in, make, model, battery, how many entities. **Add device** explains where devices come from — every installed integration, what it's for, and what it can provide — because nothing is typed in by hand yet. |
+| **A device** (`/devices/<id>`) | One device: which integration brought it in, what that integration knows it as (the MAC address, for ESPHome), make, model, firmware, hardware, battery, what it's reached through, and every entity it provides with its controls. |
 
 Routing is client-side (`leptos_router`), so the binary serves the app for any path that isn't a
 file, and the app decides what to show.
@@ -59,11 +60,12 @@ file, and the app decides what to show.
 - Filters by entity name, entity id, or device name.
 - Lists the extensions behind it all, with their status and any reports they lost.
 
-**Not yet:** brightness and color for lights (the command API takes them; the page doesn't send
-them), areas and floors, any page other than Devices, and history. The page **polls**
-`/api/dev/home` every 2 seconds; the WebSocket API (M1.5) will push changes instead, and
-`src/api.rs` is what goes away then. The binary also serves these files **uncompressed** (see the
-budget below).
+**Not yet:** brightness and colour for lights (the command API takes them; the page sends only
+on and off), areas and floors, history, automations, settings, and any way to change a device —
+renaming, or installing the firmware update whose version the device page shows (ROADMAP M1.8,
+D30). The page **polls** `/api/dev/home` every 2 seconds; the WebSocket API (M1.5) will push
+changes instead, and `src/api.rs` is what goes away then. The binary also serves these files
+**uncompressed** (see the budget below).
 
 ## Why Leptos (ROADMAP D27)
 

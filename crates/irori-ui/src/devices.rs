@@ -4,10 +4,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use irori_types::{
-    Availability, BinarySensorClass, Capabilities, Device, Entity, EntityId, EntityState,
-    SensorCapabilities, SensorValue, State,
+    Availability, BinarySensorCapabilities, BinarySensorClass, Capabilities, Device, Entity,
+    EntityId, EntityState, SensorCapabilities, SensorClass, SensorValue, State,
 };
 use leptos::prelude::*;
+use leptos_router::components::A;
 
 use crate::api::Home;
 
@@ -26,8 +27,8 @@ pub struct Controls {
 /// device, which the integration contract allows.
 #[derive(Debug)]
 pub struct Group {
-    device: Option<Device>,
-    entities: Vec<(Entity, Option<EntityState>)>,
+    pub device: Option<Device>,
+    pub entities: Vec<(Entity, Option<EntityState>)>,
 }
 
 /// Groups the home by device, keeping only what matches `needle`, and sorts everything by name so
@@ -87,16 +88,41 @@ pub fn groups(home: &Home, needle: &str) -> Vec<Group> {
         .collect()
 }
 
+/// Which way the list is shown. Remembered per browser, because it's a preference about
+/// reading rather than anything Irori needs to know.
+const VIEW_KEY: &str = "irori.devices.view";
+
 #[component]
 pub fn Devices() -> impl IntoView {
     let live = expect_context::<crate::Live>();
     let controls = expect_context::<Controls>();
     let filter = RwSignal::new(String::new());
     let adding = RwSignal::new(false);
+    let as_table = RwSignal::new(remembered_view());
+
+    Effect::new(move |_| remember_view(as_table.get()));
 
     view! {
         <div class="page-head">
             <h1>"Devices"</h1>
+            <div class="switcher" role="group" aria-label="How to show the devices">
+                <button
+                    type="button"
+                    class:chosen=move || !as_table.get()
+                    aria-pressed=move || (!as_table.get()).to_string()
+                    on:click=move |_| as_table.set(false)
+                >
+                    "Entities"
+                </button>
+                <button
+                    type="button"
+                    class:chosen=move || as_table.get()
+                    aria-pressed=move || as_table.get().to_string()
+                    on:click=move |_| as_table.set(true)
+                >
+                    "Devices"
+                </button>
+            </div>
             <button type="button" class="add" on:click=move |_| adding.update(|a| *a = !*a)>
                 {move || if adding.get() { "Close" } else { "+ Add device" }}
             </button>
@@ -113,7 +139,155 @@ pub fn Devices() -> impl IntoView {
             on:input:target=move |ev| filter.set(ev.target().value())
         />
 
-        {move || view(&live.home.get(), &filter.get(), controls)}
+        {move || {
+            let home = live.home.get();
+            let needle = filter.get();
+            if as_table.get() {
+                table(&home, &needle)
+            } else {
+                view(&home, &needle, controls)
+            }
+        }}
+    }
+}
+
+/// One row per device: what it is and where it came from, rather than what it's doing.
+///
+/// Built from the devices rather than from their entities, so a device Irori is connected to
+/// still appears when it provides nothing Irori can model — a Bluetooth proxy, say. Those are
+/// invisible in the entity view by their nature, and being unable to find them would be worse.
+fn table(home: &Home, needle: &str) -> AnyView {
+    let needle = needle.trim().to_lowercase();
+    let matches = |device: &Device| {
+        let haystack = [
+            device.name.as_str(),
+            device.id.as_str(),
+            device.integration.as_str(),
+            device.manufacturer.as_deref().unwrap_or_default(),
+            device.model.as_deref().unwrap_or_default(),
+        ];
+        needle.is_empty()
+            || haystack
+                .iter()
+                .any(|field| field.to_lowercase().contains(&needle))
+    };
+    let mut devices: Vec<_> = home
+        .devices
+        .iter()
+        .filter(|device| matches(device))
+        .map(|device| {
+            let entities: Vec<_> = home
+                .entities
+                .iter()
+                .filter(|entity| entity.device_id.as_ref() == Some(&device.id))
+                .map(|entity| {
+                    let state = home
+                        .states
+                        .iter()
+                        .find(|state| state.entity_id == entity.id)
+                        .cloned();
+                    (entity.clone(), state)
+                })
+                .collect();
+            (device.clone(), entities)
+        })
+        .collect();
+    devices.sort_by(|(a, _), (b, _)| (&a.name, &a.id).cmp(&(&b.name, &b.id)));
+    if devices.is_empty() {
+        let message = if home.devices.is_empty() {
+            "No devices yet. Extensions bring them in; \"Add device\" says how."
+        } else {
+            "Nothing matches that."
+        };
+        return view! { <p class="empty">{message}</p> }.into_any();
+    }
+    view! {
+        <div class="table-scroll">
+            <table class="devices">
+                <thead>
+                    <tr>
+                        <th scope="col">"Device"</th>
+                        <th scope="col">"Through"</th>
+                        <th scope="col">"Make"</th>
+                        <th scope="col">"Model"</th>
+                        <th scope="col">"Battery"</th>
+                        <th scope="col" class="number">"Entities"</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {devices
+                        .into_iter()
+                        .map(|(device, entities)| {
+                            let id = device.id.to_string();
+                            let entity_count = entities.len();
+                            let battery = battery(&entities);
+                            view! {
+                                <tr>
+                                    <th scope="row">
+                                        <A href=format!("/devices/{id}")>{device.name.to_string()}</A>
+                                        <span class="id">{id}</span>
+                                    </th>
+                                    <td>{device.integration.to_string()}</td>
+                                    <td>{device.manufacturer.clone().unwrap_or_default()}</td>
+                                    <td>{device.model.clone().unwrap_or_default()}</td>
+                                    <td class="battery">{battery.unwrap_or_else(|| "—".to_owned())}</td>
+                                    <td class="number">{entity_count}</td>
+                                </tr>
+                            }
+                        })
+                        .collect_view()}
+                </tbody>
+            </table>
+        </div>
+    }
+    .into_any()
+}
+
+/// A device's battery, if one of its entities reports one: a percentage from a battery sensor,
+/// or low/ok from a battery binary sensor. `None` when it doesn't have one, which is most
+/// mains-powered things.
+pub fn battery(entities: &[(Entity, Option<EntityState>)]) -> Option<String> {
+    entities.iter().find_map(|(entity, state)| {
+        let value = state.as_ref()?.state.as_ref();
+        match (&entity.capabilities, value) {
+            (
+                Capabilities::Sensor(SensorCapabilities {
+                    device_class: Some(SensorClass::Battery),
+                    unit,
+                    ..
+                }),
+                Some(State::Sensor(sensor)),
+            ) => Some(match &sensor.value {
+                SensorValue::Number(n) => {
+                    format!("{}{}", number(*n), unit.as_deref().unwrap_or("%"))
+                }
+                SensorValue::Text(text) => text.clone(),
+            }),
+            (
+                Capabilities::BinarySensor(BinarySensorCapabilities {
+                    device_class: Some(BinarySensorClass::Battery),
+                }),
+                Some(State::BinarySensor(sensor)),
+            ) => Some(if sensor.on { "Low" } else { "OK" }.to_owned()),
+            _ => None,
+        }
+    })
+}
+
+/// The list style this browser was last shown. Browser storage can be unavailable or refused,
+/// and it only holds a preference, so anything unexpected just means the default.
+fn remembered_view() -> bool {
+    window()
+        .local_storage()
+        .ok()
+        .flatten()
+        .and_then(|storage| storage.get_item(VIEW_KEY).ok().flatten())
+        .is_some_and(|value| value == "devices")
+}
+
+fn remember_view(as_table: bool) {
+    if let Ok(Some(storage)) = window().local_storage() {
+        let _ = storage.set_item(VIEW_KEY, if as_table { "devices" } else { "entities" });
     }
 }
 
@@ -233,7 +407,7 @@ fn group_view(group: Group, controls: Controls) -> AnyView {
     .into_any()
 }
 
-fn row(entity: Entity, state: Option<EntityState>, controls: Controls) -> AnyView {
+pub fn row(entity: Entity, state: Option<EntityState>, controls: Controls) -> AnyView {
     let offline = state
         .as_ref()
         .is_some_and(|s| s.availability == Availability::Unavailable);
