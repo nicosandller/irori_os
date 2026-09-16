@@ -62,6 +62,16 @@ more than volume: one verified finding beats five guesses.
 - **The UI polls `/api/dev/home` every 2 seconds.** `/api/dev/*` is a temporary, unauthenticated
   API, and pushing changes waits for the WebSocket API in M1.5. Don't propose WebSockets, SSE,
   ETags, or caching headers for it yet.
+- **Plaintext ESPHome devices are adopted without authentication, on purpose and knowingly.**
+  ESPHome's native API has no device authentication of its own, so `irori-int-esphome` connects
+  to whatever announces `_esphomelib._tcp`. This is decision **D29**: the alternatives (an
+  allowlist, a record of which devices were adopted, or the encryption keys that make it moot)
+  all need somewhere to keep a decision, which is the config dir in M0.7. It's written up in
+  `integrations/irori-int-esphome/README.md`, and every device's first connection warns in the
+  log. Don't raise unauthenticated adoption, mDNS spoofing, or device-id impersonation again
+  until encryption lands. **Still worth reporting:** a flaw in the encrypted path once it
+  exists, anything that widens exposure beyond the local network, or a way this reaches past
+  ESPHome's own entities.
 - **Check files before claiming what they contain.** Quote the actual line, for example the
   value in a fixture, rather than inferring it.
 
