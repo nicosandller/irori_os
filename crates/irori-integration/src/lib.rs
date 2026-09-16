@@ -276,6 +276,13 @@ impl ReportQueue {
         self.ready.notify_one();
     }
 
+    fn is_empty(&self) -> bool {
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+    }
+
     fn take(&self) -> Vec<StateReport> {
         std::mem::take(&mut *self.pending.lock().unwrap_or_else(PoisonError::into_inner))
             .into_values()
@@ -388,13 +395,13 @@ pub mod host {
     pub struct Reports(Arc<ReportQueue>);
 
     impl Reports {
-        /// Waits until at least one report is pending or some were dropped, then takes the
-        /// pending ones (possibly none; check [`Reports::take_dropped`]).
-        pub async fn next_batch(&self) -> Vec<StateReport> {
+        /// Waits until there's something to do: reports pending, or reports dropped. Takes
+        /// nothing, so dropping this future (as a losing `select!` branch, say) loses nothing;
+        /// call [`Reports::drain`] once the caller commits to handling them.
+        pub async fn ready(&self) {
             loop {
-                let batch = self.0.take();
-                if !batch.is_empty() || self.0.dropped.load(Ordering::Relaxed) > 0 {
-                    return batch;
+                if !self.0.is_empty() || self.0.dropped.load(Ordering::Relaxed) > 0 {
+                    return;
                 }
                 self.0.ready.notified().await;
             }
@@ -462,8 +469,11 @@ mod tests {
         ctx.report_state(report("a", true));
         ctx.report_state(report("b", true));
         ctx.report_state(report("a", false));
-        let batch = host.reports.next_batch().await;
-        assert_eq!(batch, vec![report("a", false), report("b", true)]);
+        host.reports.ready().await;
+        assert_eq!(
+            host.reports.drain(),
+            vec![report("a", false), report("b", true)]
+        );
         assert!(host.reports.drain().is_empty());
     }
 
@@ -485,13 +495,25 @@ mod tests {
         for i in 0..MAX_PENDING_ENTITIES + 1 {
             ctx.report_state(report(&format!("f{i}"), true));
         }
-        assert_eq!(host.reports.next_batch().await.len(), MAX_PENDING_ENTITIES);
-        let woke =
-            tokio::time::timeout(std::time::Duration::from_secs(1), host.reports.next_batch())
-                .await
-                .expect("woken by the drop alone");
-        assert!(woke.is_empty());
+        host.reports.ready().await;
+        assert_eq!(host.reports.drain().len(), MAX_PENDING_ENTITIES);
+        tokio::time::timeout(std::time::Duration::from_secs(1), host.reports.ready())
+            .await
+            .expect("woken by the drop alone");
+        assert!(host.reports.drain().is_empty());
         assert_eq!(host.reports.take_dropped(), 1);
+    }
+
+    /// Readiness must take nothing: a `select!` that drops this branch loses no reports.
+    #[tokio::test]
+    async fn readiness_takes_nothing() {
+        let (ctx, host) = host::connect();
+        ctx.report_state(report("a", true));
+        tokio::select! {
+            () = host.reports.ready() => {}
+            () = std::future::ready(()) => {}
+        }
+        assert_eq!(host.reports.drain(), vec![report("a", true)]);
     }
 
     #[tokio::test]

@@ -149,6 +149,11 @@ async fn supervise(
 
     let mut delay = timing.first_retry;
     loop {
+        if *stop.borrow() {
+            // Already stopping: don't start anything, not even the first time.
+            core.set_status(&extension, ExtensionStatus::Disabled);
+            return;
+        }
         core.set_status(&extension, ExtensionStatus::Starting);
         let (ctx, host_end) = connect();
         // Settings come from the config dir once it exists (M0.7); until then, defaults.
@@ -295,8 +300,9 @@ async fn serve(
 ) {
     tokio::select! {
         Some(op) = ops.recv() => core.apply_op(extension, integration, kinds, op),
-        batch = reports.next_batch() => {
-            core.apply_reports(extension, integration, batch, reports.take_dropped());
+        // `ready` takes nothing, so losing this race can't lose reports.
+        () = reports.ready() => {
+            core.apply_reports(extension, integration, reports.drain(), reports.take_dropped());
         }
     }
 }
