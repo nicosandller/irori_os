@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use irori_core::{CallError, Command, Core, Event, ExtensionOverview};
 use irori_types::{
     Area, AreaId, ContextId, Device, DeviceId, Entity, EntityId, EntityState, ExtensionId,
-    LightTurnOn, Name, Origin, UserId,
+    LightTurnOn, Name, Origin, Placement, UserId,
 };
 use tokio::sync::broadcast;
 
@@ -206,13 +206,38 @@ where
     Deserialize::deserialize(deserializer).map(Some)
 }
 
+/// Where to put a device, in a PATCH body: `"hall"` for a room, `false` for deliberately no
+/// room, `null` to go back to having said nothing (which lets the device's own suggestion stand
+/// in again). Absent leaves it alone.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum WhereTo {
+    In(AreaId),
+    /// `false`. `true` would mean "yes, a room" without saying which, so it's refused.
+    Nowhere(bool),
+}
+
+impl WhereTo {
+    fn placement(&self) -> Result<Placement, Refused> {
+        match self {
+            WhereTo::In(area) => Ok(Placement::In(area.clone())),
+            WhereTo::Nowhere(false) => Ok(Placement::Nowhere),
+            WhereTo::Nowhere(true) => Err(Refused(
+                "`area: true` doesn't say which room; send a room's id, `false` for no room, or \
+                 null to leave it to the device"
+                    .to_owned(),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DeviceEdit {
     #[serde(default, deserialize_with = "patched")]
     name: Patch<Name>,
     #[serde(default, deserialize_with = "patched")]
-    area: Patch<AreaId>,
+    area: Patch<WhereTo>,
 }
 
 async fn edit_device(
@@ -228,8 +253,14 @@ async fn edit_device(
         .0
         .config
         .edit(core, |settings| {
-            if let Some(area) = request.area.clone().flatten()
-                && settings.area(&area).is_none()
+            let area = match request.area.clone() {
+                None => None,
+                // `null`: nobody has said, so the device's own suggestion may stand in again.
+                Some(None) => Some(Placement::Unsaid),
+                Some(Some(where_to)) => Some(where_to.placement()?),
+            };
+            if let Some(Placement::In(area)) = &area
+                && settings.area(area).is_none()
             {
                 return Err(Refused(format!("there's no room `{area}`")));
             }
@@ -237,7 +268,7 @@ async fn edit_device(
             if let Some(name) = request.name.clone() {
                 device.name = name;
             }
-            if let Some(area) = request.area.clone() {
+            if let Some(area) = area {
                 device.area = area;
             }
             Ok(())
@@ -962,6 +993,72 @@ mod tests {
             Some("study"),
             "the device remembered where it belonged"
         );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// "Not in a room" is an answer. The demo lamp's firmware asks for the Study; once that room
+    /// exists the lamp is in it, and `area: false` must take it out and keep it out, while
+    /// `area: null` hands the decision back to the device.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn a_device_can_be_kept_out_of_the_room_it_asks_for() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+        let placed = |core: &Core| {
+            core.devices()
+                .into_iter()
+                .find(|device| device.id.as_str() == "demo_lamp")
+                .and_then(|device| device.area_id)
+                .map(|id| id.to_string())
+        };
+        server
+            .json(
+                "POST",
+                "/api/dev/areas",
+                serde_json::json!({"name": "Study"}),
+            )
+            .await?;
+        assert_eq!(
+            placed(&core).as_deref(),
+            Some("study"),
+            "the suggestion stands in"
+        );
+
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"area": false}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(placed(&core), None, "and a person can say no");
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(devices.contains("area = false"), "{devices}");
+
+        server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"area": null}),
+            )
+            .await?;
+        assert_eq!(
+            placed(&core).as_deref(),
+            Some("study"),
+            "or give it back to the device"
+        );
+
+        let (status, _) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"area": true}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "`true` names no room");
 
         host.shutdown().await;
         Ok(())

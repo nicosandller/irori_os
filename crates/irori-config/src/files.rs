@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use irori_types::{
-    Area, AreaId, DeviceSettings, EntitySettings, FloorId, Name, Settings, SettingsKey,
+    Area, AreaId, DeviceSettings, EntitySettings, FloorId, Name, Placement, Settings, SettingsKey,
 };
 use serde::{Deserialize, Serialize};
 
@@ -66,7 +66,42 @@ struct RawDevice {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<Name>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    area: Option<AreaId>,
+    area: Option<RawPlacement>,
+}
+
+/// `area = "hall"` for a room, `area = false` for "not in one, and don't ask the device".
+///
+/// A word like `"none"` would have been friendlier to read, but `none` is a perfectly good area
+/// id — somebody's room could be called that — so the two have to be different types rather than
+/// different strings.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum RawPlacement {
+    In(AreaId),
+    Nowhere(bool),
+}
+
+impl RawPlacement {
+    fn of(placement: &Placement) -> Option<Self> {
+        match placement {
+            Placement::Unsaid => None,
+            Placement::Nowhere => Some(RawPlacement::Nowhere(false)),
+            Placement::In(area) => Some(RawPlacement::In(area.clone())),
+        }
+    }
+
+    /// `area = true` has no meaning — "yes, a room" doesn't say which — so it's an error rather
+    /// than a guess.
+    fn placement(self) -> Result<Placement, String> {
+        match self {
+            RawPlacement::In(area) => Ok(Placement::In(area)),
+            RawPlacement::Nowhere(false) => Ok(Placement::Nowhere),
+            RawPlacement::Nowhere(true) => Err(
+                "`area = true` doesn't say which room; use a room's id, or `false` for none"
+                    .to_owned(),
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -102,12 +137,16 @@ pub fn read_devices(text: &str) -> Result<BTreeMap<SettingsKey, DeviceSettings>,
     file.devices
         .into_iter()
         .map(|(key, raw)| {
-            let key: SettingsKey = key.parse().map_err(|e| format!("`{key}`: {e}"))?;
+            let parsed: SettingsKey = key.parse().map_err(|e| format!("`{key}`: {e}"))?;
+            let area = match raw.area {
+                Some(raw) => raw.placement().map_err(|e| format!("`{key}`: {e}"))?,
+                None => Placement::Unsaid,
+            };
             Ok((
-                key,
+                parsed,
                 DeviceSettings {
                     name: raw.name,
-                    area: raw.area,
+                    area,
                 },
             ))
         })
@@ -154,7 +193,7 @@ pub fn write(file: File, settings: &Settings) -> String {
                         key.to_string(),
                         RawDevice {
                             name: device.name.clone(),
-                            area: device.area.clone(),
+                            area: RawPlacement::of(&device.area),
                         },
                     )
                 })
@@ -240,7 +279,7 @@ mod tests {
             settings.name.as_ref().map(Name::as_str),
             Some("Hallway radar")
         );
-        assert_eq!(settings.area.as_ref().map(AreaId::as_str), Some("hall"));
+        assert_eq!(settings.area.area().map(AreaId::as_str), Some("hall"));
     }
 
     #[test]
@@ -277,7 +316,7 @@ mod tests {
                 key("esphome/34:98:7a:2b:09:00"),
                 DeviceSettings {
                     name: Some(name("Hallway radar")),
-                    area: Some(area_id("hall")),
+                    area: Placement::In(area_id("hall")),
                 },
             )]
             .into(),
@@ -315,7 +354,7 @@ mod tests {
                     key("demo/plug"),
                     DeviceSettings {
                         name: Some(name("Plug")),
-                        area: None,
+                        area: Placement::Unsaid,
                     },
                 ),
             ]

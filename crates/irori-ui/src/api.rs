@@ -190,6 +190,22 @@ pub async fn set_on(entity_id: &EntityId, on: bool) -> Result<Option<EntityState
 // thing became, but the page refetches anyway: a rename can change more than the thing renamed,
 // because entities without a name of their own follow their device.
 
+/// Where to put a device: in a room, in none at all, or back to having said nothing — which
+/// lets whatever the device suggests for itself stand in again.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum WhereTo {
+    In(AreaId),
+    /// Serialized as `false`: deliberately no room, suggestion and all.
+    Nowhere(bool),
+}
+
+impl WhereTo {
+    pub fn nowhere() -> Self {
+        WhereTo::Nowhere(false)
+    }
+}
+
 /// What a change to a device should do to one of its fields: leave it alone, set it, or clear it
 /// so whatever the integration reports comes back.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -197,8 +213,9 @@ pub struct DeviceEdit {
     /// `None` leaves the name alone; `Some(None)` clears it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<Option<Name>>,
+    /// `None` leaves the room alone; `Some(None)` un-says it, letting the device suggest again.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub area: Option<Option<AreaId>>,
+    pub area: Option<Option<WhereTo>>,
 }
 
 /// The body of a refusal, which the core writes as a sentence.

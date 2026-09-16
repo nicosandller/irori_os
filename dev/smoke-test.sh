@@ -82,15 +82,22 @@ fi
 room="$(curl -fsS --max-time 5 -X POST "$base_url/api/dev/areas" \
   -H 'content-type: application/json' -d '{"name":"Smoke test room"}')" ||
   fail "couldn't make a room: is the config directory writable?"
-grep -q '"id":"smoke_test_room"' <<<"$room" || fail "unexpected answer making a room: $room"
+# Its id is whatever the server chose: against an instance that already has one (a persistent
+# home, or an earlier run of this script that didn't finish) it will be smoke_test_room_2. Take
+# it from the answer rather than assuming, or the room is made and then never cleaned up.
+room_id="$(sed -n 's/.*"id":"\([^"]*\)".*/\1/p' <<<"$room")"
+[[ -n "$room_id" ]] || fail "unexpected answer making a room: $room"
+# From here on the room exists, so every exit has to remove it.
+trap 'curl -fsS --max-time 5 -o /dev/null -X DELETE "$base_url/api/dev/areas/$room_id" || true' EXIT
 
 areas="$(curl -fsS --max-time 5 "$base_url/api/dev/areas")" || fail "can't list rooms"
-grep -q '"name":"Smoke test room"' <<<"$areas" || fail "the room wasn't listed: $areas"
+grep -q "\"id\":\"$room_id\"" <<<"$areas" || fail "the room wasn't listed: $areas"
 
-curl -fsS --max-time 5 -o /dev/null -X DELETE "$base_url/api/dev/areas/smoke_test_room" ||
+curl -fsS --max-time 5 -o /dev/null -X DELETE "$base_url/api/dev/areas/$room_id" ||
   fail "couldn't remove the room again"
+trap - EXIT
 areas="$(curl -fsS --max-time 5 "$base_url/api/dev/areas")" || fail "can't list rooms"
-grep -q '"id":"smoke_test_room"' <<<"$areas" && fail "the room is still there: $areas"
-echo "config: a room was made, listed, and removed"
+grep -q "\"id\":\"$room_id\"" <<<"$areas" && fail "the room is still there: $areas"
+echo "config: a room was made, listed, and removed ($room_id)"
 
 echo "smoke test passed"

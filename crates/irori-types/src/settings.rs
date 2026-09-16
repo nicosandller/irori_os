@@ -33,20 +33,49 @@ impl Settings {
     }
 }
 
+/// Where a device is, as far as a person has said.
+///
+/// Three states, not two, because "nobody has said" and "it isn't in a room" are different
+/// answers. A device whose firmware suggests a room needs its owner to be able to say *no* —
+/// otherwise choosing "not in a room" would only clear the setting, let the suggestion back in,
+/// and put the device straight back where it was.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Placement {
+    /// Nobody has said. The device's own `suggested_area` may stand in.
+    #[default]
+    Unsaid,
+    /// Deliberately in no room, whatever the device suggests.
+    Nowhere,
+    In(AreaId),
+}
+
+impl Placement {
+    pub fn area(&self) -> Option<&AreaId> {
+        match self {
+            Placement::In(area) => Some(area),
+            _ => None,
+        }
+    }
+
+    /// Whether a person has answered at all.
+    pub fn is_unsaid(&self) -> bool {
+        matches!(self, Placement::Unsaid)
+    }
+}
+
 /// What a person has said about one device.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeviceSettings {
     /// What to call it instead of the name its integration reports.
     pub name: Option<Name>,
-    /// Which room it's in. Absent means nobody has said, and the device's own suggestion may
-    /// stand in.
-    pub area: Option<AreaId>,
+    /// Which room it's in, if that's been decided.
+    pub area: Placement,
 }
 
 impl DeviceSettings {
     /// Whether this says anything at all. An entry that says nothing is not written out.
     pub fn is_empty(&self) -> bool {
-        self.name.is_none() && self.area.is_none()
+        self.name.is_none() && self.area.is_unsaid()
     }
 }
 
