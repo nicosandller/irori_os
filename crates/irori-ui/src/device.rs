@@ -12,6 +12,11 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 
 use crate::api::{self, DeviceEdit, Home};
+
+/// The two picker choices that aren't a room. Neither can collide with an area id: one is empty
+/// and the other has a space in it, and a slug can have neither.
+const NOWHERE: &str = "";
+const LET_THE_DEVICE_SAY: &str = "let the device say";
 use crate::devices::{self, Controls};
 use crate::rooms::named;
 
@@ -174,10 +179,13 @@ fn page(
     let move_to = {
         let edit = edit.clone();
         move |chosen: String| {
+            // The three the picker offers. "Nowhere" is a decision, not the absence of one:
+            // without it, a device whose firmware names a room would be put straight back.
             let area = match chosen.as_str() {
-                "" => None,
+                NOWHERE => Some(api::WhereTo::nowhere()),
+                LET_THE_DEVICE_SAY => None,
                 id => match AreaId::try_from(id) {
-                    Ok(id) => Some(id),
+                    Ok(id) => Some(api::WhereTo::In(id)),
                     Err(e) => {
                         trouble.set(Some(e.to_string()));
                         return;
@@ -201,19 +209,34 @@ fn page(
     let renamed_from = device.renamed_from.clone();
     let in_room = device.area_id.clone();
     let suggested = device.suggested_area.clone();
-    // Whether the room it's in is the one it asked for. Irori doesn't record *why* a device is
-    // where it is, and it doesn't need to: if the names match, the suggestion has nothing left
-    // to offer, however the device got there.
-    let suggestion_met = match (&suggested, &in_room) {
-        (Some(suggests), Some(id)) => areas.iter().any(|area| {
-            &area.id == id
-                && area
-                    .name
+    // What the device's own suggestion amounts to right now. Irori doesn't send *why* a device
+    // is where it is, and doesn't need to: comparing the suggestion with the rooms that exist
+    // and the room it's in tells all three stories apart.
+    let asked_for = suggested.as_ref().and_then(|suggests| {
+        areas
+            .iter()
+            .find(|area| {
+                area.name
                     .as_str()
                     .trim()
                     .eq_ignore_ascii_case(suggests.as_str().trim())
-        }),
-        _ => false,
+            })
+            .map(|area| area.id.clone())
+    });
+    let suggestion = match (&suggested, &asked_for) {
+        (None, _) => None,
+        (Some(suggests), None) => Some(format!(
+            "The device says it's in \"{suggests}\". Irori doesn't make rooms on its own, but a \
+             room called that would collect it."
+        )),
+        (Some(suggests), Some(room)) if in_room.as_ref() == Some(room) => Some(format!(
+            "The device says it's in \"{suggests}\", and it is."
+        )),
+        // The room exists and the device isn't in it: somebody decided otherwise.
+        (Some(suggests), Some(_)) => Some(format!(
+            "The device says it's in \"{suggests}\", but it's been put elsewhere. Choose \
+             \"Wherever the device says\" to let it decide again."
+        )),
     };
 
     view! {
@@ -262,9 +285,9 @@ fn page(
                     prop:value=in_room
                         .as_ref()
                         .map(AreaId::to_string)
-                        .unwrap_or_default()
+                        .unwrap_or_else(|| NOWHERE.to_owned())
                 >
-                    <option value="">"Not in a room"</option>
+                    <option value=NOWHERE selected=in_room.is_none()>"Not in a room"</option>
                     {areas
                         .iter()
                         .map(|area| {
@@ -279,6 +302,10 @@ fn page(
                             }
                         })
                         .collect_view()}
+                    // Only worth offering when there's something to go back to.
+                    {suggested.is_some().then(|| view! {
+                        <option value=LET_THE_DEVICE_SAY>"Wherever the device says"</option>
+                    })}
                 </select>
             </label>
             {if areas.is_empty() {
@@ -292,18 +319,7 @@ fn page(
             } else {
                 ().into_any()
             }}
-            {suggested.clone().map(|suggests| view! {
-                <p class="muted small">
-                    {if suggestion_met {
-                        format!("The device says it's in \"{suggests}\", and it is.")
-                    } else {
-                        format!(
-                            "The device says it's in \"{suggests}\". Irori doesn't make rooms \
-                             on its own, but a room called that would collect it.",
-                        )
-                    }}
-                </p>
-            })}
+            {suggestion.map(|note| view! { <p class="muted small">{note}</p> })}
         </section>
 
         <section class="card">
@@ -342,7 +358,7 @@ fn page(
                     <dt>"Hardware"</dt>
                     <dd>{version}</dd>
                 })}
-                {battery.map(|level| view! {
+                {move || battery.get().map(|level| view! {
                     <dt>"Battery"</dt>
                     <dd>{level}</dd>
                 })}
@@ -514,20 +530,26 @@ fn EntityRow(
 }
 
 /// A device's battery, from whichever of its entities reports one.
-fn battery_of(live: crate::Live, entities: &[Entity]) -> Option<String> {
-    let home = live.home.get_untracked();
-    let with_state: Vec<_> = entities
-        .iter()
-        .map(|entity| {
-            let state = home
-                .states
-                .iter()
-                .find(|state| state.entity_id == entity.id)
-                .cloned();
-            (entity.clone(), state)
-        })
-        .collect();
-    devices::battery(&with_state)
+///
+/// A reading like any other, so it follows the readings rather than the page's shape: a battery
+/// level that arrives after the page is drawn — or drops overnight — has to show up.
+fn battery_of(live: crate::Live, entities: &[Entity]) -> Memo<Option<String>> {
+    let entities = entities.to_vec();
+    Memo::new(move |_| {
+        let home = live.home.get();
+        let with_state: Vec<_> = entities
+            .iter()
+            .map(|entity| {
+                let state = home
+                    .states
+                    .iter()
+                    .find(|state| state.entity_id == entity.id)
+                    .cloned();
+                (entity.clone(), state)
+            })
+            .collect();
+        devices::battery(&with_state)
+    })
 }
 
 /// A device id that isn't here: either mistyped, or one that has gone away since the link was

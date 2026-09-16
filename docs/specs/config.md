@@ -66,11 +66,25 @@ name = "Kitchen"
 ```toml
 [devices."esphome/34:98:7a:2b:09:00"]
 name = "Hallway radar"
-area = "hall"
+area = "hall"          # a room's id, or `false` for "not in one"
 ```
 
 Both fields are optional: a device may be renamed without being placed, or placed without being
 renamed.
+
+`area` has **three** states, not two, because "nobody has said" and "it isn't in a room" are
+different answers:
+
+| `area` | Means |
+|---|---|
+| absent | Nobody has said. The device's `suggested_area` may stand in (§5). |
+| `"hall"` | That room. |
+| `false` | Deliberately no room — the suggestion doesn't get to overrule it. |
+
+Without the third state, telling Irori that a device suggesting "Study" is *not* in the study
+would only clear the setting, let the suggestion back in, and put the device straight back. A
+word like `"none"` would read better than `false`, but `none` is a perfectly good room id, so the
+two have to be different types rather than different spellings. `area = true` is an error.
 
 ### 3.3 `entities.toml`
 
@@ -98,7 +112,7 @@ now" and "this entry is stale" look identical from here.
 |---|---|
 | Device name | yours, else the integration's |
 | Entity name | yours, else the integration's, else the device's name |
-| Device area | yours, else an existing area whose name matches the device's `suggested_area` |
+| Device area | yours (a room, or a deliberate none), else an existing area whose name matches the device's `suggested_area` |
 
 `suggested_area` is what the device says about itself — ESPHome's `area:`, for one. Irori
 **never creates an area from a suggestion**: config changes when a person asks, not when a device
@@ -121,8 +135,12 @@ two files, and saving two files is two moments; rejecting `devices.toml` in the 
 normal edit look like a failure. The entry is kept exactly as written, the device is simply left
 unplaced, and it takes its place the moment the area exists.
 
-**Writes are atomic.** Irori writes to a temporary file in the same directory and renames it over
-the target, so a reader (or a crash) never sees half a file.
+**Writes are atomic, and a save is all or nothing.** Each file is written to a temporary one in
+the same directory and only then renamed over the target, so a reader (or a crash) never sees half
+a file. Across files, every temporary is written before *any* of them is renamed: writing bytes is
+where a full disk shows up, renaming an existing file on the same filesystem is as close to
+infallible as a filesystem gets, so a failure leaves the directory exactly as it was rather than
+half-changed — which the next reload would otherwise adopt as if someone had meant it.
 
 **The UI writes these files.** There is no second store: renaming a device in the UI and editing
 `devices.toml` by hand are the same operation, and either is visible to the other within the

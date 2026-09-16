@@ -168,12 +168,16 @@ jobs:
           $RUNNER "$BIN" version --json
 
           data="$(mktemp -d)"
-          $RUNNER "$BIN" serve --data "$data" --bind 127.0.0.1:8480 &
+          config="$(mktemp -d)"
+          $RUNNER "$BIN" serve --data "$data" --config "$config" --bind 127.0.0.1:8480 &
           pid=$!
           dev/smoke-test.sh http://127.0.0.1:8480 30
           kill -TERM "$pid"
           wait "$pid"
           test -f "$data/irori.db"
+          # The smoke test made and removed a room, so the config dir must exist and hold the
+          # files the spec describes (docs/specs/config.md).
+          test -f "$config/areas.toml" && test -f "$config/devices.toml"
 
       - name: Binary size summary
         run: |

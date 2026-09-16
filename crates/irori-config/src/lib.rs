@@ -162,8 +162,14 @@ impl Store {
     ///
     /// Returns the files it wrote, which is empty when the settings match what's already there —
     /// so saving the same thing twice touches nothing.
+    ///
+    /// Every file is written to a temporary one first, and only then are they renamed into place.
+    /// Renaming a file that already exists on the same filesystem is about as close to "cannot
+    /// fail" as a filesystem offers, while writing the bytes is where a full disk or a read-only
+    /// mount shows up — so doing all the writing first means a failure leaves the directory
+    /// exactly as it was, rather than half of a change that the next reload would then adopt.
     pub fn save(&mut self, settings: &Settings) -> std::io::Result<Vec<File>> {
-        let mut written = Vec::new();
+        let mut prepared = Vec::new();
         for file in File::ALL {
             let text = files::write(file, settings);
             let path = self.path(file);
@@ -171,8 +177,40 @@ impl Store {
                 continue;
             }
             std::fs::create_dir_all(&self.dir)?;
-            atomically(&path, &text)?;
-            written.push(file);
+            match write_beside(&path, &text) {
+                Ok(temporary) => prepared.push((file, path, temporary)),
+                Err(e) => {
+                    discard(&prepared);
+                    return Err(e);
+                }
+            }
+        }
+
+        let mut written: Vec<File> = Vec::new();
+        for (file, path, temporary) in &prepared {
+            if let Err(e) = std::fs::rename(temporary, path) {
+                // A rename failing here is close to unheard of, and there is nothing sensible
+                // left to try — so the error says which files did land, because that, not the
+                // errno, is what someone needs in order to put the directory right by hand.
+                let landed = match written.as_slice() {
+                    [] => "no files were changed".to_owned(),
+                    landed => format!(
+                        "these were already changed: {}",
+                        landed
+                            .iter()
+                            .map(|file| file.name())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                };
+                let kind = e.kind();
+                discard(&prepared);
+                return Err(std::io::Error::new(
+                    kind,
+                    format!("couldn't put {file} in place ({landed}): {e}"),
+                ));
+            }
+            written.push(*file);
         }
         self.areas.value = settings.areas.clone();
         self.devices.value = settings.devices.clone();
@@ -195,27 +233,32 @@ fn look(path: &Path) -> Option<Seen> {
     })
 }
 
-/// Writes `text` to `path` so that a reader sees either the old file or the new one.
+/// Writes `text` to a temporary file next to `path`, ready to be renamed over it.
 ///
-/// The temporary file is in the same directory on purpose: `rename` is only atomic within one
-/// filesystem, and `/tmp` is often a different one.
-fn atomically(path: &Path, text: &str) -> std::io::Result<()> {
+/// Beside it, not in `/tmp`, on purpose: `rename` is only atomic within one filesystem.
+fn write_beside(path: &Path, text: &str) -> std::io::Result<PathBuf> {
     use std::io::Write as _;
 
     let temporary = path.with_extension("toml.writing");
-    {
-        let mut file = std::fs::File::create(&temporary)?;
-        file.write_all(text.as_bytes())?;
+    let mut file = std::fs::File::create(&temporary)?;
+    let written = file
+        .write_all(text.as_bytes())
         // Rename is atomic, but without this the rename can land before the contents do and a
         // power cut leaves an empty file where the old good one was.
-        file.sync_all()?;
+        .and_then(|()| file.sync_all());
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(e);
     }
-    match std::fs::rename(&temporary, path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = std::fs::remove_file(&temporary);
-            Err(e)
-        }
+    Ok(temporary)
+}
+
+/// Throws away files that were prepared but never put in place.
+fn discard(prepared: &[(File, PathBuf, PathBuf)]) {
+    for (_, _, temporary) in prepared {
+        // Already renamed, or never created: either way there's nothing to clean up, and a
+        // failure to tidy isn't worth reporting over whatever went wrong first.
+        let _ = std::fs::remove_file(temporary);
     }
 }
 
@@ -248,7 +291,7 @@ mod tests {
     fn named(what: &str) -> DeviceSettings {
         DeviceSettings {
             name: Some(name(what)),
-            area: None,
+            area: irori_types::Placement::Unsaid,
         }
     }
 
@@ -372,6 +415,57 @@ mod tests {
         std::fs::remove_file(home.path().join("areas.toml")).expect("removed");
         assert!(store.reload().is_empty());
         assert!(store.settings().areas.is_empty());
+    }
+
+    /// A save that can't be finished must change nothing, or the watcher would find half of it
+    /// on the next tick and adopt a state nobody asked for.
+    ///
+    /// Provoked by putting a directory where the last file's working file needs to go, so that
+    /// two of the three are prepared and the third can't be. It stands in for the real reasons a
+    /// write fails part-way — a full disk, a read-only mount — which a test can't arrange.
+    #[test]
+    fn a_save_that_cant_finish_leaves_the_directory_as_it_was() {
+        let home = dir();
+        let mut store = Store::new(home.path());
+        store
+            .save(&Settings {
+                areas: vec![area("hall", "Hall")],
+                ..Settings::default()
+            })
+            .expect("saved");
+
+        // `entities.toml` is the last of the three, so a failure on it is exactly the case where
+        // the two before it would already have been changed.
+        std::fs::create_dir(home.path().join("entities.toml.writing")).expect("in the way");
+        let before: Vec<String> = File::ALL
+            .iter()
+            .map(|file| std::fs::read_to_string(home.path().join(file.name())).expect("readable"))
+            .collect();
+
+        let refused = store.save(&Settings {
+            areas: vec![area("kitchen", "Kitchen")],
+            devices: [(key("demo/lamp"), named("Reading lamp"))].into(),
+            entities: [(
+                key("demo/lamp-light"),
+                EntitySettings {
+                    name: Some(name("Reading light")),
+                },
+            )]
+            .into(),
+        });
+
+        assert!(refused.is_err(), "the save should have failed");
+        for (file, was) in File::ALL.iter().zip(before) {
+            assert_eq!(
+                std::fs::read_to_string(home.path().join(file.name())).expect("readable"),
+                was,
+                "{file} changed despite the save failing"
+            );
+        }
+        assert!(
+            !home.path().join("areas.toml.writing").exists(),
+            "a prepared file was left behind"
+        );
     }
 
     /// A rename must not leave the working file behind: the directory a person opens should have

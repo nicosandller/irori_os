@@ -8,8 +8,9 @@ use irori_integration::{AvailabilityTarget, Rejected};
 use irori_types::{
     Area, AreaId, Availability, Capabilities, ColorMode, Context, ContextId, Device,
     DeviceDescription, DeviceId, Entity, EntityDescription, EntityId, EntityKind, EntityState,
-    IntegrationId, LightCapabilities, LightTurnOn, Name, Origin, SLUG_MAX_LEN, SensorValue,
-    SensorValueType, Service, Settings, SettingsKey, State, StateReport, Timestamp, UniqueId,
+    IntegrationId, LightCapabilities, LightTurnOn, Name, Origin, Placement, SLUG_MAX_LEN,
+    SensorValue, SensorValueType, Service, Settings, SettingsKey, State, StateReport, Timestamp,
+    UniqueId,
 };
 
 use crate::Event;
@@ -137,17 +138,14 @@ impl Home {
     ///
     /// A choice that points at an area which no longer exists leaves the device unplaced rather
     /// than falling back to the suggestion — the choice is still in the file, and deleting a room
-    /// shouldn't quietly hand the device back to its firmware.
+    /// shouldn't quietly hand the device back to its firmware. Same for a deliberate "no room":
+    /// that's an answer, and the suggestion doesn't get to overrule it.
     fn area_for_device(&self, id: &DeviceId, suggested: Option<&Name>) -> Option<AreaId> {
         let chosen = self
             .device_key(id)
-            .and_then(|key| self.settings.devices.get(&key)?.area.clone());
-        match chosen {
-            Some(area) => self.settings.area(&area).map(|area| area.id.clone()),
-            None => suggested
-                .and_then(|name| self.settings.area_named(name))
-                .map(|area| area.id.clone()),
-        }
+            .and_then(|key| self.settings.devices.get(&key).map(|d| d.area.clone()))
+            .unwrap_or_default();
+        placed(&self.settings, &chosen, suggested)
     }
 
     /// What an entity should be called: the name a person gave it, else the one its integration
@@ -309,14 +307,13 @@ impl Home {
             DeviceId::try_from(c).is_ok_and(|id| self.devices.contains_key(&id))
         });
         let id = DeviceId::try_from(id).expect("unique_id_for returns a slug");
-        let area_id = match settings.and_then(|settings| settings.area.clone()) {
-            Some(area) => self.settings.area(&area).map(|area| area.id.clone()),
-            None => description
-                .suggested_area
-                .as_ref()
-                .and_then(|name| self.settings.area_named(name))
-                .map(|area| area.id.clone()),
-        };
+        let area_id = placed(
+            &self.settings,
+            &settings
+                .map(|settings| settings.area.clone())
+                .unwrap_or_default(),
+            description.suggested_area.as_ref(),
+        );
         let device = Device {
             id: id.clone(),
             integration: integration.clone(),
@@ -859,6 +856,21 @@ impl Home {
     }
 }
 
+/// Where a device ends up: what a person said, else what the device suggests.
+///
+/// The three answers are different. A room that was chosen is used if it still exists; a
+/// deliberate "no room" is honoured and shuts the suggestion out; and only silence lets the
+/// device's own idea of where it is stand in (`docs/specs/config.md` §5).
+fn placed(settings: &Settings, chosen: &Placement, suggested: Option<&Name>) -> Option<AreaId> {
+    match chosen {
+        Placement::In(area) => settings.area(area).map(|area| area.id.clone()),
+        Placement::Nowhere => None,
+        Placement::Unsaid => suggested
+            .and_then(|name| settings.area_named(name))
+            .map(|area| area.id.clone()),
+    }
+}
+
 /// A change Irori made itself, e.g. after an integration crashed.
 fn system_context(stamp: &Stamp) -> Context {
     Context {
@@ -1139,14 +1151,21 @@ mod tests {
     fn called(what: &str) -> irori_types::DeviceSettings {
         irori_types::DeviceSettings {
             name: Some(name(what)),
-            area: None,
+            area: Placement::Unsaid,
         }
     }
 
-    fn placed(area: &str) -> irori_types::DeviceSettings {
+    fn in_room(area: &str) -> irori_types::DeviceSettings {
         irori_types::DeviceSettings {
             name: None,
-            area: Some(AreaId::try_from(area).expect("valid")),
+            area: Placement::In(AreaId::try_from(area).expect("valid")),
+        }
+    }
+
+    fn nowhere() -> irori_types::DeviceSettings {
+        irori_types::DeviceSettings {
+            name: None,
+            area: Placement::Nowhere,
         }
     }
 
@@ -1297,7 +1316,7 @@ mod tests {
 
         home.apply_settings(Settings {
             areas: vec![area("study", "Study")],
-            devices: [(key("lamp"), placed("study"))].into(),
+            devices: [(key("lamp"), in_room("study"))].into(),
             ..Settings::default()
         });
         assert_eq!(home.devices[&id].area_id, Some(area("study", "Study").id));
@@ -1323,6 +1342,36 @@ mod tests {
         assert_eq!(events.len(), 1, "{events:?}");
     }
 
+    /// "Not in a room" has to be an answer, not the absence of one. Otherwise saying it to a
+    /// device whose firmware suggests a room would clear the setting, let the suggestion back in,
+    /// and put the device straight back where it was — the control would be a lie.
+    #[test]
+    fn a_device_can_be_kept_out_of_the_room_its_firmware_asks_for() {
+        let mut home = Home::default();
+        let mut described = device("lamp", "Desk lamp");
+        described.suggested_area = Some(name("Study"));
+        home.describe_device(&integration(), described)
+            .expect("device");
+        let id = DeviceId::try_from("desk_lamp").expect("valid");
+
+        home.apply_settings(Settings {
+            areas: vec![area("study", "Study")],
+            ..Settings::default()
+        });
+        assert_eq!(
+            home.devices[&id].area_id,
+            Some(area("study", "Study").id),
+            "the suggestion stands in while nobody has said otherwise"
+        );
+
+        home.apply_settings(Settings {
+            areas: vec![area("study", "Study")],
+            devices: [(key("lamp"), nowhere())].into(),
+            ..Settings::default()
+        });
+        assert_eq!(home.devices[&id].area_id, None, "and a person can say no");
+    }
+
     /// Deleting a room shouldn't quietly hand a device back to whatever its firmware suggests:
     /// the person's choice is still written down, so the device is simply unplaced.
     #[test]
@@ -1335,7 +1384,7 @@ mod tests {
 
         home.apply_settings(Settings {
             areas: vec![area("study", "Study"), area("hall", "Hall")],
-            devices: [(key("lamp"), placed("hall"))].into(),
+            devices: [(key("lamp"), in_room("hall"))].into(),
             ..Settings::default()
         });
         let id = DeviceId::try_from("desk_lamp").expect("valid");
@@ -1343,7 +1392,7 @@ mod tests {
 
         home.apply_settings(Settings {
             areas: vec![area("study", "Study")],
-            devices: [(key("lamp"), placed("hall"))].into(),
+            devices: [(key("lamp"), in_room("hall"))].into(),
             ..Settings::default()
         });
         assert_eq!(home.devices[&id].area_id, None);
@@ -1361,7 +1410,7 @@ mod tests {
                 key("lamp"),
                 irori_types::DeviceSettings {
                     name: Some(name("Reading lamp")),
-                    area: Some(AreaId::try_from("study").expect("valid")),
+                    area: Placement::In(AreaId::try_from("study").expect("valid")),
                 },
             )]
             .into(),

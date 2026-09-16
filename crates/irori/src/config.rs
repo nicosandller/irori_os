@@ -188,7 +188,7 @@ mod tests {
                     "demo/lamp".parse().expect("a valid key"),
                     DeviceSettings {
                         name: Some("Reading lamp".parse::<Name>().expect("a valid name")),
-                        area: None,
+                        area: irori_types::Placement::Unsaid,
                     },
                 );
                 Ok(())

@@ -38,7 +38,7 @@ pub use registry::{
     SwitchCapabilities, SwitchClass,
 };
 pub use schema::{SchemaDoc, schemas};
-pub use settings::{DeviceSettings, EntitySettings, Settings, SettingsKey};
+pub use settings::{DeviceSettings, EntitySettings, Placement, Settings, SettingsKey};
 pub use state::{
     Attributes, Availability, BinarySensorState, ColorMode, EntityState, LightState, SensorState,
     SensorValue, State, SwitchState,
