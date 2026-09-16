@@ -8,9 +8,10 @@ repository.workspace = true
 
 [features]
 # Barebones default build (ROADMAP D17). `--no-default-features` must still build, start, and serve the API.
-default = ["int-mqtt", "int-demo", "ui"]
+default = ["int-mqtt", "int-demo", "int-esphome", "ui"]
 int-mqtt = ["dep:irori-int-mqtt"]
 int-demo = ["dep:irori-int-demo"]
+int-esphome = ["dep:irori-int-esphome"]
 ui = ["dep:rust-embed", "dep:mime_guess"]
 # Opt-in, never in the default build (ROADMAP D13).
 assist = ["dep:irori-assist"]
@@ -21,6 +22,7 @@ irori-integration.workspace = true
 irori-types.workspace = true
 irori-int-mqtt = { workspace = true, optional = true }
 irori-int-demo = { workspace = true, optional = true }
+irori-int-esphome = { workspace = true, optional = true }
 irori-assist = { workspace = true, optional = true }
 
 anyhow.workspace = true

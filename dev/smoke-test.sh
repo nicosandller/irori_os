@@ -61,4 +61,14 @@ if grep -q '"features":\[[^]]*"int-demo"' <<<"$health"; then
   echo "extensions: demo running, its devices are listed"
 fi
 
+if grep -q '"features":\[[^]]*"int-esphome"' <<<"$health"; then
+  # It should be running whether or not there's an ESPHome device on this network: with none,
+  # it sits listening. Devices are a property of the network, so they aren't asserted here.
+  extensions="$(curl -fsS --max-time 2 "$base_url/api/dev/extensions" 2>/dev/null)" || \
+    fail "can't read the extensions view"
+  grep -q '"esphome":{"state":"running"' <<<"$extensions" ||
+    fail "the esphome extension isn't running: $extensions"
+  echo "extensions: esphome running"
+fi
+
 echo "smoke test passed"

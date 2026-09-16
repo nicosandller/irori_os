@@ -12,6 +12,7 @@ members = [
     "crates/irori",
     "integrations/irori-int-mqtt",
     "integrations/irori-int-demo",
+    "integrations/irori-int-esphome",
     "extras/irori-assist",
     "xtask",
 ]
@@ -39,12 +40,16 @@ irori-api = { path = "crates/irori-api" }
 irori-client = { path = "crates/irori-client" }
 irori-int-mqtt = { path = "integrations/irori-int-mqtt" }
 irori-int-demo = { path = "integrations/irori-int-demo" }
+irori-int-esphome = { path = "integrations/irori-int-esphome" }
 irori-assist = { path = "extras/irori-assist" }
 
 # External crates
 anyhow = "1.0.104"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
+# The ESPHome native API: mDNS discovery, the protobuf protocol, and its Noise transport.
+# Pinned to one API version on purpose (the crate generates one per ESPHome release).
+esphome-client = { version = "0.2.1", features = ["discovery", "api-1-15"] }
 http-body-util = "0.1.5"
 getrandom = "0.4.3"
 jiff = { version = "0.2.37", default-features = false, features = ["std", "serde"] }
