@@ -23,7 +23,9 @@ use irori_types::{
     Area, DeviceId, DeviceSettings, EntitySettings, ExtensionSettings, Floor, Settings, SettingsKey,
 };
 
-pub use files::{ExtensionsSection, File, IroriSettings, LogLevel, ServerSettings};
+pub use files::{
+    DevicesSection, ExtensionsSection, File, IroriSettings, LogLevel, NewDevices, ServerSettings,
+};
 
 /// Something wrong with one file, to be logged and shown. Never fatal: the file keeps whatever it
 /// last held.
@@ -102,6 +104,7 @@ impl Store {
             areas: self.areas.value.1.clone(),
             devices: self.devices.value.clone(),
             entities: self.entities.value.clone(),
+            ask_before_adding: self.irori.value.devices.new == NewDevices::Ask,
         }
     }
 
@@ -375,6 +378,7 @@ mod tests {
 
     fn named(what: &str) -> DeviceSettings {
         DeviceSettings {
+            added: false,
             name: Some(name(what)),
             description: None,
             area: irori_types::Placement::Unsaid,
@@ -393,6 +397,7 @@ mod tests {
     fn what_is_saved_is_what_is_loaded_again() {
         let home = dir();
         let settings = Settings {
+            ask_before_adding: false,
             floors: Vec::new(),
             areas: vec![area("hall", "Hall")],
             devices: [(device("demo_lamp"), named("Reading lamp"))].into(),
@@ -531,6 +536,7 @@ mod tests {
             .collect();
 
         let refused = store.save(&Settings {
+            ask_before_adding: false,
             floors: Vec::new(),
             areas: vec![area("kitchen", "Kitchen")],
             devices: [(device("demo_lamp"), named("Reading lamp"))].into(),

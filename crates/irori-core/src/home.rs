@@ -78,12 +78,24 @@ struct Ignored {
     available: bool,
 }
 
-/// What the page lists for an ignored device: enough to recognise it and stop ignoring it.
+/// A device found but kept out of the home, as the page lists it: enough to recognise it and
+/// let it in.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct IgnoredDevice {
+pub struct HeldDevice {
     pub id: DeviceId,
     pub integration: IntegrationId,
     pub name: Name,
+    pub why: Held,
+}
+
+/// Why a device is kept out of the home.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Held {
+    /// A person ignored it.
+    Ignored,
+    /// It's new, and Irori asks before adding new devices.
+    New,
 }
 
 /// A service call resolved to the integration that handles it.
@@ -135,20 +147,31 @@ impl Home {
         &self.settings
     }
 
-    fn is_ignored(&self, id: &DeviceId) -> bool {
-        self.settings
-            .devices
-            .get(id)
-            .is_some_and(|settings| settings.ignored)
+    /// Whether a device is kept out of the home, and why. Ignoring wins over being new: an
+    /// ignored device stays ignored whatever Irori asks about new ones.
+    fn held(&self, id: &DeviceId) -> Option<Held> {
+        let settings = self.settings.devices.get(id);
+        if settings.is_some_and(|settings| settings.ignored) {
+            return Some(Held::Ignored);
+        }
+        let added = settings.is_some_and(|settings| settings.added);
+        (self.settings.ask_before_adding && !added).then_some(Held::New)
     }
 
-    pub fn ignored_devices(&self) -> Vec<IgnoredDevice> {
+    fn is_held(&self, id: &DeviceId) -> bool {
+        self.held(id).is_some()
+    }
+
+    pub fn held_devices(&self) -> Vec<HeldDevice> {
         self.ignored
             .iter()
-            .map(|(id, ignored)| IgnoredDevice {
-                id: id.clone(),
-                integration: ignored.integration.clone(),
-                name: self.name_for_device(id, &ignored.description.name),
+            .filter_map(|(id, held)| {
+                Some(HeldDevice {
+                    id: id.clone(),
+                    integration: held.integration.clone(),
+                    name: self.name_for_device(id, &held.description.name),
+                    why: self.held(id)?,
+                })
             })
             .collect()
     }
@@ -325,7 +348,7 @@ impl Home {
         let now_ignored: Vec<DeviceId> = self
             .devices
             .keys()
-            .filter(|id| self.is_ignored(id))
+            .filter(|id| self.is_held(id))
             .cloned()
             .collect();
         for id in now_ignored {
@@ -334,7 +357,7 @@ impl Home {
         let no_longer_ignored: Vec<DeviceId> = self
             .ignored
             .keys()
-            .filter(|id| !self.is_ignored(id))
+            .filter(|id| !self.is_held(id))
             .cloned()
             .collect();
         for id in no_longer_ignored {
@@ -387,7 +410,7 @@ impl Home {
             .map_err(|e| Rejected(e.to_string()))?;
         let unique_id = &description.unique_id;
         let ignored_id = device_id_for(integration, unique_id);
-        if self.is_ignored(&ignored_id) {
+        if self.is_held(&ignored_id) {
             match self.ignored.get_mut(&ignored_id) {
                 Some(ignored) => ignored.description = description,
                 None => {
@@ -1462,6 +1485,7 @@ mod tests {
 
     fn called(what: &str) -> irori_types::DeviceSettings {
         irori_types::DeviceSettings {
+            added: false,
             name: Some(name(what)),
             description: None,
             area: Placement::Unsaid,
@@ -1471,6 +1495,7 @@ mod tests {
 
     fn in_room(area: &str) -> irori_types::DeviceSettings {
         irori_types::DeviceSettings {
+            added: false,
             name: None,
             description: None,
             area: Placement::In(AreaId::try_from(area).expect("valid")),
@@ -1480,6 +1505,7 @@ mod tests {
 
     fn nowhere() -> irori_types::DeviceSettings {
         irori_types::DeviceSettings {
+            added: false,
             name: None,
             description: None,
             area: Placement::Nowhere,
@@ -1636,8 +1662,8 @@ mod tests {
                 .any(|e| matches!(e, Event::DeviceRemoved { .. })),
             "{events:?}"
         );
-        assert_eq!(home.ignored_devices().len(), 1);
-        assert_eq!(home.ignored_devices()[0].name.as_str(), "Desk lamp");
+        assert_eq!(home.held_devices().len(), 1);
+        assert_eq!(home.held_devices()[0].name.as_str(), "Desk lamp");
 
         // The integration carries on as usual, and nothing it says is an error.
         home.describe_device(&integration(), device("lamp", "Desk lamp v2"))
@@ -1662,7 +1688,7 @@ mod tests {
         );
 
         home.settle(Settings::default());
-        assert!(home.ignored_devices().is_empty());
+        assert!(home.held_devices().is_empty());
         assert_eq!(
             device_named(&home, "demo_lamp"),
             "Desk lamp v2",
@@ -1690,12 +1716,108 @@ mod tests {
         )
         .expect("entity");
         assert!(home.devices.is_empty() && home.entities.is_empty());
-        assert_eq!(home.ignored_devices().len(), 1);
+        assert_eq!(home.held_devices().len(), 1);
 
         // And an integration that removes it while ignored is taken at its word.
         home.remove_device(&integration(), &uid("lamp"))
             .expect("removed");
-        assert!(home.ignored_devices().is_empty());
+        assert!(home.held_devices().is_empty());
+    }
+
+    /// While Irori asks before adding, a new device waits outside the home until a person adds
+    /// it, then joins as it is now. One already added joins as soon as it's found.
+    #[test]
+    fn a_new_device_waits_to_be_added_while_irori_asks() {
+        let asking = |added: &[&str]| Settings {
+            ask_before_adding: true,
+            devices: added
+                .iter()
+                .map(|unique| {
+                    (
+                        key(unique),
+                        irori_types::DeviceSettings {
+                            added: true,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
+            ..Settings::default()
+        };
+        let mut home = Home::default();
+        home.settle(asking(&["plug"]));
+        home.describe_device(&integration(), device("lamp", "Desk lamp"))
+            .expect("lamp");
+        home.describe_entity(
+            &integration(),
+            &ALL,
+            entity("lamp-light", None, Some("lamp"), dimmable()),
+            &stamp(0),
+        )
+        .expect("light");
+        home.describe_device(&integration(), device("plug", "Plug"))
+            .expect("plug");
+
+        assert_eq!(
+            home.devices
+                .keys()
+                .map(DeviceId::as_str)
+                .collect::<Vec<_>>(),
+            ["demo_plug"],
+            "the plug was added before it was found"
+        );
+        let held = home.held_devices();
+        assert_eq!(held.len(), 1);
+        assert_eq!((held[0].id.as_str(), held[0].why), ("demo_lamp", Held::New));
+
+        home.settle(asking(&["plug", "lamp"]));
+        assert!(home.devices.contains_key(&key("lamp")));
+        assert!(home.entities.contains_key(&lamp_id()), "with its entities");
+        assert!(home.held_devices().is_empty());
+    }
+
+    /// Ignored stays ignored whether or not Irori asks; stopping asking lets every new device in.
+    #[test]
+    fn stopping_asking_lets_new_devices_in_but_not_ignored_ones() {
+        let mut home = Home::default();
+        home.settle(Settings {
+            ask_before_adding: true,
+            devices: [(
+                key("plug"),
+                irori_types::DeviceSettings {
+                    ignored: true,
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            ..Settings::default()
+        });
+        home.describe_device(&integration(), device("lamp", "Desk lamp"))
+            .expect("lamp");
+        home.describe_device(&integration(), device("plug", "Plug"))
+            .expect("plug");
+        let mut why: Vec<_> = home
+            .held_devices()
+            .into_iter()
+            .map(|held| held.why)
+            .collect();
+        why.sort_by_key(|why| format!("{why:?}"));
+        assert_eq!(why, [Held::Ignored, Held::New]);
+
+        home.settle(Settings {
+            devices: [(
+                key("plug"),
+                irori_types::DeviceSettings {
+                    ignored: true,
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            ..Settings::default()
+        });
+        assert!(home.devices.contains_key(&key("lamp")));
+        assert_eq!(home.held_devices().len(), 1);
+        assert_eq!(home.held_devices()[0].why, Held::Ignored);
     }
 
     #[test]
@@ -1903,11 +2025,13 @@ mod tests {
     fn a_device_that_arrives_later_is_named_and_placed_as_it_appears() {
         let mut home = Home::default();
         home.settle(Settings {
+            ask_before_adding: false,
             floors: Vec::new(),
             areas: vec![area("study", "Study")],
             devices: [(
                 key("lamp"),
                 irori_types::DeviceSettings {
+                    added: false,
                     name: Some(name("Reading lamp")),
                     description: None,
                     area: Placement::In(AreaId::try_from("study").expect("valid")),

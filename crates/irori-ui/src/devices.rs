@@ -186,6 +186,7 @@ pub fn Devices() -> impl IntoView {
             })
         }}
         {move || adding.get().then(|| view! { <AddDevice /> })}
+        <NewDevices />
 
         {move || (showing.get() != Showing::Helpers).then(|| view! {
             <input
@@ -433,7 +434,14 @@ pub fn icon(integration: &str, has_icon: bool) -> AnyView {
 #[component]
 fn Ignored() -> impl IntoView {
     let live = expect_context::<crate::Live>();
-    let ignored = Memo::new(move |_| live.home.get().ignored);
+    let ignored = Memo::new(move |_| {
+        live.home
+            .get()
+            .held
+            .into_iter()
+            .filter(|held| held.why == "ignored")
+            .collect::<Vec<_>>()
+    });
     let trouble = RwSignal::new(None::<String>);
     move || {
         let all = ignored.get();
@@ -483,6 +491,100 @@ fn Ignored() -> impl IntoView {
             }
         })
     }
+}
+
+/// Devices found while Irori asks before adding them (`irori.toml`, `[devices] new = "ask"`),
+/// each waiting for a person to add or ignore it. Nothing shows when nothing waits.
+#[component]
+fn NewDevices() -> impl IntoView {
+    let live = expect_context::<crate::Live>();
+    let waiting = Memo::new(move |_| {
+        live.home
+            .get()
+            .held
+            .into_iter()
+            .filter(|held| held.why == "new")
+            .collect::<Vec<_>>()
+    });
+    let trouble = RwSignal::new(None::<String>);
+    let decide = move |ids: Vec<irori_types::DeviceId>, add: bool| {
+        spawn_local(async move {
+            for id in ids {
+                let edit = crate::api::DeviceEdit {
+                    added: add.then_some(true),
+                    ignored: (!add).then_some(true),
+                    ..Default::default()
+                };
+                if let Err(why) = crate::api::edit_device(&id, &edit).await {
+                    trouble.set(Some(why));
+                    break;
+                }
+            }
+            crate::refresh(live);
+        });
+    };
+    move || {
+        let all = waiting.get();
+        (!all.is_empty()).then(|| {
+            let count = all.len();
+            let every: Vec<_> = all.iter().map(|device| device.id.clone()).collect();
+            view! {
+                <section class="card waiting new-devices">
+                    <div class="room-head">
+                        <h2>
+                            {format!("{count} new device{} found", if count == 1 { "" } else { "s" })}
+                        </h2>
+                        {(count > 1).then(|| {
+                            let every = every.clone();
+                            view! {
+                                <span class="room-actions">
+                                    <button type="button" on:click=move |_| decide(every.clone(), true)>
+                                        "Add all"
+                                    </button>
+                                </span>
+                            }
+                        })}
+                    </div>
+                    <p class="muted small">
+                        "Irori asks before adding what it finds. Add a device to use it, or ignore "
+                        "it to stop being asked."
+                    </p>
+                    {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
+                    <ul class="room-devices">
+                        {all
+                            .into_iter()
+                            .map(|device| {
+                                let (add, ignore) = (device.id.clone(), device.id.clone());
+                                view! {
+                                    <li>
+                                        {icon(&device.integration, has_icon(live, &device.integration))}
+                                        <span class="name">{device.name.to_string()}</span>
+                                        <span class="muted small">{device.integration.clone()}</span>
+                                        <span class="room-actions">
+                                            <button type="button" on:click=move |_| decide(vec![add.clone()], true)>
+                                                "Add"
+                                            </button>
+                                            <button type="button" on:click=move |_| decide(vec![ignore.clone()], false)>
+                                                "Ignore"
+                                            </button>
+                                        </span>
+                                    </li>
+                                }
+                            })
+                            .collect_view()}
+                    </ul>
+                </section>
+            }
+        })
+    }
+}
+
+fn has_icon(live: crate::Live, integration: &str) -> bool {
+    live.home
+        .get_untracked()
+        .extensions
+        .iter()
+        .any(|(id, extension)| id.as_str() == integration && extension.has_icon)
 }
 
 /// Helpers don't exist yet. Saying what they will be is more use than an empty tab.

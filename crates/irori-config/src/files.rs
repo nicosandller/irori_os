@@ -97,6 +97,8 @@ struct RawDevice {
     area: Option<RawPlacement>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     ignored: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    added: bool,
 }
 
 /// `area = "hall"` for a room, `area = false` for "not in one, and don't ask the device".
@@ -189,6 +191,7 @@ pub fn read_devices(text: &str) -> Result<BTreeMap<DeviceId, DeviceSettings>, St
                     description: raw.description,
                     area,
                     ignored: raw.ignored,
+                    added: raw.added,
                 },
             ))
         })
@@ -218,6 +221,27 @@ pub struct IroriSettings {
     pub server: ServerSettings,
     #[serde(default)]
     pub extensions: ExtensionsSection,
+    #[serde(default)]
+    pub devices: DevicesSection,
+}
+
+/// `[devices]`. Applied while Irori runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DevicesSection {
+    /// What happens to a device Irori finds and hasn't been told about.
+    #[serde(default)]
+    pub new: NewDevices,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NewDevices {
+    /// It joins the home straight away. The default: nothing to set up.
+    #[default]
+    Add,
+    /// It waits on the Devices page until a person adds or ignores it.
+    Ask,
 }
 
 /// `[server]`: what command-line flags also say. A flag, or its environment variable, wins over
@@ -346,6 +370,7 @@ pub fn write(file: File, settings: &Settings) -> String {
                             description: device.description.clone(),
                             area: RawPlacement::of(&device.area),
                             ignored: device.ignored,
+                            added: device.added,
                         },
                     )
                 })
@@ -434,6 +459,13 @@ mod tests {
         assert_eq!(read_irori("").expect("empty"), IroriSettings::default());
         assert!(read_irori("[server]\nlog_level = \"loud\"\n").is_err());
         assert!(read_irori("[server]\nport = 80\n").is_err());
+        let asking = read_irori("[devices]\nnew = \"ask\"\n").expect("valid");
+        assert_eq!(asking.devices.new, NewDevices::Ask);
+        assert_eq!(
+            IroriSettings::default().devices.new,
+            NewDevices::Add,
+            "adding is the default"
+        );
     }
 
     #[test]
@@ -536,6 +568,7 @@ mod tests {
     #[test]
     fn what_is_written_reads_back_the_same() {
         let settings = Settings {
+            ask_before_adding: false,
             floors: vec![Floor {
                 id: "ground".parse().expect("valid"),
                 name: name("Ground floor"),
@@ -551,6 +584,7 @@ mod tests {
                     .parse::<DeviceId>()
                     .expect("valid"),
                 DeviceSettings {
+                    added: false,
                     name: Some(name("Hallway radar")),
                     description: Some("By the door".parse().expect("valid")),
                     area: Placement::In(area_id("hall")),
@@ -594,6 +628,7 @@ mod tests {
                 (
                     "demo_plug".parse::<DeviceId>().expect("valid"),
                     DeviceSettings {
+                        added: false,
                         name: Some(name("Plug")),
                         description: None,
                         area: Placement::Unsaid,
