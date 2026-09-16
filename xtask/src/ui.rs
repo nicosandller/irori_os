@@ -75,6 +75,27 @@ fn empty(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Builds the UI and installs the binary, so `irori run` works from anywhere.
+pub fn install() -> anyhow::Result<()> {
+    run()?;
+    let root = workspace_root();
+    println!("installing the irori binary...");
+    let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .args(["install", "--locked", "--path", "crates/irori"])
+        .current_dir(&root)
+        .status()
+        .context("failed to run `cargo install`")?;
+    if !status.success() {
+        bail!("`cargo install` failed ({status})");
+    }
+    println!(
+        "\nInstalled. Start Irori from anywhere with:\n\n    irori run\n\n\
+         If that isn't found, add cargo's bin directory to your PATH:\n\n    \
+         export PATH=\"$HOME/.cargo/bin:$PATH\"\n"
+    );
+    Ok(())
+}
+
 fn workspace_root() -> PathBuf {
     // `xtask/` is one level below the workspace root, wherever the repository is checked out.
     Path::new(env!("CARGO_MANIFEST_DIR"))

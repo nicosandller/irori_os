@@ -14,10 +14,19 @@
 
 ## Build and run
 
-Requires stable Rust (pinned via `rust-toolchain.toml`).
+Requires stable Rust (pinned via `rust-toolchain.toml`). One command builds the UI and installs
+the binary, after which Irori runs from anywhere:
 
 ```sh
-cargo run -- serve                    # http://127.0.0.1:8480
+cargo install trunk --locked          # once: builds the UI to wasm
+cargo xtask install                   # build the UI, install `irori`
+irori run                             # http://127.0.0.1:8480
+```
+
+Or straight from the checkout, without installing:
+
+```sh
+cargo run -- serve                    # http://127.0.0.1:8480 (`run` also works)
 cargo run -- serve --log-level debug  # also log every device and state change
 cargo run -- serve --data /var/lib/irori
 curl -s http://127.0.0.1:8480/api/dev/home     # temporary API: the whole home in one response
@@ -26,13 +35,9 @@ cargo run -- version --json
 ```
 
 The **web UI** is a separate wasm crate, so `cargo build` alone doesn't need a wasm toolchain and
-serves a placeholder page at `/`. Build it once to get the Devices page:
-
-```sh
-cargo install trunk --locked          # once
-cargo xtask ui                        # build the UI into the folder the binary embeds
-cargo run -- serve                    # http://127.0.0.1:8480 now shows your devices
-```
+serves a placeholder page at `/`. `cargo xtask install` above builds it; `cargo xtask ui` builds
+it without installing. It has a Home page (what Irori is looking after) and a Devices page
+(everything, with switches and an **Add device** panel explaining where devices come from).
 
 See [crates/irori-ui/README.md](crates/irori-ui/README.md) for working on the UI itself (live
 reload, no binary rebuild). CI builds it, so downloaded release binaries always have it.

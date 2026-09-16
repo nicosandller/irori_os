@@ -51,7 +51,9 @@ if grep -q '"features":\[[^]]*"int-demo"' <<<"$health"; then
     local extensions states
     extensions="$(curl -fsS --max-time 2 "$base_url/api/dev/extensions" 2>/dev/null)" || return 1
     states="$(curl -fsS --max-time 2 "$base_url/api/dev/states" 2>/dev/null)" || return 1
-    grep -q '"demo":{"state":"running"' <<<"$extensions" &&
+    # Matched inside the extension's own object, so the check doesn't depend on which order
+    # the fields happen to be serialized in.
+    grep -qE '"demo":\{[^{}]*"state":"running"' <<<"$extensions" &&
       grep -q '"entity_id":"light.demo_lamp"' <<<"$states"
   }
   until demo_ready; do
@@ -66,7 +68,7 @@ if grep -q '"features":\[[^]]*"int-esphome"' <<<"$health"; then
   # it sits listening. Devices are a property of the network, so they aren't asserted here.
   extensions="$(curl -fsS --max-time 2 "$base_url/api/dev/extensions" 2>/dev/null)" || \
     fail "can't read the extensions view"
-  grep -q '"esphome":{"state":"running"' <<<"$extensions" ||
+  grep -qE '"esphome":\{[^{}]*"state":"running"' <<<"$extensions" ||
     fail "the esphome extension isn't running: $extensions"
   echo "extensions: esphome running"
 fi

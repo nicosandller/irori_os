@@ -25,12 +25,63 @@
            font: 16px/1.5 var(--sans); }
     main { max-width: 42rem; margin: 0 auto; }
 
-    header { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.25rem; }
-    header svg { width: 2rem; height: 2rem; flex: none; }
-    h1 { margin: 0; font-size: 1.5rem; font-weight: 500; letter-spacing: -0.02em; }
+    /* Navigation: the same row on every page, so nothing moves when you switch. */
+    nav { max-width: 42rem; margin: 0 auto 1.5rem; display: flex; align-items: center;
+          gap: 1.25rem; padding-bottom: .75rem; border-bottom: 1px solid var(--line); }
+    nav .mark { display: flex; align-items: center; gap: .5rem; font-weight: 500; }
+    nav svg { width: 1.5rem; height: 1.5rem; flex: none; }
+    nav a { color: var(--muted); text-decoration: none; font-size: .95rem; padding: .15rem 0;
+            border-bottom: 2px solid transparent; }
+    nav a:hover { color: var(--fg); }
+    nav a[aria-current="page"] { color: var(--fg); border-bottom-color: var(--ember); }
+    h1 { margin: 0 0 .25rem; font-size: 1.5rem; font-weight: 500; letter-spacing: -0.02em; }
+    h2 { margin: 0 0 .6rem; font-size: 1rem; font-weight: 500; }
+    .lede { margin: 0 0 1.5rem; color: var(--muted); }
+    .small { font-size: .8rem; }
     .live { margin-left: auto; display: flex; align-items: center; gap: .45rem;
             color: var(--muted); font: .7rem/1 var(--mono); letter-spacing: .08em;
             text-transform: uppercase; }
+
+    /* The page heading row, with whatever action belongs to that page. */
+    .page-head { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.25rem; }
+    .page-head h1 { margin: 0; }
+    .add { margin-left: auto; padding: .4rem .75rem; font: inherit; font-size: .9rem;
+           color: var(--fg); background: var(--card); border: 1px solid var(--line);
+           border-radius: .4rem; cursor: pointer; }
+    .add:hover { border-color: var(--ember); color: var(--ember); }
+
+    .card { margin-bottom: 1.5rem; padding: 1rem 1.25rem; border: 1px solid var(--line);
+            border-radius: .5rem; background: var(--card); }
+    .card dl { display: grid; grid-template-columns: max-content 1fr; gap: .3rem 1.25rem;
+               margin: 0; }
+    .card dt { color: var(--muted); font: .7rem/1.8 var(--mono); letter-spacing: .08em;
+               text-transform: uppercase; }
+    .card dd { margin: 0; font-family: var(--mono); font-size: .85rem;
+               overflow-wrap: anywhere; }
+
+    /* Counts, big enough to read from across the room. */
+    .tiles { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 1.5rem; }
+    .tiles .tile { flex: 1 1 8rem; padding: .9rem 1rem; border: 1px solid var(--line);
+                   border-radius: .5rem; background: var(--card); text-decoration: none;
+                   color: inherit; display: block; }
+    .tiles a.tile:hover { border-color: var(--ember); }
+    .tiles .count { display: block; font-size: 1.75rem; font-weight: 500;
+                    font-variant-numeric: tabular-nums; }
+    .tiles .label { display: block; color: var(--muted); font-size: .8rem; }
+
+    /* Extensions, on the home page and in the add-device panel. */
+    .extensions, .integrations { margin: 0; padding: 0; list-style: none; }
+    .extensions li { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem;
+                     padding: .4rem 0; border-bottom: 1px solid var(--line); }
+    .extensions li:last-child { border-bottom: none; }
+    .integrations li { padding: .75rem 0; border-bottom: 1px solid var(--line); }
+    .integrations li:last-child { border-bottom: none; }
+    .integration-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem; }
+    .integrations p { margin: .25rem 0 0; }
+    .name { font-weight: 500; }
+    .state { color: var(--muted); font: .7rem var(--mono); letter-spacing: .08em;
+             text-transform: uppercase; }
+    .state.ok { color: var(--ember); }
     .dot { width: .5rem; height: .5rem; border-radius: 2px; background: var(--muted); }
     .dot.ok { background: var(--ember); box-shadow: 0 0 .4rem var(--ember); }
 
@@ -81,13 +132,9 @@
     .toggle:disabled { cursor: progress; opacity: .5; }
     .toggle.unknown .knob { transform: translateX(.67rem); }
 
-    .extensions { margin-top: 2.5rem; color: var(--muted); font-size: .8rem; }
-    .extensions h2 { margin: 0 0 .4rem; font: .7rem/1.6 var(--mono); letter-spacing: .08em;
-                     text-transform: uppercase; }
-    .extensions li { list-style: none; }
-    .extensions ul { margin: 0; padding: 0; }
-    .extensions .ext-id { font-family: var(--mono); color: var(--fg); }
     .empty { color: var(--muted); }
+    .muted { color: var(--muted); }
+    a { color: var(--ember); }
   </style>
 </head>
 <body></body>

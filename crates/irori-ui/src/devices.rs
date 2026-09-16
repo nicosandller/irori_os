@@ -87,7 +87,111 @@ pub fn groups(home: &Home, needle: &str) -> Vec<Group> {
         .collect()
 }
 
-pub fn view(home: &Home, needle: &str, controls: Controls) -> AnyView {
+#[component]
+pub fn Devices() -> impl IntoView {
+    let live = expect_context::<crate::Live>();
+    let controls = expect_context::<Controls>();
+    let filter = RwSignal::new(String::new());
+    let adding = RwSignal::new(false);
+
+    view! {
+        <div class="page-head">
+            <h1>"Devices"</h1>
+            <button type="button" class="add" on:click=move |_| adding.update(|a| *a = !*a)>
+                {move || if adding.get() { "Close" } else { "+ Add device" }}
+            </button>
+        </div>
+
+        {move || adding.get().then(|| view! { <AddDevice /> })}
+
+        <input
+            class="filter"
+            type="search"
+            placeholder="Filter by name or id"
+            aria-label="Filter devices"
+            prop:value=filter
+            on:input:target=move |ev| filter.set(ev.target().value())
+        />
+
+        {move || view(&live.home.get(), &filter.get(), controls)}
+    }
+}
+
+/// Where devices come from, and how to get more of them.
+///
+/// There's no "scan now" button because there's nothing to scan on demand: integrations that
+/// find devices are always listening. And there's no way to adopt one device but not another
+/// yet — that needs somewhere to record the decision, which is the config dir (M0.7).
+#[component]
+fn AddDevice() -> impl IntoView {
+    let live = expect_context::<crate::Live>();
+
+    view! {
+        <section class="card add-device">
+            <h2>"Where devices come from"</h2>
+            <p class="muted">
+                "Irori doesn't talk to devices itself: each kind of device arrives through an "
+                "extension. These are the ones this build has."
+            </p>
+            <ul class="integrations">
+                {move || {
+                    let home = live.home.get();
+                    home.extensions
+                        .iter()
+                        .map(|(id, extension)| {
+                            let devices = home
+                                .devices
+                                .iter()
+                                .filter(|device| device.integration.as_str() == id.as_str())
+                                .count();
+                            let kinds = extension.entity_kinds.join(", ");
+                            view! {
+                                <li>
+                                    <div class="integration-head">
+                                        <span class="name">{extension.name.clone()}</span>
+                                        <span class="badge">{how(&extension.iot_class)}</span>
+                                        <span class="state" class:ok=extension.state == "running">
+                                            {extension.state.clone()}
+                                        </span>
+                                    </div>
+                                    <p class="muted">
+                                        {extension.description.clone().unwrap_or_default()}
+                                    </p>
+                                    <p class="muted small">
+                                        {format!(
+                                            "Provides {kinds}. {devices} device{} here now.",
+                                            if devices == 1 { "" } else { "s" },
+                                        )}
+                                    </p>
+                                </li>
+                            }
+                        })
+                        .collect_view()
+                }}
+            </ul>
+            <p class="muted small">
+                "Devices appear on their own: an extension that can find them is always "
+                "listening, so flashing a board or plugging one in is all it takes. Choosing "
+                "which found devices to keep, giving one an address by hand, and holding the "
+                "keys encrypted devices need all wait for Irori's config dir (M0.7)."
+            </p>
+        </section>
+    }
+}
+
+/// Plain words for an `iot_class`: where the device's brain is and what it needs.
+fn how(iot_class: &Option<String>) -> &'static str {
+    match iot_class.as_deref() {
+        Some("local_push") => "local · pushes",
+        Some("local_polling") => "local · polled",
+        Some("cloud_push") => "cloud · pushes",
+        Some("cloud_polling") => "cloud · polled",
+        Some("assumed_state") => "no feedback",
+        _ => "unknown",
+    }
+}
+
+fn view(home: &Home, needle: &str, controls: Controls) -> AnyView {
     let groups = groups(home, needle);
     if groups.is_empty() {
         let message = if home.entities.is_empty() {
