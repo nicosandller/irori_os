@@ -36,6 +36,16 @@ cargo run -- serve                       # the core, with the demo devices, on 8
 cd crates/irori-ui && trunk serve --open # the page on 8080, API proxied to 8480
 ```
 
+## The pages
+
+| | |
+|---|---|
+| **Home** (`/`) | What Irori is looking after: how many devices and entities, which extensions are running and how many devices each brings in, and Irori's own version, uptime and database. |
+| **Devices** (`/devices`) | Everything in the home, grouped by device, with switches. **Add device** explains where devices come from — every installed integration, what it's for, and what it can provide — because nothing is typed in by hand yet. |
+
+Routing is client-side (`leptos_router`), so the binary serves the app for any path that isn't a
+file, and the app decides what to show.
+
 ## What it does
 
 - Lists every entity, grouped by the device it belongs to, sorted by name.
@@ -76,10 +86,10 @@ mobile reach that a page served by the core doesn't need. The spikes are in the 
 ## The size budget, and what a browser really downloads
 
 **Budget (ROADMAP §4.3):** under 500 KB brotli for the barebones UI. CI checks it on every pull
-request; the Devices page compresses to about 160 KB.
+request; both pages together compress to about 220 KB.
 
 That is the budget's unit, not yet what goes over the wire. `irori serve` hands these files out
-**as they are**, so a browser opening the page today downloads roughly **540 KB** — the wasm is
+**as they are**, so a browser opening the page today downloads roughly **730 KB** — the wasm is
 most of it. Serving precompressed assets with `Accept-Encoding` negotiation is part of the plan
 (ROADMAP §2.2) and hasn't been done; until it is, read the 160 KB as "this fits, with room", not
 as the transfer. On a LAN the difference is a fraction of a second; over a slow link it isn't.
