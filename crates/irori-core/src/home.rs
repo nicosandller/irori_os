@@ -100,14 +100,6 @@ impl Home {
         &self.settings
     }
 
-    pub fn device_key(&self, id: &DeviceId) -> Option<SettingsKey> {
-        let device = self.devices.get(id)?;
-        Some(SettingsKey::new(
-            device.integration.clone(),
-            device.unique_id.clone(),
-        ))
-    }
-
     pub fn entity_key(&self, id: &EntityId) -> Option<SettingsKey> {
         let entity = self.entities.get(id)?;
         Some(SettingsKey::new(
@@ -116,21 +108,18 @@ impl Home {
         ))
     }
 
-    /// What a device should be called right now: the name a person gave it, else the one its
-    /// integration reports (`docs/specs/config.md` §5).
-    ///
-    /// Answers with both, so the UI can say "you named this" and offer the original back.
-    fn name_for_device(&self, id: &DeviceId, reported: &Name) -> (Name, Option<Name>) {
-        match self
-            .device_key(id)
-            .and_then(|key| self.settings.devices.get(&key)?.name.clone())
-        {
-            Some(chosen) => {
-                let was = (&chosen != reported).then(|| reported.clone());
-                (chosen, was)
-            }
-            None => (reported.clone(), None),
-        }
+    /// What a device is called: the name a person gave it, else the one its integration reports
+    /// (`docs/specs/config.md` §5). One name, never two side by side (ROADMAP D36).
+    fn name_for_device(&self, id: &DeviceId, reported: &Name) -> Name {
+        self.settings
+            .devices
+            .get(id)
+            .and_then(|settings| settings.name.clone())
+            .unwrap_or_else(|| reported.clone())
+    }
+
+    fn description_for_device(&self, id: &DeviceId) -> Option<irori_types::Description> {
+        self.settings.devices.get(id)?.description.clone()
     }
 
     /// Which room a device is in: the one a person put it in, else one whose name matches what
@@ -142,33 +131,29 @@ impl Home {
     /// that's an answer, and the suggestion doesn't get to overrule it.
     fn area_for_device(&self, id: &DeviceId, suggested: Option<&Name>) -> Option<AreaId> {
         let chosen = self
-            .device_key(id)
-            .and_then(|key| self.settings.devices.get(&key).map(|d| d.area.clone()))
+            .settings
+            .devices
+            .get(id)
+            .map(|settings| settings.area.clone())
             .unwrap_or_default();
         placed(&self.settings, &chosen, suggested)
     }
 
-    /// What an entity should be called: the name a person gave it, else the one its integration
+    /// What an entity is called: the name a person gave it, else the one its integration
     /// reports, else its device's name — which it goes on following.
-    ///
-    /// Answers with what it would be called without the person's name, as `name_for_device` does.
-    fn name_for_entity(&self, id: &EntityId, device_id: Option<&DeviceId>) -> (Name, Option<Name>) {
-        let otherwise = match self.reported_entity_names.get(id) {
+    fn name_for_entity(&self, id: &EntityId, device_id: Option<&DeviceId>) -> Name {
+        if let Some(chosen) = self
+            .entity_key(id)
+            .and_then(|key| self.settings.entities.get(&key)?.name.clone())
+        {
+            return chosen;
+        }
+        match self.reported_entity_names.get(id) {
             Some(reported) => reported.clone(),
             None => device_id
                 .and_then(|device| self.devices.get(device))
                 .map(|device| device.name.clone())
                 .expect("a nameless entity has a device (EntityDescription::validate)"),
-        };
-        match self
-            .entity_key(id)
-            .and_then(|key| self.settings.entities.get(&key)?.name.clone())
-        {
-            Some(chosen) => {
-                let was = (chosen != otherwise).then_some(otherwise);
-                (chosen, was)
-            }
-            None => (otherwise, None),
         }
     }
 
@@ -185,15 +170,17 @@ impl Home {
 
         for id in self.devices.keys().cloned().collect::<Vec<_>>() {
             let reported = self.reported_device_names[&id].clone();
-            let (name, renamed_from) = self.name_for_device(&id, &reported);
+            let name = self.name_for_device(&id, &reported);
+            let description = self.description_for_device(&id);
             let suggested = self.devices[&id].suggested_area.clone();
             let area_id = self.area_for_device(&id, suggested.as_ref());
             let device = self.devices.get_mut(&id).expect("just read");
-            if device.name == name && device.area_id == area_id {
+            if device.name == name && device.area_id == area_id && device.description == description
+            {
                 continue;
             }
             device.name = name;
-            device.renamed_from = renamed_from;
+            device.description = description;
             device.area_id = area_id;
             events.push(Event::DeviceUpdated {
                 device: device.clone(),
@@ -202,13 +189,12 @@ impl Home {
 
         for id in self.entities.keys().cloned().collect::<Vec<_>>() {
             let device_id = self.entities[&id].device_id.clone();
-            let (name, renamed_from) = self.name_for_entity(&id, device_id.as_ref());
+            let name = self.name_for_entity(&id, device_id.as_ref());
             let entity = self.entities.get_mut(&id).expect("just read");
             if entity.name == name {
                 continue;
             }
             entity.name = name;
-            entity.renamed_from = renamed_from;
             events.push(Event::EntityUpdated {
                 entity: entity.clone(),
             });
@@ -250,12 +236,11 @@ impl Home {
             }
             self.reported_device_names
                 .insert(id.clone(), description.name.clone());
-            let (name, renamed_from) = self.name_for_device(&id, &description.name);
+            let name = self.name_for_device(&id, &description.name);
             let area_id = self.area_for_device(&id, description.suggested_area.as_ref());
             let device = self.devices.get_mut(&id).expect("keys and devices agree");
             let before = device.clone();
             device.name = name;
-            device.renamed_from = renamed_from;
             device.manufacturer = description.manufacturer;
             device.model = description.model;
             device.sw_version = description.sw_version;
@@ -278,13 +263,12 @@ impl Home {
                 for entity_id in following {
                     // Not every entity of a renamed device follows it: one with a name of its
                     // own, from the integration or from a person, keeps it.
-                    let (name, renamed_from) = self.name_for_entity(&entity_id, Some(&id));
+                    let name = self.name_for_entity(&entity_id, Some(&id));
                     let entity = self.entities.get_mut(&entity_id).expect("just listed");
                     if entity.name == name {
                         continue;
                     }
                     entity.name = name;
-                    entity.renamed_from = renamed_from;
                     events.push(Event::EntityUpdated {
                         entity: entity.clone(),
                     });
@@ -294,19 +278,23 @@ impl Home {
             return Ok(events);
         }
 
-        let key = SettingsKey::new(integration.clone(), description.unique_id.clone());
-        let settings = self.settings.devices.get(&key);
-        // The id follows the name a person chose, so the device's address in the UI reads the way
-        // they named it. That means a rename changes the id at the next restart, not at the
-        // rename — ids stop moving when the registry itself is kept (M1.3).
+        // The one id, from what never changes: never from a name, so a rename can't move it and
+        // it's the same after every restart (ROADMAP D36).
+        let id = device_id_for(integration, &description.unique_id);
+        if let Some(holder) = self.devices.get(&id) {
+            // Two handles that differ only in case or punctuation. Vanishingly rare for real
+            // hardware addresses, and refusing says so plainly where renumbering one of them
+            // would make its id depend on which device happened to be found first.
+            return Err(Rejected(format!(
+                "device `{unique_id}` would have the id `{id}`, which `{}` already has; its \
+                 unique_id has to differ by more than case or punctuation",
+                holder.unique_id
+            )));
+        }
+        let settings = self.settings.devices.get(&id);
         let name = settings
             .and_then(|settings| settings.name.clone())
             .unwrap_or_else(|| description.name.clone());
-        let renamed_from = (name != description.name).then(|| description.name.clone());
-        let id = unique_id_for(&slugify(name.as_str()), "device", |c| {
-            DeviceId::try_from(c).is_ok_and(|id| self.devices.contains_key(&id))
-        });
-        let id = DeviceId::try_from(id).expect("unique_id_for returns a slug");
         let area_id = placed(
             &self.settings,
             &settings
@@ -319,7 +307,7 @@ impl Home {
             integration: integration.clone(),
             unique_id: description.unique_id.clone(),
             name,
-            renamed_from,
+            description: settings.and_then(|settings| settings.description.clone()),
             manufacturer: description.manufacturer,
             model: description.model,
             sw_version: description.sw_version,
@@ -397,10 +385,9 @@ impl Home {
                     self.reported_entity_names.remove(&id);
                 }
             }
-            let (name, renamed_from) = self.name_for_entity(&id, device_id.as_ref());
+            let name = self.name_for_entity(&id, device_id.as_ref());
             let entity = self.entities.get_mut(&id).expect("keys and entities agree");
             entity.name = name;
-            entity.renamed_from = renamed_from;
             entity.capabilities = description.capabilities;
             entity.device_id = device_id;
             let mut events = if *entity == before {
@@ -468,18 +455,18 @@ impl Home {
                 unreachable!("EntityDescription::validate requires a name or a device")
             }
         };
-        let renamed_from = chosen
-            .as_ref()
-            .is_some_and(|chosen| chosen != &otherwise)
-            .then(|| otherwise.clone());
-        let name: Name = chosen.unwrap_or(otherwise);
+        // The id is built from the device's id and the name the integration gave the entity —
+        // never from a name a person chose, and never from the device's name, so renaming either
+        // can't leave an id that says something else (ROADMAP D36).
         let base = match (&description.suggested_object_id, &description.name, device) {
             (Some(object_id), _, _) => object_id.as_str().to_owned(),
-            (None, Some(_), Some(device)) => {
-                slugify(&format!("{} {}", device.name.as_str(), name.as_str()))
+            (None, Some(reported), Some(device)) => {
+                slugify(&format!("{} {}", device.id.as_str(), reported.as_str()))
             }
-            (None, _, _) => slugify(name.as_str()),
+            (None, None, Some(device)) => device.id.as_str().to_owned(),
+            (None, _, None) => slugify(otherwise.as_str()),
         };
+        let name: Name = chosen.unwrap_or(otherwise);
         let object_id = unique_id_for(&base, kind.domain(), |c| {
             EntityId::new(kind, c).is_ok_and(|id| self.entities.contains_key(&id))
         });
@@ -489,7 +476,6 @@ impl Home {
             integration: integration.clone(),
             unique_id: description.unique_id.clone(),
             name,
-            renamed_from,
             device_id,
             area_id: None,
             capabilities: description.capabilities,
@@ -1000,6 +986,45 @@ pub(crate) fn slugify(text: &str) -> String {
     slug.trim_end_matches('_').to_owned()
 }
 
+/// A device's id: its integration and the integration's permanent handle for it, as a slug —
+/// `esphome_30_83_98_ca_6a_08`. A pure function of the two, so it's the same after every restart
+/// and whatever the device is called (ROADMAP D36).
+///
+/// A handle too long for an id keeps its beginning and gains a hash of the whole, so two long
+/// handles that start the same still get different ids.
+pub fn device_id_for(integration: &IntegrationId, unique_id: &UniqueId) -> DeviceId {
+    let mut slug = String::new();
+    let mut separate = false;
+    for c in format!("{integration} {unique_id}").chars() {
+        if c.is_ascii_alphanumeric() {
+            if separate && !slug.is_empty() {
+                slug.push('_');
+            }
+            separate = false;
+            slug.push(c.to_ascii_lowercase());
+        } else {
+            separate = true;
+        }
+    }
+    // A handle with nothing a slug can keep (`玄関`) would leave just the integration's name.
+    let lossless_enough = slug.len() > integration.as_str().len();
+    if slug.len() > SLUG_MAX_LEN || !lossless_enough {
+        let hash = format!("{:016x}", fnv1a(unique_id.as_str().as_bytes()));
+        let keep = SLUG_MAX_LEN - hash.len() - 1;
+        slug.truncate(keep);
+        let trimmed = slug.trim_end_matches('_');
+        slug = format!("{trimmed}_{hash}");
+    }
+    DeviceId::try_from(slug).expect("built from slug characters, within the length")
+}
+
+/// FNV-1a: tiny, stable across builds and platforms, which is all an id suffix needs.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
 /// An id for a new area, from what it's called and what's already there.
 ///
 /// Areas are the one thing a person creates directly, so their ids are made here rather than by
@@ -1133,7 +1158,7 @@ mod tests {
     }
 
     fn lamp_id() -> EntityId {
-        EntityId::try_from("light.desk_lamp").expect("valid")
+        EntityId::try_from("light.demo_lamp").expect("valid")
     }
 
     fn area(id: &str, called: &str) -> Area {
@@ -1144,13 +1169,19 @@ mod tests {
         }
     }
 
-    fn key(unique: &str) -> SettingsKey {
+    /// Device settings are by the device's id, the same id its page and the API use.
+    fn key(unique: &str) -> DeviceId {
+        device_id_for(&integration(), &uid(unique))
+    }
+
+    fn entity_key(unique: &str) -> SettingsKey {
         SettingsKey::new(integration(), uid(unique))
     }
 
     fn called(what: &str) -> irori_types::DeviceSettings {
         irori_types::DeviceSettings {
             name: Some(name(what)),
+            description: None,
             area: Placement::Unsaid,
         }
     }
@@ -1158,6 +1189,7 @@ mod tests {
     fn in_room(area: &str) -> irori_types::DeviceSettings {
         irori_types::DeviceSettings {
             name: None,
+            description: None,
             area: Placement::In(AreaId::try_from(area).expect("valid")),
         }
     }
@@ -1165,6 +1197,7 @@ mod tests {
     fn nowhere() -> irori_types::DeviceSettings {
         irori_types::DeviceSettings {
             name: None,
+            description: None,
             area: Placement::Nowhere,
         }
     }
@@ -1183,13 +1216,13 @@ mod tests {
     #[test]
     fn a_name_a_person_chose_wins_and_can_be_taken_back() {
         let mut home = home_with_lamp();
-        assert_eq!(device_named(&home, "desk_lamp"), "Desk lamp");
+        assert_eq!(device_named(&home, "demo_lamp"), "Desk lamp");
 
         let events = home.apply_settings(Settings {
             devices: [(key("lamp"), called("Reading lamp"))].into(),
             ..Settings::default()
         });
-        assert_eq!(device_named(&home, "desk_lamp"), "Reading lamp");
+        assert_eq!(device_named(&home, "demo_lamp"), "Reading lamp");
         assert_eq!(
             home.entities[&lamp_id()].name.as_str(),
             "Reading lamp",
@@ -1197,30 +1230,112 @@ mod tests {
         );
         assert_eq!(events.len(), 2, "the device and its entity: {events:?}");
 
-        // Both names are kept, so the page can say who chose this one and offer the other back.
-        let id = DeviceId::try_from("desk_lamp").expect("valid");
-        assert_eq!(
-            home.devices[&id].renamed_from.as_ref().map(Name::as_str),
-            Some("Desk lamp")
-        );
-
         home.apply_settings(Settings::default());
-        assert_eq!(device_named(&home, "desk_lamp"), "Desk lamp");
+        assert_eq!(device_named(&home, "demo_lamp"), "Desk lamp");
         assert_eq!(home.entities[&lamp_id()].name.as_str(), "Desk lamp");
-        assert_eq!(home.devices[&id].renamed_from, None);
     }
 
-    /// Choosing the name the device already had isn't a rename, and shouldn't look like one.
+    /// The whole of what Home Assistant gets wrong here: a device has one id, and nothing a
+    /// person names it can change it — not a rename, not a restart after one, not the firmware
+    /// calling it something else. The id is the integration and its permanent handle.
     #[test]
-    fn a_chosen_name_that_matches_the_reported_one_isnt_shown_as_a_rename() {
+    fn a_devices_id_never_changes_whatever_it_is_called() {
+        let id = key("lamp");
+        assert_eq!(id.as_str(), "demo_lamp");
+
         let mut home = home_with_lamp();
         home.apply_settings(Settings {
-            devices: [(key("lamp"), called("Desk lamp"))].into(),
+            devices: [(id.clone(), called("Reading lamp"))].into(),
+            ..Settings::default()
+        });
+        assert!(home.devices.contains_key(&id));
+        assert_eq!(home.entities[&lamp_id()].name.as_str(), "Reading lamp");
+
+        // As after a restart: settings first, then the integration describes it again, under
+        // a name its firmware has since changed.
+        let mut restarted = Home::default();
+        restarted.apply_settings(Settings {
+            devices: [(id.clone(), called("Reading lamp"))].into(),
+            ..Settings::default()
+        });
+        restarted
+            .describe_device(&integration(), device("lamp", "Lamp v2"))
+            .expect("device");
+        restarted
+            .describe_entity(
+                &integration(),
+                &ALL,
+                entity("lamp-light", None, Some("lamp"), dimmable()),
+                &stamp(0),
+            )
+            .expect("entity");
+        assert_eq!(restarted.devices.keys().collect::<Vec<_>>(), [&id]);
+        assert!(
+            restarted.entities.contains_key(&lamp_id()),
+            "the entity id didn't move either"
+        );
+        assert_eq!(device_named(&restarted, "demo_lamp"), "Reading lamp");
+    }
+
+    #[test]
+    fn device_ids_are_readable_where_they_can_be_and_distinct_where_they_cant() {
+        let id = |integration: &str, unique: &str| {
+            device_id_for(
+                &IntegrationId::try_from(integration).expect("valid"),
+                &uid(unique),
+            )
+            .to_string()
+        };
+        assert_eq!(
+            id("esphome", "00:11:22:33:44:55"),
+            "esphome_30_83_98_ca_6a_08"
+        );
+        assert_eq!(id("mqtt", "0x00158d0001a2b3c4"), "mqtt_0x00158d0001a2b3c4");
+        // Nothing a slug can keep: the handle is hashed rather than dropped.
+        assert_ne!(id("demo", "玄関"), id("demo", "台所"));
+        // Too long for an id: the beginning is kept, and the whole decides the ending.
+        let long_a = format!("{}a", "x".repeat(80));
+        let long_b = format!("{}b", "x".repeat(80));
+        assert_ne!(id("demo", &long_a), id("demo", &long_b));
+        assert!(id("demo", &long_a).len() <= SLUG_MAX_LEN);
+        // A pure function: asked twice, the same answer.
+        assert_eq!(id("demo", &long_a), id("demo", &long_a));
+    }
+
+    /// Two handles that differ only in case would share an id. Refused with a reason, rather
+    /// than numbered in whatever order they happened to be found.
+    #[test]
+    fn two_devices_whose_ids_would_collide_are_refused_rather_than_renumbered() {
+        let mut home = Home::default();
+        home.describe_device(&integration(), device("AB", "One"))
+            .expect("first");
+        let refused = home
+            .describe_device(&integration(), device("ab", "Two"))
+            .expect_err("same id");
+        assert!(refused.0.contains("demo_ab"), "{}", refused.0);
+    }
+
+    /// One description, set by a person, like the name.
+    #[test]
+    fn a_device_has_the_description_a_person_gave_it() {
+        let mut home = home_with_lamp();
+        home.apply_settings(Settings {
+            devices: [(
+                key("lamp"),
+                irori_types::DeviceSettings {
+                    description: Some("On the desk by the window".parse().expect("valid")),
+                    ..Default::default()
+                },
+            )]
+            .into(),
             ..Settings::default()
         });
         assert_eq!(
-            home.devices[&DeviceId::try_from("desk_lamp").expect("valid")].renamed_from,
-            None
+            home.devices[&key("lamp")]
+                .description
+                .as_ref()
+                .map(irori_types::Description::as_str),
+            Some("On the desk by the window")
         );
     }
 
@@ -1238,9 +1353,9 @@ mod tests {
         again.sw_version = Some("2026.9.0".to_owned());
         let events = home.describe_device(&integration(), again).expect("again");
 
-        assert_eq!(device_named(&home, "desk_lamp"), "Reading lamp");
+        assert_eq!(device_named(&home, "demo_lamp"), "Reading lamp");
         assert_eq!(
-            home.devices[&DeviceId::try_from("desk_lamp").expect("valid")].sw_version,
+            home.devices[&DeviceId::try_from("demo_lamp").expect("valid")].sw_version,
             Some("2026.9.0".to_owned()),
             "what the integration is entitled to say still lands"
         );
@@ -1273,7 +1388,7 @@ mod tests {
         home.apply_settings(Settings {
             devices: [(key("lamp"), called("Reading lamp"))].into(),
             entities: [(
-                key("lamp-light"),
+                entity_key("lamp-light"),
                 irori_types::EntitySettings {
                     name: Some(name("Reading light")),
                 },
@@ -1288,7 +1403,7 @@ mod tests {
             "a name a person gave the entity stops it following its device"
         );
         assert_eq!(
-            home.entities[&EntityId::try_from("sensor.desk_lamp_power").expect("valid")]
+            home.entities[&EntityId::try_from("sensor.demo_lamp_power").expect("valid")]
                 .name
                 .as_str(),
             "Power",
@@ -1311,7 +1426,7 @@ mod tests {
     #[test]
     fn a_device_goes_in_the_room_a_person_puts_it_in() {
         let mut home = home_with_lamp();
-        let id = DeviceId::try_from("desk_lamp").expect("valid");
+        let id = DeviceId::try_from("demo_lamp").expect("valid");
         assert_eq!(home.devices[&id].area_id, None);
 
         home.apply_settings(Settings {
@@ -1331,7 +1446,7 @@ mod tests {
         described.suggested_area = Some(name("Study"));
         home.describe_device(&integration(), described)
             .expect("device");
-        let id = DeviceId::try_from("desk_lamp").expect("valid");
+        let id = DeviceId::try_from("demo_lamp").expect("valid");
         assert_eq!(home.devices[&id].area_id, None, "no such room yet");
 
         let events = home.apply_settings(Settings {
@@ -1352,7 +1467,7 @@ mod tests {
         described.suggested_area = Some(name("Study"));
         home.describe_device(&integration(), described)
             .expect("device");
-        let id = DeviceId::try_from("desk_lamp").expect("valid");
+        let id = DeviceId::try_from("demo_lamp").expect("valid");
 
         home.apply_settings(Settings {
             areas: vec![area("study", "Study")],
@@ -1387,7 +1502,7 @@ mod tests {
             devices: [(key("lamp"), in_room("hall"))].into(),
             ..Settings::default()
         });
-        let id = DeviceId::try_from("desk_lamp").expect("valid");
+        let id = DeviceId::try_from("demo_lamp").expect("valid");
         assert_eq!(home.devices[&id].area_id, Some(area("hall", "Hall").id));
 
         home.apply_settings(Settings {
@@ -1410,12 +1525,13 @@ mod tests {
                 key("lamp"),
                 irori_types::DeviceSettings {
                     name: Some(name("Reading lamp")),
+                    description: None,
                     area: Placement::In(AreaId::try_from("study").expect("valid")),
                 },
             )]
             .into(),
             entities: [(
-                key("lamp-light"),
+                entity_key("lamp-light"),
                 irori_types::EntitySettings {
                     name: Some(name("Reading light")),
                 },
@@ -1433,8 +1549,8 @@ mod tests {
         assert_eq!(device.area_id, Some(area("study", "Study").id));
         assert_eq!(
             device.id.as_str(),
-            "reading_lamp",
-            "the id follows the name a person chose, so the page's address reads that way too"
+            "demo_lamp",
+            "the id is the device's own, whatever it has been named"
         );
 
         home.describe_entity(
@@ -1479,7 +1595,7 @@ mod tests {
     }
 
     #[test]
-    fn ids_come_from_names_and_never_collide() {
+    fn slugs_and_numbered_ids_never_collide() {
         assert_eq!(slugify("Desk lamp"), "desk_lamp");
         assert_eq!(slugify("  Küche · Decke!! "), "k_che_decke");
         assert_eq!(slugify("玄関"), "");
@@ -1494,17 +1610,20 @@ mod tests {
         assert_eq!(id.len(), 64);
         assert!(id.ends_with("_2"));
 
+        // Two devices with the same name are still two ids: names aren't what ids are made of.
         let mut home = Home::default();
         for unique in ["a", "b"] {
             home.describe_device(&integration(), device(unique, "玄関 light"))
                 .expect("device");
         }
         let ids: Vec<_> = home.devices().map(|d| d.id.to_string()).collect();
-        assert_eq!(ids, ["light", "light_2"]);
+        assert_eq!(ids, ["demo_a", "demo_b"]);
     }
 
+    /// An entity's id is its device's id and the name its integration gave it: never a name a
+    /// person chose, so no rename can leave an id that says something else.
     #[test]
-    fn entities_get_ids_from_device_and_entity_names() {
+    fn entities_get_ids_from_their_devices_id_and_their_own_reported_name() {
         let mut home = home_with_lamp();
         home.describe_device(&integration(), device("sensor", "Hallway sensor"))
             .expect("device");
@@ -1521,10 +1640,7 @@ mod tests {
         )
         .expect("entity");
         let ids: Vec<_> = home.entities().map(|e| e.id.to_string()).collect();
-        assert_eq!(
-            ids,
-            ["binary_sensor.hallway_sensor_motion", "light.desk_lamp"]
-        );
+        assert_eq!(ids, ["binary_sensor.demo_sensor_motion", "light.demo_lamp"]);
         // A nameless entity takes its device's name.
         assert_eq!(home.entities[&lamp_id()].name.as_str(), "Desk lamp");
         // New entities start available and unknown, an entry Irori made itself.
@@ -2098,7 +2214,7 @@ mod tests {
             .expect_err("range");
         assert_eq!(
             err.to_string(),
-            "`light.desk_lamp` supports color temperatures from 2700 to 6500 K, not 2000 K"
+            "`light.demo_lamp` supports color temperatures from 2700 to 6500 K, not 2000 K"
         );
 
         let unknown = EntityId::try_from("light.nope").expect("valid");

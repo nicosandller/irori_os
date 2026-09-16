@@ -108,6 +108,12 @@ pub struct ExtensionInfo {
     /// extensions only: a built-in extension's schema comes from its Rust config type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_schema: Option<PackagePath>,
+    /// A square SVG, relative to the package root, shown beside the extension and its devices so
+    /// they can be told apart at a glance. Always displayed as an image, never inlined into a
+    /// page, so it can't run script. A built-in extension embeds the file as well
+    /// (`Integration::ICON`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<PackagePath>,
 }
 
 /// The `[contributes]` table: one list per contribution kind.

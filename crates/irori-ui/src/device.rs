@@ -46,6 +46,7 @@ pub fn DevicePage() -> impl IntoView {
     // reading arriving underneath it.
     let renaming = RwSignal::new(false);
     let draft = RwSignal::new(String::new());
+    let description_draft = RwSignal::new(String::new());
     let entity_draft = RwSignal::new(String::new());
     let editing = RwSignal::new(None::<EntityId>);
 
@@ -69,8 +70,11 @@ pub fn DevicePage() -> impl IntoView {
                 shape,
                 controls,
                 trouble,
-                renaming,
-                draft,
+                Drafts {
+                    editing: renaming,
+                    name: draft,
+                    description: description_draft,
+                },
                 editing,
                 entity_draft,
             )
@@ -117,14 +121,22 @@ fn of_device(home: &Home, device: &Device) -> Vec<Entity> {
         .unwrap_or_default()
 }
 
+/// The device's name and description while they're being edited. Made once, above what redraws,
+/// so live readings can't throw away what's being typed (ROADMAP D33).
+#[derive(Debug, Clone, Copy)]
+struct Drafts {
+    editing: RwSignal<bool>,
+    name: RwSignal<String>,
+    description: RwSignal<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn page(
     device: Device,
     shape: Shape,
     controls: Controls,
     trouble: RwSignal<Option<String>>,
-    renaming: RwSignal<bool>,
-    draft: RwSignal<String>,
+    drafts: Drafts,
     editing: RwSignal<Option<EntityId>>,
     entity_draft: RwSignal<String>,
 ) -> impl IntoView {
@@ -154,26 +166,36 @@ fn page(
         }
     };
 
-    let save_name = {
+    let Drafts {
+        editing: renaming,
+        name: draft,
+        description: description_draft,
+    } = drafts;
+    // One name and one description, saved together: there is no second name anywhere to fall
+    // back to or keep in step (ROADMAP D36).
+    let save = {
         let edit = edit.clone();
         move || {
             let Some(name) = named(draft.get(), trouble) else {
                 return;
             };
+            let typed = description_draft.get();
+            let description = match typed.trim() {
+                "" => None,
+                text => match irori_types::Description::try_from(text) {
+                    Ok(description) => Some(description),
+                    Err(e) => {
+                        trouble.set(Some(e.to_string()));
+                        return;
+                    }
+                },
+            };
             renaming.set(false);
             edit(DeviceEdit {
                 name: Some(Some(name)),
+                description: Some(description),
                 area: None,
             });
-        }
-    };
-    let use_reported = {
-        let edit = edit.clone();
-        move |_| {
-            edit(DeviceEdit {
-                name: Some(None),
-                area: None,
-            })
         }
     };
     let move_to = {
@@ -193,20 +215,25 @@ fn page(
                 },
             };
             edit(DeviceEdit {
-                name: None,
                 area: Some(area),
+                ..DeviceEdit::default()
             });
         }
     };
 
     let start = {
         let name = device.name.to_string();
+        let description = device
+            .description
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
         move |_| {
             draft.set(name.clone());
+            description_draft.set(description.clone());
             renaming.set(true);
         }
     };
-    let renamed_from = device.renamed_from.clone();
     let in_room = device.area_id.clone();
     let suggested = device.suggested_area.clone();
     // What the device's own suggestion amounts to right now. Irori doesn't send *why* a device
@@ -242,37 +269,56 @@ fn page(
     view! {
         <p class="crumb"><A href="/devices">"← All devices"</A></p>
         <div class="page-head">
-            {move || {
-                if renaming.get() {
-                    let save_name = save_name.clone();
-                    view! {
-                        <form
-                            class="inline-form"
-                            on:submit=move |ev| {
-                                ev.prevent_default();
-                                save_name();
-                            }
-                        >
+            <h1>{device.name.to_string()}</h1>
+            <button type="button" on:click=start>"Edit"</button>
+        </div>
+        {device
+            .description
+            .as_ref()
+            .map(|description| view! { <p class="description-lede">{description.to_string()}</p> })}
+        <p class="lede">{subtitle}</p>
+        {move || {
+            renaming.get().then(|| {
+                let save = save.clone();
+                view! {
+                    <form
+                        class="card about-form"
+                        on:submit=move |ev| {
+                            ev.prevent_default();
+                            save();
+                        }
+                    >
+                        <label>
+                            <span>"Name"</span>
                             <input
                                 type="text"
-                                aria-label="What to call this device"
                                 prop:value=draft
                                 on:input:target=move |ev| draft.set(ev.target().value())
                             />
+                        </label>
+                        <label>
+                            <span>"Description"</span>
+                            <textarea
+                                rows="2"
+                                placeholder="What it's for, or where exactly it is"
+                                prop:value=description_draft
+                                on:input:target=move |ev| description_draft.set(ev.target().value())
+                            ></textarea>
+                        </label>
+                        <p class="muted small">
+                            "This is the device's only name and description: everywhere Irori "
+                            "shows it, and in the config files, it's this."
+                        </p>
+                        <div class="inline-form">
                             <button type="submit" class="add">"Save"</button>
                             <button type="button" on:click=move |_| renaming.set(false)>
                                 "Cancel"
                             </button>
-                        </form>
-                    }
-                    .into_any()
-                } else {
-                    view! { <h1>{device.name.to_string()}</h1> }.into_any()
+                        </div>
+                    </form>
                 }
-            }}
-            <button type="button" on:click=start>"Rename"</button>
-        </div>
-        <p class="lede">{subtitle}</p>
+            })
+        }}
 
         {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
 
@@ -325,23 +371,12 @@ fn page(
         <section class="card">
             <h2>"What it is"</h2>
             <dl>
-                {renamed_from.map(|was| view! {
-                    <dt>"Called by the device"</dt>
-                    <dd>
-                        {was.to_string()}
-                        <button type="button" class="link" on:click=use_reported>
-                            "Use this name"
-                        </button>
-                    </dd>
-                })}
+                // One id, the same one as in this page's address and in the config files. It's
+                // made from the integration and its permanent handle, so it never changes.
+                <dt>"ID"</dt>
+                <dd>{device.id.to_string()}</dd>
                 <dt>"Through"</dt>
                 <dd>{device.integration.to_string()}</dd>
-                // For an ESPHome device this is its MAC address; every integration picks
-                // something of its own that survives a rename.
-                <dt>"Known to it as"</dt>
-                <dd>{device.unique_id.to_string()}</dd>
-                <dt>"Irori's id"</dt>
-                <dd>{device.id.to_string()}</dd>
                 {device.manufacturer.clone().map(|make| view! {
                     <dt>"Make"</dt>
                     <dd>{make}</dd>
@@ -462,10 +497,6 @@ fn EntityRow(
             }
         }
     };
-    let reset = {
-        let send = send.clone();
-        move |_| send(None)
-    };
     let start = {
         let id = id.clone();
         let name = entity.name.to_string();
@@ -478,7 +509,6 @@ fn EntityRow(
         let id = id.clone();
         move || editing.get().as_ref() == Some(&id)
     };
-    let was = entity.renamed_from.clone();
     let row = entity.clone();
 
     view! {
@@ -518,12 +548,6 @@ fn EntityRow(
                         .into_any()
                     }
                 }}
-                {was.map(|was| view! {
-                    <span class="muted small">
-                        {format!("was \"{was}\"")}
-                        <button type="button" class="link" on:click=reset>"undo"</button>
-                    </span>
-                })}
             </div>
         </div>
     }
@@ -585,7 +609,7 @@ mod tests {
             integration: "esphome".parse().expect("a valid integration id"),
             unique_id: "00:11:22:33:44:55".parse().expect("a valid unique id"),
             name: "Radar".parse().expect("a valid name"),
-            renamed_from: None,
+            description: None,
             manufacturer: None,
             model: None,
             sw_version: None,
@@ -606,7 +630,6 @@ mod tests {
                 .parse()
                 .expect("a valid unique id"),
             name: "Moving".parse().expect("a valid name"),
-            renamed_from: None,
             device_id: Some("radar".parse().expect("a valid device id")),
             area_id: None,
             capabilities: Capabilities::BinarySensor(BinarySensorCapabilities {

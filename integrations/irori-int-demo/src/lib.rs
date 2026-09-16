@@ -58,19 +58,21 @@ impl Default for Config {
 impl Integration for Demo {
     type Config = Config;
     const MANIFEST: &'static str = include_str!("../irori-extension.toml");
+    const ICON: Option<&'static str> = Some(include_str!("../icon.svg"));
 
     async fn run(config: Config, ctx: IntegrationContext) -> Result<(), IntegrationError> {
         run(config, ctx).await
     }
 }
 
-const LAMP: &str = "demo-lamp";
-const LAMP_LIGHT: &str = "demo-lamp-light";
-const PLUG: &str = "demo-plug";
-const PLUG_SWITCH: &str = "demo-plug-switch";
-const SENSOR: &str = "demo-hallway-sensor";
-const SENSOR_MOTION: &str = "demo-hallway-sensor-motion";
-const SENSOR_TEMPERATURE: &str = "demo-hallway-sensor-temperature";
+// Device ids are the integration and these handles (`demo_lamp`), so they don't repeat "demo".
+const LAMP: &str = "lamp";
+const LAMP_LIGHT: &str = "lamp-light";
+const PLUG: &str = "plug";
+const PLUG_SWITCH: &str = "plug-switch";
+const SENSOR: &str = "hallway-sensor";
+const SENSOR_MOTION: &str = "hallway-sensor-motion";
+const SENSOR_TEMPERATURE: &str = "hallway-sensor-temperature";
 
 async fn run(config: Config, mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
     describe(&ctx).await?;

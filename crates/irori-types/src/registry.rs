@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::num::{Num, whole};
 
 use crate::{
-    AreaId, DeviceId, EntityId, EntityKind, FloorId, IntegrationId, InvariantError, Name, UniqueId,
+    AreaId, Description, DeviceId, EntityId, EntityKind, FloorId, IntegrationId, InvariantError,
+    Name, UniqueId,
 };
 
 /// A level of the home, e.g. the ground floor.
@@ -36,17 +37,20 @@ pub struct Area {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Device {
+    /// The device's one id, everywhere: page addresses, config files, the API, rules. Made once
+    /// from the integration and its permanent handle for the device, never from a name, so it
+    /// doesn't change when the device is renamed (ROADMAP D36).
     pub id: DeviceId,
     /// The integration that provides this device.
     pub integration: IntegrationId,
     /// The integration's stable id for the device, e.g. the Zigbee IEEE address.
     pub unique_id: UniqueId,
-    /// What it's called: the name a person gave it, else the one its integration reports.
+    /// Its one name. Starts as whatever its integration reports, and once a person names it,
+    /// that name is the only one — there is no second name kept alongside (D36).
     pub name: Name,
-    /// What its integration calls it, when that isn't `name` — so the UI can say "you named
-    /// this" and offer the original back. Absent when nobody has renamed it.
+    /// What it's for, in a person's words. Only ever set by a person.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub renamed_from: Option<Name>,
+    pub description: Option<Description>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manufacturer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,10 +84,6 @@ pub struct Entity {
     /// The integration's stable id for this entity. Survives renames of `id`.
     pub unique_id: UniqueId,
     pub name: Name,
-    /// What it would be called if nobody had renamed it: its integration's name for it, or its
-    /// device's name for an entity that was described without one. Absent when nobody has.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub renamed_from: Option<Name>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<DeviceId>,
     /// Overrides the device's area when set.
@@ -99,8 +99,6 @@ struct RawEntity {
     integration: IntegrationId,
     unique_id: UniqueId,
     name: Name,
-    #[serde(default)]
-    renamed_from: Option<Name>,
     #[serde(default)]
     device_id: Option<DeviceId>,
     #[serde(default)]
@@ -123,7 +121,6 @@ impl TryFrom<RawEntity> for Entity {
             integration: raw.integration,
             unique_id: raw.unique_id,
             name: raw.name,
-            renamed_from: raw.renamed_from,
             device_id: raw.device_id,
             area_id: raw.area_id,
             capabilities: raw.capabilities,

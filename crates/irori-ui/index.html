@@ -21,24 +21,69 @@
               --card: #241e1a; --sunk: #17120f; }
     }
     * { box-sizing: border-box; }
-    body { margin: 0; padding: 2rem 1rem 4rem; background: var(--bg); color: var(--fg);
-           font: 16px/1.5 var(--sans); }
-    main { max-width: 42rem; margin: 0 auto; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 var(--sans); }
 
-    /* Navigation: the same row on every page, so nothing moves when you switch. */
-    nav { max-width: 42rem; margin: 0 auto 1.5rem; display: flex; align-items: center;
-          gap: 1.25rem; padding-bottom: .75rem; border-bottom: 1px solid var(--line); }
-    nav .mark { display: flex; align-items: center; gap: .5rem; font-weight: 500; }
-    nav svg { width: 1.5rem; height: 1.5rem; flex: none; }
-    nav a { color: var(--muted); text-decoration: none; font-size: .95rem; padding: .15rem 0;
-            border-bottom: 2px solid transparent; }
-    nav a:hover { color: var(--fg); }
-    nav a[aria-current="page"] { color: var(--fg); border-bottom-color: var(--ember); }
+    /* The shell: a sidebar that folds down to icons, and the page beside it. The same on every
+       page, so nothing moves when you switch. */
+    .shell { display: grid; grid-template-columns: 13rem 1fr; min-height: 100vh;
+             transition: grid-template-columns .15s; }
+    .shell.folded { grid-template-columns: 3.5rem 1fr; }
+    main { width: 100%; max-width: 56rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; min-width: 0; }
+
+    .sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column;
+               gap: .25rem; padding: 1rem .6rem; border-right: 1px solid var(--line);
+               background: var(--card); overflow: hidden; }
+    .sidebar-top { display: flex; align-items: center; justify-content: space-between;
+                   gap: .25rem; margin-bottom: 1rem; }
+    .sidebar .mark { display: flex; align-items: center; gap: .6rem; padding: .35rem .45rem;
+                     color: var(--fg); text-decoration: none; font-weight: 500; }
+    .sidebar .mark svg { width: 1.5rem; height: 1.5rem; flex: none; }
+    .sidebar nav { display: flex; flex-direction: column; gap: .15rem; }
+    .sidebar nav a { display: flex; align-items: center; gap: .7rem; padding: .5rem .6rem;
+                     border-radius: .4rem; color: var(--muted); text-decoration: none;
+                     font-size: .95rem; white-space: nowrap; border-left: 2px solid transparent; }
+    .sidebar nav a svg { width: 1.25rem; height: 1.25rem; flex: none; }
+    .sidebar nav a:hover { color: var(--fg); background: var(--sunk); }
+    .sidebar nav a[aria-current="page"] { color: var(--fg); background: var(--sunk);
+                                          border-left-color: var(--ember); }
+    .fold { display: grid; place-items: center; width: 1.9rem; height: 1.9rem; padding: 0;
+            color: var(--muted); background: transparent; border: 1px solid transparent;
+            border-radius: .4rem; cursor: pointer; flex: none; }
+    .fold:hover { color: var(--fg); border-color: var(--line); }
+    .fold svg { width: 1rem; height: 1rem; transition: transform .15s; }
+    .sidebar .live { margin-top: auto; padding: .5rem .6rem; }
+
+    /* Folded: icons only. Labels stay in the page for screen readers, and in each link's title. */
+    .folded .sidebar .label { position: absolute; width: 1px; height: 1px; overflow: hidden;
+                              clip: rect(0 0 0 0); white-space: nowrap; }
+    .folded .sidebar-top { flex-direction: column; }
+    .folded .fold svg { transform: rotate(180deg); }
+    .folded .sidebar nav a { justify-content: center; padding: .5rem 0; }
+    .folded .sidebar .live { justify-content: center; }
+
+    /* A phone has no room beside the page: the sidebar becomes a bar along the top, and folding
+       means nothing there. */
+    @media (max-width: 720px) {
+      .shell, .shell.folded { grid-template-columns: 1fr; }
+      .sidebar { position: static; height: auto; flex-direction: row; align-items: center;
+                 padding: .5rem .75rem; border-right: none; border-bottom: 1px solid var(--line); }
+      .sidebar-top { margin: 0; }
+      .sidebar nav { flex-direction: row; }
+      .sidebar nav a { padding: .4rem .5rem; border-left: none; }
+      .fold { display: none; }
+      .sidebar .live { margin: 0 0 0 auto; padding: 0; }
+      .folded .sidebar .label { position: static; width: auto; height: auto; clip: auto; }
+      .folded .sidebar-top { flex-direction: row; }
+      main { padding: 1.25rem 1rem 3rem; }
+    }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden;
+                       clip: rect(0 0 0 0); white-space: nowrap; }
+
     h1 { margin: 0 0 .25rem; font-size: 1.5rem; font-weight: 500; letter-spacing: -0.02em; }
     h2 { margin: 0 0 .6rem; font-size: 1rem; font-weight: 500; }
     .lede { margin: 0 0 1.5rem; color: var(--muted); }
     .small { font-size: .8rem; }
-    .live { margin-left: auto; display: flex; align-items: center; gap: .45rem;
+    .live { display: flex; align-items: center; gap: .45rem;
             color: var(--muted); font: .7rem/1 var(--mono); letter-spacing: .08em;
             text-transform: uppercase; }
 
@@ -221,6 +266,38 @@
     button.link { padding: 0; margin-left: .5rem; font: inherit; font-size: .8rem;
                   color: var(--ember); background: none; border: none; cursor: pointer;
                   text-decoration: underline; }
+
+    /* The device table, grouped by integration: a header row per group that folds it away. */
+    table.devices .icon-col { width: 2.25rem; padding-right: 0; }
+    .integration-icon { display: inline-block; width: 20px; height: 20px; vertical-align: middle;
+                        flex: none; }
+    .integration-icon.letter { display: inline-grid; place-items: center; border-radius: 4px;
+                               background: var(--sunk); color: var(--muted);
+                               font: 600 .7rem/1 var(--mono); }
+    table.devices .group-head th { padding: 0; background: var(--sunk); }
+    table.devices .group-head button { display: flex; align-items: center; gap: .6rem; width: 100%;
+                                       padding: .55rem .8rem; font: inherit; color: var(--fg);
+                                       text-align: left; background: transparent; border: none;
+                                       cursor: pointer; }
+    table.devices .group-head button:hover { background: var(--line); }
+    table.devices .group-name { font-weight: 500; }
+    .chevron { width: .5rem; height: .5rem; border-right: 2px solid var(--muted);
+               border-bottom: 2px solid var(--muted); transform: rotate(45deg);
+               margin: 0 .2rem .2rem .1rem; transition: transform .15s; flex: none; }
+    .group.folded .chevron { transform: rotate(-45deg); margin-bottom: 0; }
+    .group.folded tr:not(.group-head) { display: none; }
+    table.devices th[scope="row"] .description { display: block; color: var(--muted);
+                                                 font-size: .8rem; font-weight: 400; }
+    .description-lede { margin: -.5rem 0 .25rem; }
+    .about-form { display: grid; gap: .75rem; }
+    .about-form label { display: grid; gap: .25rem; }
+    .about-form label > span { color: var(--muted); font: .7rem var(--mono); letter-spacing: .08em;
+                               text-transform: uppercase; }
+    .about-form input, .about-form textarea { padding: .45rem .6rem; font: inherit; color: var(--fg);
+                                              background: var(--bg); border: 1px solid var(--line);
+                                              border-radius: .4rem; resize: vertical; }
+    .about-form input:focus, .about-form textarea:focus { outline: 2px solid var(--ember);
+                                                          outline-offset: -1px; }
 
     /* Found, and waiting for a person: a key to paste, a code to enter. */
     .waiting { border-color: var(--ember); }

@@ -103,39 +103,96 @@ fn App() -> impl IntoView {
         }
     });
 
+    // Folded down to icons, or open with labels. A preference about this screen, so it's
+    // remembered by the browser rather than by Irori.
+    let folded = RwSignal::new(devices::stored(SIDEBAR_KEY).as_deref() == Some("folded"));
+    Effect::new(move |_| {
+        devices::remember(SIDEBAR_KEY, if folded.get() { "folded" } else { "open" })
+    });
+
     view! {
         <Router>
-            <nav>
-                <span class="mark">
-                    // Mark A (assets/irori-mark-a-mono.svg): frame follows the text, ember stays.
-                    <svg viewBox="0 0 48 48" role="img" aria-label="IroriOS">
-                        <rect x="2" y="2" width="44" height="44" rx="2.5" fill="none"
-                            stroke="currentColor" stroke-width="4" />
-                        <rect x="17" y="17" width="14" height="14" rx="1" fill="#c4552b" />
-                    </svg>
-                    "Irori"
-                </span>
-                <A href="/">"Home"</A>
-                <A href="/devices">"Devices"</A>
-                <A href="/rooms">"Rooms"</A>
-                <span class="live">
-                    <span class="dot" class:ok=move || live.trouble.get().is_none()></span>
-                    {move || if live.trouble.get().is_none() { "Live" } else { "No answer" }}
-                </span>
-            </nav>
+            <div class="shell" class:folded=move || folded.get()>
+                <aside class="sidebar">
+                    <div class="sidebar-top">
+                        <A href="/" attr:class="mark" attr:title="Irori">
+                            // Mark A (assets/irori-mark-a-mono.svg): frame follows the text,
+                            // ember stays.
+                            <svg viewBox="0 0 48 48" role="img" aria-label="IroriOS">
+                                <rect x="2" y="2" width="44" height="44" rx="2.5" fill="none"
+                                    stroke="currentColor" stroke-width="4" />
+                                <rect x="17" y="17" width="14" height="14" rx="1" fill="#c4552b" />
+                            </svg>
+                            <span class="label">"Irori"</span>
+                        </A>
+                        <button
+                            type="button"
+                            class="fold"
+                            aria-label=move || if folded.get() { "Open the sidebar" } else { "Fold the sidebar" }
+                            aria-expanded=move || (!folded.get()).to_string()
+                            on:click=move |_| folded.update(|folded| *folded = !*folded)
+                        >
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                                <path d="M15 5 8 12l7 7" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                        </button>
+                    </div>
+                    <nav aria-label="Sections">
+                        {SECTIONS
+                            .iter()
+                            .map(|(href, label, icon)| view! {
+                                <A href=*href attr:title=*label>
+                                    <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=*icon></svg>
+                                    <span class="label">{*label}</span>
+                                </A>
+                            })
+                            .collect_view()}
+                    </nav>
+                    <span class="live" title=move || if live.trouble.get().is_none() { "Live" } else { "No answer" }>
+                        <span class="dot" class:ok=move || live.trouble.get().is_none()></span>
+                        <span class="label">
+                            {move || if live.trouble.get().is_none() { "Live" } else { "No answer" }}
+                        </span>
+                    </span>
+                </aside>
 
-            <main>
-                {move || live.trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
-                <Routes fallback=NotFound>
-                    <Route path=path!("/") view=home::Home />
-                    <Route path=path!("/devices") view=devices::Devices />
-                    <Route path=path!("/devices/:id") view=device::DevicePage />
-                    <Route path=path!("/rooms") view=rooms::Rooms />
-                </Routes>
-            </main>
+                <main>
+                    {move || live.trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
+                    <Routes fallback=NotFound>
+                        <Route path=path!("/") view=home::Home />
+                        <Route path=path!("/devices") view=devices::Devices />
+                        <Route path=path!("/devices/:id") view=device::DevicePage />
+                        <Route path=path!("/rooms") view=rooms::Rooms />
+                    </Routes>
+                </main>
+            </div>
         </Router>
     }
 }
+
+/// Where the sidebar's folded-or-open state is remembered.
+const SIDEBAR_KEY: &str = "irori.sidebar";
+
+/// The sections of the app: address, name, and an icon drawn in 24×24 strokes. Written here, not
+/// taken from any extension, so `inner_html` only ever holds these literals.
+const SECTIONS: [(&str, &str, &str); 3] = [
+    (
+        "/",
+        "Home",
+        r#"<path d="M4 11 12 4l8 7v9h-5v-6H9v6H4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>"#,
+    ),
+    (
+        "/devices",
+        "Devices",
+        r#"<rect x="6" y="6" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>"#,
+    ),
+    (
+        "/rooms",
+        "Rooms",
+        r#"<path d="M4 4h16v16H4zM4 12h7M13 4v9M13 16v4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>"#,
+    ),
+];
 
 #[component]
 fn NotFound() -> impl IntoView {

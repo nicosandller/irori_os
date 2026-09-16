@@ -158,6 +158,7 @@ async fn supervise(
             version: manifest.extension.version.clone(),
             entity_kinds: kinds.clone(),
             iot_class: Some(contribution.iot_class),
+            icon: builtin.icon,
         },
     );
 

@@ -7,14 +7,17 @@
 
 use std::collections::BTreeMap;
 
-use crate::{Area, AreaId, ExtensionId, IdError, IntegrationId, Name, UniqueId};
+use crate::{
+    Area, AreaId, Description, DeviceId, ExtensionId, IdError, IntegrationId, Name, UniqueId,
+};
 
 /// Everything the config directory says.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
     /// The rooms of the home, ordered by id.
     pub areas: Vec<Area>,
-    pub devices: BTreeMap<SettingsKey, DeviceSettings>,
+    /// By the device's id, which never changes (ROADMAP D36).
+    pub devices: BTreeMap<DeviceId, DeviceSettings>,
     pub entities: BTreeMap<SettingsKey, EntitySettings>,
 }
 
@@ -68,6 +71,8 @@ impl Placement {
 pub struct DeviceSettings {
     /// What to call it instead of the name its integration reports.
     pub name: Option<Name>,
+    /// What it's for.
+    pub description: Option<Description>,
     /// Which room it's in, if that's been decided.
     pub area: Placement,
 }
@@ -75,7 +80,7 @@ pub struct DeviceSettings {
 impl DeviceSettings {
     /// Whether this says anything at all. An entry that says nothing is not written out.
     pub fn is_empty(&self) -> bool {
-        self.name.is_none() && self.area.is_unsaid()
+        self.name.is_none() && self.description.is_none() && self.area.is_unsaid()
     }
 }
 

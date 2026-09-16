@@ -15,6 +15,17 @@
         }
       ]
     },
+    "description": {
+      "description": "What it's for, in a person's words. Only ever set by a person.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Description"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "hw_version": {
       "type": [
         "string",
@@ -22,6 +33,7 @@
       ]
     },
     "id": {
+      "description": "The device's one id, everywhere: page addresses, config files, the API, rules. Made once\nfrom the integration and its permanent handle for the device, never from a name, so it\ndoesn't change when the device is renamed (ROADMAP D36).",
       "$ref": "#/$defs/DeviceId"
     },
     "integration": {
@@ -41,19 +53,8 @@
       ]
     },
     "name": {
-      "description": "What it's called: the name a person gave it, else the one its integration reports.",
+      "description": "Its one name. Starts as whatever its integration reports, and once a person names it,\nthat name is the only one — there is no second name kept alongside (D36).",
       "$ref": "#/$defs/Name"
-    },
-    "renamed_from": {
-      "description": "What its integration calls it, when that isn't `name` — so the UI can say \"you named\nthis\" and offer the original back. Absent when nobody has renamed it.",
-      "anyOf": [
-        {
-          "$ref": "#/$defs/Name"
-        },
-        {
-          "type": "null"
-        }
-      ]
     },
     "suggested_area": {
       "description": "The area the device says it's in, e.g. ESPHome's `area:`. Only a hint: it names an area\nrather than pointing at one, and it is used only while `area_id` is absent\n(`docs/specs/config.md` §5).",
@@ -102,6 +103,13 @@
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "Description": {
+      "description": "A short description. 1-500 characters on one line, no leading or trailing whitespace.",
+      "type": "string",
+      "maxLength": 500,
+      "minLength": 1,
+      "pattern": "^[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029]([^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029]*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029])?$"
     },
     "DeviceId": {
       "description": "Format of a slug (device id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",

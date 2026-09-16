@@ -207,9 +207,10 @@ mod tests {
         config
             .edit(&core, |settings| {
                 settings.devices.insert(
-                    "demo/lamp".parse().expect("a valid key"),
+                    "demo_lamp".parse().expect("a valid device id"),
                     DeviceSettings {
                         name: Some("Reading lamp".parse::<Name>().expect("a valid name")),
+                        description: None,
                         area: irori_types::Placement::Unsaid,
                     },
                 );

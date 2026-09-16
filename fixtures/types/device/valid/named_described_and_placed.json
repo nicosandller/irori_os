@@ -1,9 +1,9 @@
 {
-  "id": "hallway_radar",
+  "id": "esphome_34_98_7a_2b_09_00",
   "integration": "esphome",
   "unique_id": "34:98:7a:2b:09:00",
   "name": "Hallway radar",
-  "renamed_from": "Sensor fusion radar",
+  "description": "By the front door, facing the stairs",
   "manufacturer": "Espressif",
   "model": "esp32dev",
   "sw_version": "2026.8.3",
