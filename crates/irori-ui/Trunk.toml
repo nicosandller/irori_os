@@ -1,0 +1,20 @@
+[build]
+target = "index.html"
+release = true
+# Everything is served from the root of the core, so links don't carry a prefix.
+public_url = "/"
+# Hashed filenames: a new build can't be served from an old cache.
+filehash = true
+
+[tools]
+# Pinned, and downloaded by trunk rather than taken from PATH: a system `wasm-opt` can be older
+# than the WebAssembly features rustc emits (bulk memory), and would refuse the build.
+wasm_opt = "version_123"
+
+[watch]
+watch = ["index.html", "src", "../irori-types/src"]
+
+# `trunk serve --open` proxies the API to a core running the usual way, so the page can be worked
+# on without rebuilding the binary. See README.md.
+[[proxy]]
+backend = "http://127.0.0.1:8480/api/"

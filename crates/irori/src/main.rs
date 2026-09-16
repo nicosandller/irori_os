@@ -90,7 +90,7 @@ fn serve(
         tracing::warn!(
             %bind,
             "listening beyond this machine WITHOUT authentication (--allow-unauthenticated-lan); \
-             anyone on the network can reach this server"
+             anyone on the network can reach this server and switch its devices"
         );
     }
 

@@ -1,19 +1,31 @@
-//! HTTP server: health, a temporary read-only view of the core under `/api/dev/`, and the
-//! embedded static page. Moves into `irori-api` with auth and the WS API in M1.5.
+//! HTTP server: health, a temporary unauthenticated view of the core under `/api/dev/` (reads,
+//! plus the commands the Devices page sends), and the embedded UI. Nothing here checks who is
+//! asking, which is why `serve` binds loopback unless told otherwise; auth and the WebSocket API
+//! arrive with `irori-api` in M1.5.
 
-use std::sync::Arc;
-use std::time::Instant;
+use std::collections::BTreeMap;
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use irori_core::Core;
+use irori_core::{CallError, Command, Core, Event, ExtensionOverview};
+use irori_types::{
+    ContextId, Device, Entity, EntityId, EntityState, ExtensionId, LightTurnOn, Origin, UserId,
+};
+use tokio::sync::broadcast;
 
 use crate::build_info::{BuildInfo, VERSION};
 use crate::db::Database;
+
+/// Who commands are attributed to until there are accounts to attribute them to (M1.5).
+static UNAUTHENTICATED: LazyLock<UserId> =
+    LazyLock::new(|| UserId::try_from("unauthenticated").expect("a valid user id"));
 
 #[derive(Debug, Clone)]
 pub struct AppState(Arc<Inner>);
@@ -40,7 +52,10 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
-        // Unstable, read-only, for trying things out until the real API (M0.5, M1.5) exists.
+        // Unstable, for the UI and for trying things out until the real API (M0.5, M1.5) exists.
+        // Everything the Devices page shows, in one response; the rest are the same data split up.
+        .route("/api/dev/home", get(home))
+        .route("/api/dev/command", post(command))
         .route(
             "/api/dev/devices",
             get(|State(s): State<AppState>| async move { Json(s.0.core.devices()) }),
@@ -59,6 +74,134 @@ pub fn router(state: AppState) -> Router {
         )
         .fallback(get(ui::serve))
         .with_state(state)
+}
+
+/// Everything the Devices page shows, in one response: what exists, what it's doing, and how the
+/// extensions behind it are faring. The page asks for it every couple of seconds; it starts
+/// listening for changes instead once the WebSocket API lands (M1.5).
+#[derive(Debug, Serialize)]
+struct HomeView {
+    devices: Vec<Device>,
+    entities: Vec<Entity>,
+    states: Vec<EntityState>,
+    extensions: BTreeMap<ExtensionId, ExtensionOverview>,
+}
+
+async fn home(State(state): State<AppState>) -> Json<HomeView> {
+    let core = &state.0.core;
+    Json(HomeView {
+        devices: core.devices(),
+        entities: core.entities(),
+        states: core.states(),
+        extensions: core.extensions(),
+    })
+}
+
+/// A command from the UI: `{"entity_id": "light.hallway", "command": "toggle"}`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandRequest {
+    entity_id: EntityId,
+    command: CommandName,
+    /// Brightness or color, for `turn_on` on a light that supports them.
+    #[serde(default)]
+    data: Option<LightTurnOn>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CommandName {
+    TurnOn,
+    TurnOff,
+    Toggle,
+}
+
+/// Asks an entity to do something and answers with its state once the integration confirms, so
+/// the page can show the result without waiting for its next refresh.
+///
+/// There's no sign-in yet (ROADMAP D12, M1.5), so every command is attributed to one
+/// unauthenticated person; with accounts it becomes the user who clicked.
+async fn command(State(state): State<AppState>, Json(request): Json<CommandRequest>) -> Response {
+    let command = match (request.command, request.data) {
+        (CommandName::TurnOn, data) => Command::TurnOn(data.unwrap_or_default()),
+        (CommandName::TurnOff, None) => Command::TurnOff,
+        (CommandName::Toggle, None) => Command::Toggle,
+        (_, Some(_)) => {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                "`data` is only for `turn_on`".to_owned(),
+            );
+        }
+    };
+    let core = &state.0.core;
+    let who = core.new_context(Origin::User {
+        user_id: UNAUTHENTICATED.clone(),
+    });
+    // Subscribed before the call: the integration reports the new state and answers the call in
+    // the same breath, and the report must not slip past while the call is still in flight.
+    let changes = core.subscribe();
+    match core
+        .call_service(&request.entity_id, command, who.clone())
+        .await
+    {
+        Ok(()) => {
+            let settled = settled(changes, &request.entity_id, &who.id).await;
+            Json(settled.or_else(|| core.state(&request.entity_id))).into_response()
+        }
+        Err(e) => refused(status_for(&e), e.to_string()),
+    }
+}
+
+/// How long to wait for the change a command caused before answering with what's on file. The
+/// integration has already confirmed by this point, so the report is usually a moment away.
+const SETTLE: Duration = Duration::from_millis(500);
+
+/// Waits for the state change this command caused. Answers `None` when there wasn't one: a light
+/// asked to turn on while it's already on has nothing new to report, and says so by staying quiet.
+async fn settled(
+    mut changes: broadcast::Receiver<Event>,
+    entity_id: &EntityId,
+    context_id: &ContextId,
+) -> Option<EntityState> {
+    let wait = async {
+        loop {
+            match changes.recv().await {
+                Ok(Event::StateChanged {
+                    entity_id: changed,
+                    new_state,
+                    ..
+                }) if &changed == entity_id
+                    && new_state.context.parent_id.as_ref() == Some(context_id) =>
+                {
+                    return Some(*new_state);
+                }
+                // A listener that falls behind skips ahead; it may have skipped past the change.
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    };
+    tokio::time::timeout(SETTLE, wait).await.ok().flatten()
+}
+
+/// Which HTTP status a refused command gets: the caller's fault, the device's, or time running
+/// out.
+fn status_for(error: &CallError) -> StatusCode {
+    match error {
+        CallError::UnknownEntity(_) => StatusCode::NOT_FOUND,
+        CallError::NotSupported(_) => StatusCode::BAD_REQUEST,
+        CallError::NotRunning(_) | CallError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        CallError::Failed(_) => StatusCode::BAD_GATEWAY,
+        CallError::Timeout => StatusCode::GATEWAY_TIMEOUT,
+    }
+}
+
+fn refused(status: StatusCode, error: String) -> Response {
+    #[derive(Debug, Serialize)]
+    struct Refused {
+        error: String,
+    }
+    (status, Json(Refused { error })).into_response()
 }
 
 #[derive(Debug, Serialize)]
@@ -100,14 +243,23 @@ mod ui {
     use axum::response::{IntoResponse, Response};
     use rust_embed::RustEmbed;
 
+    /// The Leptos app, put here by `cargo xtask ui`. Empty after a plain `cargo build`, which
+    /// needs no wasm toolchain; the placeholder page below is then served instead.
+    #[derive(RustEmbed)]
+    #[folder = "ui/"]
+    struct App;
+
+    /// The placeholder page and the favicon: no build step, always there.
     #[derive(RustEmbed)]
     #[folder = "assets/"]
-    struct Assets;
+    struct Placeholder;
 
     pub async fn serve(uri: Uri) -> Response {
         let path = uri.path().trim_start_matches('/');
         let path = if path.is_empty() { "index.html" } else { path };
-        match Assets::get(path) {
+        // The app wins where both have a file, so a built UI replaces the placeholder page.
+        // There are no client-side routes yet, so an unknown path is still a 404.
+        match App::get(path).or_else(|| Placeholder::get(path)) {
             Some(file) => {
                 let mime = mime_guess::from_path(path).first_or_octet_stream();
                 ([(header::CONTENT_TYPE, mime.as_ref())], file.data).into_response()
@@ -195,10 +347,9 @@ mod tests {
         Ok(())
     }
 
-    /// The demo's virtual devices show up in the read-only view.
+    /// A core with the demo extension running and its first state reports in.
     #[cfg(feature = "int-demo")]
-    #[tokio::test]
-    async fn dev_view_lists_demo_devices_and_states() -> anyhow::Result<()> {
+    async fn demo() -> anyhow::Result<(Core, irori_core::ExtensionHost)> {
         let core = core();
         let host = irori_core::ExtensionHost::start(
             &core,
@@ -212,7 +363,136 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+        Ok((core, host))
+    }
 
+    #[cfg(feature = "int-demo")]
+    async fn post(
+        core: Core,
+        path: &str,
+        body: serde_json::Value,
+    ) -> anyhow::Result<(StatusCode, serde_json::Value)> {
+        let dir = tempfile::tempdir()?;
+        let app = router(AppState::new(crate::db::open(dir.path())?, core));
+        let request = Request::post(path)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body)?))?;
+        let res = app.oneshot(request).await?;
+        let status = res.status();
+        let bytes = res.into_body().collect().await?.to_bytes();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        Ok((status, json))
+    }
+
+    /// Everything the Devices page needs arrives in one response.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn dev_home_describes_the_whole_home() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let (status, _, body) = get_from(core.clone(), "/api/dev/home").await?;
+        assert_eq!(status, StatusCode::OK);
+        let home: serde_json::Value = serde_json::from_slice(&body)?;
+
+        let named = |key: &str, id: &str| {
+            home[key]
+                .as_array()
+                .is_some_and(|all| all.iter().any(|item| item["name"] == id))
+        };
+        assert!(named("devices", "Demo lamp"), "no demo lamp in {home}");
+        assert!(named("entities", "Demo lamp"), "no lamp entity in {home}");
+        assert_eq!(home["extensions"]["demo"]["state"], "running");
+        let lamp = home["states"]
+            .as_array()
+            .and_then(|all| all.iter().find(|s| s["entity_id"] == "light.demo_lamp"))
+            .ok_or_else(|| anyhow::anyhow!("no demo lamp state in {home}"))?;
+        assert_eq!(lamp["availability"], "available");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// The page turns the lamp on and is told what it became, without waiting for a refresh.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn a_command_answers_with_the_state_it_produced() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let lamp = EntityId::try_from("light.demo_lamp")?;
+
+        for on in [true, false] {
+            let (status, body) = post(
+                core.clone(),
+                "/api/dev/command",
+                serde_json::json!({
+                    "entity_id": lamp, "command": if on { "turn_on" } else { "turn_off" },
+                }),
+            )
+            .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["state"]["on"], on, "{body}");
+            // The device is what changed, but it can be traced back to the click that asked it
+            // to (`docs/specs/entities.md` §6).
+            assert_eq!(body["context"]["origin"]["type"], "device");
+            assert!(body["context"]["parent_id"].is_string(), "{body}");
+            // The core's own view agrees: the answer isn't a hopeful echo of the request.
+            let state = core
+                .state(&lamp)
+                .ok_or_else(|| anyhow::anyhow!("the lamp vanished"))?;
+            assert!(
+                matches!(&state.state, Some(irori_types::State::Light(light)) if light.on == on),
+                "the core says {:?}, the answer said {on}",
+                state.state
+            );
+        }
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A refused command says why, with a status that matches the reason.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn refusals_explain_themselves() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+
+        let (status, body) = post(
+            core.clone(),
+            "/api/dev/command",
+            serde_json::json!({"entity_id": "light.nowhere", "command": "toggle"}),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "there's no entity `light.nowhere`");
+
+        // A sensor has nothing to turn on.
+        let (status, body) = post(
+            core.clone(),
+            "/api/dev/command",
+            serde_json::json!({"entity_id": "sensor.demo_hallway_sensor_temperature", "command": "toggle"}),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+        // Brightness belongs to `turn_on`, and nowhere else.
+        let (status, body) = post(
+            core.clone(),
+            "/api/dev/command",
+            serde_json::json!({
+                "entity_id": "light.demo_lamp", "command": "turn_off", "data": {"brightness": 5},
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "`data` is only for `turn_on`");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// The demo's virtual devices show up in the read-only view.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn dev_view_lists_demo_devices_and_states() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
         let (status, _, body) = get_from(core.clone(), "/api/dev/states").await?;
         assert_eq!(status, StatusCode::OK);
         let states: serde_json::Value = serde_json::from_slice(&body)?;

@@ -9,7 +9,6 @@ members = [
     "crates/irori-config",
     "crates/irori-api",
     "crates/irori-client",
-    "crates/irori-ui",
     "crates/irori",
     "integrations/irori-int-mqtt",
     "integrations/irori-int-demo",
@@ -17,9 +16,9 @@ members = [
     "xtask",
 ]
 default-members = ["crates/irori"]
-# The M0.8 UI spikes have their own dependency trees (wasm frameworks) and are built with trunk,
-# not by workspace commands.
-exclude = ["spikes/ui-leptos", "spikes/ui-dioxus"]
+# The UI is a wasm crate with its own dependency tree, built with `trunk` (`cargo xtask ui`),
+# not by workspace commands. Keeping it out means a plain `cargo build` needs no wasm toolchain.
+exclude = ["crates/irori-ui"]
 
 [workspace.package]
 version = "0.0.0"
@@ -38,7 +37,6 @@ irori-recorder = { path = "crates/irori-recorder" }
 irori-config = { path = "crates/irori-config" }
 irori-api = { path = "crates/irori-api" }
 irori-client = { path = "crates/irori-client" }
-irori-ui = { path = "crates/irori-ui" }
 irori-int-mqtt = { path = "integrations/irori-int-mqtt" }
 irori-int-demo = { path = "integrations/irori-int-demo" }
 irori-assist = { path = "extras/irori-assist" }

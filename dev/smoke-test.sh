@@ -30,7 +30,14 @@ grep -q '"journal_mode":"wal"' <<<"$health" || fail "database is not in WAL mode
 index="$(curl -sS --max-time 5 -o /dev/null -w '%{http_code} %{content_type}' "$base_url/")"
 if grep -q '"features":\[[^]]*"ui"' <<<"$health"; then
   [[ "$index" == "200 text/html"* ]] || fail "expected the UI at / (got: $index)"
-  echo "ui: served ($index)"
+  # Which page: the Leptos app when the binary was built after `cargo xtask ui`, the placeholder
+  # in crates/irori/assets/ otherwise. Both are a served UI, so neither is a failure here.
+  page="$(curl -sS --max-time 5 "$base_url/")"
+  if grep -q 'irori-ui' <<<"$page"; then
+    echo "ui: the Leptos app ($index)"
+  else
+    echo "ui: the placeholder page, built without \`cargo xtask ui\` ($index)"
+  fi
 else
   [[ "$index" == 404* ]] || fail "expected 404 at / in a build without the ui feature (got: $index)"
   echo "ui: not compiled in, / returns 404 as expected"
