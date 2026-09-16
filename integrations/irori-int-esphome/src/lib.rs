@@ -244,6 +244,26 @@ async fn apply(
                     }
                 }
             }
+            // The address may have belonged to a different device until a moment ago (DHCP
+            // hands addresses round). That device is not this one: its commands must stop going
+            // to this connection, and it is no longer known to be present.
+            let displaced: Vec<UniqueId> = devices
+                .nodes
+                .iter()
+                .filter(|(id, node)| node.address == address && **id != device_id)
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in displaced {
+                tracing::info!(device = %id, %address, now = %device_id,
+                    "another device answers at this address now");
+                if let Some(node) = devices.nodes.get_mut(&id) {
+                    node.online = false;
+                }
+                // Its entities keep their last value, marked unavailable: the device may well
+                // still exist, somewhere else on the network, and be found again.
+                ctx.set_availability(AvailabilityTarget::Device(id), Availability::Unavailable)
+                    .await?;
+            }
             // The task that introduced it is the one its commands go to.
             let commands = devices
                 .tasks
@@ -263,7 +283,21 @@ async fn apply(
                 },
             );
         }
-        node::Event::Reported(report) => ctx.report_state(*report),
+        node::Event::Reported {
+            address,
+            device,
+            report,
+        } => {
+            // Only from the connection that speaks for the device now. A report queued by a
+            // replaced connection is about a conversation that has already ended.
+            if devices
+                .nodes
+                .get(&device)
+                .is_none_or(|node| node.address == address)
+            {
+                ctx.report_state(*report);
+            }
+        }
         node::Event::Left {
             address,
             device,
@@ -472,6 +506,98 @@ mod tests {
         assert!(
             devices.nodes[&device_id].online,
             "a healthy device stays online when its old connection says goodbye"
+        );
+    }
+
+    /// Addresses get handed round: the one a device had yesterday can belong to a different
+    /// device today. The old one must stop being "connected" at an address that isn't its own,
+    /// or its commands would be sent to a stranger.
+    #[tokio::test]
+    async fn a_device_that_loses_its_address_to_another_stops_claiming_it() {
+        let (ctx, host) = irori_integration::host::connect();
+        let mut ops = host.ops;
+        tokio::spawn(async move {
+            while let Some(op) = ops.recv().await {
+                match op {
+                    irori_integration::host::Op::DescribeDevice(_, reply)
+                    | irori_integration::host::Op::DescribeEntity(_, reply)
+                    | irori_integration::host::Op::RemoveDevice(_, reply)
+                    | irori_integration::host::Op::RemoveEntity(_, reply)
+                    | irori_integration::host::Op::SetAvailability(_, _, reply) => {
+                        let _ = reply.send(Ok(()));
+                    }
+                    irori_integration::host::Op::SetHealth(_) => {}
+                }
+            }
+        });
+
+        let mut devices = Devices::default();
+        let address: SocketAddr = "127.0.0.1:6053".parse().expect("valid");
+        let (commands, mut commands_rx) = mpsc::channel(1);
+        let handle = tokio::spawn(async move {
+            let _ = commands_rx.recv().await;
+        });
+        devices.tasks.insert(address, Task { commands, handle });
+
+        let arrival = |mac: &str| {
+            let unique_id = UniqueId::try_from(mac).expect("valid");
+            node::Event::Arrived {
+                address,
+                device: Box::new(irori_integration::types::DeviceDescription {
+                    unique_id,
+                    name: irori_integration::types::Name::try_from("A device").expect("valid"),
+                    manufacturer: None,
+                    model: None,
+                    sw_version: None,
+                    hw_version: None,
+                    suggested_area: None,
+                    via_device_unique_id: None,
+                }),
+                entities: Vec::new(),
+            }
+        };
+
+        let first = UniqueId::try_from("AA:AA:AA:AA:AA:AA").expect("valid");
+        let second = UniqueId::try_from("BB:BB:BB:BB:BB:BB").expect("valid");
+        apply(arrival(first.as_str()), &ctx, &mut devices)
+            .await
+            .expect("the first device arrives");
+        assert!(devices.nodes[&first].online);
+
+        // The same address, a different device.
+        apply(arrival(second.as_str()), &ctx, &mut devices)
+            .await
+            .expect("the second device arrives");
+        assert!(devices.nodes[&second].online, "the new one is connected");
+        assert!(
+            !devices.nodes[&first].online,
+            "the old one is no longer reachable at an address that isn't its own"
+        );
+
+        // And it won't take commands, which would otherwise reach the wrong device.
+        let (incoming, answer) =
+            irori_integration::host::incoming_call(irori_integration::types::ServiceCall {
+                unique_id: UniqueId::try_from("AA:AA:AA:AA:AA:AA-switch-1").expect("valid"),
+                service: irori_integration::types::Service::SwitchTurnOn,
+                context: irori_integration::types::Context {
+                    id: irori_integration::types::ContextId::try_from("01K5B2Q9A1B2C3D4E5F6G7H8J9")
+                        .expect("valid"),
+                    parent_id: None,
+                    origin: irori_integration::types::Origin::System,
+                },
+            });
+        // The displaced device still owns the entity, so this is the routing that matters.
+        devices
+            .nodes
+            .get_mut(&first)
+            .expect("still known")
+            .entities
+            .push(UniqueId::try_from("AA:AA:AA:AA:AA:AA-switch-1").expect("valid"));
+        route(incoming, &devices.nodes).await;
+        let answered = answer.await.expect("answered rather than dropped");
+        assert!(
+            matches!(answered, Err(ref e) if e.code == irori_integration::ServiceErrorCode::Unavailable),
+            "got {answered:?}"
         );
     }
 

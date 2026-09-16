@@ -13,9 +13,9 @@ use esphome_client::types::{
 use irori_integration::IntegrationError;
 use irori_integration::types::{
     BinarySensorCapabilities, BinarySensorClass, BinarySensorState, Capabilities, ColorMode,
-    ColorTempRange, DeviceDescription, EntityDescription, LightCapabilities, LightState, Name,
-    SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType, State, StateClass,
-    SwitchCapabilities, SwitchClass, SwitchState, UniqueId,
+    ColorTempRange, DeviceDescription, EntityDescription, EntityKind, LightCapabilities,
+    LightState, Name, SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType,
+    State, StateClass, SwitchCapabilities, SwitchClass, SwitchState, UniqueId,
 };
 
 /// ESPHome's `ColorMode` enum (api.proto). The values are a bit mask of what a mode carries.
@@ -66,8 +66,19 @@ pub fn device_id(info: &DeviceInfoResponse) -> Result<UniqueId, IntegrationError
     Ok(UniqueId::try_from(id.as_str())?)
 }
 
-pub fn entity_id(device: &UniqueId, key: u32) -> Result<UniqueId, IntegrationError> {
-    Ok(UniqueId::try_from(format!("{device}-{key}"))?)
+/// An entity's id: the device, the kind, and ESPHome's key for it.
+///
+/// The kind is in there because ESPHome's key is a hash of the object id alone. Change a
+/// component from a sensor to a switch while keeping its name and the key is unchanged — and an
+/// entity is not allowed to change kind (`docs/specs/entities.md` §4), so the core would refuse
+/// the new one and the entity would vanish. With the kind in the id they are simply two
+/// different entities, and the old one is removed as any disappeared entity is.
+pub fn entity_id(
+    device: &UniqueId,
+    kind: EntityKind,
+    key: u32,
+) -> Result<UniqueId, IntegrationError> {
+    Ok(UniqueId::try_from(format!("{device}-{kind}-{key}"))?)
 }
 
 pub fn device(info: &DeviceInfoResponse) -> Result<DeviceDescription, IntegrationError> {
@@ -94,7 +105,7 @@ pub fn light(
     let modes = &entity.supported_color_modes;
     let color_temp = modes.iter().any(|m| color_mode::has_color_temp(*m));
     Ok(EntityDescription {
-        unique_id: entity_id(device, entity.key)?,
+        unique_id: entity_id(device, EntityKind::Light, entity.key)?,
         name: Some(Name::try_from(entity.name.as_str())?),
         device_unique_id: Some(device.clone()),
         suggested_object_id: None,
@@ -114,7 +125,7 @@ pub fn switch(
     entity: &ListEntitiesSwitchResponse,
 ) -> Result<EntityDescription, IntegrationError> {
     Ok(EntityDescription {
-        unique_id: entity_id(device, entity.key)?,
+        unique_id: entity_id(device, EntityKind::Switch, entity.key)?,
         name: Some(Name::try_from(entity.name.as_str())?),
         device_unique_id: Some(device.clone()),
         suggested_object_id: None,
@@ -133,7 +144,7 @@ pub fn sensor(
     entity: &ListEntitiesSensorResponse,
 ) -> Result<EntityDescription, IntegrationError> {
     Ok(EntityDescription {
-        unique_id: entity_id(device, entity.key)?,
+        unique_id: entity_id(device, EntityKind::Sensor, entity.key)?,
         name: Some(Name::try_from(entity.name.as_str())?),
         device_unique_id: Some(device.clone()),
         suggested_object_id: None,
@@ -158,7 +169,7 @@ pub fn binary_sensor(
     entity: &ListEntitiesBinarySensorResponse,
 ) -> Result<EntityDescription, IntegrationError> {
     Ok(EntityDescription {
-        unique_id: entity_id(device, entity.key)?,
+        unique_id: entity_id(device, EntityKind::BinarySensor, entity.key)?,
         name: Some(Name::try_from(entity.name.as_str())?),
         device_unique_id: Some(device.clone()),
         suggested_object_id: None,

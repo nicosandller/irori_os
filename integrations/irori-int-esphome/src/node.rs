@@ -35,7 +35,14 @@ pub enum Event {
         device: Box<DeviceDescription>,
         entities: Vec<EntityDescription>,
     },
-    Reported(Box<StateReport>),
+    /// A new value for one of the device's entities. Carries the connection that heard it, so
+    /// a report queued by a connection that has since been replaced can't overwrite the state
+    /// the current one is reporting.
+    Reported {
+        address: SocketAddr,
+        device: UniqueId,
+        report: Box<StateReport>,
+    },
     /// Lost: the entities stay in the registry, marked unavailable, until it comes back. The
     /// address says which connection this is, so a goodbye from one that has already been
     /// replaced can be told apart from the real thing.
@@ -46,10 +53,7 @@ pub enum Event {
     },
     /// Couldn't connect at all, and this device was never introduced. Logged, not registered:
     /// there's nothing to show yet.
-    Unreachable {
-        address: SocketAddr,
-        why: String,
-    },
+    Unreachable { address: SocketAddr, why: String },
 }
 
 /// How long to wait before trying a device again, doubling up to [`MAX_RETRY`]. A device that's
@@ -212,10 +216,15 @@ async fn session(
                         return Ok(Ended::Disconnected(format!("{address} said goodbye")));
                     }
                     message => {
-                        if let Some(report) = report(&message, &by_key, &lights, &mut commanded)
-                            && events.send(Event::Reported(Box::new(report))).await.is_err()
-                        {
-                            return Ok(Ended::Stopping);
+                        if let Some(report) = report(&message, &by_key, &lights, &mut commanded) {
+                            let event = Event::Reported {
+                                address,
+                                device: device_unique_id.clone(),
+                                report: Box::new(report),
+                            };
+                            if events.send(event).await.is_err() {
+                                return Ok(Ended::Stopping);
+                            }
                         }
                     }
                 }
@@ -492,7 +501,12 @@ mod tests {
             .expect("the lamp is described");
         assert_eq!(
             lamp.unique_id,
-            map::entity_id(&device.unique_id, fake_device::LIGHT_KEY).expect("valid")
+            map::entity_id(
+                &device.unique_id,
+                irori_integration::types::EntityKind::Light,
+                fake_device::LIGHT_KEY,
+            )
+            .expect("valid")
         );
         // 153-500 mireds is 2000-6536 K, and a colour-temperature light dims.
         assert_eq!(
@@ -511,7 +525,7 @@ mod tests {
         let mut reports = Vec::new();
         while reports.len() < 4 {
             match events.recv().await {
-                Some(Event::Reported(report)) => reports.push(*report),
+                Some(Event::Reported { report, .. }) => reports.push(*report),
                 other => panic!("expected a state report, got {other:?}"),
             }
         }
@@ -543,7 +557,7 @@ mod tests {
         let mut answered = None;
         for _ in 0..10 {
             match events.recv().await {
-                Some(Event::Reported(report)) if report.unique_id == lamp.unique_id => {
+                Some(Event::Reported { report, .. }) if report.unique_id == lamp.unique_id => {
                     answered = Some(*report);
                     break;
                 }

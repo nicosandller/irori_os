@@ -18,9 +18,10 @@ Requires stable Rust (pinned via `rust-toolchain.toml`). One command builds the 
 the binary, after which Irori runs from anywhere:
 
 ```sh
-cargo install trunk --locked          # once: builds the UI to wasm
-cargo xtask install                   # build the UI, install `irori`
-irori run                             # http://127.0.0.1:8480
+rustup target add wasm32-unknown-unknown   # once: what the UI compiles to
+cargo install trunk --locked               # once: builds the UI
+cargo xtask install                        # build the UI, install `irori`
+irori run                                  # http://127.0.0.1:8480
 ```
 
 Or straight from the checkout, without installing:

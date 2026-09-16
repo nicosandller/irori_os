@@ -259,6 +259,11 @@ mod ui {
     pub async fn serve(uri: Uri) -> Response {
         let path = uri.path().trim_start_matches('/');
         let path = if path.is_empty() { INDEX } else { path };
+        // `/api/…` belongs to the API, whatever is or isn't there. Handing an API caller the
+        // page with a 200 would let a typo look like success.
+        if path == "api" || path.starts_with("api/") {
+            return (StatusCode::NOT_FOUND, "no such endpoint\n").into_response();
+        }
         // The app wins where both have a file, so a built UI replaces the placeholder page.
         let file = App::get(path)
             .or_else(|| Placeholder::get(path))
@@ -531,6 +536,17 @@ mod tests {
     async fn a_missing_file_is_not_found() -> anyhow::Result<()> {
         let (status, _, _) = get("/does-not-exist.css").await?;
         assert_eq!(status, StatusCode::NOT_FOUND);
+        Ok(())
+    }
+
+    /// An endpoint that doesn't exist says so, rather than answering with the page: a caller
+    /// asking for JSON must not read a 200 as "that worked".
+    #[tokio::test]
+    async fn a_missing_endpoint_is_not_found() -> anyhow::Result<()> {
+        for path in ["/api/dev/not-real", "/api/nope", "/api"] {
+            let (status, _, _) = get(path).await?;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        }
         Ok(())
     }
 
