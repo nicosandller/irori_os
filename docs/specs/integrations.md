@@ -107,7 +107,7 @@ core's process.
 | Set health | `running`, or `degraded` with a reason | §6.5 |
 | Set waiting | what it found but can't use until a person helps, replacing the last list | §6.6 |
 | Handle service calls | receives `ServiceCall` (§7), replies with a result | For its own entities only |
-| Store small data | key → JSON value, up to 64 KB each | Private to the integration, kept across restarts. E.g. pairing keys, a cloud token refresh |
+| Store small data | key (1–128 characters) → JSON value, up to 64 KB each; load, store, forget | Private to the integration, kept across restarts of it and of Irori, in the data directory's database. E.g. pairing keys, a cloud token refresh, the value a helper was left at. Not for settings (a person's decisions go in the config directory) and not for history |
 | Log | leveled, structured log lines | Tagged with the integration id |
 
 **What it can't do:** see or change other integrations' devices and entities (without the `api`

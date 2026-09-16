@@ -136,6 +136,7 @@ pub fn Devices() -> impl IntoView {
     let adding = RwSignal::new(false);
     let showing = RwSignal::new(remembered_view());
     let folded = RwSignal::new(remembered_folded());
+    provide_context(HelperTrouble(RwSignal::new(None)));
     let waiting = crate::waiting::everything_waiting(live);
 
     Effect::new(move |_| remember(VIEW_KEY, showing.get().key()));
@@ -205,12 +206,13 @@ pub fn Devices() -> impl IntoView {
             match showing.get() {
                 Showing::Devices => table(&home, &needle, folded),
                 Showing::Entities => view(&home, &needle, controls),
-                Showing::Helpers => helpers(),
+                Showing::Helpers => helpers(&home, controls),
             }
         }}
         // Outside the block above, which redraws on every reading: an opened list mustn't snap
         // shut two seconds later (ROADMAP D33).
         {move || (showing.get() == Showing::Devices).then(|| view! { <Ignored /> })}
+        {move || (showing.get() == Showing::Helpers).then(|| view! { <AddToggle /> })}
     }
 }
 
@@ -587,19 +589,175 @@ fn has_icon(live: crate::Live, integration: &str) -> bool {
         .any(|(id, extension)| id.as_str() == integration && extension.has_icon)
 }
 
-/// Helpers don't exist yet. Saying what they will be is more use than an empty tab.
-fn helpers() -> AnyView {
+/// The helpers in the home: the switches Irori keeps itself, each with its switch and a way to
+/// remove it. Redrawn with every reading, so it holds nothing a person is typing.
+fn helpers(home: &Home, controls: Controls) -> AnyView {
+    let states: BTreeMap<_, _> = home.states.iter().map(|s| (&s.entity_id, s)).collect();
+    let mut toggles: Vec<_> = home
+        .entities
+        .iter()
+        .filter(|entity| entity.integration.as_str() == HELPERS)
+        .filter_map(|entity| {
+            let id = entity
+                .unique_id
+                .as_str()
+                .strip_prefix("toggle-")?
+                .to_owned();
+            Some((id, entity.clone(), states.get(&entity.id).copied().cloned()))
+        })
+        .collect();
+    toggles.sort_by(|a, b| a.1.name.as_str().cmp(b.1.name.as_str()));
+    if toggles.is_empty() {
+        return view! {
+            <section class="card">
+                <h2>"No helpers yet"</h2>
+                <p class="muted">
+                    "A helper is a value Irori keeps itself rather than a device reporting it: a "
+                    "switch for \"guests are over\" or \"holiday mode\", say. It stays as it was "
+                    "left through restarts, and rules (M1.4) will be able to read and flip it."
+                </p>
+            </section>
+        }
+        .into_any();
+    }
     view! {
         <section class="card">
-            <h2>"No helpers yet"</h2>
-            <p class="muted">
-                "Helpers are values Irori keeps itself rather than a device reporting them: a "
-                "switch for \"guests are over\", a number for a thermostat's night setting, a "
-                "timer. They arrive with rules (M1.4), which are what they're for."
-            </p>
+            <ul class="room-devices">
+                {toggles
+                    .into_iter()
+                    .map(|(id, entity, state)| {
+                        let name = entity.name.to_string();
+                        let shown = entity.id.to_string();
+                        let offline = state
+                            .as_ref()
+                            .is_some_and(|s| s.availability == Availability::Unavailable);
+                        let knob = control(&entity, state.as_ref(), offline, controls);
+                        view! {
+                            <li>
+                                <span class="name">{name.clone()}</span>
+                                <code class="muted small">{shown}</code>
+                                <span class="room-actions">
+                                    {knob}
+                                    <ToggleActions id=id entity_id=entity.id.clone() name=name />
+                                </span>
+                            </li>
+                        }
+                    })
+                    .collect_view()}
+            </ul>
         </section>
     }
     .into_any()
+}
+
+/// The integration that keeps helpers.
+const HELPERS: &str = "helpers";
+
+/// Renaming and removing a toggle. A toggle has one name, kept with its definition in
+/// `extensions/helpers.toml`; renaming it here changes that one (ROADMAP D36).
+#[component]
+fn ToggleActions(id: String, entity_id: EntityId, name: String) -> impl IntoView {
+    let live = expect_context::<crate::Live>();
+    let trouble = expect_context::<HelperTrouble>().0;
+    let rename = {
+        let name = name.clone();
+        move |_| {
+            let Ok(Some(typed)) =
+                window().prompt_with_message_and_default("Rename this toggle", &name)
+            else {
+                return;
+            };
+            if typed.trim() == name {
+                return;
+            }
+            let Some(named) = crate::rooms::named(typed, trouble) else {
+                return;
+            };
+            let entity_id = entity_id.clone();
+            spawn_local(async move {
+                match crate::api::rename_entity(&entity_id, Some(named)).await {
+                    Ok(()) => {
+                        trouble.set(None);
+                        crate::refresh(live);
+                    }
+                    Err(why) => trouble.set(Some(why)),
+                }
+            });
+        }
+    };
+    let remove = move |_| {
+        if !window()
+            .confirm_with_message(&format!(
+                "Remove {name}? Anything that reads it will find it gone."
+            ))
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let id = id.clone();
+        spawn_local(async move {
+            match crate::api::remove_toggle(&id).await {
+                Ok(()) => {
+                    trouble.set(None);
+                    crate::refresh(live);
+                }
+                Err(why) => trouble.set(Some(why)),
+            }
+        });
+    };
+    view! {
+        <button type="button" on:click=rename>"Rename"</button>
+        <button type="button" class="danger" on:click=remove>"Remove"</button>
+    }
+}
+
+/// Why the last change to a helper was refused, shared by the form and the rows.
+#[derive(Debug, Clone, Copy)]
+struct HelperTrouble(RwSignal<Option<String>>);
+
+/// Making a toggle. Outside the list, which redraws with every reading, so what's being typed
+/// survives it (ROADMAP D33).
+#[component]
+fn AddToggle() -> impl IntoView {
+    let live = expect_context::<crate::Live>();
+    let trouble = expect_context::<HelperTrouble>().0;
+    let name = RwSignal::new(String::new());
+    let add = move || {
+        let Some(named) = crate::rooms::named(name.get(), trouble) else {
+            return;
+        };
+        name.set(String::new());
+        spawn_local(async move {
+            match crate::api::add_toggle(named).await {
+                Ok(()) => {
+                    trouble.set(None);
+                    crate::refresh(live);
+                }
+                Err(why) => trouble.set(Some(why)),
+            }
+        });
+    };
+    view! {
+        {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
+        <form
+            class="inline-form"
+            on:submit=move |ev| {
+                ev.prevent_default();
+                add();
+            }
+        >
+            <input
+                type="text"
+                aria-label="Name of the new toggle"
+                placeholder="Guests are over"
+                prop:value=name
+                on:input:target=move |ev| name.set(ev.target().value())
+            />
+            <button type="submit" class="add" disabled=move || name.get().trim().is_empty()>
+                "Add toggle"
+            </button>
+        </form>
+    }
 }
 
 /// A device's battery, if one of its entities reports one: a percentage from a battery sensor,
