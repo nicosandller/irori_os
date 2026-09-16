@@ -747,6 +747,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "irori-ui"
+version = "0.0.0"
+dependencies = [
+ "console_error_panic_hook",
+ "gloo-net 0.7.0",
+ "gloo-timers",
+ "irori-types",
+ "leptos",
+ "serde",
+]
+
+[[package]]
 name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1557,18 +1569,6 @@ name = "smallvec"
 version = "1.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
-
-[[package]]
-name = "spike-ui-leptos"
-version = "0.0.0"
-dependencies = [
- "console_error_panic_hook",
- "gloo-net 0.7.0",
- "gloo-timers",
- "irori-types",
- "leptos",
- "serde_json",
-]
 
 [[package]]
 name = "stable_deref_trait"

@@ -16,7 +16,7 @@ use irori_integration::host::{Op, incoming_call};
 use irori_integration::{IncomingCall, Rejected, ServiceErrorCode};
 use irori_types::{
     Context, ContextId, Device, Entity, EntityId, EntityKind, EntityState, ExtensionId,
-    IntegrationId, ServiceCall, StateReport, Timestamp, Version,
+    IntegrationId, Origin, ServiceCall, StateReport, Timestamp, Version,
 };
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc};
@@ -159,6 +159,16 @@ impl Core {
 
     pub fn now(&self) -> Timestamp {
         self.0.clock.now()
+    }
+
+    /// A fresh context for something that starts here, e.g. a command from the UI. Use the
+    /// context that caused it instead when there is one (`docs/specs/entities.md` §6).
+    pub fn new_context(&self, origin: Origin) -> Context {
+        Context {
+            id: context_id::new_context_id(self.now()),
+            parent_id: None,
+            origin,
+        }
     }
 
     /// Every event from now on. A listener that falls more than 1024 events behind skips ahead

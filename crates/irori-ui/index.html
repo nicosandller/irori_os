@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IroriOS</title>
+  <link data-trunk rel="rust" data-wasm-opt="z" data-wasm-opt-params="--enable-bulk-memory --enable-nontrapping-float-to-int">
+  <link data-trunk rel="copy-file" href="../irori/assets/favicon.svg">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <style>
+    /* Brand tokens (assets/README.md). Fonts are never downloaded: the UI works offline. */
+    :root {
+      color-scheme: light dark;
+      --ink: #1c1714; --paper: #faf7f4; --ember: #c4552b; --muted: #6b625b;
+      --fg: var(--ink); --bg: var(--paper); --line: #e6dfd8; --card: #fffdfb; --sunk: #efe9e3;
+      --sans: "IBM Plex Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --fg: var(--paper); --bg: var(--ink); --muted: #a89e96; --line: #3a322d;
+              --card: #241e1a; --sunk: #17120f; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 2rem 1rem 4rem; background: var(--bg); color: var(--fg);
+           font: 16px/1.5 var(--sans); }
+    main { max-width: 42rem; margin: 0 auto; }
+
+    header { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.25rem; }
+    header svg { width: 2rem; height: 2rem; flex: none; }
+    h1 { margin: 0; font-size: 1.5rem; font-weight: 500; letter-spacing: -0.02em; }
+    .live { margin-left: auto; display: flex; align-items: center; gap: .45rem;
+            color: var(--muted); font: .7rem/1 var(--mono); letter-spacing: .08em;
+            text-transform: uppercase; }
+    .dot { width: .5rem; height: .5rem; border-radius: 2px; background: var(--muted); }
+    .dot.ok { background: var(--ember); box-shadow: 0 0 .4rem var(--ember); }
+
+    .filter { width: 100%; margin-bottom: 1.5rem; padding: .5rem .7rem; font: inherit;
+              color: var(--fg); background: var(--card); border: 1px solid var(--line);
+              border-radius: .4rem; }
+    .filter:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
+
+    .banner { margin: 0 0 1.25rem; padding: .6rem .8rem; border: 1px solid var(--ember);
+              border-radius: .4rem; color: var(--ember); font-size: .875rem; }
+
+    .device { margin-bottom: 1.5rem; border: 1px solid var(--line); border-radius: .5rem;
+              background: var(--card); overflow: hidden; }
+    .device > h2 { margin: 0; padding: .7rem 1rem; font-size: .95rem; font-weight: 500;
+                   border-bottom: 1px solid var(--line); display: flex; align-items: baseline;
+                   gap: .6rem; }
+    .device > h2 .model { color: var(--muted); font: .7rem var(--mono); }
+
+    .entity { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem 1rem;
+              padding: .7rem 1rem; border-bottom: 1px solid var(--line); }
+    .entity:last-child { border-bottom: none; }
+    .entity.offline .name { color: var(--muted); }
+    .names { min-width: 0; flex: 1; }
+    .name { display: block; overflow-wrap: anywhere; }
+    /* Ids are long and the name above already says which entity this is: one line, cut off
+       rather than broken across lines on a phone. The full id is in the element's title. */
+    .id { display: block; color: var(--muted); font: .7rem var(--mono);
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .reading { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+    .reading .unit { color: var(--muted); }
+    .reading.on { color: var(--ember); }
+    .badge { color: var(--muted); font: .65rem var(--mono); letter-spacing: .08em;
+             text-transform: uppercase; }
+    /* Why the last command was refused, on its own line under the row it belongs to. */
+    .why { flex-basis: 100%; margin: .15rem 0 0; color: var(--ember); font-size: .8rem; }
+
+    /* The toggle: a switch that shows what the entity is doing, not what was clicked. */
+    .toggle { flex: none; width: 3.1rem; height: 1.75rem; padding: .18rem; cursor: pointer;
+              background: var(--sunk); border: 1px solid var(--line); border-radius: 1rem;
+              display: flex; justify-content: flex-start; transition: background .15s; }
+    .toggle .knob { width: 1.3rem; height: 1.3rem; border-radius: 50%; background: var(--card);
+                    border: 1px solid var(--line); transition: transform .15s; }
+    .toggle[aria-pressed="true"] { background: var(--ember); border-color: var(--ember); }
+    .toggle[aria-pressed="true"] .knob { transform: translateX(1.35rem); border-color: transparent; }
+    .toggle:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+    .toggle:disabled { cursor: progress; opacity: .5; }
+    .toggle.unknown .knob { transform: translateX(.67rem); }
+
+    .extensions { margin-top: 2.5rem; color: var(--muted); font-size: .8rem; }
+    .extensions h2 { margin: 0 0 .4rem; font: .7rem/1.6 var(--mono); letter-spacing: .08em;
+                     text-transform: uppercase; }
+    .extensions li { list-style: none; }
+    .extensions ul { margin: 0; padding: 0; }
+    .extensions .ext-id { font-family: var(--mono); color: var(--fg); }
+    .empty { color: var(--muted); }
+  </style>
+</head>
+<body></body>
+</html>

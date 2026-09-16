@@ -1,13 +1,36 @@
 [package]
 name = "irori-ui"
-description = "Barebones web UI (Rust/WASM). Framework choice pending the M0.8 spike."
-version.workspace = true
-edition.workspace = true
-publish.workspace = true
-repository.workspace = true
+description = "The web UI: a Leptos app compiled to wasm and embedded in the binary."
+version = "0.0.0"
+edition = "2024"
+publish = false
+repository = "https://github.com/nicosandller/irori_os"
+
+# Not a workspace member: this builds for wasm32 with `trunk`, not with the workspace's
+# `cargo build`. `cargo xtask ui` builds it; CI checks it compiles (see .github/workflows/ci.yml).
 
 [dependencies]
-irori-types.workspace = true
+irori-types = { path = "../irori-types" }
 
-[lints]
-workspace = true
+console_error_panic_hook = "0.1.7"
+gloo-net = { version = "0.7.0", default-features = false, features = ["http", "json"] }
+gloo-timers = { version = "0.3.0", features = ["futures"] }
+leptos = { version = "0.8.20", features = ["csr"] }
+serde = { version = "1.0.229", features = ["derive"] }
+
+[profile.release]
+# Download size is the budget that matters here (ROADMAP §4.3).
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
