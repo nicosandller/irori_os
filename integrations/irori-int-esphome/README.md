@@ -18,6 +18,21 @@ flash and it runs alongside an existing Home Assistant setup without touching it
 - **Survives devices going away**: entities stay, marked offline with their last value, and the
   integration reconnects (1 s, doubling to a minute).
 
+## A note on trust
+
+Plain ESPHome has **no authentication of its own**. A device doesn't prove who it is, and Irori
+connects to whatever announces itself as one. On a home network that's the same trust Home
+Assistant extends, and it's why this is usable with no setup at all — but it is a real limit,
+not a detail:
+
+- Anything on the network can advertise `_esphomelib._tcp` and have its entities adopted.
+- A hostile host could claim a device id that belongs to a real device.
+
+The fix is encryption, which does authenticate, and it needs somewhere to keep a key — the
+config dir (M0.7). Until then: Irori won't listen beyond this machine without
+`--allow-unauthenticated-lan`, every first connection says so in the log, and the limit is
+recorded as decision D29 rather than left to be discovered.
+
 ## What it doesn't do yet
 
 - **Encrypted devices.** ESPHome's API can require a pre-shared key. A key has to be kept

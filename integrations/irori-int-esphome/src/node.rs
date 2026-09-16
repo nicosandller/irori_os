@@ -36,8 +36,11 @@ pub enum Event {
         entities: Vec<EntityDescription>,
     },
     Reported(Box<StateReport>),
-    /// Lost: the entities stay in the registry, marked unavailable, until it comes back.
+    /// Lost: the entities stay in the registry, marked unavailable, until it comes back. The
+    /// address says which connection this is, so a goodbye from one that has already been
+    /// replaced can be told apart from the real thing.
     Left {
+        address: SocketAddr,
         device: UniqueId,
         why: String,
     },
@@ -75,7 +78,11 @@ pub async fn run(
             Ok(Ended::Stopping) => return,
             Ok(Ended::Disconnected(why)) | Err(why) => {
                 let event = match known.clone() {
-                    Some(device) => Event::Left { device, why },
+                    Some(device) => Event::Left {
+                        address,
+                        device,
+                        why,
+                    },
                     None => Event::Unreachable { address, why },
                 };
                 if events.send(event).await.is_err() {
@@ -89,10 +96,21 @@ pub async fn run(
             retry = FIRST_RETRY;
             known = None;
         }
-        // Wait to retry, unless the integration stops first.
-        tokio::select! {
-            () = tokio::time::sleep(retry) => {}
-            call = calls.recv() => if call.is_none() { return },
+        // Wait to retry. Commands that arrive meanwhile are refused rather than dropped:
+        // dropping one reaches the caller as "the integration dropped the call" instead of the
+        // plain truth, which is that the device isn't there.
+        let until = Instant::now() + retry;
+        loop {
+            tokio::select! {
+                () = tokio::time::sleep_until(until) => break,
+                call = calls.recv() => match call {
+                    None => return, // the integration is stopping
+                    Some(incoming) => {
+                        let why = format!("{address} isn't connected right now");
+                        incoming.reply(Err(ServiceError::unavailable(why)));
+                    }
+                },
+            }
         }
         retry = (retry * 2).min(MAX_RETRY);
     }
@@ -138,6 +156,17 @@ async fn session(
     let by_unique_id: HashMap<UniqueId, u32> =
         by_key.iter().map(|(key, id)| (id.clone(), *key)).collect();
 
+    if known.is_none() {
+        // Said once per device, at the first connection: plain ESPHome has no authentication of
+        // its own, so this is a trust decision, not a detail.
+        tracing::warn!(
+            device = %device_unique_id,
+            name = %description.name,
+            %address,
+            "connected without authentication; anything on this network that answers to this \
+             address is believed"
+        );
+    }
     tracing::info!(
         device = %device_unique_id,
         name = %description.name,
@@ -413,7 +442,9 @@ mod tests {
     use super::*;
     use crate::fake_device;
 
-    fn call(unique_id: &str, service: Service) -> (IncomingCall, ContextId) {
+    type Answer = tokio::sync::oneshot::Receiver<Result<(), ServiceError>>;
+
+    fn call(unique_id: &str, service: Service) -> (IncomingCall, ContextId, Answer) {
         let context = Context {
             id: ContextId::try_from("01K5B2Q9A1B2C3D4E5F6G7H8J9").expect("valid"),
             parent_id: None,
@@ -422,12 +453,12 @@ mod tests {
             },
         };
         let id = context.id.clone();
-        let (incoming, _) = incoming_call(ServiceCall {
+        let (incoming, answer) = incoming_call(ServiceCall {
             unique_id: UniqueId::try_from(unique_id).expect("valid"),
             service,
             context,
         });
-        (incoming, id)
+        (incoming, id, answer)
     }
 
     /// The whole conversation with a device, against a stand-in that speaks the real protocol:
@@ -500,7 +531,7 @@ mod tests {
         );
 
         // Doing what it's told, and saying who asked.
-        let (incoming, context) = call(
+        let (incoming, context, _answer) = call(
             lamp.unique_id.as_str(),
             Service::LightTurnOn(LightTurnOn {
                 brightness: Some(255),
@@ -543,6 +574,39 @@ mod tests {
         }
 
         // Stopping: dropping the command channel ends the task.
+        drop(calls_tx);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("the task stops when the integration does")
+            .expect("it stops without panicking");
+    }
+
+    /// A command for a device that isn't answering is refused with a reason. Dropping it would
+    /// reach the caller as "the integration dropped the call", which says nothing useful.
+    #[tokio::test]
+    async fn a_command_for_a_device_that_is_away_is_refused_not_dropped() {
+        // Nothing listens on port 1, so the task stays in its retry loop.
+        let address: SocketAddr = "127.0.0.1:1".parse().expect("a valid address");
+        let (events_tx, mut events) = mpsc::channel(8);
+        let (calls_tx, calls_rx) = mpsc::channel(8);
+        let task = tokio::spawn(run(address, events_tx, calls_rx));
+
+        match events.recv().await {
+            Some(Event::Unreachable { address: at, .. }) => assert_eq!(at, address),
+            other => panic!("expected an unreachable device, got {other:?}"),
+        }
+
+        let (incoming, _, answer) = call("light.somewhere", Service::LightTurnOff);
+        calls_tx.send(incoming).await.expect("the task is running");
+        let answered = tokio::time::timeout(Duration::from_secs(5), answer)
+            .await
+            .expect("the call is answered rather than left hanging")
+            .expect("the call is answered rather than dropped");
+        let Err(error) = answered else {
+            panic!("a device that isn't there can't have done it");
+        };
+        assert_eq!(error.code, irori_integration::ServiceErrorCode::Unavailable);
+
         drop(calls_tx);
         tokio::time::timeout(Duration::from_secs(5), task)
             .await
