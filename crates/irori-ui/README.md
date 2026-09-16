@@ -88,10 +88,10 @@ mobile reach that a page served by the core doesn't need. The spikes are in the 
 ## The size budget, and what a browser really downloads
 
 **Budget (ROADMAP §4.3):** under 500 KB brotli for the barebones UI. CI checks it on every pull
-request; both pages together compress to about 220 KB.
+request; the pages together compress to about 230 KB.
 
 That is the budget's unit, not yet what goes over the wire. `irori serve` hands these files out
-**as they are**, so a browser opening the page today downloads roughly **730 KB** — the wasm is
+**as they are**, so a browser opening the page today downloads roughly **770 KB** — the wasm is
 most of it. Serving precompressed assets with `Accept-Encoding` negotiation is part of the plan
-(ROADMAP §2.2) and hasn't been done; until it is, read the 160 KB as "this fits, with room", not
+(ROADMAP §2.2) and hasn't been done; until it is, read the 230 KB as "this fits, with room", not
 as the transfer. On a LAN the difference is a fraction of a second; over a slow link it isn't.
