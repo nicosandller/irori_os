@@ -1,0 +1,2 @@
+The Leptos app (crates/irori-ui) is built into this folder by `cargo xtask ui` and embedded
+into the binary. Everything here except this file is generated; see crates/irori-ui/README.md.

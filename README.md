@@ -10,7 +10,7 @@
   <a href="dev/README.md"><b>Try it on a Mac</b></a>
 </p>
 
-> Status: the core's registry, live state, and extension host run, with virtual demo devices (M1.1, trimmed). Next: a Devices page, then ESPHome devices (ROADMAP D26). Nothing here controls a real home yet.
+> Status: the core's registry, live state, and extension host run, with virtual demo devices (M1.1, trimmed), and a Devices page that shows them and switches them (M0.8, M1.6 first slice). Next: ESPHome devices (ROADMAP D26). Nothing here controls a real home yet.
 
 ## Build and run
 
@@ -20,10 +20,22 @@ Requires stable Rust (pinned via `rust-toolchain.toml`).
 cargo run -- serve                    # http://127.0.0.1:8480
 cargo run -- serve --log-level debug  # also log every device and state change
 cargo run -- serve --data /var/lib/irori
-curl -s http://127.0.0.1:8480/api/dev/states   # temporary read-only views: devices, entities,
-                                               # states, extensions
+curl -s http://127.0.0.1:8480/api/dev/home     # temporary API: the whole home in one response
+                                               # (also /api/dev/{devices,entities,states,extensions})
 cargo run -- version --json
 ```
+
+The **web UI** is a separate wasm crate, so `cargo build` alone doesn't need a wasm toolchain and
+serves a placeholder page at `/`. Build it once to get the Devices page:
+
+```sh
+cargo install trunk --locked          # once
+cargo xtask ui                        # build the UI into the folder the binary embeds
+cargo run -- serve                    # http://127.0.0.1:8480 now shows your devices
+```
+
+See [crates/irori-ui/README.md](crates/irori-ui/README.md) for working on the UI itself (live
+reload, no binary rebuild). CI builds it, so downloaded release binaries always have it.
 
 Barebones build, no integrations and no UI (must always build and run):
 
@@ -57,6 +69,10 @@ cargo xtask schemas --check           # schemas/ matches irori-types (run withou
 
 `dev/pi check` runs exactly this list on Linux arm64 in Docker.
 
+CI also runs `cargo xtask ui` in a job of its own and checks the UI's download size against the
+budget. It needs `trunk`, which the Pi container doesn't carry, so it isn't part of the list
+above; run it on the host after changing the UI.
+
 ## Static binary for a Raspberry Pi
 
 ```sh
@@ -68,8 +84,9 @@ ssh pi@raspberrypi.local ./irori serve --bind 0.0.0.0:8480 --allow-unauthenticat
 ```
 
 Irori has no login yet, so it only listens on `127.0.0.1` unless you pass
-`--allow-unauthenticated-lan`. Anyone on your network can reach it while that flag is on.
-The flag goes away once authentication exists (ROADMAP D12, M1.5).
+`--allow-unauthenticated-lan`. Anyone on your network can then open the UI and switch your
+devices — the temporary API sends commands as well as reading state. The flag goes away once
+authentication exists (ROADMAP D12, M1.5).
 
 CI runs on every pull request (and on every push to `main`). It builds `x86_64` and `aarch64` musl binaries, smoke-tests the `aarch64` one under QEMU, and uploads them as workflow artifacts.
 
@@ -81,7 +98,8 @@ docs/specs/    specifications: entities.md, extensions.md, integrations.md
 schemas/       JSON Schemas generated from irori-types (`cargo xtask schemas`)
 fixtures/      golden examples, valid and invalid, checked by the tests
 crates/        irori-types, irori-core, irori-integration, irori-rules, irori-recorder,
-               irori-config, irori-api, irori-client, irori-ui, irori (the binary)
+               irori-config, irori-api, irori-client, irori (the binary), and irori-ui
+               (the Leptos web UI: wasm, built by `cargo xtask ui`, outside the workspace)
 integrations/  irori-int-mqtt, irori-int-demo
 extras/        irori-assist (opt-in AI, never in the default build)
 xtask/         repository automation (`cargo xtask …`)
