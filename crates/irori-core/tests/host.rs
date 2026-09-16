@@ -197,6 +197,63 @@ async fn devices_appear_and_commands_round_trip_with_their_context() {
     );
 }
 
+/// A lamp like a real one: it accepts the command at once, but its new value only arrives a
+/// moment later.
+struct SlowLamp;
+impl Integration for SlowLamp {
+    type Config = NoSettings;
+    const MANIFEST: &'static str = r#"
+        [extension]
+        id = "slow_lamp"
+        name = "Slow lamp"
+        version = "0.1.0"
+        irori = ">=0.0.0"
+
+        [[contributes.integration]]
+        iot_class = "local_push"
+        entity_kinds = ["light"]
+    "#;
+    async fn run(_: NoSettings, mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
+        describe_lamp(&ctx).await?;
+        ctx.report_state(light(true, None, None));
+        while let Some(incoming) = ctx.next_call().await {
+            let caused_by = Some(incoming.call.context.id.clone());
+            let on = matches!(incoming.call.service, Service::LightTurnOn(_));
+            incoming.reply(Ok(()));
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            ctx.report_state(light(on, None, caused_by));
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn two_toggles_at_once_cancel_each_other_out() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = start(&core, builtin::<SlowLamp>().expect("valid"));
+    let on = || {
+        core.state(&lamp_id())
+            .and_then(|s| s.state)
+            .is_some_and(|s| matches!(s, State::Light(LightState { on: true, .. })))
+    };
+    eventually("the lamp is on", on).await;
+
+    // Two people press toggle at the same moment, before the lamp has confirmed the first:
+    // off, then on again.
+    let lamp = lamp_id();
+    let (first, second) = tokio::join!(
+        core.call_service(&lamp, Command::Toggle, user_context()),
+        core.call_service(&lamp, Command::Toggle, user_context()),
+    );
+    first.expect("first toggle");
+    second.expect("second toggle");
+
+    // Both confirmations land, and the lamp ends up as it started.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(on(), "two toggles should cancel out");
+    host.shutdown().await;
+}
+
 // --- Crashes and restarts -----------------------------------------------------------------
 
 static CRASHY_RUNS: AtomicUsize = AtomicUsize::new(0);
