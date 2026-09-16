@@ -50,6 +50,18 @@ more than volume: one verified finding beats five guesses.
   remembered command in `Home::commanded` (`docs/specs/integrations.md` §7.1), which survives a
   cancelled caller. Don't propose moving call supervision off the caller's future to close that
   window; the restructuring isn't worth it for a cancelled command arriving a moment early.
+- **`crates/irori-ui` is outside the Cargo workspace on purpose.** It builds for
+  `wasm32-unknown-unknown` with `trunk` (`cargo xtask ui`), so keeping it out means a plain
+  `cargo build` needs no wasm toolchain and the workspace's native builds don't drag in a
+  browser framework. CI's `ui` job runs its own fmt, clippy and build. Don't propose adding it
+  to `members`.
+- **The binary embeds two asset folders, and that's the point.** `crates/irori/assets/` is the
+  placeholder page that any `cargo build` can serve; `crates/irori/ui/` is the built Leptos app,
+  which wins when it's there (`crates/irori/src/server.rs`). Don't propose merging them or
+  failing the build when the UI hasn't been built.
+- **The UI polls `/api/dev/home` every 2 seconds.** `/api/dev/*` is a temporary, unauthenticated
+  API, and pushing changes waits for the WebSocket API in M1.5. Don't propose WebSockets, SSE,
+  ETags, or caching headers for it yet.
 - **Check files before claiming what they contain.** Quote the actual line, for example the
   value in a fixture, rather than inferring it.
 

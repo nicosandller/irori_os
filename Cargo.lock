@@ -639,6 +639,7 @@ dependencies = [
  "irori-int-demo",
  "irori-int-mqtt",
  "irori-integration",
+ "irori-types",
  "mime_guess",
  "rusqlite",
  "rust-embed",
@@ -752,13 +753,6 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
-]
-
-[[package]]
-name = "irori-ui"
-version = "0.0.0"
-dependencies = [
- "irori-types",
 ]
 
 [[package]]
