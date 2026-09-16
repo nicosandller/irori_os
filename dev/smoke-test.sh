@@ -38,8 +38,16 @@ fi
 
 if grep -q '"features":\[[^]]*"int-demo"' <<<"$health"; then
   # "Running" comes a moment before the demo has described its devices, so wait for both.
-  until curl -fsS --max-time 2 "$base_url/api/dev/extensions" 2>/dev/null | grep -q '"demo":{"state":"running"' \
-    && curl -fsS --max-time 2 "$base_url/api/dev/states" 2>/dev/null | grep -q '"entity_id":"light.demo_lamp"'; do
+  # Each response is captured first: piping into `grep -q` can kill curl with SIGPIPE once it
+  # matches, which `set -o pipefail` would report as a failure.
+  demo_ready() {
+    local extensions states
+    extensions="$(curl -fsS --max-time 2 "$base_url/api/dev/extensions" 2>/dev/null)" || return 1
+    states="$(curl -fsS --max-time 2 "$base_url/api/dev/states" 2>/dev/null)" || return 1
+    grep -q '"demo":{"state":"running"' <<<"$extensions" &&
+      grep -q '"entity_id":"light.demo_lamp"' <<<"$states"
+  }
+  until demo_ready; do
     ((SECONDS < deadline)) || fail "the demo extension isn't running with its devices listed within ${timeout}s"
     sleep 0.2
   done
