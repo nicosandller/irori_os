@@ -27,7 +27,7 @@ pub enum CallError {
     Unavailable(String),
     /// The integration says the device or service failed.
     Failed(String),
-    /// No answer from the integration in time.
+    /// The whole call, queueing included, didn't finish in time.
     Timeout,
 }
 
@@ -41,7 +41,9 @@ impl fmt::Display for CallError {
             }
             Self::Unavailable(why) => write!(f, "device unavailable: {why}"),
             Self::Failed(why) => write!(f, "failed: {why}"),
-            Self::Timeout => f.write_str("the integration didn't answer within 10 seconds"),
+            Self::Timeout => {
+                f.write_str("the call didn't finish within 10 seconds (waiting for other calls on the same entity, or for the integration to answer)")
+            }
         }
     }
 }
