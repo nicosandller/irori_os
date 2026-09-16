@@ -36,6 +36,17 @@ cargo run -- serve                       # the core, with the demo devices, on 8
 cd crates/irori-ui && trunk serve --open # the page on 8080, API proxied to 8480
 ```
 
+## The pages
+
+| | |
+|---|---|
+| **Home** (`/`) | What Irori is looking after: how many devices and entities, which extensions are running and how many devices each brings in, and Irori's own version, uptime and database. |
+| **Devices** (`/devices`) | Two ways to read the same home, remembered per browser: **Entities** groups everything by the device it came from, with switches; **Devices** is a row per device — what brought it in, make, model, battery, how many entities. **Add device** explains where devices come from — every installed integration, what it's for, and what it can provide — because nothing is typed in by hand yet. |
+| **A device** (`/devices/<id>`) | One device: which integration brought it in, what that integration knows it as (the MAC address, for ESPHome), make, model, firmware, hardware, battery, what it's reached through, and every entity it provides with its controls. |
+
+Routing is client-side (`leptos_router`), so the binary serves the app for any path that isn't a
+file, and the app decides what to show.
+
 ## What it does
 
 - Lists every entity, grouped by the device it belongs to, sorted by name.
@@ -49,11 +60,12 @@ cd crates/irori-ui && trunk serve --open # the page on 8080, API proxied to 8480
 - Filters by entity name, entity id, or device name.
 - Lists the extensions behind it all, with their status and any reports they lost.
 
-**Not yet:** brightness and color for lights (the command API takes them; the page doesn't send
-them), areas and floors, any page other than Devices, and history. The page **polls**
-`/api/dev/home` every 2 seconds; the WebSocket API (M1.5) will push changes instead, and
-`src/api.rs` is what goes away then. The binary also serves these files **uncompressed** (see the
-budget below).
+**Not yet:** brightness and colour for lights (the command API takes them; the page sends only
+on and off), areas and floors, history, automations, settings, and any way to change a device —
+renaming, or installing the firmware update whose version the device page shows (ROADMAP M1.8,
+D30). The page **polls** `/api/dev/home` every 2 seconds; the WebSocket API (M1.5) will push
+changes instead, and `src/api.rs` is what goes away then. The binary also serves these files
+**uncompressed** (see the budget below).
 
 ## Why Leptos (ROADMAP D27)
 
@@ -76,10 +88,10 @@ mobile reach that a page served by the core doesn't need. The spikes are in the 
 ## The size budget, and what a browser really downloads
 
 **Budget (ROADMAP §4.3):** under 500 KB brotli for the barebones UI. CI checks it on every pull
-request; the Devices page compresses to about 160 KB.
+request; the pages together compress to about 230 KB.
 
 That is the budget's unit, not yet what goes over the wire. `irori serve` hands these files out
-**as they are**, so a browser opening the page today downloads roughly **540 KB** — the wasm is
+**as they are**, so a browser opening the page today downloads roughly **770 KB** — the wasm is
 most of it. Serving precompressed assets with `Accept-Encoding` negotiation is part of the plan
-(ROADMAP §2.2) and hasn't been done; until it is, read the 160 KB as "this fits, with room", not
+(ROADMAP §2.2) and hasn't been done; until it is, read the 230 KB as "this fits, with room", not
 as the transfer. On a LAN the difference is a fraction of a second; over a slow link it isn't.

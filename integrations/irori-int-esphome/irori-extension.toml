@@ -1,0 +1,15 @@
+[extension]
+id = "esphome"
+name = "ESPHome"
+version = "0.1.0"
+irori = ">=0.0.0, <0.1.0"
+description = "Devices running ESPHome firmware, over ESPHome's native API."
+
+[[contributes.integration]]
+iot_class = "local_push"
+entity_kinds = ["light", "switch", "sensor", "binary_sensor"]
+
+# Finding devices (mDNS) and talking to them (TCP 6053) happens entirely on the local network.
+# ESPHome's native API never leaves the house, which is why it's the first real protocol (D26).
+[permissions]
+lan = true

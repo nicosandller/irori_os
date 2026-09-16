@@ -45,6 +45,8 @@ jobs:
         run: cargo xtask check-deps
       - name: JSON Schemas match irori-types
         run: cargo xtask schemas --check
+      - name: Docs match the build (default features)
+        run: cargo xtask check-docs
 
   # Builds the Leptos app to wasm. This is also the wasm32 check for `irori-types`: the UI
   # compiles it into the browser bundle, which is the point of keeping those types portable.

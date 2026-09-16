@@ -23,7 +23,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Run the Irori server.
+    /// Run the Irori server. Also spelled `run`.
+    #[command(visible_alias = "run")]
     Serve {
         /// Directory for runtime data (SQLite database).
         #[arg(long, env = "IRORI_DATA", default_value = "./data")]

@@ -11,6 +11,7 @@ use irori_types::{Device, Entity, EntityId, EntityState, ExtensionId};
 use serde::{Deserialize, Serialize};
 
 const HOME_URL: &str = "/api/dev/home";
+const HEALTH_URL: &str = "/api/health";
 const COMMAND_URL: &str = "/api/dev/command";
 
 /// Everything the page shows. Mirrors `HomeView` on the server; the two meet again in
@@ -54,6 +55,18 @@ impl Home {
 /// than blank the whole page.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Extension {
+    /// Its own name, from its manifest.
+    #[serde(default)]
+    pub name: String,
+    /// What it says it's for.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Which kinds of entity its integration can provide.
+    #[serde(default)]
+    pub entity_kinds: Vec<String>,
+    /// Where its devices live and what they need: `local_push`, `cloud_polling`, and so on.
+    #[serde(default)]
+    pub iot_class: Option<String>,
     /// `running`, `starting`, `degraded`, `failed`, `disabled`.
     pub state: String,
     /// Why, when something is wrong.
@@ -72,6 +85,38 @@ pub struct Extension {
 fn unreachable(error: gloo_net::Error) -> String {
     leptos::logging::error!("{error}");
     "Can't reach Irori. Is it still running?".to_owned()
+}
+
+/// What Irori says about itself. Changes rarely, so the page asks once.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Health {
+    pub version: String,
+    /// The commit this Irori was built from, and when. Every version is `0.0.0` until there are
+    /// releases, so this is how you tell a running Irori from the one you just built.
+    #[serde(default)]
+    pub commit: String,
+    #[serde(default)]
+    pub built_at: String,
+    pub uptime_ms: u128,
+    pub features: Vec<String>,
+    pub sqlite: Sqlite,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Sqlite {
+    pub version: String,
+    pub journal_mode: String,
+}
+
+pub async fn fetch_health() -> Result<Health, String> {
+    let response = Request::get(HEALTH_URL).send().await.map_err(unreachable)?;
+    if !response.ok() {
+        return Err(format!("{HEALTH_URL} answered {}", response.status()));
+    }
+    response
+        .json::<Health>()
+        .await
+        .map_err(|e| format!("Irori sent something this page can't read: {e}"))
 }
 
 pub async fn fetch_home() -> Result<Home, String> {
