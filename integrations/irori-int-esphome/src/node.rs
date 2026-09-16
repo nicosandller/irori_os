@@ -5,7 +5,7 @@
 //! which owns the [`IntegrationContext`], because that context can't be shared (it holds the
 //! receiving end of the call queue).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -73,13 +73,27 @@ pub async fn run(
     mut calls: mpsc::Receiver<IncomingCall>,
 ) {
     let mut retry = FIRST_RETRY;
-    // Set once the device has said who it is. Until then a failure is just an address that
-    // didn't answer; afterwards it's a device the home knows, which has gone quiet.
+    // Who this address turned out to be. Kept once learned, across every reconnect: a device
+    // that has introduced itself and then gone quiet is a device the home knows about, not an
+    // address that never answered, and saying otherwise would count it as two kinds of trouble
+    // at once.
     let mut known: Option<UniqueId> = None;
+    // The trust warning is about this connection, not this attempt; once is enough.
+    let mut warned = false;
     loop {
-        match session(address, &events, &mut calls, &mut known).await {
+        let mut connected = false;
+        let ended = session(
+            address,
+            &events,
+            &mut calls,
+            &mut known,
+            &mut warned,
+            &mut connected,
+        )
+        .await;
+        match ended {
             // The run loop dropped our command channel: the integration is stopping.
-            Ok(Ended::Stopping) => return,
+            Ok(Ended::Stopping) => break,
             Ok(Ended::Disconnected(why)) | Err(why) => {
                 let event = match known.clone() {
                     Some(device) => Event::Left {
@@ -90,15 +104,14 @@ pub async fn run(
                     None => Event::Unreachable { address, why },
                 };
                 if events.send(event).await.is_err() {
-                    return;
+                    break;
                 }
             }
         }
         // A device that worked and then dropped gets the short wait again; only repeated
         // failures back off.
-        if known.is_some() {
+        if connected {
             retry = FIRST_RETRY;
-            known = None;
         }
         // Wait to retry. Commands that arrive meanwhile are refused rather than dropped:
         // dropping one reaches the caller as "the integration dropped the call" instead of the
@@ -108,7 +121,8 @@ pub async fn run(
             tokio::select! {
                 () = tokio::time::sleep_until(until) => break,
                 call = calls.recv() => match call {
-                    None => return, // the integration is stopping
+                    // The integration is stopping, or this connection has been replaced.
+                    None => return refuse_pending(&mut calls, address).await,
                     Some(incoming) => {
                         let why = format!("{address} isn't connected right now");
                         incoming.reply(Err(ServiceError::unavailable(why)));
@@ -117,6 +131,18 @@ pub async fn run(
             }
         }
         retry = (retry * 2).min(MAX_RETRY);
+    }
+    refuse_pending(&mut calls, address).await;
+}
+
+/// Answers whatever is still queued on the way out. A command that is simply dropped reaches
+/// its caller as "the integration dropped the call", which says nothing; this says what
+/// happened. Called wherever this task stops: shutdown, or another connection taking over.
+async fn refuse_pending(calls: &mut mpsc::Receiver<IncomingCall>, address: SocketAddr) {
+    calls.close();
+    while let Some(incoming) = calls.recv().await {
+        let why = format!("the connection to {address} ended before this could be sent");
+        incoming.reply(Err(ServiceError::unavailable(why)));
     }
 }
 
@@ -134,6 +160,8 @@ async fn session(
     events: &mpsc::Sender<Event>,
     calls: &mut mpsc::Receiver<IncomingCall>,
     known: &mut Option<UniqueId>,
+    warned: &mut bool,
+    connected: &mut bool,
 ) -> Result<Ended, String> {
     let mut client = EspHomeClient::builder()
         .address(&address.to_string())
@@ -160,9 +188,10 @@ async fn session(
     let by_unique_id: HashMap<UniqueId, u32> =
         by_key.iter().map(|(key, id)| (id.clone(), *key)).collect();
 
-    if known.is_none() {
-        // Said once per device, at the first connection: plain ESPHome has no authentication of
-        // its own, so this is a trust decision, not a detail.
+    if !*warned {
+        *warned = true;
+        // Said once per connection, not once per attempt: plain ESPHome has no authentication
+        // of its own, so this is a trust decision, not a detail.
         tracing::warn!(
             device = %device_unique_id,
             name = %description.name,
@@ -179,6 +208,7 @@ async fn session(
         "connected"
     );
     *known = Some(device_unique_id.clone());
+    *connected = true;
     let sent = events
         .send(Event::Arrived {
             address,
@@ -197,7 +227,7 @@ async fn session(
 
     // Which entity a command is still waiting on, so the state it produces can be traced back
     // to whoever asked for it.
-    let mut commanded: HashMap<u32, (ContextId, Instant)> = HashMap::new();
+    let mut commanded: HashMap<u32, VecDeque<(ContextId, Instant)>> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -331,7 +361,7 @@ fn report(
     message: &EspHomeMessage,
     by_key: &HashMap<u32, UniqueId>,
     lights: &HashMap<u32, LightCapabilities>,
-    commanded: &mut HashMap<u32, (ContextId, Instant)>,
+    commanded: &mut HashMap<u32, VecDeque<(ContextId, Instant)>>,
 ) -> Option<StateReport> {
     let (key, state) = match message {
         EspHomeMessage::LightStateResponse(s) => {
@@ -353,9 +383,22 @@ fn report(
 }
 
 /// The context of the command this report answers, if it's recent enough to be its result.
-fn caused_by(key: u32, commanded: &mut HashMap<u32, (ContextId, Instant)>) -> Option<ContextId> {
-    let (context, at) = commanded.remove(&key)?;
-    (at.elapsed() < CAUSED_BY_WINDOW).then_some(context)
+///
+/// A queue rather than a single slot: the core lets a second call go out as soon as the first
+/// has been sent, so two can be in flight on one entity, and each report answers the oldest one
+/// still waiting. Anything older than the window was answered by a report Irori never saw.
+fn caused_by(
+    key: u32,
+    commanded: &mut HashMap<u32, VecDeque<(ContextId, Instant)>>,
+) -> Option<ContextId> {
+    let waiting = commanded.get_mut(&key)?;
+    while let Some((context, at)) = waiting.pop_front() {
+        if at.elapsed() < CAUSED_BY_WINDOW {
+            return Some(context);
+        }
+    }
+    commanded.remove(&key);
+    None
 }
 
 /// Carries out a service call, and remembers who asked so the state it produces can say.
@@ -364,7 +407,7 @@ async fn command(
     incoming: IncomingCall,
     key: Option<u32>,
     lights: &HashMap<u32, LightCapabilities>,
-    commanded: &mut HashMap<u32, (ContextId, Instant)>,
+    commanded: &mut HashMap<u32, VecDeque<(ContextId, Instant)>>,
 ) {
     let Some(key) = key else {
         // The core only sends calls for entities this device described, so this means the
@@ -431,7 +474,10 @@ async fn command(
         Ok(()) => {
             // ESPHome doesn't acknowledge a command; it reports the new state. The device has
             // the command, which is what a reply means here (spec §7.3).
-            commanded.insert(key, (context, Instant::now()));
+            commanded
+                .entry(key)
+                .or_default()
+                .push_back((context, Instant::now()));
             incoming.reply(Ok(()));
         }
         Err(why) => incoming.reply(Err(ServiceError::unavailable(format!(

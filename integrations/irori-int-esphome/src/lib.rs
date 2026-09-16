@@ -94,7 +94,8 @@ async fn run(mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
     let mut discovered = discovered;
     let mut devices = Devices::default();
 
-    ctx.set_health(Health::Running).await;
+    let mut reported_health = Health::Running;
+    ctx.set_health(reported_health.clone()).await;
 
     let outcome = loop {
         tokio::select! {
@@ -126,7 +127,15 @@ async fn run(mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
             }
             Some(event) = events.recv() => {
                 apply(event, &ctx, &mut devices).await?;
-                health(&ctx, &devices).await;
+                // Only when it actually changes. A busy device reports constantly, and the
+                // core's operations channel is bounded and shared with describing entities
+                // and marking them unavailable; repeating "still fine" into it would crowd
+                // out the things that matter.
+                let now = health(&devices);
+                if now != reported_health {
+                    ctx.set_health(now.clone()).await;
+                    reported_health = now;
+                }
             }
         }
     };
@@ -239,9 +248,11 @@ async fn apply(
                 if previous.address != address {
                     tracing::info!(device = %device_id, from = %previous.address, to = %address,
                         "the device moved address");
-                    if let Some(stale) = devices.tasks.remove(&previous.address) {
-                        stale.handle.abort();
-                    }
+                    // Dropping its command channel is how the old connection learns it's done.
+                    // It stops at its next turn round the loop and refuses whatever it was
+                    // still holding, which an abort would have thrown away un-answered.
+                    devices.tasks.remove(&previous.address);
+                    devices.unreachable.remove(&previous.address);
                 }
             }
             // The address may have belonged to a different device until a moment ago (DHCP
@@ -311,6 +322,9 @@ async fn apply(
             if node.address != address {
                 return Ok(());
             }
+            if !node.online {
+                return Ok(()); // already known to be away; retrying is not news
+            }
             tracing::info!(%device, %why, "lost an ESPHome device");
             node.online = false;
             // Its entities stay, showing their last value, marked unavailable.
@@ -321,7 +335,13 @@ async fn apply(
             .await?;
         }
         node::Event::Unreachable { address, why } => {
-            // One entry per address, whatever the number of attempts, so the count below is of
+            // Not from a connection that has since been replaced: that address is somebody
+            // else's business now, and counting it would leave this integration degraded over
+            // a device that is perfectly well somewhere else.
+            if !devices.tasks.contains_key(&address) {
+                return Ok(());
+            }
+            // One entry per address, whatever the number of attempts, so the count is of
             // devices rather than tries.
             if devices.unreachable.insert(address, why.clone()).is_none() {
                 tracing::warn!(%address, %why, "can't reach an ESPHome device");
@@ -332,9 +352,9 @@ async fn apply(
 }
 
 /// What the Extensions view says about this integration.
-async fn health(ctx: &IntegrationContext, devices: &Devices) {
+fn health(devices: &Devices) -> Health {
     let offline = devices.nodes.values().filter(|node| !node.online).count();
-    let health = if devices.unreachable.is_empty() && offline == 0 {
+    if devices.unreachable.is_empty() && offline == 0 {
         Health::Running
     } else {
         let connected = devices.nodes.len() - offline;
@@ -346,8 +366,7 @@ async fn health(ctx: &IntegrationContext, devices: &Devices) {
             trouble.push(format!("{} unreachable", devices.unreachable.len()));
         }
         Health::Degraded(format!("{connected} connected, {}", trouble.join(", ")))
-    };
-    ctx.set_health(health).await;
+    }
 }
 
 /// Listens for ESPHome devices announcing themselves (`_esphomelib._tcp`), and reports the
