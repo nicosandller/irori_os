@@ -49,6 +49,9 @@ Last revised: 2026-09-15. Based on the original `irori-project-plan.md`, revised
 | D28 | **ESPHome's protocol comes from the `esphome-client` crate**, pinned to one API version, rather than hand-rolled | The architecture already puts protocol libraries in integrations (`rumqttc` for MQTT, §2.2), and this one is the client half: mDNS discovery, the protobuf messages, and the Noise transport encryption will need. Hand-rolling the Noise handshake and a protobuf subset would cost weeks for no behaviour. The crate is young (0.2.1), so the risk is deliberate and bounded: it is ~2k readable lines under MIT, only `irori-int-esphome` depends on it, and its version pin means an ESPHome release can't change what Irori compiles against. If it is abandoned, vendoring or replacing it touches one crate. |
 | D29 | **Plaintext ESPHome devices are adopted automatically, and that is a known trust limit** | Plain ESPHome has no device authentication, so anything on the LAN that announces `_esphomelib._tcp` is believed: a hostile host could present fake entities, or impersonate a device id. The alternatives all need somewhere to keep a decision — an allowlist, adopted-device records, or encryption keys — which is the config dir (M0.7). Until then the limit is stated in the README, warned about in the log at every first connection, and bounded by Irori refusing to listen beyond loopback without `--allow-unauthenticated-lan`. Encrypted devices, which do authenticate, are the fix, and they come with M0.7. |
 | D30 | **A device capability is an entity kind; a vendor's own tooling is a contributed app.** Firmware update becomes an `update` entity kind in the model (M1.8), not an ESPHome-specific screen | The protocols already model it as a capability — ESPHome, Z-Wave and Matter all report an available version and take an install command, and Home Assistant's `update` domain works the same way. Modelled once, every integration that has it gets the same UI, rules can act on it, and the CLI gets it for free. What genuinely is integration-specific — ESPHome's YAML editor, compiling and flashing, a vendor's cloud account settings — is a separate program, and the manifest already reserves the contribution kinds for that (`app`, proxied under `/apps/<id>/`, Phase 3; `dashboard`/`card` in sandboxed iframes, Phase 2c). So Irori doesn't need a special back door for integration UI: it needs the contribution kinds it already planned. |
+| D31 | **A decision a person makes is attached to `<integration>/<unique_id>`, never to Irori's own id** | A `DeviceId` is derived from a name (`desk_lamp` from "Desk lamp"), so keying settings on it would mean renaming a device could detach the very setting that renamed it. The integration's own handle — a MAC address, a Zigbee IEEE address — is the one identifier that doesn't move. The cost is that config files name devices in a form that isn't pretty; the benefit is that a name, a room, and later an encryption key stay attached to the thing they are about. A consequence to fix in M1.3: because the id follows the chosen name, a rename changes the id at the next restart, so a bookmarked device page can 404 until the registry itself is kept. |
+| D32 | **Irori never creates a room from a device's suggestion** | ESPHome (and others) report an `area:` the owner wrote in the firmware, which is real information. But config that appears because something showed up on the network is config nobody remembers agreeing to, and the whole point of a plain-text config dir is that it says what a person decided. So a suggestion is kept on the device and resolved at read time: it takes effect only against a room that already exists, and it is re-checked whenever rooms change — making a room called "Kitchen" quietly collects every device that was asking for one. Nothing is written to `devices.toml` unless a person chooses a room themselves. |
+| D33 | **The parts of a page a person can edit are derived separately from the parts that show live readings** | Found by testing against a real presence sensor: it reports every second, the page rebuilt on every report, and a rebuilt page threw away a half-typed name and the cursor with it — renaming the devices that most need renaming was impossible. The fix is a memo over everything that isn't a reading (`Shape` in `crates/irori-ui/src/device.rs`), so redraws follow real changes rather than the chattiest sensor in the house. Worth stating as a rule because it will apply again to every editable page, and a unit test can pin it without a browser: two homes differing only in state must produce the same shape. |
 
 ### Review notes on the original plan (kept for context)
 
@@ -190,7 +193,7 @@ irori_os/
 
 Goal: the decisions that are expensive to change later are written down and prototyped. **Little product code, lots of leverage.**
 
-> **Current order (D26):** M0.1 ✅ → M0.2 ✅ → M0.6 ✅ → M1.1 (trimmed) ✅ → M0.8 UI spike ✅ + Devices page ✅ → ESPHome integration ✅ (plaintext; encrypted devices wait for M0.7) → M0.3, M0.4, M0.5, M0.7.
+> **Current order (D26):** M0.1 ✅ → M0.2 ✅ → M0.6 ✅ → M1.1 (trimmed) ✅ → M0.8 UI spike ✅ + Devices page ✅ → ESPHome integration ✅ (plaintext; encrypted devices wait for the rest of M0.7) → M0.7 config dir ✅ (rooms and names; settings and secrets still to come) → M0.3, M0.4, M0.5.
 
 ### M0.1 Workspace and toolchain ✅
 
@@ -317,7 +320,16 @@ Must decide:
 - **Config:** each extension's config lives in `extensions/<id>.toml`, validated against its `config_schema`. The UI renders a settings form from the schema and the CLI validates it. Extension authors never write settings UI code.
 - **Reference implementations:** `irori-int-demo` (virtual devices, ~300 lines, the template to copy) and `examples/external-integration-py` (the same virtual devices, external, in Python).
 
-### M0.7 Spec: config dir and CLI → `docs/specs/config-cli.md`
+### M0.7 Spec: config dir → [docs/specs/config.md](docs/specs/config.md) ✅ (in part)
+
+> Done: the config directory exists and holds the decisions a person makes about their home —
+> rooms (`areas.toml`), and what to call a device or an entity (`devices.toml`, `entities.toml`).
+> Loaded at startup, hot-reloaded every two seconds, written atomically, and editable by hand or
+> from the UI (D31, D32). `crates/irori-config` reads and writes; the core never touches the disk.
+>
+> **Not yet:** `irori.toml` (server settings, which extensions are enabled — still CLI flags),
+> `extensions/<id>.toml`, `secrets.toml` (which is what closes D29), `rules/<id>.json` (M0.3),
+> floors, and choosing which discovered devices to adopt.
 - Config dir layout: `irori.toml` (server, location, recorder retention, enabled extensions), `rules/<id>.json`, `extensions/<id>.toml` (config plus approved permissions), `areas.toml`. Secrets go in a separate file (e.g. `secrets.toml`) that is git-ignorable. Runtime data (SQLite DB) lives in a separate data dir.
 - Hot reload: file changes are validated, then applied atomically; invalid files are rejected with a clear error and the last good version stays active.
 - UI edits write the same files (humans and the UI share one source of truth).

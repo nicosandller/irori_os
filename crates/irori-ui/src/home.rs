@@ -8,6 +8,7 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 
 use crate::Live;
+use crate::api::Home as HomeView;
 
 #[component]
 pub fn Home() -> impl IntoView {
@@ -55,6 +56,8 @@ pub fn Home() -> impl IntoView {
                 <span class="label">"extensions running"</span>
             </span>
         </div>
+
+        {move || rooms(&live.home.get())}
 
         <section class="card">
             <h2>"Irori itself"</h2>
@@ -141,6 +144,90 @@ pub fn Home() -> impl IntoView {
             "own. See ROADMAP.md for what comes next."
         </p>
     }
+}
+
+/// The home by room: where everything is, at a glance.
+///
+/// Rooms are the arrangement a person made, so this is the part of the page that is theirs. It
+/// shows nothing when they haven't made any rooms, rather than an empty frame implying they
+/// should have.
+fn rooms(home: &HomeView) -> AnyView {
+    let unplaced = home
+        .devices
+        .iter()
+        .filter(|device| device.area_id.is_none())
+        .count();
+
+    if home.areas.is_empty() {
+        if home.devices.is_empty() {
+            return ().into_any();
+        }
+        return view! {
+            <section class="card">
+                <h2>"Rooms"</h2>
+                <p class="muted">
+                    "Your devices aren't in rooms yet. " <A href="/rooms">"Make a room"</A>
+                    " and a home stops being a list."
+                </p>
+            </section>
+        }
+        .into_any();
+    }
+
+    let rooms = home
+        .areas
+        .iter()
+        .map(|area| {
+            let inside: Vec<_> = home
+                .devices
+                .iter()
+                .filter(|device| device.area_id.as_ref() == Some(&area.id))
+                .map(|device| (device.id.to_string(), device.name.to_string()))
+                .collect();
+            view! {
+                <div class="room-card">
+                    <h3>{area.name.to_string()}</h3>
+                    {if inside.is_empty() {
+                        view! { <p class="muted small">"Nothing in here yet"</p> }.into_any()
+                    } else {
+                        view! {
+                            <ul>
+                                {inside
+                                    .into_iter()
+                                    .map(|(id, name)| view! {
+                                        <li><A href=format!("/devices/{id}")>{name}</A></li>
+                                    })
+                                    .collect_view()}
+                            </ul>
+                        }
+                        .into_any()
+                    }}
+                </div>
+            }
+        })
+        .collect_view();
+
+    view! {
+        <section class="card">
+            <div class="room-head">
+                <h2>"Your rooms"</h2>
+                <A href="/rooms">"Manage"</A>
+            </div>
+            <div class="rooms">{rooms}</div>
+            {(unplaced > 0)
+                .then(|| view! {
+                    <p class="muted small">
+                        {format!(
+                            "{unplaced} device{} not in a room. ",
+                            if unplaced == 1 { " is" } else { "s are" },
+                        )}
+                        <A href="/devices">"Put them somewhere"</A>
+                        "."
+                    </p>
+                })}
+        </section>
+    }
+    .into_any()
 }
 
 /// Uptime a person can read, to one unit: seconds, then minutes, then hours, then days.

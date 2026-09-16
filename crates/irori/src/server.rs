@@ -7,20 +7,22 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use irori_core::{CallError, Command, Core, Event, ExtensionOverview};
 use irori_types::{
-    ContextId, Device, Entity, EntityId, EntityState, ExtensionId, LightTurnOn, Origin, UserId,
+    Area, AreaId, ContextId, Device, DeviceId, Entity, EntityId, EntityState, ExtensionId,
+    LightTurnOn, Name, Origin, UserId,
 };
 use tokio::sync::broadcast;
 
 use crate::build_info::{BuildInfo, VERSION};
+use crate::config::{Config, EditError, Refused};
 use crate::db::Database;
 
 /// Who commands are attributed to until there are accounts to attribute them to (M1.5).
@@ -36,15 +38,17 @@ struct Inner {
     db: Database,
     build: BuildInfo,
     core: Core,
+    config: Config,
 }
 
 impl AppState {
-    pub fn new(db: Database, core: Core) -> Self {
+    pub fn new(db: Database, core: Core, config: Config) -> Self {
         Self(Arc::new(Inner {
             started: Instant::now(),
             db,
             build: BuildInfo::current(),
             core,
+            config,
         }))
     }
 }
@@ -72,6 +76,11 @@ pub fn router(state: AppState) -> Router {
             "/api/dev/extensions",
             get(|State(s): State<AppState>| async move { Json(s.0.core.extensions()) }),
         )
+        // What a person has said about their home (`docs/specs/config.md`). These write files.
+        .route("/api/dev/areas", get(areas).post(add_area))
+        .route("/api/dev/areas/{id}", patch(edit_area).delete(remove_area))
+        .route("/api/dev/devices/{id}", patch(edit_device))
+        .route("/api/dev/entities/{id}", patch(edit_entity))
         .fallback(get(ui::serve))
         .with_state(state)
 }
@@ -85,6 +94,7 @@ struct HomeView {
     entities: Vec<Entity>,
     states: Vec<EntityState>,
     extensions: BTreeMap<ExtensionId, ExtensionOverview>,
+    areas: Vec<Area>,
 }
 
 async fn home(State(state): State<AppState>) -> Json<HomeView> {
@@ -94,7 +104,197 @@ async fn home(State(state): State<AppState>) -> Json<HomeView> {
         entities: core.entities(),
         states: core.states(),
         extensions: core.extensions(),
+        areas: core.areas(),
     })
+}
+
+// --- Rooms, names, and where things live ---------------------------------------------------
+//
+// Each of these changes a file in the config directory and then tells the core
+// (`docs/specs/config.md`). None of them touch what an integration reports: taking a name away
+// gives the integration's name back, rather than leaving whatever was on screen.
+
+async fn areas(State(state): State<AppState>) -> Json<Vec<Area>> {
+    Json(state.0.core.areas())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AreaRequest {
+    name: Name,
+}
+
+/// Makes a room. Two rooms may share a name — homes have two bathrooms — so the id, not the
+/// name, is what has to be unique.
+async fn add_area(State(state): State<AppState>, Json(request): Json<AreaRequest>) -> Response {
+    let made = state
+        .0
+        .config
+        .edit(&state.0.core, |settings| {
+            let area = Area {
+                id: irori_core::new_area_id(&request.name, &settings.areas),
+                name: request.name.clone(),
+                floor_id: None,
+            };
+            settings.areas.push(area.clone());
+            settings.areas.sort_by(|a, b| a.id.cmp(&b.id));
+            Ok(area)
+        })
+        .await;
+    match made {
+        Ok(area) => (StatusCode::CREATED, Json(area)).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+async fn edit_area(
+    State(state): State<AppState>,
+    Path(id): Path<AreaId>,
+    Json(request): Json<AreaRequest>,
+) -> Response {
+    let renamed = state
+        .0
+        .config
+        .edit(&state.0.core, |settings| {
+            let area = settings
+                .areas
+                .iter_mut()
+                .find(|area| area.id == id)
+                .ok_or_else(|| Refused(format!("there's no room `{id}`")))?;
+            area.name = request.name.clone();
+            Ok(area.clone())
+        })
+        .await;
+    match renamed {
+        Ok(area) => Json(area).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+/// Removes a room. Devices that were in it are left unplaced, and what was said about them is
+/// kept: making the room again puts them back.
+async fn remove_area(State(state): State<AppState>, Path(id): Path<AreaId>) -> Response {
+    let removed = state
+        .0
+        .config
+        .edit(&state.0.core, |settings| {
+            let before = settings.areas.len();
+            settings.areas.retain(|area| area.id != id);
+            if settings.areas.len() == before {
+                return Err(Refused(format!("there's no room `{id}`")));
+            }
+            Ok(())
+        })
+        .await;
+    match removed {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+/// A field that can be set, cleared, or left alone: absent means "don't touch", `null` means
+/// "clear it", and a value means "make it this".
+type Patch<T> = Option<Option<T>>;
+
+/// serde reads a plain `Option<Option<T>>` as `None` for both an absent field and a `null` one,
+/// which loses exactly the distinction a PATCH needs.
+fn patched<'de, T, D>(deserializer: D) -> Result<Patch<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeviceEdit {
+    #[serde(default, deserialize_with = "patched")]
+    name: Patch<Name>,
+    #[serde(default, deserialize_with = "patched")]
+    area: Patch<AreaId>,
+}
+
+async fn edit_device(
+    State(state): State<AppState>,
+    Path(id): Path<DeviceId>,
+    Json(request): Json<DeviceEdit>,
+) -> Response {
+    let core = &state.0.core;
+    let Some(key) = core.device_key(&id) else {
+        return refused(StatusCode::NOT_FOUND, format!("there's no device `{id}`"));
+    };
+    let edited = state
+        .0
+        .config
+        .edit(core, |settings| {
+            if let Some(area) = request.area.clone().flatten()
+                && settings.area(&area).is_none()
+            {
+                return Err(Refused(format!("there's no room `{area}`")));
+            }
+            let device = settings.devices.entry(key).or_default();
+            if let Some(name) = request.name.clone() {
+                device.name = name;
+            }
+            if let Some(area) = request.area.clone() {
+                device.area = area;
+            }
+            Ok(())
+        })
+        .await;
+    match edited {
+        // The device as it now is, so the page doesn't have to guess what the change produced.
+        Ok(()) => Json(core.devices().into_iter().find(|device| device.id == id)).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EntityEdit {
+    #[serde(default, deserialize_with = "patched")]
+    name: Patch<Name>,
+}
+
+async fn edit_entity(
+    State(state): State<AppState>,
+    Path(id): Path<EntityId>,
+    Json(request): Json<EntityEdit>,
+) -> Response {
+    let core = &state.0.core;
+    let Some(key) = core.entity_key(&id) else {
+        return refused(StatusCode::NOT_FOUND, format!("there's no entity `{id}`"));
+    };
+    let edited = state
+        .0
+        .config
+        .edit(core, |settings| {
+            if let Some(name) = request.name.clone() {
+                settings.entities.entry(key).or_default().name = name;
+            }
+            Ok(())
+        })
+        .await;
+    match edited {
+        Ok(()) => Json(core.entities().into_iter().find(|entity| entity.id == id)).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+/// An edit that couldn't be made says why; one that couldn't be written says that instead, because
+/// the two need different things from whoever is reading.
+fn edit_failed(error: EditError) -> Response {
+    match error {
+        EditError::Refused(why) => refused(StatusCode::BAD_REQUEST, why.to_string()),
+        EditError::Io(e) => {
+            tracing::error!(%e, "couldn't write the config directory");
+            refused(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("couldn't write the config directory: {e}"),
+            )
+        }
+    }
 }
 
 /// A command from the UI: `{"entity_id": "light.hallway", "command": "toggle"}`.
@@ -323,6 +523,65 @@ mod tests {
         Core::new(Arc::new(irori_core::SystemClock))
     }
 
+    /// A server on throwaway directories. Held for the length of a test, because the config
+    /// directory has to outlive the requests that write to it.
+    struct Server {
+        dir: tempfile::TempDir,
+        core: Core,
+        config: Config,
+    }
+
+    impl Server {
+        fn new(core: Core) -> anyhow::Result<Self> {
+            let dir = tempfile::tempdir()?;
+            let config = Config::open(dir.path().join("config"), &core);
+            Ok(Self { dir, core, config })
+        }
+
+        fn app(&self) -> anyhow::Result<Router> {
+            Ok(router(AppState::new(
+                crate::db::open(self.dir.path())?,
+                self.core.clone(),
+                self.config.clone(),
+            )))
+        }
+
+        /// The config directory this server writes to, for checking what landed on disk.
+        fn config_dir(&self) -> std::path::PathBuf {
+            self.dir.path().join("config")
+        }
+
+        async fn send(&self, request: Request<Body>) -> anyhow::Result<(StatusCode, Vec<u8>)> {
+            let res = self.app()?.oneshot(request).await?;
+            let status = res.status();
+            let body = res.into_body().collect().await?.to_bytes().to_vec();
+            Ok((status, body))
+        }
+
+        async fn json(
+            &self,
+            method: &str,
+            path: &str,
+            body: serde_json::Value,
+        ) -> anyhow::Result<(StatusCode, serde_json::Value)> {
+            let request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body)?))?;
+            let (status, bytes) = self.send(request).await?;
+            Ok((
+                status,
+                serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+            ))
+        }
+
+        async fn read(&self, path: &str) -> anyhow::Result<serde_json::Value> {
+            let (_, bytes) = self.send(Request::get(path).body(Body::empty())?).await?;
+            Ok(serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+        }
+    }
+
     async fn get(path: &str) -> anyhow::Result<(StatusCode, Option<String>, Vec<u8>)> {
         get_from(core(), path).await
     }
@@ -331,9 +590,11 @@ mod tests {
         core: Core,
         path: &str,
     ) -> anyhow::Result<(StatusCode, Option<String>, Vec<u8>)> {
-        let dir = tempfile::tempdir()?;
-        let app = router(AppState::new(crate::db::open(dir.path())?, core));
-        let res = app.oneshot(Request::get(path).body(Body::empty())?).await?;
+        let server = Server::new(core)?;
+        let res = server
+            .app()?
+            .oneshot(Request::get(path).body(Body::empty())?)
+            .await?;
         let status = res.status();
         let content_type = res
             .headers()
@@ -399,16 +660,7 @@ mod tests {
         path: &str,
         body: serde_json::Value,
     ) -> anyhow::Result<(StatusCode, serde_json::Value)> {
-        let dir = tempfile::tempdir()?;
-        let app = router(AppState::new(crate::db::open(dir.path())?, core));
-        let request = Request::post(path)
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_vec(&body)?))?;
-        let res = app.oneshot(request).await?;
-        let status = res.status();
-        let bytes = res.into_body().collect().await?.to_bytes();
-        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
-        Ok((status, json))
+        Server::new(core)?.json("POST", path, body).await
     }
 
     /// Everything the Devices page needs arrives in one response.
@@ -532,6 +784,234 @@ mod tests {
         let (_, _, body) = get_from(core.clone(), "/api/dev/extensions").await?;
         let extensions: serde_json::Value = serde_json::from_slice(&body)?;
         assert_eq!(extensions["demo"]["state"], "running");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    // --- Rooms and names ------------------------------------------------------------------
+
+    /// The whole round trip: make a room, put a device in it, and find both on disk in files a
+    /// person could have written themselves.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn a_room_and_a_device_in_it_are_written_where_a_person_can_read_them()
+    -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, area) = server
+            .json(
+                "POST",
+                "/api/dev/areas",
+                serde_json::json!({"name": "Study"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{area}");
+        assert_eq!(area["id"], "study");
+
+        let (status, device) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"name": "Reading lamp", "area": "study"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{device}");
+        assert_eq!(device["name"], "Reading lamp");
+        assert_eq!(device["area_id"], "study");
+
+        let areas = std::fs::read_to_string(server.config_dir().join("areas.toml"))?;
+        assert!(areas.contains("[areas.study]"), "{areas}");
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        // Keyed by what the integration calls the device, not by the id Irori derived from its
+        // name — so the name can change without the setting losing track of what it's about.
+        assert!(
+            devices.contains("[devices.\"demo/demo-lamp\"]"),
+            "{devices}"
+        );
+        assert!(devices.contains("name = \"Reading lamp\""), "{devices}");
+
+        // And the page sees the same thing it would after a restart.
+        let home = server.read("/api/dev/home").await?;
+        assert_eq!(home["areas"][0]["name"], "Study");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Renaming a device renames the entities that were following its name, and taking the name
+    /// away gives the integration's name back rather than leaving the chosen one stuck.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn a_rename_carries_the_entities_and_can_be_undone() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+        let lamp = EntityId::try_from("light.demo_lamp")?;
+        let entity_named = |core: &Core| {
+            core.entities()
+                .into_iter()
+                .find(|entity| entity.id == lamp)
+                .map(|entity| entity.name.to_string())
+        };
+        assert_eq!(entity_named(&core).as_deref(), Some("Demo lamp"));
+
+        let (status, _) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"name": "Reading lamp"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(entity_named(&core).as_deref(), Some("Reading lamp"));
+
+        let (status, device) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"name": null}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{device}");
+        assert_eq!(device["name"], "Demo lamp");
+        assert_eq!(entity_named(&core).as_deref(), Some("Demo lamp"));
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// An entity can be named on its own, and then it stops following its device.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn an_entity_can_have_a_name_of_its_own() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, entity) = server
+            .json(
+                "PATCH",
+                "/api/dev/entities/light.demo_lamp",
+                serde_json::json!({"name": "Reading light"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{entity}");
+        assert_eq!(entity["name"], "Reading light");
+
+        server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"name": "Reading lamp"}),
+            )
+            .await?;
+        let home = server.read("/api/dev/home").await?;
+        let named = home["entities"]
+            .as_array()
+            .and_then(|all| all.iter().find(|e| e["id"] == "light.demo_lamp"))
+            .map(|e| e["name"].clone());
+        assert_eq!(named, Some(serde_json::json!("Reading light")));
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Deleting a room doesn't delete what was said about the devices in it: the device is
+    /// unplaced, and making the room again puts it back.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn deleting_a_room_unplaces_its_devices_without_forgetting_them() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+        server
+            .json(
+                "POST",
+                "/api/dev/areas",
+                serde_json::json!({"name": "Study"}),
+            )
+            .await?;
+        server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"area": "study"}),
+            )
+            .await?;
+
+        let (status, _) = server
+            .json("DELETE", "/api/dev/areas/study", serde_json::json!(null))
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let placed = |core: &Core| {
+            core.devices()
+                .into_iter()
+                .find(|device| device.id.as_str() == "demo_lamp")
+                .and_then(|device| device.area_id)
+        };
+        assert_eq!(placed(&core), None);
+
+        server
+            .json(
+                "POST",
+                "/api/dev/areas",
+                serde_json::json!({"name": "Study"}),
+            )
+            .await?;
+        assert_eq!(
+            placed(&core).map(|id| id.to_string()).as_deref(),
+            Some("study"),
+            "the device remembered where it belonged"
+        );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Edits that can't be made say why, and change nothing.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn refused_edits_explain_themselves() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"area": "nowhere"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "there's no room `nowhere`");
+
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/not_a_device",
+                serde_json::json!({"name": "Nope"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/areas/nowhere",
+                serde_json::json!({"name": "Nope"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+        // A name that isn't a name at all, rather than one that's merely wrong.
+        let (status, body) = server
+            .json("POST", "/api/dev/areas", serde_json::json!({"name": ""}))
+            .await?;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+        assert!(
+            !server.config_dir().join("devices.toml").exists(),
+            "nothing was written"
+        );
 
         host.shutdown().await;
         Ok(())

@@ -4,8 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use irori_types::{
-    Availability, BinarySensorCapabilities, BinarySensorClass, Capabilities, Device, Entity,
-    EntityId, EntityState, SensorCapabilities, SensorClass, SensorValue, State,
+    AreaId, Availability, BinarySensorCapabilities, BinarySensorClass, Capabilities, Device,
+    Entity, EntityId, EntityState, SensorCapabilities, SensorClass, SensorValue, State,
 };
 use leptos::prelude::*;
 use leptos_router::components::A;
@@ -160,11 +160,13 @@ fn table(home: &Home, needle: &str) -> AnyView {
     let needle = needle.trim().to_lowercase();
     let matches = |device: &Device| {
         let haystack = [
-            device.name.as_str(),
-            device.id.as_str(),
-            device.integration.as_str(),
-            device.manufacturer.as_deref().unwrap_or_default(),
-            device.model.as_deref().unwrap_or_default(),
+            device.name.to_string(),
+            device.id.to_string(),
+            device.integration.to_string(),
+            device.manufacturer.clone().unwrap_or_default(),
+            device.model.clone().unwrap_or_default(),
+            // Typing a room's name is one of the most useful things to be able to type.
+            home.room_of(device).unwrap_or_default(),
         ];
         needle.is_empty()
             || haystack
@@ -193,6 +195,12 @@ fn table(home: &Home, needle: &str) -> AnyView {
         })
         .collect();
     devices.sort_by(|(a, _), (b, _)| (&a.name, &a.id).cmp(&(&b.name, &b.id)));
+    // Room names by area id, so each row is a lookup rather than a scan of every area.
+    let rooms: BTreeMap<Option<AreaId>, String> = home
+        .areas
+        .iter()
+        .map(|area| (Some(area.id.clone()), area.name.to_string()))
+        .collect();
     if devices.is_empty() {
         let message = if home.devices.is_empty() {
             "No devices yet. Extensions bring them in; \"Add device\" says how."
@@ -207,6 +215,7 @@ fn table(home: &Home, needle: &str) -> AnyView {
                 <thead>
                     <tr>
                         <th scope="col">"Device"</th>
+                        <th scope="col">"Room"</th>
                         <th scope="col">"Through"</th>
                         <th scope="col">"Make"</th>
                         <th scope="col">"Model"</th>
@@ -221,12 +230,14 @@ fn table(home: &Home, needle: &str) -> AnyView {
                             let id = device.id.to_string();
                             let entity_count = entities.len();
                             let battery = battery(&entities);
+                            let room = rooms.get(&device.area_id).cloned();
                             view! {
                                 <tr>
                                     <th scope="row">
                                         <A href=format!("/devices/{id}")>{device.name.to_string()}</A>
                                         <span class="id">{id}</span>
                                     </th>
+                                    <td class="room">{room.unwrap_or_else(|| "—".to_owned())}</td>
                                     <td>{device.integration.to_string()}</td>
                                     <td>{device.manufacturer.clone().unwrap_or_default()}</td>
                                     <td>{device.model.clone().unwrap_or_default()}</td>

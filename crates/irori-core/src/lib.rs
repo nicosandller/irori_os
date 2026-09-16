@@ -15,9 +15,9 @@ use std::time::Duration;
 use irori_integration::host::{Op, incoming_call};
 use irori_integration::{IncomingCall, Rejected, ServiceErrorCode};
 use irori_types::{
-    Context, ContextId, Description, Device, Entity, EntityId, EntityKind, EntityState,
-    ExtensionId, IntegrationId, IotClass, Name, Origin, ServiceCall, StateReport, Timestamp,
-    Version,
+    Area, Context, ContextId, Description, Device, DeviceId, Entity, EntityId, EntityKind,
+    EntityState, ExtensionId, IntegrationId, IotClass, Name, Origin, ServiceCall, Settings,
+    SettingsKey, StateReport, Timestamp, Version,
 };
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc};
@@ -26,6 +26,8 @@ pub use clock::{Clock, SystemClock};
 pub use events::Event;
 pub use host::{ExtensionHost, Timing};
 pub use services::{CallError, Command};
+
+pub use home::new_area_id;
 
 use home::{Home, Stamp};
 
@@ -216,6 +218,37 @@ impl Core {
 
     pub fn extensions(&self) -> BTreeMap<ExtensionId, ExtensionOverview> {
         read(&self.0.extensions).clone()
+    }
+
+    /// The rooms of the home, as the config directory has them.
+    pub fn areas(&self) -> Vec<Area> {
+        read(&self.0.home).areas().to_vec()
+    }
+
+    /// What a person has said about this home (`docs/specs/config.md`).
+    pub fn settings(&self) -> Settings {
+        read(&self.0.home).settings().clone()
+    }
+
+    /// What a setting about this device attaches to, or `None` if there's no such device.
+    ///
+    /// Callers edit settings by key, not by `DeviceId`: an id is derived from a name, and a
+    /// setting that a rename could detach from its device would be no setting at all.
+    pub fn device_key(&self, id: &DeviceId) -> Option<SettingsKey> {
+        read(&self.0.home).device_key(id)
+    }
+
+    pub fn entity_key(&self, id: &EntityId) -> Option<SettingsKey> {
+        read(&self.0.home).entity_key(id)
+    }
+
+    /// Brings the registry in line with what a person has said, publishing what changed.
+    ///
+    /// This is the only way settings reach the core, whether they came from a UI edit or from
+    /// someone editing the files (`irori-config`). The core itself never touches the disk.
+    pub fn apply_settings(&self, settings: Settings) {
+        let events = write(&self.0.home).apply_settings(settings);
+        self.publish(events);
     }
 
     /// Asks an entity to do something, and waits for its integration's answer (at most

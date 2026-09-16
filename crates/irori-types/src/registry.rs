@@ -41,7 +41,12 @@ pub struct Device {
     pub integration: IntegrationId,
     /// The integration's stable id for the device, e.g. the Zigbee IEEE address.
     pub unique_id: UniqueId,
+    /// What it's called: the name a person gave it, else the one its integration reports.
     pub name: Name,
+    /// What its integration calls it, when that isn't `name` — so the UI can say "you named
+    /// this" and offer the original back. Absent when nobody has renamed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renamed_from: Option<Name>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manufacturer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -50,8 +55,14 @@ pub struct Device {
     pub sw_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hw_version: Option<String>,
+    /// The area a person put this device in. Absent means nobody has said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub area_id: Option<AreaId>,
+    /// The area the device says it's in, e.g. ESPHome's `area:`. Only a hint: it names an area
+    /// rather than pointing at one, and it is used only while `area_id` is absent
+    /// (`docs/specs/config.md` §5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_area: Option<Name>,
     /// The device this one is reached through, e.g. a Zigbee coordinator or a bridge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via_device_id: Option<DeviceId>,
@@ -69,6 +80,10 @@ pub struct Entity {
     /// The integration's stable id for this entity. Survives renames of `id`.
     pub unique_id: UniqueId,
     pub name: Name,
+    /// What it would be called if nobody had renamed it: its integration's name for it, or its
+    /// device's name for an entity that was described without one. Absent when nobody has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renamed_from: Option<Name>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<DeviceId>,
     /// Overrides the device's area when set.
@@ -84,6 +99,8 @@ struct RawEntity {
     integration: IntegrationId,
     unique_id: UniqueId,
     name: Name,
+    #[serde(default)]
+    renamed_from: Option<Name>,
     #[serde(default)]
     device_id: Option<DeviceId>,
     #[serde(default)]
@@ -106,6 +123,7 @@ impl TryFrom<RawEntity> for Entity {
             integration: raw.integration,
             unique_id: raw.unique_id,
             name: raw.name,
+            renamed_from: raw.renamed_from,
             device_id: raw.device_id,
             area_id: raw.area_id,
             capabilities: raw.capabilities,

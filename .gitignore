@@ -1,6 +1,9 @@
 /target
 # Default runtime data dir of `irori serve` (SQLite database)
 /data
+# Default config dir of `irori serve`. Yours to keep in git if you want to — just not in this
+# one, where it would be somebody else's home.
+/config
 **/*.rs.bk
 .DS_Store
 

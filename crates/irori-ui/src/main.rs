@@ -10,6 +10,7 @@ mod api;
 mod device;
 mod devices;
 mod home;
+mod rooms;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -115,6 +116,7 @@ fn App() -> impl IntoView {
                 </span>
                 <A href="/">"Home"</A>
                 <A href="/devices">"Devices"</A>
+                <A href="/rooms">"Rooms"</A>
                 <span class="live">
                     <span class="dot" class:ok=move || live.trouble.get().is_none()></span>
                     {move || if live.trouble.get().is_none() { "Live" } else { "No answer" }}
@@ -127,6 +129,7 @@ fn App() -> impl IntoView {
                     <Route path=path!("/") view=home::Home />
                     <Route path=path!("/devices") view=devices::Devices />
                     <Route path=path!("/devices/:id") view=device::DevicePage />
+                    <Route path=path!("/rooms") view=rooms::Rooms />
                 </Routes>
             </main>
         </Router>
@@ -138,10 +141,32 @@ fn NotFound() -> impl IntoView {
     view! {
         <section class="card">
             <h1>"There's no page here"</h1>
-            <p class="muted">"Irori has a Home and a Devices page. The rest is still to come."</p>
+            <p class="muted">
+                "Irori has a Home page, a Devices page and a Rooms page. The rest is still to "
+                "come."
+            </p>
             <p><A href="/">"Back to the start"</A></p>
         </section>
     }
+}
+
+/// Asks the core for the home again, now, rather than waiting for the next poll.
+///
+/// Renaming and moving things change more than the thing that was changed — an entity with no
+/// name of its own follows its device, and a room that goes away unplaces everything in it — so
+/// after one of those the whole picture is refetched rather than patched.
+pub fn refresh(live: Live) {
+    spawn_local(async move {
+        match api::fetch_home().await {
+            Ok(fetched) => {
+                if fetched != live.home.get_untracked() {
+                    live.home.set(fetched);
+                }
+                live.trouble.set(None);
+            }
+            Err(why) => live.trouble.set(Some(why)),
+        }
+    });
 }
 
 /// Sends the command, then puts the entity's new state on the page without waiting for the next

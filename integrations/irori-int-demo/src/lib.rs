@@ -156,7 +156,7 @@ fn temperature(tick: u64) -> f64 {
 }
 
 async fn describe(ctx: &IntegrationContext) -> Result<(), IntegrationError> {
-    ctx.describe_device(device(LAMP, "Demo lamp", "Virtual lamp")?)
+    ctx.describe_device(device(LAMP, "Demo lamp", "Virtual lamp", "Study")?)
         .await?;
     ctx.describe_entity(EntityDescription {
         unique_id: id(LAMP_LIGHT)?,
@@ -174,7 +174,7 @@ async fn describe(ctx: &IntegrationContext) -> Result<(), IntegrationError> {
     })
     .await?;
 
-    ctx.describe_device(device(PLUG, "Demo plug", "Virtual plug")?)
+    ctx.describe_device(device(PLUG, "Demo plug", "Virtual plug", "Study")?)
         .await?;
     ctx.describe_entity(EntityDescription {
         unique_id: id(PLUG_SWITCH)?,
@@ -187,8 +187,13 @@ async fn describe(ctx: &IntegrationContext) -> Result<(), IntegrationError> {
     })
     .await?;
 
-    ctx.describe_device(device(SENSOR, "Demo hallway sensor", "Virtual sensor")?)
-        .await?;
+    ctx.describe_device(device(
+        SENSOR,
+        "Demo hallway sensor",
+        "Virtual sensor",
+        "Hallway",
+    )?)
+    .await?;
     ctx.describe_entity(EntityDescription {
         unique_id: id(SENSOR_MOTION)?,
         name: Some(Name::try_from("Motion")?),
@@ -219,7 +224,16 @@ fn id(unique_id: &str) -> Result<UniqueId, IntegrationError> {
     Ok(UniqueId::try_from(unique_id)?)
 }
 
-fn device(unique_id: &str, name: &str, model: &str) -> Result<DeviceDescription, IntegrationError> {
+/// One virtual device. `room` is what a real device would say about where it is — ESPHome's
+/// `area:`, for one — so the demo exercises the path a real home takes: Irori never invents the
+/// room, but making one by that name collects the devices asking for it
+/// (`docs/specs/config.md` §5).
+fn device(
+    unique_id: &str,
+    name: &str,
+    model: &str,
+    room: &str,
+) -> Result<DeviceDescription, IntegrationError> {
     Ok(DeviceDescription {
         unique_id: id(unique_id)?,
         name: Name::try_from(name)?,
@@ -227,7 +241,7 @@ fn device(unique_id: &str, name: &str, model: &str) -> Result<DeviceDescription,
         model: Some(model.into()),
         sw_version: Some(env!("CARGO_PKG_VERSION").into()),
         hw_version: None,
-        suggested_area: None,
+        suggested_area: Some(Name::try_from(room)?),
         via_device_unique_id: None,
     })
 }

@@ -5,6 +5,7 @@
   "type": "object",
   "properties": {
     "area_id": {
+      "description": "The area a person put this device in. Absent means nobody has said.",
       "anyOf": [
         {
           "$ref": "#/$defs/AreaId"
@@ -40,7 +41,30 @@
       ]
     },
     "name": {
+      "description": "What it's called: the name a person gave it, else the one its integration reports.",
       "$ref": "#/$defs/Name"
+    },
+    "renamed_from": {
+      "description": "What its integration calls it, when that isn't `name` — so the UI can say \"you named\nthis\" and offer the original back. Absent when nobody has renamed it.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Name"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "suggested_area": {
+      "description": "The area the device says it's in, e.g. ESPHome's `area:`. Only a hint: it names an area\nrather than pointing at one, and it is used only while `area_id` is absent\n(`docs/specs/config.md` §5).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Name"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "sw_version": {
       "type": [

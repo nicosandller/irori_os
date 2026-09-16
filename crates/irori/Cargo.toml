@@ -17,6 +17,7 @@ ui = ["dep:rust-embed", "dep:mime_guess"]
 assist = ["dep:irori-assist"]
 
 [dependencies]
+irori-config.workspace = true
 irori-core.workspace = true
 irori-integration.workspace = true
 irori-types.workspace = true

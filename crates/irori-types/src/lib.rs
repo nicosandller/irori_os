@@ -13,6 +13,7 @@ mod kind;
 mod num;
 mod registry;
 mod schema;
+mod settings;
 mod state;
 mod time;
 
@@ -37,6 +38,7 @@ pub use registry::{
     SwitchCapabilities, SwitchClass,
 };
 pub use schema::{SchemaDoc, schemas};
+pub use settings::{DeviceSettings, EntitySettings, Settings, SettingsKey};
 pub use state::{
     Attributes, Availability, BinarySensorState, ColorMode, EntityState, LightState, SensorState,
     SensorValue, State, SwitchState,

@@ -887,6 +887,7 @@ dependencies = [
  "clap",
  "http-body-util",
  "irori-assist",
+ "irori-config",
  "irori-core",
  "irori-int-demo",
  "irori-int-esphome",
@@ -933,6 +934,9 @@ name = "irori-config"
 version = "0.0.0"
 dependencies = [
  "irori-types",
+ "serde",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
