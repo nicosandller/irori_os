@@ -107,6 +107,7 @@ cargo clippy --locked -p irori --no-default-features --all-targets -- -D warning
 cargo test --locked --workspace --all-features
 cargo test --locked -p irori --no-default-features
 cargo xtask check-deps                # crate dependency rules, ROADMAP §2.1
+cargo xtask check-docs                # the docs' default-feature claims match the manifest
 cargo xtask schemas --check           # schemas/ matches irori-types (run without --check to update)
 ```
 
