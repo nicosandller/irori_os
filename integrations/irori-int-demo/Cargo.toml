@@ -10,5 +10,12 @@ repository.workspace = true
 irori-types.workspace = true
 irori-integration.workspace = true
 
+schemars.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true

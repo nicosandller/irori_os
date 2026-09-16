@@ -98,9 +98,11 @@ impl EntityState {
                 .validate()
                 .map_err(|e| InvariantError(format!("entity `{}`: {e}", self.entity_id)))?;
         }
-        if !(self.last_changed <= self.last_updated && self.last_updated <= self.last_reported) {
+        // `last_reported` has no order with the others: Irori can change an entity without
+        // hearing from it (marking it unavailable after its integration crashed).
+        if self.last_changed > self.last_updated {
             return Err(InvariantError(format!(
-                "entity `{}` timestamps must satisfy last_changed <= last_updated <= last_reported",
+                "entity `{}` timestamps must satisfy last_changed <= last_updated",
                 self.entity_id
             )));
         }

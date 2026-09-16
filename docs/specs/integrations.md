@@ -58,10 +58,19 @@ the user-facing ids, timestamps, contexts, history, and checking that what it's 
    keeps them in between, matched by `unique_id`, so ids, areas, and names the user set survive.
    Nothing is removed unless the integration removes it (§5).
 
-**Isolation.** Built-in integrations run in their own task. The core never waits on an
-integration while holding its own state: operations reach the core through bounded queues;
-state reports for the same entity are merged so only the latest waits in line; service calls
-time out after **10 seconds**. Third-party code only runs as an external process, never in the
+**Isolation.** Built-in integrations run in their own task, and **must never block**: no
+long computation, blocking I/O, or `std::thread::sleep`, in `run` or before it returns its
+future. Blocking one task blocks a shared worker, which no supervision can undo, so slow or
+blocking work belongs in `tokio::task::spawn_blocking` or its own thread. This is a rule rather
+than a guarantee because built-in integrations are first-party code, shipped and reviewed with
+the core; anyone else's code runs as a separate process, where the operating system enforces the
+boundary. Revisit if third-party code is ever allowed in-process (ROADMAP open question 7).
+
+The core never waits on an integration while holding its own state: operations reach the core
+through bounded queues;
+state reports for the same entity are merged so only the latest waits in line, and at most 4096
+entities' reports wait at once (further ones are dropped and logged); service calls time out
+after **10 seconds**. A panic while the integration is starting counts as a crash. Third-party code only runs as an external process, never in the
 core's process.
 
 ## 4. Identity
@@ -106,7 +115,7 @@ Schemas: `schemas/device-description.schema.json`, `entity-description`, `state-
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `unique_id` | `UniqueId` | yes | |
-| `name` | `Name` | yes | Used when the device is new; after that, the user's name wins |
+| `name` | `Name` | yes | Updated each time the device is described. Once people can rename devices (config spec, M0.7), a name they set wins |
 | `manufacturer`, `model`, `sw_version`, `hw_version` | string | no | Informational, updated every time |
 | `suggested_area` | `Name` | no | An area name the device reports for itself (ESPHome's `area`). Used only when the device is new and has no area; the core matches it to an existing area by name |
 | `via_device_unique_id` | `UniqueId` | no | The bridge or hub it's reached through. Not its own `unique_id` |
@@ -121,8 +130,10 @@ Schemas: `schemas/device-description.schema.json`, `entity-description`, `state-
 | `suggested_object_id` | slug | no | The part after `.` in its entity id, when it's new. Otherwise derived from the names |
 | `capabilities` | `Capabilities` ([entities.md](entities.md) §4.4) | yes | `capabilities.kind` is the entity's kind, and must be one of the manifest's `entity_kinds` |
 
-Describing an existing entity again updates its capabilities and suggested name; it never
-changes its kind. A different kind needs a different `unique_id`.
+Describing an existing entity again updates its name and capabilities (a nameless entity follows
+its device's name); it never changes its kind or its id. A different kind needs a different
+`unique_id`. If the new capabilities no longer fit the stored value, the value is forgotten
+(`null`) until the next report.
 
 ### 6.3 StateReport
 
@@ -145,10 +156,12 @@ asked for (optimistic state) unless the device can't report back; see open quest
 
 ### 6.4 Availability
 
-Separate from state (ROADMAP D20). Entities start `available` when first described. When a
-device drops off the network, set it `unavailable` (per device, or per entity); the last value
-stays. When the integration itself stops or crashes, the core marks all its entities
-`unavailable`.
+Separate from state (ROADMAP D20). Describing an entity marks it `available`: the integration is
+in touch with it, whether it's new or described again after a restart. When a device drops off the
+network, set it `unavailable` (per device, or per entity); the last value stays. Setting the same
+availability again counts as hearing from the device (it moves `last_reported`); the core marking
+entities unavailable after a crash doesn't, so "last heard from" stays true. When the
+integration itself stops or crashes, the core marks all its entities `unavailable`.
 
 ### 6.5 Health
 
@@ -179,7 +192,17 @@ manifest's `entity_kinds`.
 **What the core resolves first,** so integrations don't have to:
 
 - **Toggle.** People and rules can call `light.toggle`; the core reads the current state and
-  sends `turn_on` or `turn_off`.
+  sends `turn_on` or `turn_off`. Until the device reports back, the core remembers what it last
+  told the entity to be and resolves the next toggle against that, so two toggles at once cancel
+  out instead of both doing the same thing. That memory is cleared when the device reports, and
+  whenever a call doesn't reach the integration or comes back failed: an error, a timeout, a
+  dropped call, or a caller who gives up before delivery. A caller who gives up *after* delivery
+  leaves it in place, because the integration has the call and its report is still coming.
+
+  Calls on one entity are also handled one at a time, but that's ordering, not a guarantee: a
+  caller who gives up mid-call releases its turn while the integration may still be working, so
+  two commands can briefly overlap at the device. Correctness rests on the remembered command
+  above, not on the ordering.
 - **Friendlier parameters.** `brightness_pct` from people becomes `brightness`.
 - **Capabilities.** A call asking for something the entity can't do (brightness on a
   non-dimmable light, a color temperature outside its range) is rejected before it reaches the
@@ -197,8 +220,11 @@ What the integration receives. Schema: `schemas/service-call.schema.json`.
 | `context` | `Context` | Why it's being called. Pass `context.id` back as `caused_by` when reporting the result |
 
 There's deliberately no `entity_id`: that's the user's name for the entity and can change at any
-time (§4). The core has already checked that the entity belongs to this integration and is of
-the service's kind.
+time (§4). The core has already checked that the entity belongs to this integration, is of the
+service's kind, and can do what's asked, and it checks again right before sending, in case the
+integration changed the entity meanwhile. A change in the last moment still reaches the
+integration, which answers with an error like any other device trouble (§7.3): the core never
+holds the registry while waiting on an integration (§3).
 
 ### 7.3 Result
 
@@ -224,7 +250,8 @@ manifest (layer 3), and rejects it with a message naming the problem:
 - an entity isn't re-described with a different kind;
 - a state report's kind matches the entity's, and fits its capabilities (`brightness` only if
   dimmable, a sensor value matching `value_type`);
-- `caused_by` is a context of a call made to this integration.
+- `caused_by` is the context of a call delivered to this integration in the last 5 minutes (the
+  core remembers up to 1024 per integration).
 
 A rejected describe returns the error to the integration. A rejected state report is logged and
 dropped, and the Extensions page shows how many were rejected.

@@ -1,3 +1,562 @@
-//! The integration SDK: Integration trait, manifest, config schema, external-process protocol.
+//! The integration SDK: what a built-in integration implements, and the handle it uses to talk
+//! to the core. See `docs/specs/integrations.md`.
 //!
-//! Empty shell created in M0.1; see `ROADMAP.md` §2.1 for what lands here.
+//! An integration implements [`Integration`]. The core starts it with its settings and an
+//! [`IntegrationContext`], which offers exactly the operations of the contract: describe devices
+//! and entities, report state and availability, set health, and handle service calls.
+//!
+//! The other end of the context lives in the core ([`host`]); integrations never see it.
+
+use std::collections::BTreeMap;
+use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+
+use irori_types::{
+    Availability, DeviceDescription, EntityDescription, ExtensionManifest, ServiceCall,
+    StateReport, UniqueId,
+};
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
+use tokio::sync::{Notify, mpsc, oneshot, watch};
+
+pub use irori_types as types;
+
+/// A built-in integration.
+///
+/// ```ignore
+/// impl Integration for Demo {
+///     type Config = Config;
+///     const MANIFEST: &'static str = include_str!("../irori-extension.toml");
+///
+///     async fn run(config: Config, ctx: IntegrationContext) -> Result<(), IntegrationError> {
+///         describe_devices(&ctx).await?;
+///         // … handle `ctx.next_call()` until it returns `None`
+///         Ok(())
+///     }
+/// }
+/// ```
+pub trait Integration: Send + 'static {
+    /// Its settings. The core deserializes them before starting it; the config schema shown to
+    /// people is generated from this type.
+    type Config: DeserializeOwned + JsonSchema + Send + 'static;
+
+    /// The extension manifest, usually `include_str!("../irori-extension.toml")`.
+    const MANIFEST: &'static str;
+
+    /// Runs until told to stop ([`IntegrationContext::next_call`] returns `None`). Returning an
+    /// error, returning without being told to stop, or panicking marks it failed, and the core
+    /// starts it again after a delay.
+    fn run(
+        config: Self::Config,
+        ctx: IntegrationContext,
+    ) -> impl Future<Output = Result<(), IntegrationError>> + Send;
+}
+
+/// Settings for an integration that has none. Accepts only an empty table.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NoSettings {}
+
+/// Why an integration stopped working. Shown to people, so say what went wrong in their terms.
+pub struct IntegrationError(String);
+
+impl IntegrationError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
+impl fmt::Display for IntegrationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl fmt::Debug for IntegrationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+/// Any error converts, so `?` works in [`Integration::run`].
+impl<E: std::error::Error> From<E> for IntegrationError {
+    fn from(error: E) -> Self {
+        Self(error.to_string())
+    }
+}
+
+/// The core refused an operation, e.g. an entity of a kind the manifest doesn't declare.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rejected(pub String);
+
+impl fmt::Display for Rejected {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Rejected {}
+
+/// What the integration says about itself (spec §6.5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Health {
+    Running,
+    /// Working, with a problem worth showing, e.g. "2 of 5 devices unreachable".
+    Degraded(String),
+}
+
+/// Which entities a change of availability applies to (spec §6.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AvailabilityTarget {
+    /// Every entity of this device.
+    Device(UniqueId),
+    Entities(Vec<UniqueId>),
+}
+
+/// A failed service call, as the integration reports it (spec §7.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceError {
+    pub code: ServiceErrorCode,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceErrorCode {
+    /// The device can't be reached right now.
+    Unavailable,
+    /// The device or service refused or failed.
+    Failed,
+}
+
+impl ServiceError {
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            code: ServiceErrorCode::Unavailable,
+            message: message.into(),
+        }
+    }
+
+    pub fn failed(message: impl Into<String>) -> Self {
+        Self {
+            code: ServiceErrorCode::Failed,
+            message: message.into(),
+        }
+    }
+}
+
+/// A service call waiting for its result. Reply exactly once; dropping it without replying
+/// reports a failure.
+#[derive(Debug)]
+pub struct IncomingCall {
+    pub call: ServiceCall,
+    reply: oneshot::Sender<Result<(), ServiceError>>,
+}
+
+impl IncomingCall {
+    /// Replies once the device accepted the command. The new state comes as a state report,
+    /// with `caused_by` set to `self.call.context.id`.
+    pub fn reply(self, result: Result<(), ServiceError>) {
+        // The core may have given up waiting (timeout); nothing to do then.
+        let _ = self.reply.send(result);
+    }
+}
+
+/// The integration's handle to the core. Offers exactly the operations of the contract.
+#[derive(Debug)]
+pub struct IntegrationContext {
+    ops: mpsc::Sender<host::Op>,
+    reports: Arc<ReportQueue>,
+    calls: mpsc::Receiver<IncomingCall>,
+    stop: watch::Receiver<bool>,
+}
+
+const CORE_GONE: &str = "the core is shutting down";
+
+impl IntegrationContext {
+    async fn request(&self, op: impl FnOnce(host::Reply) -> host::Op) -> Result<(), Rejected> {
+        let (reply, result) = oneshot::channel();
+        self.ops
+            .send(op(reply))
+            .await
+            .map_err(|_| Rejected(CORE_GONE.into()))?;
+        result.await.map_err(|_| Rejected(CORE_GONE.into()))?
+    }
+
+    /// Adds a device, or updates the one with the same `unique_id`.
+    pub async fn describe_device(&self, device: DeviceDescription) -> Result<(), Rejected> {
+        self.request(|reply| host::Op::DescribeDevice(device, reply))
+            .await
+    }
+
+    /// Adds an entity, or updates the one with the same `unique_id`. Describe its device first.
+    pub async fn describe_entity(&self, entity: EntityDescription) -> Result<(), Rejected> {
+        self.request(|reply| host::Op::DescribeEntity(entity, reply))
+            .await
+    }
+
+    /// Removes a device and its entities.
+    pub async fn remove_device(&self, unique_id: UniqueId) -> Result<(), Rejected> {
+        self.request(|reply| host::Op::RemoveDevice(unique_id, reply))
+            .await
+    }
+
+    pub async fn remove_entity(&self, unique_id: UniqueId) -> Result<(), Rejected> {
+        self.request(|reply| host::Op::RemoveEntity(unique_id, reply))
+            .await
+    }
+
+    pub async fn set_availability(
+        &self,
+        target: AvailabilityTarget,
+        availability: Availability,
+    ) -> Result<(), Rejected> {
+        self.request(|reply| host::Op::SetAvailability(target, availability, reply))
+            .await
+    }
+
+    pub async fn set_health(&self, health: Health) {
+        // If the core is gone there's nobody to tell.
+        let _ = self.ops.send(host::Op::SetHealth(health)).await;
+    }
+
+    /// Reports a new value for one of its entities. Never waits: if the core is behind, an
+    /// older report for the same entity that it hasn't read yet is replaced by this one. At most
+    /// [`MAX_PENDING_ENTITIES`] entities' reports wait at once; reports for further entities are
+    /// dropped until the core catches up. The core logs dropped and rejected reports.
+    pub fn report_state(&self, report: StateReport) {
+        self.reports.push(report);
+    }
+
+    /// The next service call, or `None` once the integration should stop. After `None`, finish
+    /// up and return from `run` within 5 seconds.
+    pub async fn next_call(&mut self) -> Option<IncomingCall> {
+        if *self.stop.borrow() {
+            return None;
+        }
+        tokio::select! {
+            biased;
+            _ = self.stop.wait_for(|stop| *stop) => None,
+            call = self.calls.recv() => call,
+        }
+    }
+
+    /// Resolves once the integration should stop. For integrations that don't take calls in the
+    /// same loop.
+    pub async fn stopped(&mut self) {
+        let _ = self.stop.wait_for(|stop| *stop).await;
+    }
+}
+
+/// How many entities can have a state report waiting for the core at once. Bounds the core's
+/// memory even if an integration reports for ever-new entities faster than the core keeps up.
+pub const MAX_PENDING_ENTITIES: usize = 4096;
+
+/// Pending state reports, one per entity: a newer report replaces an unread older one.
+#[derive(Debug, Default)]
+struct ReportQueue {
+    pending: Mutex<BTreeMap<UniqueId, StateReport>>,
+    dropped: AtomicU64,
+    ready: Notify,
+}
+
+impl ReportQueue {
+    fn push(&self, report: StateReport) {
+        {
+            let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            if pending.len() >= MAX_PENDING_ENTITIES && !pending.contains_key(&report.unique_id) {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+            } else {
+                pending.insert(report.unique_id.clone(), report);
+            }
+        }
+        // Wake the core for drops too, so it logs them even if nothing else is waiting.
+        self.ready.notify_one();
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+    }
+
+    fn take(&self) -> Vec<StateReport> {
+        std::mem::take(&mut *self.pending.lock().unwrap_or_else(PoisonError::into_inner))
+            .into_values()
+            .collect()
+    }
+}
+
+/// A built-in integration, ready for the core to start.
+pub struct Builtin {
+    pub manifest: ExtensionManifest,
+    /// JSON Schema for its settings, generated from its config type.
+    pub config_schema: serde_json::Value,
+    start: StartFn,
+}
+
+type RunFuture = Pin<Box<dyn Future<Output = Result<(), IntegrationError>> + Send>>;
+type StartFn =
+    Box<dyn Fn(serde_json::Value, IntegrationContext) -> Result<RunFuture, String> + Send + Sync>;
+
+impl fmt::Debug for Builtin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Builtin")
+            .field("id", &self.manifest.extension.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Builtin {
+    /// Checks `config` against the integration's config type, then returns the future that runs
+    /// it. The error says what's wrong with the settings.
+    pub fn start(
+        &self,
+        config: serde_json::Value,
+        ctx: IntegrationContext,
+    ) -> Result<RunFuture, String> {
+        (self.start)(config, ctx)
+    }
+}
+
+/// Prepares a built-in integration: parses and checks its manifest, and generates its config
+/// schema. Fails if the manifest is invalid or doesn't describe a built-in integration.
+pub fn builtin<I: Integration>() -> Result<Builtin, String> {
+    let manifest = parse_manifest(I::MANIFEST)?;
+    let id = &manifest.extension.id;
+    match manifest.contributes.integration.as_slice() {
+        [integration] if integration.run.is_none() => {}
+        [_] => {
+            return Err(format!(
+                "extension `{id}`: a built-in integration must not have `run` (that's for external extensions)"
+            ));
+        }
+        _ => {
+            return Err(format!(
+                "extension `{id}`: a built-in integration needs a `[[contributes.integration]]` entry"
+            ));
+        }
+    }
+    let config_schema = serde_json::to_value(schemars::schema_for!(I::Config))
+        .map_err(|e| format!("extension `{id}`: config schema: {e}"))?;
+    Ok(Builtin {
+        manifest,
+        config_schema,
+        start: Box::new(|config, ctx| {
+            let config: I::Config =
+                serde_json::from_value(config).map_err(|e| format!("invalid settings: {e}"))?;
+            Ok(Box::pin(I::run(config, ctx)))
+        }),
+    })
+}
+
+/// Reads `irori-extension.toml` text the way Irori reads every manifest: TOML into the JSON data
+/// model, then the manifest types.
+pub fn parse_manifest(toml_text: &str) -> Result<ExtensionManifest, String> {
+    let json: serde_json::Value =
+        toml::from_str(toml_text).map_err(|e| format!("manifest is not valid TOML: {e}"))?;
+    serde_json::from_value(json).map_err(|e| format!("invalid manifest: {e}"))
+}
+
+/// The core's end of an [`IntegrationContext`]. Used by the core's extension host only.
+pub mod host {
+    use super::*;
+
+    pub type Reply = oneshot::Sender<Result<(), Rejected>>;
+
+    /// An operation from the integration that needs the core's answer (spec §5).
+    #[derive(Debug)]
+    pub enum Op {
+        DescribeDevice(DeviceDescription, Reply),
+        DescribeEntity(EntityDescription, Reply),
+        RemoveDevice(UniqueId, Reply),
+        RemoveEntity(UniqueId, Reply),
+        SetAvailability(AvailabilityTarget, Availability, Reply),
+        SetHealth(Health),
+    }
+
+    /// Bounded, so a runaway integration waits instead of growing the core's memory.
+    const OPS_CAPACITY: usize = 256;
+    const CALLS_CAPACITY: usize = 64;
+
+    #[derive(Debug)]
+    pub struct HostEnd {
+        pub ops: mpsc::Receiver<Op>,
+        pub reports: Reports,
+        pub calls: mpsc::Sender<IncomingCall>,
+        pub stop: watch::Sender<bool>,
+    }
+
+    /// State reports waiting for the core.
+    #[derive(Debug)]
+    pub struct Reports(Arc<ReportQueue>);
+
+    impl Reports {
+        /// Waits until there's something to do: reports pending, or reports dropped. Takes
+        /// nothing, so dropping this future (as a losing `select!` branch, say) loses nothing;
+        /// call [`Reports::drain`] once the caller commits to handling them.
+        pub async fn ready(&self) {
+            loop {
+                if !self.0.is_empty() || self.0.dropped.load(Ordering::Relaxed) > 0 {
+                    return;
+                }
+                self.0.ready.notified().await;
+            }
+        }
+
+        /// Takes whatever is pending, without waiting.
+        pub fn drain(&self) -> Vec<StateReport> {
+            self.0.take()
+        }
+
+        /// How many reports were dropped because too many entities were waiting, since the last
+        /// call.
+        pub fn take_dropped(&self) -> u64 {
+            self.0.dropped.swap(0, Ordering::Relaxed)
+        }
+    }
+
+    /// A connected pair: the context goes to the integration, the other end stays in the core.
+    pub fn connect() -> (IntegrationContext, HostEnd) {
+        let (ops_tx, ops_rx) = mpsc::channel(OPS_CAPACITY);
+        let (calls_tx, calls_rx) = mpsc::channel(CALLS_CAPACITY);
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let reports = Arc::new(ReportQueue::default());
+        let ctx = IntegrationContext {
+            ops: ops_tx,
+            reports: Arc::clone(&reports),
+            calls: calls_rx,
+            stop: stop_rx,
+        };
+        let host = HostEnd {
+            ops: ops_rx,
+            reports: Reports(reports),
+            calls: calls_tx,
+            stop: stop_tx,
+        };
+        (ctx, host)
+    }
+
+    /// Builds a call for the integration, with the channel its reply comes back on.
+    pub fn incoming_call(
+        call: ServiceCall,
+    ) -> (IncomingCall, oneshot::Receiver<Result<(), ServiceError>>) {
+        let (reply, result) = oneshot::channel();
+        (IncomingCall { call, reply }, result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use irori_types::{State, SwitchState};
+
+    fn report(unique_id: &str, on: bool) -> StateReport {
+        StateReport {
+            unique_id: UniqueId::try_from(unique_id).expect("valid"),
+            state: Some(State::Switch(SwitchState { on })),
+            attributes: BTreeMap::new(),
+            caused_by: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn newer_reports_replace_unread_ones_for_the_same_entity() {
+        let (ctx, host) = host::connect();
+        ctx.report_state(report("a", true));
+        ctx.report_state(report("b", true));
+        ctx.report_state(report("a", false));
+        host.reports.ready().await;
+        assert_eq!(
+            host.reports.drain(),
+            vec![report("a", false), report("b", true)]
+        );
+        assert!(host.reports.drain().is_empty());
+    }
+
+    #[tokio::test]
+    async fn waiting_reports_are_bounded() {
+        let (ctx, host) = host::connect();
+        for i in 0..MAX_PENDING_ENTITIES + 10 {
+            ctx.report_state(report(&format!("e{i}"), true));
+        }
+        // An entity that's already waiting can still be updated.
+        ctx.report_state(report("e0", false));
+        let batch = host.reports.drain();
+        assert_eq!(batch.len(), MAX_PENDING_ENTITIES);
+        assert!(batch.contains(&report("e0", false)));
+        assert_eq!(host.reports.take_dropped(), 10);
+        assert_eq!(host.reports.take_dropped(), 0);
+
+        // Drops alone still wake the core, so it can log them.
+        for i in 0..MAX_PENDING_ENTITIES + 1 {
+            ctx.report_state(report(&format!("f{i}"), true));
+        }
+        host.reports.ready().await;
+        assert_eq!(host.reports.drain().len(), MAX_PENDING_ENTITIES);
+        tokio::time::timeout(std::time::Duration::from_secs(1), host.reports.ready())
+            .await
+            .expect("woken by the drop alone");
+        assert!(host.reports.drain().is_empty());
+        assert_eq!(host.reports.take_dropped(), 1);
+    }
+
+    /// Readiness must take nothing: a `select!` that drops this branch loses no reports.
+    #[tokio::test]
+    async fn readiness_takes_nothing() {
+        let (ctx, host) = host::connect();
+        ctx.report_state(report("a", true));
+        tokio::select! {
+            () = host.reports.ready() => {}
+            () = std::future::ready(()) => {}
+        }
+        assert_eq!(host.reports.drain(), vec![report("a", true)]);
+    }
+
+    #[tokio::test]
+    async fn next_call_ends_when_told_to_stop() {
+        let (mut ctx, host) = host::connect();
+        host.stop.send(true).expect("context alive");
+        assert!(ctx.next_call().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn operations_fail_cleanly_once_the_core_is_gone() {
+        let (ctx, host) = host::connect();
+        drop(host);
+        let err = ctx
+            .remove_entity(UniqueId::try_from("a").expect("valid"))
+            .await
+            .expect_err("no core");
+        assert_eq!(err, Rejected(CORE_GONE.into()));
+    }
+
+    struct NoRun;
+    impl Integration for NoRun {
+        type Config = NoSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "external_thing"
+            name = "External thing"
+            version = "0.1.0"
+            irori = ">=0.1.0"
+
+            [[contributes.integration]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+            run = { command = "bin/thing" }
+        "#;
+        async fn run(_: NoSettings, _: IntegrationContext) -> Result<(), IntegrationError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn builtins_must_not_have_a_run_command() {
+        let err = builtin::<NoRun>().expect_err("has run");
+        assert!(err.contains("must not have `run`"), "{err}");
+    }
+}
