@@ -34,15 +34,33 @@ uncommitted changes.
 irori version                              # irori 0.0.0 (359d176), built 2026-09-16 07:30 UTC
 ```
 
-Or straight from the checkout, without installing:
+Everything the installed binary does:
 
 ```sh
-cargo run -- serve                    # http://127.0.0.1:8480 (`run` also works)
-cargo run -- serve --log-level debug  # also log every device and state change
-cargo run -- serve --data /var/lib/irori
-curl -s http://127.0.0.1:8480/api/dev/home     # temporary API: the whole home in one response
+irori run                                  # http://127.0.0.1:8480
+irori run --log-level debug                # log every device and state change as it happens
+irori run --data /var/lib/irori            # where the database lives (default ./data)
+irori run --bind 0.0.0.0:8480 --allow-unauthenticated-lan   # reachable from your phone; see below
+irori version --json
+irori help run
+```
+
+`run` and `serve` are the same command. Every option is also an environment variable
+(`IRORI_DATA`, `IRORI_BIND`, `IRORI_LOG_LEVEL`), which is what the container uses.
+
+Or straight from the checkout, without installing — the same commands after `cargo run --`:
+
+```sh
+cargo run -- run                                # http://127.0.0.1:8480
+cargo run -- run --log-level debug
+cargo run --no-default-features -- run          # barebones: no integrations, no UI
+```
+
+The temporary API, for looking at the home without the page:
+
+```sh
+curl -s http://127.0.0.1:8480/api/dev/home     # the whole home in one response
                                                # (also /api/dev/{devices,entities,states,extensions})
-cargo run -- version --json
 ```
 
 The **web UI** is a separate wasm crate, so `cargo build` alone doesn't need a wasm toolchain and
@@ -66,12 +84,6 @@ connection are named in the log and skipped. Until then, a device with a plain `
 
 See [integrations/irori-int-esphome/README.md](integrations/irori-int-esphome/README.md), which
 also explains how to run a real ESPHome device on your laptop to try it without hardware.
-
-Barebones build, no integrations and no UI (must always build and run):
-
-```sh
-cargo run --no-default-features -- serve
-```
 
 ## Run it like a Raspberry Pi (Docker)
 
