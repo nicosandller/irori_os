@@ -72,6 +72,11 @@ more than volume: one verified finding beats five guesses.
   until encryption lands. **Still worth reporting:** a flaw in the encrypted path once it
   exists, anything that widens exposure beyond the local network, or a way this reaches past
   ESPHome's own entities.
+- **`cargo install --path` doesn't need `--force`.** A path source has no version to compare
+  against a registry, so Cargo rebuilds and replaces every time: `Replacing …/bin/irori` /
+  `Replaced package \`irori v0.0.0\``. Checked by running it. `--force` matters for installing
+  the same version from a registry, which `cargo xtask install` never does. Don't propose adding
+  it to `xtask/src/ui.rs`.
 - **Check files before claiming what they contain.** Quote the actual line, for example the
   value in a fixture, rather than inferring it.
 

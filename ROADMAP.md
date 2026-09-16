@@ -154,7 +154,7 @@ irori_os/
 - Integrations depend only on `irori-integration` and `irori-types`.
 - `irori-assist`, external extensions written in Rust, and other tools depend only on `irori-types` and `irori-client` (plus `irori-integration` for external integrations).
 
-**Cargo features on the `irori` binary:** `default = ["int-mqtt", "int-demo", "ui"]`; opt-in: `assist`, and future `int-zigbee`, `int-matter`, …. `--no-default-features` must still build, start, and serve the API. That's the "robust at its smallest" test.
+**Cargo features on the `irori` binary:** `default = ["int-mqtt", "int-demo", "int-esphome", "ui"]` (D17); opt-in: `assist`, and future `int-zigbee`, `int-matter`, …. `--no-default-features` must still build, start, and serve the API. That's the "robust at its smallest" test.
 
 ### 2.2 Tech stack
 

@@ -11,14 +11,12 @@ fn main() {
     println!("cargo:rustc-env=IRORI_TARGET={target}");
     println!("cargo:rustc-env=IRORI_COMMIT={}", commit());
     println!("cargo:rustc-env=IRORI_BUILT_AT={}", built_at());
-    println!("cargo:rerun-if-changed=build.rs");
-    // Rebuild when the checkout moves to a different commit. Absent in a source tarball or a
-    // build context without `.git`, which is why the paths are only hinted when they exist.
-    for path in ["../../.git/HEAD", "../../.git/index"] {
-        if std::path::Path::new(path).exists() {
-            println!("cargo:rerun-if-changed={path}");
-        }
-    }
+    // Run on every build. Naming any real path here would opt out of Cargo's own change
+    // tracking and pin this to those paths alone — and then editing a file in another crate,
+    // or committing, would leave `IRORI_COMMIT` and `IRORI_BUILT_AT` describing an older build
+    // than the one being run. A path that never exists is always "changed", which is what
+    // makes this honest; two `git` calls per build is the price.
+    println!("cargo:rerun-if-changed=.irori-always-rerun");
 }
 
 /// The short commit, with `-modified` when the working tree has uncommitted changes. `unknown`
