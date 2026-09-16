@@ -183,7 +183,7 @@ irori_os/
 
 Goal: the decisions that are expensive to change later are written down and prototyped. **Little product code, lots of leverage.**
 
-> **Current order (D26):** M0.1 ✅ → M0.2 ✅ → M0.6 ✅ → M1.1 (trimmed) → M0.8 UI spike + Devices page → ESPHome integration → M0.3, M0.4, M0.5, M0.7.
+> **Current order (D26):** M0.1 ✅ → M0.2 ✅ → M0.6 ✅ → M1.1 (trimmed) ✅ → M0.8 UI spike + Devices page → ESPHome integration → M0.3, M0.4, M0.5, M0.7.
 
 ### M0.1 Workspace and toolchain ✅
 
@@ -332,6 +332,8 @@ Must decide:
 Goal: a **barebones, fast, modular core** that a real home runs on for weeks without drama. The Phase 1 deliverable *is* the barebones release: core + CLI + minimal UI + MQTT and Demo extensions. The only contribution kind implemented is **integration** (D22).
 
 ### M1.1 Registry, state store, event bus, extension host (≈3–4 wks)
+
+> Trimmed version done (D26): in-memory registry and state with every check from the integration contract, events, service calls (toggle, capability checks, 10 s timeout), the extension host with crash isolation and restart backoff, the `Integration` trait, and the demo integration. A temporary read-only view at `/api/dev/*`. **Not yet:** config dir loading and hot reload (waits for M0.7; built-ins run with default settings), the CLI demo (needs the API), and keeping the registry across restarts (M1.3).
 - In-memory registry and state store; `tokio::sync::broadcast` event bus with typed events (`StateChanged`, `ServiceCalled`, `RuleRun*`, `RegistryUpdated`, `ExtensionStatus`).
 - Context propagation through every state change and service call.
 - Service registry: integrations register handlers for the kinds they provide.

@@ -1,0 +1,10 @@
+[extension]
+id = "demo"
+name = "Demo"
+version = "0.1.0"
+irori = ">=0.0.0, <0.1.0"
+description = "Virtual devices for trying Irori without hardware: a dimmable lamp, a plug, and a hallway sensor."
+
+[[contributes.integration]]
+iot_class = "local_push"
+entity_kinds = ["light", "switch", "sensor", "binary_sensor"]

@@ -17,6 +17,7 @@ assist = ["dep:irori-assist"]
 
 [dependencies]
 irori-core.workspace = true
+irori-integration.workspace = true
 irori-int-mqtt = { workspace = true, optional = true }
 irori-int-demo = { workspace = true, optional = true }
 irori-assist = { workspace = true, optional = true }

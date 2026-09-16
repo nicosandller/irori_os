@@ -155,12 +155,17 @@ New classes are additive.
 | `attributes` | map of `AttributeKey` → any JSON | no | Integration extras; see §5.4 |
 | `last_changed` | `Timestamp` | yes | `state` or `availability` changed |
 | `last_updated` | `Timestamp` | yes | `state`, `availability`, or `attributes` changed |
-| `last_reported` | `Timestamp` | yes | The integration reported anything, even an identical value |
+| `last_reported` | `Timestamp` | yes | The integration last reported anything about it, even an identical value |
 | `context` | `Context` | yes | What caused the last change (§6) |
 
 Timestamps are RFC 3339 with an offset, written in UTC (`2026-09-15T22:04:31.12Z`). Always
-`last_changed ≤ last_updated ≤ last_reported`. `last_reported` is what tells a stale sensor
-(no reports for hours) from a steady one (same value, reported every minute).
+`last_changed ≤ last_updated`. `last_reported` is what tells a stale sensor (no reports for hours)
+from a steady one (same value, reported every minute), so it only moves when the integration says
+something. It starts when the entity is registered: describing an entity **is** the integration
+telling Irori about it, and an entity that has never reported a value shows that as `state: null`.
+So it's never empty. It can be earlier than the other two: when an integration crashes, Irori marks its
+entities unavailable without hearing from them, and the page can still say "offline, last heard
+from 3 hours ago".
 
 ### 5.2 Unknown vs unavailable
 
@@ -233,7 +238,7 @@ Data is validated in layers. This spec covers the first two; the core adds the t
 2. **Rust types** (`irori-types`, also compiled to wasm for the UI). Everything the schema
    checks, plus rules JSON Schema can't express:
    - `min ≤ max` for `color_temp_kelvin`
-   - `last_changed ≤ last_updated ≤ last_reported`
+   - `last_changed ≤ last_updated`
 
    These examples live in `fixtures/` as `*.schema-allows.json`, so it's explicit which rules
    only Rust enforces.

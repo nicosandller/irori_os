@@ -142,4 +142,4 @@ performance number (ROADMAP §4.3), measure it on real hardware:
 | `pi` | The helper script described above |
 | `Dockerfile` | `toolchain` (Rust on Alpine/musl), `build` (static binary), `pi` (Debian slim runtime) |
 | `compose.yaml` | The `pi` service and the on-demand `toolchain` service |
-| `smoke-test.sh` | Smoke test shared with CI: health, WAL mode, and UI present or absent per build |
+| `smoke-test.sh` | Smoke test shared with CI: health, WAL mode, UI present or absent per build, and the demo extension's devices when it's compiled in |

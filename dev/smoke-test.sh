@@ -3,8 +3,9 @@
 #
 #   dev/smoke-test.sh [BASE_URL] [TIMEOUT_SECONDS]
 #
-# Waits for /api/health, checks the database is in WAL mode, and checks `/` serves the
-# UI when the `ui` feature is compiled in (and a 404 when it isn't).
+# Waits for /api/health, checks the database is in WAL mode, checks `/` serves the UI when the
+# `ui` feature is compiled in (and a 404 when it isn't), and, with the demo extension compiled
+# in, that it's running and its devices are listed.
 set -euo pipefail
 
 base_url="${1:-http://127.0.0.1:8480}"
@@ -33,6 +34,24 @@ if grep -q '"features":\[[^]]*"ui"' <<<"$health"; then
 else
   [[ "$index" == 404* ]] || fail "expected 404 at / in a build without the ui feature (got: $index)"
   echo "ui: not compiled in, / returns 404 as expected"
+fi
+
+if grep -q '"features":\[[^]]*"int-demo"' <<<"$health"; then
+  # "Running" comes a moment before the demo has described its devices, so wait for both.
+  # Each response is captured first: piping into `grep -q` can kill curl with SIGPIPE once it
+  # matches, which `set -o pipefail` would report as a failure.
+  demo_ready() {
+    local extensions states
+    extensions="$(curl -fsS --max-time 2 "$base_url/api/dev/extensions" 2>/dev/null)" || return 1
+    states="$(curl -fsS --max-time 2 "$base_url/api/dev/states" 2>/dev/null)" || return 1
+    grep -q '"demo":{"state":"running"' <<<"$extensions" &&
+      grep -q '"entity_id":"light.demo_lamp"' <<<"$states"
+  }
+  until demo_ready; do
+    ((SECONDS < deadline)) || fail "the demo extension isn't running with its devices listed within ${timeout}s"
+    sleep 0.2
+  done
+  echo "extensions: demo running, its devices are listed"
 fi
 
 echo "smoke test passed"
