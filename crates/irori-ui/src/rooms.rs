@@ -24,8 +24,14 @@ pub fn Rooms() -> impl IntoView {
     // redrew every time a sensor spoke would throw away a half-typed room name with it.
     let shape = Memo::new(move |_| {
         let home = live.home.get();
-        (home.areas.clone(), home.devices.clone())
+        (
+            home.areas.clone(),
+            home.devices.clone(),
+            home.floors.clone(),
+        )
     });
+    let floor_name = RwSignal::new(String::new());
+    let floor_level = RwSignal::new("0".to_owned());
 
     let add = move || {
         let Some(name) = named(adding.get(), trouble) else {
@@ -77,8 +83,10 @@ pub fn Rooms() -> impl IntoView {
             </form>
         </section>
 
+        <Floors name=floor_name level=floor_level trouble=trouble />
+
         {move || {
-            let (areas, devices) = shape.get();
+            let (areas, devices, floors) = shape.get();
             if areas.is_empty() {
                 return view! {
                     <p class="empty">
@@ -87,15 +95,60 @@ pub fn Rooms() -> impl IntoView {
                 }
                 .into_any();
             }
-            areas
+            if floors.is_empty() {
+                return areas
+                    .iter()
+                    .map(|area| room(area.clone(), &devices, &floors, editing, draft, trouble, live))
+                    .collect_view()
+                    .into_any();
+            }
+            // By floor, lowest first, then the rooms that aren't on one.
+            let mut sections: Vec<(String, Vec<Area>)> = floors
                 .iter()
-                .map(|area| room(area.clone(), &devices, editing, draft, trouble, live))
+                .map(|floor| {
+                    let on_it = areas
+                        .iter()
+                        .filter(|area| area.floor_id.as_ref() == Some(&floor.id))
+                        .cloned()
+                        .collect();
+                    (floor.name.to_string(), on_it)
+                })
+                .collect();
+            let unfloored: Vec<Area> = areas
+                .iter()
+                .filter(|area| {
+                    area.floor_id
+                        .as_ref()
+                        .is_none_or(|id| floors.iter().all(|floor| &floor.id != id))
+                })
+                .cloned()
+                .collect();
+            if !unfloored.is_empty() {
+                sections.push(("On no floor".to_owned(), unfloored));
+            }
+            sections
+                .into_iter()
+                .map(|(heading, rooms)| {
+                    let rooms = if rooms.is_empty() {
+                        view! { <p class="muted small">"No rooms on this floor yet."</p> }.into_any()
+                    } else {
+                        rooms
+                            .into_iter()
+                            .map(|area| room(area, &devices, &floors, editing, draft, trouble, live))
+                            .collect_view()
+                            .into_any()
+                    };
+                    view! {
+                        <h2 class="floor-heading">{heading}</h2>
+                        {rooms}
+                    }
+                })
                 .collect_view()
                 .into_any()
         }}
 
         {move || {
-            let (_, devices) = shape.get();
+            let (_, devices, _) = shape.get();
             let homeless: Vec<Device> = devices
                 .iter()
                 .filter(|device| device.area_id.is_none())
@@ -120,9 +173,11 @@ pub fn Rooms() -> impl IntoView {
 }
 
 /// One room: its name, what's in it, and the two things you can do to it.
+#[allow(clippy::too_many_arguments)]
 fn room(
     area: Area,
     all: &[Device],
+    floors: &[irori_types::Floor],
     editing: RwSignal<Option<AreaId>>,
     draft: RwSignal<String>,
     trouble: RwSignal<Option<String>>,
@@ -139,6 +194,7 @@ fn room(
         move || editing.get().as_ref() == Some(&id)
     };
 
+    let picker = floor_picker(&area, floors, trouble, live);
     let rename = {
         let id = id.clone();
         move || {
@@ -232,6 +288,7 @@ fn room(
                 }}
                 <span class="muted">{count(devices.len())}</span>
                 <span class="room-actions">
+                    {picker}
                     <button type="button" on:click=start>"Rename"</button>
                     <button
                         type="button"
@@ -263,6 +320,152 @@ fn room(
         </section>
     }
     .into_any()
+}
+
+/// Which floor a room is on. Only offered once a floor exists.
+fn floor_picker(
+    area: &Area,
+    floors: &[irori_types::Floor],
+    trouble: RwSignal<Option<String>>,
+    live: crate::Live,
+) -> AnyView {
+    if floors.is_empty() {
+        return ().into_any();
+    }
+    let id = area.id.clone();
+    let current = area.floor_id.clone();
+    let chosen = move |value: String| {
+        let id = id.clone();
+        let floor = (!value.is_empty())
+            .then(|| irori_types::FloorId::try_from(value.as_str()).ok())
+            .flatten();
+        spawn_local(async move {
+            match api::set_area_floor(&id, floor.as_ref()).await {
+                Ok(()) => crate::refresh(live),
+                Err(why) => trouble.set(Some(why)),
+            }
+        });
+    };
+    view! {
+        <select
+            class="floor-picker"
+            aria-label="Floor"
+            on:change:target=move |ev| chosen(ev.target().value())
+        >
+            <option value="" selected=current.is_none()>"No floor"</option>
+            {floors
+                .iter()
+                .map(|floor| {
+                    let value = floor.id.to_string();
+                    let selected = current.as_ref() == Some(&floor.id);
+                    view! { <option value=value selected=selected>{floor.name.to_string()}</option> }
+                })
+                .collect_view()}
+        </select>
+    }
+    .into_any()
+}
+
+/// Making and removing floors. Folded away until someone wants them: most flats have one.
+#[component]
+fn Floors(
+    name: RwSignal<String>,
+    level: RwSignal<String>,
+    trouble: RwSignal<Option<String>>,
+) -> impl IntoView {
+    let live = expect_context::<crate::Live>();
+    let floors = Memo::new(move |_| live.home.get().floors);
+    let add = move || {
+        let Some(named) = named(name.get(), trouble) else {
+            return;
+        };
+        let Ok(at) = level.get().trim().parse::<i8>() else {
+            trouble.set(Some(
+                "A floor's level is a whole number: 0 for the entrance, 1 above it, -1 below."
+                    .to_owned(),
+            ));
+            return;
+        };
+        name.set(String::new());
+        spawn_local(async move {
+            match api::add_floor(named, at).await {
+                Ok(()) => {
+                    trouble.set(None);
+                    crate::refresh(live);
+                }
+                Err(why) => trouble.set(Some(why)),
+            }
+        });
+    };
+    view! {
+        <details class="card floors">
+            <summary>
+                {move || match floors.get().len() {
+                    0 => "Floors".to_owned(),
+                    1 => "Floors (1)".to_owned(),
+                    n => format!("Floors ({n})"),
+                }}
+            </summary>
+            <p class="muted small">
+                "Floors group rooms, lowest first. The level is a whole number: 0 for the entrance "
+                "floor, 1 above it, -1 for a cellar."
+            </p>
+            <ul class="room-devices">
+                {move || {
+                    floors
+                        .get()
+                        .into_iter()
+                        .map(|floor| {
+                            let id = floor.id.clone();
+                            let remove = move |_| {
+                                let id = id.clone();
+                                spawn_local(async move {
+                                    match api::remove_floor(&id).await {
+                                        Ok(()) => crate::refresh(live),
+                                        Err(why) => trouble.set(Some(why)),
+                                    }
+                                });
+                            };
+                            view! {
+                                <li>
+                                    <span class="name">{floor.name.to_string()}</span>
+                                    <span class="muted small">{format!("level {}", floor.level)}</span>
+                                    <button type="button" class="link" on:click=remove>"Remove"</button>
+                                </li>
+                            }
+                        })
+                        .collect_view()
+                }}
+            </ul>
+            <form
+                class="inline-form"
+                on:submit=move |ev| {
+                    ev.prevent_default();
+                    add();
+                }
+            >
+                <input
+                    type="text"
+                    aria-label="Name of the new floor"
+                    placeholder="Upstairs"
+                    prop:value=name
+                    on:input:target=move |ev| name.set(ev.target().value())
+                />
+                <input
+                    type="number"
+                    class="level"
+                    aria-label="Level"
+                    min="-128"
+                    max="127"
+                    prop:value=level
+                    on:input:target=move |ev| level.set(ev.target().value())
+                />
+                <button type="submit" class="add" disabled=move || name.get().trim().is_empty()>
+                    "Add floor"
+                </button>
+            </form>
+        </details>
+    }
 }
 
 fn in_room(device: Device) -> AnyView {

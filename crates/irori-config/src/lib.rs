@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use irori_types::{
-    Area, DeviceId, DeviceSettings, EntitySettings, ExtensionSettings, Settings, SettingsKey,
+    Area, DeviceId, DeviceSettings, EntitySettings, ExtensionSettings, Floor, Settings, SettingsKey,
 };
 
 pub use files::{ExtensionsSection, File, IroriSettings, LogLevel, ServerSettings};
@@ -67,7 +67,7 @@ impl<T: Default> Default for Part<T> {
 pub struct Store {
     dir: PathBuf,
     irori: Part<IroriSettings>,
-    areas: Part<Vec<Area>>,
+    areas: Part<(Vec<Floor>, Vec<Area>)>,
     devices: Part<BTreeMap<DeviceId, DeviceSettings>>,
     entities: Part<BTreeMap<SettingsKey, EntitySettings>>,
     secrets: Part<ExtensionSettings>,
@@ -98,7 +98,8 @@ impl Store {
     /// Everything the directory currently says.
     pub fn settings(&self) -> Settings {
         Settings {
-            areas: self.areas.value.clone(),
+            floors: self.areas.value.0.clone(),
+            areas: self.areas.value.1.clone(),
             devices: self.devices.value.clone(),
             entities: self.entities.value.clone(),
         }
@@ -234,7 +235,7 @@ impl Store {
             }
             written.push(*file);
         }
-        self.areas.value = settings.areas.clone();
+        self.areas.value = (settings.floors.clone(), settings.areas.clone());
         self.devices.value = settings.devices.clone();
         self.entities.value = settings.entities.clone();
         // The files on disk are now these settings, so the next reload must not treat Irori's
@@ -392,6 +393,7 @@ mod tests {
     fn what_is_saved_is_what_is_loaded_again() {
         let home = dir();
         let settings = Settings {
+            floors: Vec::new(),
             areas: vec![area("hall", "Hall")],
             devices: [(device("demo_lamp"), named("Reading lamp"))].into(),
             entities: BTreeMap::new(),
@@ -529,6 +531,7 @@ mod tests {
             .collect();
 
         let refused = store.save(&Settings {
+            floors: Vec::new(),
             areas: vec![area("kitchen", "Kitchen")],
             devices: [(device("demo_lamp"), named("Reading lamp"))].into(),
             entities: [(

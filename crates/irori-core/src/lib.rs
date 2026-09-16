@@ -27,7 +27,7 @@ pub use events::Event;
 pub use host::{ExtensionHost, Timing};
 pub use services::{CallError, Command};
 
-pub use home::{device_id_for, new_area_id};
+pub use home::{device_id_for, new_area_id, new_floor_id};
 
 pub use home::IgnoredDevice;
 
@@ -253,6 +253,13 @@ impl Core {
     /// The rooms of the home, as the config directory has them.
     pub fn areas(&self) -> Vec<Area> {
         read(&self.0.home).areas().to_vec()
+    }
+
+    /// The levels of the home, lowest first.
+    pub fn floors(&self) -> Vec<irori_types::Floor> {
+        let mut floors = read(&self.0.home).floors().to_vec();
+        floors.sort_by(|a, b| (a.level, &a.id).cmp(&(b.level, &b.id)));
+        floors
     }
 
     /// What a person has said about this home (`docs/specs/config.md`).

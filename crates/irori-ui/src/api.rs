@@ -31,6 +31,9 @@ pub struct Home {
     /// Devices a person keeps out of the home.
     #[serde(default)]
     pub ignored: Vec<IgnoredDevice>,
+    /// The levels of the home, lowest first.
+    #[serde(default)]
+    pub floors: Vec<irori_types::Floor>,
 }
 
 /// A device kept out of the home: enough to recognise it and let it back in.
@@ -296,6 +299,49 @@ pub async fn rename_area(id: &AreaId, name: Name) -> Result<(), String> {
     let response = Request::patch(&format!("{AREAS_URL}/{id}"))
         .json(&AreaRequest { name })
         .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+#[derive(Debug, Serialize)]
+struct AreaFloor<'a> {
+    floor: Option<&'a irori_types::FloorId>,
+}
+
+/// Puts a room on a floor, or on none.
+pub async fn set_area_floor(
+    id: &AreaId,
+    floor: Option<&irori_types::FloorId>,
+) -> Result<(), String> {
+    let response = Request::patch(&format!("{AREAS_URL}/{id}"))
+        .json(&AreaFloor { floor })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+#[derive(Debug, Serialize)]
+struct FloorRequest {
+    name: Name,
+    level: i8,
+}
+
+pub async fn add_floor(name: Name, level: i8) -> Result<(), String> {
+    let response = Request::post("/api/dev/floors")
+        .json(&FloorRequest { name, level })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+pub async fn remove_floor(id: &irori_types::FloorId) -> Result<(), String> {
+    let response = Request::delete(&format!("/api/dev/floors/{id}"))
         .send()
         .await
         .map_err(unreachable)?;

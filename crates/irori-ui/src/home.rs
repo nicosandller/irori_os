@@ -179,10 +179,23 @@ fn rooms(home: &HomeView) -> AnyView {
         .into_any();
     }
 
-    let rooms = home
-        .areas
-        .iter()
+    // Lowest floor first, rooms on no floor after, then by name: the order you'd walk the house.
+    let level = |area: &irori_types::Area| {
+        area.floor_id
+            .as_ref()
+            .and_then(|id| home.floors.iter().find(|floor| &floor.id == id))
+            .map_or(i16::MAX, |floor| i16::from(floor.level))
+    };
+    let mut ordered: Vec<_> = home.areas.iter().collect();
+    ordered.sort_by(|a, b| (level(a), a.name.as_str()).cmp(&(level(b), b.name.as_str())));
+    let rooms = ordered
+        .into_iter()
         .map(|area| {
+            let floor = area
+                .floor_id
+                .as_ref()
+                .and_then(|id| home.floors.iter().find(|floor| &floor.id == id))
+                .map(|floor| floor.name.to_string());
             let inside: Vec<_> = home
                 .devices
                 .iter()
@@ -191,6 +204,7 @@ fn rooms(home: &HomeView) -> AnyView {
                 .collect();
             view! {
                 <div class="room-card">
+                    {floor.map(|floor| view! { <span class="room-floor">{floor}</span> })}
                     <h3>{area.name.to_string()}</h3>
                     {if inside.is_empty() {
                         view! { <p class="muted small">"Nothing in here yet"</p> }.into_any()
