@@ -256,6 +256,8 @@ impl Home {
                 // Irori's own change, not a report: `last_reported` stays, and the context says
                 // the core did it (like marking entities unavailable after a crash).
                 let now = stamp.now.max(old.last_updated);
+                // A command in flight was for the abilities it no longer has.
+                self.commanded.remove(&id);
                 let mut new = old.clone();
                 new.state = None;
                 new.last_changed = now;
@@ -611,6 +613,11 @@ impl Home {
         self.recent_calls
             .get(integration)
             .is_some_and(|calls| calls.iter().any(|(id, _)| id == context_id))
+    }
+
+    /// Forgets what an entity was told to be, e.g. because the call failed.
+    pub fn forget_command(&mut self, entity_id: &EntityId) {
+        self.commanded.remove(entity_id);
     }
 
     /// Remembers what an entity was just told to be, until it reports back.

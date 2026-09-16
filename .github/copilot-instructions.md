@@ -41,6 +41,10 @@ more than volume: one verified finding beats five guesses.
   core, and the contract (`docs/specs/integrations.md` §3) says they must not block. Third-party
   code runs as a separate process instead. Don't propose per-integration runtimes or threads for
   the built-ins; the cost on a Raspberry Pi isn't worth a rule we already enforce by review.
+- **`last_reported` starts when an entity is registered, and is never null.** Describing an
+  entity is the integration telling Irori about it, and "has never reported a value" is already
+  visible as `state: null` (`docs/specs/entities.md` §5.1). Don't propose making the field
+  optional or adding a sentinel for entities that have only been described.
 - **Check files before claiming what they contain.** Quote the actual line, for example the
   value in a fixture, rather than inferring it.
 

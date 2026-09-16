@@ -254,6 +254,61 @@ async fn two_toggles_at_once_cancel_each_other_out() {
     host.shutdown().await;
 }
 
+/// A lamp whose commands always fail, counting what it was asked to do.
+static TURN_OFFS: AtomicUsize = AtomicUsize::new(0);
+
+struct BrokenLamp;
+impl Integration for BrokenLamp {
+    type Config = NoSettings;
+    const MANIFEST: &'static str = r#"
+        [extension]
+        id = "broken_lamp"
+        name = "Broken lamp"
+        version = "0.1.0"
+        irori = ">=0.0.0"
+
+        [[contributes.integration]]
+        iot_class = "local_push"
+        entity_kinds = ["light"]
+    "#;
+    async fn run(_: NoSettings, mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
+        describe_lamp(&ctx).await?;
+        ctx.report_state(light(true, None, None));
+        while let Some(incoming) = ctx.next_call().await {
+            if matches!(incoming.call.service, Service::LightTurnOff) {
+                TURN_OFFS.fetch_add(1, Ordering::SeqCst);
+            }
+            incoming.reply(Err(irori_integration::ServiceError::unavailable(
+                "the lamp is unplugged",
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_command_doesnt_change_what_the_core_thinks() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = start(&core, builtin::<BrokenLamp>().expect("valid"));
+    eventually("the lamp is on", || {
+        core.state(&lamp_id())
+            .and_then(|s| s.state)
+            .is_some_and(|s| matches!(s, State::Light(LightState { on: true, .. })))
+    })
+    .await;
+
+    // Both toggles see a lamp that's still on, so both try to turn it off.
+    for _ in 0..2 {
+        let err = core
+            .call_service(&lamp_id(), Command::Toggle, user_context())
+            .await
+            .expect_err("the lamp is unplugged");
+        assert!(matches!(err, CallError::Unavailable(_)), "{err}");
+    }
+    assert_eq!(TURN_OFFS.load(Ordering::SeqCst), 2);
+    host.shutdown().await;
+}
+
 // --- Crashes and restarts -----------------------------------------------------------------
 
 static CRASHY_RUNS: AtomicUsize = AtomicUsize::new(0);
@@ -461,11 +516,15 @@ async fn calls_time_out_and_health_is_shown() {
     .await;
 
     let started = tokio::time::Instant::now();
-    let err = core
-        .call_service(&lamp_id(), Command::TurnOff, user_context())
-        .await
-        .expect_err("no answer");
-    assert_eq!(err, CallError::Timeout);
+    // Two calls on the same entity: the second queues behind the first, and the ten seconds
+    // cover the wait as well, rather than ten seconds each.
+    let lamp = lamp_id();
+    let (first, second) = tokio::join!(
+        core.call_service(&lamp, Command::TurnOff, user_context()),
+        core.call_service(&lamp, Command::TurnOff, user_context()),
+    );
+    assert_eq!(first.expect_err("no answer"), CallError::Timeout);
+    assert_eq!(second.expect_err("no answer"), CallError::Timeout);
     assert_eq!(started.elapsed(), Duration::from_secs(10));
     host.shutdown().await;
 

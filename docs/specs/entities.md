@@ -161,7 +161,9 @@ New classes are additive.
 Timestamps are RFC 3339 with an offset, written in UTC (`2026-09-15T22:04:31.12Z`). Always
 `last_changed ≤ last_updated`. `last_reported` is what tells a stale sensor (no reports for hours)
 from a steady one (same value, reported every minute), so it only moves when the integration says
-something. It can be earlier than the other two: when an integration crashes, Irori marks its
+something. It starts when the entity is registered: describing an entity **is** the integration
+telling Irori about it, and an entity that has never reported a value shows that as `state: null`.
+So it's never empty. It can be earlier than the other two: when an integration crashes, Irori marks its
 entities unavailable without hearing from them, and the page can still say "offline, last heard
 from 3 hours ago".
 
