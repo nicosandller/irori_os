@@ -17,6 +17,9 @@ members = [
     "xtask",
 ]
 default-members = ["crates/irori"]
+# The M0.8 UI spikes have their own dependency trees (wasm frameworks) and are built with trunk,
+# not by workspace commands.
+exclude = ["spikes/ui-leptos", "spikes/ui-dioxus"]
 
 [workspace.package]
 version = "0.0.0"

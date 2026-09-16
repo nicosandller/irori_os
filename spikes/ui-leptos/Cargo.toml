@@ -1,0 +1,22 @@
+[package]
+name = "spike-ui-leptos"
+description = "M0.8 spike: the same Devices page in Leptos, to compare with the Dioxus one."
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+irori-types = { path = "../../crates/irori-types" }
+
+console_error_panic_hook = "0.1.7"
+gloo-net = { version = "0.7.0", default-features = false, features = ["http", "json"] }
+gloo-timers = { version = "0.3.0", features = ["futures"] }
+serde_json = "1.0.151"
+leptos = { version = "0.8", features = ["csr"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

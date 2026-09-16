@@ -6,3 +6,6 @@
 
 # Local Claude Code settings
 .claude/settings.local.json
+# Spike build output (trunk)
+/spikes/*/dist
+/spikes/*/target

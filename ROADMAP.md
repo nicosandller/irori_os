@@ -45,6 +45,7 @@ Last revised: 2026-09-15. Based on the original `irori-project-plan.md`, revised
 | D24 | **Integrations declare an `iot_class`** (`local_push`, `local_polling`, `cloud_push`, `cloud_polling`), shown as a badge in the UI and CLI | Protocols and vendor cloud APIs share one contract; local-first users still need to see at a glance what depends on the internet. |
 | D25 | **v1: an extension contributes at most one integration, and its `IntegrationId` equals its extension id** | Leaves the M0.2 entity model and existing code (`Device.integration`) unchanged. Can be relaxed later with namespaced ids if one extension ever needs several integrations. |
 | D26 | **Home-testing path before automations.** After the extension spec (M0.6): a trimmed M1.1 (registry, state, events, extension host, demo integration), then the Leptos vs Dioxus spike (M0.8) with a first Devices page, then the **ESPHome native API integration** (moved up from Phase 3, §8.3). The remaining specs (M0.3 rules, M0.4 traces, M0.5 API, M0.7 config) resume after. MQTT/Zigbee2MQTT and native Zigbee stay undecided | Owner's direction: see real devices (ESP32 test boards) on a real Devices page early, and learn from a real home before designing automations. ESPHome's native API needs no broker and runs alongside the existing Home Assistant + Zigbee2MQTT setup without touching it. |
+| D27 | **The UI is built with Leptos** (0.8), not Dioxus | M0.8 spike: the same page in both, measured. Leptos downloads 119 KB brotli against Dioxus's 207 KB, with 203 crates against 363. Both were equally pleasant to write and both fit the §4.3 budget, but the barebones UI will grow past this page, and Dioxus's extra size buys desktop and mobile reach Irori doesn't need. See [spikes/README.md](spikes/README.md). |
 
 ### Review notes on the original plan (kept for context)
 
@@ -165,7 +166,7 @@ irori_os/
 | Time / time zones | `jiff` | DST-correct scheduling; DST bugs are classic automation failures |
 | Sun position | `sunrise` (or similar) | sunrise/sunset/elevation triggers |
 | Password hashing | `argon2` | |
-| Frontend | Leptos (CSR) → wasm, `trunk` build | Confirm vs Dioxus in Phase 0 |
+| Frontend | Leptos (CSR) → wasm, `trunk` build | Confirmed against Dioxus by measurement (D27) |
 | Graph layout (visualizer) | Hand-rolled layered layout → SVG | Rule graphs are near-trees; fall back to JS interop (e.g. elkjs) if needed |
 | Asset embedding | `rust-embed` | Serve precompressed (brotli) assets |
 | Cross-compilation | `cargo-zigbuild`, musl targets | x86_64, aarch64 required; armv7 best-effort |
@@ -183,7 +184,7 @@ irori_os/
 
 Goal: the decisions that are expensive to change later are written down and prototyped. **Little product code, lots of leverage.**
 
-> **Current order (D26):** M0.1 ✅ → M0.2 ✅ → M0.6 ✅ → M1.1 (trimmed) ✅ → M0.8 UI spike + Devices page → ESPHome integration → M0.3, M0.4, M0.5, M0.7.
+> **Current order (D26):** M0.1 ✅ → M0.2 ✅ → M0.6 ✅ → M1.1 (trimmed) ✅ → M0.8 UI spike ✅ + Devices page → ESPHome integration → M0.3, M0.4, M0.5, M0.7.
 
 ### M0.1 Workspace and toolchain ✅
 
@@ -318,7 +319,7 @@ Must decide:
 
 ### M0.8 Spikes (timeboxed, one or two evenings each)
 - CEL in Rust: evaluate typed expressions against a fake state view; check error messages are LLM-actionable. Measure eval cost (target: µs per expression).
-- Leptos vs Dioxus: CSR app sharing `irori-types`, embedded in the binary; measure wasm size (target < 500 KB brotli for the barebones UI).
+- Leptos vs Dioxus ✅ (D27): the same page in both, sharing `irori-types`, measured after `wasm-opt` and brotli. Leptos 119 KB, Dioxus 207 KB, both inside the 500 KB budget. See [spikes/README.md](spikes/README.md).
 - `rumqttd` embedded: start in-process, connect Zigbee2MQTT to it.
 - Integration trait vs external protocol: implement the demo integration both ways against a stub core, to prove the contract really is the same.
 - Baseline measurement: empty `irori` binary on a Pi 4 (RSS, startup, size) to calibrate the budgets in §4.3.
@@ -567,7 +568,7 @@ The manifest and the integration, dashboard, and card contracts already exist an
 
 1. ~~Rule storage~~ → decided: plain-text config dir is the source of truth (D18).
 2. **Expression language:** CEL vs a tiny custom language (decide in M0.8).
-3. **Leptos vs Dioxus** (decide in M0.8).
+3. ~~**Leptos vs Dioxus**~~ — decided: Leptos (D27).
 4. **Embedded broker default:** off (external broker) or on when none is detected?
 5. **Where AI features run when enabled:** `assist` cargo feature in the same binary vs a separate `irori-assist` process. Both are allowed by D13; pick a default in Phase 2.
 6. **External extension transport:** WS over TCP only, or also a Unix socket for local extensions (faster, no port)? Decide in M0.6.
