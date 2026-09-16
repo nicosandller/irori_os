@@ -171,6 +171,7 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
 
     let db = db::open(&data)?;
     tracing::info!(path = %db.path.display(), journal_mode = %db.journal_mode, "database ready");
+    let storage = Arc::new(db::SqliteStorage::open(&db)?);
     let builtins = extensions::builtins()?;
 
     tokio::runtime::Builder::new_multi_thread()
@@ -189,6 +190,7 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
                 "irori is ready"
             );
             let core = Core::new(Arc::new(SystemClock));
+            core.use_storage(storage);
             // Subscribe before any extension starts, so the log sees their first events.
             tokio::spawn(extensions::log_events(core.subscribe()));
             // Before the extensions, so a device that arrives in the first second already has

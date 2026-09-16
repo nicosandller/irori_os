@@ -13,6 +13,8 @@ pub fn builtins() -> anyhow::Result<Vec<Builtin>> {
         irori_integration::builtin::<irori_int_demo::Demo>().map_err(anyhow::Error::msg)?,
         #[cfg(feature = "int-esphome")]
         irori_integration::builtin::<irori_int_esphome::Esphome>().map_err(anyhow::Error::msg)?,
+        #[cfg(feature = "int-helpers")]
+        irori_integration::builtin::<irori_int_helpers::Helpers>().map_err(anyhow::Error::msg)?,
     ])
 }
 

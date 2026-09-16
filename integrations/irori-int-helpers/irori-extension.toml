@@ -1,0 +1,12 @@
+[extension]
+id = "helpers"
+name = "Helpers"
+version = "0.1.0"
+irori = ">=0.0.0, <0.1.0"
+description = "Values Irori keeps itself rather than a device reporting them, for rules to use."
+icon = "icon.svg"
+
+# Nothing leaves this machine: the values live in Irori's own database.
+[[contributes.integration]]
+iot_class = "local_push"
+entity_kinds = ["switch"]

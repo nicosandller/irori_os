@@ -13,6 +13,7 @@ members = [
     "integrations/irori-int-mqtt",
     "integrations/irori-int-demo",
     "integrations/irori-int-esphome",
+    "integrations/irori-int-helpers",
     "extras/irori-assist",
     "xtask",
 ]
@@ -41,6 +42,7 @@ irori-client = { path = "crates/irori-client" }
 irori-int-mqtt = { path = "integrations/irori-int-mqtt" }
 irori-int-demo = { path = "integrations/irori-int-demo" }
 irori-int-esphome = { path = "integrations/irori-int-esphome" }
+irori-int-helpers = { path = "integrations/irori-int-helpers" }
 irori-assist = { path = "extras/irori-assist" }
 
 # External crates

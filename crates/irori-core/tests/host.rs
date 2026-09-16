@@ -832,3 +832,77 @@ async fn an_extension_turned_off_from_the_start_never_starts() {
     assert!(core.devices().is_empty(), "it described devices anyway");
     host.shutdown().await;
 }
+
+// --- Stored values ----------------------------------------------------------------------------
+
+/// Counts its own starts in storage, and tries a value that's too big.
+struct Counter;
+
+static COUNTED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+static TOO_BIG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+impl Integration for Counter {
+    type Config = NoSettings;
+    const MANIFEST: &'static str = r#"
+        [extension]
+        id = "counter"
+        name = "Counter"
+        version = "0.1.0"
+        irori = ">=0.0.0, <0.1.0"
+
+        [[contributes.integration]]
+        iot_class = "local_push"
+        entity_kinds = ["switch"]
+    "#;
+    async fn run(_: NoSettings, mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
+        let starts = ctx
+            .load("starts")
+            .await?
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
+            + 1;
+        ctx.store("starts", serde_json::json!(starts)).await?;
+        COUNTED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(starts);
+        let huge = serde_json::json!("x".repeat(irori_integration::MAX_STORED_VALUE));
+        let refused = ctx.store("huge", huge).await.err().map(|e| e.to_string());
+        *TOO_BIG
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = refused;
+        ctx.stopped().await;
+        Ok(())
+    }
+}
+
+/// A stored value is there when the integration starts again; one over the limit is refused
+/// with a reason rather than silently cut.
+#[tokio::test(start_paused = true)]
+async fn stored_values_outlast_a_restart_and_have_a_size_limit() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = start(&core, builtin::<Counter>().expect("valid"));
+    let counted = || {
+        COUNTED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    };
+    eventually("started once", || counted() == [1]).await;
+
+    core.apply_disabled_extensions([ExtensionId::try_from("counter").expect("valid")].into());
+    eventually("stopped", || {
+        status(&core, "counter") == Some(ExtensionStatus::Disabled)
+    })
+    .await;
+    core.apply_disabled_extensions(Default::default());
+    eventually("started again, remembering", || counted() == [1, 2]).await;
+
+    let refused = TOO_BIG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+        .expect("the oversized value was refused");
+    assert!(refused.contains("at most"), "{refused}");
+    host.shutdown().await;
+}

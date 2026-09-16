@@ -98,6 +98,29 @@ impl Config {
         Ok(made)
     }
 
+    /// Changes one extension's `extensions/<id>.toml`, writes it, and tells the core — which
+    /// restarts that extension with it.
+    pub async fn edit_extension<T>(
+        &self,
+        core: &Core,
+        extension: &irori_types::ExtensionId,
+        change: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<T, Refused>,
+    ) -> Result<T, EditError> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+
+        let mut file = store.extension_file(extension);
+        let made = change(&mut file).map_err(EditError::Refused)?;
+        if store
+            .save_extension(extension, &file)
+            .map_err(EditError::Io)?
+        {
+            tracing::info!(file = %format!("extensions/{extension}.toml"), "config written");
+        }
+        core.apply_extension_settings(store.extension_settings());
+        Ok(made)
+    }
+
     /// Changes `secrets.toml`, writes it, and tells the core — which restarts whichever extension
     /// the change was for. Same order and same re-read as [`Config::edit`].
     pub async fn edit_secrets<T>(

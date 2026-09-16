@@ -104,6 +104,17 @@ pub struct ExtensionOverview {
     pub waiting: Vec<Waiting>,
 }
 
+/// A stored value's key: 1–128 characters, no control characters.
+fn check_key(key: &str) -> Result<(), Rejected> {
+    let length = key.chars().count();
+    if !(1..=128).contains(&length) || key.chars().any(char::is_control) {
+        return Err(Rejected(format!(
+            "`{key}` isn't a storage key: 1–128 characters, none of them control characters"
+        )));
+    }
+    Ok(())
+}
+
 /// Drops an entity's call lock from the map once nobody else is waiting for it, so the map
 /// doesn't grow with every entity ever called.
 struct ReleaseWhenIdle<'a> {
@@ -169,6 +180,8 @@ struct Shared {
     /// Extensions a person has turned off (`irori.toml`). Watched like settings: turning one off
     /// stops it, turning it back on starts it.
     disabled: watch::Sender<BTreeSet<ExtensionId>>,
+    /// Each integration's small private values (`docs/specs/integrations.md` §5).
+    storage: RwLock<Arc<dyn irori_integration::Storage>>,
 }
 
 fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
@@ -198,6 +211,7 @@ impl Core {
             extensions: RwLock::default(),
             extension_settings: watch::Sender::new(ExtensionSettings::default()),
             disabled: watch::Sender::new(BTreeSet::new()),
+            storage: RwLock::new(Arc::new(irori_integration::MemoryStorage::default())),
         }))
     }
 
@@ -303,6 +317,44 @@ impl Core {
 
     pub(crate) fn extension_settings(&self) -> watch::Receiver<ExtensionSettings> {
         self.0.extension_settings.subscribe()
+    }
+
+    /// Where integrations' stored values are kept. Until this is called they last only as long as
+    /// the process; set it before starting extensions.
+    pub fn use_storage(&self, storage: Arc<dyn irori_integration::Storage>) {
+        *write(&self.0.storage) = storage;
+    }
+
+    fn load(
+        &self,
+        extension: &ExtensionId,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>, Rejected> {
+        check_key(key)?;
+        read(&self.0.storage)
+            .load(extension, key)
+            .map_err(|e| Rejected(format!("couldn't read `{key}`: {e}")))
+    }
+
+    fn store(
+        &self,
+        extension: &ExtensionId,
+        key: &str,
+        value: Option<&serde_json::Value>,
+    ) -> Result<(), Rejected> {
+        check_key(key)?;
+        if let Some(value) = value {
+            let size = serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len());
+            if size > irori_integration::MAX_STORED_VALUE {
+                return Err(Rejected(format!(
+                    "`{key}` is {size} bytes as JSON; stored values are at most {} bytes",
+                    irori_integration::MAX_STORED_VALUE
+                )));
+            }
+        }
+        read(&self.0.storage)
+            .store(extension, key, value)
+            .map_err(|e| Rejected(format!("couldn't keep `{key}`: {e}")))
     }
 
     /// Which extensions stay off. One that's running and is now named here is stopped; one that
@@ -488,6 +540,11 @@ impl Core {
                 }),
                 reply,
             ),
+            Op::Load(key, reply) => {
+                let _ = reply.send(self.load(extension, &key));
+                return;
+            }
+            Op::Store(key, value, reply) => (self.store(extension, &key, value.as_ref()), reply),
             Op::SetWaiting(waiting) => {
                 self.set_waiting(extension, waiting);
                 return;

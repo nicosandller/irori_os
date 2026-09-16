@@ -40,7 +40,7 @@ pub fn run() -> anyhow::Result<()> {
         }
     }
     // And the reverse: an extension D17 still claims after it has left the default build.
-    for known in ["mqtt", "demo", "esphome", "zigbee", "matter"] {
+    for known in ["mqtt", "demo", "esphome", "helpers", "zigbee", "matter"] {
         let in_defaults = defaults.iter().any(|f| f == &format!("int-{known}"));
         if !in_defaults && mentions(&d17, known) {
             problems.push(format!(
