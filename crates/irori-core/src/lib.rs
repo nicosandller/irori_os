@@ -15,8 +15,9 @@ use std::time::Duration;
 use irori_integration::host::{Op, incoming_call};
 use irori_integration::{IncomingCall, Rejected, ServiceErrorCode};
 use irori_types::{
-    Context, ContextId, Device, Entity, EntityId, EntityKind, EntityState, ExtensionId,
-    IntegrationId, Origin, ServiceCall, StateReport, Timestamp, Version,
+    Context, ContextId, Description, Device, Entity, EntityId, EntityKind, EntityState,
+    ExtensionId, IntegrationId, IotClass, Name, Origin, ServiceCall, StateReport, Timestamp,
+    Version,
 };
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc};
@@ -52,10 +53,30 @@ pub enum ExtensionStatus {
     },
 }
 
-/// An extension as the Extensions page shows it: its status, and how many of its state reports
-/// were lost since Irori started.
+/// What an extension is, from its manifest. Shown wherever a person picks one: its own name
+/// rather than its id, and what it says it's for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExtensionInfo {
+    pub name: Name,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<Description>,
+    pub version: Version,
+    /// Which kinds of entity its integration can provide, from the manifest. Empty for an
+    /// extension that contributes no integration.
+    pub entity_kinds: Vec<EntityKind>,
+    /// Where its devices live and what they need: `local_push`, `cloud_polling`, and so on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iot_class: Option<IotClass>,
+}
+
+/// An extension as the Extensions page shows it: what it is, its status, and how many of its
+/// state reports were lost since Irori started.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExtensionOverview {
+    /// Absent only for an extension the core heard about before its manifest was read, which
+    /// shouldn't happen for built-ins.
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub info: Option<ExtensionInfo>,
     #[serde(flatten)]
     pub status: ExtensionStatus,
     /// Reports the core refused, e.g. a value that doesn't fit the entity. Each is logged.
@@ -428,6 +449,25 @@ impl Core {
         write(&self.0.links).remove(integration);
     }
 
+    /// Records what an extension is, before it starts. Called once per extension by the host.
+    pub(crate) fn describe_extension(&self, extension: &ExtensionId, info: ExtensionInfo) {
+        let mut extensions = write(&self.0.extensions);
+        match extensions.get_mut(extension) {
+            Some(overview) => overview.info = Some(info),
+            None => {
+                extensions.insert(
+                    extension.clone(),
+                    ExtensionOverview {
+                        info: Some(info),
+                        status: ExtensionStatus::Starting,
+                        rejected_reports: 0,
+                        dropped_reports: 0,
+                    },
+                );
+            }
+        }
+    }
+
     fn set_status(&self, extension: &ExtensionId, status: ExtensionStatus) {
         let changed = {
             let mut extensions = write(&self.0.extensions);
@@ -441,6 +481,7 @@ impl Core {
                     extensions.insert(
                         extension.clone(),
                         ExtensionOverview {
+                            info: None,
                             status: status.clone(),
                             rejected_reports: 0,
                             dropped_reports: 0,

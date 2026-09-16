@@ -35,7 +35,7 @@ Last revised: 2026-09-15. Based on the original `irori-project-plan.md`, revised
 | D14 | **HA-familiar domain/service vocabulary** (`light.turn_on`, `binary_sensor`, …) with typed state | LLMs already know it; eases a future HA backend adapter and HA importer. |
 | D15 | **Protocols are integrations behind one interface; the core has no protocol code.** MQTT is the first integration, not part of the core | Replaces the original plan's "MQTT bundled in core". Building MQTT against the interface proves the interface is good enough for Zigbee/Matter/Z-Wave later. |
 | D16 | **Two integration tiers, one contract:** *built-in* (Rust crates compiled in via cargo features, run in-process through the `Integration` trait) and *external* (any language, separate process, same contract over the WS API) | Built-in = fastest, single binary, first-party only. External = crash-isolated, language-agnostic, how nerds and third parties extend Irori. External integrations work in Phase 1 (run from a local path); the install-from-registry flow comes in Phase 3. |
-| D17 | **Barebones default build:** core + CLI + minimal UI (Devices, Automations, Extensions, Settings). Only the MQTT and Demo extensions are compiled in by default; AI is **not** in the default build | "Robust at its smallest". A slim build with no extensions must still start and serve the UI. |
+| D17 | **Barebones default build:** core + CLI + minimal UI (Devices, Automations, Extensions, Settings). The MQTT, Demo and ESPHome extensions are compiled in by default; AI is **not** in the default build | "Robust at its smallest". A slim build with no extensions must still start and serve the UI. ESPHome joined the default set with the integration itself (D26): it needs no broker and no configuration, so a default build finds the devices already on the network — which is the whole point of putting it before automations. `--no-default-features` remains the test that matters. |
 | D18 | **Nerd friendly as a requirement:** plain-text config (`irori.toml`, `rules/*.json`, `extensions/*.toml`) as the source of truth; CLI can do everything the UI can, with `--json`; structured logs; `/metrics`; shell completions | Makes the system scriptable, diffable, and git-friendly. SQLite holds runtime data (history, traces, versions), not the config users author. |
 | D19 | **Performance budgets enforced in CI** (§4.3) | Otherwise "lightning fast" drifts. Benchmarks run on every PR; budget regressions fail the build. |
 | D20 | **Registry and state are separate; availability is its own field; unknown is `null`** | Refines the M0.2 draft (one `Entity` with `Unavailable`/`Unknown` as state values). Keeps state updates small, lets rules be checked against capabilities alone, and keeps the last known value through an outage. See [docs/specs/entities.md](docs/specs/entities.md) §9. |
@@ -46,6 +46,9 @@ Last revised: 2026-09-15. Based on the original `irori-project-plan.md`, revised
 | D25 | **v1: an extension contributes at most one integration, and its `IntegrationId` equals its extension id** | Leaves the M0.2 entity model and existing code (`Device.integration`) unchanged. Can be relaxed later with namespaced ids if one extension ever needs several integrations. |
 | D26 | **Home-testing path before automations.** After the extension spec (M0.6): a trimmed M1.1 (registry, state, events, extension host, demo integration), then the Leptos vs Dioxus spike (M0.8) with a first Devices page, then the **ESPHome native API integration** (moved up from Phase 3, §8.3). The remaining specs (M0.3 rules, M0.4 traces, M0.5 API, M0.7 config) resume after. MQTT/Zigbee2MQTT and native Zigbee stay undecided | Owner's direction: see real devices (ESP32 test boards) on a real Devices page early, and learn from a real home before designing automations. ESPHome's native API needs no broker and runs alongside the existing Home Assistant + Zigbee2MQTT setup without touching it. |
 | D27 | **The UI is built with Leptos** (0.8), not Dioxus | M0.8 spike: the same page in both, measured. Leptos downloads 119 KB brotli against Dioxus's 207 KB, with 203 crates against 363. Both were equally pleasant to write and both fit the §4.3 budget, but the barebones UI will grow past this page, and Dioxus's extra size buys desktop and mobile reach Irori doesn't need. See [crates/irori-ui/README.md](crates/irori-ui/README.md). |
+| D28 | **ESPHome's protocol comes from the `esphome-client` crate**, pinned to one API version, rather than hand-rolled | The architecture already puts protocol libraries in integrations (`rumqttc` for MQTT, §2.2), and this one is the client half: mDNS discovery, the protobuf messages, and the Noise transport encryption will need. Hand-rolling the Noise handshake and a protobuf subset would cost weeks for no behaviour. The crate is young (0.2.1), so the risk is deliberate and bounded: it is ~2k readable lines under MIT, only `irori-int-esphome` depends on it, and its version pin means an ESPHome release can't change what Irori compiles against. If it is abandoned, vendoring or replacing it touches one crate. |
+| D29 | **Plaintext ESPHome devices are adopted automatically, and that is a known trust limit** | Plain ESPHome has no device authentication, so anything on the LAN that announces `_esphomelib._tcp` is believed: a hostile host could present fake entities, or impersonate a device id. The alternatives all need somewhere to keep a decision — an allowlist, adopted-device records, or encryption keys — which is the config dir (M0.7). Until then the limit is stated in the README, warned about in the log at every first connection, and bounded by Irori refusing to listen beyond loopback without `--allow-unauthenticated-lan`. Encrypted devices, which do authenticate, are the fix, and they come with M0.7. |
+| D30 | **A device capability is an entity kind; a vendor's own tooling is a contributed app.** Firmware update becomes an `update` entity kind in the model (M1.8), not an ESPHome-specific screen | The protocols already model it as a capability — ESPHome, Z-Wave and Matter all report an available version and take an install command, and Home Assistant's `update` domain works the same way. Modelled once, every integration that has it gets the same UI, rules can act on it, and the CLI gets it for free. What genuinely is integration-specific — ESPHome's YAML editor, compiling and flashing, a vendor's cloud account settings — is a separate program, and the manifest already reserves the contribution kinds for that (`app`, proxied under `/apps/<id>/`, Phase 3; `dashboard`/`card` in sandboxed iframes, Phase 2c). So Irori doesn't need a special back door for integration UI: it needs the contribution kinds it already planned. |
 
 ### Review notes on the original plan (kept for context)
 
@@ -132,6 +135,7 @@ irori_os/
     irori/                   # binary: CLI + wiring + embedded assets; cargo features pick integrations
   integrations/              # first-party extensions whose contribution is an integration
     irori-int-mqtt/          # rumqttc, HA discovery → registry, command publishing, optional broker
+    irori-int-esphome/       # ESPHome's native API: mDNS discovery, entities, state, commands
     irori-int-demo/          # virtual lights/sensors/switches; the reference integration to copy
   extensions/                # (Phase 2c+) first-party dashboards, cards, apps (`irori-ext-*`)
   extras/
@@ -150,7 +154,7 @@ irori_os/
 - Integrations depend only on `irori-integration` and `irori-types`.
 - `irori-assist`, external extensions written in Rust, and other tools depend only on `irori-types` and `irori-client` (plus `irori-integration` for external integrations).
 
-**Cargo features on the `irori` binary:** `default = ["int-mqtt", "int-demo", "ui"]`; opt-in: `assist`, and future `int-zigbee`, `int-matter`, …. `--no-default-features` must still build, start, and serve the API. That's the "robust at its smallest" test.
+**Cargo features on the `irori` binary:** `default = ["int-mqtt", "int-demo", "int-esphome", "ui"]` (D17); opt-in: `assist`, and future `int-zigbee`, `int-matter`, …. `--no-default-features` must still build, start, and serve the API. That's the "robust at its smallest" test.
 
 ### 2.2 Tech stack
 
@@ -160,6 +164,7 @@ irori_os/
 | Async runtime | `tokio` | |
 | HTTP / WebSocket | `axum` | |
 | MQTT client | `rumqttc` | |
+| ESPHome client | `esphome-client` | Native API: mDNS discovery, protobuf, Noise. Pinned to one API version; only `irori-int-esphome` depends on it |
 | Embedded broker (optional) | `rumqttd` | Evaluate maturity in Phase 0; fall back to "requires external broker" |
 | Persistence | `rusqlite` with `bundled` | Sync API on a dedicated writer thread; simpler than `sqlx` and musl-friendly. WAL mode. |
 | Serialization / schema | `serde` + `schemars` | JSON Schema generated from Rust types |
@@ -185,7 +190,7 @@ irori_os/
 
 Goal: the decisions that are expensive to change later are written down and prototyped. **Little product code, lots of leverage.**
 
-> **Current order (D26):** M0.1 ✅ → M0.2 ✅ → M0.6 ✅ → M1.1 (trimmed) ✅ → M0.8 UI spike ✅ + Devices page ✅ → ESPHome integration → M0.3, M0.4, M0.5, M0.7.
+> **Current order (D26):** M0.1 ✅ → M0.2 ✅ → M0.6 ✅ → M1.1 (trimmed) ✅ → M0.8 UI spike ✅ + Devices page ✅ → ESPHome integration ✅ (plaintext; encrypted devices wait for M0.7) → M0.3, M0.4, M0.5, M0.7.
 
 ### M0.1 Workspace and toolchain ✅
 
@@ -395,6 +400,23 @@ Deliberately minimal: fast to load, no dashboards, no charts beyond the basics. 
 - Budget: UI bundle within §4.3; first load on a Pi-served LAN < 1 s.
 - **Demo:** the full loop from a fresh install in the browser: enable the MQTT extension → device appears → write rule → it fires → trace visible.
 
+### M1.8 Firmware updates (≈1–2 wks)
+A device that can update itself says so, and a person can let it (D30).
+
+- **New entity kind: `update`** (`docs/specs/entities.md`). Capabilities: whether it can check on
+  demand. State: `installed_version`, `latest_version`, `title`, `release_url`, `in_progress`,
+  `progress`. Services: `update.install`, `update.check`.
+- **ESPHome maps straight onto it**: its native API already carries
+  `ListEntitiesUpdateResponse`, `UpdateStateResponse` and `UpdateCommandRequest`
+  (`UPDATE` / `CHECK`), which is how Home Assistant offers ESPHome OTA. No ESPHome-specific
+  screen is needed for this.
+- **UI**: on the device page, "Firmware 2026.8.2 → 2026.9.1", the release notes, an Install
+  button and progress. In the list, a device with an update available is marked.
+- **Not this**: building firmware. Compiling and flashing from source is the ESPHome dashboard's
+  job, and in Irori that's an extension contributing an `app` (Phase 3, §8), not core work.
+- **Demo:** a device with an update pending, installed from the Devices page, with the progress
+  visible and the version changing when it comes back.
+
 ### M1.7 CLI, packaging, release (≈2–3 wks)
 CLI has **full parity with the UI**; every read command supports `--json`; shell completions:
 ```
@@ -524,7 +546,7 @@ The manifest and the integration, dashboard, and card contracts already exist an
   3. **Terminal** (`host_shell = true`): the canonical high-privilege example.
 
 ### 8.3 First new integrations (in order of value for tinkerers)
-1. **ESPHome native API** (ESPHome's default transport, not MQTT). *Moved up to the home-testing path (D26).*
+1. **ESPHome native API** (ESPHome's default transport, not MQTT). ✅ *Done early on the home-testing path (D26): `integrations/irori-int-esphome`, discovery and all four entity kinds. Encrypted devices wait for somewhere to keep a key (M0.7).*
 2. **Z-Wave** via `zwave-js-server` (external)
 3. **Matter** via `rs-matter` (built-in, opt-in feature)
 4. **One vendor cloud connector** (e.g. SwitchBot, which has a documented public API) to prove `cloud_polling`/`cloud_push`, credential handling via `secrets.toml`, and the cloud badge end to end

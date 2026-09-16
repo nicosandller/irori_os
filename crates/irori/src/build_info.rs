@@ -5,10 +5,16 @@ use std::fmt;
 use serde::Serialize;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The commit this was built from, `-modified` if the tree had changes, or `unknown` without
+/// git. Until there are releases every build is `0.0.0`, so this is what tells two apart.
+pub const COMMIT: &str = env!("IRORI_COMMIT");
+pub const BUILT_AT: &str = env!("IRORI_BUILT_AT");
 
 #[derive(Debug, Serialize)]
 pub struct BuildInfo {
     pub version: &'static str,
+    pub commit: &'static str,
+    pub built_at: &'static str,
     pub target: &'static str,
     pub features: Vec<&'static str>,
     pub sqlite_version: &'static str,
@@ -18,6 +24,8 @@ impl BuildInfo {
     pub fn current() -> Self {
         Self {
             version: VERSION,
+            commit: COMMIT,
+            built_at: BUILT_AT,
             target: env!("IRORI_TARGET"),
             features: enabled_features(),
             sqlite_version: rusqlite::version(),
@@ -32,7 +40,8 @@ impl fmt::Display for BuildInfo {
         } else {
             self.features.join(", ")
         };
-        writeln!(f, "irori {}", self.version)?;
+        writeln!(f, "irori {} ({})", self.version, self.commit)?;
+        writeln!(f, "built:    {}", self.built_at)?;
         writeln!(f, "target:   {}", self.target)?;
         writeln!(f, "features: {features}")?;
         write!(f, "sqlite:   {}", self.sqlite_version)
@@ -43,6 +52,7 @@ fn enabled_features() -> Vec<&'static str> {
     [
         ("int-mqtt", cfg!(feature = "int-mqtt")),
         ("int-demo", cfg!(feature = "int-demo")),
+        ("int-esphome", cfg!(feature = "int-esphome")),
         ("ui", cfg!(feature = "ui")),
         ("assist", cfg!(feature = "assist")),
     ]

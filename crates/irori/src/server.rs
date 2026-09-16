@@ -208,6 +208,10 @@ fn refused(status: StatusCode, error: String) -> Response {
 struct Health<'a> {
     status: &'static str,
     version: &'static str,
+    /// What this binary was built from, so "am I running the version I just built?" has an
+    /// answer while every version number is still `0.0.0`.
+    commit: &'static str,
+    built_at: &'static str,
     uptime_ms: u128,
     features: &'a [&'static str],
     sqlite: SqliteHealth<'a>,
@@ -227,6 +231,8 @@ async fn health(State(state): State<AppState>) -> Response {
     Json(Health {
         status: "ok",
         version: VERSION,
+        commit: crate::build_info::COMMIT,
+        built_at: crate::build_info::BUILT_AT,
         uptime_ms: inner.started.elapsed().as_millis(),
         features: &inner.build.features,
         sqlite: SqliteHealth {
@@ -254,13 +260,34 @@ mod ui {
     #[folder = "assets/"]
     struct Placeholder;
 
+    const INDEX: &str = "index.html";
+
     pub async fn serve(uri: Uri) -> Response {
         let path = uri.path().trim_start_matches('/');
-        let path = if path.is_empty() { "index.html" } else { path };
+        let path = if path.is_empty() { INDEX } else { path };
+        // `/api/…` belongs to the API, whatever is or isn't there. Handing an API caller the
+        // page with a 200 would let a typo look like success.
+        if path == "api" || path.starts_with("api/") {
+            return (StatusCode::NOT_FOUND, "no such endpoint\n").into_response();
+        }
         // The app wins where both have a file, so a built UI replaces the placeholder page.
-        // There are no client-side routes yet, so an unknown path is still a 404.
-        match App::get(path).or_else(|| Placeholder::get(path)) {
-            Some(file) => {
+        let file = App::get(path)
+            .or_else(|| Placeholder::get(path))
+            .map(|file| (path, file))
+            // A path with no file extension is one of the app's own pages (`/devices`), which
+            // the app routes itself once it has loaded: it gets the page, not a 404. A missing
+            // file (`/nope.css`) is still a 404, so a broken asset says so plainly.
+            .or_else(|| {
+                (!path.contains('.'))
+                    .then(|| {
+                        App::get(INDEX)
+                            .or_else(|| Placeholder::get(INDEX))
+                            .map(|index| (INDEX, index))
+                    })
+                    .flatten()
+            });
+        match file {
+            Some((path, file)) => {
                 let mime = mime_guess::from_path(path).first_or_octet_stream();
                 ([(header::CONTENT_TYPE, mime.as_ref())], file.data).into_response()
             }
@@ -510,10 +537,34 @@ mod tests {
         Ok(())
     }
 
+    /// A missing file says so, rather than quietly handing back the page.
     #[tokio::test]
-    async fn unknown_path_is_not_found() -> anyhow::Result<()> {
-        let (status, _, _) = get("/does-not-exist").await?;
+    async fn a_missing_file_is_not_found() -> anyhow::Result<()> {
+        let (status, _, _) = get("/does-not-exist.css").await?;
         assert_eq!(status, StatusCode::NOT_FOUND);
+        Ok(())
+    }
+
+    /// An endpoint that doesn't exist says so, rather than answering with the page: a caller
+    /// asking for JSON must not read a 200 as "that worked".
+    #[tokio::test]
+    async fn a_missing_endpoint_is_not_found() -> anyhow::Result<()> {
+        for path in ["/api/dev/not-real", "/api/nope", "/api"] {
+            let (status, _, _) = get(path).await?;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        }
+        Ok(())
+    }
+
+    /// The UI's own pages are its business: reloading on `/devices` has to reach the app, which
+    /// then decides what to show. Holds whether or not the UI has been built into this binary.
+    #[cfg(feature = "ui")]
+    #[tokio::test]
+    async fn the_apps_own_pages_reach_the_app() -> anyhow::Result<()> {
+        let (status, content_type, body) = get("/devices").await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(content_type.as_deref(), Some("text/html"));
+        assert!(String::from_utf8(body)?.contains("IroriOS"));
         Ok(())
     }
 }

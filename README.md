@@ -10,38 +10,81 @@
   <a href="dev/README.md"><b>Try it on a Mac</b></a>
 </p>
 
-> Status: the core's registry, live state, and extension host run, with virtual demo devices (M1.1, trimmed), and a Devices page that shows them and switches them (M0.8, M1.6 first slice). Next: ESPHome devices (ROADMAP D26). Nothing here controls a real home yet.
+> Status: the core's registry, live state, and extension host run; a Devices page shows everything and switches it (M0.8, M1.6 first slice); and **ESPHome devices on your network are found and connected automatically**, sensors and all (D26). No rules or automations yet, and no login, so it isn't running a home unattended.
 
 ## Build and run
 
-Requires stable Rust (pinned via `rust-toolchain.toml`).
+Requires stable Rust (pinned via `rust-toolchain.toml`). One command builds the UI and installs
+the binary, after which Irori runs from anywhere:
 
 ```sh
-cargo run -- serve                    # http://127.0.0.1:8480
-cargo run -- serve --log-level debug  # also log every device and state change
-cargo run -- serve --data /var/lib/irori
-curl -s http://127.0.0.1:8480/api/dev/home     # temporary API: the whole home in one response
+rustup target add wasm32-unknown-unknown   # once: what the UI compiles to
+cargo install trunk --locked               # once: builds the UI
+cargo xtask install                        # build the UI, install `irori`
+irori run                                  # http://127.0.0.1:8480
+```
+
+`cargo xtask install` copies a binary; it isn't a link to the checkout. **After pulling or
+changing anything, run it again** — the running `irori` is whatever was installed last. Which
+build that is isn't a guess: every version is `0.0.0` until there are releases, so `irori
+version` and the Home page show the commit it was built from, with `-modified` when the tree had
+uncommitted changes.
+
+```sh
+irori version                              # irori 0.0.0 (359d176), built 2026-09-16 07:30 UTC
+```
+
+Everything the installed binary does:
+
+```sh
+irori run                                  # http://127.0.0.1:8480
+irori run --log-level debug                # log every device and state change as it happens
+irori run --data /var/lib/irori            # where the database lives (default ./data)
+irori run --bind 0.0.0.0:8480 --allow-unauthenticated-lan   # reachable from your phone; see below
+irori version --json
+irori help run
+```
+
+`run` and `serve` are the same command. Every option is also an environment variable
+(`IRORI_DATA`, `IRORI_BIND`, `IRORI_LOG_LEVEL`, `IRORI_ALLOW_UNAUTHENTICATED_LAN`), which is what
+the container uses. `irori help run` lists them with their defaults.
+
+Or straight from the checkout, without installing — the same commands after `cargo run --`:
+
+```sh
+cargo run -- run                                # http://127.0.0.1:8480
+cargo run -- run --log-level debug
+cargo run --no-default-features -- run          # barebones: no integrations, no UI
+```
+
+The temporary API, for looking at the home without the page:
+
+```sh
+curl -s http://127.0.0.1:8480/api/dev/home     # the whole home in one response
                                                # (also /api/dev/{devices,entities,states,extensions})
-cargo run -- version --json
 ```
 
 The **web UI** is a separate wasm crate, so `cargo build` alone doesn't need a wasm toolchain and
-serves a placeholder page at `/`. Build it once to get the Devices page:
-
-```sh
-cargo install trunk --locked          # once
-cargo xtask ui                        # build the UI into the folder the binary embeds
-cargo run -- serve                    # http://127.0.0.1:8480 now shows your devices
-```
+serves a placeholder page at `/`. `cargo xtask install` above builds it; `cargo xtask ui` builds
+it without installing. It has a Home page (what Irori is looking after) and a Devices page
+(everything, with switches and an **Add device** panel explaining where devices come from).
 
 See [crates/irori-ui/README.md](crates/irori-ui/README.md) for working on the UI itself (live
 reload, no binary rebuild). CI builds it, so downloaded release binaries always have it.
 
-Barebones build, no integrations and no UI (must always build and run):
+### ESPHome devices
 
-```sh
-cargo run --no-default-features -- serve
-```
+Nothing to configure: Irori listens for ESPHome devices announcing themselves on the local
+network, connects to each one, and puts everything it has on the Devices page. Lights and
+switches can be switched from there.
+
+The one catch today is **encryption**: ESPHome's API can require a pre-shared key, and Irori has
+nowhere to keep one until the config dir lands (M0.7). Devices asking for an encrypted
+connection are named in the log and skipped. Until then, a device with a plain `api:` block (no
+`encryption:`) is picked up on its own.
+
+See [integrations/irori-int-esphome/README.md](integrations/irori-int-esphome/README.md), which
+also explains how to run a real ESPHome device on your laptop to try it without hardware.
 
 ## Run it like a Raspberry Pi (Docker)
 
@@ -64,6 +107,7 @@ cargo clippy --locked -p irori --no-default-features --all-targets -- -D warning
 cargo test --locked --workspace --all-features
 cargo test --locked -p irori --no-default-features
 cargo xtask check-deps                # crate dependency rules, ROADMAP §2.1
+cargo xtask check-docs                # the docs' default-feature claims match the manifest
 cargo xtask schemas --check           # schemas/ matches irori-types (run without --check to update)
 ```
 
@@ -100,7 +144,7 @@ fixtures/      golden examples, valid and invalid, checked by the tests
 crates/        irori-types, irori-core, irori-integration, irori-rules, irori-recorder,
                irori-config, irori-api, irori-client, irori (the binary), and irori-ui
                (the Leptos web UI: wasm, built by `cargo xtask ui`, outside the workspace)
-integrations/  irori-int-mqtt, irori-int-demo
+integrations/  irori-int-mqtt, irori-int-demo, irori-int-esphome
 extras/        irori-assist (opt-in AI, never in the default build)
 xtask/         repository automation (`cargo xtask …`)
 ```

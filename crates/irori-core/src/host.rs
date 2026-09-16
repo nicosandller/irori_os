@@ -129,6 +129,18 @@ async fn supervise(
         return;
     };
     let kinds = contribution.entity_kinds.clone();
+    // What it is, before anything about how it's doing: the UI names extensions by their own
+    // name, not their id, and says what they're for when someone is choosing one.
+    core.describe_extension(
+        &extension,
+        crate::ExtensionInfo {
+            name: manifest.extension.name.clone(),
+            description: manifest.extension.description.clone(),
+            version: manifest.extension.version.clone(),
+            entity_kinds: kinds.clone(),
+            iot_class: Some(contribution.iot_class),
+        },
+    );
 
     if !manifest.extension.irori.matches(core.version()) {
         let reason = format!(
