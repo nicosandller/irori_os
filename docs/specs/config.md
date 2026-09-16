@@ -39,10 +39,12 @@ step.
 ```
 config/
   irori.toml      settings for Irori itself: address, log level, extensions turned off
-  areas.toml      the rooms of the home
+  areas.toml      the floors and rooms of the home
   devices.toml    what you have said about a device
   entities.toml   what you have said about an entity
   secrets.toml    keys, passwords, tokens — one table per extension
+  extensions/
+    <id>.toml     an extension's settings that aren't secret
 ```
 
 Every file is optional. A file that is absent means "nothing said".
@@ -58,9 +60,22 @@ name = "Hall"
 
 [areas.kitchen]
 name = "Kitchen"
+floor = "ground"
+
+[floors.ground]
+name = "Ground floor"
+level = 0
+
+[floors.upstairs]
+name = "Upstairs"
+level = 1
 ```
 
-`floor` is reserved for when floors land; the `Floor` type already exists in `irori-types`.
+A **floor** groups rooms. `level` is a whole number that orders floors, lowest first: 0 for the
+entrance floor, 1 above it, -1 for a cellar. Two floors may share a level (a split-level house).
+A room's `floor` is optional; a room without one is listed after the floors. A `floor` naming a
+floor that isn't there is a warning, not a rejection (§6): removing a floor leaves its rooms where
+they are, listed without a floor.
 
 ### 3.2 `devices.toml`
 
@@ -79,6 +94,11 @@ in Irori keeps a second one to fall out of step with (ROADMAP D36).
 and nothing it reports is kept. Its integration may go on talking to it; Irori just doesn't let
 it in. What the integration says meanwhile is remembered, so taking `ignored` away puts the device
 back as it is now, without a restart.
+
+`added = true` records that a person let the device in while Irori was asking before adding new
+devices (`[devices] new = "ask"` in `irori.toml`, §3.5). It means nothing otherwise. Turning
+asking on marks every device already in the home as added, so switching the setting on never
+empties the home.
 
 `area` has **three** states, not two, because "nobody has said" and "it isn't in a room" are
 different answers:
@@ -103,10 +123,8 @@ name = "Hallway occupancy"
 
 ### 3.4 `secrets.toml`
 
-One table per extension, holding that extension's settings. Today every setting any extension
-has is a secret, so this is where extension settings live; ordinary settings get
-`extensions/<id>.toml` (§7) when one needs them, and the two tables are then joined, with the same
-key in both refused.
+One table per extension, holding that extension's secret settings. Settings that aren't secret go
+in `extensions/<id>.toml` (§3.6), and the two are joined.
 
 ```toml
 [esphome.keys]
@@ -145,6 +163,9 @@ data = "/var/lib/irori"       # relative paths are relative to this directory
 
 [extensions]
 disabled = ["demo"]
+
+[devices]
+new = "ask"                   # "add" (the default) or "ask"
 ```
 
 A command-line flag, or its environment variable, wins over the file, and the file wins over the
@@ -152,6 +173,40 @@ default. `[server]` is read at startup; changing it while Irori runs logs that a
 needed. `[extensions] disabled` applies while Irori runs: naming an extension stops it, removing
 it starts it again.
 
+`[devices] new` is what happens when an integration finds a device nobody has decided about.
+`"add"` puts it in the home straight away. `"ask"` holds it back, as if ignored, until a person
+adds it (`added = true`) or ignores it (`ignored = true`) from the Devices page — the way to stop
+a busy network filling the home with a neighbour's plugs. What the integration says about a held
+device is kept, so adding it shows it as it is now. It applies while Irori runs.
+
+### 3.6 `extensions/<id>.toml`
+
+An extension's settings that aren't secret. Irori writes a header comment saying so when it
+creates the file.
+
+```toml
+# extensions/helpers.toml
+[toggles.guests_are_over]
+name = "Guests are over"
+initial = false
+```
+
+The extension receives this file **joined** with its table in `secrets.toml` (§3.4), as one table,
+checked against its own config type. A key present in both is a mistake: the secret wins, so a
+password isn't silently replaced by a placeholder, and the clash is logged once, naming the key
+but not its value. Changing either file restarts the extension (ROADMAP D34). A file for an
+extension that isn't installed is kept and does nothing.
+
+Unlike `secrets.toml`, this file is meant to be committed, and the API reads it: an endpoint that
+edits it does so on behalf of the extension it belongs to — the helpers endpoints write
+`extensions/helpers.toml` — never as a general "write any extension's settings" call.
+
+**Helpers** keep their definitions here. A toggle is a switch Irori keeps itself — "guests are
+over", "holiday mode" — with the entity id `switch.<id>`. `name` is its one name: renaming the
+entity from the UI rewrites it here, not in `entities.toml`, so there's no second name (D36).
+`initial` is its value before anyone has switched it; after that, the value it was left at is kept
+in the extension's private storage (`integrations.md` §5) through restarts. Removing a toggle
+removes its entity and forgets its value.
 ## 4. What a decision is attached to
 
 **A device** is attached to its id. A device's id is made from its integration and the
@@ -218,12 +273,12 @@ flat and boring.
 Named here so the layout has room for them, specified when they are built:
 
 - **More of `irori.toml`** — location, recorder retention.
-- **`extensions/<id>.toml`** — per-extension settings that aren't secret, and approved
-  permissions, validated against the extension's `config_schema` (`docs/specs/extensions.md`).
-  Joined with the extension's table in `secrets.toml` (§3.4).
+- **Approved permissions** in `extensions/<id>.toml`, and validating it against the extension's
+  `config_schema` before it starts (`docs/specs/extensions.md`). Today the extension's own config
+  type checks it, and an extension with invalid settings waits for valid ones.
 - **`rules/<id>.json`** — M0.3.
-- **Floors**, and an entity belonging to a different area than its device (`Entity.area_id`
-  already allows it).
+- **An entity in a different area than its device** (`Entity.area_id` already allows it).
+- **More helpers** — numbers, text, timers — once rules can use them.
 
 ## 8. Changes from the roadmap draft
 

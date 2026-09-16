@@ -95,18 +95,31 @@ because they're written to a directory of plain TOML files:
 
 ```
 config/
-  areas.toml      the rooms of your home
+  areas.toml      the floors and rooms of your home
   devices.toml    what you've called a device, and which room it's in
   entities.toml   what you've called an individual entity
   secrets.toml    keys for devices that encrypt their connection — never commit this one
   irori.toml      Irori's own settings
+  extensions/     settings for each extension, like your helpers
 ```
 
-Make rooms on the **Rooms** page; name, describe or place a device on its own page, where you can
+Make floors and rooms on the **Rooms** page; name, describe or place a device on its own page, where you can
 also **ignore** it — it leaves Irori until you let it back in from the Devices page. Or open
 the files in an editor — Irori picks up changes within a couple of seconds, and a file that
 doesn't parse is ignored with an explanation in the log while the last good version keeps
 running. There is no second copy in the database: the UI writes the same files you would.
+
+If you'd rather decide which devices Irori takes in — a shared network, a neighbour's plugs —
+put this in `irori.toml`, and new devices wait on the Devices page for you to add or ignore them:
+
+```toml
+[devices]
+new = "ask"
+```
+
+**Helpers** are switches Irori keeps itself, like "guests are over": make them on the Devices
+page's **Helpers** tab. They stay as you left them through restarts, and rules will be able to use
+them.
 
 A device that reports which room it thinks it's in (ESPHome's `area:`) never creates that room —
 but making a room by that name collects every device that was asking for one.

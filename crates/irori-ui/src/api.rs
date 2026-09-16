@@ -361,6 +361,27 @@ pub async fn remove_area(id: &AreaId) -> Result<(), String> {
     checked(response).await
 }
 
+/// Makes a toggle helper: a switch Irori keeps itself. Its entity appears a moment later, once
+/// the helpers extension has restarted with it.
+pub async fn add_toggle(name: Name) -> Result<(), String> {
+    let response = Request::post("/api/dev/helpers/toggles")
+        .json(&AreaRequest { name })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+/// Removes a toggle helper by the id it was made with: the object id of its `switch.` entity.
+pub async fn remove_toggle(id: &str) -> Result<(), String> {
+    let response = Request::delete(&format!("/api/dev/helpers/toggles/{id}"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
 #[derive(Serialize)]
 struct SecretGiven<'a> {
     path: &'a [String],
