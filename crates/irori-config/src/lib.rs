@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use irori_types::{
-    Area, DeviceId, DeviceSettings, EntitySettings, ExtensionSettings, Floor, Settings, SettingsKey,
+    Area, DeviceId, DeviceSettings, EntitySettings, ExtensionId, ExtensionSettings, Floor,
+    Settings, SettingsKey,
 };
 
 pub use files::{
@@ -31,7 +32,9 @@ pub use files::{
 /// last held.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Problem {
-    pub file: File,
+    /// The file's path inside the config directory, e.g. `areas.toml` or
+    /// `extensions/helpers.toml`.
+    pub file: String,
     pub reason: String,
 }
 
@@ -73,6 +76,11 @@ pub struct Store {
     devices: Part<BTreeMap<DeviceId, DeviceSettings>>,
     entities: Part<BTreeMap<SettingsKey, EntitySettings>>,
     secrets: Part<ExtensionSettings>,
+    /// `extensions/<id>.toml`, one per extension that has one.
+    extensions: BTreeMap<ExtensionId, Part<serde_json::Map<String, serde_json::Value>>>,
+    /// Keys set in both an extension's file and its secrets, as last reported: said once when
+    /// they appear, not on every two-second check.
+    clashes: std::collections::BTreeSet<(ExtensionId, String)>,
 }
 
 impl Store {
@@ -86,6 +94,8 @@ impl Store {
             devices: Part::default(),
             entities: Part::default(),
             secrets: Part::default(),
+            extensions: BTreeMap::new(),
+            clashes: std::collections::BTreeSet::new(),
         }
     }
 
@@ -114,8 +124,57 @@ impl Store {
     }
 
     /// Each extension's settings: its table in `secrets.toml`.
+    /// Each extension's settings: `extensions/<id>.toml` joined with its table in `secrets.toml`
+    /// (`docs/specs/config.md` §3.4). A key in both is a mistake [`Store::reload`] reports; the
+    /// secret is the one used.
     pub fn extension_settings(&self) -> ExtensionSettings {
-        self.secrets.value.clone()
+        let mut tables = self.secrets.value.tables().clone();
+        for (id, part) in &self.extensions {
+            let joined = tables.entry(id.clone()).or_default();
+            for (key, value) in &part.value {
+                joined.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
+        ExtensionSettings::new(tables)
+    }
+
+    /// One extension's settings file as it stands, for changing and saving back.
+    pub fn extension_file(
+        &self,
+        extension: &ExtensionId,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        self.extensions
+            .get(extension)
+            .map(|part| part.value.clone())
+            .unwrap_or_default()
+    }
+
+    /// Replaces `extensions/<id>.toml`, atomically, if its contents would change.
+    pub fn save_extension(
+        &mut self,
+        extension: &ExtensionId,
+        settings: &serde_json::Map<String, serde_json::Value>,
+    ) -> std::io::Result<bool> {
+        let dir = self.dir.join("extensions");
+        let path = dir.join(format!("{extension}.toml"));
+        let text = files::write_extension(extension, settings);
+        let changed = !std::fs::read_to_string(&path).is_ok_and(|current| current == text);
+        if changed {
+            std::fs::create_dir_all(&dir)?;
+            let temporary = write_beside(&path, &text, Readable::ByAnyone)?;
+            if let Err(e) = std::fs::rename(&temporary, &path) {
+                let _ = std::fs::remove_file(&temporary);
+                return Err(e);
+            }
+        }
+        self.extensions.insert(
+            extension.clone(),
+            Part {
+                value: settings.clone(),
+                seen: look(&path),
+            },
+        );
+        Ok(changed)
     }
 
     /// Re-reads whatever has changed on disk since the last call, and says what went wrong.
@@ -126,9 +185,81 @@ impl Store {
         let mut problems = Vec::new();
         for file in File::ALL {
             if let Err(reason) = self.reload_one(file) {
-                problems.push(Problem { file, reason });
+                problems.push(Problem {
+                    file: file.name().to_owned(),
+                    reason,
+                });
             }
         }
+        problems.extend(self.reload_extensions());
+        // A key set in both places is ambiguous; the secret wins. Said when it first appears.
+        let mut clashes = std::collections::BTreeSet::new();
+        for (id, part) in &self.extensions {
+            if let Some(secret) = self.secrets.value.tables().get(id) {
+                for key in part.value.keys().filter(|key| secret.contains_key(*key)) {
+                    clashes.insert((id.clone(), key.clone()));
+                }
+            }
+        }
+        for (id, key) in clashes.difference(&self.clashes) {
+            problems.push(Problem {
+                file: format!("extensions/{id}.toml"),
+                reason: format!(
+                    "`{key}` is also in secrets.toml under [{id}]; the one in secrets.toml is used"
+                ),
+            });
+        }
+        self.clashes = clashes;
+        problems
+    }
+
+    /// Reads `extensions/*.toml`: new files, changed ones, and ones that have gone.
+    fn reload_extensions(&mut self) -> Vec<Problem> {
+        let dir = self.dir.join("extensions");
+        let mut problems = Vec::new();
+        let mut present = std::collections::BTreeSet::new();
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries.filter_map(Result::ok).collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
+        };
+        for entry in entries {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            let file = format!("extensions/{stem}.toml");
+            let Ok(id) = stem.parse::<ExtensionId>() else {
+                problems.push(Problem {
+                    file,
+                    reason: "the file name has to be an extension id, like `helpers.toml`"
+                        .to_owned(),
+                });
+                continue;
+            };
+            present.insert(id.clone());
+            let now = look(&path);
+            if self
+                .extensions
+                .get(&id)
+                .is_some_and(|part| part.seen.is_some() && part.seen == now)
+            {
+                continue;
+            }
+            let parsed = std::fs::read_to_string(&path)
+                .map_err(|e| format!("can't read it: {e}"))
+                .and_then(|text| files::read_extension(&text));
+            match parsed {
+                Ok(value) => {
+                    self.extensions.insert(id, Part { value, seen: now });
+                }
+                // The last good version stays, as for every other file.
+                Err(reason) => problems.push(Problem { file, reason }),
+            }
+        }
+        self.extensions.retain(|id, _| present.contains(id));
         problems
     }
 
@@ -464,7 +595,7 @@ mod tests {
         let problems = store.reload();
 
         assert_eq!(problems.len(), 1, "{problems:?}");
-        assert_eq!(problems[0].file, File::Areas);
+        assert_eq!(problems[0].file, File::Areas.name());
         assert_eq!(
             store.settings().areas,
             vec![area("hall", "Hall")],
@@ -668,5 +799,54 @@ mod tests {
             .collect();
         left.sort();
         assert_eq!(left, ["areas.toml", "devices.toml", "entities.toml"]);
+    }
+
+    /// An extension's settings come from its own file joined with its secrets; editing the file
+    /// by hand is picked up, and deleting it takes its settings away.
+    #[test]
+    fn an_extensions_file_is_joined_with_its_secrets() {
+        let home = dir();
+        let helpers: ExtensionId = "helpers".parse().expect("valid");
+        let mut store = Store::new(home.path());
+        let mut file = serde_json::Map::new();
+        file.insert(
+            "toggles".into(),
+            serde_json::json!({"guests": {"name": "Guests"}}),
+        );
+        store.save_extension(&helpers, &file).expect("saved");
+        std::fs::write(
+            home.path().join("secrets.toml"),
+            "[helpers]\ntoken = \"s3cret\"\n",
+        )
+        .expect("written");
+
+        let mut fresh = Store::new(home.path());
+        assert!(fresh.reload().is_empty());
+        assert_eq!(
+            fresh.extension_settings().of(&helpers),
+            serde_json::json!({"toggles": {"guests": {"name": "Guests"}}, "token": "s3cret"})
+        );
+
+        std::fs::write(
+            home.path().join("extensions/helpers.toml"),
+            "token = \"clash\"\n",
+        )
+        .expect("written");
+        let problems = fresh.reload();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].reason.contains("secrets.toml"),
+            "{}",
+            problems[0].reason
+        );
+        assert_eq!(fresh.extension_settings().of(&helpers)["token"], "s3cret");
+        assert!(fresh.reload().is_empty(), "said once, not on every check");
+
+        std::fs::remove_file(home.path().join("extensions/helpers.toml")).expect("removed");
+        fresh.reload();
+        assert_eq!(
+            fresh.extension_settings().of(&helpers),
+            serde_json::json!({"token": "s3cret"})
+        );
     }
 }

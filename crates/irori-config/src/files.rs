@@ -312,6 +312,30 @@ pub fn read_secrets(text: &str) -> Result<ExtensionSettings, String> {
     Ok(ExtensionSettings::new(tables))
 }
 
+/// One extension's `extensions/<id>.toml`: its settings that aren't secret.
+pub fn read_extension(text: &str) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let table: toml::Table = toml::from_str(text).map_err(|e| e.to_string())?;
+    match serde_json::to_value(table) {
+        Ok(serde_json::Value::Object(map)) => Ok(map),
+        _ => Err("holds something that isn't a plain value".to_owned()),
+    }
+}
+
+/// An `extensions/<id>.toml` file's text, ready to write.
+pub fn write_extension(
+    extension: &ExtensionId,
+    settings: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    let body = toml::to_string_pretty(settings).unwrap_or_default();
+    format!(
+        "# Settings for the `{extension}` extension that aren't secret. Secrets for it go in\n\
+         # secrets.toml, under [{extension}].\n\
+         #\n\
+         # Written by Irori, and yours to edit: changes are picked up within a couple of seconds, and\n\
+         # the extension restarts with them. See docs/specs/config.md.\n\n{body}"
+    )
+}
+
 /// `secrets.toml`'s text, ready to write.
 pub fn write_secrets(secrets: &ExtensionSettings) -> String {
     let body = toml::to_string_pretty(secrets.tables()).unwrap_or_default();

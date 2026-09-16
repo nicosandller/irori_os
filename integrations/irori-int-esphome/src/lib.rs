@@ -800,6 +800,12 @@ mod tests {
                     }
                     irori_integration::host::Op::SetHealth(_)
                     | irori_integration::host::Op::SetWaiting(_) => {}
+                    irori_integration::host::Op::Load(_, reply) => {
+                        let _ = reply.send(Ok(None));
+                    }
+                    irori_integration::host::Op::Store(_, _, reply) => {
+                        let _ = reply.send(Ok(()));
+                    }
                 }
             }
         });
@@ -916,6 +922,12 @@ mod tests {
                     }
                     irori_integration::host::Op::SetHealth(_)
                     | irori_integration::host::Op::SetWaiting(_) => {}
+                    irori_integration::host::Op::Load(_, reply) => {
+                        let _ = reply.send(Ok(None));
+                    }
+                    irori_integration::host::Op::Store(_, _, reply) => {
+                        let _ = reply.send(Ok(()));
+                    }
                 }
             }
         });
@@ -1021,6 +1033,12 @@ mod tests {
                     }
                     irori_integration::host::Op::SetHealth(_)
                     | irori_integration::host::Op::SetWaiting(_) => {}
+                    irori_integration::host::Op::Load(_, reply) => {
+                        let _ = reply.send(Ok(None));
+                    }
+                    irori_integration::host::Op::Store(_, _, reply) => {
+                        let _ = reply.send(Ok(()));
+                    }
                 }
             }
         });

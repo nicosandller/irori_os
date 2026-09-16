@@ -87,6 +87,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/dev/devices/{id}", patch(edit_device))
         .route("/api/dev/entities/{id}", patch(edit_entity))
         .route("/api/dev/extensions/{id}/secrets", put(give_secret))
+        .route("/api/dev/helpers/toggles", post(add_toggle))
+        .route(
+            "/api/dev/helpers/toggles/{id}",
+            axum::routing::delete(remove_toggle),
+        )
         .route("/api/dev/extensions/{id}/icon.svg", get(extension_icon))
         .fallback(get(ui::serve))
         .with_state(state)
@@ -456,6 +461,36 @@ async fn edit_entity(
     let Some(key) = core.entity_key(&id) else {
         return refused(StatusCode::NOT_FOUND, format!("there's no entity `{id}`"));
     };
+    // A helper's name lives where the helper is defined. Writing it to entities.toml as well
+    // would give it two names, one in each file (ROADMAP D36).
+    if key.integration.as_str() == HELPERS.as_str()
+        && let Some(toggle) = key.unique_id.as_str().strip_prefix("toggle-")
+    {
+        let Some(Some(name)) = request.name.clone() else {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                "a helper always has a name; send the new one".to_owned(),
+            );
+        };
+        let toggle = toggle.to_owned();
+        let renamed = state
+            .0
+            .config
+            .edit_extension(core, &HELPERS, |file| {
+                let entry = file
+                    .get_mut("toggles")
+                    .and_then(|toggles| toggles.get_mut(&toggle))
+                    .and_then(serde_json::Value::as_object_mut)
+                    .ok_or_else(|| Refused(format!("there's no toggle `{toggle}`")))?;
+                entry.insert("name".into(), serde_json::json!(name.as_str()));
+                Ok(())
+            })
+            .await;
+        return match renamed {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(e) => edit_failed(e),
+        };
+    }
     let edited = state
         .0
         .config
@@ -468,6 +503,82 @@ async fn edit_entity(
         .await;
     match edited {
         Ok(()) => Json(core.entities().into_iter().find(|entity| entity.id == id)).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+/// The helpers extension's id: its toggles are kept in `extensions/helpers.toml`.
+static HELPERS: LazyLock<ExtensionId> =
+    LazyLock::new(|| ExtensionId::try_from("helpers").expect("a valid extension id"));
+
+/// Makes a toggle: `{"name": "Guests are over"}`. Its id comes from the name and never changes;
+/// its entity is `switch.<id>`.
+async fn add_toggle(State(state): State<AppState>, Json(request): Json<AreaRequest>) -> Response {
+    if request.floor.is_some() {
+        return refused(StatusCode::BAD_REQUEST, "a toggle has no floor".to_owned());
+    }
+    let taken: Vec<String> = state
+        .0
+        .core
+        .entities()
+        .iter()
+        .map(|entity| entity.id.to_string())
+        .collect();
+    let made = state
+        .0
+        .config
+        .edit_extension(&state.0.core, &HELPERS, |file| {
+            let toggles = file
+                .entry("toggles")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+                .ok_or_else(|| {
+                    Refused("`toggles` in extensions/helpers.toml isn't a table".into())
+                })?;
+            // An id no toggle has, and no other switch either: `switch.<id>` has to be free.
+            let base = irori_core::new_area_id(&request.name, &[]).to_string();
+            let id = (1..)
+                .map(|n| {
+                    if n == 1 {
+                        base.clone()
+                    } else {
+                        format!("{base}_{n}")
+                    }
+                })
+                .find(|id| !toggles.contains_key(id) && !taken.contains(&format!("switch.{id}")))
+                .expect("an unbounded range always finds a free id");
+            toggles.insert(
+                id.clone(),
+                serde_json::json!({"name": request.name.as_str()}),
+            );
+            Ok(id)
+        })
+        .await;
+    match made {
+        Ok(id) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({"id": id, "entity_id": format!("switch.{id}")})),
+        )
+            .into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+async fn remove_toggle(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let removed = state
+        .0
+        .config
+        .edit_extension(&state.0.core, &HELPERS, |file| {
+            let gone = file
+                .get_mut("toggles")
+                .and_then(serde_json::Value::as_object_mut)
+                .and_then(|toggles| toggles.remove(&id));
+            gone.map(|_| ())
+                .ok_or_else(|| Refused(format!("there's no toggle `{id}`")))
+        })
+        .await;
+    match removed {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => edit_failed(e),
     }
 }
@@ -1657,6 +1768,140 @@ mod tests {
         );
         assert!(home.get("held").is_none(), "{home}");
 
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// The helpers extension on its own, started against a core with storage that outlives it,
+    /// as the database does.
+    #[cfg(feature = "int-helpers")]
+    async fn helpers(core: &Core) -> anyhow::Result<irori_core::ExtensionHost> {
+        irori_core::ExtensionHost::start(
+            core,
+            vec![
+                irori_integration::builtin::<irori_int_helpers::Helpers>()
+                    .map_err(anyhow::Error::msg)?,
+            ],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)
+    }
+
+    #[cfg(feature = "int-helpers")]
+    async fn until(what: &str, mut check: impl FnMut() -> bool) -> anyhow::Result<()> {
+        for _ in 0..500 {
+            if check() {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        anyhow::bail!("timed out waiting for: {what}")
+    }
+
+    /// A toggle made from the page is a switch that remembers its value — through a new toggle
+    /// being added, which restarts the extension, and through Irori starting again. Renaming it
+    /// changes its one name, in the file that defines it, and removing it removes the entity.
+    #[cfg(feature = "int-helpers")]
+    #[tokio::test]
+    async fn a_toggle_keeps_its_value_and_has_one_name() -> anyhow::Result<()> {
+        let storage: Arc<dyn irori_integration::Storage> =
+            Arc::new(irori_integration::MemoryStorage::default());
+        let core = core();
+        core.use_storage(Arc::clone(&storage));
+        let server = Server::new(core.clone())?;
+        let host = helpers(&core).await?;
+
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/dev/helpers/toggles",
+                serde_json::json!({"name": "Guests are over"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        assert_eq!(made["entity_id"], "switch.guests_are_over");
+        let guests = EntityId::try_from("switch.guests_are_over")?;
+        until("the toggle exists", || {
+            core.state(&guests).is_some_and(|s| s.state.is_some())
+        })
+        .await?;
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/command",
+                serde_json::json!({"entity_id": guests, "command": "turn_on"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        // Another toggle restarts the extension; the first keeps its value.
+        server
+            .json(
+                "POST",
+                "/api/dev/helpers/toggles",
+                serde_json::json!({"name": "Holiday"}),
+            )
+            .await?;
+        let holiday = EntityId::try_from("switch.holiday")?;
+        until("the second toggle exists", || {
+            core.state(&holiday).is_some_and(|s| s.state.is_some())
+        })
+        .await?;
+        let on = |core: &Core, id: &EntityId| {
+            matches!(
+                core.state(id).and_then(|s| s.state),
+                Some(irori_types::State::Switch(irori_types::SwitchState {
+                    on: true
+                }))
+            )
+        };
+        until("still on", || on(&core, &guests)).await?;
+
+        // One name, kept where the toggle is defined.
+        let (status, _) = server
+            .json(
+                "PATCH",
+                "/api/dev/entities/switch.guests_are_over",
+                serde_json::json!({"name": "Visitors"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let file = std::fs::read_to_string(server.config_dir().join("extensions/helpers.toml"))?;
+        assert!(file.contains("Visitors"), "{file}");
+        assert!(
+            !server.config_dir().join("entities.toml").exists(),
+            "no second name anywhere"
+        );
+        until("renamed", || {
+            core.entities()
+                .iter()
+                .any(|e| e.id == guests && e.name.as_str() == "Visitors")
+        })
+        .await?;
+        host.shutdown().await;
+
+        // Irori starting again, with the same storage: still on.
+        let again = self::core();
+        again.use_storage(storage);
+        let _config = Config::open_dir(server.config_dir(), &again);
+        let host = helpers(&again).await?;
+        until("on after a restart", || on(&again, &guests)).await?;
+        host.shutdown().await;
+
+        let host = helpers(&core).await?;
+        let (status, _) = server
+            .json(
+                "DELETE",
+                "/api/dev/helpers/toggles/holiday",
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        until("the removed toggle's entity is gone", || {
+            core.state(&holiday).is_none()
+        })
+        .await?;
         host.shutdown().await;
         Ok(())
     }

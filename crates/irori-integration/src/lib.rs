@@ -59,6 +59,62 @@ pub trait Integration: Send + 'static {
     ) -> impl Future<Output = Result<(), IntegrationError>> + Send;
 }
 
+/// The most a stored value may take, as JSON (spec §5). Small on purpose: this is for pairing
+/// keys and remembered switches, not history, which the recorder keeps.
+pub const MAX_STORED_VALUE: usize = 64 * 1024;
+
+/// Where each integration's small private values live (spec §5). The core holds one and checks
+/// the limits; the binary backs it with the database, and tests use [`MemoryStorage`].
+pub trait Storage: Send + Sync + fmt::Debug {
+    fn load(
+        &self,
+        extension: &irori_types::ExtensionId,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>, String>;
+
+    /// `None` forgets the key.
+    fn store(
+        &self,
+        extension: &irori_types::ExtensionId,
+        key: &str,
+        value: Option<&serde_json::Value>,
+    ) -> Result<(), String>;
+}
+
+/// Storage that lasts as long as the process. For tests, and for a core nobody gave a database.
+#[derive(Debug, Default)]
+pub struct MemoryStorage(Mutex<BTreeMap<(irori_types::ExtensionId, String), serde_json::Value>>);
+
+impl Storage for MemoryStorage {
+    fn load(
+        &self,
+        extension: &irori_types::ExtensionId,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&(extension.clone(), key.to_owned()))
+            .cloned())
+    }
+
+    fn store(
+        &self,
+        extension: &irori_types::ExtensionId,
+        key: &str,
+        value: Option<&serde_json::Value>,
+    ) -> Result<(), String> {
+        let mut all = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let key = (extension.clone(), key.to_owned());
+        match value {
+            Some(value) => all.insert(key, value.clone()),
+            None => all.remove(&key),
+        };
+        Ok(())
+    }
+}
+
 /// Settings for an integration that has none. Accepts only an empty table.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -224,6 +280,30 @@ impl IntegrationContext {
     pub async fn set_health(&self, health: Health) {
         // If the core is gone there's nobody to tell.
         let _ = self.ops.send(host::Op::SetHealth(health)).await;
+    }
+
+    /// Reads a value it stored earlier, or `None` if there isn't one (spec §5). Kept across
+    /// restarts of the integration and of Irori.
+    pub async fn load(&self, key: &str) -> Result<Option<serde_json::Value>, Rejected> {
+        let (reply, answer) = oneshot::channel();
+        self.ops
+            .send(host::Op::Load(key.to_owned(), reply))
+            .await
+            .map_err(|_| Rejected(CORE_GONE.into()))?;
+        answer.await.map_err(|_| Rejected(CORE_GONE.into()))?
+    }
+
+    /// Keeps a small value under `key`, private to this integration: at most
+    /// [`MAX_STORED_VALUE`] bytes as JSON, under a key of 1–128 characters.
+    pub async fn store(&self, key: &str, value: serde_json::Value) -> Result<(), Rejected> {
+        self.request(|reply| host::Op::Store(key.to_owned(), Some(value), reply))
+            .await
+    }
+
+    /// Forgets what was stored under `key`. Forgetting something that isn't there is fine.
+    pub async fn forget(&self, key: &str) -> Result<(), Rejected> {
+        self.request(|reply| host::Op::Store(key.to_owned(), None, reply))
+            .await
     }
 
     /// Says what it has found but can't use until a person does something (spec §6.6): the
@@ -413,6 +493,12 @@ pub mod host {
         SetAvailability(AvailabilityTarget, Availability, Reply),
         SetHealth(Health),
         SetWaiting(Vec<Waiting>),
+        Load(
+            String,
+            oneshot::Sender<Result<Option<serde_json::Value>, Rejected>>,
+        ),
+        /// `None` forgets the key.
+        Store(String, Option<serde_json::Value>, Reply),
     }
 
     /// Bounded, so a runaway integration waits instead of growing the core's memory.
