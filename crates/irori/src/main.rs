@@ -2,6 +2,7 @@
 
 mod banner;
 mod build_info;
+mod config;
 mod db;
 mod extensions;
 mod server;
@@ -29,6 +30,10 @@ enum Command {
         /// Directory for runtime data (SQLite database).
         #[arg(long, env = "IRORI_DATA", default_value = "./data")]
         data: PathBuf,
+        /// Directory for what you've said about your home: rooms, and what to call a device.
+        /// Plain TOML you can edit by hand; see docs/specs/config.md.
+        #[arg(long, env = "IRORI_CONFIG", default_value = "./config")]
+        config: PathBuf,
         /// Address to listen on. Anything other than loopback also needs
         /// --allow-unauthenticated-lan until authentication exists.
         #[arg(long, env = "IRORI_BIND", default_value = "127.0.0.1:8480")]
@@ -55,10 +60,11 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Serve {
             data,
+            config,
             bind,
             allow_unauthenticated_lan,
             log_level,
-        } => serve(data, bind, allow_unauthenticated_lan, log_level),
+        } => serve(data, config, bind, allow_unauthenticated_lan, log_level),
         Command::Version { json } => {
             let info = build_info::BuildInfo::current();
             if json {
@@ -73,6 +79,7 @@ fn main() -> anyhow::Result<()> {
 
 fn serve(
     data: PathBuf,
+    config: PathBuf,
     bind: SocketAddr,
     allow_unauthenticated_lan: bool,
     log_level: tracing::Level,
@@ -117,13 +124,21 @@ fn serve(
             let core = Core::new(Arc::new(SystemClock));
             // Subscribe before any extension starts, so the log sees their first events.
             tokio::spawn(extensions::log_events(core.subscribe()));
+            // Before the extensions, so a device that arrives in the first second already has
+            // the name and the room its owner gave it, rather than appearing under its old name
+            // and moving a moment later.
+            let settings = config::Config::open(&config, &core);
+            tokio::spawn(settings.clone().watch(core.clone()));
             let host = ExtensionHost::start(&core, builtins, Timing::default())
                 .map_err(anyhow::Error::msg)?;
 
-            let served = axum::serve(listener, server::router(server::AppState::new(db, core)))
-                .with_graceful_shutdown(shutdown_signal())
-                .await
-                .context("server error");
+            let served = axum::serve(
+                listener,
+                server::router(server::AppState::new(db, core, settings)),
+            )
+            .with_graceful_shutdown(shutdown_signal())
+            .await
+            .context("server error");
             // Give every extension its chance to stop cleanly, even if the server failed.
             host.shutdown().await;
             served

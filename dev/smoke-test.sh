@@ -6,6 +6,10 @@
 # Waits for /api/health, checks the database is in WAL mode, checks `/` serves the UI when the
 # `ui` feature is compiled in (and a 404 when it isn't), and, with the demo extension compiled
 # in, that it's running and its devices are listed.
+#
+# It also makes a room called "Smoke test room" and removes it again, which is the only way to
+# prove the server can actually write its config directory (a permissions problem shows up
+# nowhere else). Against your own instance that means one room appears and disappears.
 set -euo pipefail
 
 base_url="${1:-http://127.0.0.1:8480}"
@@ -72,5 +76,21 @@ if grep -q '"features":\[[^]]*"int-esphome"' <<<"$health"; then
     fail "the esphome extension isn't running: $extensions"
   echo "extensions: esphome running"
 fi
+
+# The config directory: a room can be made, is listed, and can be removed again. Writing is the
+# part worth testing — a read-only or missing directory fails here and nowhere else.
+room="$(curl -fsS --max-time 5 -X POST "$base_url/api/dev/areas" \
+  -H 'content-type: application/json' -d '{"name":"Smoke test room"}')" ||
+  fail "couldn't make a room: is the config directory writable?"
+grep -q '"id":"smoke_test_room"' <<<"$room" || fail "unexpected answer making a room: $room"
+
+areas="$(curl -fsS --max-time 5 "$base_url/api/dev/areas")" || fail "can't list rooms"
+grep -q '"name":"Smoke test room"' <<<"$areas" || fail "the room wasn't listed: $areas"
+
+curl -fsS --max-time 5 -o /dev/null -X DELETE "$base_url/api/dev/areas/smoke_test_room" ||
+  fail "couldn't remove the room again"
+areas="$(curl -fsS --max-time 5 "$base_url/api/dev/areas")" || fail "can't list rooms"
+grep -q '"id":"smoke_test_room"' <<<"$areas" && fail "the room is still there: $areas"
+echo "config: a room was made, listed, and removed"
 
 echo "smoke test passed"

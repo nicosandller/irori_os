@@ -7,12 +7,15 @@
 use std::collections::BTreeMap;
 
 use gloo_net::http::Request;
-use irori_types::{Device, Entity, EntityId, EntityState, ExtensionId};
+use irori_types::{
+    Area, AreaId, Device, DeviceId, Entity, EntityId, EntityState, ExtensionId, Name,
+};
 use serde::{Deserialize, Serialize};
 
 const HOME_URL: &str = "/api/dev/home";
 const HEALTH_URL: &str = "/api/health";
 const COMMAND_URL: &str = "/api/dev/command";
+const AREAS_URL: &str = "/api/dev/areas";
 
 /// Everything the page shows. Mirrors `HomeView` on the server; the two meet again in
 /// `irori-types` when the real API lands.
@@ -22,9 +25,22 @@ pub struct Home {
     pub entities: Vec<Entity>,
     pub states: Vec<EntityState>,
     pub extensions: BTreeMap<ExtensionId, Extension>,
+    /// The rooms of the home, from the config directory. Empty until somebody makes one.
+    #[serde(default)]
+    pub areas: Vec<Area>,
 }
 
 impl Home {
+    pub fn area(&self, id: &AreaId) -> Option<&Area> {
+        self.areas.iter().find(|area| &area.id == id)
+    }
+
+    /// What to call the room a device is in, for showing next to it.
+    pub fn room_of(&self, device: &Device) -> Option<String> {
+        let area = self.area(device.area_id.as_ref()?)?;
+        Some(area.name.to_string())
+    }
+
     /// Takes an entity's state unless what's already here is at least as new, and says whether
     /// anything changed.
     ///
@@ -166,6 +182,93 @@ pub async fn set_on(entity_id: &EntityId, on: bool) -> Result<Option<EntityState
         .json::<Option<EntityState>>()
         .await
         .map_err(|e| format!("Irori sent something this page can't read: {e}"))
+}
+
+// --- Rooms and names -----------------------------------------------------------------------
+//
+// These write files in the config directory (`docs/specs/config.md`). Each answers with what the
+// thing became, but the page refetches anyway: a rename can change more than the thing renamed,
+// because entities without a name of their own follow their device.
+
+/// What a change to a device should do to one of its fields: leave it alone, set it, or clear it
+/// so whatever the integration reports comes back.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DeviceEdit {
+    /// `None` leaves the name alone; `Some(None)` clears it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<Option<Name>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub area: Option<Option<AreaId>>,
+}
+
+/// The body of a refusal, which the core writes as a sentence.
+async fn checked(response: gloo_net::http::Response) -> Result<(), String> {
+    if response.ok() {
+        return Ok(());
+    }
+    let status = response.status();
+    Err(match response.json::<Refused>().await {
+        Ok(refused) => refused.error,
+        Err(_) => format!("Irori refused that ({status})"),
+    })
+}
+
+pub async fn edit_device(device_id: &DeviceId, edit: &DeviceEdit) -> Result<(), String> {
+    let response = Request::patch(&format!("/api/dev/devices/{device_id}"))
+        .json(edit)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+#[derive(Debug, Serialize)]
+struct EntityEdit {
+    name: Option<Name>,
+}
+
+pub async fn rename_entity(entity_id: &EntityId, name: Option<Name>) -> Result<(), String> {
+    let response = Request::patch(&format!("/api/dev/entities/{entity_id}"))
+        .json(&EntityEdit { name })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+#[derive(Debug, Serialize)]
+struct AreaRequest {
+    name: Name,
+}
+
+pub async fn add_area(name: Name) -> Result<(), String> {
+    let response = Request::post(AREAS_URL)
+        .json(&AreaRequest { name })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+pub async fn rename_area(id: &AreaId, name: Name) -> Result<(), String> {
+    let response = Request::patch(&format!("{AREAS_URL}/{id}"))
+        .json(&AreaRequest { name })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+pub async fn remove_area(id: &AreaId) -> Result<(), String> {
+    let response = Request::delete(&format!("{AREAS_URL}/{id}"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
 }
 
 #[cfg(test)]

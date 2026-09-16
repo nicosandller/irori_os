@@ -40,13 +40,14 @@ Everything the installed binary does:
 irori run                                  # http://127.0.0.1:8480
 irori run --log-level debug                # log every device and state change as it happens
 irori run --data /var/lib/irori            # where the database lives (default ./data)
+irori run --config ~/.config/irori         # where your rooms and names live (default ./config)
 irori run --bind 0.0.0.0:8480 --allow-unauthenticated-lan   # reachable from your phone; see below
 irori version --json
 irori help run
 ```
 
 `run` and `serve` are the same command. Every option is also an environment variable
-(`IRORI_DATA`, `IRORI_BIND`, `IRORI_LOG_LEVEL`, `IRORI_ALLOW_UNAUTHENTICATED_LAN`), which is what
+(`IRORI_DATA`, `IRORI_CONFIG`, `IRORI_BIND`, `IRORI_LOG_LEVEL`, `IRORI_ALLOW_UNAUTHENTICATED_LAN`), which is what
 the container uses. `irori help run` lists them with their defaults.
 
 Or straight from the checkout, without installing — the same commands after `cargo run --`:
@@ -66,11 +67,34 @@ curl -s http://127.0.0.1:8480/api/dev/home     # the whole home in one response
 
 The **web UI** is a separate wasm crate, so `cargo build` alone doesn't need a wasm toolchain and
 serves a placeholder page at `/`. `cargo xtask install` above builds it; `cargo xtask ui` builds
-it without installing. It has a Home page (what Irori is looking after) and a Devices page
-(everything, with switches and an **Add device** panel explaining where devices come from).
+it without installing. It has a Home page (what Irori is looking
+after, by room), a Devices page (everything, with switches and an **Add device** panel explaining
+where devices come from), and a Rooms page.
 
 See [crates/irori-ui/README.md](crates/irori-ui/README.md) for working on the UI itself (live
 reload, no binary rebuild). CI builds it, so downloaded release binaries always have it.
+
+### Rooms, and what to call things
+
+What a device calls itself is up to its firmware; what *you* call it is up to you. Both a name
+and a room survive restarts, because they're written to a directory of plain TOML files:
+
+```
+config/
+  areas.toml      the rooms of your home
+  devices.toml    what you've called a device, and which room it's in
+  entities.toml   what you've called an individual entity
+```
+
+Make rooms on the **Rooms** page; rename a device, or put it in a room, on its own page. Or open
+the files in an editor — Irori picks up changes within a couple of seconds, and a file that
+doesn't parse is ignored with an explanation in the log while the last good version keeps
+running. There is no second copy in the database: the UI writes the same files you would.
+
+A device that reports which room it thinks it's in (ESPHome's `area:`) never creates that room —
+but making a room by that name collects every device that was asking for one.
+
+See [docs/specs/config.md](docs/specs/config.md).
 
 ### ESPHome devices
 
@@ -79,9 +103,12 @@ network, connects to each one, and puts everything it has on the Devices page. L
 switches can be switched from there.
 
 The one catch today is **encryption**: ESPHome's API can require a pre-shared key, and Irori has
-nowhere to keep one until the config dir lands (M0.7). Devices asking for an encrypted
-connection are named in the log and skipped. Until then, a device with a plain `api:` block (no
-`encryption:`) is picked up on its own.
+nowhere to keep a secret yet — the config dir exists, but `secrets.toml` is still to come (M0.7).
+Devices asking for an encrypted connection are named in the log and skipped. Until then, a device
+with a plain `api:` block (no `encryption:`) is picked up on its own.
+
+If your ESPHome config has an `area:`, Irori notices it but doesn't act on it by itself: make a
+room by that name and the device walks into it (see below).
 
 See [integrations/irori-int-esphome/README.md](integrations/irori-int-esphome/README.md), which
 also explains how to run a real ESPHome device on your laptop to try it without hardware.
@@ -138,7 +165,7 @@ CI runs on every pull request (and on every push to `main`). It builds `x86_64` 
 
 ```
 assets/        brand: logo marks, banner, favicon, social card (see assets/README.md)
-docs/specs/    specifications: entities.md, extensions.md, integrations.md
+docs/specs/    specifications: entities.md, extensions.md, integrations.md, config.md
 schemas/       JSON Schemas generated from irori-types (`cargo xtask schemas`)
 fixtures/      golden examples, valid and invalid, checked by the tests
 crates/        irori-types, irori-core, irori-integration, irori-rules, irori-recorder,

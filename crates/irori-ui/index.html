@@ -166,6 +166,62 @@
     .toggle:disabled { cursor: progress; opacity: .5; }
     .toggle.unknown .knob { transform: translateX(.67rem); }
 
+    /* Rooms: the part of the home a person arranged themselves. */
+    .rooms { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+             margin: .25rem 0 .75rem; }
+    .room-card { padding: .7rem .85rem; border: 1px solid var(--line); border-radius: .5rem;
+                 background: var(--bg); }
+    .room-card h3 { margin: 0 0 .4rem; font-size: .95rem; font-weight: 500; }
+    .room-card ul { margin: 0; padding: 0; list-style: none; font-size: .875rem; }
+    .room-card li { padding: .1rem 0; overflow-wrap: anywhere; }
+    .room-card a { text-decoration: none; }
+    .room-card a:hover { text-decoration: underline; }
+
+    .room-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .75rem;
+                 margin-bottom: .5rem; }
+    .room-head h2 { margin: 0; }
+    .room-actions { margin-left: auto; display: flex; gap: .5rem; }
+    .room-devices { margin: 0; padding: 0; list-style: none; }
+    .room-devices li { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem;
+                       padding: .35rem 0; border-bottom: 1px solid var(--line); }
+    .room-devices li:last-child { border-bottom: none; }
+
+    /* Renaming, and choosing a room: small forms that sit inside a heading or a card. */
+    .inline-form { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+    .inline-form input { padding: .4rem .6rem; font: inherit; font-size: .95rem;
+                         color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+                         border-radius: .4rem; }
+    .inline-form input:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
+    .inline-form button, .room-actions button {
+        padding: .35rem .7rem; font: inherit; font-size: .85rem; color: var(--fg);
+        background: var(--card); border: 1px solid var(--line); border-radius: .4rem;
+        cursor: pointer; }
+    .inline-form button:hover, .room-actions button:hover {
+        border-color: var(--ember); color: var(--ember); }
+    .room-actions .danger:hover { border-color: #b4342c; color: #b4342c; }
+    .page-head > button { padding: .35rem .7rem; font: inherit; font-size: .85rem;
+                          color: var(--muted); background: transparent;
+                          border: 1px solid var(--line); border-radius: .4rem; cursor: pointer; }
+    .page-head > button:hover { border-color: var(--ember); color: var(--ember); }
+
+    .room-picker { display: flex; align-items: center; gap: .75rem; }
+    .room-picker > span { color: var(--muted); font: .7rem var(--mono); letter-spacing: .08em;
+                          text-transform: uppercase; }
+    .room-picker select { padding: .4rem .6rem; font: inherit; font-size: .95rem;
+                          color: var(--fg); background: var(--bg);
+                          border: 1px solid var(--line); border-radius: .4rem; }
+    table.devices .room { color: var(--muted); }
+
+    /* A device's entity, with the name it can be given underneath its reading. */
+    .entity-row { border-bottom: 1px solid var(--line); }
+    .entity-row:last-child { border-bottom: none; }
+    .entity-row .entity { border-bottom: none; padding-bottom: .2rem; }
+    .entity-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem;
+                   padding: 0 1rem .6rem; }
+    button.link { padding: 0; margin-left: .5rem; font: inherit; font-size: .8rem;
+                  color: var(--ember); background: none; border: none; cursor: pointer;
+                  text-decoration: underline; }
+
     .empty { color: var(--muted); }
     .muted { color: var(--muted); }
     a { color: var(--ember); }
