@@ -97,6 +97,9 @@ pub struct Extension {
     /// What it found but can't use until someone helps, e.g. a device that needs its key.
     #[serde(default)]
     pub waiting: Vec<Waiting>,
+    /// Whether it has an icon, at `/api/dev/extensions/<id>/icon.svg`.
+    #[serde(default)]
+    pub has_icon: bool,
 }
 
 /// The browser's own words for a failed request ("TypeError: Failed to fetch") say nothing a
@@ -216,6 +219,8 @@ pub struct DeviceEdit {
     /// `None` leaves the name alone; `Some(None)` clears it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<Option<Name>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<Option<irori_types::Description>>,
     /// `None` leaves the room alone; `Some(None)` un-says it, letting the device suggest again.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub area: Option<Option<WhereTo>>,

@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 
 use irori_core::{CallError, Command, Core, Event, ExtensionOverview};
 use irori_types::{
-    Area, AreaId, ContextId, Device, DeviceId, Entity, EntityId, EntityState, ExtensionId,
-    LightTurnOn, Name, Origin, Placement, UserId,
+    Area, AreaId, ContextId, Description, Device, DeviceId, Entity, EntityId, EntityState,
+    ExtensionId, LightTurnOn, Name, Origin, Placement, UserId,
 };
 use tokio::sync::broadcast;
 
@@ -82,6 +82,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/dev/devices/{id}", patch(edit_device))
         .route("/api/dev/entities/{id}", patch(edit_entity))
         .route("/api/dev/extensions/{id}/secrets", put(give_secret))
+        .route("/api/dev/extensions/{id}/icon.svg", get(extension_icon))
         .fallback(get(ui::serve))
         .with_state(state)
 }
@@ -238,6 +239,8 @@ struct DeviceEdit {
     #[serde(default, deserialize_with = "patched")]
     name: Patch<Name>,
     #[serde(default, deserialize_with = "patched")]
+    description: Patch<Description>,
+    #[serde(default, deserialize_with = "patched")]
     area: Patch<WhereTo>,
 }
 
@@ -247,9 +250,9 @@ async fn edit_device(
     Json(request): Json<DeviceEdit>,
 ) -> Response {
     let core = &state.0.core;
-    let Some(key) = core.device_key(&id) else {
+    if !core.devices().iter().any(|device| device.id == id) {
         return refused(StatusCode::NOT_FOUND, format!("there's no device `{id}`"));
-    };
+    }
     let edited = state
         .0
         .config
@@ -265,9 +268,12 @@ async fn edit_device(
             {
                 return Err(Refused(format!("there's no room `{area}`")));
             }
-            let device = settings.devices.entry(key).or_default();
+            let device = settings.devices.entry(id.clone()).or_default();
             if let Some(name) = request.name.clone() {
                 device.name = name;
+            }
+            if let Some(description) = request.description.clone() {
+                device.description = description;
             }
             if let Some(area) = area {
                 device.area = area;
@@ -311,6 +317,29 @@ async fn edit_entity(
     match edited {
         Ok(()) => Json(core.entities().into_iter().find(|entity| entity.id == id)).into_response(),
         Err(e) => edit_failed(e),
+    }
+}
+
+/// An extension's icon. Served with a policy that forbids everything an image doesn't need, so
+/// an icon from a third-party extension can't run script even when opened on its own — and the
+/// page only ever shows it through `<img>`, where it couldn't anyway.
+async fn extension_icon(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {
+    match state.0.core.extension_icon(&id) {
+        Some(svg) => (
+            [
+                (axum::http::header::CONTENT_TYPE, "image/svg+xml"),
+                (
+                    axum::http::header::CONTENT_SECURITY_POLICY,
+                    "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+                ),
+                (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                // Compiled into this binary, so it can't change while this build runs.
+                (axum::http::header::CACHE_CONTROL, "max-age=3600"),
+            ],
+            svg,
+        )
+            .into_response(),
+        None => refused(StatusCode::NOT_FOUND, format!("`{id}` has no icon")),
     }
 }
 
@@ -914,20 +943,25 @@ mod tests {
             .json(
                 "PATCH",
                 "/api/dev/devices/demo_lamp",
-                serde_json::json!({"name": "Reading lamp", "area": "study"}),
+                serde_json::json!({
+                    "name": "Reading lamp", "description": "On the desk", "area": "study",
+                }),
             )
             .await?;
         assert_eq!(status, StatusCode::OK, "{device}");
         assert_eq!(device["name"], "Reading lamp");
+        assert_eq!(device["description"], "On the desk");
+        assert_eq!(device["id"], "demo_lamp", "renaming it didn't move its id");
         assert_eq!(device["area_id"], "study");
 
         let areas = std::fs::read_to_string(server.config_dir().join("areas.toml"))?;
         assert!(areas.contains("[areas.study]"), "{areas}");
         let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
-        // Keyed by what the integration calls the device, not by the id Irori derived from its
-        // name — so the name can change without the setting losing track of what it's about.
+        // Keyed by the device's one id — the same id as its page address — so there is never a
+        // second identifier for the same device to keep in step (ROADMAP D36).
+        assert!(devices.contains("[devices.demo_lamp]"), "{devices}");
         assert!(
-            devices.contains("[devices.\"demo/demo-lamp\"]"),
+            devices.contains("description = \"On the desk\""),
             "{devices}"
         );
         assert!(devices.contains("name = \"Reading lamp\""), "{devices}");
@@ -1346,6 +1380,42 @@ mod tests {
             !server.config_dir().join("secrets.toml").exists(),
             "nothing was written"
         );
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// An icon arrives as an image with a policy that stops it doing anything but being one.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn an_extensions_icon_is_served_as_a_locked_down_image() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+        let home = server.read("/api/dev/home").await?;
+        assert_eq!(home["extensions"]["demo"]["has_icon"], true);
+
+        let res = server
+            .app()?
+            .oneshot(Request::get("/api/dev/extensions/demo/icon.svg").body(Body::empty())?)
+            .await?;
+        assert_eq!(res.status(), StatusCode::OK);
+        let headers = res.headers().clone();
+        assert_eq!(headers["content-type"], "image/svg+xml");
+        assert!(
+            headers["content-security-policy"]
+                .to_str()?
+                .contains("default-src 'none'")
+        );
+        let body = res.into_body().collect().await?.to_bytes();
+        assert!(
+            String::from_utf8(body.to_vec())?
+                .trim_start()
+                .starts_with("<svg")
+        );
+
+        let (status, _) = server
+            .send(Request::get("/api/dev/extensions/nope/icon.svg").body(Body::empty())?)
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
         host.shutdown().await;
         Ok(())
     }

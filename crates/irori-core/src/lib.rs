@@ -15,9 +15,9 @@ use std::time::Duration;
 use irori_integration::host::{Op, incoming_call};
 use irori_integration::{IncomingCall, Rejected, ServiceErrorCode};
 use irori_types::{
-    Area, Context, ContextId, Description, Device, DeviceId, Entity, EntityId, EntityKind,
-    EntityState, ExtensionId, ExtensionSettings, IntegrationId, IotClass, Name, Origin,
-    ServiceCall, Settings, SettingsKey, StateReport, Timestamp, Version, Waiting,
+    Area, Context, ContextId, Description, Device, Entity, EntityId, EntityKind, EntityState,
+    ExtensionId, ExtensionSettings, IntegrationId, IotClass, Name, Origin, ServiceCall, Settings,
+    SettingsKey, StateReport, Timestamp, Version, Waiting,
 };
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -27,7 +27,7 @@ pub use events::Event;
 pub use host::{ExtensionHost, Timing};
 pub use services::{CallError, Command};
 
-pub use home::new_area_id;
+pub use home::{device_id_for, new_area_id};
 
 use home::{Home, Stamp};
 
@@ -69,6 +69,17 @@ pub struct ExtensionInfo {
     /// Where its devices live and what they need: `local_push`, `cloud_polling`, and so on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iot_class: Option<IotClass>,
+    /// Its icon, an SVG document. Sent as `has_icon`, not inline: the page loads it as an image
+    /// from its own address, where it can't run script (`docs/specs/extensions.md`).
+    #[serde(rename = "has_icon", serialize_with = "is_present")]
+    pub icon: Option<&'static str>,
+}
+
+fn is_present<S: serde::Serializer>(
+    icon: &Option<&'static str>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_bool(icon.is_some())
 }
 
 /// An extension as the Extensions page shows it: what it is, its status, and how many of its
@@ -228,6 +239,11 @@ impl Core {
         read(&self.0.extensions).clone()
     }
 
+    /// An extension's icon, if it has one.
+    pub fn extension_icon(&self, extension: &ExtensionId) -> Option<&'static str> {
+        read(&self.0.extensions).get(extension)?.info.as_ref()?.icon
+    }
+
     /// The rooms of the home, as the config directory has them.
     pub fn areas(&self) -> Vec<Area> {
         read(&self.0.home).areas().to_vec()
@@ -236,14 +252,6 @@ impl Core {
     /// What a person has said about this home (`docs/specs/config.md`).
     pub fn settings(&self) -> Settings {
         read(&self.0.home).settings().clone()
-    }
-
-    /// What a setting about this device attaches to, or `None` if there's no such device.
-    ///
-    /// Callers edit settings by key, not by `DeviceId`: an id is derived from a name, and a
-    /// setting that a rename could detach from its device would be no setting at all.
-    pub fn device_key(&self, id: &DeviceId) -> Option<SettingsKey> {
-        read(&self.0.home).device_key(id)
     }
 
     pub fn entity_key(&self, id: &EntityId) -> Option<SettingsKey> {

@@ -46,6 +46,10 @@ pub trait Integration: Send + 'static {
     /// The extension manifest, usually `include_str!("../irori-extension.toml")`.
     const MANIFEST: &'static str;
 
+    /// The icon the manifest names (`icon = "icon.svg"`), usually `Some(include_str!("../icon.svg"))`.
+    /// A built-in has no package directory to read it from at runtime, so it carries the file.
+    const ICON: Option<&'static str> = None;
+
     /// Runs until told to stop ([`IntegrationContext::next_call`] returns `None`). Returning an
     /// error, returning without being told to stop, or panicking marks it failed, and the core
     /// starts it again after a delay.
@@ -303,6 +307,8 @@ pub struct Builtin {
     pub manifest: ExtensionManifest,
     /// JSON Schema for its settings, generated from its config type.
     pub config_schema: serde_json::Value,
+    /// Its icon, an SVG document, when the manifest names one.
+    pub icon: Option<&'static str>,
     start: StartFn,
 }
 
@@ -350,9 +356,31 @@ pub fn builtin<I: Integration>() -> Result<Builtin, String> {
     }
     let config_schema = serde_json::to_value(schemars::schema_for!(I::Config))
         .map_err(|e| format!("extension `{id}`: config schema: {e}"))?;
+    // The manifest is what says there's an icon; the constant is only where a built-in keeps it.
+    // Disagreeing is a mistake worth failing loudly over, not a missing picture.
+    match (&manifest.extension.icon, I::ICON) {
+        (Some(_), Some(svg)) if svg.trim_start().starts_with("<svg") => {}
+        (Some(_), Some(_)) => {
+            return Err(format!("extension `{id}`: its icon isn't an SVG document"));
+        }
+        (Some(path), None) => {
+            return Err(format!(
+                "extension `{id}`: the manifest names the icon `{path}`, but the integration \
+                 doesn't embed it (`const ICON`)"
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(format!(
+                "extension `{id}`: the integration embeds an icon the manifest doesn't name \
+                 (`icon = \"icon.svg\"`)"
+            ));
+        }
+        (None, None) => {}
+    }
     Ok(Builtin {
         manifest,
         config_schema,
+        icon: I::ICON,
         start: Box::new(|config, ctx| {
             let config: I::Config =
                 serde_json::from_value(config).map_err(|e| format!("invalid settings: {e}"))?;
@@ -567,5 +595,57 @@ mod tests {
     fn builtins_must_not_have_a_run_command() {
         let err = builtin::<NoRun>().expect_err("has run");
         assert!(err.contains("must not have `run`"), "{err}");
+    }
+
+    macro_rules! with_icon {
+        ($name:ident, $manifest_icon:expr, $icon:expr) => {
+            struct $name;
+            impl Integration for $name {
+                type Config = NoSettings;
+                const MANIFEST: &'static str = concat!(
+                    "[extension]\nid = \"lamp\"\nname = \"Lamp\"\nversion = \"0.1.0\"\n",
+                    "irori = \">=0.0.0\"\n",
+                    $manifest_icon,
+                    "\n[[contributes.integration]]\niot_class = \"local_push\"\n",
+                    "entity_kinds = [\"light\"]\n"
+                );
+                const ICON: Option<&'static str> = $icon;
+                async fn run(_: NoSettings, _: IntegrationContext) -> Result<(), IntegrationError> {
+                    Ok(())
+                }
+            }
+        };
+    }
+    with_icon!(
+        Agreed,
+        "icon = \"icon.svg\"",
+        Some("<svg xmlns=\"http://www.w3.org/2000/svg\"/>")
+    );
+    with_icon!(NamedNotEmbedded, "icon = \"icon.svg\"", None);
+    with_icon!(EmbeddedNotNamed, "", Some("<svg/>"));
+    with_icon!(
+        NotAnSvg,
+        "icon = \"icon.svg\"",
+        Some("<script>alert(1)</script>")
+    );
+
+    /// The manifest says whether there's an icon; a built-in carries the file. They have to
+    /// agree, and the file has to be an SVG.
+    #[test]
+    fn a_builtins_icon_is_the_one_its_manifest_names() {
+        assert!(builtin::<Agreed>().expect("valid").icon.is_some());
+        for (err, says) in [
+            (
+                builtin::<NamedNotEmbedded>().expect_err("missing"),
+                "doesn't embed",
+            ),
+            (
+                builtin::<EmbeddedNotNamed>().expect_err("unnamed"),
+                "doesn't name",
+            ),
+            (builtin::<NotAnSvg>().expect_err("not svg"), "isn't an SVG"),
+        ] {
+            assert!(err.contains(says), "{err}");
+        }
     }
 }

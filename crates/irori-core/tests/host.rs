@@ -22,8 +22,10 @@ fn uid(s: &str) -> UniqueId {
     UniqueId::try_from(s).expect("valid")
 }
 
-fn lamp_id() -> EntityId {
-    EntityId::try_from("light.lamp").expect("valid")
+/// The lamp's entity id under the extension that described it: ids are made from the device's
+/// id, which is the integration and its handle for the device (ROADMAP D36).
+fn lamp_id(integration: &str) -> EntityId {
+    EntityId::try_from(format!("light.{integration}_lamp")).expect("valid")
 }
 
 async fn describe_lamp(ctx: &IntegrationContext) -> Result<(), IntegrationError> {
@@ -139,7 +141,7 @@ async fn devices_appear_and_commands_round_trip_with_their_context() {
     let host = start(&core, builtin::<Lamp>().expect("valid"));
 
     eventually("the lamp reports it's on", || {
-        core.state(&lamp_id())
+        core.state(&lamp_id("lamp"))
             .and_then(|s| s.state)
             .is_some_and(|s| matches!(s, State::Light(LightState { on: true, .. })))
     })
@@ -148,17 +150,17 @@ async fn devices_appear_and_commands_round_trip_with_their_context() {
     assert_eq!(core.devices().len(), 1);
 
     let context = user_context();
-    core.call_service(&lamp_id(), Command::Toggle, context.clone())
+    core.call_service(&lamp_id("lamp"), Command::Toggle, context.clone())
         .await
         .expect("toggle works");
     eventually("the lamp reports it's off", || {
-        core.state(&lamp_id())
+        core.state(&lamp_id("lamp"))
             .and_then(|s| s.state)
             .is_some_and(|s| matches!(s, State::Light(LightState { on: false, .. })))
     })
     .await;
     // The change points back to the person who asked.
-    let state = core.state(&lamp_id()).expect("state");
+    let state = core.state(&lamp_id("lamp")).expect("state");
     assert_eq!(state.context.parent_id, Some(context.id));
 
     let mut saw_call = false;
@@ -169,7 +171,7 @@ async fn devices_appear_and_commands_round_trip_with_their_context() {
 
     let err = core
         .call_service(
-            &lamp_id(),
+            &lamp_id("lamp"),
             Command::TurnOn(LightTurnOn {
                 rgb: Some([1, 2, 3]),
                 ..LightTurnOn::default()
@@ -182,7 +184,7 @@ async fn devices_appear_and_commands_round_trip_with_their_context() {
 
     host.shutdown().await;
     assert_eq!(status(&core, "lamp"), Some(ExtensionStatus::Disabled));
-    let state = core.state(&lamp_id()).expect("kept");
+    let state = core.state(&lamp_id("lamp")).expect("kept");
     assert_eq!(state.availability, Availability::Unavailable);
     // What it reported while shutting down was applied, and survives going offline.
     assert_eq!(
@@ -232,7 +234,7 @@ async fn two_toggles_at_once_cancel_each_other_out() {
     let core = Core::new(Arc::new(SystemClock));
     let host = start(&core, builtin::<SlowLamp>().expect("valid"));
     let on = || {
-        core.state(&lamp_id())
+        core.state(&lamp_id("slow_lamp"))
             .and_then(|s| s.state)
             .is_some_and(|s| matches!(s, State::Light(LightState { on: true, .. })))
     };
@@ -240,7 +242,7 @@ async fn two_toggles_at_once_cancel_each_other_out() {
 
     // Two people press toggle at the same moment, before the lamp has confirmed the first:
     // off, then on again.
-    let lamp = lamp_id();
+    let lamp = lamp_id("slow_lamp");
     let (first, second) = tokio::join!(
         core.call_service(&lamp, Command::Toggle, user_context()),
         core.call_service(&lamp, Command::Toggle, user_context()),
@@ -291,7 +293,7 @@ async fn a_failed_command_doesnt_change_what_the_core_thinks() {
     let core = Core::new(Arc::new(SystemClock));
     let host = start(&core, builtin::<BrokenLamp>().expect("valid"));
     eventually("the lamp is on", || {
-        core.state(&lamp_id())
+        core.state(&lamp_id("broken_lamp"))
             .and_then(|s| s.state)
             .is_some_and(|s| matches!(s, State::Light(LightState { on: true, .. })))
     })
@@ -300,7 +302,7 @@ async fn a_failed_command_doesnt_change_what_the_core_thinks() {
     // Both toggles see a lamp that's still on, so both try to turn it off.
     for _ in 0..2 {
         let err = core
-            .call_service(&lamp_id(), Command::Toggle, user_context())
+            .call_service(&lamp_id("broken_lamp"), Command::Toggle, user_context())
             .await
             .expect_err("the lamp is unplugged");
         assert!(matches!(err, CallError::Unavailable(_)), "{err}");
@@ -362,7 +364,7 @@ async fn a_crashing_integration_is_restarted_with_growing_delays() {
         other => panic!("expected failed, got {other:?}"),
     }
     assert_eq!(
-        core.state(&lamp_id()).expect("kept").availability,
+        core.state(&lamp_id("crashy")).expect("kept").availability,
         Availability::Unavailable
     );
 
@@ -379,7 +381,7 @@ async fn a_crashing_integration_is_restarted_with_growing_delays() {
         "{waited:?}"
     );
     eventually("available again", || {
-        core.state(&lamp_id())
+        core.state(&lamp_id("crashy"))
             .is_some_and(|s| s.availability == Availability::Available)
     })
     .await;
@@ -518,7 +520,7 @@ async fn calls_time_out_and_health_is_shown() {
     let started = tokio::time::Instant::now();
     // Two calls on the same entity: the second queues behind the first, and the ten seconds
     // cover the wait as well, rather than ten seconds each.
-    let lamp = lamp_id();
+    let lamp = lamp_id("silent");
     let (first, second) = tokio::join!(
         core.call_service(&lamp, Command::TurnOff, user_context()),
         core.call_service(&lamp, Command::TurnOff, user_context()),
@@ -529,7 +531,7 @@ async fn calls_time_out_and_health_is_shown() {
     host.shutdown().await;
 
     let err = core
-        .call_service(&lamp_id(), Command::TurnOff, user_context())
+        .call_service(&lamp_id("silent"), Command::TurnOff, user_context())
         .await
         .expect_err("stopped");
     assert!(matches!(err, CallError::NotRunning(_)), "{err}");

@@ -88,9 +88,44 @@ pub fn groups(home: &Home, needle: &str) -> Vec<Group> {
         .collect()
 }
 
-/// Which way the list is shown. Remembered per browser, because it's a preference about
-/// reading rather than anything Irori needs to know.
+/// Which view the page shows. Remembered per browser, because it's a preference about reading
+/// rather than anything Irori needs to know.
 const VIEW_KEY: &str = "irori.devices.view";
+
+/// Which groups of the device table are folded away, remembered the same way.
+const FOLDED_KEY: &str = "irori.devices.folded";
+
+/// The three ways to look at what's in the home.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Showing {
+    /// One row per device, grouped by the integration it came through. The default: a device is
+    /// the thing a person bought and put somewhere.
+    Devices,
+    /// Every entity with its reading and its switch, grouped by device.
+    Entities,
+    /// Values Irori keeps itself, rather than a device reporting them.
+    Helpers,
+}
+
+impl Showing {
+    const ALL: [Showing; 3] = [Showing::Devices, Showing::Entities, Showing::Helpers];
+
+    fn key(self) -> &'static str {
+        match self {
+            Showing::Devices => "devices",
+            Showing::Entities => "entities",
+            Showing::Helpers => "helpers",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Showing::Devices => "Devices",
+            Showing::Entities => "Entities",
+            Showing::Helpers => "Helpers",
+        }
+    }
+}
 
 #[component]
 pub fn Devices() -> impl IntoView {
@@ -98,31 +133,35 @@ pub fn Devices() -> impl IntoView {
     let controls = expect_context::<Controls>();
     let filter = RwSignal::new(String::new());
     let adding = RwSignal::new(false);
-    let as_table = RwSignal::new(remembered_view());
+    let showing = RwSignal::new(remembered_view());
+    let folded = RwSignal::new(remembered_folded());
     let waiting = crate::waiting::everything_waiting(live);
 
-    Effect::new(move |_| remember_view(as_table.get()));
+    Effect::new(move |_| remember(VIEW_KEY, showing.get().key()));
+    Effect::new(move |_| {
+        remember(
+            FOLDED_KEY,
+            &folded.get().into_iter().collect::<Vec<_>>().join(","),
+        )
+    });
 
     view! {
         <div class="page-head">
             <h1>"Devices"</h1>
-            <div class="switcher" role="group" aria-label="How to show the devices">
-                <button
-                    type="button"
-                    class:chosen=move || !as_table.get()
-                    aria-pressed=move || (!as_table.get()).to_string()
-                    on:click=move |_| as_table.set(false)
-                >
-                    "Entities"
-                </button>
-                <button
-                    type="button"
-                    class:chosen=move || as_table.get()
-                    aria-pressed=move || as_table.get().to_string()
-                    on:click=move |_| as_table.set(true)
-                >
-                    "Devices"
-                </button>
+            <div class="switcher" role="group" aria-label="What to show">
+                {Showing::ALL
+                    .into_iter()
+                    .map(|view| view! {
+                        <button
+                            type="button"
+                            class:chosen=move || showing.get() == view
+                            aria-pressed=move || (showing.get() == view).to_string()
+                            on:click=move |_| showing.set(view)
+                        >
+                            {view.label()}
+                        </button>
+                    })
+                    .collect_view()}
             </div>
             <button type="button" class="add" on:click=move |_| adding.update(|a| *a = !*a)>
                 {move || if adding.get() { "Close" } else { "+ Add device" }}
@@ -147,39 +186,49 @@ pub fn Devices() -> impl IntoView {
         }}
         {move || adding.get().then(|| view! { <AddDevice /> })}
 
-        <input
-            class="filter"
-            type="search"
-            placeholder="Filter by name or id"
-            aria-label="Filter devices"
-            prop:value=filter
-            on:input:target=move |ev| filter.set(ev.target().value())
-        />
+        {move || (showing.get() != Showing::Helpers).then(|| view! {
+            <input
+                class="filter"
+                type="search"
+                placeholder="Filter by name, id, room or make"
+                aria-label="Filter"
+                prop:value=filter
+                on:input:target=move |ev| filter.set(ev.target().value())
+            />
+        })}
 
         {move || {
             let home = live.home.get();
             let needle = filter.get();
-            if as_table.get() {
-                table(&home, &needle)
-            } else {
-                view(&home, &needle, controls)
+            match showing.get() {
+                Showing::Devices => table(&home, &needle, folded),
+                Showing::Entities => view(&home, &needle, controls),
+                Showing::Helpers => helpers(),
             }
         }}
     }
 }
 
-/// One row per device: what it is and where it came from, rather than what it's doing.
+/// A device with its entities and what they're reporting: one row of the device table.
+type DeviceRow = (Device, Vec<(Entity, Option<EntityState>)>);
+
+/// One row per device: what it is and where it is, grouped by the integration it came through.
 ///
 /// Built from the devices rather than from their entities, so a device Irori is connected to
 /// still appears when it provides nothing Irori can model — a Bluetooth proxy, say. Those are
 /// invisible in the entity view by their nature, and being unable to find them would be worse.
-fn table(home: &Home, needle: &str) -> AnyView {
+fn table(home: &Home, needle: &str, folded: RwSignal<BTreeSet<String>>) -> AnyView {
     let needle = needle.trim().to_lowercase();
     let matches = |device: &Device| {
         let haystack = [
             device.name.to_string(),
             device.id.to_string(),
             device.integration.to_string(),
+            device
+                .description
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default(),
             device.manufacturer.clone().unwrap_or_default(),
             device.model.clone().unwrap_or_default(),
             // Typing a room's name is one of the most useful things to be able to type.
@@ -190,35 +239,27 @@ fn table(home: &Home, needle: &str) -> AnyView {
                 .iter()
                 .any(|field| field.to_lowercase().contains(&needle))
     };
-    let mut devices: Vec<_> = home
-        .devices
-        .iter()
-        .filter(|device| matches(device))
-        .map(|device| {
-            let entities: Vec<_> = home
-                .entities
-                .iter()
-                .filter(|entity| entity.device_id.as_ref() == Some(&device.id))
-                .map(|entity| {
-                    let state = home
-                        .states
-                        .iter()
-                        .find(|state| state.entity_id == entity.id)
-                        .cloned();
-                    (entity.clone(), state)
-                })
-                .collect();
-            (device.clone(), entities)
-        })
-        .collect();
-    devices.sort_by(|(a, _), (b, _)| (&a.name, &a.id).cmp(&(&b.name, &b.id)));
-    // Room names by area id, so each row is a lookup rather than a scan of every area.
-    let rooms: BTreeMap<Option<AreaId>, String> = home
-        .areas
-        .iter()
-        .map(|area| (Some(area.id.clone()), area.name.to_string()))
-        .collect();
-    if devices.is_empty() {
+    let mut by_integration: BTreeMap<String, Vec<DeviceRow>> = BTreeMap::new();
+    for device in home.devices.iter().filter(|device| matches(device)) {
+        let entities: Vec<_> = home
+            .entities
+            .iter()
+            .filter(|entity| entity.device_id.as_ref() == Some(&device.id))
+            .map(|entity| {
+                let state = home
+                    .states
+                    .iter()
+                    .find(|state| state.entity_id == entity.id)
+                    .cloned();
+                (entity.clone(), state)
+            })
+            .collect();
+        by_integration
+            .entry(device.integration.to_string())
+            .or_default()
+            .push((device.clone(), entities));
+    }
+    if by_integration.is_empty() {
         let message = if home.devices.is_empty() {
             "No devices yet. Extensions bring them in; \"Add device\" says how."
         } else {
@@ -226,47 +267,175 @@ fn table(home: &Home, needle: &str) -> AnyView {
         };
         return view! { <p class="empty">{message}</p> }.into_any();
     }
+    let rooms: BTreeMap<Option<AreaId>, String> = home
+        .areas
+        .iter()
+        .map(|area| (Some(area.id.clone()), area.name.to_string()))
+        .collect();
+    let mut groups: Vec<_> = by_integration
+        .into_iter()
+        .map(|(integration, mut devices)| {
+            devices.sort_by(|(a, _), (b, _)| (&a.name, &a.id).cmp(&(&b.name, &b.id)));
+            let extension = home
+                .extensions
+                .iter()
+                .find(|(id, _)| id.as_str() == integration);
+            let name = extension
+                .map(|(_, extension)| extension.name.clone())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| integration.clone());
+            let has_icon = extension.is_some_and(|(_, extension)| extension.has_icon);
+            (integration, name, has_icon, devices)
+        })
+        .collect();
+    groups.sort_by_key(|group| group.1.to_lowercase());
+    // While filtering, every group with a match is open: a folded group hiding the one result
+    // would look like no result at all.
+    let filtering = !needle.is_empty();
+
     view! {
         <div class="table-scroll">
             <table class="devices">
                 <thead>
                     <tr>
+                        <th scope="col" class="icon-col">
+                            <span class="visually-hidden">"Integration"</span>
+                        </th>
                         <th scope="col">"Device"</th>
                         <th scope="col">"Room"</th>
-                        <th scope="col">"Through"</th>
                         <th scope="col">"Make"</th>
                         <th scope="col">"Model"</th>
                         <th scope="col">"Battery"</th>
                         <th scope="col" class="number">"Entities"</th>
                     </tr>
                 </thead>
-                <tbody>
-                    {devices
-                        .into_iter()
-                        .map(|(device, entities)| {
-                            let id = device.id.to_string();
-                            let entity_count = entities.len();
-                            let battery = battery(&entities);
-                            let room = rooms.get(&device.area_id).cloned();
-                            view! {
-                                <tr>
-                                    <th scope="row">
-                                        <A href=format!("/devices/{id}")>{device.name.to_string()}</A>
-                                        <span class="id">{id}</span>
-                                    </th>
-                                    <td class="room">{room.unwrap_or_else(|| "—".to_owned())}</td>
-                                    <td>{device.integration.to_string()}</td>
-                                    <td>{device.manufacturer.clone().unwrap_or_default()}</td>
-                                    <td>{device.model.clone().unwrap_or_default()}</td>
-                                    <td class="battery">{battery.unwrap_or_else(|| "—".to_owned())}</td>
-                                    <td class="number">{entity_count}</td>
-                                </tr>
-                            }
-                        })
-                        .collect_view()}
-                </tbody>
+                {groups
+                    .into_iter()
+                    .map(|(integration, name, has_icon, devices)| {
+                        group(integration, name, has_icon, devices, &rooms, folded, filtering)
+                    })
+                    .collect_view()}
             </table>
         </div>
+    }
+    .into_any()
+}
+
+/// One integration's devices: a header that folds them away, and a row each.
+fn group(
+    integration: String,
+    name: String,
+    has_icon: bool,
+    devices: Vec<DeviceRow>,
+    rooms: &BTreeMap<Option<AreaId>, String>,
+    folded: RwSignal<BTreeSet<String>>,
+    filtering: bool,
+) -> AnyView {
+    let open = {
+        let key = integration.clone();
+        move || filtering || !folded.get().contains(&key)
+    };
+    let toggle = {
+        let key = integration.clone();
+        move |_| {
+            folded.update(|folded| {
+                if !folded.remove(&key) {
+                    folded.insert(key.clone());
+                }
+            })
+        }
+    };
+    let count = devices.len();
+    let rows = devices
+        .into_iter()
+        .map(|(device, entities)| {
+            let id = device.id.to_string();
+            let entity_count = entities.len();
+            let battery = battery(&entities);
+            let room = rooms.get(&device.area_id).cloned();
+            view! {
+                <tr>
+                    <td class="icon-col">{icon(&integration, has_icon)}</td>
+                    <th scope="row">
+                        <A href=format!("/devices/{id}")>{device.name.to_string()}</A>
+                        {device.description.as_ref().map(|description| view! {
+                            <span class="description">{description.to_string()}</span>
+                        })}
+                    </th>
+                    <td class="room">{room.unwrap_or_else(|| "—".to_owned())}</td>
+                    <td>{device.manufacturer.clone().unwrap_or_default()}</td>
+                    <td>{device.model.clone().unwrap_or_default()}</td>
+                    <td class="battery">{battery.unwrap_or_else(|| "—".to_owned())}</td>
+                    <td class="number">{entity_count}</td>
+                </tr>
+            }
+        })
+        .collect_view();
+    let header_icon = icon(&integration, has_icon);
+    let folded_class = {
+        let open = open.clone();
+        move || !open()
+    };
+    view! {
+        <tbody class="group" class:folded=folded_class>
+            <tr class="group-head">
+                <th scope="rowgroup" colspan="7">
+                    <button
+                        type="button"
+                        aria-expanded=move || open().to_string()
+                        on:click=toggle
+                    >
+                        <span class="chevron" aria-hidden="true"></span>
+                        {header_icon}
+                        <span class="group-name">{name}</span>
+                        <span class="muted small">
+                            {format!("{count} device{}", if count == 1 { "" } else { "s" })}
+                        </span>
+                    </button>
+                </th>
+            </tr>
+            {rows}
+        </tbody>
+    }
+    .into_any()
+}
+
+/// An integration's icon, or its initial when it has none. Always an `<img>`: an extension's SVG
+/// is loaded as an image, where it can't run script (`docs/specs/extensions.md`).
+pub fn icon(integration: &str, has_icon: bool) -> AnyView {
+    if has_icon {
+        view! {
+            <img
+                class="integration-icon"
+                src=format!("/api/dev/extensions/{integration}/icon.svg")
+                alt=""
+                width="20"
+                height="20"
+            />
+        }
+        .into_any()
+    } else {
+        let initial = integration
+            .chars()
+            .next()
+            .map(|c| c.to_ascii_uppercase().to_string())
+            .unwrap_or_default();
+        view! { <span class="integration-icon letter" aria-hidden="true">{initial}</span> }
+            .into_any()
+    }
+}
+
+/// Helpers don't exist yet. Saying what they will be is more use than an empty tab.
+fn helpers() -> AnyView {
+    view! {
+        <section class="card">
+            <h2>"No helpers yet"</h2>
+            <p class="muted">
+                "Helpers are values Irori keeps itself rather than a device reporting them: a "
+                "switch for \"guests are over\", a number for a thermostat's night setting, a "
+                "timer. They arrive with rules (M1.4), which are what they're for."
+            </p>
+        </section>
     }
     .into_any()
 }
@@ -302,20 +471,39 @@ pub fn battery(entities: &[(Entity, Option<EntityState>)]) -> Option<String> {
     })
 }
 
-/// The list style this browser was last shown. Browser storage can be unavailable or refused,
-/// and it only holds a preference, so anything unexpected just means the default.
-fn remembered_view() -> bool {
+/// The view this browser was last shown. Browser storage can be unavailable or refused, and it
+/// only holds a preference, so anything unexpected just means the default.
+fn remembered_view() -> Showing {
+    let saved = stored(VIEW_KEY);
+    Showing::ALL
+        .into_iter()
+        .find(|view| saved.as_deref() == Some(view.key()))
+        .unwrap_or(Showing::Devices)
+}
+
+fn remembered_folded() -> BTreeSet<String> {
+    stored(FOLDED_KEY)
+        .map(|saved| {
+            saved
+                .split(',')
+                .filter(|key| !key.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn stored(key: &str) -> Option<String> {
     window()
         .local_storage()
         .ok()
         .flatten()
-        .and_then(|storage| storage.get_item(VIEW_KEY).ok().flatten())
-        .is_some_and(|value| value == "devices")
+        .and_then(|storage| storage.get_item(key).ok().flatten())
 }
 
-fn remember_view(as_table: bool) {
+pub fn remember(key: &str, value: &str) {
     if let Ok(Some(storage)) = window().local_storage() {
-        let _ = storage.set_item(VIEW_KEY, if as_table { "devices" } else { "entities" });
+        let _ = storage.set_item(key, value);
     }
 }
 

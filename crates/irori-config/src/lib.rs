@@ -19,7 +19,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use irori_types::{Area, DeviceSettings, EntitySettings, ExtensionSettings, Settings, SettingsKey};
+use irori_types::{
+    Area, DeviceId, DeviceSettings, EntitySettings, ExtensionSettings, Settings, SettingsKey,
+};
 
 pub use files::File;
 
@@ -65,7 +67,7 @@ impl<T: Default> Default for Part<T> {
 pub struct Store {
     dir: PathBuf,
     areas: Part<Vec<Area>>,
-    devices: Part<BTreeMap<SettingsKey, DeviceSettings>>,
+    devices: Part<BTreeMap<DeviceId, DeviceSettings>>,
     entities: Part<BTreeMap<SettingsKey, EntitySettings>>,
     secrets: Part<ExtensionSettings>,
 }
@@ -340,6 +342,10 @@ mod tests {
         tempfile::tempdir().expect("a temporary directory")
     }
 
+    fn device(s: &str) -> DeviceId {
+        s.parse().expect("a valid device id")
+    }
+
     fn key(s: &str) -> SettingsKey {
         s.parse().expect("a valid settings key")
     }
@@ -359,6 +365,7 @@ mod tests {
     fn named(what: &str) -> DeviceSettings {
         DeviceSettings {
             name: Some(name(what)),
+            description: None,
             area: irori_types::Placement::Unsaid,
         }
     }
@@ -375,7 +382,7 @@ mod tests {
         let home = dir();
         let settings = Settings {
             areas: vec![area("hall", "Hall")],
-            devices: [(key("demo/lamp"), named("Reading lamp"))].into(),
+            devices: [(device("demo_lamp"), named("Reading lamp"))].into(),
             entities: BTreeMap::new(),
         };
 
@@ -430,7 +437,7 @@ mod tests {
         store
             .save(&Settings {
                 areas: vec![area("hall", "Hall")],
-                devices: [(key("demo/lamp"), named("Reading lamp"))].into(),
+                devices: [(device("demo_lamp"), named("Reading lamp"))].into(),
                 ..Settings::default()
             })
             .expect("saved");
@@ -446,7 +453,7 @@ mod tests {
             "the last good areas stay live"
         );
         assert_eq!(
-            store.settings().devices[&key("demo/lamp")],
+            store.settings().devices[&device("demo_lamp")],
             named("Reading lamp"),
             "a broken areas.toml says nothing about devices.toml"
         );
@@ -512,7 +519,7 @@ mod tests {
 
         let refused = store.save(&Settings {
             areas: vec![area("kitchen", "Kitchen")],
-            devices: [(key("demo/lamp"), named("Reading lamp"))].into(),
+            devices: [(device("demo_lamp"), named("Reading lamp"))].into(),
             entities: [(
                 key("demo/lamp-light"),
                 EntitySettings {

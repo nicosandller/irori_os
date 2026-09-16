@@ -8,8 +8,8 @@
 use std::collections::BTreeMap;
 
 use irori_types::{
-    Area, AreaId, DeviceSettings, EntitySettings, ExtensionId, ExtensionSettings, FloorId, Name,
-    Placement, Settings, SettingsKey,
+    Area, AreaId, Description, DeviceId, DeviceSettings, EntitySettings, ExtensionId,
+    ExtensionSettings, FloorId, Name, Placement, Settings, SettingsKey,
 };
 use serde::{Deserialize, Serialize};
 
@@ -64,7 +64,7 @@ struct RawArea {
 #[serde(deny_unknown_fields)]
 struct DevicesFile {
     #[serde(default)]
-    devices: BTreeMap<String, RawDevice>,
+    devices: BTreeMap<DeviceId, RawDevice>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -72,6 +72,8 @@ struct DevicesFile {
 struct RawDevice {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<Name>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<Description>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     area: Option<RawPlacement>,
 }
@@ -139,20 +141,20 @@ pub fn read_areas(text: &str) -> Result<Vec<Area>, String> {
         .collect())
 }
 
-pub fn read_devices(text: &str) -> Result<BTreeMap<SettingsKey, DeviceSettings>, String> {
+pub fn read_devices(text: &str) -> Result<BTreeMap<DeviceId, DeviceSettings>, String> {
     let file: DevicesFile = toml::from_str(text).map_err(|e| e.to_string())?;
     file.devices
         .into_iter()
-        .map(|(key, raw)| {
-            let parsed: SettingsKey = key.parse().map_err(|e| format!("`{key}`: {e}"))?;
+        .map(|(id, raw)| {
             let area = match raw.area {
-                Some(raw) => raw.placement().map_err(|e| format!("`{key}`: {e}"))?,
+                Some(raw) => raw.placement().map_err(|e| format!("`{id}`: {e}"))?,
                 None => Placement::Unsaid,
             };
             Ok((
-                parsed,
+                id,
                 DeviceSettings {
                     name: raw.name,
+                    description: raw.description,
                     area,
                 },
             ))
@@ -241,11 +243,12 @@ pub fn write(file: File, settings: &Settings) -> String {
                 .devices
                 .iter()
                 .filter(|(_, device)| !device.is_empty())
-                .map(|(key, device)| {
+                .map(|(id, device)| {
                     (
-                        key.to_string(),
+                        id.clone(),
                         RawDevice {
                             name: device.name.clone(),
+                            description: device.description.clone(),
                             area: RawPlacement::of(&device.area),
                         },
                     )
@@ -278,8 +281,8 @@ fn preamble(file: File) -> String {
     let what = match file {
         File::Areas => "The rooms of your home.",
         File::Devices => {
-            "What you've said about your devices: what to call one, and which room it's in.\n\
-             # Each key is `<integration>/<the integration's own id for the device>`."
+            "What you've said about your devices: what each is called, what it's for, and which\n\
+             # room it's in. Each key is the device's id, the same one its page and the API use."
         }
         File::Entities => {
             "What you've said about individual entities.\n\
@@ -352,11 +355,15 @@ mod tests {
     #[test]
     fn devices_read_from_the_shape_the_spec_shows() {
         let devices = read_devices(
-            "[devices.\"esphome/34:98:7a:2b:09:00\"]\nname = \"Hallway radar\"\narea = \"hall\"\n",
+            "[devices.esphome_34_98_7a_2b_09_00]\nname = \"Hallway radar\"\ndescription = \"By the door\"\narea = \"hall\"\n",
         )
         .expect("valid");
         let settings = devices
-            .get(&key("esphome/34:98:7a:2b:09:00"))
+            .get(
+                &"esphome_34_98_7a_2b_09_00"
+                    .parse::<DeviceId>()
+                    .expect("valid"),
+            )
             .expect("the device");
         assert_eq!(
             settings.name.as_ref().map(Name::as_str),
@@ -381,9 +388,15 @@ mod tests {
         assert!(read_devices("[device.\"demo/lamp\"]\nname = \"Lamp\"\n").is_err());
     }
 
+    /// A device is written under its id, which is a slug; the old `<integration>/<handle>` form
+    /// isn't one, and says so rather than being read as a device nobody has.
     #[test]
-    fn a_key_that_isnt_a_settings_key_names_itself_in_the_error() {
-        let error = read_devices("[devices.lamp]\nname = \"Lamp\"\n").expect_err("no integration");
+    fn a_device_key_that_isnt_a_device_id_names_itself_in_the_error() {
+        let error = read_devices("[devices.\"esphome/34:98:7a\"]\nname = \"Lamp\"\n")
+            .expect_err("not a device id");
+        assert!(error.contains("esphome/34:98:7a"), "{error}");
+        let error =
+            read_entities("[entities.lamp]\nname = \"Lamp\"\n").expect_err("no integration");
         assert!(error.contains("lamp"), "{error}");
     }
 
@@ -396,9 +409,12 @@ mod tests {
                 floor_id: None,
             }],
             devices: [(
-                key("esphome/34:98:7a:2b:09:00"),
+                "esphome_34_98_7a_2b_09_00"
+                    .parse::<DeviceId>()
+                    .expect("valid"),
                 DeviceSettings {
                     name: Some(name("Hallway radar")),
+                    description: Some("By the door".parse().expect("valid")),
                     area: Placement::In(area_id("hall")),
                 },
             )]
@@ -432,11 +448,15 @@ mod tests {
     fn an_entry_that_says_nothing_is_not_written() {
         let settings = Settings {
             devices: [
-                (key("demo/lamp"), DeviceSettings::default()),
                 (
-                    key("demo/plug"),
+                    "demo_lamp".parse::<DeviceId>().expect("valid"),
+                    DeviceSettings::default(),
+                ),
+                (
+                    "demo_plug".parse::<DeviceId>().expect("valid"),
                     DeviceSettings {
                         name: Some(name("Plug")),
+                        description: None,
                         area: Placement::Unsaid,
                     },
                 ),
@@ -445,7 +465,7 @@ mod tests {
             ..Settings::default()
         };
         let written = write(File::Devices, &settings);
-        assert!(!written.contains("demo/lamp"), "{written}");
-        assert!(written.contains("demo/plug"), "{written}");
+        assert!(!written.contains("demo_lamp"), "{written}");
+        assert!(written.contains("demo_plug"), "{written}");
     }
 }

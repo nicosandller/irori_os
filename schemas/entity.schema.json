@@ -38,17 +38,6 @@
     "name": {
       "$ref": "#/$defs/Name"
     },
-    "renamed_from": {
-      "description": "What it would be called if nobody had renamed it: its integration's name for it, or its\ndevice's name for an entity that was described without one. Absent when nobody has.",
-      "anyOf": [
-        {
-          "$ref": "#/$defs/Name"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
     "unique_id": {
       "description": "The integration's stable id for this entity. Survives renames of `id`.",
       "$ref": "#/$defs/UniqueId"
