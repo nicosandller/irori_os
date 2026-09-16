@@ -221,6 +221,14 @@ async fn apply(
             entities,
         } => {
             let device_id = device.unique_id.clone();
+            // A connection that has already been replaced can still have an arrival in the
+            // queue. Nothing it says should reach the core, or it would describe a device and
+            // then take ownership back from the connection that superseded it.
+            if !devices.tasks.contains_key(&address) {
+                tracing::debug!(device = %device_id, %address,
+                    "ignoring an arrival from a connection that has already ended");
+                return Ok(());
+            }
             ctx.describe_device(*device).await?;
             let mut described = Vec::new();
             for entity in entities {
@@ -245,14 +253,27 @@ async fn apply(
                 }
                 // The same device answering from a new address: the old connection is stopped,
                 // so it can't go on reporting for a device it no longer speaks for.
-                if previous.address != address {
-                    tracing::info!(device = %device_id, from = %previous.address, to = %address,
+                let moved_from = previous.address;
+                if moved_from != address {
+                    tracing::info!(device = %device_id, from = %moved_from, to = %address,
                         "the device moved address");
-                    // Dropping its command channel is how the old connection learns it's done.
-                    // It stops at its next turn round the loop and refuses whatever it was
-                    // still holding, which an abort would have thrown away un-answered.
-                    devices.tasks.remove(&previous.address);
-                    devices.unreachable.remove(&previous.address);
+                    // Only if the address it left is still its own. Two devices can swap
+                    // addresses, and the connection at the old one may already speak for
+                    // somebody else — stopping that would disconnect a device that is fine.
+                    let taken_over = devices
+                        .nodes
+                        .iter()
+                        .any(|(id, node)| node.address == moved_from && *id != device_id);
+                    if taken_over {
+                        tracing::debug!(%moved_from,
+                            "leaving the old address alone; another device answers there now");
+                    } else {
+                        // Dropping its command channel is how the old connection learns it's
+                        // done. It stops at its next turn round the loop and refuses whatever
+                        // it was still holding, which an abort would have thrown away.
+                        devices.tasks.remove(&moved_from);
+                        devices.unreachable.remove(&moved_from);
+                    }
                 }
             }
             // The address may have belonged to a different device until a moment ago (DHCP

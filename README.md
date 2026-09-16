@@ -46,7 +46,8 @@ irori help run
 ```
 
 `run` and `serve` are the same command. Every option is also an environment variable
-(`IRORI_DATA`, `IRORI_BIND`, `IRORI_LOG_LEVEL`), which is what the container uses.
+(`IRORI_DATA`, `IRORI_BIND`, `IRORI_LOG_LEVEL`, `IRORI_ALLOW_UNAUTHENTICATED_LAN`), which is what
+the container uses. `irori help run` lists them with their defaults.
 
 Or straight from the checkout, without installing — the same commands after `cargo run --`:
 

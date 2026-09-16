@@ -61,6 +61,16 @@ pub enum Event {
 const FIRST_RETRY: Duration = Duration::from_secs(1);
 const MAX_RETRY: Duration = Duration::from_secs(60);
 
+/// How long the whole opening exchange may take: connect, say hello, ask what the device is and
+/// what it has, and subscribe. A host that accepts the connection and then says nothing must not
+/// hold a task for ever — it has to reach the reconnect path like any other failure.
+const SETUP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long a connection may be silent before Irori checks it's still there, and how long the
+/// answer may take. A device with nothing to report is normal; one that has stopped answering
+/// looks exactly the same from here until asked.
+const PING_AFTER: Duration = Duration::from_secs(30);
+
 /// How long a command's context stays attached to what the device reports next. ESPHome answers
 /// a command with a state message rather than an acknowledgement, so the next report for that
 /// entity is the result; after this long it's a change that happened on its own.
@@ -169,11 +179,25 @@ async fn session(
         .await
         .map_err(|e| format!("can't connect to {address}: {e}"))?;
 
-    let device = handshake(&mut client).await?;
-    let device_unique_id = map::device_id(&device).map_err(|e| e.to_string())?;
-    let description = map::device(&device).map_err(|e| e.to_string())?;
-
-    let entities = list_entities(&mut client, &device_unique_id).await?;
+    // Bounded: everything up to "subscribed and listening" has to finish, or be given up on.
+    let opening = async {
+        let device = handshake(&mut client).await?;
+        let device_unique_id = map::device_id(&device).map_err(|e| e.to_string())?;
+        let description = map::device(&device).map_err(|e| e.to_string())?;
+        let entities = list_entities(&mut client, &device_unique_id).await?;
+        Ok::<_, String>((device, device_unique_id, description, entities))
+    };
+    let (device, device_unique_id, description, entities) =
+        match tokio::time::timeout(SETUP_TIMEOUT, opening).await {
+            Ok(opened) => opened?,
+            Err(_) => {
+                return Err(format!(
+                    "{address} accepted the connection but didn't finish saying what it is \
+                     within {}s",
+                    SETUP_TIMEOUT.as_secs()
+                ));
+            }
+        };
     let lights: HashMap<u32, LightCapabilities> = entities
         .iter()
         .filter_map(|(key, entity)| match &entity.capabilities {
@@ -229,9 +253,16 @@ async fn session(
     // to whoever asked for it.
     let mut commanded: HashMap<u32, VecDeque<(ContextId, Instant)>> = HashMap::new();
 
+    // Silence is ambiguous: a device with nothing to say and one that has gone away look the
+    // same down a TCP connection that nobody has closed. So after a quiet spell, ask.
+    let mut quiet = tokio::time::interval_at(Instant::now() + PING_AFTER, PING_AFTER);
+    let mut asked = false;
+
     loop {
         tokio::select! {
             message = client.try_read() => {
+                // Anything at all is proof it's still there.
+                asked = false;
                 let message = match message {
                     Ok(message) => message,
                     Err(e) => return Ok(Ended::Disconnected(format!("{address} stopped answering: {e}"))),
@@ -263,6 +294,17 @@ async fn session(
                 let Some(incoming) = call else { return Ok(Ended::Stopping) };
                 let key = by_unique_id.get(&incoming.call.unique_id).copied();
                 command(&mut client, incoming, key, &lights, &mut commanded).await;
+            }
+            _ = quiet.tick() => {
+                if asked {
+                    return Ok(Ended::Disconnected(format!(
+                        "{address} stopped answering (no reply to a ping in {}s)",
+                        PING_AFTER.as_secs()
+                    )));
+                }
+                client.try_write(esphome_client::types::PingRequest {}).await
+                    .map_err(|e| format!("can't ask {address} whether it's still there: {e}"))?;
+                asked = true;
             }
         }
     }
