@@ -48,6 +48,7 @@ Last revised: 2026-09-15. Based on the original `irori-project-plan.md`, revised
 | D27 | **The UI is built with Leptos** (0.8), not Dioxus | M0.8 spike: the same page in both, measured. Leptos downloads 119 KB brotli against Dioxus's 207 KB, with 203 crates against 363. Both were equally pleasant to write and both fit the §4.3 budget, but the barebones UI will grow past this page, and Dioxus's extra size buys desktop and mobile reach Irori doesn't need. See [crates/irori-ui/README.md](crates/irori-ui/README.md). |
 | D28 | **ESPHome's protocol comes from the `esphome-client` crate**, pinned to one API version, rather than hand-rolled | The architecture already puts protocol libraries in integrations (`rumqttc` for MQTT, §2.2), and this one is the client half: mDNS discovery, the protobuf messages, and the Noise transport encryption will need. Hand-rolling the Noise handshake and a protobuf subset would cost weeks for no behaviour. The crate is young (0.2.1), so the risk is deliberate and bounded: it is ~2k readable lines under MIT, only `irori-int-esphome` depends on it, and its version pin means an ESPHome release can't change what Irori compiles against. If it is abandoned, vendoring or replacing it touches one crate. |
 | D29 | **Plaintext ESPHome devices are adopted automatically, and that is a known trust limit** | Plain ESPHome has no device authentication, so anything on the LAN that announces `_esphomelib._tcp` is believed: a hostile host could present fake entities, or impersonate a device id. The alternatives all need somewhere to keep a decision — an allowlist, adopted-device records, or encryption keys — which is the config dir (M0.7). Until then the limit is stated in the README, warned about in the log at every first connection, and bounded by Irori refusing to listen beyond loopback without `--allow-unauthenticated-lan`. Encrypted devices, which do authenticate, are the fix, and they come with M0.7. |
+| D30 | **A device capability is an entity kind; a vendor's own tooling is a contributed app.** Firmware update becomes an `update` entity kind in the model (M1.8), not an ESPHome-specific screen | The protocols already model it as a capability — ESPHome, Z-Wave and Matter all report an available version and take an install command, and Home Assistant's `update` domain works the same way. Modelled once, every integration that has it gets the same UI, rules can act on it, and the CLI gets it for free. What genuinely is integration-specific — ESPHome's YAML editor, compiling and flashing, a vendor's cloud account settings — is a separate program, and the manifest already reserves the contribution kinds for that (`app`, proxied under `/apps/<id>/`, Phase 3; `dashboard`/`card` in sandboxed iframes, Phase 2c). So Irori doesn't need a special back door for integration UI: it needs the contribution kinds it already planned. |
 
 ### Review notes on the original plan (kept for context)
 
@@ -398,6 +399,23 @@ Deliberately minimal: fast to load, no dashboards, no charts beyond the basics. 
 - **Settings:** access tokens, location/time zone, recorder retention, system info (version, uptime, memory, DB size).
 - Budget: UI bundle within §4.3; first load on a Pi-served LAN < 1 s.
 - **Demo:** the full loop from a fresh install in the browser: enable the MQTT extension → device appears → write rule → it fires → trace visible.
+
+### M1.8 Firmware updates (≈1–2 wks)
+A device that can update itself says so, and a person can let it (D30).
+
+- **New entity kind: `update`** (`docs/specs/entities.md`). Capabilities: whether it can check on
+  demand. State: `installed_version`, `latest_version`, `title`, `release_url`, `in_progress`,
+  `progress`. Services: `update.install`, `update.check`.
+- **ESPHome maps straight onto it**: its native API already carries
+  `ListEntitiesUpdateResponse`, `UpdateStateResponse` and `UpdateCommandRequest`
+  (`UPDATE` / `CHECK`), which is how Home Assistant offers ESPHome OTA. No ESPHome-specific
+  screen is needed for this.
+- **UI**: on the device page, "Firmware 2026.8.2 → 2026.9.1", the release notes, an Install
+  button and progress. In the list, a device with an update available is marked.
+- **Not this**: building firmware. Compiling and flashing from source is the ESPHome dashboard's
+  job, and in Irori that's an extension contributing an `app` (Phase 3, §8), not core work.
+- **Demo:** a device with an update pending, installed from the Devices page, with the progress
+  visible and the version changing when it comes back.
 
 ### M1.7 CLI, packaging, release (≈2–3 wks)
 CLI has **full parity with the UI**; every read command supports `--json`; shell completions:
