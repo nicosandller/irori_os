@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use irori_config::{Problem, Store};
 use irori_core::Core;
-use irori_types::Settings;
+use irori_types::{ExtensionSettings, Settings};
 use tokio::sync::Mutex;
 
 /// How often the files are checked for outside edits. Two seconds is fast enough that editing a
@@ -57,6 +57,7 @@ impl Config {
             "config directory read"
         );
         core.apply_settings(store.settings());
+        core.apply_extension_settings(store.extension_settings());
         Self(Arc::new(Mutex::new(store)))
     }
 
@@ -83,6 +84,26 @@ impl Config {
         Ok(made)
     }
 
+    /// Changes `secrets.toml`, writes it, and tells the core — which restarts whichever extension
+    /// the change was for. Same order and same re-read as [`Config::edit`].
+    pub async fn edit_secrets<T>(
+        &self,
+        core: &Core,
+        change: impl FnOnce(&mut ExtensionSettings) -> Result<T, Refused>,
+    ) -> Result<T, EditError> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+
+        let mut secrets = store.extension_settings();
+        let made = change(&mut secrets).map_err(EditError::Refused)?;
+        if store.save_secrets(&secrets).map_err(EditError::Io)? {
+            // Which file, never what's in it.
+            tracing::info!(file = "secrets.toml", "config written");
+        }
+        core.apply_extension_settings(secrets);
+        Ok(made)
+    }
+
     /// Picks up edits made outside Irori. Runs until the process ends.
     pub async fn watch(self, core: Core) {
         loop {
@@ -90,9 +111,10 @@ impl Config {
             let mut store = self.0.lock().await;
             let problems = store.reload();
             report(&problems);
-            // `apply_settings` publishes nothing when nothing changed, so this is free on the
-            // overwhelming majority of ticks.
+            // Both publish nothing when nothing changed, so this is free on the overwhelming
+            // majority of ticks.
             core.apply_settings(store.settings());
+            core.apply_extension_settings(store.extension_settings());
         }
     }
 }

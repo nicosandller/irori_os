@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +81,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/dev/areas/{id}", patch(edit_area).delete(remove_area))
         .route("/api/dev/devices/{id}", patch(edit_device))
         .route("/api/dev/entities/{id}", patch(edit_entity))
+        .route("/api/dev/extensions/{id}/secrets", put(give_secret))
         .fallback(get(ui::serve))
         .with_state(state)
 }
@@ -309,6 +310,74 @@ async fn edit_entity(
         .await;
     match edited {
         Ok(()) => Json(core.entities().into_iter().find(|entity| entity.id == id)).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+/// A secret for an extension, at the place it asked for one: `{"path": [...], "value": "..."}`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SecretGiven {
+    path: Vec<String>,
+    value: String,
+}
+
+/// Written by hand so the value can't reach a log through `{:?}`.
+impl std::fmt::Debug for SecretGiven {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretGiven")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Hands an extension a secret it asked for — an encryption key for a device it found, say — by
+/// writing it into `secrets.toml`. The extension is restarted with it.
+///
+/// **Only where it asked.** The path has to be one the extension lists as waiting right now
+/// (`docs/specs/integrations.md` §6.6). There is no sign-in yet (D12), so this endpoint must not
+/// be a way to put anything into anyone's settings; this way it can only answer a question an
+/// extension is actually asking. The value is never echoed back, logged, or readable afterwards.
+async fn give_secret(
+    State(state): State<AppState>,
+    Path(id): Path<ExtensionId>,
+    Json(given): Json<SecretGiven>,
+) -> Response {
+    let core = &state.0.core;
+    let Some(extension) = core.extensions().remove(&id) else {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("there's no extension `{id}`"),
+        );
+    };
+    let asked = extension
+        .waiting
+        .iter()
+        .filter_map(|waiting| waiting.secret.as_ref())
+        .any(|secret| secret.path == given.path);
+    if !asked {
+        return refused(
+            StatusCode::CONFLICT,
+            format!(
+                "`{id}` isn't asking for a secret there right now; it may already have one, or \
+                 have stopped waiting"
+            ),
+        );
+    }
+    if given.value.trim().is_empty() {
+        return refused(StatusCode::BAD_REQUEST, "the secret is empty".to_owned());
+    }
+    let saved = state
+        .0
+        .config
+        .edit_secrets(core, |secrets| {
+            secrets
+                .set(&id, &given.path, given.value.trim().to_owned())
+                .map_err(|e| Refused(e.to_string()))
+        })
+        .await;
+    match saved {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => edit_failed(e),
     }
 }
@@ -1110,6 +1179,173 @@ mod tests {
             "nothing was written"
         );
 
+        host.shutdown().await;
+        Ok(())
+    }
+
+    // --- Secrets ----------------------------------------------------------------------------
+
+    /// An integration that won't do anything without a key, and says where the key goes.
+    struct Safe;
+
+    #[derive(Debug, Deserialize, schemars::JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    struct SafeSettings {
+        #[serde(default)]
+        code: Option<String>,
+    }
+
+    impl irori_integration::Integration for Safe {
+        type Config = SafeSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "safe"
+            name = "Safe"
+            version = "0.1.0"
+            irori = ">=0.0.0, <0.1.0"
+
+            [[contributes.integration]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+        "#;
+        async fn run(
+            settings: SafeSettings,
+            mut ctx: irori_integration::IntegrationContext,
+        ) -> Result<(), irori_integration::IntegrationError> {
+            if settings.code.is_none() {
+                ctx.set_waiting(vec![irori_types::Waiting {
+                    unique_id: "vault".parse()?,
+                    name: "Vault".parse()?,
+                    reason: "it wants a code".into(),
+                    secret: Some(irori_types::SecretRequest {
+                        path: vec!["code".into()],
+                        label: "Code".into(),
+                        hint: None,
+                    }),
+                }])
+                .await;
+            }
+            ctx.stopped().await;
+            Ok(())
+        }
+    }
+
+    async fn safe() -> anyhow::Result<(Core, irori_core::ExtensionHost)> {
+        let core = core();
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![irori_integration::builtin::<Safe>().map_err(anyhow::Error::msg)?],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        waiting_for(&core, 1).await?;
+        Ok((core, host))
+    }
+
+    async fn waiting_for(core: &Core, count: usize) -> anyhow::Result<()> {
+        for _ in 0..500 {
+            let waiting = core
+                .extensions()
+                .get(&ExtensionId::try_from("safe")?)
+                .map_or(0, |overview| overview.waiting.len());
+            if waiting == count {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        anyhow::bail!("the safe never had {count} waiting")
+    }
+
+    /// The whole path of a secret: the page shows what's waiting, sends the secret to the place
+    /// it was asked for, and the extension is restarted with it — and it's written somewhere only
+    /// Irori's user can read, and never handed back.
+    #[tokio::test]
+    async fn a_secret_given_where_it_was_asked_for_unlocks_the_extension() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        let home = server.read("/api/dev/home").await?;
+        assert_eq!(home["extensions"]["safe"]["waiting"][0]["name"], "Vault");
+        assert_eq!(
+            home["extensions"]["safe"]["waiting"][0]["secret"]["path"],
+            serde_json::json!(["code"])
+        );
+
+        let (status, body) = server
+            .json(
+                "PUT",
+                "/api/dev/extensions/safe/secrets",
+                serde_json::json!({"path": ["code"], "value": "1234-5678"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        assert!(
+            !body.to_string().contains("1234"),
+            "the secret came back: {body}"
+        );
+
+        waiting_for(&core, 0).await?;
+        let written = std::fs::read_to_string(server.config_dir().join("secrets.toml"))?;
+        assert!(
+            written.contains("[safe]") && written.contains("code = \"1234-5678\""),
+            "{written}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(server.config_dir().join("secrets.toml"))?
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+        }
+        let home = server.read("/api/dev/home").await?;
+        assert!(
+            !home.to_string().contains("1234"),
+            "a secret leaked into the home view"
+        );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Without sign-in, this endpoint can only answer a question an extension is asking. It can't
+    /// put anything anywhere else in anyone's settings.
+    #[tokio::test]
+    async fn a_secret_nobody_asked_for_is_refused() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, _) = server
+            .json(
+                "PUT",
+                "/api/dev/extensions/safe/secrets",
+                serde_json::json!({"path": ["something_else"], "value": "x"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        let (status, _) = server
+            .json(
+                "PUT",
+                "/api/dev/extensions/nope/secrets",
+                serde_json::json!({"path": ["code"], "value": "x"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let (status, _) = server
+            .json(
+                "PUT",
+                "/api/dev/extensions/safe/secrets",
+                serde_json::json!({"path": ["code"], "value": "   "}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        assert!(
+            !server.config_dir().join("secrets.toml").exists(),
+            "nothing was written"
+        );
         host.shutdown().await;
         Ok(())
     }

@@ -125,6 +125,11 @@ pub fn Home() -> impl IntoView {
                                             if devices == 1 { "" } else { "s" },
                                         )}
                                     </span>
+                                    {(!extension.waiting.is_empty()).then(|| view! {
+                                        <A href="/devices" attr:class="small">
+                                            {format!("{} waiting for you", extension.waiting.len())}
+                                        </A>
+                                    })}
                                     {trouble.map(|why| view! { <p class="why">{why}</p> })}
                                 </li>
                             }

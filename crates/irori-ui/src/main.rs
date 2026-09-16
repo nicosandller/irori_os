@@ -11,6 +11,7 @@ mod device;
 mod devices;
 mod home;
 mod rooms;
+mod waiting;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;

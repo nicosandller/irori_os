@@ -16,6 +16,44 @@ use crate::{
     State, UniqueId,
 };
 
+/// Something an integration found but can't use yet, because it needs a person first: a device
+/// that wants an encryption key, one that has to be paired, an account that has to be signed in
+/// to. See `docs/specs/integrations.md` §6.6.
+///
+/// Not a device in the registry. It has no entities and nothing is known about it beyond what
+/// it announced, so putting it there would show a device that can't do anything. It's listed on
+/// its extension instead, where the UI can offer to fix it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Waiting {
+    /// The same handle the device will have once it's in the registry, so what a person
+    /// provides now is attached to what it's for (ROADMAP D31).
+    pub unique_id: UniqueId,
+    /// What it calls itself, for recognising it.
+    pub name: Name,
+    /// What's needed, in a sentence, e.g. "it wants an encryption key".
+    pub reason: String,
+    /// Where a secret that would unlock it goes, if a secret is what it needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<SecretRequest>,
+}
+
+/// Where a secret goes: a path inside the extension's table in `secrets.toml`
+/// (`docs/specs/config.md`). The extension decides the path, so the UI and the core can take a
+/// secret for any extension without knowing what it means.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecretRequest {
+    /// Table keys from the extension's own table down to the value, e.g.
+    /// `["keys", "30:83:98:CA:6A:08"]`. At least one.
+    pub path: Vec<String>,
+    /// What to call the field, e.g. "Encryption key".
+    pub label: String,
+    /// Where to find it, e.g. "`api: encryption: key:` in the device's YAML".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
 /// A device as an integration describes it. The core adds it to the registry, or updates the
 /// entry with the same `unique_id`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]

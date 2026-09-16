@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use irori_types::{Area, DeviceSettings, EntitySettings, Settings, SettingsKey};
+use irori_types::{Area, DeviceSettings, EntitySettings, ExtensionSettings, Settings, SettingsKey};
 
 pub use files::File;
 
@@ -67,6 +67,7 @@ pub struct Store {
     areas: Part<Vec<Area>>,
     devices: Part<BTreeMap<SettingsKey, DeviceSettings>>,
     entities: Part<BTreeMap<SettingsKey, EntitySettings>>,
+    secrets: Part<ExtensionSettings>,
 }
 
 impl Store {
@@ -78,6 +79,7 @@ impl Store {
             areas: Part::default(),
             devices: Part::default(),
             entities: Part::default(),
+            secrets: Part::default(),
         }
     }
 
@@ -96,6 +98,11 @@ impl Store {
             devices: self.devices.value.clone(),
             entities: self.entities.value.clone(),
         }
+    }
+
+    /// Each extension's settings: its table in `secrets.toml`.
+    pub fn extension_settings(&self) -> ExtensionSettings {
+        self.secrets.value.clone()
     }
 
     /// Re-reads whatever has changed on disk since the last call, and says what went wrong.
@@ -135,6 +142,7 @@ impl Store {
             File::Areas => self.areas.value = files::read_areas(&text)?,
             File::Devices => self.devices.value = files::read_devices(&text)?,
             File::Entities => self.entities.value = files::read_entities(&text)?,
+            File::Secrets => self.secrets.value = files::read_secrets(&text)?,
         }
         // Only once it parsed: a file that is being edited and saved half-written should be
         // re-read on the next tick, not remembered as good.
@@ -147,6 +155,7 @@ impl Store {
             File::Areas => self.areas.seen.as_ref(),
             File::Devices => self.devices.seen.as_ref(),
             File::Entities => self.entities.seen.as_ref(),
+            File::Secrets => self.secrets.seen.as_ref(),
         }
     }
 
@@ -155,6 +164,7 @@ impl Store {
             File::Areas => &mut self.areas.seen,
             File::Devices => &mut self.devices.seen,
             File::Entities => &mut self.entities.seen,
+            File::Secrets => &mut self.secrets.seen,
         }
     }
 
@@ -170,14 +180,14 @@ impl Store {
     /// exactly as it was, rather than half of a change that the next reload would then adopt.
     pub fn save(&mut self, settings: &Settings) -> std::io::Result<Vec<File>> {
         let mut prepared = Vec::new();
-        for file in File::ALL {
+        for file in File::SETTINGS {
             let text = files::write(file, settings);
             let path = self.path(file);
             if std::fs::read_to_string(&path).is_ok_and(|current| current == text) {
                 continue;
             }
             std::fs::create_dir_all(&self.dir)?;
-            match write_beside(&path, &text) {
+            match write_beside(&path, &text, Readable::ByAnyone) {
                 Ok(temporary) => prepared.push((file, path, temporary)),
                 Err(e) => {
                     discard(&prepared);
@@ -217,11 +227,53 @@ impl Store {
         self.entities.value = settings.entities.clone();
         // The files on disk are now these settings, so the next reload must not treat Irori's
         // own write as an outside edit and parse them again.
-        for file in File::ALL {
+        for file in File::SETTINGS {
             *self.seen_mut(file) = look(&self.dir.join(file.name()));
         }
         Ok(written)
     }
+
+    /// Replaces `secrets.toml`. Written only if its contents change, atomically, and — when Irori
+    /// creates it — readable by Irori's own user and nobody else.
+    ///
+    /// Returns whether it wrote anything.
+    pub fn save_secrets(&mut self, secrets: &ExtensionSettings) -> std::io::Result<bool> {
+        let text = files::write_secrets(secrets);
+        let path = self.path(File::Secrets);
+        let changed = !std::fs::read_to_string(&path).is_ok_and(|current| current == text);
+        if changed {
+            std::fs::create_dir_all(&self.dir)?;
+            // The rest of this directory is meant for git; this file mustn't end up there by way
+            // of a `git add .`. Only when there's no `.gitignore` at all: one a person wrote is
+            // theirs, and they may have their reasons.
+            let ignore = self.dir.join(".gitignore");
+            if !ignore.exists() {
+                std::fs::write(
+                    &ignore,
+                    "# Written by Irori: secrets.toml holds keys and must never be committed.\n\
+                     secrets.toml\n*.toml.writing\n",
+                )?;
+            }
+            let temporary = write_beside(&path, &text, Readable::ByOwnerOnly)?;
+            if let Err(e) = std::fs::rename(&temporary, &path) {
+                let _ = std::fs::remove_file(&temporary);
+                return Err(e);
+            }
+        }
+        self.secrets.value = secrets.clone();
+        *self.seen_mut(File::Secrets) = look(&path);
+        Ok(changed)
+    }
+}
+
+/// Who a file Irori writes may be read by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Readable {
+    /// Whatever the umask allows, like any other file.
+    ByAnyone,
+    /// Irori's own user. Set on the file before anything is written into it, so there's no
+    /// moment when a secret sits in a file others can open.
+    ByOwnerOnly,
 }
 
 /// A file's size and modification time, or `None` if it isn't there.
@@ -236,11 +288,27 @@ fn look(path: &Path) -> Option<Seen> {
 /// Writes `text` to a temporary file next to `path`, ready to be renamed over it.
 ///
 /// Beside it, not in `/tmp`, on purpose: `rename` is only atomic within one filesystem.
-fn write_beside(path: &Path, text: &str) -> std::io::Result<PathBuf> {
+fn write_beside(path: &Path, text: &str, readable: Readable) -> std::io::Result<PathBuf> {
     use std::io::Write as _;
 
     let temporary = path.with_extension("toml.writing");
-    let mut file = std::fs::File::create(&temporary)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    if readable == Readable::ByOwnerOnly {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    #[cfg(not(unix))]
+    let _ = readable;
+    let mut file = options.open(&temporary)?;
+    // `mode` only applies when the file is created. One left behind by a crash could already
+    // exist with wider permissions, so say it again rather than trust whatever was there.
+    #[cfg(unix)]
+    if readable == Readable::ByOwnerOnly {
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
     let written = file
         .write_all(text.as_bytes())
         // Rename is atomic, but without this the rename can land before the contents do and a
@@ -437,7 +505,7 @@ mod tests {
         // `entities.toml` is the last of the three, so a failure on it is exactly the case where
         // the two before it would already have been changed.
         std::fs::create_dir(home.path().join("entities.toml.writing")).expect("in the way");
-        let before: Vec<String> = File::ALL
+        let before: Vec<String> = File::SETTINGS
             .iter()
             .map(|file| std::fs::read_to_string(home.path().join(file.name())).expect("readable"))
             .collect();
@@ -455,7 +523,7 @@ mod tests {
         });
 
         assert!(refused.is_err(), "the save should have failed");
-        for (file, was) in File::ALL.iter().zip(before) {
+        for (file, was) in File::SETTINGS.iter().zip(before) {
             assert_eq!(
                 std::fs::read_to_string(home.path().join(file.name())).expect("readable"),
                 was,
@@ -466,6 +534,92 @@ mod tests {
             !home.path().join("areas.toml.writing").exists(),
             "a prepared file was left behind"
         );
+    }
+
+    fn esphome_key(value: &str) -> ExtensionSettings {
+        let mut secrets = ExtensionSettings::default();
+        secrets
+            .set(
+                &"esphome".parse().expect("a valid id"),
+                &["keys".to_owned(), "30:83:98:CA:6A:08".to_owned()],
+                value.to_owned(),
+            )
+            .expect("set");
+        secrets
+    }
+
+    #[test]
+    fn secrets_are_saved_and_read_back_like_everything_else() {
+        let home = dir();
+        let mut store = Store::new(home.path());
+        assert!(store.save_secrets(&esphome_key("a2V5")).expect("saved"));
+        assert!(
+            !store.save_secrets(&esphome_key("a2V5")).expect("saved"),
+            "unchanged"
+        );
+
+        let mut fresh = Store::new(home.path());
+        assert!(fresh.reload().is_empty());
+        assert_eq!(fresh.extension_settings(), esphome_key("a2V5"));
+    }
+
+    /// A config directory is meant to be kept in git, and a `git add .` there must not take the
+    /// keys with it. A `.gitignore` somebody already wrote is left exactly as it is.
+    #[test]
+    fn secrets_are_kept_out_of_git_without_overriding_a_persons_own_gitignore() {
+        let home = dir();
+        let mut store = Store::new(home.path());
+        store.save_secrets(&esphome_key("a2V5")).expect("saved");
+        let ignore = std::fs::read_to_string(home.path().join(".gitignore")).expect("written");
+        assert!(
+            ignore.lines().any(|line| line == "secrets.toml"),
+            "{ignore}"
+        );
+
+        let theirs = dir();
+        std::fs::write(theirs.path().join(".gitignore"), "mine\n").expect("written");
+        let mut store = Store::new(theirs.path());
+        store.save_secrets(&esphome_key("a2V5")).expect("saved");
+        assert_eq!(
+            std::fs::read_to_string(theirs.path().join(".gitignore")).expect("readable"),
+            "mine\n"
+        );
+    }
+
+    /// Somebody else on the machine shouldn't be able to read a key just because the umask is
+    /// generous.
+    #[cfg(unix)]
+    #[test]
+    fn a_secrets_file_irori_writes_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let home = dir();
+        let mut store = Store::new(home.path());
+        store.save_secrets(&esphome_key("a2V5")).expect("saved");
+        let mode = std::fs::metadata(home.path().join("secrets.toml"))
+            .expect("written")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+    }
+
+    /// A key edited by hand reaches the running server; a broken edit keeps the last good keys.
+    #[test]
+    fn a_secrets_file_edited_by_hand_is_picked_up_and_a_broken_one_is_survived() {
+        let home = dir();
+        let mut store = Store::new(home.path());
+        store.reload();
+        std::fs::write(
+            home.path().join("secrets.toml"),
+            "[esphome.keys]\n\"30:83:98:CA:6A:08\" = \"a2V5\"\n",
+        )
+        .expect("written");
+        assert!(store.reload().is_empty());
+        assert_eq!(store.extension_settings(), esphome_key("a2V5"));
+
+        std::fs::write(home.path().join("secrets.toml"), "[esphome.keys\n").expect("written");
+        assert_eq!(store.reload().len(), 1);
+        assert_eq!(store.extension_settings(), esphome_key("a2V5"));
     }
 
     /// A rename must not leave the working file behind: the directory a person opens should have

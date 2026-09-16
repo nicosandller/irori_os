@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use irori_types::{
     Availability, DeviceDescription, EntityDescription, ExtensionManifest, ServiceCall,
-    StateReport, UniqueId,
+    StateReport, UniqueId, Waiting,
 };
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
@@ -222,6 +222,14 @@ impl IntegrationContext {
         let _ = self.ops.send(host::Op::SetHealth(health)).await;
     }
 
+    /// Says what it has found but can't use until a person does something (spec §6.6): the
+    /// whole list, replacing the last one. Send an empty list when nothing is waiting.
+    ///
+    /// Like health, send it when it changes rather than on every turn of a loop.
+    pub async fn set_waiting(&self, waiting: Vec<Waiting>) {
+        let _ = self.ops.send(host::Op::SetWaiting(waiting)).await;
+    }
+
     /// Reports a new value for one of its entities. Never waits: if the core is behind, an
     /// older report for the same entity that it hasn't read yet is replaced by this one. At most
     /// [`MAX_PENDING_ENTITIES`] entities' reports wait at once; reports for further entities are
@@ -376,6 +384,7 @@ pub mod host {
         RemoveEntity(UniqueId, Reply),
         SetAvailability(AvailabilityTarget, Availability, Reply),
         SetHealth(Health),
+        SetWaiting(Vec<Waiting>),
     }
 
     /// Bounded, so a runaway integration waits instead of growing the core's memory.

@@ -5,24 +5,28 @@
 //! Each device gets its own task ([`node`]); this module owns the loop that talks to the core,
 //! because the core's handle can't be shared.
 //!
-//! **Not yet:** encrypted devices. ESPHome's API can require a pre-shared key, and a key has to
-//! be configured somewhere, which waits for the config dir (M0.7). Devices that want one are
-//! listed in the log and left alone rather than retried forever.
+//! **Encrypted devices** need their key, kept in `secrets.toml` ([`settings`]). A device that
+//! wants one and has none, or whose key doesn't match, isn't retried: it's listed as waiting
+//! (`docs/specs/integrations.md` §6.6), where the UI offers to take the key, and a new key
+//! restarts the integration.
 
 #[cfg(test)]
 mod fake_device;
 mod map;
 mod node;
+mod settings;
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use irori_integration::types::{Availability, UniqueId};
+use irori_integration::types::{Availability, Name, SecretRequest, UniqueId, Waiting};
 use irori_integration::{
     AvailabilityTarget, Health, IncomingCall, Integration, IntegrationContext, IntegrationError,
-    NoSettings, ServiceError,
+    ServiceError,
 };
+
+use crate::settings::{Mac, Settings};
 use tokio::sync::mpsc;
 
 /// The ESPHome integration.
@@ -30,13 +34,13 @@ use tokio::sync::mpsc;
 pub struct Esphome;
 
 impl Integration for Esphome {
-    // Nothing to configure yet: discovery finds the devices, and the one thing that will need
-    // configuring (encryption keys) waits for the config dir (M0.7).
-    type Config = NoSettings;
+    // Discovery finds the devices; the one thing a person has to supply is the key for a device
+    // that encrypts its connection.
+    type Config = Settings;
     const MANIFEST: &'static str = include_str!("../irori-extension.toml");
 
-    async fn run(_config: NoSettings, ctx: IntegrationContext) -> Result<(), IntegrationError> {
-        run(ctx).await
+    async fn run(settings: Settings, ctx: IntegrationContext) -> Result<(), IntegrationError> {
+        run(settings, ctx).await
     }
 }
 
@@ -91,16 +95,56 @@ struct Devices {
     unreachable: BTreeMap<SocketAddr, String>,
     /// Handed out to each new connection; never reused.
     connections: u64,
+    /// What each address announced about itself, so a device that turns out to be locked can be
+    /// named by what it called itself rather than by an address.
+    announced: BTreeMap<SocketAddr, Announced>,
+    /// Devices that need a key before they can be used, by MAC. Not retried in this run: the
+    /// settings can't change without the integration being restarted.
+    waiting: BTreeMap<Mac, Waiting>,
 }
 
-async fn run(mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
+/// What a device says about itself on the network, before anyone connects to it.
+#[derive(Debug, Clone)]
+struct Announced {
+    address: SocketAddr,
+    /// From mDNS's `mac` record. Firmware old enough not to send one can still be used unless it
+    /// needs a key, which has nothing to be attached to without it.
+    mac: Option<Mac>,
+    /// Its `friendly_name`, else its hostname.
+    name: String,
+    /// Whether it announced `api_encryption`.
+    encrypted: bool,
+}
+
+/// What the Add device panel shows for a device that needs its key.
+fn needs_key(mac: &Mac, name: &str, why: &str) -> Option<Waiting> {
+    Some(Waiting {
+        // The same handle the device will have in the registry once it's in (`map::device_id`).
+        unique_id: UniqueId::try_from(mac.as_str()).ok()?,
+        name: Name::try_from(name.trim())
+            .or_else(|_| Name::try_from(mac.as_str()))
+            .ok()?,
+        reason: why.to_owned(),
+        secret: Some(SecretRequest {
+            path: vec!["keys".to_owned(), mac.to_string()],
+            label: "Encryption key".to_owned(),
+            hint: Some("`api: encryption: key:` in the device's ESPHome YAML".to_owned()),
+        }),
+    })
+}
+
+async fn run(settings: Settings, mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
     let (events_tx, mut events) = mpsc::channel(EVENT_QUEUE);
     let (discovered, listener) = discovery()?;
     let mut discovered = discovered;
     let mut devices = Devices::default();
+    if !settings.keys.is_empty() {
+        tracing::info!(keys = settings.keys.len(), "encryption keys configured");
+    }
 
     let mut reported_health = Health::Running;
     ctx.set_health(reported_health.clone()).await;
+    let mut reported_waiting: Vec<Waiting> = Vec::new();
 
     let outcome = loop {
         tokio::select! {
@@ -110,20 +154,8 @@ async fn run(mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
             }
             found = discovered.recv() => {
                 match found {
-                    Some(Ok(address)) => {
-                        if devices.tasks.contains_key(&address) {
-                            continue;
-                        }
-                        tracing::info!(%address, "found an ESPHome device");
-                        devices.connections += 1;
-                        let connection = node::Connection { id: devices.connections, address };
-                        let (commands, commands_rx) = mpsc::channel(COMMAND_QUEUE);
-                        let handle =
-                            tokio::spawn(node::run(connection, events_tx.clone(), commands_rx));
-                        devices.tasks.insert(
-                            address,
-                            Task { connection, commands, handle },
-                        );
+                    Some(Ok(announced)) => {
+                        arrive(announced, &settings, &mut devices, &events_tx);
                     }
                     // Discovery is how this integration finds anything, so losing it is not
                     // something to carry on quietly with: fail, and let the core restart us
@@ -138,16 +170,20 @@ async fn run(mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
             }
             Some(event) = events.recv() => {
                 apply(event, &ctx, &mut devices).await?;
-                // Only when it actually changes. A busy device reports constantly, and the
-                // core's operations channel is bounded and shared with describing entities
-                // and marking them unavailable; repeating "still fine" into it would crowd
-                // out the things that matter.
-                let now = health(&devices);
-                if now != reported_health {
-                    ctx.set_health(now.clone()).await;
-                    reported_health = now;
-                }
             }
+        }
+        // Only when they actually change. A busy device reports constantly, and the core's
+        // operations channel is bounded and shared with describing entities and marking them
+        // unavailable; repeating "still fine" into it would crowd out the things that matter.
+        let now = health(&devices);
+        if now != reported_health {
+            ctx.set_health(now.clone()).await;
+            reported_health = now;
+        }
+        let waiting: Vec<Waiting> = devices.waiting.values().cloned().collect();
+        if waiting != reported_waiting {
+            ctx.set_waiting(waiting.clone()).await;
+            reported_waiting = waiting;
         }
     };
 
@@ -161,6 +197,74 @@ async fn run(mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
     devices.nodes.clear();
     stop(handles).await;
     outcome
+}
+
+/// Starts talking to a device that announced itself — unless it needs a key it doesn't have, in
+/// which case it's listed as waiting instead.
+fn arrive(
+    announced: Announced,
+    settings: &Settings,
+    devices: &mut Devices,
+    events: &mpsc::Sender<node::Event>,
+) {
+    let address = announced.address;
+    if devices.tasks.contains_key(&address) {
+        return;
+    }
+    // Already known to be locked. Its key can't change without a restart, so trying again at
+    // every announcement would only fail the same way, every time.
+    if announced
+        .mac
+        .as_ref()
+        .is_some_and(|mac| devices.waiting.contains_key(mac))
+    {
+        return;
+    }
+    devices.announced.insert(address, announced.clone());
+    if announced.encrypted {
+        let Some(mac) = &announced.mac else {
+            tracing::warn!(%address, name = %announced.name,
+                "skipping: it wants an encrypted connection but didn't announce its MAC address, so there's nothing to attach a key to");
+            return;
+        };
+        let why = match settings.keys.get(mac).map(|given| &given.0) {
+            Some(Ok(key)) => return connect(address, Some(key.clone()), devices, events),
+            Some(Err(bad)) => format!("the key it was given can't be used: {bad}"),
+            None => "it wants an encryption key".to_owned(),
+        };
+        tracing::info!(%address, device = %mac, name = %announced.name, %why,
+            "found an ESPHome device that needs its encryption key");
+        if let Some(waiting) = needs_key(mac, &announced.name, &why) {
+            devices.waiting.insert(mac.clone(), waiting);
+        }
+        return;
+    }
+    connect(address, None, devices, events);
+}
+
+/// Starts the task that talks to one address.
+fn connect(
+    address: SocketAddr,
+    key: Option<crate::settings::Key>,
+    devices: &mut Devices,
+    events: &mpsc::Sender<node::Event>,
+) {
+    tracing::info!(%address, encrypted = key.is_some(), "found an ESPHome device");
+    devices.connections += 1;
+    let connection = node::Connection {
+        id: devices.connections,
+        address,
+    };
+    let (commands, commands_rx) = mpsc::channel(COMMAND_QUEUE);
+    let handle = tokio::spawn(node::run(connection, key, events.clone(), commands_rx));
+    devices.tasks.insert(
+        address,
+        Task {
+            connection,
+            commands,
+            handle,
+        },
+    );
 }
 
 /// Gives the device tasks a moment to finish, then stops them. A task can be waiting on a
@@ -326,6 +430,10 @@ async fn apply(
                     IntegrationError::new(format!("`{device_id}` arrived with no task behind it"))
                 })?;
             devices.unreachable.remove(&address);
+            // Whatever it was waiting for, it has it now.
+            devices
+                .waiting
+                .retain(|mac, _| mac.as_str() != device_id.as_str());
             devices.nodes.insert(
                 device_id,
                 Node {
@@ -376,6 +484,28 @@ async fn apply(
             )
             .await?;
         }
+        node::Event::Locked { connection, why } => {
+            if !current(devices, connection) {
+                return Ok(());
+            }
+            let address = connection.address;
+            // Its task has already stopped; forget it so the address isn't counted as busy.
+            devices.tasks.remove(&address);
+            devices.unreachable.remove(&address);
+            let announced = devices.announced.get(&address);
+            match announced.and_then(|announced| announced.mac.clone()) {
+                Some(mac) => {
+                    let name = announced.map_or_else(|| mac.to_string(), |a| a.name.clone());
+                    tracing::warn!(%address, device = %mac, %why, "an ESPHome device is locked");
+                    if let Some(waiting) = needs_key(&mac, &name, &why) {
+                        devices.waiting.insert(mac, waiting);
+                    }
+                }
+                None => tracing::warn!(%address, %why,
+                    "an ESPHome device is locked, and didn't announce a MAC address to attach a \
+                     key to"),
+            }
+        }
         node::Event::Unreachable { connection, why } => {
             // Not from a connection that has since been replaced: that address is somebody
             // else's business now, and counting it would leave this integration degraded over
@@ -397,7 +527,7 @@ async fn apply(
 /// What the Extensions view says about this integration.
 fn health(devices: &Devices) -> Health {
     let offline = devices.nodes.values().filter(|node| !node.online).count();
-    if devices.unreachable.is_empty() && offline == 0 {
+    if devices.unreachable.is_empty() && offline == 0 && devices.waiting.is_empty() {
         Health::Running
     } else {
         let connected = devices.nodes.len() - offline;
@@ -407,6 +537,9 @@ fn health(devices: &Devices) -> Health {
         }
         if !devices.unreachable.is_empty() {
             trouble.push(format!("{} unreachable", devices.unreachable.len()));
+        }
+        if !devices.waiting.is_empty() {
+            trouble.push(format!("{} waiting for a key", devices.waiting.len()));
         }
         Health::Degraded(format!("{connected} connected, {}", trouble.join(", ")))
     }
@@ -421,7 +554,7 @@ fn health(devices: &Devices) -> Health {
 /// trust an ESPHome device gets from Home Assistant on a home LAN, but it is a real limit:
 /// until keys can be configured (M0.7), Irori's ESPHome support is only as trustworthy as the
 /// network it runs on. See the README.
-type Discovered = mpsc::Receiver<Result<SocketAddr, String>>;
+type Discovered = mpsc::Receiver<Result<Announced, String>>;
 
 fn discovery() -> Result<(Discovered, tokio::task::JoinHandle<()>), IntegrationError> {
     let found = esphome_client::discovery::Client::default()
@@ -433,22 +566,11 @@ fn discovery() -> Result<(Discovered, tokio::task::JoinHandle<()>), IntegrationE
         loop {
             let message = match found.next().await {
                 Ok(device) => {
-                    if device.has_encryption() {
-                        // Nothing to do about it yet, and retrying wouldn't help; say so once.
-                        tracing::warn!(
-                            device = %device.hostname(),
-                            "skipping: it wants an encrypted connection, and Irori can't hold a \
-                             key until the config dir lands (M0.7)"
-                        );
+                    let Some(address) = device.socket_address() else {
+                        tracing::warn!(device = %device.hostname(), "announced with no address");
                         continue;
-                    }
-                    match device.socket_address() {
-                        Some(address) => Ok(address),
-                        None => {
-                            tracing::warn!(device = %device.hostname(), "announced with no address");
-                            continue;
-                        }
-                    }
+                    };
+                    Ok(announced(address, &device))
                 }
                 // Discovery is the only way this integration finds anything, so the run loop
                 // needs to hear about this rather than simply going quiet.
@@ -463,9 +585,198 @@ fn discovery() -> Result<(Discovered, tokio::task::JoinHandle<()>), IntegrationE
     Ok((rx, listener))
 }
 
+/// What a device's mDNS record says about it.
+fn announced(address: SocketAddr, device: &esphome_client::discovery::DeviceInfo) -> Announced {
+    let attributes = device.attributes();
+    let hostname = device
+        .hostname()
+        .trim_end_matches('.')
+        .trim_end_matches(".local");
+    Announced {
+        address,
+        mac: attributes.get("mac").and_then(|mac| mac.parse().ok()),
+        name: attributes
+            .get("friendly_name")
+            .filter(|name| !name.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| hostname.to_owned()),
+        encrypted: device.has_encryption(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn announced(port: u16, mac: &str, encrypted: bool) -> Announced {
+        Announced {
+            address: SocketAddr::from(([127, 0, 0, 1], port)),
+            mac: Some(mac.parse().expect("a MAC")),
+            name: "Garage door".to_owned(),
+            encrypted,
+        }
+    }
+
+    /// A device that wants a key it doesn't have is listed as waiting — named as it announced
+    /// itself, with the place its key goes — and nothing tries to connect to it.
+    #[tokio::test]
+    async fn a_device_that_needs_a_key_waits_instead_of_being_connected_to() {
+        let (events, _events) = mpsc::channel(8);
+        let mut devices = Devices::default();
+
+        arrive(
+            announced(1, "aa:bb:cc:00:00:01", true),
+            &Settings::default(),
+            &mut devices,
+            &events,
+        );
+
+        assert!(devices.tasks.is_empty(), "nothing to connect with");
+        let waiting = devices.waiting.values().next().expect("waiting");
+        assert_eq!(waiting.name.as_str(), "Garage door");
+        assert_eq!(waiting.unique_id.as_str(), "AA:BB:CC:00:00:01");
+        assert_eq!(
+            waiting.secret.as_ref().map(|secret| secret.path.clone()),
+            Some(vec!["keys".to_owned(), "AA:BB:CC:00:00:01".to_owned()])
+        );
+        assert_eq!(
+            health(&devices),
+            Health::Degraded("0 connected, 1 waiting for a key".to_owned())
+        );
+
+        // Announced again, as mDNS does: still one entry, still no connection.
+        arrive(
+            announced(1, "aa:bb:cc:00:00:01", true),
+            &Settings::default(),
+            &mut devices,
+            &events,
+        );
+        assert_eq!(devices.waiting.len(), 1);
+        assert!(devices.tasks.is_empty());
+    }
+
+    /// With its key, the same device is connected to; without encryption, no key is needed.
+    #[tokio::test]
+    async fn a_device_with_its_key_or_without_encryption_is_connected_to() {
+        let (events, _events) = mpsc::channel(8);
+        let mut devices = Devices::default();
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "keys": { "aa:bb:cc:00:00:01": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=" }
+        }))
+        .expect("valid");
+
+        arrive(
+            announced(1, "aa:bb:cc:00:00:01", true),
+            &settings,
+            &mut devices,
+            &events,
+        );
+        arrive(
+            announced(2, "aa:bb:cc:00:00:02", false),
+            &settings,
+            &mut devices,
+            &events,
+        );
+
+        assert_eq!(devices.tasks.len(), 2);
+        assert!(devices.waiting.is_empty());
+        stop(
+            std::mem::take(&mut devices.tasks)
+                .into_values()
+                .map(|t| t.handle)
+                .collect(),
+        )
+        .await;
+    }
+
+    /// A key that isn't a key keeps only its own device waiting, and says why. The other devices
+    /// are none of its business — failing the settings would disconnect all of them.
+    #[tokio::test]
+    async fn a_malformed_key_keeps_only_its_own_device_waiting() {
+        let (events, _events) = mpsc::channel(8);
+        let mut devices = Devices::default();
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "keys": { "aa:bb:cc:00:00:01": "far too short" }
+        }))
+        .expect("the settings still load");
+
+        arrive(
+            announced(1, "aa:bb:cc:00:00:01", true),
+            &settings,
+            &mut devices,
+            &events,
+        );
+        arrive(
+            announced(2, "aa:bb:cc:00:00:02", false),
+            &settings,
+            &mut devices,
+            &events,
+        );
+
+        assert_eq!(
+            devices.tasks.len(),
+            1,
+            "the unencrypted device is connected regardless"
+        );
+        let waiting = devices.waiting.values().next().expect("waiting");
+        assert!(
+            waiting.reason.contains("can't be used"),
+            "{}",
+            waiting.reason
+        );
+        assert!(
+            !waiting.reason.contains("far too short"),
+            "{}",
+            waiting.reason
+        );
+        stop(
+            std::mem::take(&mut devices.tasks)
+                .into_values()
+                .map(|t| t.handle)
+                .collect(),
+        )
+        .await;
+    }
+
+    /// A key that turns out to be wrong puts the device back to waiting, under the name it
+    /// announced, and says why — so the page can ask for the right one.
+    #[tokio::test]
+    async fn a_wrong_key_puts_the_device_back_to_waiting() {
+        let (ctx, _host) = irori_integration::host::connect();
+        let (events, _events) = mpsc::channel(8);
+        let mut devices = Devices::default();
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "keys": { "aa:bb:cc:00:00:01": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=" }
+        }))
+        .expect("valid");
+        arrive(
+            announced(1, "aa:bb:cc:00:00:01", true),
+            &settings,
+            &mut devices,
+            &events,
+        );
+        let connection = devices.tasks.values().next().expect("a task").connection;
+
+        apply(
+            node::Event::Locked {
+                connection,
+                why: "the encryption key doesn't match the one on the device".to_owned(),
+            },
+            &ctx,
+            &mut devices,
+        )
+        .await
+        .expect("applied");
+
+        assert!(devices.tasks.is_empty());
+        let waiting = devices.waiting.values().next().expect("waiting");
+        assert_eq!(waiting.name.as_str(), "Garage door");
+        assert!(
+            waiting.reason.contains("doesn't match"),
+            "{}",
+            waiting.reason
+        );
+    }
 
     /// A device that answers from a new address is taken over by the new connection, and the
     /// old one is stopped: otherwise both keep reporting, and the old one's goodbye marks a
@@ -486,7 +797,8 @@ mod tests {
                     | irori_integration::host::Op::SetAvailability(_, _, reply) => {
                         let _ = reply.send(Ok(()));
                     }
-                    irori_integration::host::Op::SetHealth(_) => {}
+                    irori_integration::host::Op::SetHealth(_)
+                    | irori_integration::host::Op::SetWaiting(_) => {}
                 }
             }
         });
@@ -601,7 +913,8 @@ mod tests {
                     | irori_integration::host::Op::SetAvailability(_, _, reply) => {
                         let _ = reply.send(Ok(()));
                     }
-                    irori_integration::host::Op::SetHealth(_) => {}
+                    irori_integration::host::Op::SetHealth(_)
+                    | irori_integration::host::Op::SetWaiting(_) => {}
                 }
             }
         });
@@ -705,7 +1018,8 @@ mod tests {
                     | irori_integration::host::Op::SetAvailability(_, _, reply) => {
                         let _ = reply.send(Ok(()));
                     }
-                    irori_integration::host::Op::SetHealth(_) => {}
+                    irori_integration::host::Op::SetHealth(_)
+                    | irori_integration::host::Op::SetWaiting(_) => {}
                 }
             }
         });
