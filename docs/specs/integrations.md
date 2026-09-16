@@ -195,7 +195,9 @@ manifest's `entity_kinds`.
   sends `turn_on` or `turn_off`. Until the device reports back, the core remembers what it last
   told the entity to be and resolves the next toggle against that, so two toggles at once cancel
   out instead of both doing the same thing. That memory is cleared when the device reports, and
-  whenever a call fails, times out, is dropped, or the caller gives up.
+  whenever a call doesn't reach the integration or comes back failed: an error, a timeout, a
+  dropped call, or a caller who gives up before delivery. A caller who gives up *after* delivery
+  leaves it in place, because the integration has the call and its report is still coming.
 
   Calls on one entity are also handled one at a time, but that's ordering, not a guarantee: a
   caller who gives up mid-call releases its turn while the integration may still be working, so
