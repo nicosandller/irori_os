@@ -22,6 +22,9 @@ pub struct Settings {
     /// By the device's id, which never changes (ROADMAP D36).
     pub devices: BTreeMap<DeviceId, DeviceSettings>,
     pub entities: BTreeMap<SettingsKey, EntitySettings>,
+    /// Whether a device Irori hasn't been told to add waits to be added, rather than joining the
+    /// home as soon as it's found (`irori.toml`, `[devices] new = "ask"`).
+    pub ask_before_adding: bool,
 }
 
 impl Settings {
@@ -85,12 +88,18 @@ pub struct DeviceSettings {
     /// Kept out of the home: not listed, not controllable, nothing it reports is recorded. The
     /// integration may still talk to it; Irori just doesn't let it in.
     pub ignored: bool,
+    /// A person added it. Only matters while Irori asks before adding new devices.
+    pub added: bool,
 }
 
 impl DeviceSettings {
     /// Whether this says anything at all. An entry that says nothing is not written out.
     pub fn is_empty(&self) -> bool {
-        self.name.is_none() && self.description.is_none() && self.area.is_unsaid() && !self.ignored
+        self.name.is_none()
+            && self.description.is_none()
+            && self.area.is_unsaid()
+            && !self.ignored
+            && !self.added
     }
 }
 

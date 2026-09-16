@@ -28,20 +28,22 @@ pub struct Home {
     /// The rooms of the home, from the config directory. Empty until somebody makes one.
     #[serde(default)]
     pub areas: Vec<Area>,
-    /// Devices a person keeps out of the home.
+    /// Devices kept out of the home: ignored, or new and waiting to be added.
     #[serde(default)]
-    pub ignored: Vec<IgnoredDevice>,
+    pub held: Vec<HeldDevice>,
     /// The levels of the home, lowest first.
     #[serde(default)]
     pub floors: Vec<irori_types::Floor>,
 }
 
-/// A device kept out of the home: enough to recognise it and let it back in.
+/// A device kept out of the home: enough to recognise it and let it in.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct IgnoredDevice {
+pub struct HeldDevice {
     pub id: DeviceId,
     pub integration: String,
     pub name: Name,
+    /// `ignored`, or `new` while Irori asks before adding.
+    pub why: String,
 }
 
 impl Home {
@@ -241,6 +243,9 @@ pub struct DeviceEdit {
     /// `Some(true)` keeps the device out of the home; `Some(false)` lets it back in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ignored: Option<bool>,
+    /// `Some(true)` adds a device that's waiting to be added.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added: Option<bool>,
 }
 
 /// The body of a refusal, which the core writes as a sentence.

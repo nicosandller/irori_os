@@ -29,7 +29,7 @@ pub use services::{CallError, Command};
 
 pub use home::{device_id_for, new_area_id, new_floor_id};
 
-pub use home::IgnoredDevice;
+pub use home::{Held, HeldDevice};
 
 use home::{Home, Stamp};
 
@@ -268,8 +268,8 @@ impl Core {
     }
 
     /// Devices a person has chosen to keep out of the home, to list so they can be let back in.
-    pub fn ignored_devices(&self) -> Vec<IgnoredDevice> {
-        read(&self.0.home).ignored_devices()
+    pub fn held_devices(&self) -> Vec<HeldDevice> {
+        read(&self.0.home).held_devices()
     }
 
     pub fn entity_key(&self, id: &EntityId) -> Option<SettingsKey> {

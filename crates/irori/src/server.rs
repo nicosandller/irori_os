@@ -107,7 +107,7 @@ struct HomeView {
     floors: Vec<Floor>,
     /// Devices a person keeps out of the home, so they can be let back in.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    ignored: Vec<irori_core::IgnoredDevice>,
+    held: Vec<irori_core::HeldDevice>,
 }
 
 async fn home(State(state): State<AppState>) -> Json<HomeView> {
@@ -119,7 +119,7 @@ async fn home(State(state): State<AppState>) -> Json<HomeView> {
         extensions: core.extensions(),
         areas: core.areas(),
         floors: core.floors(),
-        ignored: core.ignored_devices(),
+        held: core.held_devices(),
     })
 }
 
@@ -382,6 +382,9 @@ struct DeviceEdit {
     /// `true` takes the device out of the home; `false` lets it back in.
     #[serde(default)]
     ignored: Option<bool>,
+    /// `true` adds a new device while Irori asks before adding.
+    #[serde(default)]
+    added: Option<bool>,
 }
 
 async fn edit_device(
@@ -392,7 +395,7 @@ async fn edit_device(
     let core = &state.0.core;
     // An ignored device isn't in the registry, but it's still one a person can let back in.
     let known = core.devices().iter().any(|device| device.id == id)
-        || core.ignored_devices().iter().any(|device| device.id == id);
+        || core.held_devices().iter().any(|device| device.id == id);
     if !known {
         return refused(StatusCode::NOT_FOUND, format!("there's no device `{id}`"));
     }
@@ -420,6 +423,9 @@ async fn edit_device(
             }
             if let Some(ignored) = request.ignored {
                 device.ignored = ignored;
+            }
+            if let Some(added) = request.added {
+                device.added = added;
             }
             if let Some(area) = area {
                 device.area = area;
@@ -1631,7 +1637,7 @@ mod tests {
         };
         assert!(!listed("devices", "demo_lamp"));
         assert!(!listed("entities", "light.demo_lamp"));
-        assert!(listed("ignored", "demo_lamp"));
+        assert!(listed("held", "demo_lamp"));
         let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
         assert!(devices.contains("ignored = true"), "{devices}");
 
@@ -1649,7 +1655,7 @@ mod tests {
                 .as_array()
                 .is_some_and(|all| all.iter().any(|e| e["id"] == "light.demo_lamp"))
         );
-        assert!(home.get("ignored").is_none(), "{home}");
+        assert!(home.get("held").is_none(), "{home}");
 
         host.shutdown().await;
         Ok(())

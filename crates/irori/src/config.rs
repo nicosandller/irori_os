@@ -129,7 +129,11 @@ impl Config {
             report(&problems);
             // All of these publish nothing when nothing changed, so this is free on the
             // overwhelming majority of ticks.
-            core.apply_settings(store.settings());
+            let mut settings = store.settings();
+            if settings.ask_before_adding && !core.settings().ask_before_adding {
+                keep_what_is_here(&mut store, &mut settings, &core);
+            }
+            core.apply_settings(settings);
             core.apply_extension_settings(store.extension_settings());
             let irori = store.irori();
             core.apply_disabled_extensions(irori.extensions.disabled);
@@ -141,6 +145,35 @@ impl Config {
                 );
                 warned = Some(irori.server);
             }
+        }
+    }
+}
+
+/// Asking before adding is about what Irori finds from now on. Turning it on mustn't empty the
+/// home of everything already in it, so those devices are written down as added — the one time
+/// Irori writes `devices.toml` without being asked for that exact change, because the change a
+/// person did ask for would otherwise undo their whole home.
+fn keep_what_is_here(store: &mut Store, settings: &mut Settings, core: &Core) {
+    let mut kept = 0;
+    for device in core.devices() {
+        let entry = settings.devices.entry(device.id).or_default();
+        if !entry.added && !entry.ignored {
+            entry.added = true;
+            kept += 1;
+        }
+    }
+    if kept == 0 {
+        return;
+    }
+    match store.save(settings) {
+        Ok(_) => tracing::info!(
+            devices = kept,
+            "asking before adding new devices; the ones already in the home stay"
+        ),
+        // Not written, so not in force either: the core goes on with what's on disk.
+        Err(e) => {
+            tracing::error!(%e, "couldn't record the devices already in the home as added");
+            *settings = store.settings();
         }
     }
 }
@@ -235,6 +268,7 @@ mod tests {
                 settings.devices.insert(
                     "demo_lamp".parse().expect("a valid device id"),
                     DeviceSettings {
+                        added: false,
                         name: Some("Reading lamp".parse::<Name>().expect("a valid name")),
                         description: None,
                         area: irori_types::Placement::Unsaid,
@@ -251,6 +285,54 @@ mod tests {
             vec![area("kitchen", "Kitchen")],
             "the hand-made room survived an edit that knew nothing about it"
         );
+        Ok(())
+    }
+
+    /// Turning on "ask before adding" keeps the home as it is: what's already in it is written
+    /// down as added, so neither this moment nor the next restart empties it.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn asking_before_adding_keeps_the_devices_already_here() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let core = core();
+        let config = Config::open_dir(dir.path(), &core);
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            // The demo alone: ESPHome would find whatever is on this network partway through.
+            crate::extensions::builtins()?
+                .into_iter()
+                .filter(|builtin| builtin.manifest.extension.id.as_str() == "demo")
+                .collect(),
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        for _ in 0..500 {
+            if core.devices().len() >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let before = core.devices().len();
+        assert!(before >= 3, "the demo devices arrived");
+        tokio::spawn(config.clone().watch(core.clone()));
+
+        std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"ask\"\n")?;
+        for _ in 0..500 {
+            if core.settings().ask_before_adding {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            core.settings().ask_before_adding,
+            "the change was picked up"
+        );
+        assert_eq!(core.devices().len(), before, "nothing left the home");
+        assert!(core.held_devices().is_empty());
+        let devices = std::fs::read_to_string(dir.path().join("devices.toml"))?;
+        assert!(devices.contains("added = true"), "{devices}");
+
+        host.shutdown().await;
         Ok(())
     }
 }
