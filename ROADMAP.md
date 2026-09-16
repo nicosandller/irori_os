@@ -382,7 +382,8 @@ Goal: a **barebones, fast, modular core** that a real home runs on for weeks wit
 > grouped by device with live state, a switch for lights and switches, readings for sensors, and
 > the extensions behind them. It polls `/api/dev/home` and commands through `/api/dev/command`
 > until the real API exists. **Not yet:** the rest of this list, brightness and colour, areas,
-> history, and pushed changes instead of polling (M1.5). See
+> history, pushed changes instead of polling (M1.5), and serving the assets precompressed (§2.2),
+> which the download budget in §4.3 assumes. See
 > [crates/irori-ui/README.md](crates/irori-ui/README.md).
 
 Deliberately minimal: fast to load, no dashboards, no charts beyond the basics. Four sections:
