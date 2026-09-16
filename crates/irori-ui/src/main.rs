@@ -42,10 +42,16 @@ fn App() -> impl IntoView {
     spawn_local(async move {
         loop {
             match api::fetch_home().await {
-                // Only when something actually changed: an unchanged home would rebuild the list
-                // under the pointer twice a second for nothing.
-                Ok(fetched) => {
-                    if fetched != home.get_untracked() {
+                Ok(mut fetched) => {
+                    let shown = home.get_untracked();
+                    // This snapshot can be older than a change the page already has from a
+                    // command it sent, so the fresher of the two wins per entity.
+                    for state in &shown.states {
+                        fetched.accept(state.clone());
+                    }
+                    // Set it only when something actually changed: an unchanged home would
+                    // rebuild the list under the pointer twice a second for nothing.
+                    if fetched != shown {
                         home.set(fetched);
                     }
                     trouble.set(None);
@@ -108,15 +114,11 @@ fn set_on(
                     failures.remove(&entity_id);
                 });
                 if let Some(state) = state {
-                    home.update(|home| {
-                        if let Some(slot) = home
-                            .states
-                            .iter_mut()
-                            .find(|existing| existing.entity_id == state.entity_id)
-                        {
-                            *slot = state;
-                        }
-                    });
+                    // Unless a poll has already brought something newer back.
+                    let mut next = home.get_untracked();
+                    if next.accept(state) {
+                        home.set(next);
+                    }
                 }
             }
             Err(why) => failures.update(|failures| {

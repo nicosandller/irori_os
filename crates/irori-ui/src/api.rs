@@ -23,6 +23,32 @@ pub struct Home {
     pub extensions: BTreeMap<ExtensionId, Extension>,
 }
 
+impl Home {
+    /// Takes an entity's state unless what's already here is at least as new, and says whether
+    /// anything changed.
+    ///
+    /// The page learns about a change twice: from the command that caused it, and from the next
+    /// poll. Those arrive in either order — a poll that started before the change lands after it
+    /// — so the older of the two must never win, or the page would go backwards for a couple of
+    /// seconds. `last_updated` only moves forward for an entity, which makes it the tiebreaker.
+    pub fn accept(&mut self, state: EntityState) -> bool {
+        let Some(shown) = self
+            .states
+            .iter_mut()
+            .find(|shown| shown.entity_id == state.entity_id)
+        else {
+            // An entity this snapshot doesn't have: whether it's new or gone is the registry's
+            // business, and the next poll settles it.
+            return false;
+        };
+        if state.last_updated <= shown.last_updated {
+            return false;
+        }
+        *shown = state;
+        true
+    }
+}
+
 /// How an extension is faring. Deliberately loose: the server's `ExtensionStatus` gains variants
 /// as Irori grows, and a status this page doesn't know yet should still show up as a word rather
 /// than blank the whole page.
@@ -95,4 +121,50 @@ pub async fn set_on(entity_id: &EntityId, on: bool) -> Result<Option<EntityState
         .json::<Option<EntityState>>()
         .await
         .map_err(|e| format!("Irori sent something this page can't read: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use irori_types::{Availability, Context, Origin, State, SwitchState, Timestamp};
+
+    use super::*;
+
+    fn state(at: &str, on: bool) -> EntityState {
+        let at: Timestamp = at.parse().expect("a valid timestamp");
+        EntityState {
+            entity_id: "switch.plug".parse().expect("a valid entity id"),
+            availability: Availability::Available,
+            state: Some(State::Switch(SwitchState { on })),
+            attributes: Default::default(),
+            last_changed: at,
+            last_updated: at,
+            last_reported: at,
+            context: Context {
+                id: "01K5B2Q9A1B2C3D4E5F6G7H8J9"
+                    .parse()
+                    .expect("a valid context id"),
+                parent_id: None,
+                origin: Origin::System,
+            },
+        }
+    }
+
+    #[test]
+    fn a_state_never_goes_backwards_on_the_page() {
+        let mut home = Home {
+            states: vec![state("2026-09-16T10:00:00Z", false)],
+            ..Home::default()
+        };
+
+        assert!(home.accept(state("2026-09-16T10:00:01Z", true)), "newer");
+        assert!(!home.accept(state("2026-09-16T10:00:00Z", false)), "older");
+        assert!(
+            !home.accept(state("2026-09-16T10:00:01Z", false)),
+            "the same instant is the same change, however it reached the page"
+        );
+        assert_eq!(
+            home.states[0].state,
+            Some(State::Switch(SwitchState { on: true }))
+        );
+    }
 }

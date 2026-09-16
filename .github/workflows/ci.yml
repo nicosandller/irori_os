@@ -59,6 +59,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+          # This job runs its own fmt and clippy; don't rely on the runner image carrying them.
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           # The UI is outside the workspace and has its own target dir.
@@ -76,6 +78,10 @@ jobs:
         run: |
           cargo clippy --locked --manifest-path crates/irori-ui/Cargo.toml \
             --target wasm32-unknown-unknown --all-targets -- -D warnings
+      # The page's own logic (what to show, and which of two states is newer) is plain Rust and
+      # runs on the host; the browser is not needed to check it.
+      - name: test
+        run: cargo test --locked --manifest-path crates/irori-ui/Cargo.toml
       - name: build
         run: cargo xtask ui
 
