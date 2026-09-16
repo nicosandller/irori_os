@@ -41,6 +41,9 @@ pub(crate) struct Home {
     states: BTreeMap<EntityId, EntityState>,
     /// Entities described without a name, which use (and follow) their device's name.
     nameless: HashSet<EntityId>,
+    /// What the core last told an entity to be, until the device reports back. `Toggle` uses it,
+    /// so two toggles in a row don't both see the old value while the first is still in flight.
+    commanded: HashMap<EntityId, bool>,
     recent_calls: HashMap<IntegrationId, VecDeque<(ContextId, Timestamp)>>,
 }
 
@@ -345,6 +348,7 @@ impl Home {
         self.entities.remove(&id);
         self.states.remove(&id);
         self.nameless.remove(&id);
+        self.commanded.remove(&id);
         Ok(vec![Event::EntityRemoved { entity_id: id }])
     }
 
@@ -418,6 +422,8 @@ impl Home {
             None => None,
         };
 
+        // The device has spoken, so what it was told to be doesn't matter any more.
+        self.commanded.remove(&id);
         let old = self.states[&id].clone();
         // A clock that steps backwards never moves a timestamp back.
         let now = stamp.now.max(old.last_updated).max(old.last_reported);
@@ -548,10 +554,13 @@ impl Home {
             .entities
             .get(entity_id)
             .ok_or_else(|| CallError::UnknownEntity(entity_id.clone()))?;
-        let is_on = || match self.states.get(entity_id).and_then(|s| s.state.as_ref()) {
-            Some(State::Light(light)) => light.on,
-            Some(State::Switch(switch)) => switch.on,
-            _ => false,
+        let is_on = || match self.commanded.get(entity_id) {
+            Some(on) => *on,
+            None => match self.states.get(entity_id).and_then(|s| s.state.as_ref()) {
+                Some(State::Light(light)) => light.on,
+                Some(State::Switch(switch)) => switch.on,
+                _ => false,
+            },
         };
         let not_supported = |what: String| CallError::NotSupported(format!("`{entity_id}` {what}"));
         let service = match (&entity.capabilities, command) {
@@ -602,6 +611,15 @@ impl Home {
         self.recent_calls
             .get(integration)
             .is_some_and(|calls| calls.iter().any(|(id, _)| id == context_id))
+    }
+
+    /// Remembers what an entity was just told to be, until it reports back.
+    pub fn record_command(&mut self, entity_id: &EntityId, service: &Service) {
+        let on = match service {
+            Service::LightTurnOn(_) | Service::SwitchTurnOn => true,
+            Service::LightTurnOff | Service::SwitchTurnOff => false,
+        };
+        self.commanded.insert(entity_id.clone(), on);
     }
 
     /// Remembers a call's context for [`CALL_WINDOW`], so a state report can say it was caused
@@ -1339,6 +1357,41 @@ mod tests {
             .report_state(&integration(), confirmed, &stamp(1_000 - 86_400))
             .expect_err("far outside the window");
         assert!(err.0.contains("in the last 5 minutes"), "{err}");
+    }
+
+    #[test]
+    fn toggle_follows_the_last_command_until_the_device_reports() {
+        let mut home = home_with_lamp();
+        home.report_state(
+            &integration(),
+            report("lamp-light", Some(light(false, None))),
+            &stamp(1),
+        )
+        .expect("fits");
+
+        // First toggle: it's off, so turn it on.
+        let first = home.resolve(&lamp_id(), Command::Toggle).expect("light");
+        assert_eq!(first.service, Service::LightTurnOn(LightTurnOn::default()));
+        home.record_command(&lamp_id(), &first.service);
+
+        // Second toggle before the lamp has reported: it must undo the first, not repeat it.
+        let second = home.resolve(&lamp_id(), Command::Toggle).expect("light");
+        assert_eq!(second.service, Service::LightTurnOff);
+        home.record_command(&lamp_id(), &second.service);
+
+        // Once the lamp reports, its own word counts again.
+        home.report_state(
+            &integration(),
+            report("lamp-light", Some(light(true, None))),
+            &stamp(2),
+        )
+        .expect("fits");
+        assert_eq!(
+            home.resolve(&lamp_id(), Command::Toggle)
+                .expect("light")
+                .service,
+            Service::LightTurnOff
+        );
     }
 
     #[test]

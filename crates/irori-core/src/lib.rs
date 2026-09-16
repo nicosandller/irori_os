@@ -9,7 +9,7 @@ mod host;
 mod services;
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
 use irori_integration::host::{Op, incoming_call};
@@ -64,6 +64,31 @@ pub struct ExtensionOverview {
     pub dropped_reports: u64,
 }
 
+/// Drops an entity's call lock from the map once nobody else is waiting for it, so the map
+/// doesn't grow with every entity ever called.
+struct ReleaseWhenIdle<'a> {
+    core: &'a Core,
+    entity_id: EntityId,
+}
+
+impl Drop for ReleaseWhenIdle<'_> {
+    fn drop(&mut self) {
+        let mut busy = self
+            .core
+            .0
+            .busy
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        // 2 = the map's copy and this call's. Anything more means another call is waiting.
+        if busy
+            .get(&self.entity_id)
+            .is_some_and(|lock| Arc::strong_count(lock) <= 2)
+        {
+            busy.remove(&self.entity_id);
+        }
+    }
+}
+
 /// Forgets a recorded call unless it was delivered, whatever ends the call: an error, a timeout,
 /// or the caller dropping the future.
 struct Delivery<'a> {
@@ -93,6 +118,8 @@ struct Shared {
     home: RwLock<Home>,
     events: broadcast::Sender<Event>,
     links: RwLock<HashMap<IntegrationId, mpsc::Sender<IncomingCall>>>,
+    /// One lock per entity, so calls on the same entity happen one after another.
+    busy: Mutex<HashMap<EntityId, Arc<tokio::sync::Mutex<()>>>>,
     extensions: RwLock<BTreeMap<ExtensionId, ExtensionOverview>>,
 }
 
@@ -119,6 +146,7 @@ impl Core {
             home: RwLock::default(),
             events: broadcast::channel(EVENT_BUFFER).0,
             links: RwLock::default(),
+            busy: Mutex::default(),
             extensions: RwLock::default(),
         }))
     }
@@ -165,6 +193,23 @@ impl Core {
         command: Command,
         context: Context,
     ) -> Result<(), CallError> {
+        // One call at a time per entity: two toggles arriving together must not both read the
+        // same "off" and both turn it on. Held until the integration answers (at most
+        // `SERVICE_CALL_TIMEOUT`), so the second toggle sees the result of the first.
+        let busy = Arc::clone(
+            self.0
+                .busy
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .entry(entity_id.clone())
+                .or_default(),
+        );
+        let _turn = busy.lock().await;
+        let _release = ReleaseWhenIdle {
+            core: self,
+            entity_id: entity_id.clone(),
+        };
+
         let resolved = read(&self.0.home).resolve(entity_id, command)?;
         let sender = read(&self.0.links)
             .get(&resolved.integration)
@@ -186,6 +231,7 @@ impl Core {
             service: resolved.service.name(),
             context: context.clone(),
         };
+        let service = resolved.service.clone();
         let (incoming, result) = incoming_call(ServiceCall {
             unique_id: resolved.unique_id,
             service: resolved.service,
@@ -202,6 +248,9 @@ impl Core {
             });
         }
         delivery.delivered = true;
+        // Remember what it was told to be, so a second toggle doesn't repeat the first while
+        // the device is still answering.
+        write(&self.0.home).record_command(entity_id, &service);
         // Only once the integration has it: a call that never went out wasn't made.
         self.publish(vec![called]);
 
