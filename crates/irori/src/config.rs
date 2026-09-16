@@ -238,6 +238,7 @@ mod tests {
                         name: Some("Reading lamp".parse::<Name>().expect("a valid name")),
                         description: None,
                         area: irori_types::Placement::Unsaid,
+                        ignored: false,
                     },
                 );
                 Ok(())

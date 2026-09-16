@@ -50,6 +50,10 @@ pub fn DevicePage() -> impl IntoView {
     let entity_draft = RwSignal::new(String::new());
     let editing = RwSignal::new(None::<EntityId>);
 
+    // Once a device is ignored it has no page any more: go back to the list, which says where it went.
+    let navigate = leptos_router::hooks::use_navigate();
+    let leave = Callback::new(move |()| navigate("/devices", Default::default()));
+
     let shape = Memo::new(move |_| {
         shape_of(
             &live.home.get(),
@@ -68,6 +72,7 @@ pub fn DevicePage() -> impl IntoView {
             Some(device) => page(
                 device,
                 shape,
+                leave,
                 controls,
                 trouble,
                 Drafts {
@@ -134,6 +139,7 @@ struct Drafts {
 fn page(
     device: Device,
     shape: Shape,
+    leave: Callback<()>,
     controls: Controls,
     trouble: RwSignal<Option<String>>,
     drafts: Drafts,
@@ -194,7 +200,7 @@ fn page(
             edit(DeviceEdit {
                 name: Some(Some(name)),
                 description: Some(description),
-                area: None,
+                ..DeviceEdit::default()
             });
         }
     };
@@ -221,6 +227,34 @@ fn page(
         }
     };
 
+    let ignore = {
+        let id = device.id.clone();
+        let what = device.name.to_string();
+        move |_| {
+            let asked = window()
+                .confirm_with_message(&format!(
+                    "Ignore {what}? It leaves Irori until you let it back in."
+                ))
+                .unwrap_or(false);
+            if !asked {
+                return;
+            }
+            let id = id.clone();
+            spawn_local(async move {
+                let edit = DeviceEdit {
+                    ignored: Some(true),
+                    ..DeviceEdit::default()
+                };
+                match api::edit_device(&id, &edit).await {
+                    Ok(()) => {
+                        crate::refresh(live);
+                        leave.run(());
+                    }
+                    Err(why) => trouble.set(Some(why)),
+                }
+            });
+        }
+    };
     let start = {
         let name = device.name.to_string();
         let description = device
@@ -408,6 +442,16 @@ fn page(
                     "roadmap (M1.8)."
                 </p>
             })}
+        </section>
+
+        <section class="card">
+            <h2>"Not wanted here?"</h2>
+            <p class="muted small">
+                "Ignoring a device takes it and its entities out of Irori: not listed, not "
+                "switchable, nothing it reports is kept. The device itself isn't touched, and it "
+                "can be let back in from the Devices page."
+            </p>
+            <button type="button" class="danger-button" on:click=ignore>"Ignore this device"</button>
         </section>
 
         <section class="card">

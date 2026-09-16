@@ -39,8 +39,8 @@ Everything the installed binary does:
 ```sh
 irori run                                  # http://127.0.0.1:8480
 irori run --log-level debug                # log every device and state change as it happens
+irori run --config ~/.config/irori         # your rooms, names, keys and irori.toml (default ./config)
 irori run --data /var/lib/irori            # where the database lives (default ./data)
-irori run --config ~/.config/irori         # where your rooms and names live (default ./config)
 irori run --bind 0.0.0.0:8480 --allow-unauthenticated-lan   # reachable from your phone; see below
 irori version --json
 irori help run
@@ -49,6 +49,17 @@ irori help run
 `run` and `serve` are the same command. Every option is also an environment variable
 (`IRORI_DATA`, `IRORI_CONFIG`, `IRORI_BIND`, `IRORI_LOG_LEVEL`, `IRORI_ALLOW_UNAUTHENTICATED_LAN`), which is what
 the container uses. `irori help run` lists them with their defaults.
+
+Or put them in `irori.toml` in the config directory, where a flag still wins:
+
+```toml
+[server]
+bind = "127.0.0.1:8480"
+log_level = "info"
+
+[extensions]
+disabled = ["demo"]          # applies while Irori runs; [server] needs a restart
+```
 
 Or straight from the checkout, without installing — the same commands after `cargo run --`:
 
@@ -67,17 +78,20 @@ curl -s http://127.0.0.1:8480/api/dev/home     # the whole home in one response
 
 The **web UI** is a separate wasm crate, so `cargo build` alone doesn't need a wasm toolchain and
 serves a placeholder page at `/`. `cargo xtask install` above builds it; `cargo xtask ui` builds
-it without installing. It has a Home page (what Irori is looking
-after, by room), a Devices page (everything, with switches and an **Add device** panel explaining
-where devices come from), and a Rooms page.
+it without installing. It has a folding sidebar, a Home page (what
+Irori is looking after, by room), a Devices page (devices grouped by integration, entities with
+their switches, and an **Add device** panel), and a Rooms page.
 
 See [crates/irori-ui/README.md](crates/irori-ui/README.md) for working on the UI itself (live
 reload, no binary rebuild). CI builds it, so downloaded release binaries always have it.
 
 ### Rooms, and what to call things
 
-What a device calls itself is up to its firmware; what *you* call it is up to you. Both a name
-and a room survive restarts, because they're written to a directory of plain TOML files:
+Every device has **one id, one name and one description**. The id is made from the integration
+and the device's hardware address (`esphome_30_83_98_ca_6a_08`) and never changes. The name
+starts as whatever the firmware calls the device, and once you rename it, yours is the only name —
+there's no second one kept in step somewhere else. Names, descriptions and rooms survive restarts,
+because they're written to a directory of plain TOML files:
 
 ```
 config/
@@ -85,9 +99,11 @@ config/
   devices.toml    what you've called a device, and which room it's in
   entities.toml   what you've called an individual entity
   secrets.toml    keys for devices that encrypt their connection — never commit this one
+  irori.toml      Irori's own settings
 ```
 
-Make rooms on the **Rooms** page; rename a device, or put it in a room, on its own page. Or open
+Make rooms on the **Rooms** page; name, describe or place a device on its own page, where you can
+also **ignore** it — it leaves Irori until you let it back in from the Devices page. Or open
 the files in an editor — Irori picks up changes within a couple of seconds, and a file that
 doesn't parse is ignored with an explanation in the log while the last good version keeps
 running. There is no second copy in the database: the UI writes the same files you would.

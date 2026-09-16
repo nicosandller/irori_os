@@ -29,6 +29,8 @@ pub use services::{CallError, Command};
 
 pub use home::{device_id_for, new_area_id};
 
+pub use home::IgnoredDevice;
+
 use home::{Home, Stamp};
 
 /// How long a service call may take before the caller gets [`CallError::Timeout`].
@@ -258,6 +260,11 @@ impl Core {
         read(&self.0.home).settings().clone()
     }
 
+    /// Devices a person has chosen to keep out of the home, to list so they can be let back in.
+    pub fn ignored_devices(&self) -> Vec<IgnoredDevice> {
+        read(&self.0.home).ignored_devices()
+    }
+
     pub fn entity_key(&self, id: &EntityId) -> Option<SettingsKey> {
         read(&self.0.home).entity_key(id)
     }
@@ -267,7 +274,8 @@ impl Core {
     /// This is the only way settings reach the core, whether they came from a UI edit or from
     /// someone editing the files (`irori-config`). The core itself never touches the disk.
     pub fn apply_settings(&self, settings: Settings) {
-        let events = write(&self.0.home).apply_settings(settings);
+        let stamp = self.stamp();
+        let events = write(&self.0.home).apply_settings(settings, &stamp);
         self.publish(events);
     }
 

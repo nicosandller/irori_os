@@ -77,6 +77,10 @@ more than volume: one verified finding beats five guesses.
   `Replaced package \`irori v0.0.0\``. Checked by running it. `--force` matters for installing
   the same version from a registry, which `cargo xtask install` never does. Don't propose adding
   it to `xtask/src/ui.rs`.
+- **A device has one id, one name and one description (ROADMAP D36).** Don't suggest showing the
+  firmware's or integration's name next to a name a person chose, keeping a "display name"
+  separately, or deriving a device id from its name. Device ids are made from the integration and
+  its handle on purpose, so a rename can never move them.
 - **Check files before claiming what they contain.** Quote the actual line, for example the
   value in a fixture, rather than inferring it.
 

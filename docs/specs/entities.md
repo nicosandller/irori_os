@@ -99,12 +99,14 @@ A physical or virtual thing an integration talks to. It has one or more entities
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `id` | `DeviceId` | yes | |
+| `id` | `DeviceId` | yes | Its **one** id, everywhere. Made once from `integration` and `unique_id` — `esphome_30_83_98_ca_6a_08` — and never from a name, so it never changes (ROADMAP D36) |
 | `integration` | `IntegrationId` | yes | The integration that provides it |
 | `unique_id` | `UniqueId` | yes | Unique within `integration` |
-| `name` | `Name` | yes | |
+| `name` | `Name` | yes | Its one name: a person's, else what the integration reports. Never two side by side |
+| `description` | `Description` | no | What it's for, in a person's words |
 | `manufacturer`, `model`, `sw_version`, `hw_version` | string | no | As reported; informational only |
 | `area_id` | `AreaId` | no | |
+| `suggested_area` | `Name` | no | The room the device says it's in; used only while no one has placed it ([config.md](config.md) §5) |
 | `via_device_id` | `DeviceId` | no | The bridge or coordinator it's reached through |
 
 ### 4.4 Entity
@@ -114,7 +116,7 @@ motion sensor are three entities.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `id` | `EntityId` | yes | Its kind must match `capabilities.kind` |
+| `id` | `EntityId` | yes | Its kind must match `capabilities.kind`. `<kind>.<device id>_<name the integration gave it>`, or the integration's `suggested_object_id`: never a name a person chose, so no rename leaves an id that says something else |
 | `integration` | `IntegrationId` | yes | |
 | `unique_id` | `UniqueId` | yes | Unique within `integration`; survives renames of `id` |
 | `name` | `Name` | yes | |
