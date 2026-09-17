@@ -4,6 +4,10 @@
 //! length and message type as LEB128 varints — and answers the handshake, the entity listing,
 //! the state subscription, and commands. The message bodies themselves come from the same
 //! generated types the integration uses, so only the framing is written out here.
+//!
+//! [`start_encrypted`] is the same device with an encryption key: the device side of ESPHome's
+//! `Noise_NNpsk0_25519_ChaChaPoly_SHA256` handshake, then every message encrypted. Real
+//! cryptography, so a wrong key fails the way it does against real firmware.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -55,6 +59,144 @@ async fn serve(mut stream: TcpStream, commands: Arc<Mutex<Commands>>) {
         let Some(message) = read(&mut stream, &mut buffer).await else {
             return;
         };
+        for answer in answer(message, &commands) {
+            if write(&mut stream, answer).await.is_none() {
+                return;
+            }
+        }
+    }
+}
+
+/// Starts a device that only talks encrypted, with `key`.
+pub async fn start_encrypted(key: [u8; 32]) -> (SocketAddr, Arc<Mutex<Commands>>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a free port on loopback");
+    let address = listener.local_addr().expect("a bound address");
+    let commands = Arc::new(Mutex::new(Commands::default()));
+    let recorded = Arc::clone(&commands);
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let recorded = Arc::clone(&recorded);
+            tokio::spawn(async move { serve_encrypted(stream, key, recorded).await });
+        }
+    });
+    (address, commands)
+}
+
+const NOISE: u8 = 0x01;
+
+async fn serve_encrypted(mut stream: TcpStream, key: [u8; 32], commands: Arc<Mutex<Commands>>) {
+    let mut buffer = Vec::new();
+    // A client speaking plaintext gets a Noise refusal back, which is how real firmware tells it
+    // encryption is required (ESPHome's `send_explicit_handshake_reject_`).
+    let Some(hello) = read_noise(&mut stream, &mut buffer).await else {
+        let refusal = [&[NOISE][..], b"Bad indicator byte"].concat();
+        let _ = stream.write_all(&noise_frame(&refusal)).await;
+        return;
+    };
+    let _ = hello; // the client's hello says only "Noise, please"
+    let Some(handshake) = read_noise(&mut stream, &mut buffer).await else {
+        return;
+    };
+    let mut responder = snow::Builder::new(
+        "Noise_NNpsk0_25519_ChaChaPoly_SHA256"
+            .parse()
+            .expect("a valid pattern"),
+    )
+    .prologue(b"NoiseAPIInit\x00\x00")
+    .expect("a prologue")
+    .psk(0, &key)
+    .expect("a psk")
+    .build_responder()
+    .expect("a responder");
+
+    // Who it is, sent before the handshake answer: marker, name, NUL, MAC, NUL.
+    let server_hello = [&[NOISE][..], b"fake\x00", MAC.as_bytes(), b"\x00"].concat();
+    if stream.write_all(&noise_frame(&server_hello)).await.is_err() {
+        return;
+    }
+    let mut scratch = vec![0_u8; 65535];
+    // `handshake[0]` is a zero marker; the Noise message follows. With the wrong key the tag on
+    // it doesn't verify, and firmware answers with a refusal instead of a handshake.
+    if handshake.is_empty()
+        || responder
+            .read_message(&handshake[1..], &mut scratch)
+            .is_err()
+    {
+        let refusal = [&[NOISE][..], b"Handshake MAC failure"].concat();
+        let _ = stream.write_all(&noise_frame(&refusal)).await;
+        return;
+    }
+    let Ok(size) = responder.write_message(&[], &mut scratch) else {
+        return;
+    };
+    let reply = [&[0x00][..], &scratch[..size]].concat();
+    if stream.write_all(&noise_frame(&reply)).await.is_err() {
+        return;
+    }
+    let Ok(mut transport) = responder.into_transport_mode() else {
+        return;
+    };
+
+    loop {
+        let Some(sealed) = read_noise(&mut stream, &mut buffer).await else {
+            return;
+        };
+        let Ok(size) = transport.read_message(&sealed, &mut scratch) else {
+            return;
+        };
+        let Ok(message) = EspHomeMessage::try_from(scratch[..size].to_vec()) else {
+            continue;
+        };
+        for answer in answer(message, &commands) {
+            let plain: Vec<u8> = answer.into();
+            let mut sealed = vec![0_u8; 65535];
+            let Ok(size) = transport.write_message(&plain, &mut sealed) else {
+                return;
+            };
+            if stream
+                .write_all(&noise_frame(&sealed[..size]))
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+    }
+}
+
+/// `0x01`, the payload length as two big-endian bytes, then the payload.
+fn noise_frame(payload: &[u8]) -> Vec<u8> {
+    let length = u16::try_from(payload.len())
+        .unwrap_or(u16::MAX)
+        .to_be_bytes();
+    [&[NOISE][..], &length, payload].concat()
+}
+
+/// Reads one Noise frame's payload, or `None` when the connection ends or isn't speaking Noise.
+async fn read_noise(stream: &mut TcpStream, buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
+    loop {
+        if buffer.len() >= 3 {
+            if buffer[0] != NOISE {
+                return None;
+            }
+            let length = usize::from(u16::from_be_bytes([buffer[1], buffer[2]]));
+            if buffer.len() >= 3 + length {
+                return Some(buffer.drain(..3 + length).skip(3).collect());
+            }
+        }
+        let mut chunk = [0_u8; 1024];
+        match stream.read(&mut chunk).await {
+            Ok(0) | Err(_) => return None,
+            Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+        }
+    }
+}
+
+/// What the device says back to a message, encrypted or not.
+fn answer(message: EspHomeMessage, commands: &Mutex<Commands>) -> Vec<EspHomeMessage> {
+    {
         let answers: Vec<EspHomeMessage> = match message {
             EspHomeMessage::HelloRequest(_) => vec![EspHomeMessage::HelloResponse(HelloResponse {
                 api_version_major: esphome_client::API_VERSION.0,
@@ -102,11 +244,7 @@ async fn serve(mut stream: TcpStream, commands: Arc<Mutex<Commands>>) {
             )],
             _ => Vec::new(),
         };
-        for answer in answers {
-            if write(&mut stream, answer).await.is_none() {
-                return;
-            }
-        }
+        answers
     }
 }
 

@@ -7,12 +7,15 @@
 use std::collections::BTreeMap;
 
 use gloo_net::http::Request;
-use irori_types::{Device, Entity, EntityId, EntityState, ExtensionId};
+use irori_types::{
+    Area, AreaId, Device, DeviceId, Entity, EntityId, EntityState, ExtensionId, Name, Waiting,
+};
 use serde::{Deserialize, Serialize};
 
 const HOME_URL: &str = "/api/dev/home";
 const HEALTH_URL: &str = "/api/health";
 const COMMAND_URL: &str = "/api/dev/command";
+const AREAS_URL: &str = "/api/dev/areas";
 
 /// Everything the page shows. Mirrors `HomeView` on the server; the two meet again in
 /// `irori-types` when the real API lands.
@@ -22,9 +25,38 @@ pub struct Home {
     pub entities: Vec<Entity>,
     pub states: Vec<EntityState>,
     pub extensions: BTreeMap<ExtensionId, Extension>,
+    /// The rooms of the home, from the config directory. Empty until somebody makes one.
+    #[serde(default)]
+    pub areas: Vec<Area>,
+    /// Devices kept out of the home: ignored, or new and waiting to be added.
+    #[serde(default)]
+    pub held: Vec<HeldDevice>,
+    /// The levels of the home, lowest first.
+    #[serde(default)]
+    pub floors: Vec<irori_types::Floor>,
+}
+
+/// A device kept out of the home: enough to recognise it and let it in.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HeldDevice {
+    pub id: DeviceId,
+    pub integration: String,
+    pub name: Name,
+    /// `ignored`, or `new` while Irori asks before adding.
+    pub why: String,
 }
 
 impl Home {
+    pub fn area(&self, id: &AreaId) -> Option<&Area> {
+        self.areas.iter().find(|area| &area.id == id)
+    }
+
+    /// What to call the room a device is in, for showing next to it.
+    pub fn room_of(&self, device: &Device) -> Option<String> {
+        let area = self.area(device.area_id.as_ref()?)?;
+        Some(area.name.to_string())
+    }
+
     /// Takes an entity's state unless what's already here is at least as new, and says whether
     /// anything changed.
     ///
@@ -78,6 +110,12 @@ pub struct Extension {
     /// State reports dropped because the core couldn't keep up.
     #[serde(default)]
     pub dropped_reports: u64,
+    /// What it found but can't use until someone helps, e.g. a device that needs its key.
+    #[serde(default)]
+    pub waiting: Vec<Waiting>,
+    /// Whether it has an icon, at `/api/dev/extensions/<id>/icon.svg`.
+    #[serde(default)]
+    pub has_icon: bool,
 }
 
 /// The browser's own words for a failed request ("TypeError: Failed to fetch") say nothing a
@@ -166,6 +204,204 @@ pub async fn set_on(entity_id: &EntityId, on: bool) -> Result<Option<EntityState
         .json::<Option<EntityState>>()
         .await
         .map_err(|e| format!("Irori sent something this page can't read: {e}"))
+}
+
+// --- Rooms and names -----------------------------------------------------------------------
+//
+// These write files in the config directory (`docs/specs/config.md`). Each answers with what the
+// thing became, but the page refetches anyway: a rename can change more than the thing renamed,
+// because entities without a name of their own follow their device.
+
+/// Where to put a device: in a room, in none at all, or back to having said nothing — which
+/// lets whatever the device suggests for itself stand in again.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum WhereTo {
+    In(AreaId),
+    /// Serialized as `false`: deliberately no room, suggestion and all.
+    Nowhere(bool),
+}
+
+impl WhereTo {
+    pub fn nowhere() -> Self {
+        WhereTo::Nowhere(false)
+    }
+}
+
+/// What a change to a device should do to one of its fields: leave it alone, set it, or clear it
+/// so whatever the integration reports comes back.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DeviceEdit {
+    /// `None` leaves the name alone; `Some(None)` clears it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<Option<Name>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<Option<irori_types::Description>>,
+    /// `None` leaves the room alone; `Some(None)` un-says it, letting the device suggest again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub area: Option<Option<WhereTo>>,
+    /// `Some(true)` keeps the device out of the home; `Some(false)` lets it back in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ignored: Option<bool>,
+    /// `Some(true)` adds a device that's waiting to be added.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added: Option<bool>,
+}
+
+/// The body of a refusal, which the core writes as a sentence.
+async fn checked(response: gloo_net::http::Response) -> Result<(), String> {
+    if response.ok() {
+        return Ok(());
+    }
+    let status = response.status();
+    Err(match response.json::<Refused>().await {
+        Ok(refused) => refused.error,
+        Err(_) => format!("Irori refused that ({status})"),
+    })
+}
+
+pub async fn edit_device(device_id: &DeviceId, edit: &DeviceEdit) -> Result<(), String> {
+    let response = Request::patch(&format!("/api/dev/devices/{device_id}"))
+        .json(edit)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+#[derive(Debug, Serialize)]
+struct EntityEdit {
+    name: Option<Name>,
+}
+
+pub async fn rename_entity(entity_id: &EntityId, name: Option<Name>) -> Result<(), String> {
+    let response = Request::patch(&format!("/api/dev/entities/{entity_id}"))
+        .json(&EntityEdit { name })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+#[derive(Debug, Serialize)]
+struct AreaRequest {
+    name: Name,
+}
+
+pub async fn add_area(name: Name) -> Result<(), String> {
+    let response = Request::post(AREAS_URL)
+        .json(&AreaRequest { name })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+pub async fn rename_area(id: &AreaId, name: Name) -> Result<(), String> {
+    let response = Request::patch(&format!("{AREAS_URL}/{id}"))
+        .json(&AreaRequest { name })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+#[derive(Debug, Serialize)]
+struct AreaFloor<'a> {
+    floor: Option<&'a irori_types::FloorId>,
+}
+
+/// Puts a room on a floor, or on none.
+pub async fn set_area_floor(
+    id: &AreaId,
+    floor: Option<&irori_types::FloorId>,
+) -> Result<(), String> {
+    let response = Request::patch(&format!("{AREAS_URL}/{id}"))
+        .json(&AreaFloor { floor })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+#[derive(Debug, Serialize)]
+struct FloorRequest {
+    name: Name,
+    level: i8,
+}
+
+pub async fn add_floor(name: Name, level: i8) -> Result<(), String> {
+    let response = Request::post("/api/dev/floors")
+        .json(&FloorRequest { name, level })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+pub async fn remove_floor(id: &irori_types::FloorId) -> Result<(), String> {
+    let response = Request::delete(&format!("/api/dev/floors/{id}"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+pub async fn remove_area(id: &AreaId) -> Result<(), String> {
+    let response = Request::delete(&format!("{AREAS_URL}/{id}"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+/// Makes a toggle helper: a switch Irori keeps itself. Its entity appears a moment later, once
+/// the helpers extension has restarted with it.
+pub async fn add_toggle(name: Name) -> Result<(), String> {
+    let response = Request::post("/api/dev/helpers/toggles")
+        .json(&AreaRequest { name })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+/// Removes a toggle helper by the id it was made with: the object id of its `switch.` entity.
+pub async fn remove_toggle(id: &str) -> Result<(), String> {
+    let response = Request::delete(&format!("/api/dev/helpers/toggles/{id}"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+#[derive(Serialize)]
+struct SecretGiven<'a> {
+    path: &'a [String],
+    value: &'a str,
+}
+
+/// Hands an extension a secret it asked for. Irori writes it to `secrets.toml`, restarts the
+/// extension with it, and never sends it back.
+pub async fn give_secret(
+    extension: &ExtensionId,
+    path: &[String],
+    value: &str,
+) -> Result<(), String> {
+    let response = Request::put(&format!("/api/dev/extensions/{extension}/secrets"))
+        .json(&SecretGiven { path, value })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
 }
 
 #[cfg(test)]

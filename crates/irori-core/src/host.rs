@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use irori_integration::Builtin;
 use irori_integration::host::{HostEnd, Op, Reports, connect};
-use irori_types::{EntityKind, ExtensionId, IntegrationId};
+use std::collections::BTreeSet;
+
+use irori_types::{EntityKind, ExtensionId, ExtensionSettings, IntegrationId};
 use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
@@ -105,8 +107,29 @@ impl ExtensionHost {
 enum Outcome {
     /// We told it to stop.
     Stopped,
+    /// Its settings changed, so it was stopped to be started again with them.
+    Reconfigured,
+    /// A person turned it off.
+    Disabled,
     /// It ended on its own; why.
     Ended(String),
+}
+
+/// Resolves once this extension's settings are no longer `started_with`. Only its own table
+/// counts: another extension's key arriving is no reason to restart this one.
+async fn settings_changed(
+    settings: &mut watch::Receiver<ExtensionSettings>,
+    extension: &ExtensionId,
+    started_with: &serde_json::Value,
+) {
+    if settings
+        .wait_for(|all| &all.of(extension) != started_with)
+        .await
+        .is_err()
+    {
+        // The core is gone, and with it any chance of new settings.
+        std::future::pending::<()>().await;
+    }
 }
 
 async fn supervise(
@@ -139,6 +162,7 @@ async fn supervise(
             version: manifest.extension.version.clone(),
             entity_kinds: kinds.clone(),
             iot_class: Some(contribution.iot_class),
+            icon: builtin.icon,
         },
     );
 
@@ -159,8 +183,26 @@ async fn supervise(
         return;
     }
 
+    let mut settings = core.extension_settings();
+    let mut disabled = core.disabled_extensions();
     let mut delay = timing.first_retry;
     loop {
+        // Turned off: stay off, without counting it as a failure, until it's turned back on.
+        if disabled.borrow_and_update().contains(&extension) {
+            core.set_status(&extension, ExtensionStatus::Disabled);
+            tokio::select! {
+                biased;
+                _ = stop.wait_for(|stop| *stop) => return,
+                result = disabled.wait_for(|disabled| !disabled.contains(&extension)) => {
+                    if result.is_err() {
+                        return;
+                    }
+                    tracing::info!(%extension, "turned on; starting extension");
+                    delay = timing.first_retry;
+                    continue;
+                }
+            }
+        }
         if *stop.borrow() {
             // Already stopping: don't start anything, not even the first time.
             core.set_status(&extension, ExtensionStatus::Disabled);
@@ -168,14 +210,16 @@ async fn supervise(
         }
         core.set_status(&extension, ExtensionStatus::Starting);
         let (ctx, host_end) = connect();
-        // Settings come from the config dir once it exists (M0.7); until then, defaults.
-        let settings = serde_json::Value::Object(serde_json::Map::new());
+        // Whatever the config dir says right now; a later change restarts it (below).
+        let started_with = settings.borrow_and_update().of(&extension);
         // Only time spent actually running counts towards `healthy_after`; startup doesn't, and
         // a start that panics never ran at all.
         let mut running_since: Option<Instant> = None;
         // `Integration::run` may do work before returning its future; a panic there is a crash
         // like any other, not the end of supervision.
-        let reason = match catch_unwind(AssertUnwindSafe(|| builtin.start(settings, ctx))) {
+        let reason = match catch_unwind(AssertUnwindSafe(|| {
+            builtin.start(started_with.clone(), ctx)
+        })) {
             Ok(Ok(run)) => {
                 core.link(&integration, host_end.calls.clone());
                 let task = tokio::spawn(run);
@@ -190,23 +234,41 @@ async fn supervise(
                     &kinds,
                     host_end,
                     task,
-                    &mut stop,
+                    Watching {
+                        stop: &mut stop,
+                        settings: &mut settings,
+                        disabled: &mut disabled,
+                        started_with: &started_with,
+                    },
                     timing,
                 )
                 .await;
                 core.unlink(&integration);
                 core.mark_unavailable(&integration);
+                core.set_waiting(&extension, Vec::new());
                 match outcome {
                     Outcome::Stopped => {
                         tracing::info!(%extension, "extension stopped");
                         core.set_status(&extension, ExtensionStatus::Disabled);
                         return;
                     }
+                    Outcome::Disabled => {
+                        tracing::info!(%extension, "turned off; extension stopped");
+                        continue;
+                    }
+                    Outcome::Reconfigured => {
+                        // Not a failure, so no backoff: somebody changed its settings and
+                        // expects to see the result.
+                        tracing::info!(%extension, "settings changed; restarting extension");
+                        delay = timing.first_retry;
+                        continue;
+                    }
                     Outcome::Ended(reason) => reason,
                 }
             }
             Ok(Err(reason)) => {
-                // Invalid settings: retrying won't help until they change.
+                // Invalid settings: retrying won't help until they change, so wait for that
+                // rather than giving up for good. The reason names what's wrong, never a value.
                 tracing::error!(%extension, %reason, "can't start extension");
                 core.set_status(
                     &extension,
@@ -215,7 +277,21 @@ async fn supervise(
                         retry_at: None,
                     },
                 );
-                return;
+                tokio::select! {
+                    biased;
+                    _ = stop.wait_for(|stop| *stop) => {
+                        core.set_status(&extension, ExtensionStatus::Disabled);
+                        return;
+                    }
+                    () = settings_changed(&mut settings, &extension, &started_with) => {
+                        tracing::info!(%extension, "settings changed; trying again");
+                        continue;
+                    }
+                    // Turned off while its settings were wrong: the top of the loop says so.
+                    Ok(_) = disabled.wait_for(|disabled| disabled.contains(&extension)) => {
+                        continue;
+                    }
+                }
             }
             Err(payload) => format!("crashed while starting: {}", panic_message(payload)),
         };
@@ -237,11 +313,29 @@ async fn supervise(
                 core.set_status(&extension, ExtensionStatus::Disabled);
                 return;
             }
+            () = settings_changed(&mut settings, &extension, &started_with) => {
+                // New settings, not another crash: start again now, no backoff
+                // (`docs/specs/integrations.md` §3 step 6).
+                tracing::info!(%extension, "settings changed; restarting extension");
+                delay = timing.first_retry;
+                continue;
+            }
+            Ok(_) = disabled.wait_for(|disabled| disabled.contains(&extension)) => {
+                continue;
+            }
             () = tokio::time::sleep(delay) => {}
         }
         // Saturating: a custom `Timing` with huge delays must not overflow and end supervision.
         delay = delay.saturating_mul(2).min(timing.max_retry);
     }
+}
+
+/// What ends a running extension from outside: being told to stop, or its settings changing.
+struct Watching<'a> {
+    stop: &'a mut watch::Receiver<bool>,
+    settings: &'a mut watch::Receiver<ExtensionSettings>,
+    disabled: &'a mut watch::Receiver<BTreeSet<ExtensionId>>,
+    started_with: &'a serde_json::Value,
 }
 
 /// Feeds the integration's operations and reports into the core until it ends or we stop it.
@@ -253,9 +347,15 @@ async fn pump(
     kinds: &[EntityKind],
     host_end: HostEnd,
     mut task: JoinHandle<Result<(), irori_integration::IntegrationError>>,
-    stop: &mut watch::Receiver<bool>,
+    watching: Watching<'_>,
     timing: Timing,
 ) -> Outcome {
+    let Watching {
+        stop,
+        settings,
+        disabled,
+        started_with,
+    } = watching;
     let HostEnd {
         mut ops,
         reports,
@@ -265,17 +365,23 @@ async fn pump(
     // The core's link holds its own sender; this one isn't needed.
     drop(calls);
 
-    loop {
+    let why = loop {
         tokio::select! {
             biased;
-            _ = stop.wait_for(|stop| *stop) => break,
+            _ = stop.wait_for(|stop| *stop) => break Outcome::Stopped,
             result = &mut task => {
                 drain(core, extension, integration, kinds, &mut ops, &reports);
                 return Outcome::Ended(describe_end(result));
             }
+            () = settings_changed(settings, extension, started_with) => {
+                break Outcome::Reconfigured;
+            }
+            Ok(_) = disabled.wait_for(|disabled| disabled.contains(extension)) => {
+                break Outcome::Disabled;
+            }
             () = serve(core, extension, integration, kinds, &mut ops, &reports) => {}
         }
-    }
+    };
 
     // Told to stop: let it finish within the grace period, still serving what it says.
     let _ = stop_integration.send(true);
@@ -287,13 +393,13 @@ async fn pump(
             _ = &mut task => {
                 // Whatever it said on its way out still counts.
                 drain(core, extension, integration, kinds, &mut ops, &reports);
-                return Outcome::Stopped;
+                return why;
             }
             () = &mut grace => {
                 tracing::warn!(%extension, "extension didn't stop in time; cancelling it");
                 task.abort();
                 drain(core, extension, integration, kinds, &mut ops, &reports);
-                return Outcome::Stopped;
+                return why;
             }
             () = serve(core, extension, integration, kinds, &mut ops, &reports) => {}
         }

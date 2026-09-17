@@ -2,14 +2,15 @@
 //! a time. Pure and synchronous, so every rule of the contract is easy to test. The spec's "what
 //! the core checks" (`docs/specs/integrations.md` §8) lives here.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use irori_integration::{AvailabilityTarget, Rejected};
 use irori_types::{
-    Availability, Capabilities, ColorMode, Context, ContextId, Device, DeviceDescription, DeviceId,
-    Entity, EntityDescription, EntityId, EntityKind, EntityState, IntegrationId, LightCapabilities,
-    LightTurnOn, Name, Origin, SLUG_MAX_LEN, SensorValue, SensorValueType, Service, State,
-    StateReport, Timestamp, UniqueId,
+    Area, AreaId, Availability, Capabilities, ColorMode, Context, ContextId, Device,
+    DeviceDescription, DeviceId, Entity, EntityDescription, EntityId, EntityKind, EntityState,
+    IntegrationId, LightCapabilities, LightTurnOn, Name, Origin, Placement, SLUG_MAX_LEN,
+    SensorValue, SensorValueType, Service, Settings, SettingsKey, State, StateReport, Timestamp,
+    UniqueId,
 };
 
 use crate::Event;
@@ -39,12 +40,62 @@ pub(crate) struct Home {
     entities: BTreeMap<EntityId, Entity>,
     entity_keys: HashMap<Key, EntityId>,
     states: BTreeMap<EntityId, EntityState>,
-    /// Entities described without a name, which use (and follow) their device's name.
-    nameless: HashSet<EntityId>,
+    /// What each integration calls its devices, kept even while a person's name is being shown,
+    /// so removing that name restores the original rather than freezing it.
+    reported_device_names: HashMap<DeviceId, Name>,
+    /// The same for entities. An entity that is *absent* here was described without a name, and
+    /// uses (and follows) its device's name.
+    reported_entity_names: HashMap<EntityId, Name>,
+    /// What a person has said about all this (`docs/specs/config.md`). Overrides what the
+    /// integrations report.
+    settings: Settings,
+    /// What each integration last said about its devices and entities, as it said it. Kept so
+    /// a device can be taken out of the home and put back without asking the integration again.
+    device_descriptions: HashMap<DeviceId, DeviceDescription>,
+    entity_descriptions: HashMap<EntityId, (Vec<EntityKind>, EntityDescription)>,
+    /// Devices a person has ignored: out of the registry, but remembered.
+    ignored: BTreeMap<DeviceId, Ignored>,
+    /// Which ignored device each of their entities belongs to, to recognise what arrives for them.
+    ignored_entities: HashMap<Key, DeviceId>,
     /// What the core last told an entity to be, until the device reports back. `Toggle` uses it,
     /// so two toggles in a row don't both see the old value while the first is still in flight.
     commanded: HashMap<EntityId, bool>,
     recent_calls: HashMap<IntegrationId, VecDeque<(ContextId, Timestamp)>>,
+}
+
+/// A device a person has chosen to keep out of the home (`docs/specs/config.md` §3.2).
+///
+/// Everything its integration says about it lands here instead of in the registry: nothing is
+/// listed, nothing can be switched, nothing is recorded. The latest of it is kept, so stopping
+/// ignoring the device puts it back as it is now, not as it was.
+#[derive(Debug, Clone)]
+struct Ignored {
+    integration: IntegrationId,
+    description: DeviceDescription,
+    entities: BTreeMap<UniqueId, (Vec<EntityKind>, EntityDescription)>,
+    reports: BTreeMap<UniqueId, StateReport>,
+    /// What the integration last said about whether the device can be reached.
+    available: bool,
+}
+
+/// A device found but kept out of the home, as the page lists it: enough to recognise it and
+/// let it in.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct HeldDevice {
+    pub id: DeviceId,
+    pub integration: IntegrationId,
+    pub name: Name,
+    pub why: Held,
+}
+
+/// Why a device is kept out of the home.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Held {
+    /// A person ignored it.
+    Ignored,
+    /// It's new, and Irori asks before adding new devices.
+    New,
 }
 
 /// A service call resolved to the integration that handles it.
@@ -82,6 +133,273 @@ impl Home {
             .get(&(integration.clone(), unique_id.clone()))
     }
 
+    // --- Settings -------------------------------------------------------------------------
+
+    pub fn areas(&self) -> &[Area] {
+        &self.settings.areas
+    }
+
+    pub fn floors(&self) -> &[irori_types::Floor] {
+        &self.settings.floors
+    }
+
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    /// Whether a device is kept out of the home, and why. Ignoring wins over being new: an
+    /// ignored device stays ignored whatever Irori asks about new ones. Any other `devices.toml`
+    /// entry means it isn't new — a name or a room is as much a decision as `added = true`, so
+    /// turning asking on in `irori.toml` and restarting doesn't hold a home that was already named.
+    fn held(&self, id: &DeviceId) -> Option<Held> {
+        let settings = self.settings.devices.get(id);
+        if settings.is_some_and(|settings| settings.ignored) {
+            return Some(Held::Ignored);
+        }
+        let known = settings.is_some();
+        (self.settings.ask_before_adding && !known).then_some(Held::New)
+    }
+
+    fn is_held(&self, id: &DeviceId) -> bool {
+        self.held(id).is_some()
+    }
+
+    pub fn held_devices(&self) -> Vec<HeldDevice> {
+        self.ignored
+            .iter()
+            .filter_map(|(id, held)| {
+                Some(HeldDevice {
+                    id: id.clone(),
+                    integration: held.integration.clone(),
+                    name: self.name_for_device(id, &held.description.name),
+                    why: self.held(id)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Takes a device out of the home, keeping what its integration said so it can come back.
+    fn ignore(&mut self, id: &DeviceId, _stamp: &Stamp) -> Vec<Event> {
+        let (Some(device), Some(description)) = (
+            self.devices.get(id).cloned(),
+            self.device_descriptions.get(id).cloned(),
+        ) else {
+            return vec![];
+        };
+        let mut ignored = Ignored {
+            integration: device.integration.clone(),
+            description,
+            entities: BTreeMap::new(),
+            reports: BTreeMap::new(),
+            available: true,
+        };
+        let owned: Vec<Entity> = self
+            .entities
+            .values()
+            .filter(|entity| entity.device_id.as_ref() == Some(id))
+            .cloned()
+            .collect();
+        for entity in &owned {
+            if let Some(described) = self.entity_descriptions.get(&entity.id) {
+                ignored
+                    .entities
+                    .insert(entity.unique_id.clone(), described.clone());
+            }
+            if let Some(state) = self.states.get(&entity.id) {
+                if state.availability == Availability::Unavailable {
+                    ignored.available = false;
+                }
+                ignored.reports.insert(
+                    entity.unique_id.clone(),
+                    StateReport {
+                        unique_id: entity.unique_id.clone(),
+                        state: state.state.clone(),
+                        attributes: state.attributes.clone(),
+                        caused_by: None,
+                    },
+                );
+            }
+        }
+        // Removed first, then recorded as ignored: the other way round, removal would take the
+        // entities for already-ignored ones and leave them in the registry without their device.
+        let events = self
+            .remove_device(&device.integration, &device.unique_id)
+            .unwrap_or_default();
+        for entity in &owned {
+            self.ignored_entities.insert(
+                (device.integration.clone(), entity.unique_id.clone()),
+                id.clone(),
+            );
+        }
+        self.ignored.insert(id.clone(), ignored);
+        events
+    }
+
+    /// Puts an ignored device back, as its integration last described it.
+    fn restore(&mut self, id: &DeviceId, stamp: &Stamp) -> Vec<Event> {
+        let Some(ignored) = self.ignored.remove(id) else {
+            return vec![];
+        };
+        let integration = ignored.integration;
+        for unique_id in ignored.entities.keys() {
+            self.ignored_entities
+                .remove(&(integration.clone(), unique_id.clone()));
+        }
+        let mut events = Vec::new();
+        // Each step is what the integration said and the core accepted before; if one is
+        // refused now (the registry changed meanwhile), the rest still go back.
+        events.extend(
+            self.describe_device(&integration, ignored.description.clone())
+                .unwrap_or_default(),
+        );
+        for (kinds, description) in ignored.entities.into_values() {
+            events.extend(
+                self.describe_entity(&integration, &kinds, description, stamp)
+                    .unwrap_or_default(),
+            );
+        }
+        for report in ignored.reports.into_values() {
+            events.extend(
+                self.report_state(&integration, report, stamp)
+                    .unwrap_or_default(),
+            );
+        }
+        if !ignored.available {
+            events.extend(
+                self.set_availability(
+                    &integration,
+                    AvailabilityTarget::Device(ignored.description.unique_id),
+                    Availability::Unavailable,
+                    stamp,
+                )
+                .unwrap_or_default(),
+            );
+        }
+        events
+    }
+
+    pub fn entity_key(&self, id: &EntityId) -> Option<SettingsKey> {
+        let entity = self.entities.get(id)?;
+        Some(SettingsKey::new(
+            entity.integration.clone(),
+            entity.unique_id.clone(),
+        ))
+    }
+
+    /// What a device is called: the name a person gave it, else the one its integration reports
+    /// (`docs/specs/config.md` §5). One name, never two side by side (ROADMAP D36).
+    fn name_for_device(&self, id: &DeviceId, reported: &Name) -> Name {
+        self.settings
+            .devices
+            .get(id)
+            .and_then(|settings| settings.name.clone())
+            .unwrap_or_else(|| reported.clone())
+    }
+
+    fn description_for_device(&self, id: &DeviceId) -> Option<irori_types::Description> {
+        self.settings.devices.get(id)?.description.clone()
+    }
+
+    /// Which room a device is in: the one a person put it in, else one whose name matches what
+    /// the device suggests for itself.
+    ///
+    /// A choice that points at an area which no longer exists leaves the device unplaced rather
+    /// than falling back to the suggestion — the choice is still in the file, and deleting a room
+    /// shouldn't quietly hand the device back to its firmware. Same for a deliberate "no room":
+    /// that's an answer, and the suggestion doesn't get to overrule it.
+    fn area_for_device(&self, id: &DeviceId, suggested: Option<&Name>) -> Option<AreaId> {
+        let chosen = self
+            .settings
+            .devices
+            .get(id)
+            .map(|settings| settings.area.clone())
+            .unwrap_or_default();
+        placed(&self.settings, &chosen, suggested)
+    }
+
+    /// What an entity is called: the name a person gave it, else the one its integration
+    /// reports, else its device's name — which it goes on following.
+    fn name_for_entity(&self, id: &EntityId, device_id: Option<&DeviceId>) -> Name {
+        if let Some(chosen) = self
+            .entity_key(id)
+            .and_then(|key| self.settings.entities.get(&key)?.name.clone())
+        {
+            return chosen;
+        }
+        match self.reported_entity_names.get(id) {
+            Some(reported) => reported.clone(),
+            None => device_id
+                .and_then(|device| self.devices.get(device))
+                .map(|device| device.name.clone())
+                .expect("a nameless entity has a device (EntityDescription::validate)"),
+        }
+    }
+
+    /// Takes what a person has said about the home and brings the registry in line with it.
+    ///
+    /// Devices first: an entity with no name of its own follows its device's, so it has to see
+    /// the device's new name rather than the old one.
+    pub fn apply_settings(&mut self, settings: Settings, stamp: &Stamp) -> Vec<Event> {
+        if self.settings == settings {
+            return vec![];
+        }
+        self.settings = settings;
+        let mut events = Vec::new();
+
+        // Ignoring first, so the renames below only touch what's still in the home.
+        let now_ignored: Vec<DeviceId> = self
+            .devices
+            .keys()
+            .filter(|id| self.is_held(id))
+            .cloned()
+            .collect();
+        for id in now_ignored {
+            events.extend(self.ignore(&id, stamp));
+        }
+        let no_longer_ignored: Vec<DeviceId> = self
+            .ignored
+            .keys()
+            .filter(|id| !self.is_held(id))
+            .cloned()
+            .collect();
+        for id in no_longer_ignored {
+            events.extend(self.restore(&id, stamp));
+        }
+
+        for id in self.devices.keys().cloned().collect::<Vec<_>>() {
+            let reported = self.reported_device_names[&id].clone();
+            let name = self.name_for_device(&id, &reported);
+            let description = self.description_for_device(&id);
+            let suggested = self.devices[&id].suggested_area.clone();
+            let area_id = self.area_for_device(&id, suggested.as_ref());
+            let device = self.devices.get_mut(&id).expect("just read");
+            if device.name == name && device.area_id == area_id && device.description == description
+            {
+                continue;
+            }
+            device.name = name;
+            device.description = description;
+            device.area_id = area_id;
+            events.push(Event::DeviceUpdated {
+                device: device.clone(),
+            });
+        }
+
+        for id in self.entities.keys().cloned().collect::<Vec<_>>() {
+            let device_id = self.entities[&id].device_id.clone();
+            let name = self.name_for_entity(&id, device_id.as_ref());
+            let entity = self.entities.get_mut(&id).expect("just read");
+            if entity.name == name {
+                continue;
+            }
+            entity.name = name;
+            events.push(Event::EntityUpdated {
+                entity: entity.clone(),
+            });
+        }
+        events
+    }
+
     // --- Registry -------------------------------------------------------------------------
 
     pub fn describe_device(
@@ -93,7 +411,31 @@ impl Home {
             .validate()
             .map_err(|e| Rejected(e.to_string()))?;
         let unique_id = &description.unique_id;
-        let via = match &description.via_device_unique_id {
+        let ignored_id = device_id_for(integration, unique_id);
+        if self.is_held(&ignored_id) {
+            match self.ignored.get_mut(&ignored_id) {
+                Some(ignored) => ignored.description = description,
+                None => {
+                    self.ignored.insert(
+                        ignored_id,
+                        Ignored {
+                            integration: integration.clone(),
+                            description,
+                            entities: BTreeMap::new(),
+                            reports: BTreeMap::new(),
+                            available: true,
+                        },
+                    );
+                }
+            }
+            return Ok(vec![]);
+        }
+        // Reached through a device that's ignored: as far as the home knows, it's reached directly.
+        let via_unique_id = description
+            .via_device_unique_id
+            .clone()
+            .filter(|via| !self.ignored.contains_key(&device_id_for(integration, via)));
+        let via = match &via_unique_id {
             Some(via) => Some(self.device_id(integration, via).cloned().ok_or_else(|| {
                 Rejected(format!(
                     "device `{unique_id}`: via_device_unique_id `{via}` isn't a device this integration described"
@@ -114,15 +456,21 @@ impl Home {
                         .map_or("", UniqueId::as_str)
                 )));
             }
+            self.reported_device_names
+                .insert(id.clone(), description.name.clone());
+            self.device_descriptions
+                .insert(id.clone(), description.clone());
+            let name = self.name_for_device(&id, &description.name);
+            let area_id = self.area_for_device(&id, description.suggested_area.as_ref());
             let device = self.devices.get_mut(&id).expect("keys and devices agree");
             let before = device.clone();
-            // Nobody can rename devices in Irori yet (config spec, M0.7), so the integration's
-            // name is the only one. Once people can, a name they set wins.
-            device.name = description.name;
+            device.name = name;
             device.manufacturer = description.manufacturer;
             device.model = description.model;
             device.sw_version = description.sw_version;
             device.hw_version = description.hw_version;
+            device.suggested_area = description.suggested_area;
+            device.area_id = area_id;
             device.via_device_id = via;
             if *device == before {
                 return Ok(vec![]);
@@ -130,37 +478,72 @@ impl Home {
             let device = device.clone();
             let mut events = Vec::new();
             if device.name != before.name {
-                for entity in self.entities.values_mut() {
-                    if entity.device_id.as_ref() == Some(&id) && self.nameless.contains(&entity.id)
-                    {
-                        entity.name = device.name.clone();
-                        events.push(Event::EntityUpdated {
-                            entity: entity.clone(),
-                        });
+                let following: Vec<EntityId> = self
+                    .entities
+                    .values()
+                    .filter(|entity| entity.device_id.as_ref() == Some(&id))
+                    .map(|entity| entity.id.clone())
+                    .collect();
+                for entity_id in following {
+                    // Not every entity of a renamed device follows it: one with a name of its
+                    // own, from the integration or from a person, keeps it.
+                    let name = self.name_for_entity(&entity_id, Some(&id));
+                    let entity = self.entities.get_mut(&entity_id).expect("just listed");
+                    if entity.name == name {
+                        continue;
                     }
+                    entity.name = name;
+                    events.push(Event::EntityUpdated {
+                        entity: entity.clone(),
+                    });
                 }
             }
             events.insert(0, Event::DeviceUpdated { device });
             return Ok(events);
         }
 
-        let id = unique_id_for(&slugify(description.name.as_str()), "device", |c| {
-            DeviceId::try_from(c).is_ok_and(|id| self.devices.contains_key(&id))
-        });
-        let id = DeviceId::try_from(id).expect("unique_id_for returns a slug");
+        // The one id, from what never changes: never from a name, so a rename can't move it and
+        // it's the same after every restart (ROADMAP D36).
+        let id = device_id_for(integration, &description.unique_id);
+        if let Some(holder) = self.devices.get(&id) {
+            // Two handles that differ only in case or punctuation. Vanishingly rare for real
+            // hardware addresses, and refusing says so plainly where renumbering one of them
+            // would make its id depend on which device happened to be found first.
+            return Err(Rejected(format!(
+                "device `{unique_id}` would have the id `{id}`, which `{}` already has; its \
+                 unique_id has to differ by more than case or punctuation",
+                holder.unique_id
+            )));
+        }
+        self.device_descriptions
+            .insert(id.clone(), description.clone());
+        let settings = self.settings.devices.get(&id);
+        let name = settings
+            .and_then(|settings| settings.name.clone())
+            .unwrap_or_else(|| description.name.clone());
+        let area_id = placed(
+            &self.settings,
+            &settings
+                .map(|settings| settings.area.clone())
+                .unwrap_or_default(),
+            description.suggested_area.as_ref(),
+        );
         let device = Device {
             id: id.clone(),
             integration: integration.clone(),
             unique_id: description.unique_id.clone(),
-            name: description.name,
+            name,
+            description: settings.and_then(|settings| settings.description.clone()),
             manufacturer: description.manufacturer,
             model: description.model,
             sw_version: description.sw_version,
             hw_version: description.hw_version,
-            // Areas arrive with the config spec (M0.7); `suggested_area` is used then.
-            area_id: None,
+            area_id,
+            suggested_area: description.suggested_area,
             via_device_id: via,
         };
+        self.reported_device_names
+            .insert(id.clone(), description.name);
         self.device_keys
             .insert((integration.clone(), description.unique_id), id.clone());
         self.devices.insert(id, device.clone());
@@ -197,6 +580,18 @@ impl Home {
                 "entity `{unique_id}` is a {kind}, but the manifest's entity_kinds doesn't list {kind}"
             )));
         }
+        if let Some(device) = &description.device_unique_id {
+            let device_id = device_id_for(integration, device);
+            if let Some(ignored) = self.ignored.get_mut(&device_id) {
+                self.ignored_entities
+                    .insert((integration.clone(), unique_id.clone()), device_id);
+                ignored
+                    .entities
+                    .insert(unique_id.clone(), (kinds.to_vec(), description));
+                return Ok(vec![]);
+            }
+        }
+        let described = (kinds.to_vec(), description.clone());
         let device = match &description.device_unique_id {
             Some(device) => {
                 let id = self.device_id(integration, device).ok_or_else(|| {
@@ -219,21 +614,18 @@ impl Home {
                 )));
             }
             let before = entity.clone();
-            let name = match (description.name, device) {
-                (Some(name), _) => {
-                    self.nameless.remove(&id);
-                    name
+            match description.name {
+                Some(name) => {
+                    self.reported_entity_names.insert(id.clone(), name);
                 }
-                (None, Some(device)) => {
-                    self.nameless.insert(id.clone());
-                    device.name.clone()
+                // Nameless: it follows its device's name, whatever that currently is.
+                None => {
+                    self.reported_entity_names.remove(&id);
                 }
-                (None, None) => {
-                    unreachable!("EntityDescription::validate requires a name or a device")
-                }
-            };
+            }
+            self.entity_descriptions.insert(id.clone(), described);
+            let name = self.name_for_entity(&id, device_id.as_ref());
             let entity = self.entities.get_mut(&id).expect("keys and entities agree");
-            // As for devices: the integration's name, until people can rename entities (M0.7).
             entity.name = name;
             entity.capabilities = description.capabilities;
             entity.device_id = device_id;
@@ -285,18 +677,35 @@ impl Home {
             return Ok(events);
         }
 
-        let name: Name = match (&description.name, device) {
+        // The entity doesn't exist yet, so its settings have to be looked up by hand rather than
+        // through `name_for_entity`.
+        let chosen = self
+            .settings
+            .entities
+            .get(&SettingsKey::new(
+                integration.clone(),
+                description.unique_id.clone(),
+            ))
+            .and_then(|settings| settings.name.clone());
+        let otherwise: Name = match (&description.name, device) {
             (Some(name), _) => name.clone(),
             (None, Some(device)) => device.name.clone(),
-            (None, None) => unreachable!("EntityDescription::validate requires a name or a device"),
+            (None, None) => {
+                unreachable!("EntityDescription::validate requires a name or a device")
+            }
         };
+        // The id is built from the device's id and the name the integration gave the entity —
+        // never from a name a person chose, and never from the device's name, so renaming either
+        // can't leave an id that says something else (ROADMAP D36).
         let base = match (&description.suggested_object_id, &description.name, device) {
             (Some(object_id), _, _) => object_id.as_str().to_owned(),
-            (None, Some(name), Some(device)) => {
-                slugify(&format!("{} {}", device.name.as_str(), name.as_str()))
+            (None, Some(reported), Some(device)) => {
+                slugify(&format!("{} {}", device.id.as_str(), reported.as_str()))
             }
-            (None, _, _) => slugify(name.as_str()),
+            (None, None, Some(device)) => device.id.as_str().to_owned(),
+            (None, _, None) => slugify(otherwise.as_str()),
         };
+        let name: Name = chosen.unwrap_or(otherwise);
         let object_id = unique_id_for(&base, kind.domain(), |c| {
             EntityId::new(kind, c).is_ok_and(|id| self.entities.contains_key(&id))
         });
@@ -321,9 +730,10 @@ impl Home {
             // Irori creates this "nothing reported yet" entry; the device hasn't said anything.
             context: system_context(stamp),
         };
-        if description.name.is_none() {
-            self.nameless.insert(id.clone());
+        if let Some(reported) = description.name {
+            self.reported_entity_names.insert(id.clone(), reported);
         }
+        self.entity_descriptions.insert(id.clone(), described);
         self.entity_keys
             .insert((integration.clone(), description.unique_id), id.clone());
         self.entities.insert(id.clone(), entity.clone());
@@ -344,14 +754,22 @@ impl Home {
         unique_id: &UniqueId,
     ) -> Result<Vec<Event>, Rejected> {
         let key = (integration.clone(), unique_id.clone());
+        if let Some(device) = self.ignored_entities.remove(&key) {
+            if let Some(ignored) = self.ignored.get_mut(&device) {
+                ignored.entities.remove(unique_id);
+                ignored.reports.remove(unique_id);
+            }
+            return Ok(vec![]);
+        }
         let id = self.entity_keys.remove(&key).ok_or_else(|| {
             Rejected(format!(
                 "can't remove entity `{unique_id}`: this integration has no such entity"
             ))
         })?;
+        self.entity_descriptions.remove(&id);
         self.entities.remove(&id);
         self.states.remove(&id);
-        self.nameless.remove(&id);
+        self.reported_entity_names.remove(&id);
         self.commanded.remove(&id);
         Ok(vec![Event::EntityRemoved { entity_id: id }])
     }
@@ -362,11 +780,19 @@ impl Home {
         unique_id: &UniqueId,
     ) -> Result<Vec<Event>, Rejected> {
         let key = (integration.clone(), unique_id.clone());
+        if let Some(ignored) = self.ignored.remove(&device_id_for(integration, unique_id)) {
+            for entity in ignored.entities.keys() {
+                self.ignored_entities
+                    .remove(&(integration.clone(), entity.clone()));
+            }
+            return Ok(vec![]);
+        }
         let id = self.device_keys.remove(&key).ok_or_else(|| {
             Rejected(format!(
                 "can't remove device `{unique_id}`: this integration has no such device"
             ))
         })?;
+        self.device_descriptions.remove(&id);
         let mut events = Vec::new();
         let owned: Vec<Entity> = self
             .entities
@@ -400,6 +826,18 @@ impl Home {
     ) -> Result<Vec<Event>, Rejected> {
         report.validate().map_err(|e| Rejected(e.to_string()))?;
         let unique_id = &report.unique_id;
+        if let Some(device) = self
+            .ignored_entities
+            .get(&(integration.clone(), unique_id.clone()))
+        {
+            if let Some(ignored) = self.ignored.get_mut(device) {
+                // Kept without its cause: by the time it's put back, no call is waiting on it.
+                let mut report = report;
+                report.caused_by = None;
+                ignored.reports.insert(report.unique_id.clone(), report);
+            }
+            return Ok(vec![]);
+        }
         let id = self.entity_id(integration, unique_id).cloned().ok_or_else(|| {
             Rejected(format!(
                 "state report for `{unique_id}`: this integration has no such entity (describe it first)"
@@ -463,6 +901,29 @@ impl Home {
         availability: Availability,
         stamp: &Stamp,
     ) -> Result<Vec<Event>, Rejected> {
+        let target = match target {
+            AvailabilityTarget::Device(device) => {
+                if let Some(ignored) = self.ignored.get_mut(&device_id_for(integration, &device)) {
+                    ignored.available = availability == Availability::Available;
+                    return Ok(vec![]);
+                }
+                AvailabilityTarget::Device(device)
+            }
+            AvailabilityTarget::Entities(unique_ids) => {
+                let kept: Vec<UniqueId> = unique_ids
+                    .into_iter()
+                    .filter(|u| {
+                        !self
+                            .ignored_entities
+                            .contains_key(&(integration.clone(), u.clone()))
+                    })
+                    .collect();
+                if kept.is_empty() {
+                    return Ok(vec![]);
+                }
+                AvailabilityTarget::Entities(kept)
+            }
+        };
         let ids: Vec<EntityId> = match &target {
             AvailabilityTarget::Device(device) => {
                 let device_id = self.device_id(integration, device).ok_or_else(|| {
@@ -672,6 +1133,21 @@ impl Home {
     }
 }
 
+/// Where a device ends up: what a person said, else what the device suggests.
+///
+/// The three answers are different. A room that was chosen is used if it still exists; a
+/// deliberate "no room" is honoured and shuts the suggestion out; and only silence lets the
+/// device's own idea of where it is stand in (`docs/specs/config.md` §5).
+fn placed(settings: &Settings, chosen: &Placement, suggested: Option<&Name>) -> Option<AreaId> {
+    match chosen {
+        Placement::In(area) => settings.area(area).map(|area| area.id.clone()),
+        Placement::Nowhere => None,
+        Placement::Unsaid => suggested
+            .and_then(|name| settings.area_named(name))
+            .map(|area| area.id.clone()),
+    }
+}
+
 /// A change Irori made itself, e.g. after an integration crashed.
 fn system_context(stamp: &Stamp) -> Context {
     Context {
@@ -801,6 +1277,69 @@ pub(crate) fn slugify(text: &str) -> String {
     slug.trim_end_matches('_').to_owned()
 }
 
+/// A device's id: its integration and the integration's permanent handle for it, as a slug —
+/// `esphome_30_83_98_ca_6a_08`. A pure function of the two, so it's the same after every restart
+/// and whatever the device is called (ROADMAP D36).
+///
+/// A handle too long for an id keeps its beginning and gains a hash of the whole canonical
+/// input (integration plus handle), so two long integrations that share a prefix — or two long
+/// handles that start the same — still get different ids.
+pub fn device_id_for(integration: &IntegrationId, unique_id: &UniqueId) -> DeviceId {
+    let canonical = format!("{integration} {unique_id}");
+    let mut slug = String::new();
+    let mut separate = false;
+    for c in canonical.chars() {
+        if c.is_ascii_alphanumeric() {
+            if separate && !slug.is_empty() {
+                slug.push('_');
+            }
+            separate = false;
+            slug.push(c.to_ascii_lowercase());
+        } else {
+            separate = true;
+        }
+    }
+    // A handle with nothing a slug can keep (`玄関`) would leave just the integration's name.
+    let lossless_enough = slug.len() > integration.as_str().len();
+    if slug.len() > SLUG_MAX_LEN || !lossless_enough {
+        let hash = format!("{:016x}", fnv1a(canonical.as_bytes()));
+        let keep = SLUG_MAX_LEN - hash.len() - 1;
+        slug.truncate(keep);
+        let trimmed = slug.trim_end_matches('_');
+        slug = format!("{trimmed}_{hash}");
+    }
+    DeviceId::try_from(slug).expect("built from slug characters, within the length")
+}
+
+/// FNV-1a: tiny, stable across builds and platforms, which is all an id suffix needs.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// An id for a new area, from what it's called and what's already there.
+///
+/// Areas are the one thing a person creates directly, so their ids are made here rather than by
+/// an integration — and by the same rules as every other id, so `Kitchen` becomes `kitchen` and a
+/// second `Kitchen` becomes `kitchen_2` instead of an error.
+pub fn new_area_id(name: &Name, existing: &[Area]) -> AreaId {
+    let id = unique_id_for(&slugify(name.as_str()), "area", |candidate| {
+        AreaId::try_from(candidate)
+            .is_ok_and(|id| existing.iter().any(|existing| existing.id == id))
+    });
+    AreaId::try_from(id).expect("unique_id_for returns a slug")
+}
+
+/// An id for a new floor, by the same rules as a room's: from its name, never colliding.
+pub fn new_floor_id(name: &Name, existing: &[irori_types::Floor]) -> irori_types::FloorId {
+    let id = unique_id_for(&slugify(name.as_str()), "floor", |candidate| {
+        irori_types::FloorId::try_from(candidate)
+            .is_ok_and(|id| existing.iter().any(|existing| existing.id == id))
+    });
+    irori_types::FloorId::try_from(id).expect("unique_id_for returns a slug")
+}
+
 /// `base` (or `fallback` if empty), with `_2`, `_3`, … appended until `taken` says it's free.
 fn unique_id_for(base: &str, fallback: &str, taken: impl Fn(&str) -> bool) -> String {
     let base = if base.is_empty() { fallback } else { base };
@@ -920,12 +1459,682 @@ mod tests {
         home
     }
 
+    impl Home {
+        /// `apply_settings` at a fixed moment: these tests are about what settings do, not when.
+        fn settle(&mut self, settings: Settings) -> Vec<Event> {
+            self.apply_settings(settings, &stamp(0))
+        }
+    }
+
     fn lamp_id() -> EntityId {
-        EntityId::try_from("light.desk_lamp").expect("valid")
+        EntityId::try_from("light.demo_lamp").expect("valid")
+    }
+
+    fn area(id: &str, called: &str) -> Area {
+        Area {
+            id: AreaId::try_from(id).expect("valid"),
+            name: name(called),
+            floor_id: None,
+        }
+    }
+
+    /// Device settings are by the device's id, the same id its page and the API use.
+    fn key(unique: &str) -> DeviceId {
+        device_id_for(&integration(), &uid(unique))
+    }
+
+    fn entity_key(unique: &str) -> SettingsKey {
+        SettingsKey::new(integration(), uid(unique))
+    }
+
+    fn called(what: &str) -> irori_types::DeviceSettings {
+        irori_types::DeviceSettings {
+            added: false,
+            name: Some(name(what)),
+            description: None,
+            area: Placement::Unsaid,
+            ignored: false,
+        }
+    }
+
+    fn in_room(area: &str) -> irori_types::DeviceSettings {
+        irori_types::DeviceSettings {
+            added: false,
+            name: None,
+            description: None,
+            area: Placement::In(AreaId::try_from(area).expect("valid")),
+            ignored: false,
+        }
+    }
+
+    fn nowhere() -> irori_types::DeviceSettings {
+        irori_types::DeviceSettings {
+            added: false,
+            name: None,
+            description: None,
+            area: Placement::Nowhere,
+            ignored: false,
+        }
+    }
+
+    fn device_named(home: &Home, id: &str) -> String {
+        home.devices[&DeviceId::try_from(id).expect("valid")]
+            .name
+            .to_string()
+    }
+
+    // --- Settings -------------------------------------------------------------------------
+
+    /// The point of the config directory: what a person calls their device beats what its
+    /// firmware calls it, and taking the name away gives the firmware's name back rather than
+    /// freezing whatever was on screen.
+    #[test]
+    fn a_name_a_person_chose_wins_and_can_be_taken_back() {
+        let mut home = home_with_lamp();
+        assert_eq!(device_named(&home, "demo_lamp"), "Desk lamp");
+
+        let events = home.settle(Settings {
+            devices: [(key("lamp"), called("Reading lamp"))].into(),
+            ..Settings::default()
+        });
+        assert_eq!(device_named(&home, "demo_lamp"), "Reading lamp");
+        assert_eq!(
+            home.entities[&lamp_id()].name.as_str(),
+            "Reading lamp",
+            "a nameless entity follows its device"
+        );
+        assert_eq!(events.len(), 2, "the device and its entity: {events:?}");
+
+        home.settle(Settings::default());
+        assert_eq!(device_named(&home, "demo_lamp"), "Desk lamp");
+        assert_eq!(home.entities[&lamp_id()].name.as_str(), "Desk lamp");
+    }
+
+    /// The whole of what Home Assistant gets wrong here: a device has one id, and nothing a
+    /// person names it can change it — not a rename, not a restart after one, not the firmware
+    /// calling it something else. The id is the integration and its permanent handle.
+    #[test]
+    fn a_devices_id_never_changes_whatever_it_is_called() {
+        let id = key("lamp");
+        assert_eq!(id.as_str(), "demo_lamp");
+
+        let mut home = home_with_lamp();
+        home.settle(Settings {
+            devices: [(id.clone(), called("Reading lamp"))].into(),
+            ..Settings::default()
+        });
+        assert!(home.devices.contains_key(&id));
+        assert_eq!(home.entities[&lamp_id()].name.as_str(), "Reading lamp");
+
+        // As after a restart: settings first, then the integration describes it again, under
+        // a name its firmware has since changed.
+        let mut restarted = Home::default();
+        restarted.settle(Settings {
+            devices: [(id.clone(), called("Reading lamp"))].into(),
+            ..Settings::default()
+        });
+        restarted
+            .describe_device(&integration(), device("lamp", "Lamp v2"))
+            .expect("device");
+        restarted
+            .describe_entity(
+                &integration(),
+                &ALL,
+                entity("lamp-light", None, Some("lamp"), dimmable()),
+                &stamp(0),
+            )
+            .expect("entity");
+        assert_eq!(restarted.devices.keys().collect::<Vec<_>>(), [&id]);
+        assert!(
+            restarted.entities.contains_key(&lamp_id()),
+            "the entity id didn't move either"
+        );
+        assert_eq!(device_named(&restarted, "demo_lamp"), "Reading lamp");
     }
 
     #[test]
-    fn ids_come_from_names_and_never_collide() {
+    fn device_ids_are_readable_where_they_can_be_and_distinct_where_they_cant() {
+        let id = |integration: &str, unique: &str| {
+            device_id_for(
+                &IntegrationId::try_from(integration).expect("valid"),
+                &uid(unique),
+            )
+            .to_string()
+        };
+        assert_eq!(
+            id("esphome", "30:83:98:CA:6A:08"),
+            "esphome_30_83_98_ca_6a_08"
+        );
+        assert_eq!(id("mqtt", "0x00158d0001a2b3c4"), "mqtt_0x00158d0001a2b3c4");
+        // Nothing a slug can keep: the handle is hashed rather than dropped.
+        assert_ne!(id("demo", "玄関"), id("demo", "台所"));
+        // Too long for an id: the beginning is kept, and the whole decides the ending.
+        let long_a = format!("{}a", "x".repeat(80));
+        let long_b = format!("{}b", "x".repeat(80));
+        assert_ne!(id("demo", &long_a), id("demo", &long_b));
+        assert!(id("demo", &long_a).len() <= SLUG_MAX_LEN);
+        // A pure function: asked twice, the same answer.
+        assert_eq!(id("demo", &long_a), id("demo", &long_a));
+        // Two long integration ids that share a slug prefix, same handle: the hash covers both,
+        // so truncation can't make them collide.
+        let prefix = "i".repeat(60);
+        let left = format!("{prefix}a");
+        let right = format!("{prefix}b");
+        assert_ne!(
+            id(&left, "same-handle"),
+            id(&right, "same-handle"),
+            "hash must include the integration, not only the handle"
+        );
+    }
+
+    /// Two handles that differ only in case would share an id. Refused with a reason, rather
+    /// than numbered in whatever order they happened to be found.
+    #[test]
+    fn two_devices_whose_ids_would_collide_are_refused_rather_than_renumbered() {
+        let mut home = Home::default();
+        home.describe_device(&integration(), device("AB", "One"))
+            .expect("first");
+        let refused = home
+            .describe_device(&integration(), device("ab", "Two"))
+            .expect_err("same id");
+        assert!(refused.0.contains("demo_ab"), "{}", refused.0);
+    }
+
+    /// One description, set by a person, like the name.
+    fn ignoring(unique: &str) -> Settings {
+        Settings {
+            devices: [(
+                key(unique),
+                irori_types::DeviceSettings {
+                    ignored: true,
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            ..Settings::default()
+        }
+    }
+
+    /// Ignoring a device takes it and its entities out of the home. What its integration goes
+    /// on saying is kept, not refused — so nothing is counted as a rejected report — and letting
+    /// it back in restores it as it is now, not as it was when it left.
+    #[test]
+    fn an_ignored_device_leaves_the_home_and_comes_back_as_it_is_now() {
+        let mut home = home_with_lamp();
+        home.report_state(
+            &integration(),
+            report("lamp-light", Some(light(false, Some(10)))),
+            &stamp(1),
+        )
+        .expect("report");
+
+        let events = home.settle(ignoring("lamp"));
+        assert!(home.devices.is_empty() && home.entities.is_empty() && home.states.is_empty());
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::DeviceRemoved { .. })),
+            "{events:?}"
+        );
+        assert_eq!(home.held_devices().len(), 1);
+        assert_eq!(home.held_devices()[0].name.as_str(), "Desk lamp");
+
+        // The integration carries on as usual, and nothing it says is an error.
+        home.describe_device(&integration(), device("lamp", "Desk lamp v2"))
+            .expect("described while ignored");
+        home.report_state(
+            &integration(),
+            report("lamp-light", Some(light(true, Some(200)))),
+            &stamp(2),
+        )
+        .expect("reported while ignored");
+        home.set_availability(
+            &integration(),
+            AvailabilityTarget::Device(uid("lamp")),
+            Availability::Available,
+            &stamp(2),
+        )
+        .expect("availability while ignored");
+        assert!(home.devices.is_empty(), "still out of the home");
+        assert!(
+            home.resolve(&lamp_id(), Command::Toggle).is_err(),
+            "an ignored entity can't be commanded"
+        );
+
+        home.settle(Settings::default());
+        assert!(home.held_devices().is_empty());
+        assert_eq!(
+            device_named(&home, "demo_lamp"),
+            "Desk lamp v2",
+            "its latest name"
+        );
+        assert_eq!(
+            home.state(&lamp_id()).and_then(|state| state.state.clone()),
+            Some(light(true, Some(200))),
+            "its latest reading"
+        );
+    }
+
+    /// A device that's ignored before it's ever seen never enters the home at all.
+    #[test]
+    fn a_device_ignored_in_advance_never_arrives() {
+        let mut home = Home::default();
+        home.settle(ignoring("lamp"));
+        home.describe_device(&integration(), device("lamp", "Desk lamp"))
+            .expect("device");
+        home.describe_entity(
+            &integration(),
+            &ALL,
+            entity("lamp-light", None, Some("lamp"), dimmable()),
+            &stamp(0),
+        )
+        .expect("entity");
+        assert!(home.devices.is_empty() && home.entities.is_empty());
+        assert_eq!(home.held_devices().len(), 1);
+
+        // And an integration that removes it while ignored is taken at its word.
+        home.remove_device(&integration(), &uid("lamp"))
+            .expect("removed");
+        assert!(home.held_devices().is_empty());
+    }
+
+    /// While Irori asks before adding, a new device waits outside the home until a person adds
+    /// it, then joins as it is now. One already added joins as soon as it's found.
+    #[test]
+    fn a_new_device_waits_to_be_added_while_irori_asks() {
+        let asking = |added: &[&str]| Settings {
+            ask_before_adding: true,
+            devices: added
+                .iter()
+                .map(|unique| {
+                    (
+                        key(unique),
+                        irori_types::DeviceSettings {
+                            added: true,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
+            ..Settings::default()
+        };
+        let mut home = Home::default();
+        home.settle(asking(&["plug"]));
+        home.describe_device(&integration(), device("lamp", "Desk lamp"))
+            .expect("lamp");
+        home.describe_entity(
+            &integration(),
+            &ALL,
+            entity("lamp-light", None, Some("lamp"), dimmable()),
+            &stamp(0),
+        )
+        .expect("light");
+        home.describe_device(&integration(), device("plug", "Plug"))
+            .expect("plug");
+
+        assert_eq!(
+            home.devices
+                .keys()
+                .map(DeviceId::as_str)
+                .collect::<Vec<_>>(),
+            ["demo_plug"],
+            "the plug was added before it was found"
+        );
+        let held = home.held_devices();
+        assert_eq!(held.len(), 1);
+        assert_eq!((held[0].id.as_str(), held[0].why), ("demo_lamp", Held::New));
+
+        home.settle(asking(&["plug", "lamp"]));
+        assert!(home.devices.contains_key(&key("lamp")));
+        assert!(home.entities.contains_key(&lamp_id()), "with its entities");
+        assert!(home.held_devices().is_empty());
+    }
+
+    /// A device that already has a `devices.toml` entry (a name, a room) is not new. Asking
+    /// written in `irori.toml` before Irori starts must not hold a home someone already arranged.
+    #[test]
+    fn a_named_device_is_not_new_when_asking_is_already_on() {
+        let mut home = Home::default();
+        home.settle(Settings {
+            ask_before_adding: true,
+            devices: [(key("lamp"), called("Reading lamp"))].into(),
+            ..Settings::default()
+        });
+        home.describe_device(&integration(), device("lamp", "Desk lamp"))
+            .expect("lamp");
+        assert!(home.devices.contains_key(&key("lamp")));
+        assert!(home.held_devices().is_empty());
+    }
+
+    /// Ignored stays ignored whether or not Irori asks; stopping asking lets every new device in.
+    #[test]
+    fn stopping_asking_lets_new_devices_in_but_not_ignored_ones() {
+        let mut home = Home::default();
+        home.settle(Settings {
+            ask_before_adding: true,
+            devices: [(
+                key("plug"),
+                irori_types::DeviceSettings {
+                    ignored: true,
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            ..Settings::default()
+        });
+        home.describe_device(&integration(), device("lamp", "Desk lamp"))
+            .expect("lamp");
+        home.describe_device(&integration(), device("plug", "Plug"))
+            .expect("plug");
+        let mut why: Vec<_> = home
+            .held_devices()
+            .into_iter()
+            .map(|held| held.why)
+            .collect();
+        why.sort_by_key(|why| format!("{why:?}"));
+        assert_eq!(why, [Held::Ignored, Held::New]);
+
+        home.settle(Settings {
+            devices: [(
+                key("plug"),
+                irori_types::DeviceSettings {
+                    ignored: true,
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            ..Settings::default()
+        });
+        assert!(home.devices.contains_key(&key("lamp")));
+        assert_eq!(home.held_devices().len(), 1);
+        assert_eq!(home.held_devices()[0].why, Held::Ignored);
+    }
+
+    #[test]
+    fn a_device_has_the_description_a_person_gave_it() {
+        let mut home = home_with_lamp();
+        home.settle(Settings {
+            devices: [(
+                key("lamp"),
+                irori_types::DeviceSettings {
+                    description: Some("On the desk by the window".parse().expect("valid")),
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            ..Settings::default()
+        });
+        assert_eq!(
+            home.devices[&key("lamp")]
+                .description
+                .as_ref()
+                .map(irori_types::Description::as_str),
+            Some("On the desk by the window")
+        );
+    }
+
+    /// The integration keeps describing the device while a person's name is in force. Its name
+    /// must not win back, and the new manufacturer or firmware version must still land.
+    #[test]
+    fn an_integration_that_describes_a_renamed_device_again_doesnt_rename_it_back() {
+        let mut home = home_with_lamp();
+        home.settle(Settings {
+            devices: [(key("lamp"), called("Reading lamp"))].into(),
+            ..Settings::default()
+        });
+
+        let mut again = device("lamp", "Desk lamp");
+        again.sw_version = Some("2026.9.0".to_owned());
+        let events = home.describe_device(&integration(), again).expect("again");
+
+        assert_eq!(device_named(&home, "demo_lamp"), "Reading lamp");
+        assert_eq!(
+            home.devices[&DeviceId::try_from("demo_lamp").expect("valid")].sw_version,
+            Some("2026.9.0".to_owned()),
+            "what the integration is entitled to say still lands"
+        );
+        assert_eq!(events.len(), 1, "only the device changed: {events:?}");
+    }
+
+    /// An entity named by its integration, or by a person, has a name of its own and keeps it
+    /// when the device is renamed.
+    #[test]
+    fn only_entities_without_a_name_of_their_own_follow_the_device() {
+        let mut home = home_with_lamp();
+        home.describe_entity(
+            &integration(),
+            &ALL,
+            entity(
+                "lamp-power",
+                Some("Power"),
+                Some("lamp"),
+                Capabilities::Sensor(SensorCapabilities {
+                    value_type: SensorValueType::Number,
+                    device_class: None,
+                    unit: None,
+                    state_class: None,
+                }),
+            ),
+            &stamp(0),
+        )
+        .expect("entity");
+
+        home.settle(Settings {
+            floors: Vec::new(),
+            devices: [(key("lamp"), called("Reading lamp"))].into(),
+            entities: [(
+                entity_key("lamp-light"),
+                irori_types::EntitySettings {
+                    name: Some(name("Reading light")),
+                },
+            )]
+            .into(),
+            ..Settings::default()
+        });
+
+        assert_eq!(
+            home.entities[&lamp_id()].name.as_str(),
+            "Reading light",
+            "a name a person gave the entity stops it following its device"
+        );
+        assert_eq!(
+            home.entities[&EntityId::try_from("sensor.demo_lamp_power").expect("valid")]
+                .name
+                .as_str(),
+            "Power",
+            "a name the integration gave the entity is its own too"
+        );
+    }
+
+    #[test]
+    fn a_new_rooms_id_comes_from_its_name_and_never_collides() {
+        let kitchen = area("kitchen", "Kitchen");
+        assert_eq!(new_area_id(&name("Kitchen"), &[]).as_str(), "kitchen");
+        assert_eq!(
+            new_area_id(&name("Kitchen"), std::slice::from_ref(&kitchen)).as_str(),
+            "kitchen_2"
+        );
+        // A name with nothing a slug can use still has to produce an id.
+        assert_eq!(new_area_id(&name("玄関"), &[]).as_str(), "area");
+    }
+
+    #[test]
+    fn a_device_goes_in_the_room_a_person_puts_it_in() {
+        let mut home = home_with_lamp();
+        let id = DeviceId::try_from("demo_lamp").expect("valid");
+        assert_eq!(home.devices[&id].area_id, None);
+
+        home.settle(Settings {
+            areas: vec![area("study", "Study")],
+            devices: [(key("lamp"), in_room("study"))].into(),
+            ..Settings::default()
+        });
+        assert_eq!(home.devices[&id].area_id, Some(area("study", "Study").id));
+    }
+
+    /// A device that says which room it's in doesn't get to invent one, but it does take its
+    /// place the moment that room exists — including when the room is made later.
+    #[test]
+    fn a_devices_own_suggestion_is_used_only_once_that_room_exists() {
+        let mut home = Home::default();
+        let mut described = device("lamp", "Desk lamp");
+        described.suggested_area = Some(name("Study"));
+        home.describe_device(&integration(), described)
+            .expect("device");
+        let id = DeviceId::try_from("demo_lamp").expect("valid");
+        assert_eq!(home.devices[&id].area_id, None, "no such room yet");
+
+        let events = home.settle(Settings {
+            areas: vec![area("study", "Study")],
+            ..Settings::default()
+        });
+        assert_eq!(home.devices[&id].area_id, Some(area("study", "Study").id));
+        assert_eq!(events.len(), 1, "{events:?}");
+    }
+
+    /// "Not in a room" has to be an answer, not the absence of one. Otherwise saying it to a
+    /// device whose firmware suggests a room would clear the setting, let the suggestion back in,
+    /// and put the device straight back where it was — the control would be a lie.
+    #[test]
+    fn a_device_can_be_kept_out_of_the_room_its_firmware_asks_for() {
+        let mut home = Home::default();
+        let mut described = device("lamp", "Desk lamp");
+        described.suggested_area = Some(name("Study"));
+        home.describe_device(&integration(), described)
+            .expect("device");
+        let id = DeviceId::try_from("demo_lamp").expect("valid");
+
+        home.settle(Settings {
+            areas: vec![area("study", "Study")],
+            ..Settings::default()
+        });
+        assert_eq!(
+            home.devices[&id].area_id,
+            Some(area("study", "Study").id),
+            "the suggestion stands in while nobody has said otherwise"
+        );
+
+        home.settle(Settings {
+            areas: vec![area("study", "Study")],
+            devices: [(key("lamp"), nowhere())].into(),
+            ..Settings::default()
+        });
+        assert_eq!(home.devices[&id].area_id, None, "and a person can say no");
+    }
+
+    /// Deleting a room shouldn't quietly hand a device back to whatever its firmware suggests:
+    /// the person's choice is still written down, so the device is simply unplaced.
+    #[test]
+    fn a_choice_pointing_at_a_deleted_room_leaves_the_device_unplaced() {
+        let mut home = Home::default();
+        let mut described = device("lamp", "Desk lamp");
+        described.suggested_area = Some(name("Study"));
+        home.describe_device(&integration(), described)
+            .expect("device");
+
+        home.settle(Settings {
+            areas: vec![area("study", "Study"), area("hall", "Hall")],
+            devices: [(key("lamp"), in_room("hall"))].into(),
+            ..Settings::default()
+        });
+        let id = DeviceId::try_from("demo_lamp").expect("valid");
+        assert_eq!(home.devices[&id].area_id, Some(area("hall", "Hall").id));
+
+        home.settle(Settings {
+            areas: vec![area("study", "Study")],
+            devices: [(key("lamp"), in_room("hall"))].into(),
+            ..Settings::default()
+        });
+        assert_eq!(home.devices[&id].area_id, None);
+    }
+
+    /// Settings are read before any integration starts, so the common case is a device arriving
+    /// into a home that already has an opinion about it. It should never appear under its old
+    /// name, not even for an instant.
+    #[test]
+    fn a_device_that_arrives_later_is_named_and_placed_as_it_appears() {
+        let mut home = Home::default();
+        home.settle(Settings {
+            ask_before_adding: false,
+            floors: Vec::new(),
+            areas: vec![area("study", "Study")],
+            devices: [(
+                key("lamp"),
+                irori_types::DeviceSettings {
+                    added: false,
+                    name: Some(name("Reading lamp")),
+                    description: None,
+                    area: Placement::In(AreaId::try_from("study").expect("valid")),
+                    ignored: false,
+                },
+            )]
+            .into(),
+            entities: [(
+                entity_key("lamp-light"),
+                irori_types::EntitySettings {
+                    name: Some(name("Reading light")),
+                },
+            )]
+            .into(),
+        });
+
+        let events = home
+            .describe_device(&integration(), device("lamp", "Desk lamp"))
+            .expect("device");
+        let Some(Event::DeviceAdded { device }) = events.first() else {
+            panic!("a device was added: {events:?}");
+        };
+        assert_eq!(device.name.as_str(), "Reading lamp");
+        assert_eq!(device.area_id, Some(area("study", "Study").id));
+        assert_eq!(
+            device.id.as_str(),
+            "demo_lamp",
+            "the id is the device's own, whatever it has been named"
+        );
+
+        home.describe_entity(
+            &integration(),
+            &ALL,
+            entity("lamp-light", None, Some("lamp"), dimmable()),
+            &stamp(0),
+        )
+        .expect("entity");
+        assert_eq!(
+            home.entities
+                .values()
+                .map(|entity| entity.name.to_string())
+                .collect::<Vec<_>>(),
+            ["Reading light"]
+        );
+    }
+
+    #[test]
+    fn settings_that_change_nothing_change_nothing() {
+        let mut home = home_with_lamp();
+        let settings = Settings {
+            areas: vec![area("study", "Study")],
+            devices: [(key("lamp"), called("Reading lamp"))].into(),
+            ..Settings::default()
+        };
+
+        assert_eq!(home.settle(settings.clone()).len(), 2);
+        assert!(home.settle(settings).is_empty(), "applied twice");
+    }
+
+    /// Settings are kept for things that aren't here: a device unplugged for a week comes back to
+    /// the name it had, rather than to its firmware's.
+    #[test]
+    fn a_setting_for_something_absent_is_kept_and_waits() {
+        let mut home = Home::default();
+        home.settle(Settings {
+            devices: [(key("nothing_here"), called("Someday"))].into(),
+            ..Settings::default()
+        });
+        assert_eq!(home.settings().devices.len(), 1);
+    }
+
+    #[test]
+    fn slugs_and_numbered_ids_never_collide() {
         assert_eq!(slugify("Desk lamp"), "desk_lamp");
         assert_eq!(slugify("  Küche · Decke!! "), "k_che_decke");
         assert_eq!(slugify("玄関"), "");
@@ -940,17 +2149,20 @@ mod tests {
         assert_eq!(id.len(), 64);
         assert!(id.ends_with("_2"));
 
+        // Two devices with the same name are still two ids: names aren't what ids are made of.
         let mut home = Home::default();
         for unique in ["a", "b"] {
             home.describe_device(&integration(), device(unique, "玄関 light"))
                 .expect("device");
         }
         let ids: Vec<_> = home.devices().map(|d| d.id.to_string()).collect();
-        assert_eq!(ids, ["light", "light_2"]);
+        assert_eq!(ids, ["demo_a", "demo_b"]);
     }
 
+    /// An entity's id is its device's id and the name its integration gave it: never a name a
+    /// person chose, so no rename can leave an id that says something else.
     #[test]
-    fn entities_get_ids_from_device_and_entity_names() {
+    fn entities_get_ids_from_their_devices_id_and_their_own_reported_name() {
         let mut home = home_with_lamp();
         home.describe_device(&integration(), device("sensor", "Hallway sensor"))
             .expect("device");
@@ -967,10 +2179,7 @@ mod tests {
         )
         .expect("entity");
         let ids: Vec<_> = home.entities().map(|e| e.id.to_string()).collect();
-        assert_eq!(
-            ids,
-            ["binary_sensor.hallway_sensor_motion", "light.desk_lamp"]
-        );
+        assert_eq!(ids, ["binary_sensor.demo_sensor_motion", "light.demo_lamp"]);
         // A nameless entity takes its device's name.
         assert_eq!(home.entities[&lamp_id()].name.as_str(), "Desk lamp");
         // New entities start available and unknown, an entry Irori made itself.
@@ -1544,7 +2753,7 @@ mod tests {
             .expect_err("range");
         assert_eq!(
             err.to_string(),
-            "`light.desk_lamp` supports color temperatures from 2700 to 6500 K, not 2000 K"
+            "`light.demo_lamp` supports color temperatures from 2700 to 6500 K, not 2000 K"
         );
 
         let unknown = EntityId::try_from("light.nope").expect("valid");

@@ -39,6 +39,7 @@ Everything the installed binary does:
 ```sh
 irori run                                  # http://127.0.0.1:8480
 irori run --log-level debug                # log every device and state change as it happens
+irori run --config ~/.config/irori         # your rooms, names, keys and irori.toml (default ./config)
 irori run --data /var/lib/irori            # where the database lives (default ./data)
 irori run --bind 0.0.0.0:8480 --allow-unauthenticated-lan   # reachable from your phone; see below
 irori version --json
@@ -46,8 +47,19 @@ irori help run
 ```
 
 `run` and `serve` are the same command. Every option is also an environment variable
-(`IRORI_DATA`, `IRORI_BIND`, `IRORI_LOG_LEVEL`, `IRORI_ALLOW_UNAUTHENTICATED_LAN`), which is what
+(`IRORI_DATA`, `IRORI_CONFIG`, `IRORI_BIND`, `IRORI_LOG_LEVEL`, `IRORI_ALLOW_UNAUTHENTICATED_LAN`), which is what
 the container uses. `irori help run` lists them with their defaults.
+
+Or put them in `irori.toml` in the config directory, where a flag still wins:
+
+```toml
+[server]
+bind = "127.0.0.1:8480"
+log_level = "info"
+
+[extensions]
+disabled = ["demo"]          # applies while Irori runs; [server] needs a restart
+```
 
 Or straight from the checkout, without installing — the same commands after `cargo run --`:
 
@@ -66,11 +78,53 @@ curl -s http://127.0.0.1:8480/api/dev/home     # the whole home in one response
 
 The **web UI** is a separate wasm crate, so `cargo build` alone doesn't need a wasm toolchain and
 serves a placeholder page at `/`. `cargo xtask install` above builds it; `cargo xtask ui` builds
-it without installing. It has a Home page (what Irori is looking after) and a Devices page
-(everything, with switches and an **Add device** panel explaining where devices come from).
+it without installing. It has a folding sidebar, a Home page (what
+Irori is looking after, by room), a Devices page (devices grouped by integration, entities with
+their switches, and an **Add device** panel), and a Rooms page.
 
 See [crates/irori-ui/README.md](crates/irori-ui/README.md) for working on the UI itself (live
 reload, no binary rebuild). CI builds it, so downloaded release binaries always have it.
+
+### Rooms, and what to call things
+
+Every device has **one id, one name and one description**. The id is made from the integration
+and the device's hardware address (`esphome_30_83_98_ca_6a_08`) and never changes. The name
+starts as whatever the firmware calls the device, and once you rename it, yours is the only name —
+there's no second one kept in step somewhere else. Names, descriptions and rooms survive restarts,
+because they're written to a directory of plain TOML files:
+
+```
+config/
+  areas.toml      the floors and rooms of your home
+  devices.toml    what you've called a device, and which room it's in
+  entities.toml   what you've called an individual entity
+  secrets.toml    keys for devices that encrypt their connection — never commit this one
+  irori.toml      Irori's own settings
+  extensions/     settings for each extension, like your helpers
+```
+
+Make floors and rooms on the **Rooms** page; name, describe or place a device on its own page, where you can
+also **ignore** it — it leaves Irori until you let it back in from the Devices page. Or open
+the files in an editor — Irori picks up changes within a couple of seconds, and a file that
+doesn't parse is ignored with an explanation in the log while the last good version keeps
+running. There is no second copy in the database: the UI writes the same files you would.
+
+If you'd rather decide which devices Irori takes in — a shared network, a neighbour's plugs —
+put this in `irori.toml`, and new devices wait on the Devices page for you to add or ignore them:
+
+```toml
+[devices]
+new = "ask"
+```
+
+**Helpers** are switches Irori keeps itself, like "guests are over": make them on the Devices
+page's **Helpers** tab. They stay as you left them through restarts, and rules will be able to use
+them.
+
+A device that reports which room it thinks it's in (ESPHome's `area:`) never creates that room —
+but making a room by that name collects every device that was asking for one.
+
+See [docs/specs/config.md](docs/specs/config.md).
 
 ### ESPHome devices
 
@@ -78,13 +132,16 @@ Nothing to configure: Irori listens for ESPHome devices announcing themselves on
 network, connects to each one, and puts everything it has on the Devices page. Lights and
 switches can be switched from there.
 
-The one catch today is **encryption**: ESPHome's API can require a pre-shared key, and Irori has
-nowhere to keep one until the config dir lands (M0.7). Devices asking for an encrypted
-connection are named in the log and skipped. Until then, a device with a plain `api:` block (no
-`encryption:`) is picked up on its own.
+A device with **encryption** (`api: encryption: key:` in its YAML) is found but not connected to
+until Irori has its key. The Devices page says so; **Add device** lists it by name with a field
+for the key. Paste it and the device connects. The key goes into `secrets.toml`, readable only by
+Irori, and is never shown again.
+
+If your ESPHome config has an `area:`, Irori notices it but doesn't act on it by itself: make a
+room by that name and the device walks into it (see above).
 
 See [integrations/irori-int-esphome/README.md](integrations/irori-int-esphome/README.md), which
-also explains how to run a real ESPHome device on your laptop to try it without hardware.
+also explains how to try both kinds of device without hardware.
 
 ## Run it like a Raspberry Pi (Docker)
 
@@ -138,7 +195,7 @@ CI runs on every pull request (and on every push to `main`). It builds `x86_64` 
 
 ```
 assets/        brand: logo marks, banner, favicon, social card (see assets/README.md)
-docs/specs/    specifications: entities.md, extensions.md, integrations.md
+docs/specs/    specifications: entities.md, extensions.md, integrations.md, config.md
 schemas/       JSON Schemas generated from irori-types (`cargo xtask schemas`)
 fixtures/      golden examples, valid and invalid, checked by the tests
 crates/        irori-types, irori-core, irori-integration, irori-rules, irori-recorder,

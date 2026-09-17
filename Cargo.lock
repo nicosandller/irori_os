@@ -887,15 +887,18 @@ dependencies = [
  "clap",
  "http-body-util",
  "irori-assist",
+ "irori-config",
  "irori-core",
  "irori-int-demo",
  "irori-int-esphome",
+ "irori-int-helpers",
  "irori-int-mqtt",
  "irori-integration",
  "irori-types",
  "mime_guess",
  "rusqlite",
  "rust-embed",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",
@@ -933,6 +936,11 @@ name = "irori-config"
 version = "0.0.0"
 dependencies = [
  "irori-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "tracing",
 ]
 
 [[package]]
@@ -943,6 +951,7 @@ dependencies = [
  "irori-integration",
  "irori-types",
  "jiff",
+ "schemars",
  "serde",
  "serde_json",
  "tokio",
@@ -965,14 +974,28 @@ dependencies = [
 name = "irori-int-esphome"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "esphome-client",
  "irori-integration",
  "irori-types",
  "schemars",
  "serde",
  "serde_json",
+ "snow",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "irori-int-helpers"
+version = "0.0.0"
+dependencies = [
+ "irori-integration",
+ "irori-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

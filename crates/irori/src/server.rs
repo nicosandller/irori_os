@@ -7,20 +7,22 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use irori_core::{CallError, Command, Core, Event, ExtensionOverview};
 use irori_types::{
-    ContextId, Device, Entity, EntityId, EntityState, ExtensionId, LightTurnOn, Origin, UserId,
+    Area, AreaId, ContextId, Description, Device, DeviceId, Entity, EntityId, EntityState,
+    ExtensionId, Floor, FloorId, LightTurnOn, Name, Origin, Placement, UserId,
 };
 use tokio::sync::broadcast;
 
 use crate::build_info::{BuildInfo, VERSION};
+use crate::config::{Config, EditError, Refused};
 use crate::db::Database;
 
 /// Who commands are attributed to until there are accounts to attribute them to (M1.5).
@@ -36,15 +38,17 @@ struct Inner {
     db: Database,
     build: BuildInfo,
     core: Core,
+    config: Config,
 }
 
 impl AppState {
-    pub fn new(db: Database, core: Core) -> Self {
+    pub fn new(db: Database, core: Core, config: Config) -> Self {
         Self(Arc::new(Inner {
             started: Instant::now(),
             db,
             build: BuildInfo::current(),
             core,
+            config,
         }))
     }
 }
@@ -72,6 +76,23 @@ pub fn router(state: AppState) -> Router {
             "/api/dev/extensions",
             get(|State(s): State<AppState>| async move { Json(s.0.core.extensions()) }),
         )
+        // What a person has said about their home (`docs/specs/config.md`). These write files.
+        .route("/api/dev/areas", get(areas).post(add_area))
+        .route("/api/dev/floors", get(floors).post(add_floor))
+        .route(
+            "/api/dev/floors/{id}",
+            patch(edit_floor).delete(remove_floor),
+        )
+        .route("/api/dev/areas/{id}", patch(edit_area).delete(remove_area))
+        .route("/api/dev/devices/{id}", patch(edit_device))
+        .route("/api/dev/entities/{id}", patch(edit_entity))
+        .route("/api/dev/extensions/{id}/secrets", put(give_secret))
+        .route("/api/dev/helpers/toggles", post(add_toggle))
+        .route(
+            "/api/dev/helpers/toggles/{id}",
+            axum::routing::delete(remove_toggle),
+        )
+        .route("/api/dev/extensions/{id}/icon.svg", get(extension_icon))
         .fallback(get(ui::serve))
         .with_state(state)
 }
@@ -85,6 +106,13 @@ struct HomeView {
     entities: Vec<Entity>,
     states: Vec<EntityState>,
     extensions: BTreeMap<ExtensionId, ExtensionOverview>,
+    areas: Vec<Area>,
+    /// The levels of the home, lowest first. Empty for a home nobody has divided into floors.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    floors: Vec<Floor>,
+    /// Devices a person keeps out of the home, so they can be let back in.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    held: Vec<irori_core::HeldDevice>,
 }
 
 async fn home(State(state): State<AppState>) -> Json<HomeView> {
@@ -94,7 +122,577 @@ async fn home(State(state): State<AppState>) -> Json<HomeView> {
         entities: core.entities(),
         states: core.states(),
         extensions: core.extensions(),
+        areas: core.areas(),
+        floors: core.floors(),
+        held: core.held_devices(),
     })
+}
+
+// --- Rooms, names, and where things live ---------------------------------------------------
+//
+// Each of these changes a file in the config directory and then tells the core
+// (`docs/specs/config.md`). None of them touch what an integration reports: taking a name away
+// gives the integration's name back, rather than leaving whatever was on screen.
+
+async fn areas(State(state): State<AppState>) -> Json<Vec<Area>> {
+    Json(state.0.core.areas())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AreaRequest {
+    name: Name,
+    #[serde(default)]
+    floor: Option<FloorId>,
+}
+
+/// A change to a room: a new name, a floor (`null` for none), or both.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AreaEdit {
+    #[serde(default)]
+    name: Option<Name>,
+    #[serde(default, deserialize_with = "patched")]
+    floor: Patch<FloorId>,
+}
+
+/// A room on a floor that isn't there is refused; a room with no floor is fine.
+fn floor_exists(settings: &irori_types::Settings, floor: Option<&FloorId>) -> Result<(), Refused> {
+    match floor {
+        Some(floor) if settings.floor(floor).is_none() => {
+            Err(Refused(format!("there's no floor `{floor}`")))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Makes a room. Two rooms may share a name — homes have two bathrooms — so the id, not the
+/// name, is what has to be unique.
+async fn add_area(State(state): State<AppState>, Json(request): Json<AreaRequest>) -> Response {
+    let made = state
+        .0
+        .config
+        .edit(&state.0.core, |settings| {
+            floor_exists(settings, request.floor.as_ref())?;
+            let area = Area {
+                id: irori_core::new_area_id(&request.name, &settings.areas),
+                name: request.name.clone(),
+                floor_id: request.floor.clone(),
+            };
+            settings.areas.push(area.clone());
+            settings.areas.sort_by(|a, b| a.id.cmp(&b.id));
+            Ok(area)
+        })
+        .await;
+    match made {
+        Ok(area) => (StatusCode::CREATED, Json(area)).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+async fn edit_area(
+    State(state): State<AppState>,
+    Path(id): Path<AreaId>,
+    Json(request): Json<AreaEdit>,
+) -> Response {
+    let renamed = state
+        .0
+        .config
+        .edit(&state.0.core, |settings| {
+            if let Some(floor) = &request.floor {
+                floor_exists(settings, floor.as_ref())?;
+            }
+            let area = settings
+                .areas
+                .iter_mut()
+                .find(|area| area.id == id)
+                .ok_or_else(|| Refused(format!("there's no room `{id}`")))?;
+            if let Some(name) = &request.name {
+                area.name = name.clone();
+            }
+            if let Some(floor) = &request.floor {
+                area.floor_id = floor.clone();
+            }
+            Ok(area.clone())
+        })
+        .await;
+    match renamed {
+        Ok(area) => Json(area).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+/// Removes a room. Devices that were in it are left unplaced, and what was said about them is
+/// kept: making the room again puts them back.
+async fn remove_area(State(state): State<AppState>, Path(id): Path<AreaId>) -> Response {
+    let removed = state
+        .0
+        .config
+        .edit(&state.0.core, |settings| {
+            let before = settings.areas.len();
+            settings.areas.retain(|area| area.id != id);
+            if settings.areas.len() == before {
+                return Err(Refused(format!("there's no room `{id}`")));
+            }
+            Ok(())
+        })
+        .await;
+    match removed {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+async fn floors(State(state): State<AppState>) -> Json<Vec<Floor>> {
+    Json(state.0.core.floors())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FloorRequest {
+    name: Name,
+    /// 0 is the entrance level; negative is below ground.
+    #[serde(default)]
+    level: i8,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FloorEdit {
+    #[serde(default)]
+    name: Option<Name>,
+    #[serde(default)]
+    level: Option<i8>,
+}
+
+async fn add_floor(State(state): State<AppState>, Json(request): Json<FloorRequest>) -> Response {
+    let made = state
+        .0
+        .config
+        .edit(&state.0.core, |settings| {
+            let floor = Floor {
+                id: irori_core::new_floor_id(&request.name, &settings.floors),
+                name: request.name.clone(),
+                level: request.level,
+            };
+            settings.floors.push(floor.clone());
+            settings.floors.sort_by(|a, b| a.id.cmp(&b.id));
+            Ok(floor)
+        })
+        .await;
+    match made {
+        Ok(floor) => (StatusCode::CREATED, Json(floor)).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+async fn edit_floor(
+    State(state): State<AppState>,
+    Path(id): Path<FloorId>,
+    Json(request): Json<FloorEdit>,
+) -> Response {
+    let edited = state
+        .0
+        .config
+        .edit(&state.0.core, |settings| {
+            let floor = settings
+                .floors
+                .iter_mut()
+                .find(|floor| floor.id == id)
+                .ok_or_else(|| Refused(format!("there's no floor `{id}`")))?;
+            if let Some(name) = &request.name {
+                floor.name = name.clone();
+            }
+            if let Some(level) = request.level {
+                floor.level = level;
+            }
+            Ok(floor.clone())
+        })
+        .await;
+    match edited {
+        Ok(floor) => Json(floor).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+/// Removes a floor. Its rooms stay, on no floor; what they said about it is kept, so making the
+/// floor again puts them back — as with rooms and their devices.
+async fn remove_floor(State(state): State<AppState>, Path(id): Path<FloorId>) -> Response {
+    let removed = state
+        .0
+        .config
+        .edit(&state.0.core, |settings| {
+            let before = settings.floors.len();
+            settings.floors.retain(|floor| floor.id != id);
+            if settings.floors.len() == before {
+                return Err(Refused(format!("there's no floor `{id}`")));
+            }
+            Ok(())
+        })
+        .await;
+    match removed {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+/// A field that can be set, cleared, or left alone: absent means "don't touch", `null` means
+/// "clear it", and a value means "make it this".
+type Patch<T> = Option<Option<T>>;
+
+/// serde reads a plain `Option<Option<T>>` as `None` for both an absent field and a `null` one,
+/// which loses exactly the distinction a PATCH needs.
+fn patched<'de, T, D>(deserializer: D) -> Result<Patch<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(deserializer).map(Some)
+}
+
+/// Where to put a device, in a PATCH body: `"hall"` for a room, `false` for deliberately no
+/// room, `null` to go back to having said nothing (which lets the device's own suggestion stand
+/// in again). Absent leaves it alone.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum WhereTo {
+    In(AreaId),
+    /// `false`. `true` would mean "yes, a room" without saying which, so it's refused.
+    Nowhere(bool),
+}
+
+impl WhereTo {
+    fn placement(&self) -> Result<Placement, Refused> {
+        match self {
+            WhereTo::In(area) => Ok(Placement::In(area.clone())),
+            WhereTo::Nowhere(false) => Ok(Placement::Nowhere),
+            WhereTo::Nowhere(true) => Err(Refused(
+                "`area: true` doesn't say which room; send a room's id, `false` for no room, or \
+                 null to leave it to the device"
+                    .to_owned(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeviceEdit {
+    #[serde(default, deserialize_with = "patched")]
+    name: Patch<Name>,
+    #[serde(default, deserialize_with = "patched")]
+    description: Patch<Description>,
+    #[serde(default, deserialize_with = "patched")]
+    area: Patch<WhereTo>,
+    /// `true` takes the device out of the home; `false` lets it back in.
+    #[serde(default)]
+    ignored: Option<bool>,
+    /// `true` adds a new device while Irori asks before adding.
+    #[serde(default)]
+    added: Option<bool>,
+}
+
+async fn edit_device(
+    State(state): State<AppState>,
+    Path(id): Path<DeviceId>,
+    Json(request): Json<DeviceEdit>,
+) -> Response {
+    let core = &state.0.core;
+    // An ignored device isn't in the registry, but it's still one a person can let back in.
+    let known = core.devices().iter().any(|device| device.id == id)
+        || core.held_devices().iter().any(|device| device.id == id);
+    if !known {
+        return refused(StatusCode::NOT_FOUND, format!("there's no device `{id}`"));
+    }
+    let edited = state
+        .0
+        .config
+        .edit(core, |settings| {
+            let area = match request.area.clone() {
+                None => None,
+                // `null`: nobody has said, so the device's own suggestion may stand in again.
+                Some(None) => Some(Placement::Unsaid),
+                Some(Some(where_to)) => Some(where_to.placement()?),
+            };
+            if let Some(Placement::In(area)) = &area
+                && settings.area(area).is_none()
+            {
+                return Err(Refused(format!("there's no room `{area}`")));
+            }
+            let device = settings.devices.entry(id.clone()).or_default();
+            if let Some(name) = request.name.clone() {
+                device.name = name;
+            }
+            if let Some(description) = request.description.clone() {
+                device.description = description;
+            }
+            if let Some(ignored) = request.ignored {
+                device.ignored = ignored;
+                // Letting it back in is adding it. With ask mode on, clearing ignored alone
+                // would leave `added = false` and put it on the waiting list instead of in
+                // the home.
+                if !ignored {
+                    device.added = true;
+                }
+            }
+            if let Some(added) = request.added {
+                device.added = added;
+            }
+            if let Some(area) = area {
+                device.area = area;
+            }
+            Ok(())
+        })
+        .await;
+    match edited {
+        // The device as it now is, so the page doesn't have to guess what the change produced.
+        Ok(()) => Json(core.devices().into_iter().find(|device| device.id == id)).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EntityEdit {
+    #[serde(default, deserialize_with = "patched")]
+    name: Patch<Name>,
+}
+
+async fn edit_entity(
+    State(state): State<AppState>,
+    Path(id): Path<EntityId>,
+    Json(request): Json<EntityEdit>,
+) -> Response {
+    let core = &state.0.core;
+    let Some(key) = core.entity_key(&id) else {
+        return refused(StatusCode::NOT_FOUND, format!("there's no entity `{id}`"));
+    };
+    // A helper's name lives where the helper is defined. Writing it to entities.toml as well
+    // would give it two names, one in each file (ROADMAP D36).
+    if key.integration.as_str() == HELPERS.as_str()
+        && let Some(toggle) = key.unique_id.as_str().strip_prefix("toggle-")
+    {
+        let Some(Some(name)) = request.name.clone() else {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                "a helper always has a name; send the new one".to_owned(),
+            );
+        };
+        let toggle = toggle.to_owned();
+        let renamed = state
+            .0
+            .config
+            .edit_extension(core, &HELPERS, |file| {
+                let entry = file
+                    .get_mut("toggles")
+                    .and_then(|toggles| toggles.get_mut(&toggle))
+                    .and_then(serde_json::Value::as_object_mut)
+                    .ok_or_else(|| Refused(format!("there's no toggle `{toggle}`")))?;
+                entry.insert("name".into(), serde_json::json!(name.as_str()));
+                Ok(())
+            })
+            .await;
+        return match renamed {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(e) => edit_failed(e),
+        };
+    }
+    let edited = state
+        .0
+        .config
+        .edit(core, |settings| {
+            if let Some(name) = request.name.clone() {
+                settings.entities.entry(key).or_default().name = name;
+            }
+            Ok(())
+        })
+        .await;
+    match edited {
+        Ok(()) => Json(core.entities().into_iter().find(|entity| entity.id == id)).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+/// The helpers extension's id: its toggles are kept in `extensions/helpers.toml`.
+static HELPERS: LazyLock<ExtensionId> =
+    LazyLock::new(|| ExtensionId::try_from("helpers").expect("a valid extension id"));
+
+/// Makes a toggle: `{"name": "Guests are over"}`. Its id comes from the name and never changes;
+/// its entity is `switch.<id>`.
+async fn add_toggle(State(state): State<AppState>, Json(request): Json<AreaRequest>) -> Response {
+    if request.floor.is_some() {
+        return refused(StatusCode::BAD_REQUEST, "a toggle has no floor".to_owned());
+    }
+    let taken: Vec<String> = state
+        .0
+        .core
+        .entities()
+        .iter()
+        .map(|entity| entity.id.to_string())
+        .collect();
+    let made = state
+        .0
+        .config
+        .edit_extension(&state.0.core, &HELPERS, |file| {
+            let toggles = file
+                .entry("toggles")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+                .ok_or_else(|| {
+                    Refused("`toggles` in extensions/helpers.toml isn't a table".into())
+                })?;
+            // An id no toggle has, and no other switch either: `switch.<id>` has to be free.
+            let base = irori_core::new_area_id(&request.name, &[]).to_string();
+            let id = (1..)
+                .map(|n| {
+                    if n == 1 {
+                        base.clone()
+                    } else {
+                        format!("{base}_{n}")
+                    }
+                })
+                .find(|id| !toggles.contains_key(id) && !taken.contains(&format!("switch.{id}")))
+                .expect("an unbounded range always finds a free id");
+            toggles.insert(
+                id.clone(),
+                serde_json::json!({"name": request.name.as_str()}),
+            );
+            Ok(id)
+        })
+        .await;
+    match made {
+        Ok(id) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({"id": id, "entity_id": format!("switch.{id}")})),
+        )
+            .into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+async fn remove_toggle(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let removed = state
+        .0
+        .config
+        .edit_extension(&state.0.core, &HELPERS, |file| {
+            let gone = file
+                .get_mut("toggles")
+                .and_then(serde_json::Value::as_object_mut)
+                .and_then(|toggles| toggles.remove(&id));
+            gone.map(|_| ())
+                .ok_or_else(|| Refused(format!("there's no toggle `{id}`")))
+        })
+        .await;
+    match removed {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+/// An extension's icon. Served with a policy that forbids everything an image doesn't need, so
+/// an icon from a third-party extension can't run script even when opened on its own — and the
+/// page only ever shows it through `<img>`, where it couldn't anyway.
+async fn extension_icon(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {
+    match state.0.core.extension_icon(&id) {
+        Some(svg) => (
+            [
+                (axum::http::header::CONTENT_TYPE, "image/svg+xml"),
+                (
+                    axum::http::header::CONTENT_SECURITY_POLICY,
+                    "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+                ),
+                (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                // Compiled into this binary, so it can't change while this build runs.
+                (axum::http::header::CACHE_CONTROL, "max-age=3600"),
+            ],
+            svg,
+        )
+            .into_response(),
+        None => refused(StatusCode::NOT_FOUND, format!("`{id}` has no icon")),
+    }
+}
+
+/// A secret for an extension, at the place it asked for one: `{"path": [...], "value": "..."}`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SecretGiven {
+    path: Vec<String>,
+    value: String,
+}
+
+/// Written by hand so the value can't reach a log through `{:?}`.
+impl std::fmt::Debug for SecretGiven {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretGiven")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Hands an extension a secret it asked for — an encryption key for a device it found, say — by
+/// writing it into `secrets.toml`. The extension is restarted with it.
+///
+/// **Only where it asked.** The path has to be one the extension lists as waiting right now
+/// (`docs/specs/integrations.md` §6.6). There is no sign-in yet (D12), so this endpoint must not
+/// be a way to put anything into anyone's settings; this way it can only answer a question an
+/// extension is actually asking. The value is never echoed back, logged, or readable afterwards.
+async fn give_secret(
+    State(state): State<AppState>,
+    Path(id): Path<ExtensionId>,
+    Json(given): Json<SecretGiven>,
+) -> Response {
+    let core = &state.0.core;
+    let Some(extension) = core.extensions().remove(&id) else {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("there's no extension `{id}`"),
+        );
+    };
+    let asked = extension
+        .waiting
+        .iter()
+        .filter_map(|waiting| waiting.secret.as_ref())
+        .any(|secret| secret.path == given.path);
+    if !asked {
+        return refused(
+            StatusCode::CONFLICT,
+            format!(
+                "`{id}` isn't asking for a secret there right now; it may already have one, or \
+                 have stopped waiting"
+            ),
+        );
+    }
+    if given.value.trim().is_empty() {
+        return refused(StatusCode::BAD_REQUEST, "the secret is empty".to_owned());
+    }
+    let saved = state
+        .0
+        .config
+        .edit_secrets(core, |secrets| {
+            secrets
+                .set(&id, &given.path, given.value.trim().to_owned())
+                .map_err(|e| Refused(e.to_string()))
+        })
+        .await;
+    match saved {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+/// An edit that couldn't be made says why; one that couldn't be written says that instead, because
+/// the two need different things from whoever is reading.
+fn edit_failed(error: EditError) -> Response {
+    match error {
+        EditError::Refused(why) => refused(StatusCode::BAD_REQUEST, why.to_string()),
+        EditError::Io(e) => {
+            tracing::error!(%e, "couldn't write the config directory");
+            refused(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("couldn't write the config directory: {e}"),
+            )
+        }
+    }
 }
 
 /// A command from the UI: `{"entity_id": "light.hallway", "command": "toggle"}`.
@@ -323,6 +921,65 @@ mod tests {
         Core::new(Arc::new(irori_core::SystemClock))
     }
 
+    /// A server on throwaway directories. Held for the length of a test, because the config
+    /// directory has to outlive the requests that write to it.
+    struct Server {
+        dir: tempfile::TempDir,
+        core: Core,
+        config: Config,
+    }
+
+    impl Server {
+        fn new(core: Core) -> anyhow::Result<Self> {
+            let dir = tempfile::tempdir()?;
+            let config = Config::open_dir(dir.path().join("config"), &core);
+            Ok(Self { dir, core, config })
+        }
+
+        fn app(&self) -> anyhow::Result<Router> {
+            Ok(router(AppState::new(
+                crate::db::open(self.dir.path())?,
+                self.core.clone(),
+                self.config.clone(),
+            )))
+        }
+
+        /// The config directory this server writes to, for checking what landed on disk.
+        fn config_dir(&self) -> std::path::PathBuf {
+            self.dir.path().join("config")
+        }
+
+        async fn send(&self, request: Request<Body>) -> anyhow::Result<(StatusCode, Vec<u8>)> {
+            let res = self.app()?.oneshot(request).await?;
+            let status = res.status();
+            let body = res.into_body().collect().await?.to_bytes().to_vec();
+            Ok((status, body))
+        }
+
+        async fn json(
+            &self,
+            method: &str,
+            path: &str,
+            body: serde_json::Value,
+        ) -> anyhow::Result<(StatusCode, serde_json::Value)> {
+            let request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body)?))?;
+            let (status, bytes) = self.send(request).await?;
+            Ok((
+                status,
+                serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+            ))
+        }
+
+        async fn read(&self, path: &str) -> anyhow::Result<serde_json::Value> {
+            let (_, bytes) = self.send(Request::get(path).body(Body::empty())?).await?;
+            Ok(serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+        }
+    }
+
     async fn get(path: &str) -> anyhow::Result<(StatusCode, Option<String>, Vec<u8>)> {
         get_from(core(), path).await
     }
@@ -331,9 +988,11 @@ mod tests {
         core: Core,
         path: &str,
     ) -> anyhow::Result<(StatusCode, Option<String>, Vec<u8>)> {
-        let dir = tempfile::tempdir()?;
-        let app = router(AppState::new(crate::db::open(dir.path())?, core));
-        let res = app.oneshot(Request::get(path).body(Body::empty())?).await?;
+        let server = Server::new(core)?;
+        let res = server
+            .app()?
+            .oneshot(Request::get(path).body(Body::empty())?)
+            .await?;
         let status = res.status();
         let content_type = res
             .headers()
@@ -399,16 +1058,7 @@ mod tests {
         path: &str,
         body: serde_json::Value,
     ) -> anyhow::Result<(StatusCode, serde_json::Value)> {
-        let dir = tempfile::tempdir()?;
-        let app = router(AppState::new(crate::db::open(dir.path())?, core));
-        let request = Request::post(path)
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_vec(&body)?))?;
-        let res = app.oneshot(request).await?;
-        let status = res.status();
-        let bytes = res.into_body().collect().await?.to_bytes();
-        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
-        Ok((status, json))
+        Server::new(core)?.json("POST", path, body).await
     }
 
     /// Everything the Devices page needs arrives in one response.
@@ -533,6 +1183,809 @@ mod tests {
         let extensions: serde_json::Value = serde_json::from_slice(&body)?;
         assert_eq!(extensions["demo"]["state"], "running");
 
+        host.shutdown().await;
+        Ok(())
+    }
+
+    // --- Rooms and names ------------------------------------------------------------------
+
+    /// The whole round trip: make a room, put a device in it, and find both on disk in files a
+    /// person could have written themselves.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn a_room_and_a_device_in_it_are_written_where_a_person_can_read_them()
+    -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, area) = server
+            .json(
+                "POST",
+                "/api/dev/areas",
+                serde_json::json!({"name": "Study"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{area}");
+        assert_eq!(area["id"], "study");
+
+        let (status, device) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({
+                    "name": "Reading lamp", "description": "On the desk", "area": "study",
+                }),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{device}");
+        assert_eq!(device["name"], "Reading lamp");
+        assert_eq!(device["description"], "On the desk");
+        assert_eq!(device["id"], "demo_lamp", "renaming it didn't move its id");
+        assert_eq!(device["area_id"], "study");
+
+        let areas = std::fs::read_to_string(server.config_dir().join("areas.toml"))?;
+        assert!(areas.contains("[areas.study]"), "{areas}");
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        // Keyed by the device's one id — the same id as its page address — so there is never a
+        // second identifier for the same device to keep in step (ROADMAP D36).
+        assert!(devices.contains("[devices.demo_lamp]"), "{devices}");
+        assert!(
+            devices.contains("description = \"On the desk\""),
+            "{devices}"
+        );
+        assert!(devices.contains("name = \"Reading lamp\""), "{devices}");
+
+        // And the page sees the same thing it would after a restart.
+        let home = server.read("/api/dev/home").await?;
+        assert_eq!(home["areas"][0]["name"], "Study");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Renaming a device renames the entities that were following its name, and taking the name
+    /// away gives the integration's name back rather than leaving the chosen one stuck.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn a_rename_carries_the_entities_and_can_be_undone() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+        let lamp = EntityId::try_from("light.demo_lamp")?;
+        let entity_named = |core: &Core| {
+            core.entities()
+                .into_iter()
+                .find(|entity| entity.id == lamp)
+                .map(|entity| entity.name.to_string())
+        };
+        assert_eq!(entity_named(&core).as_deref(), Some("Demo lamp"));
+
+        let (status, _) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"name": "Reading lamp"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(entity_named(&core).as_deref(), Some("Reading lamp"));
+
+        let (status, device) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"name": null}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{device}");
+        assert_eq!(device["name"], "Demo lamp");
+        assert_eq!(entity_named(&core).as_deref(), Some("Demo lamp"));
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// An entity can be named on its own, and then it stops following its device.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn an_entity_can_have_a_name_of_its_own() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, entity) = server
+            .json(
+                "PATCH",
+                "/api/dev/entities/light.demo_lamp",
+                serde_json::json!({"name": "Reading light"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{entity}");
+        assert_eq!(entity["name"], "Reading light");
+
+        server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"name": "Reading lamp"}),
+            )
+            .await?;
+        let home = server.read("/api/dev/home").await?;
+        let named = home["entities"]
+            .as_array()
+            .and_then(|all| all.iter().find(|e| e["id"] == "light.demo_lamp"))
+            .map(|e| e["name"].clone());
+        assert_eq!(named, Some(serde_json::json!("Reading light")));
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Deleting a room doesn't delete what was said about the devices in it: the device is
+    /// unplaced, and making the room again puts it back.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn deleting_a_room_unplaces_its_devices_without_forgetting_them() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+        server
+            .json(
+                "POST",
+                "/api/dev/areas",
+                serde_json::json!({"name": "Study"}),
+            )
+            .await?;
+        server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"area": "study"}),
+            )
+            .await?;
+
+        let (status, _) = server
+            .json("DELETE", "/api/dev/areas/study", serde_json::json!(null))
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let placed = |core: &Core| {
+            core.devices()
+                .into_iter()
+                .find(|device| device.id.as_str() == "demo_lamp")
+                .and_then(|device| device.area_id)
+        };
+        assert_eq!(placed(&core), None);
+
+        server
+            .json(
+                "POST",
+                "/api/dev/areas",
+                serde_json::json!({"name": "Study"}),
+            )
+            .await?;
+        assert_eq!(
+            placed(&core).map(|id| id.to_string()).as_deref(),
+            Some("study"),
+            "the device remembered where it belonged"
+        );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// "Not in a room" is an answer. The demo lamp's firmware asks for the Study; once that room
+    /// exists the lamp is in it, and `area: false` must take it out and keep it out, while
+    /// `area: null` hands the decision back to the device.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn a_device_can_be_kept_out_of_the_room_it_asks_for() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+        let placed = |core: &Core| {
+            core.devices()
+                .into_iter()
+                .find(|device| device.id.as_str() == "demo_lamp")
+                .and_then(|device| device.area_id)
+                .map(|id| id.to_string())
+        };
+        server
+            .json(
+                "POST",
+                "/api/dev/areas",
+                serde_json::json!({"name": "Study"}),
+            )
+            .await?;
+        assert_eq!(
+            placed(&core).as_deref(),
+            Some("study"),
+            "the suggestion stands in"
+        );
+
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"area": false}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(placed(&core), None, "and a person can say no");
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(devices.contains("area = false"), "{devices}");
+
+        server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"area": null}),
+            )
+            .await?;
+        assert_eq!(
+            placed(&core).as_deref(),
+            Some("study"),
+            "or give it back to the device"
+        );
+
+        let (status, _) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"area": true}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "`true` names no room");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Floors are made, listed lowest first, and rooms go on them; removing a floor leaves its
+    /// rooms where they are, on no floor.
+    #[tokio::test]
+    async fn floors_hold_rooms_and_removing_one_keeps_them() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (status, upstairs) = server
+            .json(
+                "POST",
+                "/api/dev/floors",
+                serde_json::json!({"name": "Upstairs", "level": 1}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{upstairs}");
+        server
+            .json(
+                "POST",
+                "/api/dev/floors",
+                serde_json::json!({"name": "Ground floor"}),
+            )
+            .await?;
+        let (status, room) = server
+            .json(
+                "POST",
+                "/api/dev/areas",
+                serde_json::json!({"name": "Bedroom", "floor": "upstairs"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{room}");
+        assert_eq!(room["floor_id"], "upstairs");
+
+        let home = server.read("/api/dev/home").await?;
+        assert_eq!(
+            home["floors"][0]["id"], "ground_floor",
+            "lowest first: {home}"
+        );
+        let areas = std::fs::read_to_string(server.config_dir().join("areas.toml"))?;
+        assert!(
+            areas.contains("[floors.upstairs]") && areas.contains("floor = \"upstairs\""),
+            "{areas}"
+        );
+
+        let (status, _) = server
+            .json(
+                "POST",
+                "/api/dev/areas",
+                serde_json::json!({"name": "Attic", "floor": "nowhere"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let (status, _) = server
+            .json(
+                "DELETE",
+                "/api/dev/floors/upstairs",
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let home = server.read("/api/dev/home").await?;
+        assert_eq!(home["areas"][0]["name"], "Bedroom", "the room stayed");
+
+        let (status, moved) = server
+            .json(
+                "PATCH",
+                "/api/dev/areas/bedroom",
+                serde_json::json!({"floor": "ground_floor"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{moved}");
+        assert_eq!(moved["floor_id"], "ground_floor");
+        assert_eq!(
+            moved["name"], "Bedroom",
+            "a floor change leaves the name alone"
+        );
+        Ok(())
+    }
+
+    /// Edits that can't be made say why, and change nothing.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn refused_edits_explain_themselves() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"area": "nowhere"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "there's no room `nowhere`");
+
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/not_a_device",
+                serde_json::json!({"name": "Nope"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/areas/nowhere",
+                serde_json::json!({"name": "Nope"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+        // A name that isn't a name at all, rather than one that's merely wrong.
+        let (status, body) = server
+            .json("POST", "/api/dev/areas", serde_json::json!({"name": ""}))
+            .await?;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+        assert!(
+            !server.config_dir().join("devices.toml").exists(),
+            "nothing was written"
+        );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    // --- Secrets ----------------------------------------------------------------------------
+
+    /// An integration that won't do anything without a key, and says where the key goes.
+    struct Safe;
+
+    #[derive(Debug, Deserialize, schemars::JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    struct SafeSettings {
+        #[serde(default)]
+        code: Option<String>,
+    }
+
+    impl irori_integration::Integration for Safe {
+        type Config = SafeSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "safe"
+            name = "Safe"
+            version = "0.1.0"
+            irori = ">=0.0.0, <0.1.0"
+
+            [[contributes.integration]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+        "#;
+        async fn run(
+            settings: SafeSettings,
+            mut ctx: irori_integration::IntegrationContext,
+        ) -> Result<(), irori_integration::IntegrationError> {
+            if settings.code.is_none() {
+                ctx.set_waiting(vec![irori_types::Waiting {
+                    unique_id: "vault".parse()?,
+                    name: "Vault".parse()?,
+                    reason: "it wants a code".into(),
+                    secret: Some(irori_types::SecretRequest {
+                        path: vec!["code".into()],
+                        label: "Code".into(),
+                        hint: None,
+                    }),
+                }])
+                .await;
+            }
+            ctx.stopped().await;
+            Ok(())
+        }
+    }
+
+    async fn safe() -> anyhow::Result<(Core, irori_core::ExtensionHost)> {
+        let core = core();
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![irori_integration::builtin::<Safe>().map_err(anyhow::Error::msg)?],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        waiting_for(&core, 1).await?;
+        Ok((core, host))
+    }
+
+    async fn waiting_for(core: &Core, count: usize) -> anyhow::Result<()> {
+        for _ in 0..500 {
+            let waiting = core
+                .extensions()
+                .get(&ExtensionId::try_from("safe")?)
+                .map_or(0, |overview| overview.waiting.len());
+            if waiting == count {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        anyhow::bail!("the safe never had {count} waiting")
+    }
+
+    /// The whole path of a secret: the page shows what's waiting, sends the secret to the place
+    /// it was asked for, and the extension is restarted with it — and it's written somewhere only
+    /// Irori's user can read, and never handed back.
+    #[tokio::test]
+    async fn a_secret_given_where_it_was_asked_for_unlocks_the_extension() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        let home = server.read("/api/dev/home").await?;
+        assert_eq!(home["extensions"]["safe"]["waiting"][0]["name"], "Vault");
+        assert_eq!(
+            home["extensions"]["safe"]["waiting"][0]["secret"]["path"],
+            serde_json::json!(["code"])
+        );
+
+        let (status, body) = server
+            .json(
+                "PUT",
+                "/api/dev/extensions/safe/secrets",
+                serde_json::json!({"path": ["code"], "value": "1234-5678"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        assert!(
+            !body.to_string().contains("1234"),
+            "the secret came back: {body}"
+        );
+
+        waiting_for(&core, 0).await?;
+        let written = std::fs::read_to_string(server.config_dir().join("secrets.toml"))?;
+        assert!(
+            written.contains("[safe]") && written.contains("code = \"1234-5678\""),
+            "{written}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(server.config_dir().join("secrets.toml"))?
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+        }
+        let home = server.read("/api/dev/home").await?;
+        assert!(
+            !home.to_string().contains("1234"),
+            "a secret leaked into the home view"
+        );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Without sign-in, this endpoint can only answer a question an extension is asking. It can't
+    /// put anything anywhere else in anyone's settings.
+    #[tokio::test]
+    async fn a_secret_nobody_asked_for_is_refused() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, _) = server
+            .json(
+                "PUT",
+                "/api/dev/extensions/safe/secrets",
+                serde_json::json!({"path": ["something_else"], "value": "x"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        let (status, _) = server
+            .json(
+                "PUT",
+                "/api/dev/extensions/nope/secrets",
+                serde_json::json!({"path": ["code"], "value": "x"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let (status, _) = server
+            .json(
+                "PUT",
+                "/api/dev/extensions/safe/secrets",
+                serde_json::json!({"path": ["code"], "value": "   "}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        assert!(
+            !server.config_dir().join("secrets.toml").exists(),
+            "nothing was written"
+        );
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Ignoring a device takes it out of everything the page shows, writes it down, and letting
+    /// it back in restores it with its entities.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn a_device_can_be_ignored_and_let_back_in() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"ignored": true}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let home = server.read("/api/dev/home").await?;
+        let listed = |key: &str, id: &str| {
+            home[key]
+                .as_array()
+                .is_some_and(|all| all.iter().any(|item| item["id"] == id))
+        };
+        assert!(!listed("devices", "demo_lamp"));
+        assert!(!listed("entities", "light.demo_lamp"));
+        assert!(listed("held", "demo_lamp"));
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(devices.contains("ignored = true"), "{devices}");
+
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"ignored": false}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let home = server.read("/api/dev/home").await?;
+        assert!(
+            home["entities"]
+                .as_array()
+                .is_some_and(|all| all.iter().any(|e| e["id"] == "light.demo_lamp"))
+        );
+        assert!(home.get("held").is_none(), "{home}");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// "Let back in" restores the device to the home, even when Irori is asking before adding
+    /// new ones. Clearing `ignored` alone would put a never-added device on the waiting list.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn letting_a_device_back_in_adds_it_even_when_asking() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"ignored": true}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let mut settings = core.settings();
+        settings.ask_before_adding = true;
+        core.apply_settings(settings);
+
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"ignored": false}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let home = server.read("/api/dev/home").await?;
+        assert!(
+            home["devices"]
+                .as_array()
+                .is_some_and(|all| all.iter().any(|item| item["id"] == "demo_lamp")),
+            "{home}"
+        );
+        assert!(home.get("held").is_none(), "{home}");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// The helpers extension on its own, started against a core with storage that outlives it,
+    /// as the database does.
+    #[cfg(feature = "int-helpers")]
+    async fn helpers(core: &Core) -> anyhow::Result<irori_core::ExtensionHost> {
+        irori_core::ExtensionHost::start(
+            core,
+            vec![
+                irori_integration::builtin::<irori_int_helpers::Helpers>()
+                    .map_err(anyhow::Error::msg)?,
+            ],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)
+    }
+
+    #[cfg(feature = "int-helpers")]
+    async fn until(what: &str, mut check: impl FnMut() -> bool) -> anyhow::Result<()> {
+        for _ in 0..500 {
+            if check() {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        anyhow::bail!("timed out waiting for: {what}")
+    }
+
+    /// A toggle made from the page is a switch that remembers its value — through a new toggle
+    /// being added, which restarts the extension, and through Irori starting again. Renaming it
+    /// changes its one name, in the file that defines it, and removing it removes the entity.
+    #[cfg(feature = "int-helpers")]
+    #[tokio::test]
+    async fn a_toggle_keeps_its_value_and_has_one_name() -> anyhow::Result<()> {
+        let storage: Arc<dyn irori_integration::Storage> =
+            Arc::new(irori_integration::MemoryStorage::default());
+        let core = core();
+        core.use_storage(Arc::clone(&storage));
+        let server = Server::new(core.clone())?;
+        let host = helpers(&core).await?;
+
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/dev/helpers/toggles",
+                serde_json::json!({"name": "Guests are over"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        assert_eq!(made["entity_id"], "switch.guests_are_over");
+        let guests = EntityId::try_from("switch.guests_are_over")?;
+        until("the toggle exists", || {
+            core.state(&guests).is_some_and(|s| s.state.is_some())
+        })
+        .await?;
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/command",
+                serde_json::json!({"entity_id": guests, "command": "turn_on"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        // Another toggle restarts the extension; the first keeps its value.
+        server
+            .json(
+                "POST",
+                "/api/dev/helpers/toggles",
+                serde_json::json!({"name": "Holiday"}),
+            )
+            .await?;
+        let holiday = EntityId::try_from("switch.holiday")?;
+        until("the second toggle exists", || {
+            core.state(&holiday).is_some_and(|s| s.state.is_some())
+        })
+        .await?;
+        let on = |core: &Core, id: &EntityId| {
+            matches!(
+                core.state(id).and_then(|s| s.state),
+                Some(irori_types::State::Switch(irori_types::SwitchState {
+                    on: true
+                }))
+            )
+        };
+        until("still on", || on(&core, &guests)).await?;
+
+        // One name, kept where the toggle is defined.
+        let (status, _) = server
+            .json(
+                "PATCH",
+                "/api/dev/entities/switch.guests_are_over",
+                serde_json::json!({"name": "Visitors"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let file = std::fs::read_to_string(server.config_dir().join("extensions/helpers.toml"))?;
+        assert!(file.contains("Visitors"), "{file}");
+        assert!(
+            !server.config_dir().join("entities.toml").exists(),
+            "no second name anywhere"
+        );
+        until("renamed", || {
+            core.entities()
+                .iter()
+                .any(|e| e.id == guests && e.name.as_str() == "Visitors")
+        })
+        .await?;
+        host.shutdown().await;
+
+        // Irori starting again, with the same storage: still on.
+        let again = self::core();
+        again.use_storage(storage);
+        let _config = Config::open_dir(server.config_dir(), &again);
+        let host = helpers(&again).await?;
+        until("on after a restart", || on(&again, &guests)).await?;
+        host.shutdown().await;
+
+        let host = helpers(&core).await?;
+        let (status, _) = server
+            .json(
+                "DELETE",
+                "/api/dev/helpers/toggles/holiday",
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        until("the removed toggle's entity is gone", || {
+            core.state(&holiday).is_none()
+        })
+        .await?;
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// An icon arrives as an image with a policy that stops it doing anything but being one.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn an_extensions_icon_is_served_as_a_locked_down_image() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+        let home = server.read("/api/dev/home").await?;
+        assert_eq!(home["extensions"]["demo"]["has_icon"], true);
+
+        let res = server
+            .app()?
+            .oneshot(Request::get("/api/dev/extensions/demo/icon.svg").body(Body::empty())?)
+            .await?;
+        assert_eq!(res.status(), StatusCode::OK);
+        let headers = res.headers().clone();
+        assert_eq!(headers["content-type"], "image/svg+xml");
+        assert!(
+            headers["content-security-policy"]
+                .to_str()?
+                .contains("default-src 'none'")
+        );
+        let body = res.into_body().collect().await?.to_bytes();
+        assert!(
+            String::from_utf8(body.to_vec())?
+                .trim_start()
+                .starts_with("<svg")
+        );
+
+        let (status, _) = server
+            .send(Request::get("/api/dev/extensions/nope/icon.svg").body(Body::empty())?)
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
         host.shutdown().await;
         Ok(())
     }

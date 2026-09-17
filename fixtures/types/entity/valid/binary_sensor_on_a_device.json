@@ -1,0 +1,11 @@
+{
+  "id": "binary_sensor.esphome_34_98_7a_2b_09_00_occupancy",
+  "integration": "esphome",
+  "unique_id": "34:98:7a:2b:09:00-binary_sensor-1594977085",
+  "name": "Hallway occupancy",
+  "device_id": "esphome_34_98_7a_2b_09_00",
+  "capabilities": {
+    "kind": "binary_sensor",
+    "device_class": "occupancy"
+  }
+}

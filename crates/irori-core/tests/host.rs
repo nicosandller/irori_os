@@ -22,8 +22,10 @@ fn uid(s: &str) -> UniqueId {
     UniqueId::try_from(s).expect("valid")
 }
 
-fn lamp_id() -> EntityId {
-    EntityId::try_from("light.lamp").expect("valid")
+/// The lamp's entity id under the extension that described it: ids are made from the device's
+/// id, which is the integration and its handle for the device (ROADMAP D36).
+fn lamp_id(integration: &str) -> EntityId {
+    EntityId::try_from(format!("light.{integration}_lamp")).expect("valid")
 }
 
 async fn describe_lamp(ctx: &IntegrationContext) -> Result<(), IntegrationError> {
@@ -139,7 +141,7 @@ async fn devices_appear_and_commands_round_trip_with_their_context() {
     let host = start(&core, builtin::<Lamp>().expect("valid"));
 
     eventually("the lamp reports it's on", || {
-        core.state(&lamp_id())
+        core.state(&lamp_id("lamp"))
             .and_then(|s| s.state)
             .is_some_and(|s| matches!(s, State::Light(LightState { on: true, .. })))
     })
@@ -148,17 +150,17 @@ async fn devices_appear_and_commands_round_trip_with_their_context() {
     assert_eq!(core.devices().len(), 1);
 
     let context = user_context();
-    core.call_service(&lamp_id(), Command::Toggle, context.clone())
+    core.call_service(&lamp_id("lamp"), Command::Toggle, context.clone())
         .await
         .expect("toggle works");
     eventually("the lamp reports it's off", || {
-        core.state(&lamp_id())
+        core.state(&lamp_id("lamp"))
             .and_then(|s| s.state)
             .is_some_and(|s| matches!(s, State::Light(LightState { on: false, .. })))
     })
     .await;
     // The change points back to the person who asked.
-    let state = core.state(&lamp_id()).expect("state");
+    let state = core.state(&lamp_id("lamp")).expect("state");
     assert_eq!(state.context.parent_id, Some(context.id));
 
     let mut saw_call = false;
@@ -169,7 +171,7 @@ async fn devices_appear_and_commands_round_trip_with_their_context() {
 
     let err = core
         .call_service(
-            &lamp_id(),
+            &lamp_id("lamp"),
             Command::TurnOn(LightTurnOn {
                 rgb: Some([1, 2, 3]),
                 ..LightTurnOn::default()
@@ -182,7 +184,7 @@ async fn devices_appear_and_commands_round_trip_with_their_context() {
 
     host.shutdown().await;
     assert_eq!(status(&core, "lamp"), Some(ExtensionStatus::Disabled));
-    let state = core.state(&lamp_id()).expect("kept");
+    let state = core.state(&lamp_id("lamp")).expect("kept");
     assert_eq!(state.availability, Availability::Unavailable);
     // What it reported while shutting down was applied, and survives going offline.
     assert_eq!(
@@ -232,7 +234,7 @@ async fn two_toggles_at_once_cancel_each_other_out() {
     let core = Core::new(Arc::new(SystemClock));
     let host = start(&core, builtin::<SlowLamp>().expect("valid"));
     let on = || {
-        core.state(&lamp_id())
+        core.state(&lamp_id("slow_lamp"))
             .and_then(|s| s.state)
             .is_some_and(|s| matches!(s, State::Light(LightState { on: true, .. })))
     };
@@ -240,7 +242,7 @@ async fn two_toggles_at_once_cancel_each_other_out() {
 
     // Two people press toggle at the same moment, before the lamp has confirmed the first:
     // off, then on again.
-    let lamp = lamp_id();
+    let lamp = lamp_id("slow_lamp");
     let (first, second) = tokio::join!(
         core.call_service(&lamp, Command::Toggle, user_context()),
         core.call_service(&lamp, Command::Toggle, user_context()),
@@ -291,7 +293,7 @@ async fn a_failed_command_doesnt_change_what_the_core_thinks() {
     let core = Core::new(Arc::new(SystemClock));
     let host = start(&core, builtin::<BrokenLamp>().expect("valid"));
     eventually("the lamp is on", || {
-        core.state(&lamp_id())
+        core.state(&lamp_id("broken_lamp"))
             .and_then(|s| s.state)
             .is_some_and(|s| matches!(s, State::Light(LightState { on: true, .. })))
     })
@@ -300,7 +302,7 @@ async fn a_failed_command_doesnt_change_what_the_core_thinks() {
     // Both toggles see a lamp that's still on, so both try to turn it off.
     for _ in 0..2 {
         let err = core
-            .call_service(&lamp_id(), Command::Toggle, user_context())
+            .call_service(&lamp_id("broken_lamp"), Command::Toggle, user_context())
             .await
             .expect_err("the lamp is unplugged");
         assert!(matches!(err, CallError::Unavailable(_)), "{err}");
@@ -362,7 +364,7 @@ async fn a_crashing_integration_is_restarted_with_growing_delays() {
         other => panic!("expected failed, got {other:?}"),
     }
     assert_eq!(
-        core.state(&lamp_id()).expect("kept").availability,
+        core.state(&lamp_id("crashy")).expect("kept").availability,
         Availability::Unavailable
     );
 
@@ -379,7 +381,7 @@ async fn a_crashing_integration_is_restarted_with_growing_delays() {
         "{waited:?}"
     );
     eventually("available again", || {
-        core.state(&lamp_id())
+        core.state(&lamp_id("crashy"))
             .is_some_and(|s| s.availability == Availability::Available)
     })
     .await;
@@ -518,7 +520,7 @@ async fn calls_time_out_and_health_is_shown() {
     let started = tokio::time::Instant::now();
     // Two calls on the same entity: the second queues behind the first, and the ten seconds
     // cover the wait as well, rather than ten seconds each.
-    let lamp = lamp_id();
+    let lamp = lamp_id("silent");
     let (first, second) = tokio::join!(
         core.call_service(&lamp, Command::TurnOff, user_context()),
         core.call_service(&lamp, Command::TurnOff, user_context()),
@@ -529,7 +531,7 @@ async fn calls_time_out_and_health_is_shown() {
     host.shutdown().await;
 
     let err = core
-        .call_service(&lamp_id(), Command::TurnOff, user_context())
+        .call_service(&lamp_id("silent"), Command::TurnOff, user_context())
         .await
         .expect_err("stopped");
     assert!(matches!(err, CallError::NotRunning(_)), "{err}");
@@ -649,4 +651,343 @@ fn duplicate_extension_ids_are_refused() {
         .expect_err("same id twice");
         assert_eq!(err, "two extensions share the id `lamp`");
     });
+}
+
+// --- Settings, and what's waiting ----------------------------------------------------------
+
+/// Records every set of settings it was started with, and says what it's waiting for.
+struct Keyed;
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct KeyedSettings {
+    #[serde(default)]
+    key: Option<String>,
+}
+
+static STARTED_WITH: std::sync::Mutex<Vec<Option<String>>> = std::sync::Mutex::new(Vec::new());
+
+impl Integration for Keyed {
+    type Config = KeyedSettings;
+    const MANIFEST: &'static str = KEYED_MANIFEST;
+    async fn run(
+        settings: KeyedSettings,
+        mut ctx: IntegrationContext,
+    ) -> Result<(), IntegrationError> {
+        STARTED_WITH
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(settings.key.clone());
+        if settings.key.is_none() {
+            ctx.set_waiting(vec![irori_integration::types::Waiting {
+                unique_id: uid("locked"),
+                name: Name::try_from("Locked box")?,
+                reason: "it wants a key".into(),
+                secret: Some(irori_integration::types::SecretRequest {
+                    path: vec!["key".into()],
+                    label: "Key".into(),
+                    hint: None,
+                }),
+            }])
+            .await;
+        }
+        ctx.stopped().await;
+        Ok(())
+    }
+}
+const KEYED_MANIFEST: &str = r#"
+    [extension]
+    id = "keyed"
+    name = "Keyed"
+    version = "0.1.0"
+    irori = ">=0.0.0, <0.1.0"
+
+    [[contributes.integration]]
+    iot_class = "local_push"
+    entity_kinds = ["light"]
+"#;
+
+fn keyed_settings(
+    extension: &str,
+    table: serde_json::Value,
+) -> irori_integration::types::ExtensionSettings {
+    let serde_json::Value::Object(table) = table else {
+        panic!("a table");
+    };
+    irori_integration::types::ExtensionSettings::new(
+        [(ExtensionId::try_from(extension).expect("valid"), table)].into(),
+    )
+}
+
+fn waiting(core: &Core) -> usize {
+    core.extensions()
+        .get(&ExtensionId::try_from("keyed").expect("valid"))
+        .map_or(0, |overview| overview.waiting.len())
+}
+
+fn started_with() -> Vec<Option<String>> {
+    STARTED_WITH
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// The whole path a key takes: an extension says what it's waiting for, a key arrives in its
+/// settings, and it's restarted with the key and stops waiting — without anyone restarting Irori.
+/// A change to some other extension's settings doesn't disturb it.
+///
+/// One test rather than several because the recorder is shared, process-wide state.
+#[tokio::test(start_paused = true)]
+async fn new_settings_restart_only_their_own_extension_and_what_was_waiting_clears() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = start(&core, builtin::<Keyed>().expect("valid"));
+
+    eventually(
+        "it starts with no key and says what it's waiting for",
+        || started_with() == [None] && waiting(&core) == 1,
+    )
+    .await;
+
+    // Another extension's settings: no reason to restart this one.
+    core.apply_extension_settings(keyed_settings("demo", serde_json::json!({"x": "y"})));
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(
+        started_with(),
+        [None],
+        "restarted over somebody else's settings"
+    );
+
+    core.apply_extension_settings(keyed_settings("keyed", serde_json::json!({"key": "k"})));
+    eventually("it's restarted with the key and stops waiting", || {
+        started_with() == [None, Some("k".into())]
+            && waiting(&core) == 0
+            && status(&core, "keyed") == Some(ExtensionStatus::Running)
+    })
+    .await;
+
+    // Settings it can't accept: failed, not retried in a loop — and not given up on either.
+    core.apply_extension_settings(keyed_settings("keyed", serde_json::json!({"nope": 1})));
+    eventually("bad settings fail it", || {
+        matches!(
+            status(&core, "keyed"),
+            Some(ExtensionStatus::Failed { retry_at: None, .. })
+        )
+    })
+    .await;
+    core.apply_extension_settings(keyed_settings("keyed", serde_json::json!({"key": "k2"})));
+    eventually("fixing them starts it again", || {
+        started_with().last() == Some(&Some("k2".into()))
+            && status(&core, "keyed") == Some(ExtensionStatus::Running)
+    })
+    .await;
+
+    host.shutdown().await;
+    assert_eq!(waiting(&core), 0);
+}
+
+static RETRY_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+/// Crashes until it has a token, so a settings change during the retry wait can be seen.
+struct CrashUntilKeyed;
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CrashUntilKeyedSettings {
+    #[serde(default)]
+    key: Option<String>,
+}
+impl Integration for CrashUntilKeyed {
+    type Config = CrashUntilKeyedSettings;
+    const MANIFEST: &'static str = r#"
+        [extension]
+        id = "crash_until_keyed"
+        name = "Crash until keyed"
+        version = "0.1.0"
+        irori = ">=0.0.0"
+
+        [[contributes.integration]]
+        iot_class = "local_push"
+        entity_kinds = ["light"]
+    "#;
+    async fn run(
+        settings: CrashUntilKeyedSettings,
+        mut ctx: IntegrationContext,
+    ) -> Result<(), IntegrationError> {
+        RETRY_RUNS.fetch_add(1, Ordering::SeqCst);
+        if settings.key.is_none() {
+            panic!("no key");
+        }
+        ctx.stopped().await;
+        Ok(())
+    }
+}
+
+/// Changing settings during the crash backoff must restart now, not after the current delay
+/// (`docs/specs/integrations.md` §3 step 6).
+#[tokio::test(start_paused = true)]
+async fn a_settings_change_during_retry_restarts_without_waiting_out_the_delay() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = ExtensionHost::start(
+        &core,
+        vec![builtin::<CrashUntilKeyed>().expect("valid")],
+        Timing {
+            first_retry: Duration::from_secs(300),
+            max_retry: Duration::from_secs(300),
+            healthy_after: Duration::from_secs(600),
+            stop_grace: Duration::from_secs(1),
+        },
+    )
+    .expect("unique ids");
+
+    eventually("crashed", || {
+        RETRY_RUNS.load(Ordering::SeqCst) >= 1
+            && matches!(
+                status(&core, "crash_until_keyed"),
+                Some(ExtensionStatus::Failed {
+                    retry_at: Some(_),
+                    ..
+                })
+            )
+    })
+    .await;
+    let after_crash = RETRY_RUNS.load(Ordering::SeqCst);
+
+    core.apply_extension_settings(keyed_settings(
+        "crash_until_keyed",
+        serde_json::json!({"key": "k"}),
+    ));
+    let started = tokio::time::Instant::now();
+    eventually("restarted with the key", || {
+        RETRY_RUNS.load(Ordering::SeqCst) > after_crash
+            && status(&core, "crash_until_keyed") == Some(ExtensionStatus::Running)
+    })
+    .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "waited out the backoff: {:?}",
+        started.elapsed()
+    );
+
+    host.shutdown().await;
+}
+
+/// Turning an extension off stops it and says so; turning it back on starts it again with its
+/// devices. Neither counts as a failure, and turning off one leaves the others alone.
+#[tokio::test(start_paused = true)]
+async fn an_extension_can_be_turned_off_and_on_while_irori_runs() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = ExtensionHost::start(
+        &core,
+        vec![builtin::<Lamp>().expect("valid")],
+        Timing::default(),
+    )
+    .expect("unique ids");
+    eventually("the lamp is on", || core.state(&lamp_id("lamp")).is_some()).await;
+
+    core.apply_disabled_extensions([ExtensionId::try_from("lamp").expect("valid")].into());
+    eventually("turned off", || {
+        status(&core, "lamp") == Some(ExtensionStatus::Disabled)
+            && core
+                .state(&lamp_id("lamp"))
+                .is_some_and(|state| state.availability == Availability::Unavailable)
+    })
+    .await;
+
+    core.apply_disabled_extensions(Default::default());
+    eventually("turned back on, and its lamp with it", || {
+        status(&core, "lamp") == Some(ExtensionStatus::Running)
+            && core
+                .state(&lamp_id("lamp"))
+                .is_some_and(|state| state.availability == Availability::Available)
+    })
+    .await;
+    host.shutdown().await;
+}
+
+/// An extension named in `irori.toml` never starts at all.
+#[tokio::test(start_paused = true)]
+async fn an_extension_turned_off_from_the_start_never_starts() {
+    let core = Core::new(Arc::new(SystemClock));
+    core.apply_disabled_extensions([ExtensionId::try_from("lamp").expect("valid")].into());
+    let host = start(&core, builtin::<Lamp>().expect("valid"));
+    eventually("disabled", || {
+        status(&core, "lamp") == Some(ExtensionStatus::Disabled)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert!(core.devices().is_empty(), "it described devices anyway");
+    host.shutdown().await;
+}
+
+// --- Stored values ----------------------------------------------------------------------------
+
+/// Counts its own starts in storage, and tries a value that's too big.
+struct Counter;
+
+static COUNTED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+static TOO_BIG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+impl Integration for Counter {
+    type Config = NoSettings;
+    const MANIFEST: &'static str = r#"
+        [extension]
+        id = "counter"
+        name = "Counter"
+        version = "0.1.0"
+        irori = ">=0.0.0, <0.1.0"
+
+        [[contributes.integration]]
+        iot_class = "local_push"
+        entity_kinds = ["switch"]
+    "#;
+    async fn run(_: NoSettings, mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
+        let starts = ctx
+            .load("starts")
+            .await?
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
+            + 1;
+        ctx.store("starts", serde_json::json!(starts)).await?;
+        COUNTED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(starts);
+        let huge = serde_json::json!("x".repeat(irori_integration::MAX_STORED_VALUE));
+        let refused = ctx.store("huge", huge).await.err().map(|e| e.to_string());
+        *TOO_BIG
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = refused;
+        ctx.stopped().await;
+        Ok(())
+    }
+}
+
+/// A stored value is there when the integration starts again; one over the limit is refused
+/// with a reason rather than silently cut.
+#[tokio::test(start_paused = true)]
+async fn stored_values_outlast_a_restart_and_have_a_size_limit() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = start(&core, builtin::<Counter>().expect("valid"));
+    let counted = || {
+        COUNTED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    };
+    eventually("started once", || counted() == [1]).await;
+
+    core.apply_disabled_extensions([ExtensionId::try_from("counter").expect("valid")].into());
+    eventually("stopped", || {
+        status(&core, "counter") == Some(ExtensionStatus::Disabled)
+    })
+    .await;
+    core.apply_disabled_extensions(Default::default());
+    eventually("started again, remembering", || counted() == [1, 2]).await;
+
+    let refused = TOO_BIG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+        .expect("the oversized value was refused");
+    assert!(refused.contains("at most"), "{refused}");
+    host.shutdown().await;
 }

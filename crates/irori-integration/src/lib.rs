@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use irori_types::{
     Availability, DeviceDescription, EntityDescription, ExtensionManifest, ServiceCall,
-    StateReport, UniqueId,
+    StateReport, UniqueId, Waiting,
 };
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
@@ -46,6 +46,10 @@ pub trait Integration: Send + 'static {
     /// The extension manifest, usually `include_str!("../irori-extension.toml")`.
     const MANIFEST: &'static str;
 
+    /// The icon the manifest names (`icon = "icon.svg"`), usually `Some(include_str!("../icon.svg"))`.
+    /// A built-in has no package directory to read it from at runtime, so it carries the file.
+    const ICON: Option<&'static str> = None;
+
     /// Runs until told to stop ([`IntegrationContext::next_call`] returns `None`). Returning an
     /// error, returning without being told to stop, or panicking marks it failed, and the core
     /// starts it again after a delay.
@@ -53,6 +57,62 @@ pub trait Integration: Send + 'static {
         config: Self::Config,
         ctx: IntegrationContext,
     ) -> impl Future<Output = Result<(), IntegrationError>> + Send;
+}
+
+/// The most a stored value may take, as JSON (spec §5). Small on purpose: this is for pairing
+/// keys and remembered switches, not history, which the recorder keeps.
+pub const MAX_STORED_VALUE: usize = 64 * 1024;
+
+/// Where each integration's small private values live (spec §5). The core holds one and checks
+/// the limits; the binary backs it with the database, and tests use [`MemoryStorage`].
+pub trait Storage: Send + Sync + fmt::Debug {
+    fn load(
+        &self,
+        extension: &irori_types::ExtensionId,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>, String>;
+
+    /// `None` forgets the key.
+    fn store(
+        &self,
+        extension: &irori_types::ExtensionId,
+        key: &str,
+        value: Option<&serde_json::Value>,
+    ) -> Result<(), String>;
+}
+
+/// Storage that lasts as long as the process. For tests, and for a core nobody gave a database.
+#[derive(Debug, Default)]
+pub struct MemoryStorage(Mutex<BTreeMap<(irori_types::ExtensionId, String), serde_json::Value>>);
+
+impl Storage for MemoryStorage {
+    fn load(
+        &self,
+        extension: &irori_types::ExtensionId,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&(extension.clone(), key.to_owned()))
+            .cloned())
+    }
+
+    fn store(
+        &self,
+        extension: &irori_types::ExtensionId,
+        key: &str,
+        value: Option<&serde_json::Value>,
+    ) -> Result<(), String> {
+        let mut all = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let key = (extension.clone(), key.to_owned());
+        match value {
+            Some(value) => all.insert(key, value.clone()),
+            None => all.remove(&key),
+        };
+        Ok(())
+    }
 }
 
 /// Settings for an integration that has none. Accepts only an empty table.
@@ -222,6 +282,38 @@ impl IntegrationContext {
         let _ = self.ops.send(host::Op::SetHealth(health)).await;
     }
 
+    /// Reads a value it stored earlier, or `None` if there isn't one (spec §5). Kept across
+    /// restarts of the integration and of Irori.
+    pub async fn load(&self, key: &str) -> Result<Option<serde_json::Value>, Rejected> {
+        let (reply, answer) = oneshot::channel();
+        self.ops
+            .send(host::Op::Load(key.to_owned(), reply))
+            .await
+            .map_err(|_| Rejected(CORE_GONE.into()))?;
+        answer.await.map_err(|_| Rejected(CORE_GONE.into()))?
+    }
+
+    /// Keeps a small value under `key`, private to this integration: at most
+    /// [`MAX_STORED_VALUE`] bytes as JSON, under a key of 1–128 characters.
+    pub async fn store(&self, key: &str, value: serde_json::Value) -> Result<(), Rejected> {
+        self.request(|reply| host::Op::Store(key.to_owned(), Some(value), reply))
+            .await
+    }
+
+    /// Forgets what was stored under `key`. Forgetting something that isn't there is fine.
+    pub async fn forget(&self, key: &str) -> Result<(), Rejected> {
+        self.request(|reply| host::Op::Store(key.to_owned(), None, reply))
+            .await
+    }
+
+    /// Says what it has found but can't use until a person does something (spec §6.6): the
+    /// whole list, replacing the last one. Send an empty list when nothing is waiting.
+    ///
+    /// Like health, send it when it changes rather than on every turn of a loop.
+    pub async fn set_waiting(&self, waiting: Vec<Waiting>) {
+        let _ = self.ops.send(host::Op::SetWaiting(waiting)).await;
+    }
+
     /// Reports a new value for one of its entities. Never waits: if the core is behind, an
     /// older report for the same entity that it hasn't read yet is replaced by this one. At most
     /// [`MAX_PENDING_ENTITIES`] entities' reports wait at once; reports for further entities are
@@ -295,6 +387,8 @@ pub struct Builtin {
     pub manifest: ExtensionManifest,
     /// JSON Schema for its settings, generated from its config type.
     pub config_schema: serde_json::Value,
+    /// Its icon, an SVG document, when the manifest names one.
+    pub icon: Option<&'static str>,
     start: StartFn,
 }
 
@@ -342,15 +436,129 @@ pub fn builtin<I: Integration>() -> Result<Builtin, String> {
     }
     let config_schema = serde_json::to_value(schemars::schema_for!(I::Config))
         .map_err(|e| format!("extension `{id}`: config schema: {e}"))?;
+    // The manifest is what says there's an icon; the constant is only where a built-in keeps it.
+    // Disagreeing is a mistake worth failing loudly over, not a missing picture.
+    match (&manifest.extension.icon, I::ICON) {
+        (Some(_), Some(svg)) if svg.trim_start().starts_with("<svg") => {}
+        (Some(_), Some(_)) => {
+            return Err(format!("extension `{id}`: its icon isn't an SVG document"));
+        }
+        (Some(path), None) => {
+            return Err(format!(
+                "extension `{id}`: the manifest names the icon `{path}`, but the integration \
+                 doesn't embed it (`const ICON`)"
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(format!(
+                "extension `{id}`: the integration embeds an icon the manifest doesn't name \
+                 (`icon = \"icon.svg\"`)"
+            ));
+        }
+        (None, None) => {}
+    }
     Ok(Builtin {
         manifest,
         config_schema,
+        icon: I::ICON,
         start: Box::new(|config, ctx| {
-            let config: I::Config =
-                serde_json::from_value(config).map_err(|e| format!("invalid settings: {e}"))?;
+            let config: I::Config = serde_json::from_value(config).map_err(invalid_settings)?;
             Ok(Box::pin(I::run(config, ctx)))
         }),
     })
+}
+
+/// Why settings couldn't be turned into the integration's config type. Names the shape, never a
+/// value: settings hold secrets, and the reason is logged and shown (`docs/specs/integrations.md`
+/// §3).
+fn invalid_settings(err: serde_json::Error) -> String {
+    format!("invalid settings: {}", redact_serde_value(&err.to_string()))
+}
+
+/// Drops quoted strings and numeric/boolean literals from a serde error. Field names in
+/// backticks stay: they are keys, not values.
+fn redact_serde_value(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut chars = message.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '"' {
+            out.push_str("\"…\"");
+            let mut escaped = false;
+            for next in chars.by_ref() {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                match next {
+                    '\\' => escaped = true,
+                    '"' => break,
+                    _ => {}
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    redact_serde_literals(&out)
+}
+
+fn redact_serde_literals(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some((at, kind)) = ["integer ", "float ", "boolean "]
+        .into_iter()
+        .filter_map(|kind| rest.find(kind).map(|at| (at, kind)))
+        .min_by_key(|(at, _)| *at)
+    {
+        out.push_str(&rest[..at + kind.len()]);
+        rest = &rest[at + kind.len()..];
+        rest = match kind {
+            "boolean " => skip_boolean(rest),
+            _ => skip_number(rest),
+        };
+    }
+    out.push_str(rest);
+    out
+}
+
+fn skip_boolean(s: &str) -> &str {
+    let (s, tick) = match s.strip_prefix('`') {
+        Some(inner) => (inner, true),
+        None => (s, false),
+    };
+    let s = s
+        .strip_prefix("true")
+        .or_else(|| s.strip_prefix("false"))
+        .unwrap_or(s);
+    if tick {
+        s.strip_prefix('`').unwrap_or(s)
+    } else {
+        s
+    }
+}
+
+fn skip_number(s: &str) -> &str {
+    let (s, tick) = match s.strip_prefix('`') {
+        Some(inner) => (inner, true),
+        None => (s, false),
+    };
+    let s = s.trim_start_matches(['+', '-']);
+    let s = s.trim_start_matches(|c: char| c.is_ascii_digit());
+    let s = s
+        .strip_prefix('.')
+        .map(|frac| frac.trim_start_matches(|c: char| c.is_ascii_digit()))
+        .unwrap_or(s);
+    let s = match s.strip_prefix(['e', 'E']) {
+        Some(exp) => exp
+            .trim_start_matches(['+', '-'])
+            .trim_start_matches(|c: char| c.is_ascii_digit()),
+        None => s,
+    };
+    if tick {
+        s.strip_prefix('`').unwrap_or(s)
+    } else {
+        s
+    }
 }
 
 /// Reads `irori-extension.toml` text the way Irori reads every manifest: TOML into the JSON data
@@ -376,6 +584,13 @@ pub mod host {
         RemoveEntity(UniqueId, Reply),
         SetAvailability(AvailabilityTarget, Availability, Reply),
         SetHealth(Health),
+        SetWaiting(Vec<Waiting>),
+        Load(
+            String,
+            oneshot::Sender<Result<Option<serde_json::Value>, Rejected>>,
+        ),
+        /// `None` forgets the key.
+        Store(String, Option<serde_json::Value>, Reply),
     }
 
     /// Bounded, so a runaway integration waits instead of growing the core's memory.
@@ -558,5 +773,87 @@ mod tests {
     fn builtins_must_not_have_a_run_command() {
         let err = builtin::<NoRun>().expect_err("has run");
         assert!(err.contains("must not have `run`"), "{err}");
+    }
+
+    macro_rules! with_icon {
+        ($name:ident, $manifest_icon:expr, $icon:expr) => {
+            struct $name;
+            impl Integration for $name {
+                type Config = NoSettings;
+                const MANIFEST: &'static str = concat!(
+                    "[extension]\nid = \"lamp\"\nname = \"Lamp\"\nversion = \"0.1.0\"\n",
+                    "irori = \">=0.0.0\"\n",
+                    $manifest_icon,
+                    "\n[[contributes.integration]]\niot_class = \"local_push\"\n",
+                    "entity_kinds = [\"light\"]\n"
+                );
+                const ICON: Option<&'static str> = $icon;
+                async fn run(_: NoSettings, _: IntegrationContext) -> Result<(), IntegrationError> {
+                    Ok(())
+                }
+            }
+        };
+    }
+    with_icon!(
+        Agreed,
+        "icon = \"icon.svg\"",
+        Some("<svg xmlns=\"http://www.w3.org/2000/svg\"/>")
+    );
+    with_icon!(NamedNotEmbedded, "icon = \"icon.svg\"", None);
+    with_icon!(EmbeddedNotNamed, "", Some("<svg/>"));
+    with_icon!(
+        NotAnSvg,
+        "icon = \"icon.svg\"",
+        Some("<script>alert(1)</script>")
+    );
+
+    /// The manifest says whether there's an icon; a built-in carries the file. They have to
+    /// agree, and the file has to be an SVG.
+    #[test]
+    fn a_builtins_icon_is_the_one_its_manifest_names() {
+        assert!(builtin::<Agreed>().expect("valid").icon.is_some());
+        for (err, says) in [
+            (
+                builtin::<NamedNotEmbedded>().expect_err("missing"),
+                "doesn't embed",
+            ),
+            (
+                builtin::<EmbeddedNotNamed>().expect_err("unnamed"),
+                "doesn't name",
+            ),
+            (builtin::<NotAnSvg>().expect_err("not svg"), "isn't an SVG"),
+        ] {
+            assert!(err.contains(says), "{err}");
+        }
+    }
+
+    /// Settings errors are shown. They must name the field and the type, never the value that
+    /// was there — that's where secrets live.
+    #[test]
+    fn a_settings_error_names_the_shape_not_the_value() {
+        #[derive(Debug, serde::Deserialize)]
+        struct NeedsString {
+            #[allow(dead_code)]
+            key: String,
+        }
+        #[derive(Debug, serde::Deserialize)]
+        struct NeedsNumber {
+            #[allow(dead_code)]
+            key: i64,
+        }
+
+        let number = invalid_settings(
+            serde_json::from_value::<NeedsString>(serde_json::json!({"key": 1})).expect_err("type"),
+        );
+        assert!(number.starts_with("invalid settings:"), "{number}");
+        assert!(!number.contains('1'), "{number}");
+        assert!(number.contains("integer"), "{number}");
+
+        let secret = invalid_settings(
+            serde_json::from_value::<NeedsNumber>(serde_json::json!({"key": "s3cret"}))
+                .expect_err("type"),
+        );
+        assert!(!secret.contains("s3cret"), "{secret}");
+        assert!(secret.contains("\"…\""), "{secret}");
     }
 }
