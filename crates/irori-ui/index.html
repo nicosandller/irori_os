@@ -239,11 +239,11 @@
                          color: var(--fg); background: var(--bg); border: 1px solid var(--line);
                          border-radius: .4rem; }
     .inline-form input:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
-    .inline-form button, .room-actions button {
+    .inline-form button, .room-actions button:not(.toggle) {
         padding: .35rem .7rem; font: inherit; font-size: .85rem; color: var(--fg);
         background: var(--card); border: 1px solid var(--line); border-radius: .4rem;
         cursor: pointer; }
-    .inline-form button:hover, .room-actions button:hover {
+    .inline-form button:hover, .room-actions button:not(.toggle):hover {
         border-color: var(--ember); color: var(--ember); }
     .room-actions .danger:hover { border-color: #b4342c; color: #b4342c; }
     .page-head > button { padding: .35rem .7rem; font: inherit; font-size: .85rem;
