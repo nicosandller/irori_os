@@ -83,6 +83,10 @@ more than volume: one verified finding beats five guesses.
   its handle on purpose, so a rename can never move them.
 - **Check files before claiming what they contain.** Quote the actual line, for example the
   value in a fixture, rather than inferring it.
+- **`SqliteStorage` syncs rusqlite behind a `Mutex` on the host task on purpose.** Extension KV
+  is tiny and infrequent (helpers toggles, paired keys) — a few writes a minute at most, not a
+  stream. Don't propose spawning a dedicated async DB worker for it in this milestone; see the
+  comment on `SqliteStorage` in `crates/irori/src/db.rs`.
 
 ## What's most useful
 

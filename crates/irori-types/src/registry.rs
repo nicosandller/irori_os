@@ -59,11 +59,14 @@ pub struct Device {
     pub sw_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hw_version: Option<String>,
-    /// The area a person put this device in. Absent means nobody has said.
+    /// The resolved area for this device: a person's placement when they chose a room (or
+    /// deliberately none), otherwise the room matching `suggested_area` while placement is still
+    /// unsaid. Absent means it isn't in a room — either on purpose, or because no matching room
+    /// exists yet (`docs/specs/config.md` §5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub area_id: Option<AreaId>,
     /// The area the device says it's in, e.g. ESPHome's `area:`. Only a hint: it names an area
-    /// rather than pointing at one, and it is used only while `area_id` is absent
+    /// rather than pointing at one, and it is used only while placement is still unsaid
     /// (`docs/specs/config.md` §5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_area: Option<Name>,

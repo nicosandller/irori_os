@@ -1279,12 +1279,14 @@ pub(crate) fn slugify(text: &str) -> String {
 /// `esphome_30_83_98_ca_6a_08`. A pure function of the two, so it's the same after every restart
 /// and whatever the device is called (ROADMAP D36).
 ///
-/// A handle too long for an id keeps its beginning and gains a hash of the whole, so two long
-/// handles that start the same still get different ids.
+/// A handle too long for an id keeps its beginning and gains a hash of the whole canonical
+/// input (integration plus handle), so two long integrations that share a prefix — or two long
+/// handles that start the same — still get different ids.
 pub fn device_id_for(integration: &IntegrationId, unique_id: &UniqueId) -> DeviceId {
+    let canonical = format!("{integration} {unique_id}");
     let mut slug = String::new();
     let mut separate = false;
-    for c in format!("{integration} {unique_id}").chars() {
+    for c in canonical.chars() {
         if c.is_ascii_alphanumeric() {
             if separate && !slug.is_empty() {
                 slug.push('_');
@@ -1298,7 +1300,7 @@ pub fn device_id_for(integration: &IntegrationId, unique_id: &UniqueId) -> Devic
     // A handle with nothing a slug can keep (`玄関`) would leave just the integration's name.
     let lossless_enough = slug.len() > integration.as_str().len();
     if slug.len() > SLUG_MAX_LEN || !lossless_enough {
-        let hash = format!("{:016x}", fnv1a(unique_id.as_str().as_bytes()));
+        let hash = format!("{:016x}", fnv1a(canonical.as_bytes()));
         let keep = SLUG_MAX_LEN - hash.len() - 1;
         slug.truncate(keep);
         let trimmed = slug.trim_end_matches('_');
@@ -1611,6 +1613,16 @@ mod tests {
         assert!(id("demo", &long_a).len() <= SLUG_MAX_LEN);
         // A pure function: asked twice, the same answer.
         assert_eq!(id("demo", &long_a), id("demo", &long_a));
+        // Two long integration ids that share a slug prefix, same handle: the hash covers both,
+        // so truncation can't make them collide.
+        let prefix = "i".repeat(60);
+        let left = format!("{prefix}a");
+        let right = format!("{prefix}b");
+        assert_ne!(
+            id(&left, "same-handle"),
+            id(&right, "same-handle"),
+            "hash must include the integration, not only the handle"
+        );
     }
 
     /// Two handles that differ only in case would share an id. Refused with a reason, rather

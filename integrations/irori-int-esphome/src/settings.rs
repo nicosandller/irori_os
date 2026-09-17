@@ -23,8 +23,33 @@ use serde::{Deserialize, Deserializer};
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     /// Encryption keys, by the MAC address of the device each one is for.
-    #[serde(default)]
+    ///
+    /// A map key that isn't a MAC is skipped the same way a bad *value* is kept as a reason
+    /// ([`GivenKey`]): refusing the whole table would disconnect every device over one typo.
+    #[serde(default, deserialize_with = "keys_by_mac")]
     pub keys: BTreeMap<Mac, GivenKey>,
+}
+
+fn keys_by_mac<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<Mac, GivenKey>, D::Error> {
+    let raw = BTreeMap::<String, GivenKey>::deserialize(deserializer)?;
+    let mut keys = BTreeMap::new();
+    for (text, given) in raw {
+        match text.parse::<Mac>() {
+            Ok(mac) => {
+                keys.insert(mac, given);
+            }
+            Err(why) => {
+                tracing::warn!(
+                    entry = %text,
+                    reason = %why,
+                    "esphome.keys entry skipped; not a MAC address"
+                );
+            }
+        }
+    }
+    Ok(keys)
 }
 
 /// A key as it was given: usable, or why not.
@@ -274,5 +299,22 @@ mod tests {
     fn a_key_never_shows_up_in_debug_output() {
         let key: Key = KEY.parse().expect("valid");
         assert!(!format!("{key:?}").contains("px7t"));
+    }
+
+    /// A map key that isn't a MAC must not fail the whole table — same reason a bad value
+    /// doesn't: one typo would take every encrypted device down with it.
+    #[test]
+    fn a_bad_mac_key_is_skipped_and_the_rest_load() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "keys": {
+                "not-a-mac": KEY,
+                "308398ca6a08": KEY,
+                "also bad!!": KEY
+            }
+        }))
+        .expect("the settings as a whole are fine");
+        let mac: Mac = "30:83:98:CA:6A:08".parse().expect("a MAC");
+        assert_eq!(settings.keys.len(), 1);
+        assert_eq!(settings.keys[&mac].0.as_ref().map(Key::expose), Ok(KEY));
     }
 }
