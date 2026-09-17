@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use irori_types::{
-    Area, DeviceId, DeviceSettings, EntitySettings, ExtensionId, ExtensionSettings, Floor,
-    Settings, SettingsKey,
+    Area, AreaId, DeviceId, DeviceSettings, EntitySettings, ExtensionId, ExtensionSettings, Floor,
+    FloorId, Settings, SettingsKey,
 };
 
 pub use files::{
@@ -81,6 +81,8 @@ pub struct Store {
     /// Keys set in both an extension's file and its secrets, as last reported: said once when
     /// they appear, not on every two-second check.
     clashes: std::collections::BTreeSet<(ExtensionId, String)>,
+    /// Rooms naming a floor that isn't there, as last reported: said once when they appear.
+    missing_floors: std::collections::BTreeSet<(AreaId, FloorId)>,
 }
 
 impl Store {
@@ -96,6 +98,7 @@ impl Store {
             secrets: Part::default(),
             extensions: BTreeMap::new(),
             clashes: std::collections::BTreeSet::new(),
+            missing_floors: std::collections::BTreeSet::new(),
         }
     }
 
@@ -215,6 +218,32 @@ impl Store {
             });
         }
         self.clashes = clashes;
+
+        // A room naming a missing floor is kept (config.md §3.1 / §6). Warn once when it appears.
+        let floor_ids: std::collections::BTreeSet<_> = self
+            .areas
+            .value
+            .0
+            .iter()
+            .map(|floor| floor.id.clone())
+            .collect();
+        let mut missing_floors = std::collections::BTreeSet::new();
+        for area in &self.areas.value.1 {
+            if let Some(floor) = &area.floor_id
+                && !floor_ids.contains(floor)
+            {
+                missing_floors.insert((area.id.clone(), floor.clone()));
+            }
+        }
+        for (room, floor) in missing_floors.difference(&self.missing_floors) {
+            tracing::warn!(
+                room = %room,
+                floor = %floor,
+                "room names a floor that isn't there; it's listed without a floor"
+            );
+        }
+        self.missing_floors = missing_floors;
+
         problems
     }
 
@@ -916,5 +945,27 @@ mod tests {
             store.extension_settings().of(&helpers)["toggles"]["guests"]["name"],
             "Guests"
         );
+    }
+
+    /// areas.toml with a dangling floor reference still loads (the warning is in reload).
+    #[test]
+    fn a_room_on_a_missing_floor_reloads() {
+        let home = dir();
+        std::fs::write(
+            home.path().join("areas.toml"),
+            "[areas.hall]\nname = \"Hall\"\nfloor = \"upstairs\"\n",
+        )
+        .expect("written");
+        let mut store = Store::new(home.path());
+        assert!(store.reload().is_empty());
+        assert_eq!(store.settings().areas.len(), 1);
+        assert_eq!(
+            store.settings().areas[0]
+                .floor_id
+                .as_ref()
+                .map(|id| id.as_str()),
+            Some("upstairs")
+        );
+        assert!(store.settings().floors.is_empty());
     }
 }

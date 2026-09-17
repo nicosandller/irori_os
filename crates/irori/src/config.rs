@@ -51,8 +51,11 @@ impl Config {
     /// starting is not conditional on its config being perfect.
     pub fn open(store: Store, problems: &[Problem], core: &Core) -> Self {
         report(problems);
+        // Absolute even when the directory doesn't exist yet: canonicalize needs it on disk,
+        // and the log is how someone tells which relative `--config` they actually started.
+        let path = std::path::absolute(store.dir()).unwrap_or_else(|_| store.dir().to_path_buf());
         tracing::info!(
-            path = %store.dir().display(),
+            path = %path.display(),
             areas = store.settings().areas.len(),
             devices = store.settings().devices.len(),
             "config directory read"

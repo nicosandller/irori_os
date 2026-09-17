@@ -635,7 +635,11 @@ impl Core {
 
     /// Replaces what an extension says is waiting. A change is published as a status change, so
     /// anything watching extensions sees it the same way.
+    ///
+    /// A `SecretRequest` with an empty path (or an empty key in it) has its secret dropped: the
+    /// UI would otherwise ask for a secret that [`irori_types::ExtensionSettings::set`] refuses.
     pub(crate) fn set_waiting(&self, extension: &ExtensionId, waiting: Vec<Waiting>) {
+        let waiting = sanitize_waiting(extension, waiting);
         let status = {
             let mut extensions = write(&self.0.extensions);
             let Some(overview) = extensions.get_mut(extension) else {
@@ -684,6 +688,26 @@ impl Core {
             }]);
         }
     }
+}
+
+fn sanitize_waiting(extension: &ExtensionId, waiting: Vec<Waiting>) -> Vec<Waiting> {
+    waiting
+        .into_iter()
+        .map(|mut item| {
+            if let Some(secret) = &item.secret
+                && let Err(why) = secret.validate()
+            {
+                tracing::warn!(
+                    %extension,
+                    unique_id = %item.unique_id,
+                    reason = %why,
+                    "dropping secret request the UI couldn't answer"
+                );
+                item.secret = None;
+            }
+            item
+        })
+        .collect()
 }
 
 #[cfg(test)]

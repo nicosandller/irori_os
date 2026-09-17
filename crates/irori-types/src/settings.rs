@@ -231,8 +231,9 @@ impl ExtensionSettings {
 /// What a setting is attached to: an integration and its own permanent handle for the thing
 /// (`docs/specs/config.md` §4).
 ///
-/// Not a `DeviceId` or `EntityId`, which are derived from names — keying on those would mean a
-/// rename could lose the setting that caused it.
+/// Not a `DeviceId` or `EntityId`. Those are also made from the integration and permanent handle
+/// (ROADMAP D36), not from names; settings still key on the handle itself so they stay attached
+/// if the user-facing id format ever changes.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SettingsKey {
     pub integration: IntegrationId,

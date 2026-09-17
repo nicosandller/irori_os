@@ -667,4 +667,17 @@ mod tests {
         assert!(!written.contains("demo_lamp"), "{written}");
         assert!(written.contains("demo_plug"), "{written}");
     }
+
+    /// A room naming a floor that isn't there is kept: warning, not rejection (config.md §3.1).
+    #[test]
+    fn a_room_on_a_missing_floor_is_kept() {
+        let (floors, areas) =
+            read_areas("[areas.hall]\nname = \"Hall\"\nfloor = \"upstairs\"\n").expect("valid");
+        assert!(floors.is_empty());
+        assert_eq!(areas.len(), 1);
+        assert_eq!(
+            areas[0].floor_id.as_ref().map(|id| id.as_str()),
+            Some("upstairs")
+        );
+    }
 }
