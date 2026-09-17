@@ -428,6 +428,12 @@ async fn edit_device(
             }
             if let Some(ignored) = request.ignored {
                 device.ignored = ignored;
+                // Letting it back in is adding it. With ask mode on, clearing ignored alone
+                // would leave `added = false` and put it on the waiting list instead of in
+                // the home.
+                if !ignored {
+                    device.added = true;
+                }
             }
             if let Some(added) = request.added {
                 device.added = added;
@@ -1765,6 +1771,48 @@ mod tests {
             home["entities"]
                 .as_array()
                 .is_some_and(|all| all.iter().any(|e| e["id"] == "light.demo_lamp"))
+        );
+        assert!(home.get("held").is_none(), "{home}");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// "Let back in" restores the device to the home, even when Irori is asking before adding
+    /// new ones. Clearing `ignored` alone would put a never-added device on the waiting list.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn letting_a_device_back_in_adds_it_even_when_asking() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"ignored": true}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let mut settings = core.settings();
+        settings.ask_before_adding = true;
+        core.apply_settings(settings);
+
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"ignored": false}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let home = server.read("/api/dev/home").await?;
+        assert!(
+            home["devices"]
+                .as_array()
+                .is_some_and(|all| all.iter().any(|item| item["id"] == "demo_lamp")),
+            "{home}"
         );
         assert!(home.get("held").is_none(), "{home}");
 

@@ -785,6 +785,91 @@ async fn new_settings_restart_only_their_own_extension_and_what_was_waiting_clea
     assert_eq!(waiting(&core), 0);
 }
 
+static RETRY_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+/// Crashes until it has a token, so a settings change during the retry wait can be seen.
+struct CrashUntilKeyed;
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CrashUntilKeyedSettings {
+    #[serde(default)]
+    key: Option<String>,
+}
+impl Integration for CrashUntilKeyed {
+    type Config = CrashUntilKeyedSettings;
+    const MANIFEST: &'static str = r#"
+        [extension]
+        id = "crash_until_keyed"
+        name = "Crash until keyed"
+        version = "0.1.0"
+        irori = ">=0.0.0"
+
+        [[contributes.integration]]
+        iot_class = "local_push"
+        entity_kinds = ["light"]
+    "#;
+    async fn run(
+        settings: CrashUntilKeyedSettings,
+        mut ctx: IntegrationContext,
+    ) -> Result<(), IntegrationError> {
+        RETRY_RUNS.fetch_add(1, Ordering::SeqCst);
+        if settings.key.is_none() {
+            panic!("no key");
+        }
+        ctx.stopped().await;
+        Ok(())
+    }
+}
+
+/// Changing settings during the crash backoff must restart now, not after the current delay
+/// (`docs/specs/integrations.md` §3 step 6).
+#[tokio::test(start_paused = true)]
+async fn a_settings_change_during_retry_restarts_without_waiting_out_the_delay() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = ExtensionHost::start(
+        &core,
+        vec![builtin::<CrashUntilKeyed>().expect("valid")],
+        Timing {
+            first_retry: Duration::from_secs(300),
+            max_retry: Duration::from_secs(300),
+            healthy_after: Duration::from_secs(600),
+            stop_grace: Duration::from_secs(1),
+        },
+    )
+    .expect("unique ids");
+
+    eventually("crashed", || {
+        RETRY_RUNS.load(Ordering::SeqCst) >= 1
+            && matches!(
+                status(&core, "crash_until_keyed"),
+                Some(ExtensionStatus::Failed {
+                    retry_at: Some(_),
+                    ..
+                })
+            )
+    })
+    .await;
+    let after_crash = RETRY_RUNS.load(Ordering::SeqCst);
+
+    core.apply_extension_settings(keyed_settings(
+        "crash_until_keyed",
+        serde_json::json!({"key": "k"}),
+    ));
+    let started = tokio::time::Instant::now();
+    eventually("restarted with the key", || {
+        RETRY_RUNS.load(Ordering::SeqCst) > after_crash
+            && status(&core, "crash_until_keyed") == Some(ExtensionStatus::Running)
+    })
+    .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "waited out the backoff: {:?}",
+        started.elapsed()
+    );
+
+    host.shutdown().await;
+}
+
 /// Turning an extension off stops it and says so; turning it back on starts it again with its
 /// devices. Neither counts as a failure, and turning off one leaves the others alone.
 #[tokio::test(start_paused = true)]

@@ -462,11 +462,103 @@ pub fn builtin<I: Integration>() -> Result<Builtin, String> {
         config_schema,
         icon: I::ICON,
         start: Box::new(|config, ctx| {
-            let config: I::Config =
-                serde_json::from_value(config).map_err(|e| format!("invalid settings: {e}"))?;
+            let config: I::Config = serde_json::from_value(config).map_err(invalid_settings)?;
             Ok(Box::pin(I::run(config, ctx)))
         }),
     })
+}
+
+/// Why settings couldn't be turned into the integration's config type. Names the shape, never a
+/// value: settings hold secrets, and the reason is logged and shown (`docs/specs/integrations.md`
+/// §3).
+fn invalid_settings(err: serde_json::Error) -> String {
+    format!("invalid settings: {}", redact_serde_value(&err.to_string()))
+}
+
+/// Drops quoted strings and numeric/boolean literals from a serde error. Field names in
+/// backticks stay: they are keys, not values.
+fn redact_serde_value(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut chars = message.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '"' {
+            out.push_str("\"…\"");
+            let mut escaped = false;
+            for next in chars.by_ref() {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                match next {
+                    '\\' => escaped = true,
+                    '"' => break,
+                    _ => {}
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    redact_serde_literals(&out)
+}
+
+fn redact_serde_literals(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some((at, kind)) = ["integer ", "float ", "boolean "]
+        .into_iter()
+        .filter_map(|kind| rest.find(kind).map(|at| (at, kind)))
+        .min_by_key(|(at, _)| *at)
+    {
+        out.push_str(&rest[..at + kind.len()]);
+        rest = &rest[at + kind.len()..];
+        rest = match kind {
+            "boolean " => skip_boolean(rest),
+            _ => skip_number(rest),
+        };
+    }
+    out.push_str(rest);
+    out
+}
+
+fn skip_boolean(s: &str) -> &str {
+    let (s, tick) = match s.strip_prefix('`') {
+        Some(inner) => (inner, true),
+        None => (s, false),
+    };
+    let s = s
+        .strip_prefix("true")
+        .or_else(|| s.strip_prefix("false"))
+        .unwrap_or(s);
+    if tick {
+        s.strip_prefix('`').unwrap_or(s)
+    } else {
+        s
+    }
+}
+
+fn skip_number(s: &str) -> &str {
+    let (s, tick) = match s.strip_prefix('`') {
+        Some(inner) => (inner, true),
+        None => (s, false),
+    };
+    let s = s.trim_start_matches(['+', '-']);
+    let s = s.trim_start_matches(|c: char| c.is_ascii_digit());
+    let s = s
+        .strip_prefix('.')
+        .map(|frac| frac.trim_start_matches(|c: char| c.is_ascii_digit()))
+        .unwrap_or(s);
+    let s = match s.strip_prefix(['e', 'E']) {
+        Some(exp) => exp
+            .trim_start_matches(['+', '-'])
+            .trim_start_matches(|c: char| c.is_ascii_digit()),
+        None => s,
+    };
+    if tick {
+        s.strip_prefix('`').unwrap_or(s)
+    } else {
+        s
+    }
 }
 
 /// Reads `irori-extension.toml` text the way Irori reads every manifest: TOML into the JSON data
@@ -733,5 +825,35 @@ mod tests {
         ] {
             assert!(err.contains(says), "{err}");
         }
+    }
+
+    /// Settings errors are shown. They must name the field and the type, never the value that
+    /// was there — that's where secrets live.
+    #[test]
+    fn a_settings_error_names_the_shape_not_the_value() {
+        #[derive(Debug, serde::Deserialize)]
+        struct NeedsString {
+            #[allow(dead_code)]
+            key: String,
+        }
+        #[derive(Debug, serde::Deserialize)]
+        struct NeedsNumber {
+            #[allow(dead_code)]
+            key: i64,
+        }
+
+        let number = invalid_settings(
+            serde_json::from_value::<NeedsString>(serde_json::json!({"key": 1})).expect_err("type"),
+        );
+        assert!(number.starts_with("invalid settings:"), "{number}");
+        assert!(!number.contains('1'), "{number}");
+        assert!(number.contains("integer"), "{number}");
+
+        let secret = invalid_settings(
+            serde_json::from_value::<NeedsNumber>(serde_json::json!({"key": "s3cret"}))
+                .expect_err("type"),
+        );
+        assert!(!secret.contains("s3cret"), "{secret}");
+        assert!(secret.contains("\"…\""), "{secret}");
     }
 }

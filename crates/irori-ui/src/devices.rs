@@ -469,6 +469,7 @@ fn Ignored() -> impl IntoView {
                                     spawn_local(async move {
                                         let edit = crate::api::DeviceEdit {
                                             ignored: Some(false),
+                                            added: Some(true),
                                             ..Default::default()
                                         };
                                         match crate::api::edit_device(&id, &edit).await {
@@ -894,8 +895,10 @@ fn AddDevice() -> impl IntoView {
             <p class="muted small">
                 "Devices appear on their own: an extension that can find them is always "
                 "listening, so flashing a board or plugging one in is all it takes. A device that "
-                "encrypts its connection shows up above until it has its key. Choosing which "
-                "found devices to keep, and giving one an address by hand, are still to come."
+                "encrypts its connection shows up above until it has its key. To choose which "
+                "found devices to keep, set `[devices] new = \"ask\"` in irori.toml — they wait "
+                "here with Add and Ignore instead of joining on their own. Giving one an address "
+                "by hand is still to come."
             </p>
         </section>
     }

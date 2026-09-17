@@ -313,6 +313,16 @@ async fn supervise(
                 core.set_status(&extension, ExtensionStatus::Disabled);
                 return;
             }
+            () = settings_changed(&mut settings, &extension, &started_with) => {
+                // New settings, not another crash: start again now, no backoff
+                // (`docs/specs/integrations.md` §3 step 6).
+                tracing::info!(%extension, "settings changed; restarting extension");
+                delay = timing.first_retry;
+                continue;
+            }
+            Ok(_) = disabled.wait_for(|disabled| disabled.contains(&extension)) => {
+                continue;
+            }
             () = tokio::time::sleep(delay) => {}
         }
         // Saturating: a custom `Timing` with huge delays must not overflow and end supervision.
