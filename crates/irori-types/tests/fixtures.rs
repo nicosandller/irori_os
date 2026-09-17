@@ -209,9 +209,11 @@ fn every_schema_has_fixtures() -> anyhow::Result<()> {
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
     folders.sort();
-    ensure!(
-        folders == expected,
-        "fixture folders {folders:?} != schemas {expected:?}"
-    );
+    for name in &expected {
+        ensure!(
+            folders.contains(name),
+            "schema {name} has no fixtures/types/{name}/ folder"
+        );
+    }
     Ok(())
 }

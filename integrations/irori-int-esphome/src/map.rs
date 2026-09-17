@@ -246,6 +246,7 @@ fn sensor_class(class: &str) -> Option<SensorClass> {
         "carbon_dioxide" => SensorClass::Co2,
         "pm25" => SensorClass::Pm25,
         "signal_strength" => SensorClass::SignalStrength,
+        "distance" => SensorClass::Distance,
         _ => return None,
     })
 }

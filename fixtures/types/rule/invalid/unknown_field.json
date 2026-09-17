@@ -1,0 +1,7 @@
+{
+  "id": "unknown_field",
+  "name": "Unknown field",
+  "bogus": true,
+  "triggers": [{ "type": "startup" }],
+  "actions": [{ "type": "stop" }]
+}

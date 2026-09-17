@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{ContextId, IntegrationId, RuleId, TokenId, UserId};
+use crate::{ContextId, ExtensionId, IntegrationId, TokenId, UserId};
 
 /// Why something happened. Every state change and service call carries one, so any change can
 /// be traced back to its cause (`docs/specs/entities.md` §6).
@@ -23,8 +23,11 @@ pub enum Origin {
     Device { integration: IntegrationId },
     /// A person, through the UI or CLI.
     User { user_id: UserId },
-    /// A rule run.
-    Rule { rule_id: RuleId, run_id: ContextId },
+    /// An automation engine run (any installed engine, not a core scheduler).
+    Automation {
+        extension: ExtensionId,
+        run_id: ContextId,
+    },
     /// An API client authenticated with an access token.
     Api { token_id: TokenId },
     /// Irori itself, e.g. restoring state at startup or reloading config.

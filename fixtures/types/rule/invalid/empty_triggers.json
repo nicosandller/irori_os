@@ -1,0 +1,6 @@
+{
+  "id": "empty_triggers",
+  "name": "Empty triggers",
+  "triggers": [],
+  "actions": [{ "type": "stop" }]
+}

@@ -1077,6 +1077,22 @@ mod tests {
         };
         assert!(named("devices", "Demo lamp"), "no demo lamp in {home}");
         assert!(named("entities", "Demo lamp"), "no lamp entity in {home}");
+        assert!(
+            named("devices", "Demo hallway light"),
+            "no hallway light in {home}"
+        );
+        assert!(
+            named("devices", "Demo movement sensor"),
+            "no movement sensor in {home}"
+        );
+        assert!(
+            named("devices", "Demo luminosity sensor"),
+            "no luminosity sensor in {home}"
+        );
+        assert!(
+            named("devices", "Demo mmWave sensor"),
+            "no mmWave sensor in {home}"
+        );
         assert_eq!(home["extensions"]["demo"]["state"], "running");
         let lamp = home["states"]
             .as_array()

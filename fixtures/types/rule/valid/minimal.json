@@ -1,0 +1,14 @@
+{
+  "id": "lamp_on_at_seven",
+  "name": "Study lamp at seven",
+  "triggers": [
+    { "type": "time", "at": "07:00" }
+  ],
+  "actions": [
+    {
+      "type": "call",
+      "service": "light.turn_on",
+      "target": { "entity": "light.demo_lamp" }
+    }
+  ]
+}

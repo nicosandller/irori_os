@@ -1,0 +1,6 @@
+{
+  "id": "Hallway light",
+  "name": "Hallway",
+  "triggers": [{ "type": "startup" }],
+  "actions": [{ "type": "stop" }]
+}

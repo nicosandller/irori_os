@@ -1,6 +1,6 @@
 [package]
 name = "irori-types"
-description = "Shared types: entities, typed state, registry, rules, traces, API messages. Compiles to native and wasm32."
+description = "Shared types: entities, typed state, registry, traces, API messages. Compiles to native and wasm32."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

@@ -110,6 +110,7 @@ One list per contribution kind, written as TOML arrays of tables (`[[contributes
 | `dashboard` | Reserved for Phase 2c (ROADMAP §6.4) | A pre-built view that binds to matching devices |
 | `card` | Reserved for Phase 2c | A visualization used inside dashboards |
 | `app` | Reserved for Phase 3 (ROADMAP §8.2) | A tool with its own page, served by the extension |
+| `automation` | Reserved | An automation engine. The core does not ship one; engines are installed as extensions. This version reads the contribution and ignores it with a warning, like dashboard/card. |
 
 ### 6.1 Integration
 

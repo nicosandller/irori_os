@@ -1,5 +1,6 @@
-//! `cargo xtask schemas [--check]`: writes the JSON Schemas generated from `irori-types` to
-//! `schemas/`, or with `--check`, fails if the checked-in files are stale.
+//! `cargo xtask schemas [--check]`: writes JSON Schemas from `irori-types` (core) and
+//! `irori-rules` (sequential engine) to `schemas/`, or with `--check`, fails if the checked-in
+//! files are stale.
 
 use std::path::{Path, PathBuf};
 
@@ -7,7 +8,8 @@ use anyhow::{Context as _, bail};
 
 pub fn run(check: bool) -> anyhow::Result<()> {
     let dir = repo_root().join("schemas");
-    let docs = irori_types::schemas();
+    let mut docs = irori_types::schemas();
+    docs.extend(irori_rules::schemas());
 
     let mut stale = Vec::new();
     for doc in &docs {
