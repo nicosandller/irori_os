@@ -9,9 +9,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use irori_config::{Problem, ServerSettings, Store};
-use irori_core::Core;
+use irori_core::{Core, Event};
 use irori_types::{ExtensionSettings, Settings};
 use tokio::sync::Mutex;
+use tokio::sync::broadcast::error::RecvError;
 
 /// How often the files are checked for outside edits. Two seconds is fast enough that editing a
 /// file feels live, and slow enough that the cost is three `stat` calls.
@@ -158,6 +159,8 @@ impl Config {
             let mut settings = store.settings();
             if settings.ask_before_adding && !core.settings().ask_before_adding {
                 keep_what_is_here(&mut store, &mut settings, &core);
+            } else if !settings.ask_before_adding {
+                remember_who_is_here(&mut store, &mut settings, &core);
             }
             core.apply_settings(settings);
             core.apply_extension_settings(store.extension_settings());
@@ -173,6 +176,27 @@ impl Config {
             }
         }
     }
+
+    /// Writes `added = true` for devices that join while Irori isn't asking, so a later restart
+    /// with asking already on in `irori.toml` doesn't hold the home as new.
+    pub async fn remember_arrivals(self, core: Core) {
+        let mut events = core.subscribe();
+        loop {
+            match events.recv().await {
+                Ok(Event::DeviceAdded { .. }) | Err(RecvError::Lagged(_)) => {
+                    if core.settings().ask_before_adding {
+                        continue;
+                    }
+                    let mut store = self.0.lock().await;
+                    let mut settings = store.settings();
+                    remember_who_is_here(&mut store, &mut settings, &core);
+                    core.apply_settings(settings);
+                }
+                Ok(_) => {}
+                Err(RecvError::Closed) => return,
+            }
+        }
+    }
 }
 
 /// Asking before adding is about what Irori finds from now on. Turning it on mustn't empty the
@@ -180,14 +204,7 @@ impl Config {
 /// Irori writes `devices.toml` without being asked for that exact change, because the change a
 /// person did ask for would otherwise undo their whole home.
 fn keep_what_is_here(store: &mut Store, settings: &mut Settings, core: &Core) {
-    let mut kept = 0;
-    for device in core.devices() {
-        let entry = settings.devices.entry(device.id).or_default();
-        if !entry.added && !entry.ignored {
-            entry.added = true;
-            kept += 1;
-        }
-    }
+    let kept = mark_present_as_added(settings, core);
     if kept == 0 {
         return;
     }
@@ -205,6 +222,29 @@ fn keep_what_is_here(store: &mut Store, settings: &mut Settings, core: &Core) {
             settings.ask_before_adding = false;
         }
     }
+}
+
+/// Devices that joined while asking is off, so a restart with asking already on keeps them.
+fn remember_who_is_here(store: &mut Store, settings: &mut Settings, core: &Core) {
+    if mark_present_as_added(settings, core) == 0 {
+        return;
+    }
+    if let Err(e) = store.save(settings) {
+        tracing::error!(%e, "couldn't record a device as already in the home");
+        *settings = store.settings();
+    }
+}
+
+fn mark_present_as_added(settings: &mut Settings, core: &Core) -> usize {
+    let mut kept = 0;
+    for device in core.devices() {
+        let entry = settings.devices.entry(device.id).or_default();
+        if !entry.added && !entry.ignored {
+            entry.added = true;
+            kept += 1;
+        }
+    }
+    kept
 }
 
 /// A file Irori couldn't read is worth saying loudly and repeatedly: it means someone's edit
@@ -360,6 +400,69 @@ mod tests {
         assert!(core.held_devices().is_empty());
         let devices = std::fs::read_to_string(dir.path().join("devices.toml"))?;
         assert!(devices.contains("added = true"), "{devices}");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Asking already on in `irori.toml` at startup keeps a home that joined while asking was
+    /// off: those devices were written down as added, so they are not "new".
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn starting_with_asking_already_on_keeps_the_devices_already_here() -> anyhow::Result<()>
+    {
+        let dir = tempfile::tempdir()?;
+        let before = {
+            let core = core();
+            let _config = Config::open_dir(dir.path(), &core);
+            let host = irori_core::ExtensionHost::start(
+                &core,
+                crate::extensions::builtins()?
+                    .into_iter()
+                    .filter(|builtin| builtin.manifest.extension.id.as_str() == "demo")
+                    .collect(),
+                irori_core::Timing::default(),
+            )
+            .map_err(anyhow::Error::msg)?;
+            for _ in 0..500 {
+                if core.devices().len() >= 3 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let before = core.devices().len();
+            assert!(before >= 3, "the demo devices arrived");
+            let mut store = Store::new(dir.path());
+            store.reload();
+            let mut settings = store.settings();
+            remember_who_is_here(&mut store, &mut settings, &core);
+            let devices = std::fs::read_to_string(dir.path().join("devices.toml"))?;
+            assert!(devices.contains("added = true"), "{devices}");
+            host.shutdown().await;
+            before
+        };
+
+        std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"ask\"\n")?;
+        let core = core();
+        let _config = Config::open_dir(dir.path(), &core);
+        assert!(core.settings().ask_before_adding);
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            crate::extensions::builtins()?
+                .into_iter()
+                .filter(|builtin| builtin.manifest.extension.id.as_str() == "demo")
+                .collect(),
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        for _ in 0..500 {
+            if core.devices().len() >= before {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(core.devices().len(), before, "nothing left the home");
+        assert!(core.held_devices().is_empty());
 
         host.shutdown().await;
         Ok(())

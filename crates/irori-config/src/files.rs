@@ -150,7 +150,6 @@ struct RawEntity {
     name: Option<Name>,
 }
 
-/// The areas in `areas.toml`, ordered by id.
 /// The floors and rooms in `areas.toml`, each ordered by id.
 pub fn read_areas(text: &str) -> Result<(Vec<Floor>, Vec<Area>), String> {
     let file: AreasFile = toml::from_str(text).map_err(|e| e.to_string())?;
