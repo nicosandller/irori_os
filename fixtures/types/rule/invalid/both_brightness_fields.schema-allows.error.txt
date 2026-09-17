@@ -1,0 +1,1 @@
+not both `brightness` and `brightness_pct`

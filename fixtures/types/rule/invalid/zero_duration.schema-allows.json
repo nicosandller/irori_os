@@ -1,0 +1,6 @@
+{
+  "id": "zero_duration",
+  "name": "Zero duration",
+  "triggers": [{ "type": "startup" }],
+  "actions": [{ "type": "delay", "for": "0s" }]
+}

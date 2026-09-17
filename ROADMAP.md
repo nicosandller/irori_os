@@ -59,6 +59,7 @@ Last revised: 2026-09-15. Based on the original `irori-project-plan.md`, revised
 | D38 | **Irori's own settings live in `irori.toml`, which nothing Irori serves can write** | Bind address, data directory, log level and which extensions are turned off, with a flag or environment variable still winning. Turning an extension off applies while Irori runs, through the same host machinery as new settings (D34); where Irori listens can't change under a running server, so an edit to `[server]` says it needs a restart instead of silently doing nothing. `allow_unauthenticated_lan` is in this file, so while there's no sign-in (D12) no endpoint may write it — otherwise anything that can reach Irori could open it to the network. |
 | D39 | **Irori can ask before adding a device it finds** | `[devices] new = "ask"` in `irori.toml` holds each newly found device back — the same way an ignored one is held (D37), so what its integration says is kept — until a person adds or ignores it. The default stays `"add"`: most homes want the ESPHome board they just flashed to appear, and a setting that makes a new install look empty would be a bad first impression. It's the answer to D29's "choosing which devices to adopt" and to a neighbour's devices showing up on a shared network. The decision is written to `devices.toml` (`added = true`), so it survives restarts and is visible in the file. Turning asking on marks everything already in the home as added: a setting that emptied the home the moment it was switched on would be read as data loss. |
 | D40 | **Helpers are an extension, and their definitions are its settings** | A toggle ("guests are over") is a switch no device reports, which rules will read and flip. Rather than a special kind of entity in the core, helpers are a built-in extension using only the integration contract: its settings (`extensions/helpers.toml`) define the toggles, its private storage keeps the value each was left at, and it reports them like any switch — so the core stays smaller, and every helper is a proof that the contract is enough. The page writes the definitions through endpoints that only edit that extension's file. A helper's one name is the one in its definition; renaming its entity rewrites that rather than adding a second name in `entities.toml` (D36). Numbers, text and timers follow once rules exist to use them. |
+| D41 | **Rule expressions are CEL, behind an Irori function surface** (`num`, `on`, `available`, …) | M0.8 spike in `crates/irori-rules` (`cel` 0.14.5, `default-features = false` so chrono/regex stay out; civil time stays on `jiff`). Hallway `num("sensor.demo_luminosity_illuminance") < 30 && !on("switch.guests_over")` eval'd at ~39 µs on a Mac debug build (new `Context` each time; target was µs). Mixed int/float and single quotes work. `Program::references()` does not see entity-id string arguments — walk the AST. Error strings name the id and the mismatch (`no such entity`, `unavailable`, `never reported`, `use on(...)`). Custom evaluator of the same surface remains the fallback if a Pi 4 miss or wasm (M1.6, untried) cannot host `cel`. Spec: [docs/specs/rules.md](docs/specs/rules.md) (M0.3). |
 
 ### Review notes on the original plan (kept for context)
 
@@ -178,7 +179,7 @@ irori_os/
 | Embedded broker (optional) | `rumqttd` | Evaluate maturity in Phase 0; fall back to "requires external broker" |
 | Persistence | `rusqlite` with `bundled` | Sync API on a dedicated writer thread; simpler than `sqlx` and musl-friendly. WAL mode. |
 | Serialization / schema | `serde` + `schemars` | JSON Schema generated from Rust types |
-| Expression language | **CEL** via `cel-interpreter` (candidate) | Non-Turing-complete, typed, well known to LLMs. Spike vs a tiny custom language in Phase 0. |
+| Expression language | **CEL** via `cel` 0.14.5 (D41) | Irori function surface (`num`, `on`, `available`). `default-features = false`. Custom evaluator of the same surface remains the fallback if Pi 4 or wasm cannot host `cel`. |
 | Time / time zones | `jiff` | DST-correct scheduling; DST bugs are classic automation failures |
 | Sun position | `sunrise` (or similar) | sunrise/sunset/elevation triggers |
 | Password hashing | `argon2` | |
@@ -200,7 +201,7 @@ irori_os/
 
 Goal: the decisions that are expensive to change later are written down and prototyped. **Little product code, lots of leverage.**
 
-> **Current order (D26):** M0.1 ✅ → M0.2 ✅ → M0.6 ✅ → M1.1 (trimmed) ✅ → M0.8 UI spike ✅ + Devices page ✅ → ESPHome integration ✅ → M0.7 config dir ✅ (rooms and floors, one name and id per device, secrets and encrypted ESPHome devices, ignoring devices and asking before adding them, `irori.toml`, extension settings and storage, toggle helpers) → M0.3, M0.4, M0.5.
+> **Current order (D26):** M0.1 ✅ → M0.2 ✅ → M0.6 ✅ → M1.1 (trimmed) ✅ → M0.8 UI spike ✅ + Devices page ✅ → ESPHome integration ✅ → M0.7 config dir ✅ (rooms and floors, one name and id per device, secrets and encrypted ESPHome devices, ignoring devices and asking before adding them, `irori.toml`, extension settings and storage, toggle helpers) → M0.3 (spec + CEL spike + loader + compile) → M0.4, M0.5. The engine that *runs* rules is M1.4.
 
 ### M0.1 Workspace and toolchain ✅
 
@@ -352,7 +353,7 @@ Must decide:
 - CLI command tree (UI parity): see M1.7.
 
 ### M0.8 Spikes (timeboxed, one or two evenings each)
-- CEL in Rust: evaluate typed expressions against a fake state view; check error messages are LLM-actionable. Measure eval cost (target: µs per expression).
+- CEL in Rust ✅ (D41): `cel` 0.14.5 against a fake hallway `StateView` in `crates/irori-rules`. Error messages name the entity id. ~39 µs/eval on a Mac debug build. Pi 4 and wasm still outstanding.
 - Leptos vs Dioxus ✅ (D27): the same page in both, sharing `irori-types`, measured after `wasm-opt` and brotli. Leptos 119 KB, Dioxus 207 KB, both inside the 500 KB budget. The spikes then became the real Devices page; see [crates/irori-ui/README.md](crates/irori-ui/README.md).
 - `rumqttd` embedded: start in-process, connect Zigbee2MQTT to it.
 - Integration trait vs external protocol: implement the demo integration both ways against a stub core, to prove the contract really is the same.
