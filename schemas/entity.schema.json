@@ -381,7 +381,8 @@
         "battery",
         "co2",
         "pm25",
-        "signal_strength"
+        "signal_strength",
+        "distance"
       ]
     },
     "SensorValueType": {

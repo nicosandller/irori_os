@@ -1,0 +1,14 @@
+{
+  "id": "sensor.hallway_target_distance",
+  "integration": "mqtt",
+  "unique_id": "0x00158d0001a2b3c4_target_distance",
+  "name": "Target distance",
+  "device_id": "hallway_mmwave",
+  "capabilities": {
+    "kind": "sensor",
+    "value_type": "number",
+    "device_class": "distance",
+    "unit": "m",
+    "state_class": "measurement"
+  }
+}

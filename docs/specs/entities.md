@@ -137,7 +137,7 @@ additive change: a new tag in `Capabilities` and `State`.
 | | `rgb` | bool | `false` | Supports RGB color |
 | `switch` | `device_class` | `outlet` \| `switch` | absent | |
 | `sensor` | `value_type` | `number` \| `text` | **required** | Rules are type-checked against it |
-| | `device_class` | `temperature` \| `humidity` \| `illuminance` \| `pressure` \| `power` \| `energy` \| `voltage` \| `current` \| `battery` \| `co2` \| `pm25` \| `signal_strength` | absent | |
+| | `device_class` | `temperature` \| `humidity` \| `illuminance` \| `pressure` \| `power` \| `energy` \| `voltage` \| `current` \| `battery` \| `co2` \| `pm25` \| `signal_strength` \| `distance` | absent | |
 | | `unit` | string | absent | E.g. `°C`, `lx`, `%`, `W`, `kWh` |
 | | `state_class` | `measurement` \| `total` \| `total_increasing` | absent | How values accumulate, for statistics |
 | `binary_sensor` | `device_class` | `motion` \| `occupancy` \| `door` \| `window` \| `moisture` \| `smoke` \| `gas` \| `vibration` \| `plug` \| `connectivity` \| `problem` \| `battery` | absent | Says what `on` means |

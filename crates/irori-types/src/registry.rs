@@ -296,6 +296,7 @@ pub enum SensorClass {
     Co2,
     Pm25,
     SignalStrength,
+    Distance,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

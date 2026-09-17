@@ -373,7 +373,7 @@ Goal: a **barebones, fast, modular core** that a real home runs on for weeks wit
 - Context propagation through every state change and service call.
 - Service registry: integrations register handlers for the kinds they provide.
 - **Extension host:** reads manifests of built-in extensions, checks compatibility and permissions, loads the ones enabled in `irori.toml`, and supervises their integrations (panic/crash isolation, restart with backoff, health status).
-- `irori-int-demo` built against the `Integration` trait: virtual light, switch, motion sensor, temperature sensor.
+- `irori-int-demo` built against the `Integration` trait: virtual lights, switch, motion, illuminance, mmWave occupancy and target distance, temperature.
 - Config dir loading and hot reload (`irori-config`).
 - **Demo:** `irori serve` with only the demo integration; `irori` CLI lists devices, toggles a virtual light, and watches events with contexts. Kill the demo integration's task and watch the core restart it.
 
