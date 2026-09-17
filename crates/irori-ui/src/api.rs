@@ -129,8 +129,8 @@ fn unreachable(error: gloo_net::Error) -> String {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Health {
     pub version: String,
-    /// The commit this Irori was built from, and when. Every version is `0.0.0` until there are
-    /// releases, so this is how you tell a running Irori from the one you just built.
+    /// The commit this Irori was built from, and when. Development builds are all `0.0.0`, so
+    /// this is how you tell a running Irori from the one you just built.
     #[serde(default)]
     pub commit: String,
     #[serde(default)]

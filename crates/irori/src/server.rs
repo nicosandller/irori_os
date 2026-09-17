@@ -807,7 +807,7 @@ struct Health<'a> {
     status: &'static str,
     version: &'static str,
     /// What this binary was built from, so "am I running the version I just built?" has an
-    /// answer while every version number is still `0.0.0`.
+    /// answer even between releases, when every development build is `0.0.0`.
     commit: &'static str,
     built_at: &'static str,
     uptime_ms: u128,

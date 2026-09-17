@@ -12,7 +12,31 @@
 
 > Status: the core's registry, live state, and extension host run; a Devices page shows everything and switches it (M0.8, M1.6 first slice); and **ESPHome devices on your network are found and connected automatically**, sensors and all (D26). No rules or automations yet, and no login, so it isn't running a home unattended.
 
-## Build and run
+## Install
+
+One command, into `~/.irori`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nicosandller/irori_os/main/install/install.sh | bash
+irori run                                  # http://127.0.0.1:8480
+```
+
+It detects your OS and CPU, downloads the latest [release](https://github.com/nicosandller/irori_os/releases)
+for it, verifies the SHA-256 against the release's `SHA256SUMS`, then puts `irori` and the
+official extensions in place and adds them to your shell config. Releases carry `linux-x64`,
+`linux-arm64` (both static musl), `darwin-x64` and `darwin-arm64`. There are no releases yet, so
+until the first tag use the source build below. Options go after `bash -s --`:
+
+```sh
+curl -fsSL … | bash -s -- --version 0.2.0    # a specific release
+curl -fsSL … | bash -s -- --system           # /usr/local/bin and /usr/share/irori/extensions
+curl -fsSL … | bash -s -- --binary ./target/release/irori   # a local build
+```
+
+`install/irori.service` is a systemd unit for a `--system` install; it runs as an unprivileged
+`irori` user with its data in `/var/lib/irori` (see the header of that file).
+
+## Build from source
 
 Requires stable Rust (pinned via `rust-toolchain.toml`). One command builds the UI and installs
 the binary, after which Irori runs from anywhere:
@@ -26,9 +50,9 @@ irori run                                  # http://127.0.0.1:8480
 
 `cargo xtask install` copies a binary; it isn't a link to the checkout. **After pulling or
 changing anything, run it again** — the running `irori` is whatever was installed last. Which
-build that is isn't a guess: every version is `0.0.0` until there are releases, so `irori
-version` and the Home page show the commit it was built from, with `-modified` when the tree had
-uncommitted changes.
+build that is isn't a guess: `irori version` and the Home page show the commit it was built from,
+with `-modified` when the tree had uncommitted changes. A build made at a release tag reports
+that version instead of `0.0.0`.
 
 ```sh
 irori version                              # irori 0.0.0 (359d176), built 2026-09-16 07:30 UTC
