@@ -552,6 +552,16 @@ pub enum RuleService {
 }
 
 impl RuleService {
+    /// The kind of entity this service acts on.
+    pub fn kind(self) -> crate::EntityKind {
+        match self {
+            Self::LightTurnOn | Self::LightTurnOff | Self::LightToggle => crate::EntityKind::Light,
+            Self::SwitchTurnOn | Self::SwitchTurnOff | Self::SwitchToggle => {
+                crate::EntityKind::Switch
+            }
+        }
+    }
+
     fn validate_data(self, data: Option<&CallData>) -> Result<(), InvariantError> {
         match (self, data) {
             (Self::LightTurnOn | Self::LightToggle, Some(CallData::Light(light))) => {
@@ -594,10 +604,13 @@ pub enum CallData {
 #[serde(deny_unknown_fields)]
 pub struct LightCallData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 255))]
     pub brightness: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 100))]
     pub brightness_pct: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1000, max = 20000))]
     pub color_temp_kelvin: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rgb: Option<[u8; 3]>,
@@ -1057,8 +1070,23 @@ fn check_event_data(
 }
 
 /// Expression source. Length only; parse and type-check are `irori-rules`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExprString(String);
+
+impl JsonSchema for ExprString {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ExprString".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "description": "A CEL expression using the Irori function surface (num, on, available, …).",
+            "minLength": 1,
+            "maxLength": MAX_EXPR_CHARS,
+        })
+    }
+}
 
 impl ExprString {
     pub fn as_str(&self) -> &str {
@@ -1087,8 +1115,23 @@ impl<'de> Deserialize<'de> for ExprString {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StopReason(String);
+
+impl JsonSchema for StopReason {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "StopReason".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "description": "Optional reason stored on a stop action's trace.",
+            "minLength": 1,
+            "maxLength": MAX_STOP_REASON,
+        })
+    }
+}
 
 impl StopReason {
     pub fn as_str(&self) -> &str {

@@ -575,8 +575,10 @@
       "type": "string"
     },
     "ExprString": {
-      "description": "Expression source. Length only; parse and type-check are `irori-rules`.",
-      "type": "string"
+      "description": "A CEL expression using the Irori function surface (num, on, available, …).",
+      "type": "string",
+      "maxLength": 512,
+      "minLength": 1
     },
     "LightCallData": {
       "type": "object",
@@ -588,7 +590,7 @@
           ],
           "format": "uint8",
           "maximum": 255,
-          "minimum": 0
+          "minimum": 1
         },
         "brightness_pct": {
           "type": [
@@ -596,8 +598,8 @@
             "null"
           ],
           "format": "uint8",
-          "maximum": 255,
-          "minimum": 0
+          "maximum": 100,
+          "minimum": 1
         },
         "color_temp_kelvin": {
           "type": [
@@ -605,8 +607,8 @@
             "null"
           ],
           "format": "uint16",
-          "maximum": 65535,
-          "minimum": 0
+          "maximum": 20000,
+          "minimum": 1000
         },
         "rgb": {
           "type": [
@@ -735,7 +737,10 @@
       ]
     },
     "StopReason": {
-      "type": "string"
+      "description": "Optional reason stored on a stop action's trace.",
+      "type": "string",
+      "maxLength": 200,
+      "minLength": 1
     },
     "SunEvent": {
       "type": "string",

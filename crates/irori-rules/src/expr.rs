@@ -162,13 +162,10 @@ fn flag(state: &impl StateView, ftx: &FunctionContext, id: &str) -> ResolveResul
     }
 }
 
-fn reachable(state: &impl StateView, ftx: &FunctionContext, id: &str) -> ResolveResult {
+fn reachable(state: &impl StateView, _ftx: &FunctionContext, id: &str) -> ResolveResult {
     match state.reading(id) {
-        None => ftx
-            .error(format!(
-                "available({id:?}): no such entity — check the entity id"
-            ))
-            .into(),
+        // Gone at run time is "not available", not an error: `!available('sensor.x')` is true.
+        None => Ok(Value::Bool(false)),
         Some(Reading::Number { available, .. } | Reading::Flag { available, .. }) => {
             Ok(Value::Bool(available))
         }
@@ -301,6 +298,13 @@ mod tests {
         let compiled = dark_and_not_guests();
         let message = eval_bool(&compiled, &state).unwrap_err().to_string();
         assert!(message.contains("never reported"), "got: {message}");
+    }
+
+    #[test]
+    fn available_is_false_when_the_entity_is_gone() {
+        let compiled = compile(&format!(r#"!available("{LUX}")"#)).unwrap();
+        let empty: BTreeMap<String, Reading> = BTreeMap::new();
+        assert!(eval_bool(&compiled, &empty).unwrap());
     }
 
     #[test]
