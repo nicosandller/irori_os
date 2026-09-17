@@ -126,7 +126,12 @@ fn walk_condition(
             }
         }
         Condition::All { conditions } | Condition::Any { conditions } => {
-            walk_conditions(&format!("{path}/conditions"), conditions, registry, problems);
+            walk_conditions(
+                &format!("{path}/conditions"),
+                conditions,
+                registry,
+                problems,
+            );
         }
         Condition::Not { condition } => {
             walk_condition(&format!("{path}/condition"), condition, registry, problems);
@@ -166,14 +171,16 @@ fn walk_actions(
                 then,
                 r#else,
             } => {
-                walk_conditions(&format!("{here}/conditions"), conditions, registry, problems);
+                walk_conditions(
+                    &format!("{here}/conditions"),
+                    conditions,
+                    registry,
+                    problems,
+                );
                 walk_actions(&format!("{here}/then"), then, registry, problems, false);
                 walk_actions(&format!("{here}/else"), r#else, registry, problems, false);
             }
-            Action::Choose {
-                options,
-                otherwise,
-            } => {
+            Action::Choose { options, otherwise } => {
                 for (j, option) in options.iter().enumerate() {
                     let opt = format!("{here}/options/{j}");
                     walk_conditions(
@@ -182,9 +189,21 @@ fn walk_actions(
                         registry,
                         problems,
                     );
-                    walk_actions(&format!("{opt}/then"), &option.then, registry, problems, false);
+                    walk_actions(
+                        &format!("{opt}/then"),
+                        &option.then,
+                        registry,
+                        problems,
+                        false,
+                    );
                 }
-                walk_actions(&format!("{here}/default"), otherwise, registry, problems, false);
+                walk_actions(
+                    &format!("{here}/default"),
+                    otherwise,
+                    registry,
+                    problems,
+                    false,
+                );
             }
             Action::Set { expr, .. } => {
                 check_expr(&here, expr, ExprRole::Value, registry, problems);
@@ -269,7 +288,11 @@ fn walk_ast(
             if name == "has" || name == "duration" || name == "timestamp" {
                 return Err(format!("{name}() isn't allowed in rule expressions"));
             }
-            if name == "map" || name == "filter" || name == "exists" || name == "exists_one" || name == "all"
+            if name == "map"
+                || name == "filter"
+                || name == "exists"
+                || name == "exists_one"
+                || name == "all"
             {
                 return Err("macros like map/filter/exists aren't allowed".into());
             }
@@ -287,11 +310,15 @@ fn walk_ast(
                     id.parse::<irori_types::ObjectId>()
                         .map_err(|e| e.to_string())?;
                 } else if name != "attr" {
-                    let entity_id: EntityId = id.parse().map_err(|e: irori_types::IdError| e.to_string())?;
+                    let entity_id: EntityId = id
+                        .parse()
+                        .map_err(|e: irori_types::IdError| e.to_string())?;
                     ids.insert(entity_id.clone());
                     check_fn_against_registry(name, &entity_id, registry)?;
                 } else {
-                    let entity_id: EntityId = id.parse().map_err(|e: irori_types::IdError| e.to_string())?;
+                    let entity_id: EntityId = id
+                        .parse()
+                        .map_err(|e: irori_types::IdError| e.to_string())?;
                     ids.insert(entity_id.clone());
                     if registry.entity(&entity_id).is_none() {
                         return Err(format!(
@@ -350,16 +377,17 @@ fn check_fn_against_registry(
         )),
         ("text", Capabilities::Sensor(s)) if s.value_type == SensorValueType::Text => Ok(()),
         ("text", _) => Err(format!("text(\"{id}\"): entity is not a text sensor")),
-        ("on", Capabilities::Light(_) | Capabilities::Switch(_) | Capabilities::BinarySensor(_)) => {
-            Ok(())
-        }
+        (
+            "on",
+            Capabilities::Light(_) | Capabilities::Switch(_) | Capabilities::BinarySensor(_),
+        ) => Ok(()),
         ("on", _) => Err(format!(
             "on(\"{id}\"): entity is a number, not on/off — use num(\"{id}\")"
         )),
         ("brightness", Capabilities::Light(light)) if light.brightness => Ok(()),
-        ("brightness", Capabilities::Light(_)) => Err(format!(
-            "brightness(\"{id}\"): this light is not dimmable"
-        )),
+        ("brightness", Capabilities::Light(_)) => {
+            Err(format!("brightness(\"{id}\"): this light is not dimmable"))
+        }
         ("brightness", _) => Err(format!("brightness(\"{id}\"): entity is not a light")),
         ("available" | "unknown" | "attr", _) => Ok(()),
         _ => Ok(()),
@@ -502,8 +530,10 @@ mod tests {
         }
         let problems = validate(&rule, &hallway_registry());
         assert!(
-            problems.iter().any(|p| p.reason.contains("string literal")
-                || p.reason.contains("reserved identifier")),
+            problems
+                .iter()
+                .any(|p| p.reason.contains("string literal")
+                    || p.reason.contains("reserved identifier")),
             "{problems:?}"
         );
     }

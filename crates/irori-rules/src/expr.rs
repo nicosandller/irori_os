@@ -36,14 +36,8 @@ pub trait StateView {
 /// One entity's current reading, including availability and "never reported" (`None`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Reading {
-    Number {
-        value: Option<f64>,
-        available: bool,
-    },
-    Flag {
-        on: Option<bool>,
-        available: bool,
-    },
+    Number { value: Option<f64>, available: bool },
+    Flag { on: Option<bool>, available: bool },
 }
 
 impl StateView for BTreeMap<String, Reading> {
@@ -70,7 +64,8 @@ impl std::error::Error for ExprError {}
 
 /// Compile `source` as CEL. Does not type-check against a registry; that's a later layer.
 pub fn compile(source: &str) -> Result<Compiled, ExprError> {
-    let program = Program::compile(source).map_err(|errors| ExprError::Parse(errors.to_string()))?;
+    let program =
+        Program::compile(source).map_err(|errors| ExprError::Parse(errors.to_string()))?;
     Ok(Compiled {
         source: source.to_owned(),
         program,
@@ -124,9 +119,7 @@ fn bind_functions<S: StateView + Clone + Send + Sync + 'static>(context: &mut Co
 fn number(state: &impl StateView, ftx: &FunctionContext, id: &str) -> ResolveResult {
     match state.reading(id) {
         None => ftx
-            .error(format!(
-                "num({id:?}): no such entity — check the entity id"
-            ))
+            .error(format!("num({id:?}): no such entity — check the entity id"))
             .into(),
         Some(Reading::Number {
             available: false, ..
@@ -219,10 +212,8 @@ mod tests {
     }
 
     fn dark_and_not_guests() -> Compiled {
-        compile(&format!(
-            r#"num("{LUX}") < 30.0 && !on("{GUESTS}")"#
-        ))
-        .expect("hallway condition compiles")
+        compile(&format!(r#"num("{LUX}") < 30.0 && !on("{GUESTS}")"#))
+            .expect("hallway condition compiles")
     }
 
     #[test]
@@ -269,14 +260,8 @@ mod tests {
         let message = eval_bool(&compiled, &home(8.0, true, false))
             .unwrap_err()
             .to_string();
-        assert!(
-            message.contains("sensor.does_not_exist"),
-            "got: {message}"
-        );
-        assert!(
-            message.contains("no such entity"),
-            "got: {message}"
-        );
+        assert!(message.contains("sensor.does_not_exist"), "got: {message}");
+        assert!(message.contains("no such entity"), "got: {message}");
     }
 
     #[test]
@@ -332,9 +317,7 @@ mod tests {
         }
         let elapsed = started.elapsed();
         let per = elapsed / n;
-        eprintln!(
-            "CEL eval: {n} runs in {elapsed:?} ({per:?} each, target µs)"
-        );
+        eprintln!("CEL eval: {n} runs in {elapsed:?} ({per:?} each, target µs)");
         assert!(
             per.as_micros() < 1_000,
             "eval took {per:?}; even a generous 1ms budget on a Mac should hold"

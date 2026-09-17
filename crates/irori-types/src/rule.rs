@@ -9,9 +9,7 @@ use std::fmt;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    AttributeKey, Description, EntityId, InvariantError, Name, ObjectId, RuleId,
-};
+use crate::{AttributeKey, Description, EntityId, InvariantError, Name, ObjectId, RuleId};
 
 const MAX_TRIGGERS: usize = 16;
 const MAX_CONDITIONS: usize = 32;
@@ -311,9 +309,7 @@ impl Condition {
                 weekday,
             } => {
                 if after.is_none() && before.is_none() && weekday.is_none() {
-                    return Err(inv(
-                        "a time window needs `after`, `before`, or `weekday`",
-                    ));
+                    return Err(inv("a time window needs `after`, `before`, or `weekday`"));
                 }
                 if let Some(days) = weekday {
                     check_weekdays(days)?;
@@ -412,9 +408,7 @@ impl Action {
             )));
         }
         match self {
-            Self::Call {
-                service, data, ..
-            } => service.validate_data(data.as_ref()),
+            Self::Call { service, data, .. } => service.validate_data(data.as_ref()),
             Self::Delay { hold } => hold.require_positive("for"),
             Self::Wait { until, timeout, .. } => {
                 until.validate()?;
@@ -564,14 +558,14 @@ impl RuleService {
                 light.validate()
             }
             (Self::LightTurnOn | Self::LightToggle, None) => Ok(()),
-            (Self::LightTurnOff | Self::SwitchTurnOn | Self::SwitchTurnOff | Self::SwitchToggle, Some(_)) => {
-                Err(inv(format!(
-                    "{self} does not take data"
-                )))
-            }
-            (Self::LightTurnOff | Self::SwitchTurnOn | Self::SwitchTurnOff | Self::SwitchToggle, None) => {
-                Ok(())
-            }
+            (
+                Self::LightTurnOff | Self::SwitchTurnOn | Self::SwitchTurnOff | Self::SwitchToggle,
+                Some(_),
+            ) => Err(inv(format!("{self} does not take data"))),
+            (
+                Self::LightTurnOff | Self::SwitchTurnOn | Self::SwitchTurnOff | Self::SwitchToggle,
+                None,
+            ) => Ok(()),
         }
     }
 }
@@ -612,9 +606,7 @@ pub struct LightCallData {
 impl LightCallData {
     fn validate(&self) -> Result<(), InvariantError> {
         if self.brightness.is_some() && self.brightness_pct.is_some() {
-            return Err(inv(
-                "not both `brightness` and `brightness_pct`; pick one",
-            ));
+            return Err(inv("not both `brightness` and `brightness_pct`; pick one"));
         }
         if let Some(brightness) = self.brightness
             && !(1..=255).contains(&brightness)
@@ -721,9 +713,9 @@ impl<'de> Deserialize<'de> for TypedValue {
         match value {
             serde_json::Value::Bool(value) => Ok(Self::Bool(value)),
             serde_json::Value::Number(number) => {
-                let value = number.as_f64().ok_or_else(|| {
-                    serde::de::Error::custom("typed values need a finite number")
-                })?;
+                let value = number
+                    .as_f64()
+                    .ok_or_else(|| serde::de::Error::custom("typed values need a finite number"))?;
                 if !value.is_finite() {
                     return Err(serde::de::Error::custom(
                         "typed values need a finite number",
@@ -905,9 +897,7 @@ impl<'de> Deserialize<'de> for CivilTime {
 fn parse_civil(text: &str) -> Result<(), InvariantError> {
     let parts: Vec<&str> = text.split(':').collect();
     if parts.len() != 2 && parts.len() != 3 {
-        return Err(inv(format!(
-            "invalid time {text:?}: use HH:MM or HH:MM:SS"
-        )));
+        return Err(inv(format!("invalid time {text:?}: use HH:MM or HH:MM:SS")));
     }
     let parse = |piece: &str, max: u32, what: &str| -> Result<u32, InvariantError> {
         if piece.len() != 2 || !piece.bytes().all(|b| b.is_ascii_digit()) {
@@ -951,7 +941,9 @@ impl<'de> Deserialize<'de> for Cron {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Weekday {
     Mon,
@@ -1017,11 +1009,8 @@ fn parse_event_name(text: &str) -> Result<(), InvariantError> {
                     "invalid event name {text:?}: at most one dot (`integration.event`)"
                 )));
             }
-            left.parse::<ObjectId>()
-                .map_err(|e| inv(e.to_string()))?;
-            right
-                .parse::<ObjectId>()
-                .map_err(|e| inv(e.to_string()))?;
+            left.parse::<ObjectId>().map_err(|e| inv(e.to_string()))?;
+            right.parse::<ObjectId>().map_err(|e| inv(e.to_string()))?;
             Ok(())
         }
     }
@@ -1127,5 +1116,3 @@ impl<'de> Deserialize<'de> for StopReason {
         Ok(reason)
     }
 }
-
-
