@@ -32,6 +32,29 @@ pub struct Group {
     pub entities: Vec<(Entity, Option<EntityState>)>,
 }
 
+/// Whether a device matches the shared Devices/Entities search: name, id, room, make, model.
+fn matches_device(home: &Home, device: &Device, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let haystack = [
+        device.name.to_string(),
+        device.id.to_string(),
+        device.integration.to_string(),
+        device
+            .description
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
+        device.manufacturer.clone().unwrap_or_default(),
+        device.model.clone().unwrap_or_default(),
+        home.room_of(device).unwrap_or_default(),
+    ];
+    haystack
+        .iter()
+        .any(|field| field.to_lowercase().contains(needle))
+}
+
 /// Groups the home by device, keeping only what matches `needle`, and sorts everything by name so
 /// the page doesn't reshuffle between refreshes.
 pub fn groups(home: &Home, needle: &str) -> Vec<Group> {
@@ -40,7 +63,8 @@ pub fn groups(home: &Home, needle: &str) -> Vec<Group> {
     let devices: BTreeMap<_, _> = home.devices.iter().map(|d| (&d.id, d)).collect();
 
     // A device's name is part of what its entities are called in conversation ("the lamp in the
-    // hallway sensor"), so typing it keeps the whole device.
+    // hallway sensor"), so typing it keeps the whole device. Room and make too: the same
+    // search box is used on the Devices table.
     let matches = |entity: &Entity| {
         needle.is_empty()
             || entity.id.to_string().to_lowercase().contains(&needle)
@@ -49,7 +73,7 @@ pub fn groups(home: &Home, needle: &str) -> Vec<Group> {
                 .device_id
                 .as_ref()
                 .and_then(|id| devices.get(id))
-                .is_some_and(|device| device.name.as_str().to_lowercase().contains(&needle))
+                .is_some_and(|device| matches_device(home, device, &needle))
     };
 
     // Grouped by device name, then device id so two devices sharing a name keep a stable order.
@@ -226,28 +250,12 @@ type DeviceRow = (Device, Vec<(Entity, Option<EntityState>)>);
 /// invisible in the entity view by their nature, and being unable to find them would be worse.
 fn table(home: &Home, needle: &str, folded: RwSignal<BTreeSet<String>>) -> AnyView {
     let needle = needle.trim().to_lowercase();
-    let matches = |device: &Device| {
-        let haystack = [
-            device.name.to_string(),
-            device.id.to_string(),
-            device.integration.to_string(),
-            device
-                .description
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_default(),
-            device.manufacturer.clone().unwrap_or_default(),
-            device.model.clone().unwrap_or_default(),
-            // Typing a room's name is one of the most useful things to be able to type.
-            home.room_of(device).unwrap_or_default(),
-        ];
-        needle.is_empty()
-            || haystack
-                .iter()
-                .any(|field| field.to_lowercase().contains(&needle))
-    };
     let mut by_integration: BTreeMap<String, Vec<DeviceRow>> = BTreeMap::new();
-    for device in home.devices.iter().filter(|device| matches(device)) {
+    for device in home
+        .devices
+        .iter()
+        .filter(|device| matches_device(home, device, &needle))
+    {
         let entities: Vec<_> = home
             .entities
             .iter()
@@ -1138,5 +1146,54 @@ mod tests {
         assert_eq!(number(-0.5), "-0.5");
         assert_eq!(number(1234.56789), "1234.568");
         assert_eq!(number(f64::NAN), UNKNOWN);
+    }
+
+    fn entity_home() -> Home {
+        let device = Device {
+            id: "radar".parse().expect("valid"),
+            integration: "esphome".parse().expect("valid"),
+            unique_id: "30:83:98:CA:6A:08".parse().expect("valid"),
+            name: "Radar".parse().expect("valid"),
+            description: None,
+            manufacturer: Some("Espressif".into()),
+            model: Some("rd-03d".into()),
+            sw_version: None,
+            hw_version: None,
+            area_id: Some("hall".parse().expect("valid")),
+            suggested_area: None,
+            via_device_id: None,
+        };
+        let entity = Entity {
+            id: "binary_sensor.radar_moving".parse().expect("valid"),
+            integration: device.integration.clone(),
+            unique_id: "moving".parse().expect("valid"),
+            name: "Moving".parse().expect("valid"),
+            device_id: Some(device.id.clone()),
+            area_id: None,
+            capabilities: Capabilities::BinarySensor(BinarySensorCapabilities {
+                device_class: None,
+            }),
+        };
+        Home {
+            devices: vec![device],
+            entities: vec![entity],
+            areas: vec![irori_types::Area {
+                id: "hall".parse().expect("valid"),
+                name: "Hall".parse().expect("valid"),
+                floor_id: None,
+            }],
+            ..Home::default()
+        }
+    }
+
+    /// The Devices and Entities views share one search box. Typing a room or a make has to
+    /// keep the entity, not look like a broken filter.
+    #[test]
+    fn filtering_entities_matches_room_and_make() {
+        let home = entity_home();
+        assert_eq!(groups(&home, "hall").len(), 1);
+        assert_eq!(groups(&home, "espressif").len(), 1);
+        assert_eq!(groups(&home, "rd-03").len(), 1);
+        assert!(groups(&home, "nowhere").is_empty());
     }
 }

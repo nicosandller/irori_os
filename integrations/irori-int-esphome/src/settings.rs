@@ -40,12 +40,10 @@ fn keys_by_mac<'de, D: Deserializer<'de>>(
             Ok(mac) => {
                 keys.insert(mac, given);
             }
-            Err(why) => {
-                tracing::warn!(
-                    entry = %text,
-                    reason = %why,
-                    "esphome.keys entry skipped; not a MAC address"
-                );
+            Err(_) => {
+                // Not the entry: swapping the MAC and the key is a plausible paste, and the
+                // key must not land in the log (`docs/specs/config.md` §3.4).
+                tracing::warn!("esphome.keys entry skipped; not a MAC address");
             }
         }
     }

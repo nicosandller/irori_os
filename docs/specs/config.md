@@ -95,10 +95,12 @@ and nothing it reports is kept. Its integration may go on talking to it; Irori j
 it in. What the integration says meanwhile is remembered, so taking `ignored` away puts the device
 back as it is now, without a restart.
 
-`added = true` records that a person let the device in while Irori was asking before adding new
-devices (`[devices] new = "ask"` in `irori.toml`, §3.5). It means nothing otherwise. Turning
-asking on marks every device already in the home as added, so switching the setting on never
-empties the home.
+`added = true` records that the device is in the home: a person added it while Irori was asking
+(`[devices] new = "ask"` in `irori.toml`, §3.5), or it joined while asking was off and Irori
+wrote this so a later restart with asking already on doesn't hold it as new. Any other entry
+for the device (a name, a room) is the same decision — that device is not new. Turning asking
+on marks every device already in the home as added, so switching the setting on never empties
+the home.
 
 `area` has **three** states, not two, because "nobody has said" and "it isn't in a room" are
 different answers:
@@ -176,8 +178,11 @@ it starts it again.
 `[devices] new` is what happens when an integration finds a device nobody has decided about.
 `"add"` puts it in the home straight away. `"ask"` holds it back, as if ignored, until a person
 adds it (`added = true`) or ignores it (`ignored = true`) from the Devices page — the way to stop
-a busy network filling the home with a neighbour's plugs. What the integration says about a held
-device is kept, so adding it shows it as it is now. It applies while Irori runs.
+a busy network filling the home with a neighbour's plugs. A device that already has a
+`devices.toml` entry is not new: it stays in the home. Irori writes `added = true` for devices
+that join while asking is off, so restarting with asking already on doesn't empty the home.
+What the integration says about a held device is kept, so adding it shows it as it is now. It
+applies while Irori runs.
 
 ### 3.6 `extensions/<id>.toml`
 

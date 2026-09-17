@@ -148,14 +148,16 @@ impl Home {
     }
 
     /// Whether a device is kept out of the home, and why. Ignoring wins over being new: an
-    /// ignored device stays ignored whatever Irori asks about new ones.
+    /// ignored device stays ignored whatever Irori asks about new ones. Any other `devices.toml`
+    /// entry means it isn't new — a name or a room is as much a decision as `added = true`, so
+    /// turning asking on in `irori.toml` and restarting doesn't hold a home that was already named.
     fn held(&self, id: &DeviceId) -> Option<Held> {
         let settings = self.settings.devices.get(id);
         if settings.is_some_and(|settings| settings.ignored) {
             return Some(Held::Ignored);
         }
-        let added = settings.is_some_and(|settings| settings.added);
-        (self.settings.ask_before_adding && !added).then_some(Held::New)
+        let known = settings.is_some();
+        (self.settings.ask_before_adding && !known).then_some(Held::New)
     }
 
     fn is_held(&self, id: &DeviceId) -> bool {
@@ -1785,6 +1787,22 @@ mod tests {
         home.settle(asking(&["plug", "lamp"]));
         assert!(home.devices.contains_key(&key("lamp")));
         assert!(home.entities.contains_key(&lamp_id()), "with its entities");
+        assert!(home.held_devices().is_empty());
+    }
+
+    /// A device that already has a `devices.toml` entry (a name, a room) is not new. Asking
+    /// written in `irori.toml` before Irori starts must not hold a home someone already arranged.
+    #[test]
+    fn a_named_device_is_not_new_when_asking_is_already_on() {
+        let mut home = Home::default();
+        home.settle(Settings {
+            ask_before_adding: true,
+            devices: [(key("lamp"), called("Reading lamp"))].into(),
+            ..Settings::default()
+        });
+        home.describe_device(&integration(), device("lamp", "Desk lamp"))
+            .expect("lamp");
+        assert!(home.devices.contains_key(&key("lamp")));
         assert!(home.held_devices().is_empty());
     }
 

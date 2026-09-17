@@ -198,6 +198,7 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // and moving a moment later.
             let settings = config::Config::open(store, &problems, &core);
             tokio::spawn(settings.clone().watch(core.clone()));
+            tokio::spawn(settings.clone().remember_arrivals(core.clone()));
             let host = ExtensionHost::start(&core, builtins, Timing::default())
                 .map_err(anyhow::Error::msg)?;
 
