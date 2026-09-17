@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::num::{Num, whole};
 
 use crate::{
-    AreaId, DeviceId, EntityId, EntityKind, FloorId, IntegrationId, InvariantError, Name, UniqueId,
+    AreaId, Description, DeviceId, EntityId, EntityKind, FloorId, IntegrationId, InvariantError,
+    Name, UniqueId,
 };
 
 /// A level of the home, e.g. the ground floor.
@@ -36,12 +37,20 @@ pub struct Area {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Device {
+    /// The device's one id, everywhere: page addresses, config files, the API, rules. Made once
+    /// from the integration and its permanent handle for the device, never from a name, so it
+    /// doesn't change when the device is renamed (ROADMAP D36).
     pub id: DeviceId,
     /// The integration that provides this device.
     pub integration: IntegrationId,
     /// The integration's stable id for the device, e.g. the Zigbee IEEE address.
     pub unique_id: UniqueId,
+    /// Its one name. Starts as whatever its integration reports, and once a person names it,
+    /// that name is the only one — there is no second name kept alongside (D36).
     pub name: Name,
+    /// What it's for, in a person's words. Only ever set by a person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<Description>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manufacturer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -50,8 +59,17 @@ pub struct Device {
     pub sw_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hw_version: Option<String>,
+    /// The resolved area for this device: a person's placement when they chose a room (or
+    /// deliberately none), otherwise the room matching `suggested_area` while placement is still
+    /// unsaid. Absent means it isn't in a room — either on purpose, or because no matching room
+    /// exists yet (`docs/specs/config.md` §5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub area_id: Option<AreaId>,
+    /// The area the device says it's in, e.g. ESPHome's `area:`. Only a hint: it names an area
+    /// rather than pointing at one, and it is used only while placement is still unsaid
+    /// (`docs/specs/config.md` §5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_area: Option<Name>,
     /// The device this one is reached through, e.g. a Zigbee coordinator or a bridge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via_device_id: Option<DeviceId>,

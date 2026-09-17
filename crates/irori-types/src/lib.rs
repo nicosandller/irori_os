@@ -13,6 +13,7 @@ mod kind;
 mod num;
 mod registry;
 mod schema;
+mod settings;
 mod state;
 mod time;
 
@@ -27,8 +28,8 @@ pub use id::{
     IdError, IntegrationId, Name, ObjectId, RuleId, SLUG_MAX_LEN, TokenId, UniqueId, UserId,
 };
 pub use integration::{
-    DeviceDescription, EntityDescription, LightTurnOn, Service, ServiceCall, ServiceName,
-    StateReport,
+    DeviceDescription, EntityDescription, LightTurnOn, SecretRequest, Service, ServiceCall,
+    ServiceName, StateReport, Waiting,
 };
 pub use kind::EntityKind;
 pub use registry::{
@@ -37,6 +38,10 @@ pub use registry::{
     SwitchCapabilities, SwitchClass,
 };
 pub use schema::{SchemaDoc, schemas};
+pub use settings::{
+    DeviceSettings, EntitySettings, ExtensionSettings, Placement, SecretError, Settings,
+    SettingsKey,
+};
 pub use state::{
     Attributes, Availability, BinarySensorState, ColorMode, EntityState, LightState, SensorState,
     SensorValue, State, SwitchState,

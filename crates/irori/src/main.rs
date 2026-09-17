@@ -2,6 +2,7 @@
 
 mod banner;
 mod build_info;
+mod config;
 mod db;
 mod extensions;
 mod server;
@@ -26,21 +27,28 @@ enum Command {
     /// Run the Irori server. Also spelled `run`.
     #[command(visible_alias = "run")]
     Serve {
-        /// Directory for runtime data (SQLite database).
-        #[arg(long, env = "IRORI_DATA", default_value = "./data")]
-        data: PathBuf,
+        /// Directory for what you've said about your home, and for irori.toml: rooms, names,
+        /// keys, and Irori's own settings. Plain TOML you can edit by hand; see
+        /// docs/specs/config.md.
+        #[arg(long, env = "IRORI_CONFIG", default_value = "./config")]
+        config: PathBuf,
+        /// Directory for runtime data (SQLite database). Also `[server] data` in irori.toml;
+        /// default ./data.
+        #[arg(long, env = "IRORI_DATA")]
+        data: Option<PathBuf>,
         /// Address to listen on. Anything other than loopback also needs
-        /// --allow-unauthenticated-lan until authentication exists.
-        #[arg(long, env = "IRORI_BIND", default_value = "127.0.0.1:8480")]
-        bind: SocketAddr,
+        /// --allow-unauthenticated-lan until authentication exists. Also `[server] bind`;
+        /// default 127.0.0.1:8480.
+        #[arg(long, env = "IRORI_BIND")]
+        bind: Option<SocketAddr>,
         /// Allow a non-loopback --bind even though this build has no authentication yet.
         /// Temporary: removed when login and access tokens land (ROADMAP D12, M1.5).
-        #[arg(long, env = "IRORI_ALLOW_UNAUTHENTICATED_LAN")]
-        allow_unauthenticated_lan: bool,
+        #[arg(long, env = "IRORI_ALLOW_UNAUTHENTICATED_LAN", num_args = 0..=1, default_missing_value = "true")]
+        allow_unauthenticated_lan: Option<bool>,
         /// How much to log: error, warn, info, debug, or trace. `debug` shows every device and
-        /// state change.
-        #[arg(long, env = "IRORI_LOG_LEVEL", default_value = "info")]
-        log_level: tracing::Level,
+        /// state change. Also `[server] log_level`; default info.
+        #[arg(long, env = "IRORI_LOG_LEVEL")]
+        log_level: Option<tracing::Level>,
     },
     /// Print version and build information.
     Version {
@@ -55,10 +63,19 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Serve {
             data,
+            config,
             bind,
             allow_unauthenticated_lan,
             log_level,
-        } => serve(data, bind, allow_unauthenticated_lan, log_level),
+        } => {
+            let flags = Flags {
+                data,
+                bind,
+                allow_unauthenticated_lan,
+                log_level,
+            };
+            serve(config, flags)
+        }
         Command::Version { json } => {
             let info = build_info::BuildInfo::current();
             if json {
@@ -71,12 +88,69 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn serve(
+/// What was given on the command line or in the environment, which wins over `irori.toml`.
+#[derive(Debug, Default)]
+struct Flags {
+    data: Option<PathBuf>,
+    bind: Option<SocketAddr>,
+    allow_unauthenticated_lan: Option<bool>,
+    log_level: Option<tracing::Level>,
+}
+
+/// Where Irori's own settings end up: a flag, else `irori.toml`, else the default.
+#[derive(Debug, PartialEq, Eq)]
+struct Resolved {
     data: PathBuf,
     bind: SocketAddr,
     allow_unauthenticated_lan: bool,
     log_level: tracing::Level,
-) -> anyhow::Result<()> {
+}
+
+fn resolve(
+    flags: Flags,
+    file: &irori_config::ServerSettings,
+    config_dir: &std::path::Path,
+) -> Resolved {
+    use irori_config::LogLevel;
+    let level = |level: LogLevel| match level {
+        LogLevel::Error => tracing::Level::ERROR,
+        LogLevel::Warn => tracing::Level::WARN,
+        LogLevel::Info => tracing::Level::INFO,
+        LogLevel::Debug => tracing::Level::DEBUG,
+        LogLevel::Trace => tracing::Level::TRACE,
+    };
+    Resolved {
+        // A path in irori.toml is about that file's directory, not wherever Irori was started.
+        data: flags
+            .data
+            .or_else(|| file.data.as_ref().map(|data| config_dir.join(data)))
+            .unwrap_or_else(|| PathBuf::from("./data")),
+        bind: flags
+            .bind
+            .or(file.bind)
+            .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 8480))),
+        allow_unauthenticated_lan: flags
+            .allow_unauthenticated_lan
+            .or(file.allow_unauthenticated_lan)
+            .unwrap_or(false),
+        log_level: flags
+            .log_level
+            .or(file.log_level.map(level))
+            .unwrap_or(tracing::Level::INFO),
+    }
+}
+
+fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
+    // Read before anything else: the log level and the address come from it.
+    let mut store = irori_config::Store::new(&config);
+    let problems = store.reload();
+    let Resolved {
+        data,
+        bind,
+        allow_unauthenticated_lan,
+        log_level,
+    } = resolve(flags, &store.irori().server, &config);
+
     // Logs go to stdout, with no color codes when that's journald, Docker, or a file.
     let ansi = std::io::IsTerminal::is_terminal(&std::io::stdout());
     tracing_subscriber::fmt()
@@ -97,6 +171,7 @@ fn serve(
 
     let db = db::open(&data)?;
     tracing::info!(path = %db.path.display(), journal_mode = %db.journal_mode, "database ready");
+    let storage = Arc::new(db::SqliteStorage::open(&db)?);
     let builtins = extensions::builtins()?;
 
     tokio::runtime::Builder::new_multi_thread()
@@ -115,15 +190,25 @@ fn serve(
                 "irori is ready"
             );
             let core = Core::new(Arc::new(SystemClock));
+            core.use_storage(storage);
             // Subscribe before any extension starts, so the log sees their first events.
             tokio::spawn(extensions::log_events(core.subscribe()));
+            // Before the extensions, so a device that arrives in the first second already has
+            // the name and the room its owner gave it, rather than appearing under its old name
+            // and moving a moment later.
+            let settings = config::Config::open(store, &problems, &core);
+            tokio::spawn(settings.clone().watch(core.clone()));
+            tokio::spawn(settings.clone().remember_arrivals(core.clone()));
             let host = ExtensionHost::start(&core, builtins, Timing::default())
                 .map_err(anyhow::Error::msg)?;
 
-            let served = axum::serve(listener, server::router(server::AppState::new(db, core)))
-                .with_graceful_shutdown(shutdown_signal())
-                .await
-                .context("server error");
+            let served = axum::serve(
+                listener,
+                server::router(server::AppState::new(db, core, settings)),
+            )
+            .with_graceful_shutdown(shutdown_signal())
+            .await
+            .context("server error");
             // Give every extension its chance to stop cleanly, even if the server failed.
             host.shutdown().await;
             served
@@ -207,9 +292,47 @@ mod tests {
         assert!(matches!(
             cli.map(|c| c.command),
             Ok(Command::Serve {
-                allow_unauthenticated_lan: true,
+                allow_unauthenticated_lan: Some(true),
                 ..
             })
         ));
+    }
+
+    /// A flag wins over irori.toml, irori.toml wins over the default, and a path in the file is
+    /// about the file's directory.
+    #[test]
+    fn a_flag_beats_the_file_and_the_file_beats_the_default() {
+        let file = irori_config::ServerSettings {
+            bind: Some(addr("0.0.0.0:9000")),
+            data: Some(PathBuf::from("state")),
+            allow_unauthenticated_lan: Some(true),
+            log_level: Some(irori_config::LogLevel::Debug),
+        };
+        let config = std::path::Path::new("/etc/irori");
+
+        let from_file = resolve(Flags::default(), &file, config);
+        assert_eq!(from_file.bind, addr("0.0.0.0:9000"));
+        assert_eq!(from_file.data, PathBuf::from("/etc/irori/state"));
+        assert!(from_file.allow_unauthenticated_lan);
+        assert_eq!(from_file.log_level, tracing::Level::DEBUG);
+
+        let flags = Flags {
+            bind: Some(addr("127.0.0.1:8481")),
+            allow_unauthenticated_lan: Some(false),
+            ..Flags::default()
+        };
+        let flagged = resolve(flags, &file, config);
+        assert_eq!(flagged.bind, addr("127.0.0.1:8481"));
+        assert!(!flagged.allow_unauthenticated_lan);
+
+        let defaults = resolve(
+            Flags::default(),
+            &irori_config::ServerSettings::default(),
+            config,
+        );
+        assert_eq!(defaults.bind, addr("127.0.0.1:8480"));
+        assert_eq!(defaults.data, PathBuf::from("./data"));
+        assert!(!defaults.allow_unauthenticated_lan);
+        assert_eq!(defaults.log_level, tracing::Level::INFO);
     }
 }

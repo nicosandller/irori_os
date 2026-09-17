@@ -159,6 +159,17 @@
             }
           ]
         },
+        "icon": {
+          "description": "A square SVG, relative to the package root, shown beside the extension and its devices so\nthey can be told apart at a glance. Always displayed as an image, never inlined into a\npage, so it can't run script. A built-in extension embeds the file as well\n(`Integration::ICON`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PackagePath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "id": {
           "description": "Also the id of the integration it contributes, if any (ROADMAP D25).",
           "$ref": "#/$defs/ExtensionId"

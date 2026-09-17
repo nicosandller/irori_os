@@ -8,24 +8,28 @@ mod home;
 mod host;
 mod services;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
 use irori_integration::host::{Op, incoming_call};
 use irori_integration::{IncomingCall, Rejected, ServiceErrorCode};
 use irori_types::{
-    Context, ContextId, Description, Device, Entity, EntityId, EntityKind, EntityState,
-    ExtensionId, IntegrationId, IotClass, Name, Origin, ServiceCall, StateReport, Timestamp,
-    Version,
+    Area, Context, ContextId, Description, Device, Entity, EntityId, EntityKind, EntityState,
+    ExtensionId, ExtensionSettings, IntegrationId, IotClass, Name, Origin, ServiceCall, Settings,
+    SettingsKey, StateReport, Timestamp, Version, Waiting,
 };
 use serde::Serialize;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 
 pub use clock::{Clock, SystemClock};
 pub use events::Event;
 pub use host::{ExtensionHost, Timing};
 pub use services::{CallError, Command};
+
+pub use home::{device_id_for, new_area_id, new_floor_id};
+
+pub use home::{Held, HeldDevice};
 
 use home::{Home, Stamp};
 
@@ -67,6 +71,17 @@ pub struct ExtensionInfo {
     /// Where its devices live and what they need: `local_push`, `cloud_polling`, and so on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iot_class: Option<IotClass>,
+    /// Its icon, an SVG document. Sent as `has_icon`, not inline: the page loads it as an image
+    /// from its own address, where it can't run script (`docs/specs/extensions.md`).
+    #[serde(rename = "has_icon", serialize_with = "is_present")]
+    pub icon: Option<&'static str>,
+}
+
+fn is_present<S: serde::Serializer>(
+    icon: &Option<&'static str>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_bool(icon.is_some())
 }
 
 /// An extension as the Extensions page shows it: what it is, its status, and how many of its
@@ -83,6 +98,21 @@ pub struct ExtensionOverview {
     pub rejected_reports: u64,
     /// Reports dropped because too many entities were waiting for the core.
     pub dropped_reports: u64,
+    /// What it has found but can't use until a person helps (`docs/specs/integrations.md`
+    /// §6.6). Empty while it isn't running: a list from a stopped integration is out of date.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub waiting: Vec<Waiting>,
+}
+
+/// A stored value's key: 1–128 characters, no control characters.
+fn check_key(key: &str) -> Result<(), Rejected> {
+    let length = key.chars().count();
+    if !(1..=128).contains(&length) || key.chars().any(char::is_control) {
+        return Err(Rejected(format!(
+            "`{key}` isn't a storage key: 1–128 characters, none of them control characters"
+        )));
+    }
+    Ok(())
 }
 
 /// Drops an entity's call lock from the map once nobody else is waiting for it, so the map
@@ -144,6 +174,14 @@ struct Shared {
     /// One lock per entity, so calls on the same entity happen one after another.
     busy: Mutex<HashMap<EntityId, Arc<tokio::sync::Mutex<()>>>>,
     extensions: RwLock<BTreeMap<ExtensionId, ExtensionOverview>>,
+    /// Each extension's settings. A watch channel, because the host has to notice a change and
+    /// restart the extension with it.
+    extension_settings: watch::Sender<ExtensionSettings>,
+    /// Extensions a person has turned off (`irori.toml`). Watched like settings: turning one off
+    /// stops it, turning it back on starts it.
+    disabled: watch::Sender<BTreeSet<ExtensionId>>,
+    /// Each integration's small private values (`docs/specs/integrations.md` §5).
+    storage: RwLock<Arc<dyn irori_integration::Storage>>,
 }
 
 fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
@@ -171,6 +209,9 @@ impl Core {
             links: RwLock::default(),
             busy: Mutex::default(),
             extensions: RwLock::default(),
+            extension_settings: watch::Sender::new(ExtensionSettings::default()),
+            disabled: watch::Sender::new(BTreeSet::new()),
+            storage: RwLock::new(Arc::new(irori_integration::MemoryStorage::default())),
         }))
     }
 
@@ -216,6 +257,120 @@ impl Core {
 
     pub fn extensions(&self) -> BTreeMap<ExtensionId, ExtensionOverview> {
         read(&self.0.extensions).clone()
+    }
+
+    /// An extension's icon, if it has one.
+    pub fn extension_icon(&self, extension: &ExtensionId) -> Option<&'static str> {
+        read(&self.0.extensions).get(extension)?.info.as_ref()?.icon
+    }
+
+    /// The rooms of the home, as the config directory has them.
+    pub fn areas(&self) -> Vec<Area> {
+        read(&self.0.home).areas().to_vec()
+    }
+
+    /// The levels of the home, lowest first.
+    pub fn floors(&self) -> Vec<irori_types::Floor> {
+        let mut floors = read(&self.0.home).floors().to_vec();
+        floors.sort_by(|a, b| (a.level, &a.id).cmp(&(b.level, &b.id)));
+        floors
+    }
+
+    /// What a person has said about this home (`docs/specs/config.md`).
+    pub fn settings(&self) -> Settings {
+        read(&self.0.home).settings().clone()
+    }
+
+    /// Devices a person has chosen to keep out of the home, to list so they can be let back in.
+    pub fn held_devices(&self) -> Vec<HeldDevice> {
+        read(&self.0.home).held_devices()
+    }
+
+    pub fn entity_key(&self, id: &EntityId) -> Option<SettingsKey> {
+        read(&self.0.home).entity_key(id)
+    }
+
+    /// Brings the registry in line with what a person has said, publishing what changed.
+    ///
+    /// This is the only way settings reach the core, whether they came from a UI edit or from
+    /// someone editing the files (`irori-config`). The core itself never touches the disk.
+    pub fn apply_settings(&self, settings: Settings) {
+        let stamp = self.stamp();
+        let events = write(&self.0.home).apply_settings(settings, &stamp);
+        self.publish(events);
+    }
+
+    /// Replaces every extension's settings. An extension whose own settings changed is restarted
+    /// with the new ones; the rest aren't touched (`docs/specs/integrations.md` §3).
+    ///
+    /// Like [`Core::apply_settings`], this is how settings reach the core whether they were typed
+    /// into a file or sent from the UI; the core never reads the disk.
+    pub fn apply_extension_settings(&self, settings: ExtensionSettings) {
+        self.0.extension_settings.send_if_modified(|current| {
+            if *current == settings {
+                return false;
+            }
+            *current = settings;
+            true
+        });
+    }
+
+    pub(crate) fn extension_settings(&self) -> watch::Receiver<ExtensionSettings> {
+        self.0.extension_settings.subscribe()
+    }
+
+    /// Where integrations' stored values are kept. Until this is called they last only as long as
+    /// the process; set it before starting extensions.
+    pub fn use_storage(&self, storage: Arc<dyn irori_integration::Storage>) {
+        *write(&self.0.storage) = storage;
+    }
+
+    fn load(
+        &self,
+        extension: &ExtensionId,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>, Rejected> {
+        check_key(key)?;
+        read(&self.0.storage)
+            .load(extension, key)
+            .map_err(|e| Rejected(format!("couldn't read `{key}`: {e}")))
+    }
+
+    fn store(
+        &self,
+        extension: &ExtensionId,
+        key: &str,
+        value: Option<&serde_json::Value>,
+    ) -> Result<(), Rejected> {
+        check_key(key)?;
+        if let Some(value) = value {
+            let size = serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len());
+            if size > irori_integration::MAX_STORED_VALUE {
+                return Err(Rejected(format!(
+                    "`{key}` is {size} bytes as JSON; stored values are at most {} bytes",
+                    irori_integration::MAX_STORED_VALUE
+                )));
+            }
+        }
+        read(&self.0.storage)
+            .store(extension, key, value)
+            .map_err(|e| Rejected(format!("couldn't keep `{key}`: {e}")))
+    }
+
+    /// Which extensions stay off. One that's running and is now named here is stopped; one that
+    /// was named and no longer is starts.
+    pub fn apply_disabled_extensions(&self, disabled: BTreeSet<ExtensionId>) {
+        self.0.disabled.send_if_modified(|current| {
+            if *current == disabled {
+                return false;
+            }
+            *current = disabled;
+            true
+        });
+    }
+
+    pub(crate) fn disabled_extensions(&self) -> watch::Receiver<BTreeSet<ExtensionId>> {
+        self.0.disabled.subscribe()
     }
 
     /// Asks an entity to do something, and waits for its integration's answer (at most
@@ -385,6 +540,15 @@ impl Core {
                 }),
                 reply,
             ),
+            Op::Load(key, reply) => {
+                let _ = reply.send(self.load(extension, &key));
+                return;
+            }
+            Op::Store(key, value, reply) => (self.store(extension, &key, value.as_ref()), reply),
+            Op::SetWaiting(waiting) => {
+                self.set_waiting(extension, waiting);
+                return;
+            }
             Op::SetHealth(health) => {
                 self.set_status(
                     extension,
@@ -462,10 +626,35 @@ impl Core {
                         status: ExtensionStatus::Starting,
                         rejected_reports: 0,
                         dropped_reports: 0,
+                        waiting: Vec::new(),
                     },
                 );
             }
         }
+    }
+
+    /// Replaces what an extension says is waiting. A change is published as a status change, so
+    /// anything watching extensions sees it the same way.
+    ///
+    /// A `SecretRequest` with an empty path (or an empty key in it) has its secret dropped: the
+    /// UI would otherwise ask for a secret that [`irori_types::ExtensionSettings::set`] refuses.
+    pub(crate) fn set_waiting(&self, extension: &ExtensionId, waiting: Vec<Waiting>) {
+        let waiting = sanitize_waiting(extension, waiting);
+        let status = {
+            let mut extensions = write(&self.0.extensions);
+            let Some(overview) = extensions.get_mut(extension) else {
+                return;
+            };
+            if overview.waiting == waiting {
+                return;
+            }
+            overview.waiting = waiting;
+            overview.status.clone()
+        };
+        self.publish(vec![Event::ExtensionStatusChanged {
+            extension_id: extension.clone(),
+            status,
+        }]);
     }
 
     fn set_status(&self, extension: &ExtensionId, status: ExtensionStatus) {
@@ -485,6 +674,7 @@ impl Core {
                             status: status.clone(),
                             rejected_reports: 0,
                             dropped_reports: 0,
+                            waiting: Vec::new(),
                         },
                     );
                     true
@@ -498,6 +688,26 @@ impl Core {
             }]);
         }
     }
+}
+
+fn sanitize_waiting(extension: &ExtensionId, waiting: Vec<Waiting>) -> Vec<Waiting> {
+    waiting
+        .into_iter()
+        .map(|mut item| {
+            if let Some(secret) = &item.secret
+                && let Err(why) = secret.validate()
+            {
+                tracing::warn!(
+                    %extension,
+                    unique_id = %item.unique_id,
+                    reason = %why,
+                    "dropping secret request the UI couldn't answer"
+                );
+                item.secret = None;
+            }
+            item
+        })
+        .collect()
 }
 
 #[cfg(test)]

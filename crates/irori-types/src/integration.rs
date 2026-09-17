@@ -16,6 +16,84 @@ use crate::{
     State, UniqueId,
 };
 
+/// Something an integration found but can't use yet, because it needs a person first: a device
+/// that wants an encryption key, one that has to be paired, an account that has to be signed in
+/// to. See `docs/specs/integrations.md` §6.6.
+///
+/// Not a device in the registry. It has no entities and nothing is known about it beyond what
+/// it announced, so putting it there would show a device that can't do anything. It's listed on
+/// its extension instead, where the UI can offer to fix it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Waiting {
+    /// The same handle the device will have once it's in the registry, so what a person
+    /// provides now is attached to what it's for (ROADMAP D31).
+    pub unique_id: UniqueId,
+    /// What it calls itself, for recognising it.
+    pub name: Name,
+    /// What's needed, in a sentence, e.g. "it wants an encryption key".
+    pub reason: String,
+    /// Where a secret that would unlock it goes, if a secret is what it needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<SecretRequest>,
+}
+
+/// Where a secret goes: a path inside the extension's table in `secrets.toml`
+/// (`docs/specs/config.md`). The extension decides the path, so the UI and the core can take a
+/// secret for any extension without knowing what it means.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecretRequest {
+    /// Table keys from the extension's own table down to the value, e.g.
+    /// `["keys", "00:11:22:33:44:55"]`. At least one, and none empty — the same rules
+    /// [`crate::ExtensionSettings::set`] enforces when the secret is written.
+    pub path: Vec<String>,
+    /// What to call the field, e.g. "Encryption key".
+    pub label: String,
+    /// Where to find it, e.g. "`api: encryption: key:` in the device's YAML".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSecretRequest {
+    path: Vec<String>,
+    label: String,
+    #[serde(default)]
+    hint: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for SecretRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = RawSecretRequest::deserialize(deserializer)?;
+        let request = SecretRequest {
+            path: raw.path,
+            label: raw.label,
+            hint: raw.hint,
+        };
+        request.validate().map_err(serde::de::Error::custom)?;
+        Ok(request)
+    }
+}
+
+impl SecretRequest {
+    /// Deserialization runs this; call it yourself when building a request in code.
+    pub fn validate(&self) -> Result<(), InvariantError> {
+        if self.path.is_empty() {
+            return Err(InvariantError(
+                "a secret request needs a path of at least one key".into(),
+            ));
+        }
+        if self.path.iter().any(|key| key.is_empty()) {
+            return Err(InvariantError(
+                "a secret request's path can't have an empty key in it".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// A device as an integration describes it. The core adds it to the registry, or updates the
 /// entry with the same `unique_id`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -538,5 +616,41 @@ impl LightTurnOn {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod secret_request_tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_secret_path_is_refused() {
+        let empty = SecretRequest {
+            path: vec![],
+            label: "Key".into(),
+            hint: None,
+        };
+        assert!(empty.validate().is_err());
+        let blank_key = SecretRequest {
+            path: vec!["keys".into(), "".into()],
+            label: "Key".into(),
+            hint: None,
+        };
+        assert!(blank_key.validate().is_err());
+        let ok = SecretRequest {
+            path: vec!["keys".into(), "aa:bb".into()],
+            label: "Key".into(),
+            hint: None,
+        };
+        assert!(ok.validate().is_ok());
+    }
+
+    #[test]
+    fn deserializing_an_empty_secret_path_fails() {
+        let err = serde_json::from_value::<SecretRequest>(serde_json::json!({
+            "path": [],
+            "label": "Key"
+        }));
+        assert!(err.is_err(), "{err:?}");
     }
 }

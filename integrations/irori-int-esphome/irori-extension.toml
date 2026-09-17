@@ -4,6 +4,7 @@ name = "ESPHome"
 version = "0.1.0"
 irori = ">=0.0.0, <0.1.0"
 description = "Devices running ESPHome firmware, over ESPHome's native API."
+icon = "icon.svg"
 
 [[contributes.integration]]
 iot_class = "local_push"

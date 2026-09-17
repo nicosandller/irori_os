@@ -39,7 +39,11 @@ RUN irori version
 USER irori
 # Listening on all interfaces is needed inside a container. It stays private: compose publishes
 # the port on the host's 127.0.0.1 only. The flag goes away when auth lands (ROADMAP D12, M1.5).
+# Both absolute: the container has no WORKDIR, so the relative defaults would land in `/`, which
+# the unprivileged user can't write. The config dir sits inside the data dir because that's the
+# one volume compose persists — different paths, one thing to mount.
 ENV IRORI_DATA=/var/lib/irori \
+    IRORI_CONFIG=/var/lib/irori/config \
     IRORI_BIND=0.0.0.0:8480 \
     IRORI_ALLOW_UNAUTHENTICATED_LAN=true
 EXPOSE 8480

@@ -43,9 +43,11 @@ the user-facing ids, timestamps, contexts, history, and checking that what it's 
 
 ## 3. Lifecycle and supervision
 
-1. **Start.** The core reads the integration's settings (config spec, M0.7), checks them against
-   its config schema, and starts it with them. Invalid settings mean `failed` with the error, and
-   no start.
+1. **Start.** The core takes the integration's settings — its table in `secrets.toml`
+   ([config.md](config.md) §3.4) — checks them against its config type, and starts it with them.
+   Invalid settings mean `failed` with the error and no retry, until the settings change.
+   **The error must not quote a value**: settings are where secrets live, and the reason is
+   logged and shown.
 2. **Running.** The integration connects to its devices, describes them, reports state, and
    handles service calls until it's told to stop.
 3. **Stop.** When disabled or when Irori shuts down, the integration is told to stop and has
@@ -57,6 +59,11 @@ the user-facing ids, timestamps, contexts, history, and checking that what it's 
 5. **Restart.** A restarted integration describes its devices and entities again. The registry
    keeps them in between, matched by `unique_id`, so ids, areas, and names the user set survive.
    Nothing is removed unless the integration removes it (§5).
+6. **New settings.** When an integration's own settings change, the core stops it (with the same
+   5-second grace) and starts it again with the new ones straight away: no backoff, because it
+   didn't fail. A change to another integration's settings doesn't touch it. An integration never
+   reloads settings itself; restarting is the one way they arrive, so there is exactly one code
+   path to get right.
 
 **Isolation.** Built-in integrations run in their own task, and **must never block**: no
 long computation, blocking I/O, or `std::thread::sleep`, in `run` or before it returns its
@@ -78,8 +85,9 @@ core's process.
 - The integration names each device and entity with a `unique_id` it chooses and **never
   changes**: a MAC address, a Zigbee IEEE address, a cloud API's device id. It must be unique
   within the integration.
-- The core assigns the ids people see (`DeviceId`, `EntityId`), from the integration's
-  suggestion (`suggested_object_id`) or from the names. The user may rename them; the
+- The core assigns the ids people see. A `DeviceId` is the integration id and `unique_id` as a
+  slug, and an `EntityId` builds on its device's id (or on `suggested_object_id`) — never on a name
+  a person chose ([entities.md](entities.md) §4.3). People rename devices and entities; the
   integration never notices, because it keeps using `unique_id`.
 - The integration id is the extension id (D25). Every device and entity it describes gets
   `integration = <its id>`; it can't describe entries for another integration.
@@ -97,8 +105,9 @@ core's process.
 | Report state | `StateReport` (§6.3) | A new value for one of its entities |
 | Set availability | entity `unique_id`s, or a device `unique_id` for all its entities; `available` \| `unavailable` | §6.4 |
 | Set health | `running`, or `degraded` with a reason | §6.5 |
+| Set waiting | what it found but can't use until a person helps, replacing the last list | §6.6 |
 | Handle service calls | receives `ServiceCall` (§7), replies with a result | For its own entities only |
-| Store small data | key → JSON value, up to 64 KB each | Private to the integration, kept across restarts. E.g. pairing keys, a cloud token refresh |
+| Store small data | key (1–128 characters) → JSON value, up to 64 KB each; load, store, forget | Private to the integration, kept across restarts of it and of Irori, in the data directory's database. E.g. pairing keys, a cloud token refresh, the value a helper was left at. Not for settings (a person's decisions go in the config directory) and not for history |
 | Log | leveled, structured log lines | Tagged with the integration id |
 
 **What it can't do:** see or change other integrations' devices and entities (without the `api`
@@ -172,6 +181,33 @@ What the integration says about itself, shown on the Extensions page:
   unreachable`, or `3 entities skipped: kinds not supported yet (select, number)`.
 
 `starting`, `failed`, and `disabled` are set by the core ([extensions.md](extensions.md) §8).
+
+### 6.6 Waiting
+
+Something the integration has found and can't use until a person does something: a device that
+wants an encryption key, one that has to be paired, an account to sign in to. The integration
+sends the **whole list** whenever it changes (an empty list when nothing waits), and the core
+shows it with the extension. It is cleared whenever the integration stops, because a list from a
+stopped integration is out of date.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `unique_id` | `UniqueId` | yes | The handle the device will have once it's in the registry, so what a person provides now stays attached to it (ROADMAP D31) |
+| `name` | `Name` | yes | What it announced itself as |
+| `reason` | string | yes | What's needed, in a sentence: `it wants an encryption key`, `the encryption key doesn't match` |
+| `secret` | `{ path, label, hint? }` | no | Where a secret that would unlock it goes |
+
+Waiting items are **not** devices in the registry. Nothing is known about them beyond what they
+announced, and a device with no entities that can't do anything is worse to show than a clear
+"found, needs a key".
+
+**Secrets.** `secret.path` is a list of table keys inside the integration's own table in
+`secrets.toml`, e.g. `["keys", "00:11:22:33:44:55"]`. The UI can take a secret for any
+integration without knowing what it means, and the core writes it to exactly that place. The
+core accepts a secret **only at a path the integration is currently asking for**: until there is
+sign-in (ROADMAP D12), an endpoint that wrote anything anywhere would let anyone on the network
+rewrite anyone's settings. A secret, once given, is never sent back, and the integration receives
+it on its next start (§3, step 6).
 
 ## 7. Service calls
 
@@ -326,7 +362,8 @@ integrations must be indistinguishable from the UI and CLI.
 
 | Topic | Where it's decided |
 |---|---|
-| Where settings live, and hot reload | Config spec (M0.7) |
+| Where settings live, and hot reload | [config.md](config.md) |
+| Settings that aren't secret (`extensions/<id>.toml`) | [config.md](config.md) §7, when an integration needs one |
 | How people call services, including `toggle` and `brightness_pct` | API spec (M0.5) and rules spec (M0.3) |
 | Message envelope, transport, and tokens for external integrations | API spec (M0.5), M1.5 |
 | Entity kinds beyond v1 (cover, button, select, …) | Additive changes to [entities.md](entities.md) §4.4, as integrations need them |
