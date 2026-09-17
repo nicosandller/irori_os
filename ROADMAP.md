@@ -339,7 +339,7 @@ Must decide:
 > all. Changing a table restarts that extension (D34); an extension can list what it found but
 > can't use yet, and the UI takes a secret for it (D35). Encrypted ESPHome devices work.
 >
-> Then: floors (rooms grouped by level), asking before adding newly found devices (D39),
+> Also done: floors (rooms grouped by level), asking before adding newly found devices (D39),
 > `extensions/<id>.toml` joined with the extension's secrets, integration private storage
 > (`integrations.md` §5, in SQLite), and the first helpers — toggles, switches Irori keeps itself
 > (D40), with a Helpers tab on the Devices page.

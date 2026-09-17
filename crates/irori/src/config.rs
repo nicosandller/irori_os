@@ -131,13 +131,13 @@ impl Config {
         let mut store = self.0.lock().await;
         report(&store.reload());
 
-        let mut secrets = store.extension_settings();
+        let mut secrets = store.secrets();
         let made = change(&mut secrets).map_err(EditError::Refused)?;
         if store.save_secrets(&secrets).map_err(EditError::Io)? {
             // Which file, never what's in it.
             tracing::info!(file = "secrets.toml", "config written");
         }
-        core.apply_extension_settings(secrets);
+        core.apply_extension_settings(store.extension_settings());
         Ok(made)
     }
 
@@ -193,10 +193,13 @@ fn keep_what_is_here(store: &mut Store, settings: &mut Settings, core: &Core) {
             devices = kept,
             "asking before adding new devices; the ones already in the home stay"
         ),
-        // Not written, so not in force either: the core goes on with what's on disk.
+        // The devices file didn't change. Asking still comes from irori.toml, so restoring
+        // `store.settings()` would enable it without `added` and hold the whole home. Leave
+        // asking off in what we apply; the next poll retries the write.
         Err(e) => {
             tracing::error!(%e, "couldn't record the devices already in the home as added");
             *settings = store.settings();
+            settings.ask_before_adding = false;
         }
     }
 }
@@ -354,6 +357,90 @@ mod tests {
         assert!(core.held_devices().is_empty());
         let devices = std::fs::read_to_string(dir.path().join("devices.toml"))?;
         assert!(devices.contains("added = true"), "{devices}");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Answering a secret must write only `secrets.toml`. Starting from the joined view would
+    /// copy `extensions/<id>.toml` into it, and the secret would then win on every reload.
+    #[tokio::test]
+    async fn answering_a_secret_does_not_copy_the_extension_file_into_secrets() -> anyhow::Result<()>
+    {
+        let dir = tempfile::tempdir()?;
+        let core = core();
+        let config = Config::open_dir(dir.path(), &core);
+        let helpers: irori_types::ExtensionId = "helpers".parse().expect("valid");
+
+        config
+            .edit_extension(&core, &helpers, |file| {
+                file.insert(
+                    "toggles".into(),
+                    serde_json::json!({"guests": {"name": "Guests"}}),
+                );
+                Ok(())
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        config
+            .edit_secrets(&core, |secrets| {
+                secrets
+                    .set(&helpers, &["token".into()], "s3cret".into())
+                    .map_err(|e| Refused(e.to_string()))
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+        let secrets = std::fs::read_to_string(dir.path().join("secrets.toml"))?;
+        assert!(secrets.contains("token"), "{secrets}");
+        assert!(
+            !secrets.contains("toggles"),
+            "non-secret settings landed in secrets.toml:\n{secrets}"
+        );
+        let extension = std::fs::read_to_string(dir.path().join("extensions/helpers.toml"))?;
+        assert!(extension.contains("toggles"), "{extension}");
+        Ok(())
+    }
+
+    /// If recording `added` fails when asking is turned on, asking must not take effect: the
+    /// devices already in the home would otherwise move to the held list.
+    #[cfg(feature = "int-demo")]
+    #[tokio::test]
+    async fn a_failed_write_when_asking_starts_does_not_hold_the_home() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let core = core();
+        let _config = Config::open_dir(dir.path(), &core);
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            crate::extensions::builtins()?
+                .into_iter()
+                .filter(|builtin| builtin.manifest.extension.id.as_str() == "demo")
+                .collect(),
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        for _ in 0..500 {
+            if core.devices().len() >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let before = core.devices().len();
+        assert!(before >= 3, "the demo devices arrived");
+
+        std::fs::create_dir(dir.path().join("devices.toml.writing"))?;
+        let mut store = Store::new(dir.path());
+        store.reload();
+        let mut settings = store.settings();
+        settings.ask_before_adding = true;
+        keep_what_is_here(&mut store, &mut settings, &core);
+        assert!(
+            !settings.ask_before_adding,
+            "asking must wait until the home is recorded as added"
+        );
+        core.apply_settings(settings);
+        assert_eq!(core.devices().len(), before);
+        assert!(core.held_devices().is_empty());
 
         host.shutdown().await;
         Ok(())

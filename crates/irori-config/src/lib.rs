@@ -123,7 +123,6 @@ impl Store {
         self.irori.value.clone()
     }
 
-    /// Each extension's settings: its table in `secrets.toml`.
     /// Each extension's settings: `extensions/<id>.toml` joined with its table in `secrets.toml`
     /// (`docs/specs/config.md` §3.4). A key in both is a mistake [`Store::reload`] reports; the
     /// secret is the one used.
@@ -136,6 +135,12 @@ impl Store {
             }
         }
         ExtensionSettings::new(tables)
+    }
+
+    /// `secrets.toml` only, not joined with `extensions/<id>.toml`. Writes that go back to
+    /// `secrets.toml` must start from this, or non-secret settings would be copied into it.
+    pub fn secrets(&self) -> ExtensionSettings {
+        self.secrets.value.clone()
     }
 
     /// One extension's settings file as it stands, for changing and saving back.
@@ -218,9 +223,33 @@ impl Store {
         let dir = self.dir.join("extensions");
         let mut problems = Vec::new();
         let mut present = std::collections::BTreeSet::new();
+        // A missing directory means nothing is configured. Any other listing error (permissions,
+        // a transient I/O fault) must not look like every file was deleted: last-good stays.
         let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries.filter_map(Result::ok).collect::<Vec<_>>(),
-            Err(_) => Vec::new(),
+            Ok(entries) => {
+                let mut collected = Vec::new();
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => collected.push(entry),
+                        Err(e) => {
+                            problems.push(Problem {
+                                file: "extensions".to_owned(),
+                                reason: format!("can't list it: {e}"),
+                            });
+                            return problems;
+                        }
+                    }
+                }
+                collected
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => {
+                problems.push(Problem {
+                    file: "extensions".to_owned(),
+                    reason: format!("can't read it: {e}"),
+                });
+                return problems;
+            }
         };
         for entry in entries {
             let path = entry.path();
@@ -847,6 +876,45 @@ mod tests {
         assert_eq!(
             fresh.extension_settings().of(&helpers),
             serde_json::json!({"token": "s3cret"})
+        );
+    }
+
+    /// A listing error is not "the directory is empty": last-good helper definitions must stay,
+    /// or a permission blip would restart the extension with nothing.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_extensions_dir_keeps_the_last_good_settings() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let home = dir();
+        let helpers: ExtensionId = "helpers".parse().expect("valid");
+        let mut store = Store::new(home.path());
+        let mut file = serde_json::Map::new();
+        file.insert(
+            "toggles".into(),
+            serde_json::json!({"guests": {"name": "Guests"}}),
+        );
+        store.save_extension(&helpers, &file).expect("saved");
+
+        let dir = home.path().join("extensions");
+        let original = std::fs::metadata(&dir).expect("listed").permissions();
+        let mut locked = original.clone();
+        locked.set_mode(0o000);
+        std::fs::set_permissions(&dir, locked).expect("locked");
+        struct Unlock<'a>(&'a std::path::Path, std::fs::Permissions);
+        impl Drop for Unlock<'_> {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(self.0, self.1.clone());
+            }
+        }
+        let _unlock = Unlock(&dir, original);
+
+        let problems = store.reload();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert_eq!(problems[0].file, "extensions");
+        assert_eq!(
+            store.extension_settings().of(&helpers)["toggles"]["guests"]["name"],
+            "Guests"
         );
     }
 }
