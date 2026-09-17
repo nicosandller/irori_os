@@ -58,6 +58,14 @@
             "additionalProperties": true
           }
         },
+        "automation": {
+          "description": "Reserved: an automation engine. Read but ignored, with a warning, until a later Irori\nimplements the host.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
         "card": {
           "description": "Reserved for Phase 2c; read but ignored, with a warning.",
           "type": "array",

@@ -1,16 +1,18 @@
-# Spec: rules
+# Spec: sequential automation engine
 
-Status: **draft for Phase 0** (M0.3). The schema, modes, unavailable/unknown treatment, node
-paths, and validation layers are written to be accepted as-is. The expression **surface** is
-specified; the engine behind it is **CEL** (`cel` 0.14.5 — D41, the M0.8 spike in
-`crates/irori-rules`). A Mac debug build eval'd the hallway condition in ~39 µs; Pi 4 numbers and
-wasm compile are still outstanding, and a tiny custom evaluator of the same surface remains the
-fallback if those fail. Changes go through a PR that updates this file, the types in
-`crates/irori-types`, the generated `schemas/`, the examples in `fixtures/types/`, and the loader
-in `crates/irori-config` together; CI fails if the types, schemas, and fixtures disagree.
+Status: **draft for Phase 0** (M0.3). This document is the **first-party sequential engine**, not
+the Irori OS. The core does not ship an engine, does not load `rules/*.json`, and does not run
+automations. This engine will be **downloadable and installable** as an extension
+(`[[contributes.automation]]`). Until that host exists, the crate `irori-rules` is a library:
+JSON shape, CEL expressions, save-time type-check.
 
-The engine that *runs* rules is M1.4. This spec is what M1.4 is built from: an implementer should
-not have to invent a field, a default, or a failure mode.
+The schema, modes, unavailable/unknown treatment, node paths, and validation layers are written
+to be accepted as-is. The expression **surface** is CEL (`cel` 0.14.5 — D41). Changes go through
+a PR that updates this file, `crates/irori-rules`, `schemas/rule.schema.json`, and
+`fixtures/types/rule/` together; CI fails if those disagree.
+
+The engine that *waits and calls services* is later, still in this crate / extension, not in
+`irori-core`.
 
 ---
 
@@ -42,7 +44,7 @@ It has to be:
 
 | # | Decision | Rationale |
 |---|---|---|
-| K1 | **JSON files, one rule per file:** `config/rules/<id>.json`. Filename equals `id`. | Matches D18 and the hole already reserved in [config.md](config.md) §7. One file failing can't take the others down. |
+| K1 | **JSON files, one rule per file**, owned by **this engine** when it is installed — not by the core. Filename equals `id`. | The OS config dir has no `rules/` ([config.md](config.md)). Other engines pick their own files. |
 | K2 | **Closed tagged schema + a small expression language.** No templates. | D8. The advantage is validation against the registry, not "JSON vs YAML". |
 | K3 | **Author-facing expressions are an Irori function surface** (`num`, `on`, `available`, …). The engine behind it is **CEL** (`cel` 0.14.5, D41). Fallback: a tiny custom evaluator of the same surface if Pi 4 or wasm later kills CEL. | ROADMAP §2.2 named `cel-interpreter`; the same project now publishes as `cel`. The M0.8 spike compiled and eval'd the hallway condition; the surface did not change. |
 | K4 | **Expressions type-check at save/load** against the registry (entity exists, kind supports the function). They **evaluate** at run time against `StateView`. Compile once; eval is the µs path. | D8. Parse errors and "that's a switch, not a sensor" are authoring bugs. Unavailable/null are runtime. |
@@ -57,7 +59,7 @@ It has to be:
 | K13 | **Two gates.** `time` triggers, time-window conditions, `hour()`, `minute()`: unarmed until `irori.toml` has an IANA timezone. `sun` triggers/conditions: unarmed until it has timezone **and** lat/lon. | Civil `07:00` needs a zone. Sunrise needs coordinates. [config.md](config.md) §7 reserves location as one hole; this spec must not arm sun on timezone alone. |
 | K14 | **No protocol in the rule schema.** An event trigger names an event (`mqtt.message`); it does not name an MQTT topic as a core field. The MQTT integration (when it emits events) owns topics. | D15. The integration contract today has no "emit event" operation; this spec defines the rule side and a core `Event::Bus` shape. Wiring integrations onto it is a small addendum to integrations.md when MQTT needs it. |
 | K15 | **No auth model for rules.** A rule calling `light.turn_off` is the same as the owner doing it in the UI. | D12 is not built. Rules are owner-authored config on disk. |
-| K16 | **`irori-rules` stays pure:** depends only on workspace crate `irori-types` (plus crates.io, not protocol libraries). Traits `Clock`, `StateView`, `ServiceCaller`, `EventBus`, `TraceSink` live in `irori-rules`. The core provides the adapter. `cel` 0.14.5 with **`default-features = false`** (do not pull chrono; our surface does not need `regex` either). Civil time stays on `jiff`. | `xtask/src/deps.rs`, ROADMAP §2.1, D10. The uncommitted spike still uses defaults; PR 1 flips the features before merge. |
+| K16 | **`irori-rules` is this engine, not the OS.** It depends only on workspace crate `irori-types` among workspace crates. It is **not** a dependency of `irori` / `irori-core`. Traits `Clock`, `StateView`, `ServiceCaller` live here; a future extension host provides the adapter. `cel` 0.14.5 with **`default-features = false`**. | `xtask/src/deps.rs`. |
 
 ---
 
@@ -65,7 +67,7 @@ It has to be:
 
 ```mermaid
 flowchart LR
-    file["rules/hallway_motion_light.json"] --> load["irori-config\nparse + schema"]
+    file["this engine's JSON"] --> load["irori-rules\nparse + schema"]
     load --> sem["irori-rules\nsemantic check vs registry"]
     sem --> armed["armed copy\n+ compiled exprs"]
     event["StateChanged\nbinary_sensor.demo_movement_motion"] --> idx["trigger index"]
@@ -476,7 +478,7 @@ the call, it does not panic.
 run as `Error` at this node. `continue` records the error on the step and moves to the next
 action. The call is not retried.
 
-The run's context is `Origin::Rule { rule_id, run_id }` with `parent_id` equal to the triggering
+The run's context is `Origin::Automation { extension, run_id }` with `parent_id` equal to the triggering
 state change's context id when the trigger was `state` (otherwise omitted). Every call carries
 that context so "the hallway light turned on because this run" is already true in
 [entities.md](entities.md) §6.
@@ -1059,7 +1061,7 @@ pub trait ServiceCaller: Send + Sync {
 pub struct RuleCall {
     pub service: RuleService, // includes toggle; data may hold brightness_pct
     pub entity: EntityId,
-    pub context: Context,     // Origin::Rule { rule_id, run_id }
+    pub context: Context,     // Origin::Automation { extension, run_id }
 }
 
 /// Same variants as `irori_core::CallError`, defined here so this crate does not
@@ -1157,12 +1159,14 @@ is the trace step payload; this spec does not freeze the JSON.
 
 ---
 
-## 15. Config directory: `rules/<id>.json`
+## 15. This engine's files
 
-This fills the hole in [config.md](config.md) §7. Behaviour matches §6 of that spec.
+The **core** config directory has no `rules/` ([config.md](config.md)). When this engine is
+installed as an extension, it owns its own JSON files (filename equals `id`). Hot reload,
+last-good, and atomic writes are the **engine's** job, copying the pattern of
+`irori-config` for extensions — not a core `Store::reload_rules`.
 
-**Hot reload.** `irori-config` already polls every two seconds (`Store::reload`). `rules/` is a
-directory of JSON files, analogous to `extensions/*.toml`:
+**Hot reload (when the engine is installed).** A directory of JSON files:
 
 - A new valid file is loaded and (if enabled and layer 3 passes) armed.
 - A changed file is parsed as a whole. Layer 1–2 failure: `Problem { file: "rules/<id>.json",
@@ -1170,8 +1174,8 @@ directory of JSON files, analogous to `extensions/*.toml`:
   unarmed, problems listed.
 - A deleted file: the rule is removed; in-flight runs `Aborted` with reason `Reloaded`; a
   queued-mode queue is dropped.
-- An unreadable `rules/` directory (permissions): last-good map stays, one `Problem` on
-  `rules` — same as the extensions-dir test in `crates/irori-config/src/lib.rs`.
+- An unreadable rules directory (permissions): last-good map stays, one problem on that
+  directory — same idea as the extensions-dir test in `irori-config`.
 - File stem must be a `RuleId`. `hallway.json.bak` is ignored (not `.json`). `Hallway.json` is a
   problem (`RuleId` is a slug). Analogous to `extensions/helpers.toml` requiring an
   `ExtensionId` stem (`Store::reload_extensions`).
@@ -1189,11 +1193,8 @@ order and whitespace are **not** preserved on rewrite — same known cost as TOM
 `rules/<id>.disabled` sidecar, no database flag. The helpers pattern (definition in a file,
 value in extension storage) does not apply: enabled is authored intent.
 
-**`irori-config` today only reads TOML.** Adding JSON is new. `Store` gains
-`rules: BTreeMap<RuleId, Part<Rule>>` and `fn rules(&self) -> &BTreeMap<…>`. It deserializes
-through `irori-types::Rule`; it does not type-check expressions against the registry (it
-doesn't have one). Layer 3 is the core's job after reload, same as dangling `floor` references
-are a warning rather than a parse failure.
+The core never deserializes these files. Layer 3 (registry type-check) is this engine's job
+once it is hosted.
 
 ---
 
@@ -1244,7 +1245,7 @@ Distance is unknown when empty, so the rule **must not** wait on
 `num('sensor.demo_mmwave_target_distance')` — that expr errors when the room is clear and the
 wait would never match. Occupancy is the level; PIR is the edge.
 
-`config/rules/hallway_motion_light.json`:
+Example document (`fixtures/types/rule/valid/hallway_motion_light.json`):
 
 ```json
 {
@@ -1563,15 +1564,16 @@ confirmed). Pretending we can unsend it breaks D0. Waits cancel; calls don't.
 ## 25. References
 
 - [ROADMAP.md](../../ROADMAP.md) — M0.3, M0.8, M1.4, D8–D10, D14, D18, D36, D40, D41 (to land with PR 1), §4.3 budgets
-- [entities.md](entities.md) — registry vs state, availability, context `Origin::Rule`, brightness 1–255
+- [entities.md](entities.md) — registry vs state, availability, context `Origin::Automation`, brightness 1–255
 - [config.md](config.md) — last-good reload, atomic writes, `rules/<id>.json` reserved, helpers.toml
 - [integrations.md](integrations.md) — services, toggle resolution, `brightness_pct`, 10 s timeout
 - [extensions.md](extensions.md) — helpers as an extension
 - `crates/irori-rules` — M0.8 CEL spike (`src/expr.rs`, `cel` 0.14.5); engine is M1.4
-- `crates/irori-types` — `RuleId`, `Context` / `Origin::Rule`, `EntityState`, `ServiceName`, `LightTurnOn`
+- `crates/irori-types` — `RuleId`, `Context` / `Origin::Automation`, `EntityState`, `ServiceName`, `LightTurnOn`
+- `crates/irori-rules` — this engine: `Rule`, CEL, `validate`
 - `crates/irori-core/src/{clock,events,services,home}.rs` — `Clock` (`now`), `Event::StateChanged` (no `Bus` yet), `Command`, `Home::resolve`, `CallError`, `SERVICE_CALL_TIMEOUT`
 - `crates/irori-core/src/context_id.rs` — ULID from injected clock + `getrandom`; adapter implements `IdGen`
-- `crates/irori-config` — `Store::reload` / `reload_extensions` pattern the rules directory copies
+- `crates/irori-config` — pattern this engine will copy for *its* files; the core does not load them
 - `integrations/irori-int-demo/src/lib.rs` — hallway devices
 - `integrations/irori-int-helpers/src/lib.rs` — `switch.<id>` toggles
 - `xtask/src/deps.rs` — `irori-rules` → `irori-types` only, among workspace crates
@@ -1634,37 +1636,19 @@ numbers into the spec is PR 2.
   `*.schema-allows.json` where layer 2 (not the expr string) rejects. Banned CEL
   (`has(...)`, `[1,2]`, `x.map(...)`, `duration("1s")`, `num(var('id'))`) is **not**
   here — `irori-types` fixtures fail if `invalid/` deserializes.
-- Filename/id mismatch is a **loader** test in PR 3, not an `irori-types` fixture
-- `crates/irori-types/tests/fixtures.rs` — register the `rule` schema name
-- `docs/specs/config.md` — one paragraph that `rules/<id>.json` is now specified here
-- `docs/specs/entities.md` — the "how rules treat unavailable" row in §8 can point here as
-  decided
+- Filename/id mismatch is this engine's loader (when hosted), not a core test
+- `crates/irori-rules/tests/fixtures.rs` — rule schema
+- `docs/specs/config.md` — no `rules/` in the core layout
+- `docs/specs/entities.md` — `Origin::Automation`; unavailable is this engine's choice
 
 **Description:** The schema is now real. CI `cargo xtask schemas --check` and
-`cargo test -p irori-types` fail if types, schema, and fixtures disagree. No loader, no
-scheduler. Expression **strings** are validated for length here; parse / AST-walk / type-check
-is PR 4.
+`cargo test -p irori-rules` fail if types, schema, and fixtures disagree. The core does not
+load these files.
 
-### PR 3 — Config loader for `rules/*.json`
+### PR 3 — not a core loader
 
-**Title:** `config: load and hot-reload rules/<id>.json`
-
-**Depends on:** PR 2 (needs `irori-types::Rule`).
-
-**Files / components:**
-
-- `crates/irori-config/src/lib.rs` — `rules: BTreeMap<RuleId, Part<Rule>>` (one `Part` per
-  file, like extensions), `reload_rules()` mirroring `reload_extensions()`
-- `crates/irori-config/src/files.rs` — only if a `File` variant is needed; directory listing
-  is more like extensions than like `areas.toml`
-- Tests: valid load; broken JSON keeps last good; id/filename mismatch (loader check, last
-  good stays); delete removes; unreadable directory keeps last good; atomic save of one rule
-  file
-- `docs/specs/config.md` §3 layout listing `rules/<id>.json` as specified
-
-**Description:** Irori can see the files. It does not arm them. Layer 3 still belongs to the
-core once M1.4 exists; this PR exposes `store.rules()` and logs parse `Problem`s the same way
-a broken `areas.toml` is logged today. Enable/disable is just the field on the struct.
+**Do not add `Store::reload_rules`.** This engine is not the OS. File loading lands with the
+extension host, not in `irori-config`.
 
 ### PR 4 — Compile / validate path (still M0.3, no scheduler)
 

@@ -10,7 +10,7 @@ Last revised: 2026-09-15.
 
 ## 1. The one-sentence pitch
 
-**Irori is a lightning-fast, modular, single-binary smart home core written in Rust — barebones by default, extensible with anything from a new protocol to a whole app — where every automation is structured data that can be generated, visualized, replayed, and explained, by you or by an AI.**
+**Irori is a lightning-fast, modular, single-binary smart home core written in Rust — barebones by default, extensible with anything from a new protocol to a whole automation engine — where the first-party sequential engine is structured data that can be generated, visualized, replayed, and explained, by you or by an AI.**
 
 ## 2. Why this should exist
 
@@ -19,7 +19,7 @@ Home Assistant (HA) is an extraordinary project: ~2,800 integrations and million
 | Pain point in HA today | Root cause | Irori's answer |
 |---|---|---|
 | Dashboards are tedious enough that people "vibe-code" them with chat AIs instead of using the editor | Dashboards are hand-assembled card configs; the AI workflow lives *outside* the product | AI dashboard generation is a first-class, in-product feature, targeting a tiny stable SDK |
-| LLMs (and humans) produce broken automations | Not YAML itself, but an **open-ended language**: Jinja templates, stringly-typed state, service calls unchecked against the actual home | A **closed, typed rule schema** with a small non-Turing-complete expression language, validated against the *real* entity registry before saving |
+| LLMs (and humans) produce broken automations | Not YAML itself, but an **open-ended language**: Jinja templates, stringly-typed state, service calls unchecked against the actual home | The **first-party sequential engine** is a closed, typed schema with a small expression language, validated against the *real* entity registry. Other engines (flows, LLMs) are other extensions. |
 | "Why didn't my automation fire?" is hard to answer | Traces were retrofitted onto an engine not designed around them | **Traces are an output of the engine by construction** — every node records what it read, what it decided, and why |
 | No way to know what a new rule *would* do | The engine is coupled to wall-clock time and live state | A **deterministic, replayable engine** (injected clock + state source) that can backtest a rule against recorded history |
 | Install and upgrade are heavy (Supervisor, containers, OS images) | Python runtime + dependency graph | **One static binary**: `curl` → running setup wizard in seconds |
@@ -61,24 +61,25 @@ No YAML. No Jinja. No custom cards to install. And you installed the whole thing
 **The core comes first.** Everything else in this document — visualizer, AI, dashboards — is built on top of a core that has to be excellent by itself. The first four tenets describe that core.
 
 1. **Lightning fast and lightweight.** Rust, one static binary, no runtime dependencies. Performance is a *budget* measured in CI (memory, startup, event latency, binary size), not a hope. It should feel instant on a Raspberry Pi and barely register on anything bigger.
-2. **Modular — everything beyond the core is an extension, even MQTT.** The core knows about devices, entities, state, events, and rules; it does *not* know about any protocol, vendor, dashboard, or app. Everything else ships as an **extension** that declares what it *contributes*:
+2. **Modular — everything beyond the core is an extension, even MQTT, even automations.** The core knows about devices, entities, state, and events; it does *not* know about any protocol, vendor, dashboard, app, or rule language. Everything else ships as an **extension** that declares what it *contributes*:
    - **Integrations** bring devices in: protocols (MQTT, Zigbee, Matter, Z-Wave, ESPHome) and vendor APIs (Tesla, SwitchBot, …).
+   - **Automation engines** subscribe to those events, call services, and emit traces. The first-party sequential engine is one of them, installed like any other extension, not compiled into the OS.
    - **Dashboards** are pre-built views that bind to whatever matching devices your home has.
    - **Cards** are visualizations used inside dashboards.
    - **Apps** are whole tools with their own page: a terminal, a file explorer, a log viewer.
 
    First-party extensions can be compiled in and toggled on or off. Anyone can write their own in any language, as a separate process or a sandboxed web bundle, using the same contracts. Adding a protocol, a dashboard, or an app never requires touching the core.
-3. **Barebones by default.** The default build ships the core, a CLI, and a minimal web UI with just what's needed: **Devices, Automations, Extensions**, and Settings. Nothing else is installed or running unless you turn it on. Robust at its smallest; capabilities are added, never assumed.
+3. **Barebones by default.** The default build ships the core, a CLI, and a minimal web UI with just what's needed: **Devices, Extensions**, and Settings. Nothing else is installed or running unless you turn it on — including automations. Robust at its smallest; capabilities are added, never assumed.
 4. **Nerd friendly.** Plain-text config you can put in git. Everything the UI can do, the CLI can do (with `--json` output). Structured logs, a metrics endpoint, shell completions, a documented API, extension templates you can copy and hack. No magic, no hidden state.
 5. **Structured over textual.** Rules, dashboard metadata, extension manifests and configs: typed, schema-validated, versioned. No template-string escape hatches.
-6. **Observable by construction.** Every rule run produces a trace. Every state change carries a *context* (what caused it: a device, a user, rule X run Y).
-7. **Deterministic and replayable.** The rules engine never reads the wall clock or global state directly; both are injected. Replay is a feature, not a test trick.
-8. **Small core, public API.** Core = registry, state, event bus, extension host, recorder, rules, API. Extensions, AI features, and the UI use only public contracts — enforced by crate boundaries, not good intentions.
+6. **Observable by construction.** Every automation run produces a trace (the engine's job). Every state change carries a *context* (what caused it: a device, a user, an installed engine's run).
+7. **Deterministic and replayable.** The first-party sequential engine never reads the wall clock or global state directly; both are injected. Replay is a feature, not a test trick. Other engines may choose otherwise.
+8. **Small core, public API.** Core = registry, state, event bus, extension host, recorder, API. Extensions (including automation engines), AI features, and the UI use only public contracts — enforced by crate boundaries, not good intentions.
 9. **Least privilege for extensions.** Every extension declares its permissions (which devices it may control, network hosts, serial ports, host shell or files) and the owner approves them at install. A card can't reach what it didn't declare; a terminal app is labeled for what it is (full access to the machine).
 10. **Local-first.** The core never needs the internet. Cloud integrations are clearly labeled as such. AI is an optional add-on and bring-your-own: a cloud API key or a local model. A hosted tier may exist later as a convenience, never a requirement.
 11. **Install in seconds.** `curl` → running setup wizard, sensible defaults.
 12. **Borrow ecosystems, don't rebuild them.** Speak HA's MQTT Discovery protocol, wrap `zwave-js-server`, use `rs-matter`. Use HA-familiar domain/service vocabulary where it fits — LLMs already know it.
-13. **Rust end to end.** Core and web UI share the same type definitions; the schema a rule is validated against in the browser is the same code that validates it on the server.
+13. **Rust end to end.** Core and web UI share the same type definitions. An engine that ships a WASM editor shares *its* types with *its* page — not with the OS.
 
 ## 6. Who it's for (first)
 

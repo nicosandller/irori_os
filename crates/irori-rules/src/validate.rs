@@ -4,9 +4,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use cel::Program;
 use cel::common::ast::{Expr, IdedExpr, LiteralValue};
-use irori_types::{
-    Action, CallData, Capabilities, Condition, Entity, EntityId, ExprString, LightCallData, Rule,
-    RuleService, SensorValueType, Trigger, TypedValue, WaitUntil,
+use irori_types::{Capabilities, Entity, EntityId, SensorValueType};
+
+use crate::{
+    Action, CallData, Condition, ExprString, LightCallData, Rule, RuleService, Trigger, TypedValue,
+    WaitUntil,
 };
 
 use crate::expr::compile;
@@ -930,7 +932,7 @@ mod tests {
     #[test]
     fn missing_trigger_entity_is_reported() {
         let mut rule = hallway_rule();
-        if let irori_types::Trigger::State { entity, .. } = &mut rule.triggers[0] {
+        if let crate::Trigger::State { entity, .. } = &mut rule.triggers[0] {
             *entity = "binary_sensor.does_not_exist".parse().unwrap();
         }
         let problems = validate(&rule, &hallway_registry());

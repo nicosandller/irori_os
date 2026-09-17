@@ -1,7 +1,7 @@
-//! A rule file: `config/rules/<id>.json`. See `docs/specs/rules.md`.
+//! Sequential-engine rule documents. See `docs/specs/rules.md`.
 //!
-//! Layer 2 (this module) is JSON shape and field invariants. Expression parse, AST allow-list,
-//! and registry type-check live in `irori-rules`.
+//! This is the first-party automation engine's JSON, not a core OS type. Layer 2 is shape and
+//! field invariants; parse, AST allow-list, and registry type-check live in this crate.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -9,7 +9,7 @@ use std::fmt;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
-use crate::{AttributeKey, Description, EntityId, InvariantError, Name, ObjectId, RuleId};
+use irori_types::{AttributeKey, Description, EntityId, InvariantError, Name, ObjectId, RuleId};
 
 const MAX_TRIGGERS: usize = 16;
 const MAX_CONDITIONS: usize = 32;
@@ -124,7 +124,7 @@ impl Rule {
 }
 
 fn inv(message: impl Into<String>) -> InvariantError {
-    InvariantError(message.into())
+    InvariantError::new(message)
 }
 
 /// How a second trigger is handled while a run is in progress.
@@ -553,11 +553,13 @@ pub enum RuleService {
 
 impl RuleService {
     /// The kind of entity this service acts on.
-    pub fn kind(self) -> crate::EntityKind {
+    pub fn kind(self) -> irori_types::EntityKind {
         match self {
-            Self::LightTurnOn | Self::LightTurnOff | Self::LightToggle => crate::EntityKind::Light,
+            Self::LightTurnOn | Self::LightTurnOff | Self::LightToggle => {
+                irori_types::EntityKind::Light
+            }
             Self::SwitchTurnOn | Self::SwitchTurnOff | Self::SwitchToggle => {
-                crate::EntityKind::Switch
+                irori_types::EntityKind::Switch
             }
         }
     }

@@ -1,6 +1,6 @@
 //! Shared types for Irori: the entity and registry model (`docs/specs/entities.md`), extension
 //! manifests (`docs/specs/extensions.md`), the integration contract (`docs/specs/integrations.md`),
-//! and later rules, traces, and API messages. Compiles to native and `wasm32`, so the server, CLI, and
+//! and later traces and API messages. Compiles to native and `wasm32`, so the server, CLI, and
 //! browser UI validate data with the same code.
 
 // `id` first: its `string_newtype!` macro is used by later modules.
@@ -12,7 +12,6 @@ mod integration;
 mod kind;
 mod num;
 mod registry;
-mod rule;
 mod schema;
 mod settings;
 mod state;
@@ -38,12 +37,6 @@ pub use registry::{
     Entity, Floor, LightCapabilities, SensorCapabilities, SensorClass, SensorValueType, StateClass,
     SwitchCapabilities, SwitchClass,
 };
-pub use rule::{
-    Action, AvailabilityWanted, CallData, ChooseOption, CivilTime, CompactDuration, Condition,
-    Cron, EventDatum, EventName, ExprString, LightCallData, LimitedMode, Mode, NamedMode, OnError,
-    OnTimeout, Rule, RuleService, StopReason, SunEvent, Target, Trigger, TypedValue, WaitUntil,
-    Weekday,
-};
 pub use schema::{SchemaDoc, schemas};
 pub use settings::{
     DeviceSettings, EntitySettings, ExtensionSettings, Placement, SecretError, Settings,
@@ -59,6 +52,12 @@ pub use time::{Timestamp, TimestampError};
 /// spans several fields, e.g. an entity whose id says `light` but whose state says `switch`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvariantError(String);
+
+impl InvariantError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
 
 impl std::fmt::Display for InvariantError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

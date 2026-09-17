@@ -76,6 +76,7 @@ impl ExtensionManifest {
             ("dashboard", &self.contributes.dashboard),
             ("card", &self.contributes.card),
             ("app", &self.contributes.app),
+            ("automation", &self.contributes.automation),
         ] {
             if !entries.is_empty() {
                 warnings.push(format!(
@@ -133,6 +134,10 @@ pub struct Contributions {
     /// Reserved for Phase 3; read but ignored, with a warning.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub app: Vec<ReservedContribution>,
+    /// Reserved: an automation engine. Read but ignored, with a warning, until a later Irori
+    /// implements the host.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub automation: Vec<ReservedContribution>,
     /// Kinds this version of Irori doesn't know; read but ignored, with a warning.
     #[serde(flatten)]
     #[schemars(skip)]
@@ -148,6 +153,7 @@ impl Contributions {
             && self.dashboard.is_empty()
             && self.card.is_empty()
             && self.app.is_empty()
+            && self.automation.is_empty()
             && self.other.is_empty()
     }
 

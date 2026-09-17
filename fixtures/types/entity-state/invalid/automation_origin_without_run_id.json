@@ -11,8 +11,8 @@
   "context": {
     "id": "01K5A1000000000000000000VS",
     "origin": {
-      "type": "rule",
-      "rule_id": "morning_coffee"
+      "type": "automation",
+      "extension": "rules"
     }
   }
 }
