@@ -1,6 +1,9 @@
 # Keep the Docker build context small (dev/Dockerfile uses the repo root).
 .git
 target
+**/target
+crates/irori-ui/dist
 data
+.qa-shots-*
 **/.DS_Store
 .claude

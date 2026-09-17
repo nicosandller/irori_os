@@ -496,7 +496,11 @@ fn look(path: &Path) -> Option<Seen> {
 fn write_beside(path: &Path, text: &str, readable: Readable) -> std::io::Result<PathBuf> {
     use std::io::Write as _;
 
-    let temporary = path.with_extension("toml.writing");
+    let temporary = {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(".writing");
+        PathBuf::from(name)
+    };
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]

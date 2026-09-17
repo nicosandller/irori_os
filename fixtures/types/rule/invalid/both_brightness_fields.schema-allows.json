@@ -1,0 +1,13 @@
+{
+  "id": "both_brightness_fields",
+  "name": "Both brightness fields",
+  "triggers": [{ "type": "startup" }],
+  "actions": [
+    {
+      "type": "call",
+      "service": "light.turn_on",
+      "target": { "entity": "light.demo_hall_light" },
+      "data": { "brightness": 120, "brightness_pct": 60 }
+    }
+  ]
+}

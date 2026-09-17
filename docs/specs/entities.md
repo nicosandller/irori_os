@@ -137,7 +137,7 @@ additive change: a new tag in `Capabilities` and `State`.
 | | `rgb` | bool | `false` | Supports RGB color |
 | `switch` | `device_class` | `outlet` \| `switch` | absent | |
 | `sensor` | `value_type` | `number` \| `text` | **required** | Rules are type-checked against it |
-| | `device_class` | `temperature` \| `humidity` \| `illuminance` \| `pressure` \| `power` \| `energy` \| `voltage` \| `current` \| `battery` \| `co2` \| `pm25` \| `signal_strength` | absent | |
+| | `device_class` | `temperature` \| `humidity` \| `illuminance` \| `pressure` \| `power` \| `energy` \| `voltage` \| `current` \| `battery` \| `co2` \| `pm25` \| `signal_strength` \| `distance` | absent | |
 | | `unit` | string | absent | E.g. `°C`, `lx`, `%`, `W`, `kWh` |
 | | `state_class` | `measurement` \| `total` \| `total_increasing` | absent | How values accumulate, for statistics |
 | `binary_sensor` | `device_class` | `motion` \| `occupancy` \| `door` \| `window` \| `moisture` \| `smoke` \| `gas` \| `vibration` \| `plug` \| `connectivity` \| `problem` \| `battery` | absent | Says what `on` means |
@@ -226,7 +226,7 @@ the motion sensor reported at 22:04:12").
 |---|---|---|
 | `device` | `integration` | Reported by a device, e.g. someone pressed a physical switch |
 | `user` | `user_id` | A person, through the UI or CLI |
-| `rule` | `rule_id`, `run_id` (ULID) | A rule run; the trace spec (M0.4) defines runs |
+| `automation` | `extension`, `run_id` (ULID) | An installed automation engine's run. The engine (not the core) owns what a "rule" is. |
 | `api` | `token_id` | An API client with an access token |
 | `system` | — | Irori itself: restoring state at startup, reloading config |
 
@@ -262,7 +262,7 @@ consumers; API versioning is part of the API spec (M0.5).
 | Topic | Where it's decided |
 |---|---|
 | Services (`light.turn_on` and its parameters) | [Integration contract](integrations.md) §7 (what integrations receive); API and rules specs (how people and rules call them) |
-| How rules treat `unavailable` and `null` state | Rules spec (M0.3) |
+| How automations treat `unavailable` and `null` state | Each engine decides. The first-party sequential engine fails closed ([rules.md](rules.md) §9). |
 | Run and trace ids and formats | Trace spec (M0.4) |
 | Registry and state over the API | API spec (M0.5) |
 | How integrations create and update entries | [Integration contract](integrations.md) §5–§6 |

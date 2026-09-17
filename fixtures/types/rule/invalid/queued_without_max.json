@@ -1,0 +1,7 @@
+{
+  "id": "queued_without_max",
+  "name": "Queued without max",
+  "mode": { "type": "queued" },
+  "triggers": [{ "type": "startup" }],
+  "actions": [{ "type": "stop" }]
+}

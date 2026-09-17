@@ -1,6 +1,6 @@
 //! Shared types for Irori: the entity and registry model (`docs/specs/entities.md`), extension
 //! manifests (`docs/specs/extensions.md`), the integration contract (`docs/specs/integrations.md`),
-//! and later rules, traces, and API messages. Compiles to native and `wasm32`, so the server, CLI, and
+//! and later traces and API messages. Compiles to native and `wasm32`, so the server, CLI, and
 //! browser UI validate data with the same code.
 
 // `id` first: its `string_newtype!` macro is used by later modules.
@@ -52,6 +52,12 @@ pub use time::{Timestamp, TimestampError};
 /// spans several fields, e.g. an entity whose id says `light` but whose state says `switch`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvariantError(String);
+
+impl InvariantError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
 
 impl std::fmt::Display for InvariantError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

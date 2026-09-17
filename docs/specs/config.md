@@ -21,7 +21,7 @@ database. Authored intent is config; observed facts are data (ROADMAP D18).
 flowchart LR
     device["the device<br/>(firmware)"] -->|name, suggested area| core
     config["the config dir<br/>(you)"] -->|name, room| core
-    core["the core"] --> ui["UI · CLI · rules"]
+    core["the core"] --> ui["UI · CLI · engines"]
     ui -->|"an edit writes the same files"| config
 ```
 
@@ -281,7 +281,6 @@ Named here so the layout has room for them, specified when they are built:
 - **Approved permissions** in `extensions/<id>.toml`, and validating it against the extension's
   `config_schema` before it starts (`docs/specs/extensions.md`). Today the extension's own config
   type checks it, and an extension with invalid settings waits for valid ones.
-- **`rules/<id>.json`** — M0.3.
 - **An entity in a different area than its device** (`Entity.area_id` already allows it).
 - **More helpers** — numbers, text, timers — once rules can use them.
 
