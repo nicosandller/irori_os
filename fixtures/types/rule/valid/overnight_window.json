@@ -1,0 +1,17 @@
+{
+  "id": "overnight_window",
+  "name": "Overnight window",
+  "triggers": [
+    { "type": "state", "entity": "binary_sensor.demo_movement_motion", "to": true }
+  ],
+  "conditions": [
+    { "type": "time", "after": "22:00", "before": "06:00" }
+  ],
+  "actions": [
+    {
+      "type": "call",
+      "service": "light.turn_on",
+      "target": { "entity": "light.demo_hall_light" }
+    }
+  ]
+}

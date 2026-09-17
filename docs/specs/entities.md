@@ -262,7 +262,7 @@ consumers; API versioning is part of the API spec (M0.5).
 | Topic | Where it's decided |
 |---|---|
 | Services (`light.turn_on` and its parameters) | [Integration contract](integrations.md) §7 (what integrations receive); API and rules specs (how people and rules call them) |
-| How rules treat `unavailable` and `null` state | Rules spec (M0.3) |
+| How rules treat `unavailable` and `null` state | Decided in [rules.md](rules.md) §9: fail closed; last-known is for the UI |
 | Run and trace ids and formats | Trace spec (M0.4) |
 | Registry and state over the API | API spec (M0.5) |
 | How integrations create and update entries | [Integration contract](integrations.md) §5–§6 |

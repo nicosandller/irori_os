@@ -1,0 +1,51 @@
+{
+  "id": "hallway_motion_light",
+  "name": "Hallway motion light",
+  "description": "On when someone walks into a dark hallway; off after the hallway has been empty for two minutes, unless guests are over.",
+  "enabled": true,
+  "mode": "restart",
+  "triggers": [
+    {
+      "type": "state",
+      "entity": "binary_sensor.demo_movement_motion",
+      "to": true
+    }
+  ],
+  "conditions": [
+    {
+      "type": "expr",
+      "expr": "num('sensor.demo_luminosity_illuminance') < 30"
+    }
+  ],
+  "actions": [
+    {
+      "type": "call",
+      "service": "light.turn_on",
+      "target": { "entity": "light.demo_hall_light" },
+      "data": { "brightness_pct": 60 }
+    },
+    {
+      "type": "wait",
+      "until": {
+        "type": "expr",
+        "expr": "!on('binary_sensor.demo_mmwave_occupancy') && !on('binary_sensor.demo_movement_motion')",
+        "for": "2m"
+      },
+      "timeout": "10m",
+      "on_timeout": "continue"
+    },
+    {
+      "type": "if",
+      "conditions": [
+        { "type": "state", "entity": "switch.guests_over", "is": false }
+      ],
+      "then": [
+        {
+          "type": "call",
+          "service": "light.turn_off",
+          "target": { "entity": "light.demo_hall_light" }
+        }
+      ]
+    }
+  ]
+}

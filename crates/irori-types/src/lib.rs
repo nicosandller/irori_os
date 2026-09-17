@@ -12,6 +12,7 @@ mod integration;
 mod kind;
 mod num;
 mod registry;
+mod rule;
 mod schema;
 mod settings;
 mod state;
@@ -36,6 +37,12 @@ pub use registry::{
     Area, BinarySensorCapabilities, BinarySensorClass, Capabilities, ColorTempRange, Device,
     Entity, Floor, LightCapabilities, SensorCapabilities, SensorClass, SensorValueType, StateClass,
     SwitchCapabilities, SwitchClass,
+};
+pub use rule::{
+    Action, AvailabilityWanted, CallData, ChooseOption, CivilTime, CompactDuration, Condition,
+    Cron, EventDatum, EventName, ExprString, LightCallData, LimitedMode, Mode, NamedMode, OnError,
+    OnTimeout, Rule, RuleService, StopReason, SunEvent, Target, Trigger, TypedValue, WaitUntil,
+    Weekday,
 };
 pub use schema::{SchemaDoc, schemas};
 pub use settings::{

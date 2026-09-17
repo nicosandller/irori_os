@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, bail, ensure};
 use irori_types::{
     Area, Device, DeviceDescription, Entity, EntityDescription, EntityState, ExtensionManifest,
-    Floor, ServiceCall, StateReport,
+    Floor, Rule, ServiceCall, StateReport,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -163,6 +163,11 @@ fn state_reports() -> anyhow::Result<()> {
 #[test]
 fn service_calls() -> anyhow::Result<()> {
     check::<ServiceCall>("service-call")
+}
+
+#[test]
+fn rules() -> anyhow::Result<()> {
+    check::<Rule>("rule")
 }
 
 /// Contribution kinds this version doesn't implement are kept, and named in warnings.

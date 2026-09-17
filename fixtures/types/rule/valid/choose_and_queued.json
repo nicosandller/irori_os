@@ -1,0 +1,30 @@
+{
+  "id": "choose_and_queued",
+  "name": "Choose and queued",
+  "mode": { "type": "queued", "max": 2 },
+  "triggers": [
+    { "type": "startup" }
+  ],
+  "actions": [
+    {
+      "type": "choose",
+      "options": [
+        {
+          "conditions": [
+            { "type": "state", "entity": "switch.demo_plug", "is": true }
+          ],
+          "then": [
+            { "type": "stop", "reason": "already on" }
+          ]
+        }
+      ],
+      "default": [
+        {
+          "type": "call",
+          "service": "switch.turn_on",
+          "target": { "entity": "switch.demo_plug" }
+        }
+      ]
+    }
+  ]
+}
