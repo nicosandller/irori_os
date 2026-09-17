@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, bail, ensure};
 use irori_types::{
     Area, Device, DeviceDescription, Entity, EntityDescription, EntityState, ExtensionManifest,
-    Floor, Rule, ServiceCall, StateReport,
+    Floor, ServiceCall, StateReport,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -165,11 +165,6 @@ fn service_calls() -> anyhow::Result<()> {
     check::<ServiceCall>("service-call")
 }
 
-#[test]
-fn rules() -> anyhow::Result<()> {
-    check::<Rule>("rule")
-}
-
 /// Contribution kinds this version doesn't implement are kept, and named in warnings.
 #[test]
 fn manifest_warnings_name_ignored_contributions() -> anyhow::Result<()> {
@@ -214,9 +209,11 @@ fn every_schema_has_fixtures() -> anyhow::Result<()> {
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
     folders.sort();
-    ensure!(
-        folders == expected,
-        "fixture folders {folders:?} != schemas {expected:?}"
-    );
+    for name in &expected {
+        ensure!(
+            folders.contains(name),
+            "schema {name} has no fixtures/types/{name}/ folder"
+        );
+    }
     Ok(())
 }

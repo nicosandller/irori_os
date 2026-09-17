@@ -1072,8 +1072,12 @@ dependencies = [
 name = "irori-rules"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "cel",
  "irori-types",
+ "jsonschema",
+ "schemars",
+ "serde",
  "serde_json",
 ]
 
@@ -2520,6 +2524,7 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "irori-rules",
  "irori-types",
  "serde",
  "serde_json",

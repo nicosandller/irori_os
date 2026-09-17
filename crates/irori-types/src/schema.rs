@@ -5,7 +5,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 
 use crate::{
     Area, AttributeKey, Device, DeviceDescription, Entity, EntityDescription, EntityKind,
-    EntityState, ExtensionManifest, Floor, Rule, ServiceCall, StateReport,
+    EntityState, ExtensionManifest, Floor, ServiceCall, StateReport,
 };
 
 /// One generated schema document.
@@ -16,13 +16,20 @@ pub struct SchemaDoc {
     pub schema: Schema,
 }
 
-/// Every top-level document type, as draft 2020-12 JSON Schemas.
-pub fn schemas() -> Vec<SchemaDoc> {
-    fn doc<T: JsonSchema>(name: &'static str) -> SchemaDoc {
+impl SchemaDoc {
+    /// Draft 2020-12 schema for `T`, used by this crate and by engine crates (e.g. `irori-rules`).
+    pub fn for_type<T: JsonSchema>(name: &'static str) -> Self {
         let schema = SchemaSettings::draft2020_12()
             .into_generator()
             .into_root_schema_for::<T>();
-        SchemaDoc { name, schema }
+        Self { name, schema }
+    }
+}
+
+/// Every top-level **core** document type, as draft 2020-12 JSON Schemas.
+pub fn schemas() -> Vec<SchemaDoc> {
+    fn doc<T: JsonSchema>(name: &'static str) -> SchemaDoc {
+        SchemaDoc::for_type::<T>(name)
     }
     vec![
         doc::<Floor>("floor"),
@@ -35,7 +42,6 @@ pub fn schemas() -> Vec<SchemaDoc> {
         doc::<EntityDescription>("entity-description"),
         doc::<StateReport>("state-report"),
         doc::<ServiceCall>("service-call"),
-        doc::<Rule>("rule"),
     ]
 }
 

@@ -21,7 +21,7 @@ use std::time::SystemTime;
 
 use irori_types::{
     Area, AreaId, DeviceId, DeviceSettings, EntitySettings, ExtensionId, ExtensionSettings, Floor,
-    FloorId, Rule, RuleId, Settings, SettingsKey,
+    FloorId, Settings, SettingsKey,
 };
 
 pub use files::{
@@ -78,8 +78,6 @@ pub struct Store {
     secrets: Part<ExtensionSettings>,
     /// `extensions/<id>.toml`, one per extension that has one.
     extensions: BTreeMap<ExtensionId, Part<serde_json::Map<String, serde_json::Value>>>,
-    /// `rules/<id>.json`, one per rule.
-    rules: BTreeMap<RuleId, Part<Rule>>,
     /// Keys set in both an extension's file and its secrets, as last reported: said once when
     /// they appear, not on every two-second check.
     clashes: std::collections::BTreeSet<(ExtensionId, String)>,
@@ -99,7 +97,6 @@ impl Store {
             entities: Part::default(),
             secrets: Part::default(),
             extensions: BTreeMap::new(),
-            rules: BTreeMap::new(),
             clashes: std::collections::BTreeSet::new(),
             missing_floors: std::collections::BTreeSet::new(),
         }
@@ -147,40 +144,6 @@ impl Store {
     /// `secrets.toml` must start from this, or non-secret settings would be copied into it.
     pub fn secrets(&self) -> ExtensionSettings {
         self.secrets.value.clone()
-    }
-
-    /// Loaded rules, keyed by id. Layer 3 (registry type-check) is the core's job.
-    pub fn rules(&self) -> BTreeMap<RuleId, Rule> {
-        self.rules
-            .iter()
-            .map(|(id, part)| (id.clone(), part.value.clone()))
-            .collect()
-    }
-
-    /// Replaces `rules/<id>.json`, atomically, if its contents would change.
-    pub fn save_rule(&mut self, rule: &Rule) -> std::io::Result<bool> {
-        let dir = self.dir.join("rules");
-        let path = dir.join(format!("{}.json", rule.id));
-        let mut text = serde_json::to_string_pretty(rule)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        text.push('\n');
-        let changed = !std::fs::read_to_string(&path).is_ok_and(|current| current == text);
-        if changed {
-            std::fs::create_dir_all(&dir)?;
-            let temporary = write_beside(&path, &text, Readable::ByAnyone)?;
-            if let Err(e) = std::fs::rename(&temporary, &path) {
-                let _ = std::fs::remove_file(&temporary);
-                return Err(e);
-            }
-        }
-        self.rules.insert(
-            rule.id.clone(),
-            Part {
-                value: rule.clone(),
-                seen: look(&path),
-            },
-        );
-        Ok(changed)
     }
 
     /// One extension's settings file as it stands, for changing and saving back.
@@ -237,7 +200,6 @@ impl Store {
             }
         }
         problems.extend(self.reload_extensions());
-        problems.extend(self.reload_rules());
         // A key set in both places is ambiguous; the secret wins. Said when it first appears.
         let mut clashes = std::collections::BTreeSet::new();
         for (id, part) in &self.extensions {
@@ -356,86 +318,6 @@ impl Store {
             }
         }
         self.extensions.retain(|id, _| present.contains(id));
-        problems
-    }
-
-    /// Reads `rules/*.json`: new files, changed ones, and ones that have gone.
-    fn reload_rules(&mut self) -> Vec<Problem> {
-        let dir = self.dir.join("rules");
-        let mut problems = Vec::new();
-        let mut present = std::collections::BTreeSet::new();
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => {
-                let mut collected = Vec::new();
-                for entry in entries {
-                    match entry {
-                        Ok(entry) => collected.push(entry),
-                        Err(e) => {
-                            problems.push(Problem {
-                                file: "rules".to_owned(),
-                                reason: format!("can't list it: {e}"),
-                            });
-                            return problems;
-                        }
-                    }
-                }
-                collected
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => {
-                problems.push(Problem {
-                    file: "rules".to_owned(),
-                    reason: format!("can't read it: {e}"),
-                });
-                return problems;
-            }
-        };
-        for entry in entries {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
-                continue;
-            };
-            let file = format!("rules/{stem}.json");
-            let Ok(id) = stem.parse::<RuleId>() else {
-                problems.push(Problem {
-                    file,
-                    reason: "the file name has to be a rule id, like `hallway_motion_light.json`"
-                        .to_owned(),
-                });
-                continue;
-            };
-            present.insert(id.clone());
-            let now = look(&path);
-            if self
-                .rules
-                .get(&id)
-                .is_some_and(|part| part.seen.is_some() && part.seen == now)
-            {
-                continue;
-            }
-            let parsed = std::fs::read_to_string(&path)
-                .map_err(|e| format!("can't read it: {e}"))
-                .and_then(|text| {
-                    let rule: Rule = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-                    if rule.id != id {
-                        return Err(format!(
-                            "id is \"{}\"; the file name has to match the id, like rules/{}.json",
-                            rule.id, rule.id
-                        ));
-                    }
-                    Ok(rule)
-                });
-            match parsed {
-                Ok(value) => {
-                    self.rules.insert(id, Part { value, seen: now });
-                }
-                Err(reason) => problems.push(Problem { file, reason }),
-            }
-        }
-        self.rules.retain(|id, _| present.contains(id));
         problems
     }
 
@@ -1089,108 +971,5 @@ mod tests {
             Some("upstairs")
         );
         assert!(store.settings().floors.is_empty());
-    }
-
-    fn hallway_rule() -> Rule {
-        serde_json::from_str(include_str!(
-            "../../../fixtures/types/rule/valid/hallway_motion_light.json"
-        ))
-        .expect("hallway fixture")
-    }
-
-    #[test]
-    fn a_rule_file_is_saved_and_reloaded() {
-        let home = dir();
-        let mut store = Store::new(home.path());
-        let rule = hallway_rule();
-        assert!(store.save_rule(&rule).expect("saved"));
-        assert!(!store.save_rule(&rule).expect("second save is a no-op"));
-
-        let mut fresh = Store::new(home.path());
-        assert!(fresh.reload().is_empty(), "{:?}", fresh.reload());
-        assert_eq!(fresh.rules().get(&rule.id), Some(&rule));
-    }
-
-    #[test]
-    fn a_broken_rule_keeps_the_last_good_version() {
-        let home = dir();
-        let mut store = Store::new(home.path());
-        let rule = hallway_rule();
-        store.save_rule(&rule).expect("saved");
-
-        std::fs::write(
-            home.path().join("rules/hallway_motion_light.json"),
-            "{ not json",
-        )
-        .expect("broken");
-        let problems = store.reload();
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert_eq!(problems[0].file, "rules/hallway_motion_light.json");
-        assert_eq!(
-            store.rules().get(&rule.id).map(|r| r.name.as_str()),
-            Some("Hallway motion light")
-        );
-    }
-
-    #[test]
-    fn a_rule_id_must_match_the_file_name() {
-        let home = dir();
-        let mut store = Store::new(home.path());
-        let rule = hallway_rule();
-        store.save_rule(&rule).expect("saved");
-
-        std::fs::create_dir_all(home.path().join("rules")).expect("dir");
-        std::fs::write(
-            home.path().join("rules/foo.json"),
-            serde_json::to_string(&rule).expect("json"),
-        )
-        .expect("mismatched name");
-        let problems = store.reload();
-        assert!(
-            problems.iter().any(|p| p.file == "rules/foo.json"
-                && p.reason.contains("the file name has to match the id")),
-            "{problems:?}"
-        );
-        assert!(!store.rules().contains_key(&"foo".parse().expect("id")));
-    }
-
-    #[test]
-    fn deleting_a_rule_file_drops_it() {
-        let home = dir();
-        let mut store = Store::new(home.path());
-        let rule = hallway_rule();
-        store.save_rule(&rule).expect("saved");
-        std::fs::remove_file(home.path().join("rules/hallway_motion_light.json")).expect("removed");
-        store.reload();
-        assert!(store.rules().is_empty());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn an_unreadable_rules_dir_keeps_the_last_good_rules() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let home = dir();
-        let mut store = Store::new(home.path());
-        let rule = hallway_rule();
-        store.save_rule(&rule).expect("saved");
-
-        let dir = home.path().join("rules");
-        let original = std::fs::metadata(&dir).expect("listed").permissions();
-        let mut locked = original.clone();
-        locked.set_mode(0o000);
-        std::fs::set_permissions(&dir, locked).expect("locked");
-        struct Unlock<'a>(&'a std::path::Path, std::fs::Permissions);
-        impl Drop for Unlock<'_> {
-            fn drop(&mut self) {
-                let _ = std::fs::set_permissions(self.0, self.1.clone());
-            }
-        }
-        let _unlock = Unlock(&dir, original);
-
-        let problems = store.reload();
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert_eq!(problems[0].file, "rules");
-        assert_eq!(store.rules().len(), 1);
     }
 }
