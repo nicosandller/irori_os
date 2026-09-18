@@ -32,10 +32,29 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          if [[ ! "$version" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::tag '$GITHUB_REF_NAME' isn't vMAJOR.MINOR.PATCH with an optional -prerelease"
-            exit 1
+          fail() { echo "::error::tag '$GITHUB_REF_NAME' $1"; exit 1; }
+
+          # Mirror irori-types/build.rs::is_version: a tag that passes here must also build, or
+          # the validate job succeeds and the build jobs fail on the version assert.
+          [[ ${#version} -le 64 ]] || fail "is longer than 64 characters"
+          [[ "$version" != *"+"* ]] || fail "has a +build suffix"
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})(-(.*))?$ ]]; then
+            fail "isn't vMAJOR.MINOR.PATCH with an optional -prerelease"
           fi
+          if [[ -n "${BASH_REMATCH[4]}" ]]; then
+            pre="${BASH_REMATCH[5]}"
+            if [[ -z "$pre" || "$pre" == .* || "$pre" == *. || "$pre" == *..* ]]; then
+              fail "has an empty prerelease identifier"
+            fi
+            IFS='.' read -r -a ids <<<"$pre"
+            for id in "${ids[@]}"; do
+              [[ "$id" =~ ^[0-9A-Za-z-]+$ ]] || fail "has a prerelease identifier with invalid characters"
+              if [[ ${#id} -gt 1 && "$id" == 0* && "$id" =~ ^[0-9]+$ ]]; then
+                fail "has a numeric prerelease identifier with a leading zero"
+              fi
+            done
+          fi
+          echo "release tag $GITHUB_REF_NAME is valid"
 
   # The wasm UI is built once and shared by every target; without it the binaries embed the
   # placeholder page a UI-less `cargo build` leaves behind.
