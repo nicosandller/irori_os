@@ -5,7 +5,9 @@
 //! integration brought it in, what it calls itself, what firmware it's running, and which
 //! entities belong to it.
 
-use irori_types::{Area, AreaId, Device, Entity, EntityId, Name};
+use irori_types::{
+    Area, AreaId, Capabilities, Device, Entity, EntityId, EntityState, Name, SensorValue, State,
+};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
@@ -270,6 +272,13 @@ fn page(
     };
     let in_room = device.area_id.clone();
     let suggested = device.suggested_area.clone();
+    // The room to say as plain text, until "Edit" turns it into the picker.
+    let room_name = in_room.as_ref().and_then(|id| {
+        areas
+            .iter()
+            .find(|area| area.id.as_str() == id.as_str())
+            .map(|area| area.name.to_string())
+    });
     // What the device's own suggestion amounts to right now. Irori doesn't send *why* a device
     // is where it is, and doesn't need to: comparing the suggestion with the rooms that exist
     // and the room it's in tells all three stories apart.
@@ -304,106 +313,68 @@ fn page(
         <p class="crumb"><A href="/devices">"← All devices"</A></p>
         <div class="page-head">
             <h1>{device.name.to_string()}</h1>
-            <button type="button" on:click=start>"Edit"</button>
+            <div class="page-actions">
+                // The two things a person decides about a device, kept as buttons rather than a
+                // section: Edit opens the fields below; Ignore is what a device that has no use
+                // here is for.
+                <button type="button" on:click=start>"Edit"</button>
+                <button type="button" class="danger-button" on:click=ignore>"Ignore"</button>
+            </div>
         </div>
         {device
             .description
             .as_ref()
             .map(|description| view! { <p class="description-lede">{description.to_string()}</p> })}
         <p class="lede">{subtitle}</p>
-        {move || {
-            renaming.get().then(|| {
-                let save = save.clone();
-                view! {
-                    <form
-                        class="card about-form"
-                        on:submit=move |ev| {
-                            ev.prevent_default();
-                            save();
-                        }
-                    >
-                        <label>
-                            <span>"Name"</span>
-                            <input
-                                type="text"
-                                prop:value=draft
-                                on:input:target=move |ev| draft.set(ev.target().value())
-                            />
-                        </label>
-                        <label>
-                            <span>"Description"</span>
-                            <textarea
-                                rows="2"
-                                placeholder="What it's for, or where exactly it is"
-                                prop:value=description_draft
-                                on:input:target=move |ev| description_draft.set(ev.target().value())
-                            ></textarea>
-                        </label>
-                        <p class="muted small">
-                            "This is the device's only name and description: everywhere Irori "
-                            "shows it, and in the config files, it's this."
-                        </p>
-                        <div class="inline-form">
-                            <button type="submit" class="add">"Save"</button>
-                            <button type="button" on:click=move |_| renaming.set(false)>
-                                "Cancel"
-                            </button>
-                        </div>
-                    </form>
-                }
-            })
-        }}
 
         {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
 
+        // One card for the device itself: what it is, where it is, and — while "Edit" is open —
+        // the name, description and room that are a person's to decide.
         <section class="card">
-            <h2>"Where it is"</h2>
-            <label class="room-picker">
-                <span>"Room"</span>
-                <select
-                    on:change:target=move |ev| move_to(ev.target().value())
-                    prop:value=in_room
-                        .as_ref()
-                        .map(AreaId::to_string)
-                        .unwrap_or_else(|| NOWHERE.to_owned())
-                >
-                    <option value=NOWHERE selected=in_room.is_none()>"Not in a room"</option>
-                    {areas
-                        .iter()
-                        .map(|area| {
-                            let id = area.id.to_string();
-                            view! {
-                                <option value=id.clone() selected=in_room
-                                    .as_ref()
-                                    .is_some_and(|chosen| chosen.as_str() == id)
-                                >
-                                    {area.name.to_string()}
-                                </option>
+            <h2>"Device information"</h2>
+            {move || {
+                renaming.get().then(|| {
+                    let save = save.clone();
+                    view! {
+                        <form
+                            class="about-form"
+                            on:submit=move |ev| {
+                                ev.prevent_default();
+                                save();
                             }
-                        })
-                        .collect_view()}
-                    // Only worth offering when there's something to go back to.
-                    {suggested.is_some().then(|| view! {
-                        <option value=LET_THE_DEVICE_SAY>"Wherever the device says"</option>
-                    })}
-                </select>
-            </label>
-            {if areas.is_empty() {
-                view! {
-                    <p class="muted small">
-                        "No rooms yet. " <A href="/rooms">"Make one"</A>
-                        " and this device can go in it."
-                    </p>
-                }
-                .into_any()
-            } else {
-                ().into_any()
+                        >
+                            <label>
+                                <span>"Name"</span>
+                                <input
+                                    type="text"
+                                    prop:value=draft
+                                    on:input:target=move |ev| draft.set(ev.target().value())
+                                />
+                            </label>
+                            <label>
+                                <span>"Description"</span>
+                                <textarea
+                                    rows="2"
+                                    placeholder="What it's for, or where exactly it is"
+                                    prop:value=description_draft
+                                    on:input:target=move |ev| description_draft.set(ev.target().value())
+                                ></textarea>
+                            </label>
+                            <p class="muted small">
+                                "This is the device's only name and description: everywhere Irori "
+                                "shows it, and in the config files, it's this."
+                            </p>
+                            <div class="inline-form">
+                                <button type="submit" class="add">"Save"</button>
+                                <button type="button" on:click=move |_| renaming.set(false)>
+                                    "Cancel"
+                                </button>
+                            </div>
+                        </form>
+                    }
+                })
             }}
-            {suggestion.map(|note| view! { <p class="muted small">{note}</p> })}
-        </section>
-
-        <section class="card">
-            <h2>"What it is"</h2>
             <dl>
                 // One id, the same one as in this page's address and in the config files. It's
                 // made from the integration and its permanent handle, so it never changes.
@@ -411,6 +382,60 @@ fn page(
                 <dd>{device.id.to_string()}</dd>
                 <dt>"Through"</dt>
                 <dd>{device.integration.to_string()}</dd>
+                <dt>"Room"</dt>
+                // The room is a reading until "Edit" is open, when it becomes the picker: the
+                // page says where a device is without offering to move it by mistake.
+                <dd>
+                    {{
+                        let areas = areas.clone();
+                        move || {
+                            if renaming.get() {
+                                let move_to = move_to.clone();
+                                view! {
+                                <label class="room-picker">
+                                    <select
+                                        on:change:target=move |ev| move_to(ev.target().value())
+                                        prop:value=in_room
+                                            .as_ref()
+                                            .map(AreaId::to_string)
+                                            .unwrap_or_else(|| NOWHERE.to_owned())
+                                    >
+                                        <option value=NOWHERE selected=in_room.is_none()>
+                                            "Not in a room"
+                                        </option>
+                                        {areas
+                                            .iter()
+                                            .map(|area| {
+                                                let id = area.id.to_string();
+                                                view! {
+                                                    <option value=id.clone() selected=in_room
+                                                        .as_ref()
+                                                        .is_some_and(|chosen| chosen.as_str() == id)
+                                                    >
+                                                        {area.name.to_string()}
+                                                    </option>
+                                                }
+                                            })
+                                            .collect_view()}
+                                        // Only worth offering when there's something to go back to.
+                                        {suggested.is_some().then(|| view! {
+                                            <option value=LET_THE_DEVICE_SAY>
+                                                "Wherever the device says"
+                                            </option>
+                                        })}
+                                    </select>
+                                </label>
+                            }
+                            .into_any()
+                        } else {
+                            view! {
+                                {room_name.clone().unwrap_or_else(|| "Not in a room".to_owned())}
+                            }
+                            .into_any()
+                        }
+                        }
+                    }}
+                </dd>
                 {device.manufacturer.clone().map(|make| view! {
                     <dt>"Make"</dt>
                     <dd>{make}</dd>
@@ -436,22 +461,24 @@ fn page(
                     <dd><A href=format!("/devices/{via}")>{via.to_string()}</A></dd>
                 })}
             </dl>
+            {if areas.is_empty() {
+                view! {
+                    <p class="muted small">
+                        "No rooms yet. " <A href="/rooms">"Make one"</A>
+                        " and this device can go in it."
+                    </p>
+                }
+                .into_any()
+            } else {
+                ().into_any()
+            }}
+            {suggestion.map(|note| view! { <p class="muted small">{note}</p> })}
             {device.sw_version.as_ref().map(|_| view! {
                 <p class="muted small">
                     "Irori can read the firmware version but can't install updates yet; see the "
                     "roadmap (M1.8)."
                 </p>
             })}
-        </section>
-
-        <section class="card">
-            <h2>"Not wanted here?"</h2>
-            <p class="muted small">
-                "Ignoring a device takes it and its entities out of Irori: not listed, not "
-                "switchable, nothing it reports is kept. The device itself isn't touched, and it "
-                "can be let back in from the Devices page."
-            </p>
-            <button type="button" class="danger-button" on:click=ignore>"Ignore this device"</button>
         </section>
 
         <section class="card">
@@ -555,6 +582,31 @@ fn EntityRow(
     };
     let row = entity.clone();
 
+    // The expandable "last 24 hours" table. Fetched once, the first time it's opened, and kept:
+    // reopening shows the same day it loaded, which is honest about what was on file then.
+    // A mention of the recorder (M1.3) owning the long view lives under the table instead.
+    let open = RwSignal::new(false);
+    let history = RwSignal::new(None::<Result<Vec<EntityState>, String>>);
+    let fetching = RwSignal::new(false);
+    let toggle = {
+        let id = id.clone();
+        move |_| {
+            let id = id.clone();
+            if !open.get_untracked()
+                && !fetching.get_untracked()
+                && history.get_untracked().is_none()
+            {
+                fetching.set(true);
+                spawn_local(async move {
+                    let result = api::entity_history(&id).await;
+                    fetching.set(false);
+                    history.set(Some(result));
+                });
+            }
+            open.update(|open| *open = !*open);
+        }
+    };
+
     view! {
         <div class="entity-row">
             {move || devices::row(row.clone(), state.get(), controls)}
@@ -592,9 +644,125 @@ fn EntityRow(
                         .into_any()
                     }
                 }}
+                <button
+                    type="button"
+                    class="history-toggle"
+                    class:open=move || open.get()
+                    aria-expanded=move || open.get().to_string()
+                    on:click=toggle
+                >
+                    <span class="chevron" aria-hidden="true"></span>
+                    "Last 24 hours"
+                </button>
             </div>
+            {move || open.get().then(|| history_panel(entity.clone(), history))}
         </div>
     }
+}
+
+/// The unrolled "last 24 hours": the day of changes the server has recorded for this entity,
+/// newest first, in its own scroll so a sensor that changed a hundred times doesn't stretch the
+/// page. "As much as available" is what it says: the server keeps what happened while it's been
+/// running, and notes the long view is the recorder's job (M1.3).
+fn history_panel(
+    entity: Entity,
+    history: RwSignal<Option<Result<Vec<EntityState>, String>>>,
+) -> AnyView {
+    view! {
+        <div class="history">
+            {move || match history.get() {
+                None => view! {
+                    <p class="muted small history-note">"Looking for the last 24 hours…"</p>
+                }
+                .into_any(),
+                Some(Err(why)) => view! {
+                    <p class="why">{why}</p>
+                    <p class="muted small history-note">"The table is empty until it can be asked again."</p>
+                }
+                .into_any(),
+                Some(Ok(states)) if states.is_empty() => view! {
+                    <p class="muted small history-note">
+                        "No changes in the last 24 hours. Irori records a change each time one "
+                        "happens, and keeps the last day while it's running."
+                    </p>
+                }
+                .into_any(),
+                Some(Ok(states)) => view! {
+                    <div class="history-scroll">
+                        <table class="history">
+                            <thead>
+                                <tr>
+                                    <th scope="col">"Time"</th>
+                                    <th scope="col">"Reading"</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {states
+                                    .into_iter()
+                                    .rev()
+                                    .map(|state| {
+                                        let at = state.last_changed;
+                                        view! {
+                                            <tr>
+                                                <th scope="row">
+                                                    <time title=at.to_string()>{clock_time(at)}</time>
+                                                </th>
+                                                <td>{reading_of(&entity, &state)}</td>
+                                            </tr>
+                                        }
+                                    })
+                                    .collect_view()}
+                            </tbody>
+                        </table>
+                    </div>
+                }
+                .into_any(),
+            }}
+        </div>
+    }
+    .into_any()
+}
+
+/// What a change meant, in the same words as its row uses (`devices.rs`). The table's cells are
+/// plain text, so the reading is a string rather than the row's spans.
+fn reading_of(entity: &Entity, state: &EntityState) -> String {
+    let value = state.state.as_ref();
+    match (&entity.capabilities, value) {
+        (Capabilities::Sensor(capabilities), Some(State::Sensor(sensor))) => match &sensor.value {
+            SensorValue::Number(n) => {
+                let unit = capabilities
+                    .unit
+                    .as_ref()
+                    .map(|u| format!(" {u}"))
+                    .unwrap_or_default();
+                format!("{}{}", devices::number(*n), unit)
+            }
+            SensorValue::Text(text) => text.clone(),
+        },
+        (Capabilities::BinarySensor(capabilities), Some(State::BinarySensor(sensor))) => {
+            devices::wording(capabilities.device_class, sensor.on).to_owned()
+        }
+        (Capabilities::Light(_), Some(State::Light(light))) => {
+            let on = if light.on { "On" } else { "Off" };
+            light
+                .brightness
+                .map(|level| format!("{on} · {}%", (u16::from(level) * 100).div_ceil(255)))
+                .unwrap_or_else(|| on.to_owned())
+        }
+        (Capabilities::Switch(_), Some(State::Switch(switch))) => {
+            if switch.on { "On" } else { "Off" }.to_owned()
+        }
+        _ => "unknown".to_owned(),
+    }
+}
+
+/// The clock part of a timestamp, for the table's Time column. Server timestamps serialize as
+/// fixed RFC 3339 UTC (`2026-09-16T10:00:01.123Z`), so the time is the characters 11..19; the
+/// full string sits in the `<time>`'s title, and anything unexpected shows whole rather than
+/// guessed at.
+fn clock_time(at: irori_types::Timestamp) -> String {
+    let text = at.to_string();
+    text.get(11..19).map(str::to_owned).unwrap_or(text)
 }
 
 /// A device's battery, from whichever of its entities reports one.
@@ -642,7 +810,8 @@ fn missing(id: &str, known: bool) -> impl IntoView {
 mod tests {
     use irori_types::{
         Availability, BinarySensorCapabilities, BinarySensorState, Capabilities, Context,
-        EntityState, Origin, State, Timestamp,
+        EntityState, Origin, SensorCapabilities, SensorState, SensorValue, SensorValueType, State,
+        Timestamp,
     };
 
     use super::*;
@@ -741,5 +910,44 @@ mod tests {
         let mut moved = home(reading);
         moved.devices[0].area_id = Some("hall".parse().expect("a valid area id"));
         assert_ne!(before, shape_of(&moved, "radar"));
+    }
+
+    /// The table's Time column shows the clock part of the server's UTC timestamps, not the
+    /// date-long string that would crowd the column.
+    #[test]
+    fn clock_time_shows_the_clock_part() {
+        let at: Timestamp = "2026-09-16T10:00:01.123Z"
+            .parse()
+            .expect("a valid timestamp");
+        assert_eq!(clock_time(at), "10:00:01");
+    }
+
+    /// The table's Reading column uses the same words as the row above it: a sensor keeps its
+    /// unit, and a binary sensor says what its `true` means.
+    #[test]
+    fn history_readings_use_the_rows_words() {
+        let sensor = Entity {
+            id: "sensor.water_temp".parse().expect("a valid entity id"),
+            integration: "radar".parse().expect("a valid integration id"),
+            unique_id: "00:11:22:33:44:55-temp".parse().expect("a valid unique id"),
+            name: "Water temperature".parse().expect("a valid name"),
+            device_id: Some("radar".parse().expect("a valid device id")),
+            area_id: None,
+            capabilities: Capabilities::Sensor(SensorCapabilities {
+                value_type: SensorValueType::Number,
+                device_class: None,
+                unit: Some("°C".to_owned()),
+                state_class: None,
+            }),
+        };
+        let mut state = reading("2026-09-16T10:00:00Z", true);
+        state.state = Some(State::Sensor(SensorState {
+            value: SensorValue::Number(22.5),
+        }));
+        assert_eq!(reading_of(&sensor, &state), "22.5 °C");
+        assert_eq!(
+            reading_of(&entity(), &reading("2026-09-16T10:00:00Z", true)),
+            "On"
+        );
     }
 }

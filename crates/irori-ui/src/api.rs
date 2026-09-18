@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 
 use gloo_net::http::Request;
 use irori_types::{
-    Area, AreaId, Device, DeviceId, Entity, EntityId, EntityState, ExtensionId, Name, Waiting,
+    Area, AreaId, Device, DeviceId, Entity, EntityId, EntityState, ExtensionId, LightTurnOn, Name,
+    Waiting,
 };
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +17,7 @@ const HOME_URL: &str = "/api/dev/home";
 const HEALTH_URL: &str = "/api/health";
 const COMMAND_URL: &str = "/api/dev/command";
 const AREAS_URL: &str = "/api/dev/areas";
+const HISTORY_URL: &str = "/api/dev/history";
 
 /// Everything the page shows. Mirrors `HomeView` on the server; the two meet again in
 /// `irori-types` when the real API lands.
@@ -172,6 +174,9 @@ pub async fn fetch_home() -> Result<Home, String> {
 struct CommandRequest<'a> {
     entity_id: &'a EntityId,
     command: &'static str,
+    /// Brightness or color, for `turn_on` on a light that supports them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<&'a LightTurnOn>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -179,12 +184,17 @@ struct Refused {
     error: String,
 }
 
-/// Turns an entity on or off, and answers with its state once the integration confirms (or
-/// `None` if it vanished meanwhile). Brightness and color follow when the page can set them.
-pub async fn set_on(entity_id: &EntityId, on: bool) -> Result<Option<EntityState>, String> {
+/// Sends a command, and answers with the entity's state once the integration confirms (or `None`
+/// if it vanished meanwhile).
+async fn command(
+    entity_id: &EntityId,
+    command: &'static str,
+    data: Option<&LightTurnOn>,
+) -> Result<Option<EntityState>, String> {
     let body = CommandRequest {
         entity_id,
-        command: if on { "turn_on" } else { "turn_off" },
+        command,
+        data,
     };
     let response = Request::post(COMMAND_URL)
         .json(&body)
@@ -204,6 +214,20 @@ pub async fn set_on(entity_id: &EntityId, on: bool) -> Result<Option<EntityState
         .json::<Option<EntityState>>()
         .await
         .map_err(|e| format!("Irori sent something this page can't read: {e}"))
+}
+
+/// Turns an entity on or off.
+pub async fn set_on(entity_id: &EntityId, on: bool) -> Result<Option<EntityState>, String> {
+    command(entity_id, if on { "turn_on" } else { "turn_off" }, None).await
+}
+
+/// Turns a light on with its brightness, color temperature or color. Sending `turn_on` with the
+/// level is what dimming *is*: the light comes on (or stays on) at the level it asked for.
+pub async fn set_light(
+    entity_id: &EntityId,
+    data: &LightTurnOn,
+) -> Result<Option<EntityState>, String> {
+    command(entity_id, "turn_on", Some(data)).await
 }
 
 // --- Rooms and names -----------------------------------------------------------------------
@@ -390,6 +414,52 @@ struct SecretGiven<'a> {
 
 /// Hands an extension a secret it asked for. Irori writes it to `secrets.toml`, restarts the
 /// extension with it, and never sends it back.
+/// An official extension, as the Extensions page lists it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct CatalogEntry {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+    pub description: String,
+    pub version: String,
+    pub official: bool,
+    pub installed: bool,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {
+    let response = Request::get("/api/dev/catalog")
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        return match checked(response).await {
+            Err(reason) => Err(reason),
+            Ok(()) => Err("the server refused without a reason".into()),
+        };
+    }
+    response.json().await.map_err(unreachable)
+}
+
+pub async fn install_extension(id: &str) -> Result<(), String> {
+    let response = Request::post(&format!("/api/dev/extensions/{id}/install"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+pub async fn uninstall_extension(id: &str) -> Result<(), String> {
+    let response = Request::delete(&format!("/api/dev/extensions/{id}"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
 pub async fn give_secret(
     extension: &ExtensionId,
     path: &[String],
@@ -402,6 +472,37 @@ pub async fn give_secret(
         .await
         .map_err(unreachable)?;
     checked(response).await
+}
+
+/// One entity's last day, as the server's history endpoint answers it: the changes in order,
+/// oldest first.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct EntityHistory {
+    pub entity: EntityId,
+    pub states: Vec<EntityState>,
+}
+
+/// The last day of an entity's changes, for the page's expandable table. What the table shows:
+/// the most recent day of changes the server has seen while it's been running. The real
+/// recorder (M1.3) keeps the long, surviving view; this is the honest "while it's up" slice.
+pub async fn entity_history(entity_id: &EntityId) -> Result<Vec<EntityState>, String> {
+    let response = Request::get(&format!("{HISTORY_URL}/{entity_id}"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        // The core explains refusals in a sentence; fall back to the status code if it didn't.
+        let status = response.status();
+        return Err(match response.json::<Refused>().await {
+            Ok(refused) => refused.error,
+            Err(_) => format!("Irori refused that ({status})"),
+        });
+    }
+    response
+        .json::<EntityHistory>()
+        .await
+        .map(|history| history.states)
+        .map_err(|e| format!("Irori sent something this page can't read: {e}"))
 }
 
 #[cfg(test)]

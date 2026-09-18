@@ -332,7 +332,7 @@ async fn run(config: Config, mut ctx: IntegrationContext) -> Result<(), Integrat
 }
 ```
 
-The exact API is settled in M1.1, with `irori-int-demo` as the reference integration to copy.
+The exact API is settled in M1.1, with `extensions/demo` as the reference integration to copy.
 
 ## 10. External integrations
 

@@ -51,9 +51,6 @@ impl fmt::Display for BuildInfo {
 
 fn enabled_features() -> Vec<&'static str> {
     [
-        ("int-mqtt", cfg!(feature = "int-mqtt")),
-        ("int-demo", cfg!(feature = "int-demo")),
-        ("int-esphome", cfg!(feature = "int-esphome")),
         ("ui", cfg!(feature = "ui")),
         ("assist", cfg!(feature = "assist")),
     ]

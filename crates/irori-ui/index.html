@@ -161,6 +161,16 @@
     .state { color: var(--muted); font: .7rem var(--mono); letter-spacing: .08em;
              text-transform: uppercase; }
     .state.ok { color: var(--ember); }
+    .ext-list { margin: 0; padding: 0; list-style: none; }
+    .ext-list li { padding: .85rem 0; border-bottom: 1px solid var(--line); }
+    .ext-list li:last-child { border-bottom: none; }
+    .ext-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem; }
+    .ext-actions { margin-top: .6rem; }
+    button.danger { padding: .4rem .75rem; font: inherit; font-size: .9rem;
+                    color: var(--ember); background: var(--card); border: 1px solid var(--line);
+                    border-radius: .4rem; cursor: pointer; }
+    button.danger:hover { border-color: var(--ember); }
+    button:disabled { opacity: .55; cursor: default; }
     .dot { width: .5rem; height: .5rem; border-radius: 2px; background: var(--muted); }
     .dot.ok { background: var(--ember); box-shadow: 0 0 .4rem var(--ember); }
 
@@ -211,6 +221,19 @@
     .toggle:disabled { cursor: progress; opacity: .5; }
     .toggle.unknown .knob { transform: translateX(.67rem); }
 
+    /* A lit light's level and color, on its own line under the row: one slider per thing the
+       light can set. The value a slider shows is the device's, not the last thing asked for. */
+    .light-controls { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center;
+                      gap: .3rem .9rem; padding: .2rem .1rem 0; }
+    .light-controls .dim { display: inline-flex; align-items: center; gap: .45rem;
+                           font: .72rem var(--mono); color: var(--muted); }
+    .light-controls .lv { min-width: 2.6rem; text-align: right; font-variant-numeric: tabular-nums; }
+    .light-controls input[type="range"] { width: 7rem; accent-color: var(--ember); }
+    .light-controls input[type="color"] { width: 2.1rem; height: 1.55rem; padding: 0 .1rem;
+                                          border: 1px solid var(--line); border-radius: .4rem;
+                                          background: var(--card); cursor: pointer; }
+    .light-controls input:disabled { cursor: progress; opacity: .5; }
+
     /* Rooms: the part of the home a person arranged themselves. */
     .rooms { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
              margin: .25rem 0 .75rem; }
@@ -250,6 +273,11 @@
                           color: var(--muted); background: transparent;
                           border: 1px solid var(--line); border-radius: .4rem; cursor: pointer; }
     .page-head > button:hover { border-color: var(--ember); color: var(--ember); }
+    .page-actions { margin-left: auto; display: flex; gap: .5rem; align-items: center; }
+    .page-actions button { padding: .35rem .7rem; font: inherit; font-size: .85rem;
+                           color: var(--muted); background: transparent;
+                           border: 1px solid var(--line); border-radius: .4rem; cursor: pointer; }
+    .page-actions button:hover { border-color: var(--ember); color: var(--ember); }
 
     .room-picker { display: flex; align-items: center; gap: .75rem; }
     .room-picker > span { color: var(--muted); font: .7rem var(--mono); letter-spacing: .08em;
@@ -268,6 +296,27 @@
     button.link { padding: 0; margin-left: .5rem; font: inherit; font-size: .8rem;
                   color: var(--ember); background: none; border: none; cursor: pointer;
                   text-decoration: underline; }
+
+    /* The expandable "last 24 hours" table under an entity: its own scroll, so a day of
+       changes from a chatty sensor rolls through it instead of stretching the page. */
+    .history-toggle { margin-left: auto; display: inline-flex; align-items: center; gap: .3rem;
+                      padding: .25rem .5rem; font: inherit; font-size: .8rem; color: var(--muted);
+                      background: transparent; border: 1px solid var(--line); border-radius: .4rem;
+                      cursor: pointer; }
+    .history-toggle:hover { border-color: var(--ember); color: var(--ember); }
+    .history-toggle .chevron { transition: transform .15s; }
+    .history-toggle.open .chevron { transform: rotate(-45deg); }
+    .history { border-top: 1px solid var(--line); }
+    .history-scroll { max-height: 14rem; overflow-y: auto; }
+    table.history { width: 100%; border-collapse: collapse; font-size: .85rem; }
+    table.history th, table.history td { text-align: left; padding: .3rem .75rem;
+                                         border-bottom: 1px solid var(--line); }
+    table.history thead th { position: sticky; top: 0; background: var(--card);
+                             color: var(--muted); font: .65rem var(--mono); letter-spacing: .08em;
+                             text-transform: uppercase; border-bottom: 2px solid var(--line); }
+    table.history time { font: .8rem var(--mono); font-variant-numeric: tabular-nums;
+                         white-space: nowrap; }
+    .history-note { margin: 0; padding: .5rem .75rem; }
 
     /* The device table, grouped by integration: a header row per group that folds it away. */
     table.devices .icon-col { width: 2.25rem; padding-right: 0; }

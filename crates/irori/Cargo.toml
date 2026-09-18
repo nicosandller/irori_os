@@ -8,12 +8,9 @@ repository.workspace = true
 license.workspace = true
 
 [features]
-# Barebones default build (ROADMAP D17). `--no-default-features` must still build, start, and serve the API.
-default = ["int-mqtt", "int-demo", "int-esphome", "int-helpers", "ui"]
-int-mqtt = ["dep:irori-int-mqtt"]
-int-demo = ["dep:irori-int-demo"]
-int-esphome = ["dep:irori-int-esphome"]
-int-helpers = ["dep:irori-int-helpers"]
+# Barebones default build (ROADMAP D17). Official extensions are packages, not cargo features.
+# `--no-default-features` must still build, start, and serve the API.
+default = ["ui"]
 ui = ["dep:rust-embed", "dep:mime_guess"]
 # Opt-in, never in the default build (ROADMAP D13).
 assist = ["dep:irori-assist"]
@@ -23,10 +20,6 @@ irori-config.workspace = true
 irori-core.workspace = true
 irori-integration.workspace = true
 irori-types.workspace = true
-irori-int-mqtt = { workspace = true, optional = true }
-irori-int-demo = { workspace = true, optional = true }
-irori-int-esphome = { workspace = true, optional = true }
-irori-int-helpers = { workspace = true, optional = true }
 irori-assist = { workspace = true, optional = true }
 
 anyhow.workspace = true
@@ -38,11 +31,14 @@ rust-embed = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
+irori-int-demo.workspace = true
+irori-int-helpers.workspace = true
 schemars.workspace = true
 tempfile.workspace = true
 tower.workspace = true

@@ -1200,7 +1200,7 @@ once it is hosted.
 
 ## 16. Helpers
 
-Helpers are not a rule feature. They are switch entities from `integrations/irori-int-helpers`,
+Helpers are not a rule feature. They are switch entities from `extensions/helpers`,
 defined in `extensions/helpers.toml`:
 
 ```toml
@@ -1210,7 +1210,7 @@ initial = false
 ```
 
 That is `switch.guests_over` (the object id is the table key; see
-`integrations/irori-int-helpers/src/lib.rs`). A person may equally have `switch.guests_are_over`
+`extensions/helpers/src/lib.rs`). A person may equally have `switch.guests_are_over`
 if they named it that — [config.md](config.md) §3.6 uses that spelling. Rules refer to whatever
 entity id exists. Numbers, text, and timers are still later (D40); this spec does not invent
 them.
@@ -1227,7 +1227,7 @@ or `!on('switch.guests_over')`. Same type-check as any switch.
 
 ## 17. Worked example
 
-Demo hallway entities this branch actually registers (`integrations/irori-int-demo/src/lib.rs`):
+Demo hallway entities this branch actually registers (`extensions/demo/src/lib.rs`):
 
 | Entity id | What it is |
 |---|---|
@@ -1574,8 +1574,8 @@ confirmed). Pretending we can unsend it breaks D0. Waits cancel; calls don't.
 - `crates/irori-core/src/{clock,events,services,home}.rs` — `Clock` (`now`), `Event::StateChanged` (no `Bus` yet), `Command`, `Home::resolve`, `CallError`, `SERVICE_CALL_TIMEOUT`
 - `crates/irori-core/src/context_id.rs` — ULID from injected clock + `getrandom`; adapter implements `IdGen`
 - `crates/irori-config` — pattern this engine will copy for *its* files; the core does not load them
-- `integrations/irori-int-demo/src/lib.rs` — hallway devices
-- `integrations/irori-int-helpers/src/lib.rs` — `switch.<id>` toggles
+- `extensions/demo/src/lib.rs` — hallway devices
+- `extensions/helpers/src/lib.rs` — `switch.<id>` toggles
 - `xtask/src/deps.rs` — `irori-rules` → `irori-types` only, among workspace crates
 - `fixtures/README.md` — golden valid/invalid layout this spec's types join
 

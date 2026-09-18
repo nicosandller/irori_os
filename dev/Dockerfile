@@ -25,7 +25,17 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/target \
     cargo build --locked --release -p irori $FEATURES \
-    && cp /target/release/irori /irori
+      -p irori-int-demo -p irori-int-esphome -p irori-int-helpers -p irori-int-mqtt \
+    && cp /target/release/irori /irori \
+    && mkdir -p /official/demo/bin /official/esphome/bin /official/helpers/bin /official/mqtt/bin \
+    && cp extensions/demo/irori-extension.toml extensions/demo/icon.svg /official/demo/ \
+    && cp /target/release/irori-ext-demo /official/demo/bin/ \
+    && cp extensions/protocols/esphome/irori-extension.toml extensions/protocols/esphome/icon.svg /official/esphome/ \
+    && cp /target/release/irori-ext-esphome /official/esphome/bin/ \
+    && cp extensions/helpers/irori-extension.toml extensions/helpers/icon.svg /official/helpers/ \
+    && cp /target/release/irori-ext-helpers /official/helpers/bin/ \
+    && cp extensions/protocols/mqtt/irori-extension.toml /official/mqtt/ \
+    && cp /target/release/irori-ext-mqtt /official/mqtt/bin/
 
 FROM debian:${DEBIAN_RELEASE}-slim AS pi
 RUN apt-get update \
@@ -34,6 +44,7 @@ RUN apt-get update \
 # Run unprivileged, the way the systemd unit will (M1.7).
 RUN useradd --system --home-dir /var/lib/irori --create-home --shell /usr/sbin/nologin irori
 COPY --from=build /irori /usr/local/bin/irori
+COPY --from=build /official /usr/share/irori/extensions
 # Fails the build if the binary isn't really static (it was built against musl, this is glibc).
 RUN irori version
 USER irori
@@ -45,7 +56,8 @@ USER irori
 ENV IRORI_DATA=/var/lib/irori \
     IRORI_CONFIG=/var/lib/irori/config \
     IRORI_BIND=0.0.0.0:8480 \
-    IRORI_ALLOW_UNAUTHENTICATED_LAN=true
+    IRORI_ALLOW_UNAUTHENTICATED_LAN=true \
+    IRORI_OFFICIAL_PACKAGES=/usr/share/irori/extensions
 EXPOSE 8480
 HEALTHCHECK --interval=5s --timeout=2s --start-period=5s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8480/api/health || exit 1

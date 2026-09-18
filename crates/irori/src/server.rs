@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -14,7 +14,7 @@ use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use irori_core::{CallError, Command, Core, Event, ExtensionOverview};
+use irori_core::{CallError, Command, Core, Event, ExtensionHost, ExtensionOverview};
 use irori_types::{
     Area, AreaId, ContextId, Description, Device, DeviceId, Entity, EntityId, EntityState,
     ExtensionId, Floor, FloorId, LightTurnOn, Name, Origin, Placement, UserId,
@@ -24,6 +24,7 @@ use tokio::sync::broadcast;
 use crate::build_info::{BuildInfo, VERSION};
 use crate::config::{Config, EditError, Refused};
 use crate::db::Database;
+use crate::history::History;
 
 /// Who commands are attributed to until there are accounts to attribute them to (M1.5).
 static UNAUTHENTICATED: LazyLock<UserId> =
@@ -39,16 +40,26 @@ struct Inner {
     build: BuildInfo,
     core: Core,
     config: Config,
+    host: ExtensionHost,
+    history: History,
 }
 
 impl AppState {
-    pub fn new(db: Database, core: Core, config: Config) -> Self {
+    pub fn new(
+        db: Database,
+        core: Core,
+        config: Config,
+        host: ExtensionHost,
+        history: History,
+    ) -> Self {
         Self(Arc::new(Inner {
             started: Instant::now(),
             db,
             build: BuildInfo::current(),
             core,
             config,
+            host,
+            history,
         }))
     }
 }
@@ -72,6 +83,7 @@ pub fn router(state: AppState) -> Router {
             "/api/dev/states",
             get(|State(s): State<AppState>| async move { Json(s.0.core.states()) }),
         )
+        .route("/api/dev/history/{entity_id}", get(entity_history))
         .route(
             "/api/dev/extensions",
             get(|State(s): State<AppState>| async move { Json(s.0.core.extensions()) }),
@@ -87,6 +99,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/dev/devices/{id}", patch(edit_device))
         .route("/api/dev/entities/{id}", patch(edit_entity))
         .route("/api/dev/extensions/{id}/secrets", put(give_secret))
+        .route("/api/dev/catalog", get(catalog))
+        .route("/api/dev/extensions/{id}/install", post(install_official))
+        .route("/api/dev/extensions/install", post(install_url))
+        .route("/api/dev/extensions/{id}", axum::routing::delete(uninstall))
         .route("/api/dev/helpers/toggles", post(add_toggle))
         .route(
             "/api/dev/helpers/toggles/{id}",
@@ -126,6 +142,35 @@ async fn home(State(state): State<AppState>) -> Json<HomeView> {
         floors: core.floors(),
         held: core.held_devices(),
     })
+}
+
+/// The last day of an entity's changes, for the expandable table under its row on the Devices
+/// page. In memory, and only what this server has seen: it starts empty at each start, and the
+/// SQLite recorder (M1.3, `irori-recorder`) keeps the surviving, longer view behind the same
+/// idea.
+#[derive(Debug, Serialize)]
+struct HistoryView {
+    entity: EntityId,
+    /// The changes, oldest first. Empty when the entity exists but has changed nothing since
+    /// this server started.
+    states: Vec<EntityState>,
+}
+
+async fn entity_history(
+    State(state): State<AppState>,
+    Path(entity_id): Path<EntityId>,
+) -> Response {
+    if state.0.core.state(&entity_id).is_none() {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("there's no entity `{entity_id}`"),
+        );
+    }
+    Json(HistoryView {
+        entity: entity_id.clone(),
+        states: state.0.history.for_entity(&entity_id),
+    })
+    .into_response()
 }
 
 // --- Rooms, names, and where things live ---------------------------------------------------
@@ -680,6 +725,143 @@ async fn give_secret(
     }
 }
 
+/// Official catalog plus whether each one is installed in this instance.
+async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
+    let running = state.0.core.extensions();
+    Json(
+        crate::packages::official()
+            .into_iter()
+            .map(|item| {
+                let overview = running.get(&item.id);
+                CatalogEntry {
+                    id: item.id,
+                    name: item.name.to_string(),
+                    category: item.category,
+                    description: item.description,
+                    version: item.version,
+                    official: true,
+                    installed: overview.is_some(),
+                    state: overview.map(|o| match &o.status {
+                        irori_core::ExtensionStatus::Disabled => "disabled",
+                        irori_core::ExtensionStatus::Starting => "starting",
+                        irori_core::ExtensionStatus::Running => "running",
+                        irori_core::ExtensionStatus::Degraded { .. } => "degraded",
+                        irori_core::ExtensionStatus::Failed { .. } => "failed",
+                    }),
+                    reason: overview.and_then(|o| match &o.status {
+                        irori_core::ExtensionStatus::Degraded { reason }
+                        | irori_core::ExtensionStatus::Failed { reason, .. } => {
+                            Some(reason.clone())
+                        }
+                        _ => None,
+                    }),
+                }
+            })
+            .collect(),
+    )
+}
+
+#[derive(Debug, Serialize)]
+struct CatalogEntry {
+    id: ExtensionId,
+    name: String,
+    category: String,
+    description: String,
+    version: String,
+    official: bool,
+    installed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+async fn install_official(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {
+    let Some(item) = crate::packages::official_by_id(&id) else {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("`{id}` isn't an official extension"),
+        );
+    };
+    // Stage out of any live package's way and let `install_package` decide where it lands, so a
+    // double-click or a race can't overwrite files while a copy is running. A leftover staging
+    // dir is never read as a package again (its name isn't a slug, and `installed_packages`
+    // skips those).
+    let stage = state.0.host.packages_dir().join(staging_dir());
+    if let Err(why) = tokio::task::spawn_blocking({
+        let stage = stage.clone();
+        move || crate::packages::install_official(&item, &stage)
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()))
+    {
+        let _ = std::fs::remove_dir_all(&stage);
+        return refused(StatusCode::BAD_GATEWAY, why);
+    }
+    match state.0.host.install_package(stage.clone()) {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(why) => {
+            let _ = std::fs::remove_dir_all(&stage);
+            refused(StatusCode::CONFLICT, why)
+        }
+    }
+}
+
+/// A unique directory name under the packages dir for a download in flight.
+fn staging_dir() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock is after 1970")
+        .as_nanos();
+    format!("download-{nanos}")
+}
+
+#[derive(Debug, Deserialize)]
+struct InstallUrl {
+    url: String,
+}
+
+async fn install_url(State(state): State<AppState>, Json(body): Json<InstallUrl>) -> Response {
+    let url = body.url.trim();
+    if url.is_empty() {
+        return refused(StatusCode::BAD_REQUEST, "url is empty".into());
+    }
+    // `curl` understands every scheme it was built with, so one gate here keeps the endpoint
+    // from acting as a proxy for file:/ftp:/gopher: or anything else a hostile URL could reach.
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "only http:// and https:// URLs are allowed".into(),
+        );
+    }
+    let dest = state.0.host.packages_dir().join(staging_dir());
+    if let Err(why) = tokio::task::spawn_blocking({
+        let dest = dest.clone();
+        let url = url.to_owned();
+        move || crate::packages::install_url(&url, &dest)
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()))
+    {
+        let _ = std::fs::remove_dir_all(&dest);
+        return refused(StatusCode::BAD_GATEWAY, why);
+    }
+    match state.0.host.install_package(dest.clone()) {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(why) => {
+            let _ = std::fs::remove_dir_all(&dest);
+            refused(StatusCode::BAD_REQUEST, why)
+        }
+    }
+}
+
+async fn uninstall(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {
+    match state.0.host.uninstall(&id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(why) => refused(StatusCode::BAD_REQUEST, why),
+    }
+}
+
 /// An edit that couldn't be made says why; one that couldn't be written says that instead, because
 /// the two need different things from whoever is reading.
 fn edit_failed(error: EditError) -> Response {
@@ -927,20 +1109,34 @@ mod tests {
         dir: tempfile::TempDir,
         core: Core,
         config: Config,
+        history: History,
     }
 
     impl Server {
         fn new(core: Core) -> anyhow::Result<Self> {
             let dir = tempfile::tempdir()?;
             let config = Config::open_dir(dir.path().join("config"), &core);
-            Ok(Self { dir, core, config })
+            Ok(Self {
+                dir,
+                core,
+                config,
+                history: History::default(),
+            })
         }
 
         fn app(&self) -> anyhow::Result<Router> {
+            let host = irori_core::ExtensionHost::start(
+                &self.core,
+                Vec::new(),
+                irori_core::Timing::default(),
+            )
+            .map_err(anyhow::Error::msg)?;
             Ok(router(AppState::new(
                 crate::db::open(self.dir.path())?,
                 self.core.clone(),
                 self.config.clone(),
+                host,
+                self.history.clone(),
             )))
         }
 
@@ -1034,12 +1230,11 @@ mod tests {
     }
 
     /// A core with the demo extension running and its first state reports in.
-    #[cfg(feature = "int-demo")]
     async fn demo() -> anyhow::Result<(Core, irori_core::ExtensionHost)> {
         let core = core();
         let host = irori_core::ExtensionHost::start(
             &core,
-            crate::extensions::builtins()?,
+            vec![irori_integration::builtin::<irori_int_demo::Demo>().map_err(anyhow::Error::msg)?],
             irori_core::Timing::default(),
         )
         .map_err(anyhow::Error::msg)?;
@@ -1052,7 +1247,6 @@ mod tests {
         Ok((core, host))
     }
 
-    #[cfg(feature = "int-demo")]
     async fn post(
         core: Core,
         path: &str,
@@ -1062,7 +1256,6 @@ mod tests {
     }
 
     /// Everything the Devices page needs arrives in one response.
-    #[cfg(feature = "int-demo")]
     #[tokio::test]
     async fn dev_home_describes_the_whole_home() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
@@ -1105,7 +1298,6 @@ mod tests {
     }
 
     /// The page turns the lamp on and is told what it became, without waiting for a refresh.
-    #[cfg(feature = "int-demo")]
     #[tokio::test]
     async fn a_command_answers_with_the_state_it_produced() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
@@ -1141,8 +1333,49 @@ mod tests {
         Ok(())
     }
 
+    /// The per-entity history endpoint answers with the recorder's last day of changes, oldest
+    /// first, and says plainly when the entity isn't one Irori knows.
+    #[tokio::test]
+    async fn history_reports_the_last_day_of_changes() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+        let entity = core
+            .states()
+            .first()
+            .map(|state| state.entity_id.clone())
+            .ok_or_else(|| anyhow::anyhow!("the demo reported nothing"))?;
+
+        // What the recorder would have kept: feed it the endpoint's history by hand here, since
+        // the server under test isn't the one subscribed to the core.
+        let today = core
+            .state(&entity)
+            .ok_or_else(|| anyhow::anyhow!("the demo entity vanished"))?;
+        server.history.record(entity.clone(), today.clone());
+        let earlier = core
+            .state(&entity)
+            .ok_or_else(|| anyhow::anyhow!("the demo entity vanished"))?;
+        server.history.record(entity.clone(), earlier);
+
+        let (status, body) = server
+            .send(Request::get(format!("/api/dev/history/{entity}")).body(Body::empty())?)
+            .await?;
+        assert_eq!(status, StatusCode::OK);
+        let history: serde_json::Value = serde_json::from_slice(&body)?;
+        assert_eq!(history["entity"], serde_json::json!(entity.to_string()));
+        let states = history["states"].as_array().expect("a list of states");
+        assert_eq!(states.len(), 2, "the two recorded changes: {history}");
+
+        // An entity Irori has never heard of is refused, not answered with an empty table.
+        let (status, _) = server
+            .send(Request::get("/api/dev/history/sensor.never_heard_of").body(Body::empty())?)
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        host.shutdown().await;
+        Ok(())
+    }
+
     /// A refused command says why, with a status that matches the reason.
-    #[cfg(feature = "int-demo")]
     #[tokio::test]
     async fn refusals_explain_themselves() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
@@ -1182,7 +1415,6 @@ mod tests {
     }
 
     /// The demo's virtual devices show up in the read-only view.
-    #[cfg(feature = "int-demo")]
     #[tokio::test]
     async fn dev_view_lists_demo_devices_and_states() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
@@ -1207,7 +1439,6 @@ mod tests {
 
     /// The whole round trip: make a room, put a device in it, and find both on disk in files a
     /// person could have written themselves.
-    #[cfg(feature = "int-demo")]
     #[tokio::test]
     async fn a_room_and_a_device_in_it_are_written_where_a_person_can_read_them()
     -> anyhow::Result<()> {
@@ -1261,7 +1492,6 @@ mod tests {
 
     /// Renaming a device renames the entities that were following its name, and taking the name
     /// away gives the integration's name back rather than leaving the chosen one stuck.
-    #[cfg(feature = "int-demo")]
     #[tokio::test]
     async fn a_rename_carries_the_entities_and_can_be_undone() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
@@ -1301,7 +1531,6 @@ mod tests {
     }
 
     /// An entity can be named on its own, and then it stops following its device.
-    #[cfg(feature = "int-demo")]
     #[tokio::test]
     async fn an_entity_can_have_a_name_of_its_own() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
@@ -1337,7 +1566,6 @@ mod tests {
 
     /// Deleting a room doesn't delete what was said about the devices in it: the device is
     /// unplaced, and making the room again puts it back.
-    #[cfg(feature = "int-demo")]
     #[tokio::test]
     async fn deleting_a_room_unplaces_its_devices_without_forgetting_them() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
@@ -1389,7 +1617,6 @@ mod tests {
     /// "Not in a room" is an answer. The demo lamp's firmware asks for the Study; once that room
     /// exists the lamp is in it, and `area: false` must take it out and keep it out, while
     /// `area: null` hands the decision back to the device.
-    #[cfg(feature = "int-demo")]
     #[tokio::test]
     async fn a_device_can_be_kept_out_of_the_room_it_asks_for() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
@@ -1530,7 +1757,6 @@ mod tests {
     }
 
     /// Edits that can't be made say why, and change nothing.
-    #[cfg(feature = "int-demo")]
     #[tokio::test]
     async fn refused_edits_explain_themselves() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
@@ -1748,7 +1974,6 @@ mod tests {
 
     /// Ignoring a device takes it out of everything the page shows, writes it down, and letting
     /// it back in restores it with its entities.
-    #[cfg(feature = "int-demo")]
     #[tokio::test]
     async fn a_device_can_be_ignored_and_let_back_in() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
@@ -1796,7 +2021,6 @@ mod tests {
 
     /// "Let back in" restores the device to the home, even when Irori is asking before adding
     /// new ones. Clearing `ignored` alone would put a never-added device on the waiting list.
-    #[cfg(feature = "int-demo")]
     #[tokio::test]
     async fn letting_a_device_back_in_adds_it_even_when_asking() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
@@ -1838,7 +2062,6 @@ mod tests {
 
     /// The helpers extension on its own, started against a core with storage that outlives it,
     /// as the database does.
-    #[cfg(feature = "int-helpers")]
     async fn helpers(core: &Core) -> anyhow::Result<irori_core::ExtensionHost> {
         irori_core::ExtensionHost::start(
             core,
@@ -1851,7 +2074,6 @@ mod tests {
         .map_err(anyhow::Error::msg)
     }
 
-    #[cfg(feature = "int-helpers")]
     async fn until(what: &str, mut check: impl FnMut() -> bool) -> anyhow::Result<()> {
         for _ in 0..500 {
             if check() {
@@ -1865,7 +2087,6 @@ mod tests {
     /// A toggle made from the page is a switch that remembers its value — through a new toggle
     /// being added, which restarts the extension, and through Irori starting again. Renaming it
     /// changes its one name, in the file that defines it, and removing it removes the entity.
-    #[cfg(feature = "int-helpers")]
     #[tokio::test]
     async fn a_toggle_keeps_its_value_and_has_one_name() -> anyhow::Result<()> {
         let storage: Arc<dyn irori_integration::Storage> =
@@ -1971,7 +2192,6 @@ mod tests {
     }
 
     /// An icon arrives as an image with a policy that stops it doing anything but being one.
-    #[cfg(feature = "int-demo")]
     #[tokio::test]
     async fn an_extensions_icon_is_served_as_a_locked_down_image() -> anyhow::Result<()> {
         let (core, host) = demo().await?;

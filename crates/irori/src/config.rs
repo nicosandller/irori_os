@@ -359,7 +359,6 @@ mod tests {
 
     /// Turning on "ask before adding" keeps the home as it is: what's already in it is written
     /// down as added, so neither this moment nor the next restart empties it.
-    #[cfg(feature = "int-demo")]
     #[tokio::test]
     async fn asking_before_adding_keeps_the_devices_already_here() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
@@ -368,10 +367,7 @@ mod tests {
         let host = irori_core::ExtensionHost::start(
             &core,
             // The demo alone: ESPHome would find whatever is on this network partway through.
-            crate::extensions::builtins()?
-                .into_iter()
-                .filter(|builtin| builtin.manifest.extension.id.as_str() == "demo")
-                .collect(),
+            vec![irori_integration::builtin::<irori_int_demo::Demo>().map_err(anyhow::Error::msg)?],
             irori_core::Timing::default(),
         )
         .map_err(anyhow::Error::msg)?;
@@ -407,7 +403,6 @@ mod tests {
 
     /// Asking already on in `irori.toml` at startup keeps a home that joined while asking was
     /// off: those devices were written down as added, so they are not "new".
-    #[cfg(feature = "int-demo")]
     #[tokio::test]
     async fn starting_with_asking_already_on_keeps_the_devices_already_here() -> anyhow::Result<()>
     {
@@ -417,10 +412,10 @@ mod tests {
             let _config = Config::open_dir(dir.path(), &core);
             let host = irori_core::ExtensionHost::start(
                 &core,
-                crate::extensions::builtins()?
-                    .into_iter()
-                    .filter(|builtin| builtin.manifest.extension.id.as_str() == "demo")
-                    .collect(),
+                vec![
+                    irori_integration::builtin::<irori_int_demo::Demo>()
+                        .map_err(anyhow::Error::msg)?,
+                ],
                 irori_core::Timing::default(),
             )
             .map_err(anyhow::Error::msg)?;
@@ -448,10 +443,7 @@ mod tests {
         assert!(core.settings().ask_before_adding);
         let host = irori_core::ExtensionHost::start(
             &core,
-            crate::extensions::builtins()?
-                .into_iter()
-                .filter(|builtin| builtin.manifest.extension.id.as_str() == "demo")
-                .collect(),
+            vec![irori_integration::builtin::<irori_int_demo::Demo>().map_err(anyhow::Error::msg)?],
             irori_core::Timing::default(),
         )
         .map_err(anyhow::Error::msg)?;
@@ -510,7 +502,6 @@ mod tests {
 
     /// If recording `added` fails when asking is turned on, asking must not take effect: the
     /// devices already in the home would otherwise move to the held list.
-    #[cfg(feature = "int-demo")]
     #[tokio::test]
     async fn a_failed_write_when_asking_starts_does_not_hold_the_home() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
@@ -518,10 +509,7 @@ mod tests {
         let _config = Config::open_dir(dir.path(), &core);
         let host = irori_core::ExtensionHost::start(
             &core,
-            crate::extensions::builtins()?
-                .into_iter()
-                .filter(|builtin| builtin.manifest.extension.id.as_str() == "demo")
-                .collect(),
+            vec![irori_integration::builtin::<irori_int_demo::Demo>().map_err(anyhow::Error::msg)?],
             irori_core::Timing::default(),
         )
         .map_err(anyhow::Error::msg)?;

@@ -45,7 +45,7 @@ The key is written to `secrets.toml` in the config directory, keyed by the devic
 
 ```toml
 [esphome.keys]
-"00:11:22:33:44:55" = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=="
+"00:11:22:33:44:55" = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="
 ```
 
 You can write that by hand instead — the MAC in any common form (`00:11:22:33:44:55`,

@@ -1,0 +1,43 @@
+# Official first-party extensions. Source lives in this repo. None of them are linked into the
+# irori binary: Install copies a package into the instance (from this checkout, from packages
+# shipped beside the binary, or from a GitHub release of this repo).
+
+[[extension]]
+id = "demo"
+name = "Demo"
+category = "demo"
+description = "Virtual devices for trying Irori without hardware: a study lamp and plug, a hallway light, motion, illuminance, and an mmWave with occupancy and target distance."
+version = "0.1.0"
+source = "extensions/demo"
+crate = "irori-int-demo"
+bin = "irori-ext-demo"
+
+[[extension]]
+id = "esphome"
+name = "ESPHome"
+category = "protocol"
+description = "Devices running ESPHome firmware, over ESPHome's native API."
+version = "0.1.0"
+source = "extensions/protocols/esphome"
+crate = "irori-int-esphome"
+bin = "irori-ext-esphome"
+
+[[extension]]
+id = "mqtt"
+name = "MQTT"
+category = "protocol"
+description = "MQTT devices through Home Assistant MQTT Discovery. Not implemented yet."
+version = "0.1.0"
+source = "extensions/protocols/mqtt"
+crate = "irori-int-mqtt"
+bin = "irori-ext-mqtt"
+
+[[extension]]
+id = "helpers"
+name = "Helpers"
+category = "helpers"
+description = "Values Irori keeps itself rather than a device reporting them: toggles, to begin with."
+version = "0.1.0"
+source = "extensions/helpers"
+crate = "irori-int-helpers"
+bin = "irori-ext-helpers"
