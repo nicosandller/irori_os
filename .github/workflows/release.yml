@@ -1,7 +1,8 @@
 name: Release
 
 # Pushing a tag like `v0.2.0` builds the UI, builds the binary and the official extensions for
-# every target, and attaches them to a GitHub Release. `install/install.sh` downloads from there.
+# every target, and attaches them and `install/install.sh` to a GitHub Release. The installer
+# downloads the binary from there; `releases/latest/download/install.sh` is the one-liner.
 on:
   push:
     tags: ["v*"]
@@ -162,6 +163,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
@@ -186,4 +190,4 @@ jobs:
             --title "Irori $GITHUB_REF_NAME" \
             --generate-notes \
             $prerelease \
-            dist/*.tar.gz dist/SHA256SUMS
+            dist/*.tar.gz dist/SHA256SUMS install/install.sh

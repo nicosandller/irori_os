@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Irori installer: detect the platform, download a prebuilt binary, verify it, and put it on PATH.
 #
-#   curl -fsSL https://raw.githubusercontent.com/nicosandller/irori_os/main/install/install.sh | bash
+#   curl -fsSL https://github.com/nicosandller/irori_os/releases/latest/download/install.sh | bash
 #
 # Options (with `curl | bash`, pass them after `bash -s --`):
 #   -v, --version <tag>   install a specific release, e.g. 0.2.0 or v0.2.0
@@ -38,8 +38,8 @@ Options:
         --no-modify-path  Don't add the install directory to your shell config
 
 Examples:
-    curl -fsSL https://raw.githubusercontent.com/$REPO/main/install/install.sh | bash
-    curl -fsSL https://raw.githubusercontent.com/$REPO/main/install/install.sh | bash -s -- --version 0.2.0
+    curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh | bash
+    curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh | bash -s -- --version 0.2.0
     ./install.sh --binary ./target/release/irori
 EOF
 }
