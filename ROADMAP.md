@@ -25,7 +25,7 @@ Last revised: 2026-09-15. Based on the original `irori-project-plan.md`, revised
 | D4 | **AI dashboards produce generated HTML** | Owner's call. Risks: security (model-written JS) and maintainability. Mitigations are mandatory, not optional: sandboxed iframe, capability-scoped bridge SDK, versioning (§6.3). |
 | D5 | **Frontend is Rust/WASM** | Shared types crate between server and UI; no TS codegen. Leptos (CSR) recommended; confirm with a Phase 0 spike vs Dioxus. |
 | D6 | **v1 persona: tinkerers with MQTT gear** | Matches the MQTT-first device story; enables no-migration trials alongside HA. |
-| D7 | **License: decide later — hard deadline** before the repo goes public *or* the first external contribution, whichever comes first | Relicensing after outside contributions needs every contributor's consent. |
+| D7 | **License: Apache-2.0** | Chosen before the repo went public, so no relicensing-with-consent problem exists. Permissive like Home Assistant: anyone can use, modify and build on it, commercially included (royalty-free by design). Monetization is the extralegal kind: hosted tier, remote access, backups, paid extensions and support (§9). |
 | D8 | **The first-party sequential engine is a closed typed schema + small expression language, no templates.** Other engines may use other shapes. | Validation against the real home is this engine's product. The OS does not own "what a rule is." |
 | D9 | **Traces are emitted by an automation engine, stored separately from state history** | The visualizer needs "condition X read Y and evaluated false", which state history can't reconstruct. The core stores traces; engines write them. |
 | D10 | **The first-party sequential engine is deterministic: injected clock + state source** | Enables backtesting/replay. Other engines (LLM, flow-based) are not required to be deterministic. |
@@ -590,7 +590,7 @@ The manifest and the integration, dashboard, and card contracts already exist an
 ## 9. Phase 4 — Product and public launch
 
 - Public alpha (target: after Phase 2a), then beta (after 2b).
-- **License decision (D7)** before the repo goes public.
+- **License decision (D7)** — decided, before the repo goes public: Apache-2.0 (see the decision log and `LICENSE`).
 - Docs site; `irori.dev` (check domain and trademark availability early, even in Phase 0).
 - Hosted AI tier as an `LlmProvider` backed by an Irori service (usage credits).
 - Remote access (e.g. an optional relay) and off-site backups as paid conveniences.
@@ -622,7 +622,7 @@ The manifest and the integration, dashboard, and card contracts already exist an
 | Local LLMs too weak for generation | Poor AI experience for privacy-focused users | Validation loops, eval harness, per-feature model choice |
 | SD card wear from the recorder | Hardware failures blamed on Irori | Batched writes, retention, excludes, documented SSD recommendation |
 | Two controllers fighting in shadow mode | Confusing device behavior | Docs plus a UI warning when a device is also commanded by another source (visible via MQTT) |
-| License ambiguity blocks contributors | Can't accept PRs | D7 deadline |
+| ~~License ambiguity blocks contributors~~ | ~~Can't accept PRs~~ | Resolved: Apache-2.0 (D7) |
 
 ---
 
@@ -638,7 +638,7 @@ The manifest and the integration, dashboard, and card contracts already exist an
 8. **Config format details:** TOML for everything, or JSON for rules (current) and TOML for the rest? JSON rules match the schema and LLM output; TOML reads nicer by hand.
 9. **Monetization mechanism:** hosted AI credits vs remote access vs a hosted instance.
 10. **Appliance image:** yes or no (defer to Phase 4 with user data).
-11. **License** (D7 deadline).
+11. ~~**License**~~ → decided: Apache-2.0 (D7).
 12. **Extension id namespacing:** flat slugs (`switchbot`, today's `IntegrationId` format) or namespaced (`author.switchbot`) to avoid collisions in a public registry? Namespacing would need a new id format, since the current slug rules forbid dots. Decide before the registry opens in Phase 3.
 13. **Card composition:** do cards run inside the dashboard's sandbox (simpler, faster) or each in a nested sandbox (stronger isolation)? Decide in the dashboards spec (§6.4).
 14. **Extensions contributing rule building blocks:** should extensions add typed triggers/conditions/actions, or only services and events (which rules can already use)? *Lean: services and events only, to keep D8's closed rule schema.*
