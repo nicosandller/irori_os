@@ -247,12 +247,36 @@ else
 fi
 
 # How to put the install directory on PATH depends on the shell: fish uses `set -gx`, POSIX
-# shells use `export`.
+# shells use `export`. Quoting matters: `IRORI_HOME` is user-controlled, and a path containing a
+# quote, backslash, `$(...)` or a backtick would otherwise break `PATH` or run commands when the
+# config is sourced. POSIX single quotes need only the quote itself escaped; fish single quotes
+# also treat backslash specially.
+posix_quote() {
+    local s="$1" out="" i ch
+    for (( i = 0; i < ${#s}; i++ )); do
+        ch="${s:i:1}"
+        if [[ "$ch" == "'" ]]; then out+="'\\''"; else out+="$ch"; fi
+    done
+    printf "'%s'" "$out"
+}
+
+fish_quote() {
+    local s="$1" out="" i ch
+    for (( i = 0; i < ${#s}; i++ )); do
+        ch="${s:i:1}"
+        case "$ch" in
+            \\ | \') out+="\\$ch" ;;
+            *) out+="$ch" ;;
+        esac
+    done
+    printf "'%s'" "$out"
+}
+
 current_shell="$(basename "${SHELL:-sh}")"
 if [[ "$current_shell" == "fish" ]]; then
-    path_line="set -gx PATH \"$INSTALL_DIR\" \$PATH"
+    path_line="set -gx PATH $(fish_quote "$INSTALL_DIR") \"\$PATH\""
 else
-    path_line="export PATH=\"$INSTALL_DIR:\$PATH\""
+    path_line="export PATH=$(posix_quote "$INSTALL_DIR"):\"\$PATH\""
 fi
 
 add_to_path() {
