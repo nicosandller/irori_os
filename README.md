@@ -207,3 +207,7 @@ xtask/         repository automation (`cargo xtask …`)
 ```
 
 Most crates are empty shells for now; ROADMAP §2.1 describes what each will hold.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).

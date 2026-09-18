@@ -25,7 +25,8 @@ exclude = ["crates/irori-ui"]
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
-# License is intentionally undecided (ROADMAP D7). Do not publish.
+license = "Apache-2.0"
+# Not published to crates.io (ROADMAP D7); releases are binaries plus extensions.
 publish = false
 repository = "https://github.com/nicosandller/irori_os"
 
