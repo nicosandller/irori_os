@@ -119,4 +119,4 @@ A solo side project aiming at a real product, not a VC-scale company. The likely
 - Bring-your-own AI key or local model always works.
 - A paid, hosted tier offers convenience: AI generation credits without managing keys, maybe remote access and backups.
 
-Licensing is undecided; see the roadmap for the deadline on that decision.
+Licensed under [Apache-2.0](LICENSE), settled at the roadmap's D7 decision: the core stays free and open, and monetization is the paid hosted tier, not the core.
