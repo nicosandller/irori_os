@@ -1095,7 +1095,9 @@ fn light_controls(
     controls: Controls,
 ) -> AnyView {
     let entity_id = entity.id.clone();
-    let Some(light) = light else { return ().into_any(); };
+    let Some(light) = light else {
+        return ().into_any();
+    };
 
     let mut sub = Vec::new();
     if capabilities.brightness {
@@ -1245,12 +1247,7 @@ fn reading(level: u8) -> impl IntoView {
 /// A switch showing what the entity is doing, not what was last clicked: it moves when the
 /// device reports back. A light that has never reported sits in between, and clicking turns it
 /// on.
-fn knob(
-    entity: &Entity,
-    on: Option<bool>,
-    offline: bool,
-    controls: Controls,
-) -> impl IntoView {
+fn knob(entity: &Entity, on: Option<bool>, offline: bool, controls: Controls) -> impl IntoView {
     let entity_id = entity.id.clone();
     let busy = {
         let entity_id = entity_id.clone();
@@ -1449,8 +1446,16 @@ mod tests {
         assert_eq!(hex_from_rgb([0, 0, 0]), "#000000");
         assert_eq!(rgb_from_hex("#ff0080"), Some([255, 0, 128]));
         assert_eq!(rgb_from_hex("ff0080"), Some([255, 0, 128]));
-        assert_eq!(rgb_from_hex("FF00FF"), Some([255, 0, 255]), "upper case is a color too");
-        assert_eq!(rgb_from_hex("#fff"), None, "short form isn't what the input gives");
+        assert_eq!(
+            rgb_from_hex("FF00FF"),
+            Some([255, 0, 255]),
+            "upper case is a color too"
+        );
+        assert_eq!(
+            rgb_from_hex("#fff"),
+            None,
+            "short form isn't what the input gives"
+        );
         assert_eq!(rgb_from_hex("#ff00"), None);
         assert_eq!(rgb_from_hex("#gg0000"), None);
         assert_eq!(rgb_from_hex(""), None);

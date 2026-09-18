@@ -57,6 +57,7 @@ pub fn run() -> anyhow::Result<()> {
 
 /// Whether `text` names `word`, as a word: "matters" doesn't mention Matter, and a check that
 /// thinks it does is a check nobody will keep.
+#[cfg(test)]
 fn mentions(text: &str, word: &str) -> bool {
     let boundary = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
     text.match_indices(word).any(|(at, _)| {

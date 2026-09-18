@@ -216,7 +216,13 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
 
             let served = axum::serve(
                 listener,
-server::router(server::AppState::new(db, core, settings, host.clone(), history)),
+                server::router(server::AppState::new(
+                    db,
+                    core,
+                    settings,
+                    host.clone(),
+                    history,
+                )),
             )
             .with_graceful_shutdown(shutdown_signal())
             .await

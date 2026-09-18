@@ -218,17 +218,15 @@ async fn command(
 
 /// Turns an entity on or off.
 pub async fn set_on(entity_id: &EntityId, on: bool) -> Result<Option<EntityState>, String> {
-    command(
-        entity_id,
-        if on { "turn_on" } else { "turn_off" },
-        None,
-    )
-    .await
+    command(entity_id, if on { "turn_on" } else { "turn_off" }, None).await
 }
 
 /// Turns a light on with its brightness, color temperature or color. Sending `turn_on` with the
 /// level is what dimming *is*: the light comes on (or stays on) at the level it asked for.
-pub async fn set_light(entity_id: &EntityId, data: &LightTurnOn) -> Result<Option<EntityState>, String> {
+pub async fn set_light(
+    entity_id: &EntityId,
+    data: &LightTurnOn,
+) -> Result<Option<EntityState>, String> {
     command(entity_id, "turn_on", Some(data)).await
 }
 
@@ -438,7 +436,10 @@ pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {
         .await
         .map_err(unreachable)?;
     if !response.ok() {
-        return Err(checked(response).await.unwrap_err());
+        return match checked(response).await {
+            Err(reason) => Err(reason),
+            Ok(()) => Err("the server refused without a reason".into()),
+        };
     }
     response.json().await.map_err(unreachable)
 }

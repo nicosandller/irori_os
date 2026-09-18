@@ -5,7 +5,9 @@
 //! integration brought it in, what it calls itself, what firmware it's running, and which
 //! entities belong to it.
 
-use irori_types::{Area, AreaId, Capabilities, Device, Entity, EntityId, EntityState, Name, SensorValue, State};
+use irori_types::{
+    Area, AreaId, Capabilities, Device, Entity, EntityId, EntityState, Name, SensorValue, State,
+};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
@@ -737,10 +739,9 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
             }
             SensorValue::Text(text) => text.clone(),
         },
-        (
-            Capabilities::BinarySensor(capabilities),
-            Some(State::BinarySensor(sensor)),
-        ) => devices::wording(capabilities.device_class, sensor.on).to_owned(),
+        (Capabilities::BinarySensor(capabilities), Some(State::BinarySensor(sensor))) => {
+            devices::wording(capabilities.device_class, sensor.on).to_owned()
+        }
         (Capabilities::Light(_), Some(State::Light(light))) => {
             let on = if light.on { "On" } else { "Off" };
             light
@@ -915,7 +916,9 @@ mod tests {
     /// date-long string that would crowd the column.
     #[test]
     fn clock_time_shows_the_clock_part() {
-        let at: Timestamp = "2026-09-16T10:00:01.123Z".parse().expect("a valid timestamp");
+        let at: Timestamp = "2026-09-16T10:00:01.123Z"
+            .parse()
+            .expect("a valid timestamp");
         assert_eq!(clock_time(at), "10:00:01");
     }
 
@@ -926,9 +929,7 @@ mod tests {
         let sensor = Entity {
             id: "sensor.water_temp".parse().expect("a valid entity id"),
             integration: "radar".parse().expect("a valid integration id"),
-            unique_id: "00:11:22:33:44:55-temp"
-                .parse()
-                .expect("a valid unique id"),
+            unique_id: "00:11:22:33:44:55-temp".parse().expect("a valid unique id"),
             name: "Water temperature".parse().expect("a valid name"),
             device_id: Some("radar".parse().expect("a valid device id")),
             area_id: None,

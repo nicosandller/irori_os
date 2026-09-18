@@ -82,7 +82,9 @@ pub async fn record(history: History, mut events: broadcast::Receiver<Event>) {
     loop {
         match events.recv().await {
             Ok(Event::StateChanged {
-                entity_id, new_state, ..
+                entity_id,
+                new_state,
+                ..
             }) => history.record(entity_id, *new_state),
             Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
             Err(broadcast::error::RecvError::Closed) => return,
@@ -127,7 +129,10 @@ mod tests {
         let seen = history.for_entity(&plug());
         assert_eq!(seen.len(), 2);
         assert_eq!(seen[0].state, Some(State::Switch(SwitchState { on: true })));
-        assert_eq!(seen[1].state, Some(State::Switch(SwitchState { on: false })));
+        assert_eq!(
+            seen[1].state,
+            Some(State::Switch(SwitchState { on: false }))
+        );
     }
 
     #[test]
@@ -159,7 +164,11 @@ mod tests {
             history.record(plug(), state(true, "2026-09-16T10:00:00Z"));
         }
         let seen = history.for_entity(&plug());
-        assert_eq!(seen.len(), MAX_PER_ENTITY, "kept at most the cap, oldest dropped");
+        assert_eq!(
+            seen.len(),
+            MAX_PER_ENTITY,
+            "kept at most the cap, oldest dropped"
+        );
     }
 
     #[test]

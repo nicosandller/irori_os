@@ -45,7 +45,13 @@ struct Inner {
 }
 
 impl AppState {
-    pub fn new(db: Database, core: Core, config: Config, host: ExtensionHost, history: History) -> Self {
+    pub fn new(
+        db: Database,
+        core: Core,
+        config: Config,
+        host: ExtensionHost,
+        history: History,
+    ) -> Self {
         Self(Arc::new(Inner {
             started: Instant::now(),
             db,
@@ -1321,9 +1327,7 @@ mod tests {
         let today = core
             .state(&entity)
             .ok_or_else(|| anyhow::anyhow!("the demo entity vanished"))?;
-        server
-            .history
-            .record(entity.clone(), today.clone());
+        server.history.record(entity.clone(), today.clone());
         let earlier = core
             .state(&entity)
             .ok_or_else(|| anyhow::anyhow!("the demo entity vanished"))?;
@@ -1340,10 +1344,7 @@ mod tests {
 
         // An entity Irori has never heard of is refused, not answered with an empty table.
         let (status, _) = server
-            .send(
-                Request::get("/api/dev/history/sensor.never_heard_of")
-                    .body(Body::empty())?,
-            )
+            .send(Request::get("/api/dev/history/sensor.never_heard_of").body(Body::empty())?)
             .await?;
         assert_eq!(status, StatusCode::NOT_FOUND);
 
