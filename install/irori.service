@@ -17,6 +17,9 @@ Wants=network-online.target
 Type=simple
 User=irori
 Group=irori
+# SQLite creates irori.db and its WAL/SHM files under this umask; 0077 keeps them 0600
+# so integration-private values (pairing keys, token refreshes) never leak to other users.
+UMask=0077
 Environment=IRORI_DATA=/var/lib/irori
 Environment=IRORI_CONFIG=/var/lib/irori/config
 Environment=IRORI_BIND=127.0.0.1:8480

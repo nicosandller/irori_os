@@ -24,10 +24,10 @@ fn main() {
 fn version() -> String {
     if let Ok(version) = std::env::var("IRORI_VERSION") {
         let version = version.trim();
-        // One leading `v` at most, matching the release workflow's `${GITHUB_REF_NAME#v}`: a
-        // `vv…` tag must not be accepted as a valid version.
-        let version = version.strip_prefix('v').unwrap_or(version);
         if !version.is_empty() {
+            // One leading `v` at most, matching the release workflow's `${GITHUB_REF_NAME#v}`:
+            // `vv…` and a bare `v` must be rejected, not silently accepted as a valid version.
+            let version = version.strip_prefix('v').unwrap_or(version);
             assert!(
                 release_version::is_release_version(version),
                 "IRORI_VERSION={version:?} isn't MAJOR.MINOR.PATCH with an optional -prerelease"
