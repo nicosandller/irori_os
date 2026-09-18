@@ -304,7 +304,7 @@ fi
 printf '\n'
 printf "${MUTED}  ┌─────────────────┐${NC}\n"
 printf "${MUTED}  │                 │${NC}\n"
-printf "${MUTED}  │      ${EMBER}█████${MUTED}      │${NC}     ${EMBER}I R O R I${MUTED} O S${NC}\n"
+printf "${MUTED}  │      ${EMBER}█████${MUTED}      │${NC}     ${EMBER}I r o r i${MUTED} O S${NC}\n"
 printf "${MUTED}  │      ${EMBER}█████${MUTED}      │${NC}     ${MUTED}─────────────${NC}\n"
 printf "${MUTED}  │      ${EMBER}█████${MUTED}      │${NC}     ${MUTED}the hearth at the${NC}\n"
 printf "${MUTED}  │                 │${NC}     ${MUTED}center of the home${NC}\n"
