@@ -5,6 +5,7 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 repository = "https://github.com/nicosandller/irori_os"
+license = "Apache-2.0"
 
 # Not a workspace member: this builds for wasm32 with `trunk`, not with the workspace's
 # `cargo build`. `cargo xtask ui` builds it; CI checks it compiles (see .github/workflows/ci.yml).
