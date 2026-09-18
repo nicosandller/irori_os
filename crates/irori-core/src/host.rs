@@ -161,14 +161,24 @@ impl ExtensionHost {
         }
     }
 
-    /// Starts a package that has already been written under `packages_dir/<id>/`.
+    /// Starts a package that has already been written under `packages_dir/<id>/`, moving it
+    /// there first if it came from elsewhere. Keeps `uninstall` and the next start able to
+    /// find the one directory an extension lives in.
     pub fn install_package(&self, dir: PathBuf) -> Result<ExtensionId, String> {
         let manifest = read_package_manifest(&dir)?;
         let id = manifest.extension.id.clone();
         if self.is_running(&id) {
             return Err(format!("`{id}` is already running"));
         }
-        self.spawn_package(dir)?;
+        let home = self.inner.packages_dir.join(id.as_str());
+        if home != dir {
+            if home.exists() {
+                return Err(format!("`{id}` is already installed"));
+            }
+            std::fs::rename(&dir, &home)
+                .map_err(|e| format!("couldn't move {dir:?} into place: {e}"))?;
+        }
+        self.spawn_package(home)?;
         Ok(id)
     }
 
