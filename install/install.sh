@@ -6,7 +6,7 @@
 # Options (with `curl | bash`, pass them after `bash -s --`):
 #   -v, --version <tag>   install a specific release, e.g. 0.2.0 or v0.2.0
 #   -b, --binary <path>   install a local binary instead of downloading
-#   --system              install to /usr/local/bin and /usr/share/irori/extensions
+#   --system              install to /usr/local/bin (needs root)
 #   --no-modify-path      don't touch shell config files
 #   -h, --help            show this help
 #
@@ -84,34 +84,31 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Where things go. A system install matches what the binary looks for on its own
-# (`/usr/share/irori/extensions`); a user install keeps everything under IRORI_HOME.
+# Where things go. A system install puts the binary on the system PATH; a user install keeps
+# everything under IRORI_HOME.
 if [[ "$system_install" == true ]]; then
     [[ "$(id -u)" -eq 0 ]] || die "--system needs root; try: sudo"
     INSTALL_DIR="/usr/local/bin"
-    EXTENSIONS_DIR="/usr/share/irori/extensions"
 else
     IRORI_HOME="${IRORI_HOME:-$HOME/.$APP}"
     INSTALL_DIR="$IRORI_HOME/bin"
-    EXTENSIONS_DIR="$IRORI_HOME/extensions"
 fi
 mkdir -p "$INSTALL_DIR"
 
 verify_checksum() {
     local file="$1" sums="$2" name="$3"
-    [[ -f "$sums" ]] || { warn "no SHA256SUMS in the release; skipping verification"; return 0; }
+    [[ -f "$sums" ]] || die "no SHA256SUMS in the release; refusing to install unverified"
     local tool=""
     if command -v sha256sum >/dev/null 2>&1; then
         tool="sha256sum"
     elif command -v shasum >/dev/null 2>&1; then
         tool="shasum -a 256"
     else
-        warn "neither sha256sum nor shasum found; skipping verification"
-        return 0
+        die "neither sha256sum nor shasum found; refusing to install unverified"
     fi
     local expected actual
     expected="$(awk -v n="$name" '$2 == n || $2 == "./" n { print $1 }' "$sums" | head -n1)"
-    [[ -n "$expected" ]] || { warn "$name is not in SHA256SUMS; skipping verification"; return 0; }
+    [[ -n "$expected" ]] || die "$name is not in SHA256SUMS; refusing to install unverified"
     actual="$($tool "$file" | awk '{print $1}')"
     [[ "$expected" == "$actual" ]] || die "checksum mismatch for $name (expected $expected, got $actual)"
     info "checksum verified"
@@ -176,31 +173,25 @@ else
         curl -fsSL -o "$tmp/$filename" "$url" || die "download failed: $url"
     fi
 
-    # Verify if the release carries checksums, then unpack.
+    # The release carries checksums; verify before unpacking.
     curl -fsSL -o "$tmp/SHA256SUMS" \
-        "https://github.com/$REPO/releases/download/$tag/SHA256SUMS" 2>/dev/null || true
+        "https://github.com/$REPO/releases/download/$tag/SHA256SUMS" \
+        || die "no SHA256SUMS for $tag; refusing to install unverified"
     verify_checksum "$tmp/$filename" "$tmp/SHA256SUMS" "$filename"
 
     command -v tar >/dev/null 2>&1 || die "'tar' is required to install $APP"
     tar -xzf "$tmp/$filename" -C "$tmp"
 
     install_binary "$tmp/$APP"
-
-    # Official extension packages ship in the archive; the binary looks here when a device
-    # needs one (and a system install needs no environment variable for it).
-    if [[ -d "$tmp/extensions" ]]; then
-        rm -rf "$EXTENSIONS_DIR"
-        mkdir -p "$(dirname "$EXTENSIONS_DIR")"
-        mv "$tmp/extensions" "$EXTENSIONS_DIR"
-        info "installed extensions to $EXTENSIONS_DIR"
-    fi
 fi
 
-# Tell the binary where the packages are, for a user install.
-path_line="export PATH=\"$INSTALL_DIR:\$PATH\""
-if [[ "$system_install" == false ]]; then
-    path_line="export PATH=\"$INSTALL_DIR:\$PATH\"
-export IRORI_OFFICIAL_PACKAGES=\"$EXTENSIONS_DIR\""
+# How to put the install directory on PATH depends on the shell: fish uses `set -gx`, POSIX
+# shells use `export`.
+current_shell="$(basename "${SHELL:-sh}")"
+if [[ "$current_shell" == "fish" ]]; then
+    path_line="set -gx PATH \"$INSTALL_DIR\" \$PATH"
+else
+    path_line="export PATH=\"$INSTALL_DIR:\$PATH\""
 fi
 
 add_to_path() {
@@ -218,7 +209,6 @@ add_to_path() {
 
 if [[ "$no_modify_path" == false && "$system_install" == false ]]; then
     XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
-    current_shell="$(basename "${SHELL:-sh}")"
     case "$current_shell" in
         fish) config_files="$HOME/.config/fish/config.fish" ;;
         zsh) config_files="${ZDOTDIR:-$HOME}/.zshrc ${ZDOTDIR:-$HOME}/.zshenv $XDG_CONFIG_HOME/zsh/.zshrc" ;;

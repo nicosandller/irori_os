@@ -18,20 +18,22 @@ One command, into `~/.irori`:
 
 ```sh
 curl -fsSL https://github.com/nicosandller/irori_os/releases/latest/download/install.sh | bash
-irori run                                  # http://127.0.0.1:8480
+~/.irori/bin/irori run                     # http://127.0.0.1:8480
 ```
 
 It detects your OS and CPU, downloads the latest [release](https://github.com/nicosandller/irori_os/releases)
-for it, verifies the SHA-256 against the release's `SHA256SUMS`, then puts `irori` and the
-official extensions in place and adds them to your shell config. Releases carry `linux-x64`,
-`linux-arm64` (both static musl), `darwin-x64` and `darwin-arm64`, and the installer itself as
-`install.sh`. There are no releases yet, so until the first tag use the source build below.
-Options go after `bash -s --`:
+for it, verifies the SHA-256 against the release's `SHA256SUMS`, and installs `irori` under
+`~/.irori/bin`. The installer adds that to your shell config, so a new shell finds `irori`; the
+command above uses the full path because the installer runs in its own process and can't change
+the shell you're in. Releases carry `linux-x64`, `linux-arm64` (both static musl), `darwin-x64`
+and `darwin-arm64`, and the installer itself as `install.sh`. There are no releases yet, so until
+the first tag use the source build below. Options go after `bash -s --`:
 
 ```sh
-curl -fsSL … | bash -s -- --version 0.2.0    # a specific release
-curl -fsSL … | bash -s -- --system           # /usr/local/bin and /usr/share/irori/extensions
-curl -fsSL … | bash -s -- --binary ./target/release/irori   # a local build
+url=https://github.com/nicosandller/irori_os/releases/latest/download/install.sh
+curl -fsSL "$url" | bash -s -- --version 0.2.0    # a specific release
+curl -fsSL "$url" | bash -s -- --system           # /usr/local/bin (needs root)
+curl -fsSL "$url" | bash -s -- --binary ./target/release/irori   # a local build
 ```
 
 `install/irori.service` is a systemd unit for a `--system` install; it runs as an unprivileged
