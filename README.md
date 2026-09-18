@@ -26,8 +26,9 @@ for it, verifies the SHA-256 against the release's `SHA256SUMS`, and installs `i
 `~/.irori/bin`. The installer adds that to your shell config, so a new shell finds `irori`; the
 command above uses the full path because the installer runs in its own process and can't change
 the shell you're in. Releases carry `linux-x64`, `linux-arm64` (both static musl), `darwin-x64`
-and `darwin-arm64`, and the installer itself as `install.sh`. There are no releases yet, so until
-the first tag use the source build below. Options go after `bash -s --`:
+and `darwin-arm64`, and the installer itself as `install.sh`. The one-liner installs the latest
+release; before the first release is published, use the source build below. Options go after
+`bash -s --`:
 
 ```sh
 url=https://github.com/nicosandller/irori_os/releases/latest/download/install.sh

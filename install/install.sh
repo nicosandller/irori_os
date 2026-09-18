@@ -155,6 +155,12 @@ if [[ "$system_install" == true ]]; then
     INSTALL_DIR="/usr/local/bin"
 else
     IRORI_HOME="${IRORI_HOME:-$HOME/.$APP}"
+    case "$IRORI_HOME" in
+        "~"/*) IRORI_HOME="$HOME/${IRORI_HOME#\~/}" ;;
+        "~") IRORI_HOME="$HOME" ;;
+        /*) : ;;
+        *) IRORI_HOME="$PWD/$IRORI_HOME" ;;
+    esac
     INSTALL_DIR="$IRORI_HOME/bin"
 fi
 mkdir -p "$INSTALL_DIR"
@@ -332,8 +338,10 @@ if [[ "$no_modify_path" == false && "$system_install" == false ]]; then
     if [[ -n "$config_file" ]]; then
         add_to_path "$config_file"
     else
-        warn "no shell config found; add this yourself:"
-        printf '  %s\n' "$path_line"
+        config_file="${config_files[0]}"
+        mkdir -p "$(dirname "$config_file")" || die "couldn't create $(dirname "$config_file")"
+        : >"$config_file" || die "couldn't create $config_file"
+        add_to_path "$config_file"
     fi
 fi
 
