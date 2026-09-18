@@ -17,7 +17,7 @@ mod waiting;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use irori_types::EntityId;
+use irori_types::{EntityId, EntityState, LightTurnOn};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::{A, Route, Router, Routes};
@@ -62,8 +62,17 @@ fn App() -> impl IntoView {
     let controls = Controls {
         busy,
         failures,
-        set_on: Callback::new(move |(entity_id, on)| {
-            set_on(entity_id, on, live.home, busy, failures)
+        set_on: Callback::new(move |(entity_id, on): (EntityId, bool)| {
+            let (home, busy, failures) = (live.home, busy, failures);
+            send_command(entity_id.clone(), home, busy, failures, async move {
+                api::set_on(&entity_id, on).await
+            })
+        }),
+        set_light: Callback::new(move |(entity_id, data): (EntityId, LightTurnOn)| {
+            let (home, busy, failures) = (live.home, busy, failures);
+            send_command(entity_id.clone(), home, busy, failures, async move {
+                api::set_light(&entity_id, &data).await
+            })
         }),
     };
     provide_context(controls);
@@ -234,20 +243,20 @@ pub fn refresh(live: Live) {
     });
 }
 
-/// Sends the command, then puts the entity's new state on the page without waiting for the next
+/// Sends a command, then puts the entity's new state on the page without waiting for the next
 /// refresh: the core answers once the integration has confirmed.
-fn set_on(
+fn send_command(
     entity_id: EntityId,
-    on: bool,
     home: RwSignal<Home>,
     busy: RwSignal<BTreeSet<EntityId>>,
     failures: RwSignal<BTreeMap<EntityId, String>>,
+    run: impl Future<Output = Result<Option<EntityState>, String>> + 'static,
 ) {
     busy.update(|busy| {
         busy.insert(entity_id.clone());
     });
     spawn_local(async move {
-        match api::set_on(&entity_id, on).await {
+        match run.await {
             Ok(state) => {
                 failures.update(|failures| {
                     failures.remove(&entity_id);

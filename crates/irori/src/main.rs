@@ -5,6 +5,8 @@ mod build_info;
 mod config;
 mod db;
 mod extensions;
+mod history;
+mod packages;
 mod server;
 
 use std::net::SocketAddr;
@@ -172,7 +174,8 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
     let db = db::open(&data)?;
     tracing::info!(path = %db.path.display(), journal_mode = %db.journal_mode, "database ready");
     let storage = Arc::new(db::SqliteStorage::open(&db)?);
-    let builtins = extensions::builtins()?;
+    let packages_dir = packages::packages_dir(&data);
+    let _ = std::fs::create_dir_all(&packages_dir);
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -193,18 +196,27 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             core.use_storage(storage);
             // Subscribe before any extension starts, so the log sees their first events.
             tokio::spawn(extensions::log_events(core.subscribe()));
+            // And the recorder feeding the page's per-entity "last 24 hours" table. In memory,
+            // so it starts empty with each server (the SQLite recorder, M1.3, keeps the rest).
+            let history = history::History::default();
+            tokio::spawn(history::record(history.clone(), core.subscribe()));
             // Before the extensions, so a device that arrives in the first second already has
             // the name and the room its owner gave it, rather than appearing under its old name
             // and moving a moment later.
             let settings = config::Config::open(store, &problems, &core);
             tokio::spawn(settings.clone().watch(core.clone()));
             tokio::spawn(settings.clone().remember_arrivals(core.clone()));
-            let host = ExtensionHost::start(&core, builtins, Timing::default())
-                .map_err(anyhow::Error::msg)?;
+            let host = ExtensionHost::start_with_packages(
+                &core,
+                Vec::new(),
+                Timing::default(),
+                packages_dir,
+            )
+            .map_err(anyhow::Error::msg)?;
 
             let served = axum::serve(
                 listener,
-                server::router(server::AppState::new(db, core, settings)),
+server::router(server::AppState::new(db, core, settings, host.clone(), history)),
             )
             .with_graceful_shutdown(shutdown_signal())
             .await

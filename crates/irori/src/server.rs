@@ -24,6 +24,7 @@ use tokio::sync::broadcast;
 use crate::build_info::{BuildInfo, VERSION};
 use crate::config::{Config, EditError, Refused};
 use crate::db::Database;
+use crate::history::History;
 
 /// Who commands are attributed to until there are accounts to attribute them to (M1.5).
 static UNAUTHENTICATED: LazyLock<UserId> =
@@ -40,10 +41,11 @@ struct Inner {
     core: Core,
     config: Config,
     host: ExtensionHost,
+    history: History,
 }
 
 impl AppState {
-    pub fn new(db: Database, core: Core, config: Config, host: ExtensionHost) -> Self {
+    pub fn new(db: Database, core: Core, config: Config, host: ExtensionHost, history: History) -> Self {
         Self(Arc::new(Inner {
             started: Instant::now(),
             db,
@@ -51,6 +53,7 @@ impl AppState {
             core,
             config,
             host,
+            history,
         }))
     }
 }
@@ -74,6 +77,7 @@ pub fn router(state: AppState) -> Router {
             "/api/dev/states",
             get(|State(s): State<AppState>| async move { Json(s.0.core.states()) }),
         )
+        .route("/api/dev/history/{entity_id}", get(entity_history))
         .route(
             "/api/dev/extensions",
             get(|State(s): State<AppState>| async move { Json(s.0.core.extensions()) }),
@@ -132,6 +136,35 @@ async fn home(State(state): State<AppState>) -> Json<HomeView> {
         floors: core.floors(),
         held: core.held_devices(),
     })
+}
+
+/// The last day of an entity's changes, for the expandable table under its row on the Devices
+/// page. In memory, and only what this server has seen: it starts empty at each start, and the
+/// SQLite recorder (M1.3, `irori-recorder`) keeps the surviving, longer view behind the same
+/// idea.
+#[derive(Debug, Serialize)]
+struct HistoryView {
+    entity: EntityId,
+    /// The changes, oldest first. Empty when the entity exists but has changed nothing since
+    /// this server started.
+    states: Vec<EntityState>,
+}
+
+async fn entity_history(
+    State(state): State<AppState>,
+    Path(entity_id): Path<EntityId>,
+) -> Response {
+    if state.0.core.state(&entity_id).is_none() {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("there's no entity `{entity_id}`"),
+        );
+    }
+    Json(HistoryView {
+        entity: entity_id.clone(),
+        states: state.0.history.for_entity(&entity_id),
+    })
+    .into_response()
 }
 
 // --- Rooms, names, and where things live ---------------------------------------------------
@@ -1047,13 +1080,19 @@ mod tests {
         dir: tempfile::TempDir,
         core: Core,
         config: Config,
+        history: History,
     }
 
     impl Server {
         fn new(core: Core) -> anyhow::Result<Self> {
             let dir = tempfile::tempdir()?;
             let config = Config::open_dir(dir.path().join("config"), &core);
-            Ok(Self { dir, core, config })
+            Ok(Self {
+                dir,
+                core,
+                config,
+                history: History::default(),
+            })
         }
 
         fn app(&self) -> anyhow::Result<Router> {
@@ -1068,6 +1107,7 @@ mod tests {
                 self.core.clone(),
                 self.config.clone(),
                 host,
+                self.history.clone(),
             )))
         }
 
@@ -1259,6 +1299,53 @@ mod tests {
                 state.state
             );
         }
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// The per-entity history endpoint answers with the recorder's last day of changes, oldest
+    /// first, and says plainly when the entity isn't one Irori knows.
+    #[tokio::test]
+    async fn history_reports_the_last_day_of_changes() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+        let entity = core
+            .states()
+            .first()
+            .map(|state| state.entity_id.clone())
+            .ok_or_else(|| anyhow::anyhow!("the demo reported nothing"))?;
+
+        // What the recorder would have kept: feed it the endpoint's history by hand here, since
+        // the server under test isn't the one subscribed to the core.
+        let today = core
+            .state(&entity)
+            .ok_or_else(|| anyhow::anyhow!("the demo entity vanished"))?;
+        server
+            .history
+            .record(entity.clone(), today.clone());
+        let earlier = core
+            .state(&entity)
+            .ok_or_else(|| anyhow::anyhow!("the demo entity vanished"))?;
+        server.history.record(entity.clone(), earlier);
+
+        let (status, body) = server
+            .send(Request::get(format!("/api/dev/history/{entity}")).body(Body::empty())?)
+            .await?;
+        assert_eq!(status, StatusCode::OK);
+        let history: serde_json::Value = serde_json::from_slice(&body)?;
+        assert_eq!(history["entity"], serde_json::json!(entity.to_string()));
+        let states = history["states"].as_array().expect("a list of states");
+        assert_eq!(states.len(), 2, "the two recorded changes: {history}");
+
+        // An entity Irori has never heard of is refused, not answered with an empty table.
+        let (status, _) = server
+            .send(
+                Request::get("/api/dev/history/sensor.never_heard_of")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
 
         host.shutdown().await;
         Ok(())
