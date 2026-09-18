@@ -11,5 +11,13 @@ license.workspace = true
 irori-types.workspace = true
 irori-integration.workspace = true
 
+schemars.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+[[bin]]
+name = "irori-ext-mqtt"
+path = "src/main.rs"
+
 [lints]
 workspace = true

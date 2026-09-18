@@ -1,22 +1,7 @@
-//! The built-in extensions compiled into this build (cargo features, ROADMAP D17), and a log of
-//! what they do.
+//! Event log for extensions. Official extensions are packages, not compiled into this binary.
 
 use irori_core::Event;
-use irori_integration::Builtin;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
-
-/// Every built-in extension in this build. All of them run until the config dir (M0.7) lets
-/// people choose.
-pub fn builtins() -> anyhow::Result<Vec<Builtin>> {
-    Ok(vec![
-        #[cfg(feature = "int-demo")]
-        irori_integration::builtin::<irori_int_demo::Demo>().map_err(anyhow::Error::msg)?,
-        #[cfg(feature = "int-esphome")]
-        irori_integration::builtin::<irori_int_esphome::Esphome>().map_err(anyhow::Error::msg)?,
-        #[cfg(feature = "int-helpers")]
-        irori_integration::builtin::<irori_int_helpers::Helpers>().map_err(anyhow::Error::msg)?,
-    ])
-}
 
 /// Logs the core's events: extension status at `info`, device and state changes at `debug`.
 pub async fn log_events(mut events: Receiver<Event>) {

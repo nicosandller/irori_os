@@ -9,6 +9,7 @@
 mod api;
 mod device;
 mod devices;
+mod extensions;
 mod home;
 mod rooms;
 mod waiting;
@@ -164,6 +165,7 @@ fn App() -> impl IntoView {
                         <Route path=path!("/devices") view=devices::Devices />
                         <Route path=path!("/devices/:id") view=device::DevicePage />
                         <Route path=path!("/rooms") view=rooms::Rooms />
+                        <Route path=path!("/extensions") view=extensions::Extensions />
                     </Routes>
                 </main>
             </div>
@@ -176,7 +178,7 @@ const SIDEBAR_KEY: &str = "irori.sidebar";
 
 /// The sections of the app: address, name, and an icon drawn in 24×24 strokes. Written here, not
 /// taken from any extension, so `inner_html` only ever holds these literals.
-const SECTIONS: [(&str, &str, &str); 3] = [
+const SECTIONS: [(&str, &str, &str); 4] = [
     (
         "/",
         "Home",
@@ -192,6 +194,11 @@ const SECTIONS: [(&str, &str, &str); 3] = [
         "Rooms",
         r#"<path d="M4 4h16v16H4zM4 12h7M13 4v9M13 16v4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>"#,
     ),
+    (
+        "/extensions",
+        "Extensions",
+        r#"<rect x="4" y="4" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="4" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="4" y="13" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="13" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/>"#,
+    ),
 ];
 
 #[component]
@@ -200,8 +207,8 @@ fn NotFound() -> impl IntoView {
         <section class="card">
             <h1>"There's no page here"</h1>
             <p class="muted">
-                "Irori has a Home page, a Devices page and a Rooms page. The rest is still to "
-                "come."
+                "Irori has a Home page, a Devices page, a Rooms page and an Extensions page. "
+                "The rest is still to come."
             </p>
             <p><A href="/">"Back to the start"</A></p>
         </section>

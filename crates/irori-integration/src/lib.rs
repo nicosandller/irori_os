@@ -24,6 +24,9 @@ use tokio::sync::{Notify, mpsc, oneshot, watch};
 
 pub use irori_types as types;
 
+mod process;
+pub use process::{ExtProcess, FromExt, ToExt, serve, spawn};
+
 /// A built-in integration.
 ///
 /// ```ignore
@@ -79,6 +82,9 @@ pub trait Storage: Send + Sync + fmt::Debug {
         key: &str,
         value: Option<&serde_json::Value>,
     ) -> Result<(), String>;
+
+    /// Forgets every stored value for this extension (uninstall).
+    fn clear(&self, extension: &irori_types::ExtensionId) -> Result<(), String>;
 }
 
 /// Storage that lasts as long as the process. For tests, and for a core nobody gave a database.
@@ -111,6 +117,14 @@ impl Storage for MemoryStorage {
             Some(value) => all.insert(key, value.clone()),
             None => all.remove(&key),
         };
+        Ok(())
+    }
+
+    fn clear(&self, extension: &irori_types::ExtensionId) -> Result<(), String> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(id, _), _| id != extension);
         Ok(())
     }
 }
@@ -161,7 +175,8 @@ impl fmt::Display for Rejected {
 impl std::error::Error for Rejected {}
 
 /// What the integration says about itself (spec §6.5).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Health {
     Running,
     /// Working, with a problem worth showing, e.g. "2 of 5 devices unreachable".
@@ -169,7 +184,8 @@ pub enum Health {
 }
 
 /// Which entities a change of availability applies to (spec §6.4).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AvailabilityTarget {
     /// Every entity of this device.
     Device(UniqueId),
@@ -177,13 +193,14 @@ pub enum AvailabilityTarget {
 }
 
 /// A failed service call, as the integration reports it (spec §7.3).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ServiceError {
     pub code: ServiceErrorCode,
     pub message: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ServiceErrorCode {
     /// The device can't be reached right now.
     Unavailable,
@@ -422,12 +439,7 @@ pub fn builtin<I: Integration>() -> Result<Builtin, String> {
     let manifest = parse_manifest(I::MANIFEST)?;
     let id = &manifest.extension.id;
     match manifest.contributes.integration.as_slice() {
-        [integration] if integration.run.is_none() => {}
-        [_] => {
-            return Err(format!(
-                "extension `{id}`: a built-in integration must not have `run` (that's for external extensions)"
-            ));
-        }
+        [_] => {}
         _ => {
             return Err(format!(
                 "extension `{id}`: a built-in integration needs a `[[contributes.integration]]` entry"
@@ -471,7 +483,7 @@ pub fn builtin<I: Integration>() -> Result<Builtin, String> {
 /// Why settings couldn't be turned into the integration's config type. Names the shape, never a
 /// value: settings hold secrets, and the reason is logged and shown (`docs/specs/integrations.md`
 /// §3).
-fn invalid_settings(err: serde_json::Error) -> String {
+pub(crate) fn invalid_settings(err: serde_json::Error) -> String {
     format!("invalid settings: {}", redact_serde_value(&err.to_string()))
 }
 
@@ -770,9 +782,10 @@ mod tests {
     }
 
     #[test]
-    fn builtins_must_not_have_a_run_command() {
-        let err = builtin::<NoRun>().expect_err("has run");
-        assert!(err.contains("must not have `run`"), "{err}");
+    fn builtins_may_have_a_run_command() {
+        // Official packages declare `run` so the host can start them as a process. The same
+        // crate can still be started in-process in tests; `run` is ignored then.
+        assert!(builtin::<NoRun>().is_ok());
     }
 
     macro_rules! with_icon {

@@ -816,6 +816,29 @@ impl Home {
         Ok(events)
     }
 
+    /// Removes every device this integration owns, in the home or ignored.
+    pub fn remove_integration(&mut self, integration: &IntegrationId) -> Vec<Event> {
+        let live: Vec<UniqueId> = self
+            .devices
+            .values()
+            .filter(|device| &device.integration == integration)
+            .map(|device| device.unique_id.clone())
+            .collect();
+        let ignored: Vec<UniqueId> = self
+            .ignored
+            .values()
+            .filter(|held| &held.integration == integration)
+            .map(|held| held.description.unique_id.clone())
+            .collect();
+        let mut events = Vec::new();
+        for unique_id in live.into_iter().chain(ignored) {
+            if let Ok(ev) = self.remove_device(integration, &unique_id) {
+                events.extend(ev);
+            }
+        }
+        events
+    }
+
     // --- State ----------------------------------------------------------------------------
 
     pub fn report_state(

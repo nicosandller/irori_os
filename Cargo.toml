@@ -10,10 +10,10 @@ members = [
     "crates/irori-api",
     "crates/irori-client",
     "crates/irori",
-    "integrations/irori-int-mqtt",
-    "integrations/irori-int-demo",
-    "integrations/irori-int-esphome",
-    "integrations/irori-int-helpers",
+    "extensions/demo",
+    "extensions/helpers",
+    "extensions/protocols/esphome",
+    "extensions/protocols/mqtt",
     "extras/irori-assist",
     "xtask",
 ]
@@ -40,10 +40,10 @@ irori-recorder = { path = "crates/irori-recorder" }
 irori-config = { path = "crates/irori-config" }
 irori-api = { path = "crates/irori-api" }
 irori-client = { path = "crates/irori-client" }
-irori-int-mqtt = { path = "integrations/irori-int-mqtt" }
-irori-int-demo = { path = "integrations/irori-int-demo" }
-irori-int-esphome = { path = "integrations/irori-int-esphome" }
-irori-int-helpers = { path = "integrations/irori-int-helpers" }
+irori-int-mqtt = { path = "extensions/protocols/mqtt" }
+irori-int-demo = { path = "extensions/demo" }
+irori-int-esphome = { path = "extensions/protocols/esphome" }
+irori-int-helpers = { path = "extensions/helpers" }
 irori-assist = { path = "extras/irori-assist" }
 
 # External crates
@@ -69,7 +69,7 @@ serde_json = "1.0.151"
 # Only for tests: the device side of ESPHome's Noise handshake, in the fake ESPHome device.
 # The same version `esphome-client` uses for the client side.
 snow = "0.10.0"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "process", "io-util", "io-std"] }
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "ansi", "std"] }

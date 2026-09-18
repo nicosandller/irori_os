@@ -25,28 +25,23 @@ pub fn run() -> anyhow::Result<()> {
         ));
     }
 
-    // D17 says which extensions are compiled in by default, in prose, so check it names each
-    // one rather than trying to parse the sentence.
+    // D17 used to list compiled-in integrations. Official extensions are packages now, so
+    // default features must not include `int-*`, and D17 must not claim they are compiled in.
     let d17 = roadmap
         .lines()
         .find(|line| line.starts_with("| D17 |"))
         .context("ROADMAP has no D17 row")?
         .to_lowercase();
-    for integration in defaults.iter().filter_map(|f| f.strip_prefix("int-")) {
-        if !mentions(&d17, integration) {
-            problems.push(format!(
-                "ROADMAP D17 doesn't mention `{integration}`, which is in the default build"
-            ));
-        }
+    for feature in defaults.iter().filter(|f| f.starts_with("int-")) {
+        problems.push(format!(
+            "default features still compile `{feature}` into the binary; official extensions are packages"
+        ));
     }
-    // And the reverse: an extension D17 still claims after it has left the default build.
-    for known in ["mqtt", "demo", "esphome", "helpers", "zigbee", "matter"] {
-        let in_defaults = defaults.iter().any(|f| f == &format!("int-{known}"));
-        if !in_defaults && mentions(&d17, known) {
-            problems.push(format!(
-                "ROADMAP D17 mentions `{known}`, which is not in the default build"
-            ));
-        }
+    if !d17.contains("installable") && !d17.contains("not cargo features") {
+        problems.push(
+            "ROADMAP D17 should say official extensions are installable packages, not cargo features"
+                .into(),
+        );
     }
 
     if problems.is_empty() {

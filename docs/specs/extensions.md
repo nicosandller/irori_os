@@ -18,9 +18,9 @@ that says:
 - **what it contributes:** an integration now; dashboards, cards, and apps later (D22);
 - **what it may access:** the local network, internet hosts, serial ports, files, a shell (D23).
 
-Built-in and external extensions use the same manifest. A built-in one is compiled into the
-binary, with its manifest embedded; an external one is a folder with a program in it. From the
-UI and CLI they look the same.
+Official first-party extensions live in this repo under `extensions/` and are **not** linked
+into the `irori` binary. Each is a folder with a program in it. Tests may still start the same
+crate in-process through the `Integration` trait. From the UI they look the same.
 
 ## 2. The model at a glance
 
@@ -47,8 +47,14 @@ The manifest is TOML because people write it by hand. Irori reads it into the JS
 and checks it with the same types and JSON Schema (`schemas/extension-manifest.schema.json`)
 as everything else, so editors and LLM tooling can validate it too.
 
-How packages are signed, downloaded, and installed from a registry is Phase 3 (ROADMAP §8.1).
-In Phase 1, external extensions are added from a local folder (`irori extensions add <path>`).
+Install (the Extensions page, or `POST /api/dev/extensions/<id>/install`) copies a package into
+`$DATA/extensions/<id>/` and starts it. Official packages come from, in order: a git checkout
+of this repo (cargo build), packages shipped beside the binary (`IRORI_OFFICIAL_PACKAGES` or
+`/usr/share/irori/extensions`), or a GitHub release of this repo. Uninstall stops the process,
+removes its devices, and deletes the package. A third-party tarball URL uses the same machinery
+(`POST /api/dev/extensions/install`); how those URLs are discovered is later.
+
+How packages are signed is still Phase 3 (ROADMAP §8.1).
 
 ## 4. Example
 

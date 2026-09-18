@@ -2,15 +2,18 @@
 //! them when they fail (`docs/specs/integrations.md` §3).
 
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use irori_integration::Builtin;
 use irori_integration::host::{HostEnd, Op, Reports, connect};
+use irori_integration::{ExtProcess, FromExt, IncomingCall, ToExt, spawn};
 use std::collections::BTreeSet;
 
-use irori_types::{EntityKind, ExtensionId, ExtensionSettings, IntegrationId};
+use irori_types::{EntityKind, ExtensionId, ExtensionManifest, ExtensionSettings, IntegrationId};
 use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
@@ -64,15 +67,45 @@ impl Default for Timing {
 }
 
 /// Runs extensions until [`ExtensionHost::shutdown`].
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ExtensionHost {
+    inner: Arc<HostInner>,
+}
+
+struct HostInner {
+    core: Core,
+    timing: Timing,
     stop: watch::Sender<bool>,
-    supervisors: Vec<JoinHandle<()>>,
+    packages_dir: PathBuf,
+    running: std::sync::Mutex<BTreeMap<ExtensionId, Running>>,
+}
+
+struct Running {
+    removed: watch::Sender<bool>,
+    task: JoinHandle<()>,
+}
+
+impl std::fmt::Debug for HostInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostInner")
+            .field("packages_dir", &self.packages_dir)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ExtensionHost {
-    /// Starts every extension, each supervised in its own task. Fails if two share an id.
+    /// Starts every built-in, each supervised in its own task. Fails if two share an id.
     pub fn start(core: &Core, builtins: Vec<Builtin>, timing: Timing) -> Result<Self, String> {
+        Self::start_with_packages(core, builtins, timing, PathBuf::new())
+    }
+
+    /// Starts built-ins and any packages already installed under `packages_dir`.
+    pub fn start_with_packages(
+        core: &Core,
+        builtins: Vec<Builtin>,
+        timing: Timing,
+        packages_dir: PathBuf,
+    ) -> Result<Self, String> {
         timing.validate()?;
         let mut ids: Vec<&ExtensionId> =
             builtins.iter().map(|b| &b.manifest.extension.id).collect();
@@ -81,27 +114,142 @@ impl ExtensionHost {
             return Err(format!("two extensions share the id `{}`", pair[0]));
         }
         let (stop, stop_rx) = watch::channel(false);
-        let supervisors = builtins
-            .into_iter()
-            .map(|builtin| {
-                tokio::spawn(supervise(
-                    core.clone(),
-                    Arc::new(builtin),
-                    timing,
-                    stop_rx.clone(),
-                ))
-            })
-            .collect();
-        Ok(Self { stop, supervisors })
+        let host = Self {
+            inner: Arc::new(HostInner {
+                core: core.clone(),
+                timing,
+                stop,
+                packages_dir: packages_dir.clone(),
+                running: std::sync::Mutex::default(),
+            }),
+        };
+        for builtin in builtins {
+            let id = builtin.manifest.extension.id.clone();
+            let (removed, task_stop) = arm_stop(stop_rx.clone());
+            let task = tokio::spawn(supervise(
+                core.clone(),
+                Arc::new(builtin),
+                timing,
+                task_stop,
+            ));
+            host.remember(id, removed, task);
+        }
+        if packages_dir.is_dir() {
+            for package in installed_packages(&packages_dir)? {
+                host.spawn_package(package)?;
+            }
+        }
+        Ok(host)
     }
 
-    /// Tells every extension to stop and waits for them (each gets `stop_grace`).
-    pub async fn shutdown(self) {
-        let _ = self.stop.send(true);
-        for supervisor in self.supervisors {
-            let _ = supervisor.await;
+    /// Copies are cheap; shutdown stops every supervisor regardless of how many handles remain.
+    pub async fn shutdown(&self) {
+        let _ = self.inner.stop.send(true);
+        let tasks: Vec<JoinHandle<()>> = {
+            let mut running = self
+                .inner
+                .running
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *running)
+                .into_values()
+                .map(|r| r.task)
+                .collect()
+        };
+        for task in tasks {
+            let _ = task.await;
         }
     }
+
+    /// Starts a package that has already been written under `packages_dir/<id>/`.
+    pub fn install_package(&self, dir: PathBuf) -> Result<ExtensionId, String> {
+        let manifest = read_package_manifest(&dir)?;
+        let id = manifest.extension.id.clone();
+        if self.is_running(&id) {
+            return Err(format!("`{id}` is already running"));
+        }
+        self.spawn_package(dir)?;
+        Ok(id)
+    }
+
+    /// Stops the extension, removes its devices, forgets it, and deletes its package directory.
+    pub async fn uninstall(&self, id: &ExtensionId) -> Result<(), String> {
+        let task = {
+            let mut running = self
+                .inner
+                .running
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            running.remove(id).map(|r| {
+                let _ = r.removed.send(true);
+                r.task
+            })
+        };
+        if let Some(task) = task {
+            let _ = task.await;
+        }
+        let integration = IntegrationId::try_from(id.as_str()).map_err(|e| e.to_string())?;
+        self.inner.core.remove_integration(&integration);
+        self.inner.core.clear_extension_storage(id);
+        self.inner.core.forget_extension(id);
+        let dir = self.inner.packages_dir.join(id.as_str());
+        if dir.is_dir() {
+            std::fs::remove_dir_all(&dir)
+                .map_err(|e| format!("couldn't delete {}: {e}", dir.display()))?;
+        }
+        Ok(())
+    }
+
+    pub fn packages_dir(&self) -> &Path {
+        &self.inner.packages_dir
+    }
+
+    fn is_running(&self, id: &ExtensionId) -> bool {
+        self.inner
+            .running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(id)
+    }
+
+    fn remember(&self, id: ExtensionId, removed: watch::Sender<bool>, task: JoinHandle<()>) {
+        self.inner
+            .running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, Running { removed, task });
+    }
+
+    fn spawn_package(&self, dir: PathBuf) -> Result<(), String> {
+        let manifest = read_package_manifest(&dir)?;
+        let id = manifest.extension.id.clone();
+        if self.is_running(&id) {
+            return Err(format!("two extensions share the id `{id}`"));
+        }
+        let (removed, stop) = arm_stop(self.inner.stop.subscribe());
+        let task = tokio::spawn(supervise_package(
+            self.inner.core.clone(),
+            dir,
+            manifest,
+            self.inner.timing,
+            stop,
+        ));
+        self.remember(id, removed, task);
+        Ok(())
+    }
+}
+
+fn arm_stop(mut global: watch::Receiver<bool>) -> (watch::Sender<bool>, watch::Receiver<bool>) {
+    let (removed_tx, mut removed_rx) = watch::channel(false);
+    let (local_tx, local_rx) = watch::channel(false);
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = global.wait_for(|stop| *stop) => {}
+            _ = removed_rx.wait_for(|stop| *stop) => {}
+        }
+        let _ = local_tx.send(true);
+    });
+    (removed_tx, local_rx)
 }
 
 enum Outcome {
@@ -162,7 +310,7 @@ async fn supervise(
             version: manifest.extension.version.clone(),
             entity_kinds: kinds.clone(),
             iot_class: Some(contribution.iot_class),
-            icon: builtin.icon,
+            icon: builtin.icon.map(str::to_owned),
         },
     );
 
@@ -462,4 +610,467 @@ fn panic_message(payload: Box<dyn Any + Send>) -> String {
         .map(|s| (*s).to_owned())
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "panicked".into())
+}
+
+fn installed_packages(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut packages = Vec::new();
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
+        let path = entry.path();
+        if path.join("irori-extension.toml").is_file() {
+            packages.push(path);
+        }
+    }
+    packages.sort();
+    Ok(packages)
+}
+
+fn read_package_manifest(dir: &Path) -> Result<ExtensionManifest, String> {
+    let path = dir.join("irori-extension.toml");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    irori_integration::parse_manifest(&text)
+}
+
+async fn supervise_package(
+    core: Core,
+    dir: PathBuf,
+    manifest: ExtensionManifest,
+    timing: Timing,
+    mut stop: watch::Receiver<bool>,
+) {
+    let extension = manifest.extension.id.clone();
+    for warning in manifest.warnings() {
+        tracing::warn!(%extension, "{warning}");
+    }
+    let (Some(integration), Some(contribution)) = (
+        manifest.integration_id(),
+        manifest.contributes.integration.first(),
+    ) else {
+        core.set_status(&extension, crate::ExtensionStatus::Disabled);
+        return;
+    };
+    let Some(run) = contribution.run.clone() else {
+        let reason = "external packages need `run.command` in the manifest".to_owned();
+        tracing::error!(%extension, "{reason}");
+        core.set_status(
+            &extension,
+            crate::ExtensionStatus::Failed {
+                reason,
+                retry_at: None,
+            },
+        );
+        return;
+    };
+    let kinds = contribution.entity_kinds.clone();
+    let icon = manifest.extension.icon.as_ref().and_then(|path| {
+        std::fs::read_to_string(dir.join(path.as_str()))
+            .ok()
+            .filter(|svg| svg.trim_start().starts_with("<svg"))
+    });
+    core.describe_extension(
+        &extension,
+        crate::ExtensionInfo {
+            name: manifest.extension.name.clone(),
+            description: manifest.extension.description.clone(),
+            version: manifest.extension.version.clone(),
+            entity_kinds: kinds.clone(),
+            iot_class: Some(contribution.iot_class),
+            icon,
+        },
+    );
+
+    if !manifest.extension.irori.matches(core.version()) {
+        let reason = format!(
+            "requires Irori {}, this is {}",
+            manifest.extension.irori,
+            core.version()
+        );
+        tracing::error!(%extension, "{reason}");
+        core.set_status(
+            &extension,
+            crate::ExtensionStatus::Failed {
+                reason,
+                retry_at: None,
+            },
+        );
+        return;
+    }
+
+    let mut settings = core.extension_settings();
+    let mut disabled = core.disabled_extensions();
+    let mut delay = timing.first_retry;
+    loop {
+        if disabled.borrow_and_update().contains(&extension) {
+            core.set_status(&extension, crate::ExtensionStatus::Disabled);
+            tokio::select! {
+                biased;
+                _ = stop.wait_for(|stop| *stop) => return,
+                result = disabled.wait_for(|disabled| !disabled.contains(&extension)) => {
+                    if result.is_err() {
+                        return;
+                    }
+                    delay = timing.first_retry;
+                    continue;
+                }
+            }
+        }
+        if *stop.borrow() {
+            core.set_status(&extension, crate::ExtensionStatus::Disabled);
+            return;
+        }
+        core.set_status(&extension, crate::ExtensionStatus::Starting);
+        let started_with = settings.borrow_and_update().of(&extension);
+        let mut child = match spawn(&dir, &run) {
+            Ok(child) => child,
+            Err(reason) => {
+                tracing::error!(%extension, %reason, "can't start extension");
+                core.set_status(
+                    &extension,
+                    crate::ExtensionStatus::Failed {
+                        reason,
+                        retry_at: None,
+                    },
+                );
+                tokio::select! {
+                    biased;
+                    _ = stop.wait_for(|stop| *stop) => return,
+                    () = settings_changed(&mut settings, &extension, &started_with) => continue,
+                    Ok(_) = disabled.wait_for(|disabled| disabled.contains(&extension)) => continue,
+                }
+            }
+        };
+        if let Err(reason) = child
+            .send(&ToExt::Hello {
+                settings: started_with.clone(),
+            })
+            .await
+        {
+            tracing::error!(%extension, %reason, "can't talk to extension");
+            let _ = child.child.start_kill();
+            core.set_status(
+                &extension,
+                crate::ExtensionStatus::Failed {
+                    reason,
+                    retry_at: None,
+                },
+            );
+            tokio::select! {
+                biased;
+                _ = stop.wait_for(|stop| *stop) => return,
+                () = tokio::time::sleep(delay) => {}
+            }
+            delay = delay.saturating_mul(2).min(timing.max_retry);
+            continue;
+        }
+
+        let (calls_tx, calls_rx) = mpsc::channel(64);
+        core.link(&integration, calls_tx);
+        core.set_status(&extension, crate::ExtensionStatus::Running);
+        tracing::info!(%extension, "extension started");
+        let outcome = pump_process(
+            &core,
+            &extension,
+            &integration,
+            &kinds,
+            &mut child,
+            calls_rx,
+            Watching {
+                stop: &mut stop,
+                settings: &mut settings,
+                disabled: &mut disabled,
+                started_with: &started_with,
+            },
+            timing,
+        )
+        .await;
+        core.unlink(&integration);
+        core.mark_unavailable(&integration);
+        core.set_waiting(&extension, Vec::new());
+        let _ = child.send(&ToExt::Stop).await;
+        let _ = child.child.start_kill();
+        match outcome {
+            Outcome::Stopped => {
+                tracing::info!(%extension, "extension stopped");
+                core.set_status(&extension, crate::ExtensionStatus::Disabled);
+                return;
+            }
+            Outcome::Disabled => {
+                tracing::info!(%extension, "turned off; extension stopped");
+                continue;
+            }
+            Outcome::Reconfigured => {
+                tracing::info!(%extension, "settings changed; restarting extension");
+                delay = timing.first_retry;
+                continue;
+            }
+            Outcome::Ended(reason) => {
+                tracing::error!(%extension, %reason, "extension failed; restarting it");
+                let retry_at = core
+                    .now()
+                    .as_jiff()
+                    .checked_add(delay)
+                    .ok()
+                    .map(irori_types::Timestamp::from_jiff);
+                core.set_status(
+                    &extension,
+                    crate::ExtensionStatus::Failed { reason, retry_at },
+                );
+                tokio::select! {
+                    biased;
+                    _ = stop.wait_for(|stop| *stop) => {
+                        core.set_status(&extension, crate::ExtensionStatus::Disabled);
+                        return;
+                    }
+                    () = settings_changed(&mut settings, &extension, &started_with) => {
+                        delay = timing.first_retry;
+                        continue;
+                    }
+                    Ok(_) = disabled.wait_for(|disabled| disabled.contains(&extension)) => continue,
+                    () = tokio::time::sleep(delay) => {}
+                }
+                delay = delay.saturating_mul(2).min(timing.max_retry);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn pump_process(
+    core: &Core,
+    extension: &ExtensionId,
+    integration: &IntegrationId,
+    kinds: &[EntityKind],
+    proc: &mut ExtProcess,
+    mut calls: mpsc::Receiver<IncomingCall>,
+    watching: Watching<'_>,
+    timing: Timing,
+) -> Outcome {
+    use std::collections::HashMap;
+
+    let Watching {
+        stop,
+        settings,
+        disabled,
+        started_with,
+    } = watching;
+    let mut pending_calls: HashMap<u64, IncomingCall> = HashMap::new();
+    let mut next_call: u64 = 0;
+    let ExtProcess {
+        child,
+        stdin,
+        stdout,
+    } = proc;
+
+    let why = loop {
+        tokio::select! {
+            biased;
+            () = async { let _ = stop.wait_for(|stop| *stop).await; } => break Outcome::Stopped,
+            status = child.wait() => {
+                return Outcome::Ended(match status {
+                    Ok(status) if status.success() => {
+                        "stopped on its own without being asked to".into()
+                    }
+                    Ok(status) => format!("exited {status}"),
+                    Err(e) => e.to_string(),
+                });
+            }
+            () = settings_changed(settings, extension, started_with) => {
+                break Outcome::Reconfigured;
+            }
+            () = async {
+                let _ = disabled.wait_for(|disabled| disabled.contains(extension)).await;
+            } => break Outcome::Disabled,
+            Some(incoming) = calls.recv() => {
+                let id = next_call;
+                next_call += 1;
+                let call = incoming.call.clone();
+                pending_calls.insert(id, incoming);
+                if let Err(reason) = ExtProcess::send_on(stdin, &ToExt::ServiceCall { id, call }).await {
+                    return Outcome::Ended(reason);
+                }
+            }
+            msg = ExtProcess::recv_on(stdout) => {
+                match msg {
+                    Ok(from) => {
+                        if let Err(reason) = apply_from_ext(
+                            core, extension, integration, kinds, stdin, from, &mut pending_calls,
+                        ).await {
+                            return Outcome::Ended(reason);
+                        }
+                    }
+                    Err(reason) => return Outcome::Ended(reason),
+                }
+            }
+        }
+    };
+
+    let _ = ExtProcess::send_on(stdin, &ToExt::Stop).await;
+    let grace = tokio::time::sleep(timing.stop_grace);
+    tokio::pin!(grace);
+    loop {
+        tokio::select! {
+            biased;
+            status = child.wait() => {
+                let _ = status;
+                return why;
+            }
+            () = &mut grace => {
+                tracing::warn!(%extension, "extension didn't stop in time; cancelling it");
+                let _ = child.start_kill();
+                return why;
+            }
+            msg = ExtProcess::recv_on(stdout) => {
+                if let Ok(from) = msg {
+                    let _ = apply_from_ext(
+                        core, extension, integration, kinds, stdin, from, &mut pending_calls,
+                    ).await;
+                }
+            }
+        }
+    }
+}
+
+async fn apply_from_ext(
+    core: &Core,
+    extension: &ExtensionId,
+    integration: &IntegrationId,
+    kinds: &[EntityKind],
+    stdin: &mut tokio::process::ChildStdin,
+    from: FromExt,
+    pending_calls: &mut std::collections::HashMap<u64, IncomingCall>,
+) -> Result<(), String> {
+    use tokio::sync::oneshot;
+    let reply_id = match &from {
+        FromExt::DescribeDevice { id, .. }
+        | FromExt::DescribeEntity { id, .. }
+        | FromExt::RemoveDevice { id, .. }
+        | FromExt::RemoveEntity { id, .. }
+        | FromExt::SetAvailability { id, .. }
+        | FromExt::Load { id, .. }
+        | FromExt::Store { id, .. } => Some(*id),
+        _ => None,
+    };
+    match from {
+        FromExt::DescribeDevice { device, .. } => {
+            let (reply, rx) = oneshot::channel();
+            core.apply_op(
+                extension,
+                integration,
+                kinds,
+                Op::DescribeDevice(device, reply),
+            );
+            send_reply(stdin, reply_id, rx).await
+        }
+        FromExt::DescribeEntity { entity, .. } => {
+            let (reply, rx) = oneshot::channel();
+            core.apply_op(
+                extension,
+                integration,
+                kinds,
+                Op::DescribeEntity(entity, reply),
+            );
+            send_reply(stdin, reply_id, rx).await
+        }
+        FromExt::RemoveDevice { unique_id, .. } => {
+            let (reply, rx) = oneshot::channel();
+            core.apply_op(
+                extension,
+                integration,
+                kinds,
+                Op::RemoveDevice(unique_id, reply),
+            );
+            send_reply(stdin, reply_id, rx).await
+        }
+        FromExt::RemoveEntity { unique_id, .. } => {
+            let (reply, rx) = oneshot::channel();
+            core.apply_op(
+                extension,
+                integration,
+                kinds,
+                Op::RemoveEntity(unique_id, reply),
+            );
+            send_reply(stdin, reply_id, rx).await
+        }
+        FromExt::SetAvailability {
+            target,
+            availability,
+            ..
+        } => {
+            let (reply, rx) = oneshot::channel();
+            core.apply_op(
+                extension,
+                integration,
+                kinds,
+                Op::SetAvailability(target, availability, reply),
+            );
+            send_reply(stdin, reply_id, rx).await
+        }
+        FromExt::SetHealth { health } => {
+            core.apply_op(extension, integration, kinds, Op::SetHealth(health));
+            Ok(())
+        }
+        FromExt::SetWaiting { waiting } => {
+            core.apply_op(extension, integration, kinds, Op::SetWaiting(waiting));
+            Ok(())
+        }
+        FromExt::Load { key, .. } => {
+            let (reply, rx) = oneshot::channel();
+            core.apply_op(extension, integration, kinds, Op::Load(key, reply));
+            let result = rx.await.unwrap_or(Err(irori_integration::Rejected(
+                "the core is shutting down".into(),
+            )));
+            let (value, error) = match result {
+                Ok(value) => (value, None),
+                Err(rejected) => (None, Some(rejected.0)),
+            };
+            ExtProcess::send_on(
+                stdin,
+                &ToExt::Loaded {
+                    id: reply_id.expect("load has id"),
+                    value,
+                    error,
+                },
+            )
+            .await
+        }
+        FromExt::Store { key, value, .. } => {
+            let (reply, rx) = oneshot::channel();
+            core.apply_op(extension, integration, kinds, Op::Store(key, value, reply));
+            send_reply(stdin, reply_id, rx).await
+        }
+        FromExt::StateReport { report } => {
+            core.apply_reports(extension, integration, vec![report], 0);
+            Ok(())
+        }
+        FromExt::ServiceResult { id, error } => {
+            if let Some(incoming) = pending_calls.remove(&id) {
+                incoming.reply(match error {
+                    None => Ok(()),
+                    Some(error) => Err(error.into()),
+                });
+            }
+            Ok(())
+        }
+    }
+}
+
+async fn send_reply(
+    stdin: &mut tokio::process::ChildStdin,
+    id: Option<u64>,
+    rx: tokio::sync::oneshot::Receiver<Result<(), irori_integration::Rejected>>,
+) -> Result<(), String> {
+    let error = match rx.await {
+        Ok(Ok(())) => None,
+        Ok(Err(rejected)) => Some(rejected.0),
+        Err(_) => Some("the core is shutting down".into()),
+    };
+    ExtProcess::send_on(
+        stdin,
+        &ToExt::Reply {
+            id: id.expect("op has id"),
+            error,
+        },
+    )
+    .await
 }

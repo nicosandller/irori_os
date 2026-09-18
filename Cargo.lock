@@ -933,9 +933,7 @@ dependencies = [
  "irori-config",
  "irori-core",
  "irori-int-demo",
- "irori-int-esphome",
  "irori-int-helpers",
- "irori-int-mqtt",
  "irori-integration",
  "irori-types",
  "mime_guess",
@@ -946,6 +944,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "toml",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -1027,6 +1026,7 @@ dependencies = [
  "snow",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1047,6 +1047,9 @@ version = "0.0.0"
 dependencies = [
  "irori-integration",
  "irori-types",
+ "schemars",
+ "serde",
+ "tokio",
 ]
 
 [[package]]

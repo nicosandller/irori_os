@@ -161,6 +161,16 @@
     .state { color: var(--muted); font: .7rem var(--mono); letter-spacing: .08em;
              text-transform: uppercase; }
     .state.ok { color: var(--ember); }
+    .ext-list { margin: 0; padding: 0; list-style: none; }
+    .ext-list li { padding: .85rem 0; border-bottom: 1px solid var(--line); }
+    .ext-list li:last-child { border-bottom: none; }
+    .ext-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem; }
+    .ext-actions { margin-top: .6rem; }
+    button.danger { padding: .4rem .75rem; font: inherit; font-size: .9rem;
+                    color: var(--ember); background: var(--card); border: 1px solid var(--line);
+                    border-radius: .4rem; cursor: pointer; }
+    button.danger:hover { border-color: var(--ember); }
+    button:disabled { opacity: .55; cursor: default; }
     .dot { width: .5rem; height: .5rem; border-radius: 2px; background: var(--muted); }
     .dot.ok { background: var(--ember); box-shadow: 0 0 .4rem var(--ember); }
 
