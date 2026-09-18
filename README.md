@@ -37,6 +37,9 @@ curl -fsSL "$url" | bash -s -- --system           # /usr/local/bin (needs root)
 curl -fsSL "$url" | bash -s -- --binary ./target/release/irori   # a local build
 ```
 
+`releases/latest` skips pre-releases, so a tag with a `-` in it (for example `0.3.0-beta.1`)
+won't be picked up by the one-liner; install it by name with `--version` instead.
+
 `install/irori.service` is a systemd unit for a `--system` install; it runs as an unprivileged
 `irori` user with its data in `/var/lib/irori` (see the header of that file).
 

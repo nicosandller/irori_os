@@ -286,7 +286,7 @@ fi
 
 add_to_path() {
     local file="$1"
-    if grep -Fq "$path_line" "$file" 2>/dev/null; then
+    if grep -qxF "$path_line" "$file" 2>/dev/null; then
         info "$file already points $APP at $INSTALL_DIR"
         return
     fi
@@ -371,17 +371,12 @@ printf '\n'
 # gets it, but say so plainly or this window looks broken.
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     if [[ -n "${config_file:-}" ]]; then
-        reload_hint="source $config_file"
+        printf "  ${MUTED}%s isn't on this shell's PATH yet. Open a new terminal, or here:${NC}\n" "$INSTALL_DIR"
+        printf "    source %s\n" "$config_file"
     else
-        case "$current_shell" in
-            fish) reload_hint="source ${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" ;;
-            zsh) reload_hint="source ${ZDOTDIR:-$HOME}/.zshrc" ;;
-            bash) reload_hint="source $HOME/.bashrc" ;;
-            *) reload_hint="source $HOME/.profile" ;;
-        esac
+        printf "  ${MUTED}%s isn't on this shell's PATH yet (PATH was not modified). Add it to your shell config:${NC}\n" "$INSTALL_DIR"
+        printf "    %s\n" "$path_line"
     fi
-    printf "  ${MUTED}%s isn't on this shell's PATH yet. Open a new terminal, or here:${NC}\n" "$INSTALL_DIR"
-    printf "    %s\n" "$reload_hint"
     printf '\n'
 fi
 
