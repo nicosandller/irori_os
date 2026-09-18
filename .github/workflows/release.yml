@@ -1,0 +1,201 @@
+name: Release
+
+# Pushing a tag like `v0.2.0` validates the tag, builds the UI and the binary for every target,
+# and attaches the archive and `install/install.sh` to a GitHub Release. The installer downloads
+# the binary from there; `releases/latest/download/install.sh` is the one-liner.
+# Third-party actions are pinned to immutable commit SHAs (the comment names the version),
+# so nothing on the build/publish path can be moved under the job that holds `contents: write`.
+on:
+  push:
+    tags: ["v*"]
+
+# Only the release job writes (it creates the Release); every other job just reads.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # The binary reports this version (`crates/irori/build.rs`), so a release isn't `0.0.0`.
+  IRORI_VERSION: ${{ github.ref_name }}
+
+jobs:
+  # A release tag has to be a version: `irori-types/build.rs` reports it and `Core::new` parses
+  # it with `expect`, so a stray tag like `vfoo` must fail here, not publish a binary that panics.
+  validate:
+    name: validate the tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a MAJOR.MINOR.PATCH tag
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          fail() { echo "::error::tag '$GITHUB_REF_NAME' $1"; exit 1; }
+
+          # Mirror crates/irori-types/src/release_version.rs (used by irori-types/build.rs): a tag
+          # that passes here must also build, or the validate job succeeds and the build jobs fail
+          # on the version assert. Rust checks that file with unit tests; keep this regex in step.
+          [[ ${#version} -le 64 ]] || fail "is longer than 64 characters"
+          [[ "$version" != *"+"* ]] || fail "has a +build suffix"
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})(-(.*))?$ ]]; then
+            fail "isn't vMAJOR.MINOR.PATCH with an optional -prerelease"
+          fi
+          if [[ -n "${BASH_REMATCH[4]}" ]]; then
+            pre="${BASH_REMATCH[5]}"
+            if [[ -z "$pre" || "$pre" == .* || "$pre" == *. || "$pre" == *..* ]]; then
+              fail "has an empty prerelease identifier"
+            fi
+            IFS='.' read -r -a ids <<<"$pre"
+            for id in "${ids[@]}"; do
+              [[ "$id" =~ ^[0-9A-Za-z-]+$ ]] || fail "has a prerelease identifier with invalid characters"
+              if [[ ${#id} -gt 1 && "$id" == 0* && "$id" =~ ^[0-9]+$ ]]; then
+                fail "has a numeric prerelease identifier with a leading zero"
+              fi
+            done
+          fi
+          echo "release tag $GITHUB_REF_NAME is valid"
+
+  # The wasm UI is built once and shared by every target; without it the binaries embed the
+  # placeholder page a UI-less `cargo build` leaves behind.
+  ui:
+    name: web UI
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            .
+            crates/irori-ui
+      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2
+        with:
+          tool: trunk
+      - name: Build
+        run: cargo xtask ui
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ui
+          path: crates/irori/ui
+          retention-days: 1
+
+  build:
+    name: ${{ matrix.asset_os }}-${{ matrix.asset_arch }}
+    needs: ui
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            tool: zigbuild
+            asset_os: linux
+            asset_arch: x64
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            tool: zigbuild
+            asset_os: linux
+            asset_arch: arm64
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            tool: build
+            asset_os: darwin
+            asset_arch: x64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            tool: build
+            asset_os: darwin
+            asset_arch: arm64
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: release-${{ matrix.target }}
+      # Static musl builds on Linux need zig; macOS builds link against the system SDK.
+      - if: matrix.tool == 'zigbuild'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.14.1
+      - if: matrix.tool == 'zigbuild'
+        uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2
+        with:
+          tool: cargo-zigbuild
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ui
+          path: crates/irori/ui
+
+      - name: Build the binary
+        run: |
+          set -euo pipefail
+          cargo ${{ matrix.tool }} --locked --release --target ${{ matrix.target }} -p irori
+
+      - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
+          ASSET_OS: ${{ matrix.asset_os }}
+          ASSET_ARCH: ${{ matrix.asset_arch }}
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/irori-$ASSET_OS-$ASSET_ARCH"
+          mkdir -p "$stage"
+          install -m755 "target/$TARGET/release/irori" "$stage/irori"
+          tar -czf "$RUNNER_TEMP/irori-$ASSET_OS-$ASSET_ARCH.tar.gz" -C "$stage" irori
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: irori-${{ matrix.asset_os }}-${{ matrix.asset_arch }}
+          path: ${{ runner.temp }}/irori-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          merge-multiple: true
+          path: dist
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum *.tar.gz >SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          prerelease=""
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            prerelease="--prerelease"
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Irori $GITHUB_REF_NAME" \
+            --generate-notes \
+            $prerelease \
+            dist/*.tar.gz dist/SHA256SUMS install/install.sh

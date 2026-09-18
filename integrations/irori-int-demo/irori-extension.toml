@@ -2,7 +2,7 @@
 id = "demo"
 name = "Demo"
 version = "0.1.0"
-irori = ">=0.0.0, <0.1.0"
+irori = ">=0.0.0"
 description = "Virtual devices for trying Irori without hardware: a study lamp and plug, a hallway light, motion, illuminance, and an mmWave with occupancy and target distance."
 icon = "icon.svg"
 

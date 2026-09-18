@@ -1278,7 +1278,7 @@ pub(crate) fn slugify(text: &str) -> String {
 }
 
 /// A device's id: its integration and the integration's permanent handle for it, as a slug —
-/// `esphome_30_83_98_ca_6a_08`. A pure function of the two, so it's the same after every restart
+/// `esphome_00_11_22_33_44_55`. A pure function of the two, so it's the same after every restart
 /// and whatever the device is called (ROADMAP D36).
 ///
 /// A handle too long for an id keeps its beginning and gains a hash of the whole canonical
@@ -1603,7 +1603,7 @@ mod tests {
         };
         assert_eq!(
             id("esphome", "00:11:22:33:44:55"),
-            "esphome_30_83_98_ca_6a_08"
+            "esphome_00_11_22_33_44_55"
         );
         assert_eq!(id("mqtt", "0x00158d0001a2b3c4"), "mqtt_0x00158d0001a2b3c4");
         // Nothing a slug can keep: the handle is hashed rather than dropped.

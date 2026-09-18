@@ -12,6 +12,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use crate::id::{err, string_newtype};
+use crate::release_version::is_release_version;
 use crate::{Description, EntityKind, ExtensionId, IdError, IntegrationId, InvariantError, Name};
 
 /// The contents of an extension's `irori-extension.toml`.
@@ -359,15 +360,19 @@ fn parse_version(value: &str) -> Result<(Release, Option<&str>), IdError> {
     const WHAT: &str = "version";
     const SHAPE: &str =
         "must be MAJOR.MINOR.PATCH with an optional -pre-release, like 1.4.0 or 0.3.0-beta.1";
-    if value.len() > 64 {
-        return Err(err(WHAT, value, "must be at most 64 characters"));
-    }
-    if value.contains('+') {
-        return Err(err(
-            WHAT,
-            value,
-            "build metadata (`+...`) isn't allowed; use a pre-release (`-...`) instead",
-        ));
+    if !is_release_version(value) {
+        // The checks below only pick which message names the rule that failed; the acceptance
+        // decision is the shared one in `release_version.rs` (also used by `build.rs`).
+        if value.len() > 64 {
+            return Err(err(WHAT, value, "must be at most 64 characters"));
+        }
+        if value.contains('+') {
+            return Err(err(
+                WHAT,
+                value,
+                "build metadata (`+...`) isn't allowed; use a pre-release (`-...`) instead",
+            ));
+        }
     }
     let (release, pre) = match value.split_once('-') {
         Some((release, pre)) => (release, Some(pre)),

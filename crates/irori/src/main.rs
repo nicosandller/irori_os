@@ -16,7 +16,7 @@ use clap::{Parser, Subcommand};
 use irori_core::{Core, ExtensionHost, SystemClock, Timing};
 
 #[derive(Debug, Parser)]
-#[command(name = "irori", version, about = "A fast, modular smart home core")]
+#[command(name = "irori", version = build_info::VERSION, about = "A fast, modular smart home core")]
 struct Cli {
     #[command(subcommand)]
     command: Command,

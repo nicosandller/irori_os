@@ -41,6 +41,16 @@ more than volume: one verified finding beats five guesses.
   core, and the contract (`docs/specs/integrations.md` §3) says they must not block. Third-party
   code runs as a separate process instead. Don't propose per-integration runtimes or threads for
   the built-ins; the cost on a Raspberry Pi isn't worth a rule we already enforce by review.
+- **The official `irori-int-*` extensions are linked into the binary, not shipped as packages.**
+  Their manifests leave out `run` because they aren't external packages, and there is no
+  `irori-ext-*` executable to build. The release archive is the `irori` binary alone, and
+  `install/install.sh` doesn't install an `extensions/` tree until the host loads external
+  packages at startup. Don't ask for extension binaries to be packaged, or for the installer to
+  copy extensions, before that lands.
+- **The built-in manifests don't cap the `irori` requirement.** The official `irori-int-*`
+  manifests use `>=0.0.0` with no upper bound because they're compiled into the core and always
+  ship with it; the old `<0.1.0` cap made a tagged build reject its own integrations. Upper bounds
+  matter for external packages, which are loaded separately.
 - **`last_reported` starts when an entity is registered, and is never null.** Describing an
   entity is the integration telling Irori about it, and "has never reported a value" is already
   visible as `state: null` (`docs/specs/entities.md` §5.1). Don't propose making the field
@@ -87,6 +97,25 @@ more than volume: one verified finding beats five guesses.
   is tiny and infrequent (helpers toggles, paired keys) — a few writes a minute at most, not a
   stream. Don't propose spawning a dedicated async DB worker for it in this milestone; see the
   comment on `SqliteStorage` in `crates/irori/src/db.rs`.
+- **The `.irori-always-rerun` build trigger works; it is not a Cargo cache hole.** A
+  `cargo:rerun-if-changed` path that never exists is always treated as changed, so the build
+  scripts in `crates/irori/build.rs` and `crates/irori-types/build.rs` re-run on every build and
+  a freshly tagged checkout picks up the new `IRORI_VERSION` from git. Verified at the machine:
+  building the same crate twice re-ran the build script with no source changes. CI additionally
+  re-runs on `IRORI_VERSION` via `rerun-if-env-changed`. Don't propose watching git refs or
+  fingerprint invalidation for this.
+- **`useradd --system` creates the access group, so `Group=irori` in `install/irori.service`
+  refers to a group that exists.** Linux `useradd`'s default policy creates a same-named
+  primary group for the new user (that's why the unit — and most systemd units driving
+  `useradd`-created accounts — name it without an explicit `groupadd`). Don't flag the missing
+  group creation.
+- **The Bash PATH setup covers login and interactive shells, and which file wins is decided.**
+  `install/install.sh` writes its block to the first existing Bash startup file, preferring
+  login files (`.bash_profile`, `.bash_login`) over `.bashrc`, and when both files exist and
+  are separate it also appends the block to `~/.bashrc`. Reasonable setups are covered: macOS
+  login shells read `.bash_profile`; Ubuntu's `.profile` sources `.bashrc`. Don't propose
+  rewriting this into sourcing one file from the other, writing to every startup file, or
+  detecting whether `.bash_profile` sources `.bashrc`; the chosen policy is final.
 
 ## What's most useful
 

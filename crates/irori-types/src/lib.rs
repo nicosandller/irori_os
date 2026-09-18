@@ -3,6 +3,10 @@
 //! and later traces and API messages. Compiles to native and `wasm32`, so the server, CLI, and
 //! browser UI validate data with the same code.
 
+/// The version this build reports: the release tag, else an exact tag on `HEAD`, else `0.0.0`
+/// (`build.rs`). Defined here so the binary and the core's compatibility check share one source.
+pub const VERSION: &str = env!("IRORI_VERSION");
+
 // `id` first: its `string_newtype!` macro is used by later modules.
 mod id;
 
@@ -12,6 +16,7 @@ mod integration;
 mod kind;
 mod num;
 mod registry;
+mod release_version;
 mod schema;
 mod settings;
 mod state;

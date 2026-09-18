@@ -79,7 +79,7 @@ impl JsonSchema for GivenKey {
 /// A device's MAC address, the way ESPHome reports it once connected: `00:11:22:33:44:55`.
 ///
 /// Read from any of the forms people actually have to hand — the one the device's web page
-/// shows, the one mDNS announces (`308398ca6a08`), dashes instead of colons — so a key pasted
+/// shows, the one mDNS announces (`001122334455`), dashes instead of colons — so a key pasted
 /// from wherever someone found the address still finds its device.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Mac(String);
@@ -241,27 +241,28 @@ impl JsonSchema for Key {
 mod tests {
     use super::*;
 
-    const KEY: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI==";
+    // A synthetic 32-byte key (base64 of 0x00..0x20), never a real device key.
+    const KEY: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
 
     #[test]
     fn a_mac_is_read_from_whatever_form_it_was_copied_in() {
         for written in [
-            "00:11:22:33:44:55",
-            "30:83:98:ca:6a:08",
-            "308398ca6a08",
-            "30-83-98-CA-6A-08",
+            "0A:1B:2C:3D:4E:5F",
+            "0a:1b:2c:3d:4e:5f",
+            "0a1b2c3d4e5f",
+            "0A-1B-2C-3D-4E-5F",
         ] {
             let mac: Mac = written.parse().expect("a MAC");
-            assert_eq!(mac.as_str(), "00:11:22:33:44:55", "{written}");
+            assert_eq!(mac.as_str(), "0A:1B:2C:3D:4E:5F", "{written}");
         }
-        assert!("30:83:98:CA:6A".parse::<Mac>().is_err());
+        assert!("0A:1B:2C:3D:4E".parse::<Mac>().is_err());
         assert!("not a mac at all".parse::<Mac>().is_err());
     }
 
     #[test]
     fn settings_read_from_the_shape_the_docs_show() {
         let settings: Settings = serde_json::from_value(serde_json::json!({
-            "keys": { "308398ca6a08": KEY }
+            "keys": { "001122334455": KEY }
         }))
         .expect("valid");
         let mac: Mac = "00:11:22:33:44:55".parse().expect("a MAC");
@@ -277,11 +278,11 @@ mod tests {
         for (bad, shown) in [
             (serde_json::json!("c2hvcnQ="), "c2hvcnQ="),
             (serde_json::json!("not base64 at all!"), "not base64"),
-            (serde_json::json!("px7tsbK3C7bpXHr2OevEV2ZMg"), "px7tsbK3"),
+            (serde_json::json!("AAECAwQFBgcICQoLDA0O"), "AAECAwQF"),
             (serde_json::json!(12345), "12345"),
         ] {
             let settings: Settings = serde_json::from_value(serde_json::json!({
-                "keys": { "308398ca6a08": bad, "aabbccddeeff": KEY }
+                "keys": { "001122334455": bad, "aabbccddeeff": KEY }
             }))
             .expect("the settings as a whole are fine");
             let why = settings.keys[&mac].0.clone().expect_err("a bad key");
@@ -296,7 +297,7 @@ mod tests {
     #[test]
     fn a_key_never_shows_up_in_debug_output() {
         let key: Key = KEY.parse().expect("valid");
-        assert!(!format!("{key:?}").contains("px7t"));
+        assert!(!format!("{key:?}").contains("AAECAwQ"));
     }
 
     /// A map key that isn't a MAC must not fail the whole table — same reason a bad value
@@ -306,7 +307,7 @@ mod tests {
         let settings: Settings = serde_json::from_value(serde_json::json!({
             "keys": {
                 "not-a-mac": KEY,
-                "308398ca6a08": KEY,
+                "001122334455": KEY,
                 "also bad!!": KEY
             }
         }))

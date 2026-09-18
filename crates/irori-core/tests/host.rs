@@ -127,7 +127,7 @@ const LAMP_MANIFEST: &str = r#"
     id = "lamp"
     name = "Lamp"
     version = "0.1.0"
-    irori = ">=0.0.0, <0.1.0"
+    irori = ">=0.0.0"
 
     [[contributes.integration]]
     iot_class = "local_push"
@@ -700,7 +700,7 @@ const KEYED_MANIFEST: &str = r#"
     id = "keyed"
     name = "Keyed"
     version = "0.1.0"
-    irori = ">=0.0.0, <0.1.0"
+    irori = ">=0.0.0"
 
     [[contributes.integration]]
     iot_class = "local_push"
@@ -933,7 +933,7 @@ impl Integration for Counter {
         id = "counter"
         name = "Counter"
         version = "0.1.0"
-        irori = ">=0.0.0, <0.1.0"
+        irori = ">=0.0.0"
 
         [[contributes.integration]]
         iot_class = "local_push"

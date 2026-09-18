@@ -12,7 +12,38 @@
 
 > Status: the core's registry, live state, and extension host run; a Devices page shows everything and switches it (M0.8, M1.6 first slice); and **ESPHome devices on your network are found and connected automatically**, sensors and all (D26). No rules or automations yet, and no login, so it isn't running a home unattended.
 
-## Build and run
+## Install
+
+One command, into `~/.irori`:
+
+```sh
+curl -fsSL https://github.com/nicosandller/irori_os/releases/latest/download/install.sh | bash
+~/.irori/bin/irori run                     # http://127.0.0.1:8480
+```
+
+It detects your OS and CPU, downloads the latest [release](https://github.com/nicosandller/irori_os/releases)
+for it, verifies the SHA-256 against the release's `SHA256SUMS`, and installs `irori` under
+`~/.irori/bin`. The installer adds that to your shell config, so a new shell finds `irori`; the
+command above uses the full path because the installer runs in its own process and can't change
+the shell you're in. Releases carry `linux-x64`, `linux-arm64` (both static musl), `darwin-x64`
+and `darwin-arm64`, and the installer itself as `install.sh`. The one-liner installs the latest
+release; before the first release is published, use the source build below. Options go after
+`bash -s --`:
+
+```sh
+url=https://github.com/nicosandller/irori_os/releases/latest/download/install.sh
+curl -fsSL "$url" | bash -s -- --version 0.2.0    # a specific release
+curl -fsSL "$url" | bash -s -- --system           # /usr/local/bin (needs root)
+curl -fsSL "$url" | bash -s -- --binary ./target/release/irori   # a local build
+```
+
+`releases/latest` skips pre-releases, so a tag with a `-` in it (for example `0.3.0-beta.1`)
+won't be picked up by the one-liner; install it by name with `--version` instead.
+
+`install/irori.service` is a systemd unit for a `--system` install; it runs as an unprivileged
+`irori` user with its data in `/var/lib/irori` (see the header of that file).
+
+## Build from source
 
 Requires stable Rust (pinned via `rust-toolchain.toml`). One command builds the UI and installs
 the binary, after which Irori runs from anywhere:
@@ -26,9 +57,9 @@ irori run                                  # http://127.0.0.1:8480
 
 `cargo xtask install` copies a binary; it isn't a link to the checkout. **After pulling or
 changing anything, run it again** — the running `irori` is whatever was installed last. Which
-build that is isn't a guess: every version is `0.0.0` until there are releases, so `irori
-version` and the Home page show the commit it was built from, with `-modified` when the tree had
-uncommitted changes.
+build that is isn't a guess: `irori version` and the Home page show the commit it was built from,
+with `-modified` when the tree had uncommitted changes. A build made at a release tag reports
+that version instead of `0.0.0`.
 
 ```sh
 irori version                              # irori 0.0.0 (359d176), built 2026-09-16 07:30 UTC
@@ -88,7 +119,7 @@ reload, no binary rebuild). CI builds it, so downloaded release binaries always 
 ### Rooms, and what to call things
 
 Every device has **one id, one name and one description**. The id is made from the integration
-and the device's hardware address (`esphome_30_83_98_ca_6a_08`) and never changes. The name
+and the device's hardware address (`esphome_00_11_22_33_44_55`) and never changes. The name
 starts as whatever the firmware calls the device, and once you rename it, yours is the only name —
 there's no second one kept in step somewhere else. Names, descriptions and rooms survive restarts,
 because they're written to a directory of plain TOML files:

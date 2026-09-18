@@ -1,8 +1,9 @@
 //! Records what this binary was built from, for `irori version` and `/api/health`: the target
-//! triple, the commit, and when.
+//! triple, the commit, and when. The version comes from `irori-types` (`build.rs` there), so the
+//! CLI and the core's extension-compatibility check report the same one.
 //!
-//! Version numbers alone can't tell two builds apart before there are releases — everything is
-//! `0.0.0` — so "am I running what I just built?" needs the commit.
+//! The workspace version stays `0.0.0` between releases; the commit is what tells two development
+//! builds apart.
 
 use std::process::Command;
 

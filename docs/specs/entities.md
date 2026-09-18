@@ -99,7 +99,7 @@ A physical or virtual thing an integration talks to. It has one or more entities
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `id` | `DeviceId` | yes | Its **one** id, everywhere. Made once from `integration` and `unique_id` — `esphome_30_83_98_ca_6a_08` — and never from a name, so it never changes (ROADMAP D36) |
+| `id` | `DeviceId` | yes | Its **one** id, everywhere. Made once from `integration` and `unique_id` — `esphome_00_11_22_33_44_55` — and never from a name, so it never changes (ROADMAP D36) |
 | `integration` | `IntegrationId` | yes | The integration that provides it |
 | `unique_id` | `UniqueId` | yes | Unique within `integration` |
 | `name` | `Name` | yes | Its one name: a person's, else what the integration reports. Never two side by side |

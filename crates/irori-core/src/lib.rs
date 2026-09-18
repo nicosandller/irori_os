@@ -194,8 +194,8 @@ fn write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 
 impl Core {
     pub fn new(clock: Arc<dyn Clock>) -> Self {
-        let version = Version::try_from(env!("CARGO_PKG_VERSION"))
-            .expect("the workspace version is a valid semantic version");
+        let version = Version::try_from(irori_types::VERSION)
+            .expect("the resolved build version is a valid semantic version");
         Self::with_version(clock, version)
     }
 

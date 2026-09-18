@@ -807,7 +807,7 @@ struct Health<'a> {
     status: &'static str,
     version: &'static str,
     /// What this binary was built from, so "am I running the version I just built?" has an
-    /// answer while every version number is still `0.0.0`.
+    /// answer even between releases, when every development build is `0.0.0`.
     commit: &'static str,
     built_at: &'static str,
     uptime_ms: u128,
@@ -1598,7 +1598,7 @@ mod tests {
             id = "safe"
             name = "Safe"
             version = "0.1.0"
-            irori = ">=0.0.0, <0.1.0"
+            irori = ">=0.0.0"
 
             [[contributes.integration]]
             iot_class = "local_push"

@@ -4,9 +4,10 @@ use std::fmt;
 
 use serde::Serialize;
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The release tag for a tagged build, otherwise the workspace's `0.0.0`. See `irori-types`.
+pub const VERSION: &str = irori_types::VERSION;
 /// The commit this was built from, `-modified` if the tree had changes, or `unknown` without
-/// git. Until there are releases every build is `0.0.0`, so this is what tells two apart.
+/// git. Development builds are all `0.0.0`, so this is what tells two apart.
 pub const COMMIT: &str = env!("IRORI_COMMIT");
 pub const BUILT_AT: &str = env!("IRORI_BUILT_AT");
 

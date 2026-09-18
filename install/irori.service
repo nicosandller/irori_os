@@ -1,0 +1,39 @@
+# systemd unit for a system-wide Irori install (`./install.sh --system`).
+#
+#   sudo useradd --system --home-dir /var/lib/irori --create-home \
+#       --shell /usr/sbin/nologin irori
+#   sudo install -m644 install/irori.service /etc/systemd/system/irori.service
+#   sudo systemctl enable --now irori
+#
+# Irori has no login yet, so it stays on loopback. To reach it from your phone, read the
+# warning in the README and pass `--allow-unauthenticated-lan` with a wider bind.
+[Unit]
+Description=Irori smart home core
+Documentation=https://github.com/nicosandller/irori_os
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=irori
+Group=irori
+# SQLite creates irori.db and its WAL/SHM files under this umask; 0077 keeps them 0600
+# so integration-private values (pairing keys, token refreshes) never leak to other users.
+UMask=0077
+Environment=IRORI_DATA=/var/lib/irori
+Environment=IRORI_CONFIG=/var/lib/irori/config
+Environment=IRORI_BIND=127.0.0.1:8480
+ExecStart=/usr/local/bin/irori serve
+Restart=on-failure
+RestartSec=5
+
+# The config dir is the one thing an operator edits, so it lives inside the data dir.
+StateDirectory=irori
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/irori
+
+[Install]
+WantedBy=multi-user.target
