@@ -4,7 +4,7 @@
 //!
 //! ```toml
 //! [esphome.keys]
-//! "00:11:22:33:44:55" = "base64 key from the device's YAML"
+//! "30:83:98:CA:6A:08" = "base64 key from the device's YAML"
 //! ```
 //!
 //! Keyed by MAC address because that's the one thing a device announces before anyone connects
@@ -76,7 +76,7 @@ impl JsonSchema for GivenKey {
     }
 }
 
-/// A device's MAC address, the way ESPHome reports it once connected: `00:11:22:33:44:55`.
+/// A device's MAC address, the way ESPHome reports it once connected: `30:83:98:CA:6A:08`.
 ///
 /// Read from any of the forms people actually have to hand — the one the device's web page
 /// shows, the one mDNS announces (`308398ca6a08`), dashes instead of colons — so a key pasted
@@ -106,7 +106,7 @@ impl std::str::FromStr for Mac {
             .collect();
         if hex.len() != 12 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err(format!(
-                "`{text}` isn't a MAC address (six pairs of hex digits, like 00:11:22:33:44:55)"
+                "`{text}` isn't a MAC address (six pairs of hex digits, like 30:83:98:CA:6A:08)"
             ));
         }
         let pairs: Vec<String> = hex
@@ -134,7 +134,7 @@ impl JsonSchema for Mac {
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
             "type": "string",
-            "description": "A MAC address, e.g. 00:11:22:33:44:55. Colons, dashes, or none.",
+            "description": "A MAC address, e.g. 30:83:98:CA:6A:08. Colons, dashes, or none.",
         })
     }
 }
@@ -241,18 +241,18 @@ impl JsonSchema for Key {
 mod tests {
     use super::*;
 
-    const KEY: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI==";
+    const KEY: &str = "px7tsbK3C7bpXHr2OevEV2ZMg/FrNBw2+O2pNPbedtA=";
 
     #[test]
     fn a_mac_is_read_from_whatever_form_it_was_copied_in() {
         for written in [
-            "00:11:22:33:44:55",
+            "30:83:98:CA:6A:08",
             "30:83:98:ca:6a:08",
             "308398ca6a08",
             "30-83-98-CA-6A-08",
         ] {
             let mac: Mac = written.parse().expect("a MAC");
-            assert_eq!(mac.as_str(), "00:11:22:33:44:55", "{written}");
+            assert_eq!(mac.as_str(), "30:83:98:CA:6A:08", "{written}");
         }
         assert!("30:83:98:CA:6A".parse::<Mac>().is_err());
         assert!("not a mac at all".parse::<Mac>().is_err());
@@ -264,7 +264,7 @@ mod tests {
             "keys": { "308398ca6a08": KEY }
         }))
         .expect("valid");
-        let mac: Mac = "00:11:22:33:44:55".parse().expect("a MAC");
+        let mac: Mac = "30:83:98:CA:6A:08".parse().expect("a MAC");
         assert_eq!(settings.keys[&mac].0.as_ref().map(Key::expose), Ok(KEY));
     }
 
@@ -272,7 +272,7 @@ mod tests {
     /// the reason it's bad never repeats the key.
     #[test]
     fn a_bad_key_is_kept_as_a_reason_and_never_quoted() {
-        let mac: Mac = "00:11:22:33:44:55".parse().expect("a MAC");
+        let mac: Mac = "30:83:98:CA:6A:08".parse().expect("a MAC");
         let other: Mac = "aa:bb:cc:dd:ee:ff".parse().expect("a MAC");
         for (bad, shown) in [
             (serde_json::json!("c2hvcnQ="), "c2hvcnQ="),
@@ -311,7 +311,7 @@ mod tests {
             }
         }))
         .expect("the settings as a whole are fine");
-        let mac: Mac = "00:11:22:33:44:55".parse().expect("a MAC");
+        let mac: Mac = "30:83:98:CA:6A:08".parse().expect("a MAC");
         assert_eq!(settings.keys.len(), 1);
         assert_eq!(settings.keys[&mac].0.as_ref().map(Key::expose), Ok(KEY));
     }

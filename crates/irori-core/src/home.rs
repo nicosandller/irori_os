@@ -1602,7 +1602,7 @@ mod tests {
             .to_string()
         };
         assert_eq!(
-            id("esphome", "00:11:22:33:44:55"),
+            id("esphome", "30:83:98:CA:6A:08"),
             "esphome_30_83_98_ca_6a_08"
         );
         assert_eq!(id("mqtt", "0x00158d0001a2b3c4"), "mqtt_0x00158d0001a2b3c4");
