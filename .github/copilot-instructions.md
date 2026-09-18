@@ -97,6 +97,18 @@ more than volume: one verified finding beats five guesses.
   is tiny and infrequent (helpers toggles, paired keys) — a few writes a minute at most, not a
   stream. Don't propose spawning a dedicated async DB worker for it in this milestone; see the
   comment on `SqliteStorage` in `crates/irori/src/db.rs`.
+- **The `.irori-always-rerun` build trigger works; it is not a Cargo cache hole.** A
+  `cargo:rerun-if-changed` path that never exists is always treated as changed, so the build
+  scripts in `crates/irori/build.rs` and `crates/irori-types/build.rs` re-run on every build and
+  a freshly tagged checkout picks up the new `IRORI_VERSION` from git. Verified at the machine:
+  building the same crate twice re-ran the build script with no source changes. CI additionally
+  re-runs on `IRORI_VERSION` via `rerun-if-env-changed`. Don't propose watching git refs or
+  fingerprint invalidation for this.
+- **`useradd --system` creates the access group, so `Group=irori` in `install/irori.service`
+  refers to a group that exists.** Linux `useradd`'s default policy creates a same-named
+  primary group for the new user (that's why the unit — and most systemd units driving
+  `useradd`-created accounts — name it without an explicit `groupadd`). Don't flag the missing
+  group creation.
 
 ## What's most useful
 

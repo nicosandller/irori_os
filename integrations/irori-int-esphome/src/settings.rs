@@ -236,3 +236,84 @@ impl JsonSchema for Key {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A synthetic 32-byte key (base64 of 0x00..0x20), never a real device key.
+    const KEY: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
+
+    #[test]
+    fn a_mac_is_read_from_whatever_form_it_was_copied_in() {
+        for written in [
+            "0A:1B:2C:3D:4E:5F",
+            "0a:1b:2c:3d:4e:5f",
+            "0a1b2c3d4e5f",
+            "0A-1B-2C-3D-4E-5F",
+        ] {
+            let mac: Mac = written.parse().expect("a MAC");
+            assert_eq!(mac.as_str(), "0A:1B:2C:3D:4E:5F", "{written}");
+        }
+        assert!("0A:1B:2C:3D:4E".parse::<Mac>().is_err());
+        assert!("not a mac at all".parse::<Mac>().is_err());
+    }
+
+    #[test]
+    fn settings_read_from_the_shape_the_docs_show() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "keys": { "001122334455": KEY }
+        }))
+        .expect("valid");
+        let mac: Mac = "00:11:22:33:44:55".parse().expect("a MAC");
+        assert_eq!(settings.keys[&mac].0.as_ref().map(Key::expose), Ok(KEY));
+    }
+
+    /// A bad key doesn't fail the settings — that would take every device down with it — and
+    /// the reason it's bad never repeats the key.
+    #[test]
+    fn a_bad_key_is_kept_as_a_reason_and_never_quoted() {
+        let mac: Mac = "00:11:22:33:44:55".parse().expect("a MAC");
+        let other: Mac = "aa:bb:cc:dd:ee:ff".parse().expect("a MAC");
+        for (bad, shown) in [
+            (serde_json::json!("c2hvcnQ="), "c2hvcnQ="),
+            (serde_json::json!("not base64 at all!"), "not base64"),
+            (serde_json::json!("AAECAwQFBgcICQoLDA0O"), "AAECAwQF"),
+            (serde_json::json!(12345), "12345"),
+        ] {
+            let settings: Settings = serde_json::from_value(serde_json::json!({
+                "keys": { "001122334455": bad, "aabbccddeeff": KEY }
+            }))
+            .expect("the settings as a whole are fine");
+            let why = settings.keys[&mac].0.clone().expect_err("a bad key");
+            assert!(!why.contains(shown), "{why}");
+            assert!(
+                settings.keys[&other].0.is_ok(),
+                "the good key is unaffected"
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_never_shows_up_in_debug_output() {
+        let key: Key = KEY.parse().expect("valid");
+        assert!(!format!("{key:?}").contains("AAECAwQ"));
+    }
+
+    /// A map key that isn't a MAC must not fail the whole table — same reason a bad value
+    /// doesn't: one typo would take every encrypted device down with it.
+    #[test]
+    fn a_bad_mac_key_is_skipped_and_the_rest_load() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "keys": {
+                "not-a-mac": KEY,
+                "001122334455": KEY,
+                "also bad!!": KEY
+            }
+        }))
+        .expect("the settings as a whole are fine");
+        let mac: Mac = "00:11:22:33:44:55".parse().expect("a MAC");
+        assert_eq!(settings.keys.len(), 1);
+        assert_eq!(settings.keys[&mac].0.as_ref().map(Key::expose), Ok(KEY));
+    }
+}

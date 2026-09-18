@@ -85,7 +85,7 @@ download_with_progress() {
     fi
 
     local total
-    total="$(curl -fsIL "$url" | awk 'tolower($1) == "content-length:" { n = $2 } END { print n + 0 }')"
+    total="$(curl -fsIL "$url" | awk 'tolower($1) == "content-length:" { n = $2 } END { print n + 0 }')" || total=0
     if [[ -z "$total" || "$total" -le 0 ]]; then
         curl -fL --progress-bar -o "$out" "$url"
         return $?
@@ -143,8 +143,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         *)
-            warn "unknown option '$1'"
-            shift
+            die "unknown option '$1'; see --help"
             ;;
     esac
 done
@@ -281,27 +280,50 @@ fi
 
 add_to_path() {
     local file="$1"
-    if grep -Fqx "# $APP" "$file" 2>/dev/null; then
-        info "$file already has an $APP entry; leaving it alone"
-    elif [[ -w "$file" ]]; then
-        printf '\n# %s\n%s\n' "$APP" "$path_line" >>"$file"
-        info "added $APP to \$PATH in $file"
-    else
+    if grep -Fq "$path_line" "$file" 2>/dev/null; then
+        info "$file already points $APP at $INSTALL_DIR"
+        return
+    fi
+    if [[ ! -w "$file" ]]; then
         warn "couldn't write $file; add this yourself:"
         printf '  %s\n' "$path_line"
+        return
+    fi
+    if grep -Fqx "# $APP" "$file" 2>/dev/null; then
+        strip_stale_entry "$file"
+        info "replaced the stale $APP PATH entry in $file"
+    else
+        info "added $APP to \$PATH in $file"
+    fi
+    printf '\n# %s\n%s\n' "$APP" "$path_line" >>"$file"
+}
+
+strip_stale_entry() {
+    local file="$1" tmp
+    tmp="$(mktemp "${file}.irori.XXXXXX")" || return 1
+    if awk -v marker="# $APP" '
+        $0 == marker { skip = 1; next }
+        skip == 1 { skip = 0; if ($0 ~ /^(export PATH=|set -gx PATH)/) next }
+        { print }
+    ' "$file" >"$tmp"; then
+        mv "$tmp" "$file"
+    else
+        rm -f "$tmp"
+        return 1
     fi
 }
 
 if [[ "$no_modify_path" == false && "$system_install" == false ]]; then
     XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+    config_files=()
     case "$current_shell" in
-        fish) config_files="$HOME/.config/fish/config.fish" ;;
-        zsh) config_files="${ZDOTDIR:-$HOME}/.zshrc ${ZDOTDIR:-$HOME}/.zshenv $XDG_CONFIG_HOME/zsh/.zshrc" ;;
-        bash) config_files="$HOME/.bashrc $HOME/.bash_profile $HOME/.profile $XDG_CONFIG_HOME/bash/.bashrc" ;;
-        *) config_files="$HOME/.profile $XDG_CONFIG_HOME/bash/.bashrc" ;;
+        fish) config_files=("$XDG_CONFIG_HOME/fish/config.fish") ;;
+        zsh) config_files=("${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv" "$XDG_CONFIG_HOME/zsh/.zshrc") ;;
+        bash) config_files=("$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile" "$XDG_CONFIG_HOME/bash/.bashrc") ;;
+        *) config_files=("$HOME/.profile" "$XDG_CONFIG_HOME/bash/.bashrc") ;;
     esac
     config_file=""
-    for file in $config_files; do
+    for file in "${config_files[@]}"; do
         if [[ -f "$file" ]]; then
             config_file="$file"
             break
@@ -340,12 +362,16 @@ printf '\n'
 # The install dir isn't on the current shell's PATH until its config is re-read; a fresh terminal
 # gets it, but say so plainly or this window looks broken.
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-    case "$current_shell" in
-        fish) reload_hint="source $HOME/.config/fish/config.fish" ;;
-        zsh) reload_hint="source ${ZDOTDIR:-$HOME}/.zshrc" ;;
-        bash) reload_hint="source $HOME/.bashrc" ;;
-        *) reload_hint="source $HOME/.profile" ;;
-    esac
+    if [[ -n "${config_file:-}" ]]; then
+        reload_hint="source $config_file"
+    else
+        case "$current_shell" in
+            fish) reload_hint="source ${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" ;;
+            zsh) reload_hint="source ${ZDOTDIR:-$HOME}/.zshrc" ;;
+            bash) reload_hint="source $HOME/.bashrc" ;;
+            *) reload_hint="source $HOME/.profile" ;;
+        esac
+    fi
     printf "  ${MUTED}%s isn't on this shell's PATH yet. Open a new terminal, or here:${NC}\n" "$INSTALL_DIR"
     printf "    %s\n" "$reload_hint"
     printf '\n'
