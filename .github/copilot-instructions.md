@@ -41,6 +41,16 @@ more than volume: one verified finding beats five guesses.
   core, and the contract (`docs/specs/integrations.md` §3) says they must not block. Third-party
   code runs as a separate process instead. Don't propose per-integration runtimes or threads for
   the built-ins; the cost on a Raspberry Pi isn't worth a rule we already enforce by review.
+- **The official `irori-int-*` extensions are linked into the binary, not shipped as packages.**
+  Their manifests leave out `run` because they aren't external packages, and there is no
+  `irori-ext-*` executable to build. The release archive is the `irori` binary alone, and
+  `install/install.sh` doesn't install an `extensions/` tree until the host loads external
+  packages at startup. Don't ask for extension binaries to be packaged, or for the installer to
+  copy extensions, before that lands.
+- **The built-in manifests don't cap the `irori` requirement.** The official `irori-int-*`
+  manifests use `>=0.0.0` with no upper bound because they're compiled into the core and always
+  ship with it; the old `<0.1.0` cap made a tagged build reject its own integrations. Upper bounds
+  matter for external packages, which are loaded separately.
 - **`last_reported` starts when an entity is registered, and is never null.** Describing an
   entity is the integration telling Irori about it, and "has never reported a value" is already
   visible as `state: null` (`docs/specs/entities.md` §5.1). Don't propose making the field

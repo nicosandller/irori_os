@@ -1,8 +1,8 @@
 name: Release
 
-# Pushing a tag like `v0.2.0` builds the UI, builds the binary and the official extensions for
-# every target, and attaches them and `install/install.sh` to a GitHub Release. The installer
-# downloads the binary from there; `releases/latest/download/install.sh` is the one-liner.
+# Pushing a tag like `v0.2.0` validates the tag, builds the UI and the binary for every target,
+# and attaches the archive and `install/install.sh` to a GitHub Release. The installer downloads
+# the binary from there; `releases/latest/download/install.sh` is the one-liner.
 on:
   push:
     tags: ["v*"]
@@ -22,10 +22,26 @@ env:
   IRORI_VERSION: ${{ github.ref_name }}
 
 jobs:
+  # A release tag has to be a version: `irori-types/build.rs` reports it and `Core::new` parses
+  # it with `expect`, so a stray tag like `vfoo` must fail here, not publish a binary that panics.
+  validate:
+    name: validate the tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a MAJOR.MINOR.PATCH tag
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::tag '$GITHUB_REF_NAME' isn't vMAJOR.MINOR.PATCH with an optional -prerelease"
+            exit 1
+          fi
+
   # The wasm UI is built once and shared by every target; without it the binaries embed the
   # placeholder page a UI-less `cargo build` leaves behind.
   ui:
     name: web UI
+    needs: validate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -102,12 +118,10 @@ jobs:
           name: ui
           path: crates/irori/ui
 
-      - name: Build the binary and the official extensions
+      - name: Build the binary
         run: |
           set -euo pipefail
-          cargo ${{ matrix.tool }} --locked --release --target ${{ matrix.target }} \
-            -p irori \
-            -p irori-int-demo -p irori-int-esphome -p irori-int-helpers -p irori-int-mqtt
+          cargo ${{ matrix.tool }} --locked --release --target ${{ matrix.target }} -p irori
 
       - name: Package
         env:
@@ -119,37 +133,7 @@ jobs:
           stage="$RUNNER_TEMP/irori-$ASSET_OS-$ASSET_ARCH"
           mkdir -p "$stage"
           install -m755 "target/$TARGET/release/irori" "$stage/irori"
-
-          # One extension per id: the manifest, the optional icon, and the binary under bin/.
-          # The source lives under extensions/ once official packages are in the tree; while a
-          # checkout still keeps them under integrations/, the archive is just the binary.
-          have_extensions=false
-          for spec in \
-            "demo:irori-ext-demo:extensions/demo" \
-            "esphome:irori-ext-esphome:extensions/protocols/esphome" \
-            "helpers:irori-ext-helpers:extensions/helpers" \
-            "mqtt:irori-ext-mqtt:extensions/protocols/mqtt"
-          do
-            id="${spec%%:*}"; rest="${spec#*:}"; bin="${rest%%:*}"; src="${rest#*:}"
-            if [[ ! -f "$src/irori-extension.toml" ]]; then
-              echo "no extension package at $src; skipping $id"
-              continue
-            fi
-            have_extensions=true
-            mkdir -p "$stage/extensions/$id/bin"
-            cp "$src/irori-extension.toml" "$stage/extensions/$id/"
-            if [[ -f "$src/icon.svg" ]]; then
-              cp "$src/icon.svg" "$stage/extensions/$id/"
-            fi
-            install -m755 "target/$TARGET/release/$bin" "$stage/extensions/$id/bin/$bin"
-          done
-
-          entries="irori"
-          if [[ "$have_extensions" == true ]]; then
-            entries="irori extensions"
-          fi
-          # shellcheck disable=SC2086
-          tar -czf "$RUNNER_TEMP/irori-$ASSET_OS-$ASSET_ARCH.tar.gz" -C "$stage" $entries
+          tar -czf "$RUNNER_TEMP/irori-$ASSET_OS-$ASSET_ARCH.tar.gz" -C "$stage" irori
 
       - uses: actions/upload-artifact@v4
         with:
