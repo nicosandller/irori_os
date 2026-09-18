@@ -4,8 +4,8 @@ use std::fmt;
 
 use serde::Serialize;
 
-/// The release tag for a tagged build, otherwise the workspace's `0.0.0`. See `build.rs`.
-pub const VERSION: &str = env!("IRORI_VERSION");
+/// The release tag for a tagged build, otherwise the workspace's `0.0.0`. See `irori-types`.
+pub const VERSION: &str = irori_types::VERSION;
 /// The commit this was built from, `-modified` if the tree had changes, or `unknown` without
 /// git. Development builds are all `0.0.0`, so this is what tells two apart.
 pub const COMMIT: &str = env!("IRORI_COMMIT");

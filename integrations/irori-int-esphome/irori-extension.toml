@@ -2,7 +2,7 @@
 id = "esphome"
 name = "ESPHome"
 version = "0.1.0"
-irori = ">=0.0.0, <0.1.0"
+irori = ">=0.0.0"
 description = "Devices running ESPHome firmware, over ESPHome's native API."
 icon = "icon.svg"
 

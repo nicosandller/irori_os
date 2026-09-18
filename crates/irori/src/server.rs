@@ -1598,7 +1598,7 @@ mod tests {
             id = "safe"
             name = "Safe"
             version = "0.1.0"
-            irori = ">=0.0.0, <0.1.0"
+            irori = ">=0.0.0"
 
             [[contributes.integration]]
             iot_class = "local_push"
