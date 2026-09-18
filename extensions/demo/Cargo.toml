@@ -17,5 +17,9 @@ tokio.workspace = true
 [dev-dependencies]
 serde_json.workspace = true
 
+[[bin]]
+name = "irori-ext-demo"
+path = "src/main.rs"
+
 [lints]
 workspace = true

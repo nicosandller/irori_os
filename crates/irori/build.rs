@@ -1,14 +1,16 @@
-//! Records what this binary was built from, for `irori version` and `/api/health`: the target
-//! triple, the commit, and when.
+//! Records what this binary was built from, for `irori version` and `/api/health`: the version,
+//! the target triple, the commit, and when.
 //!
-//! Version numbers alone can't tell two builds apart before there are releases — everything is
-//! `0.0.0` — so "am I running what I just built?" needs the commit.
+//! The workspace version stays `0.0.0` between releases, so the version a release binary reports
+//! comes from the tag instead: `IRORI_VERSION` when the release job sets it, else an exact tag on
+//! `HEAD`, else the manifest version. The commit is still what tells two development builds apart.
 
 use std::process::Command;
 
 fn main() {
     let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".to_owned());
     println!("cargo:rustc-env=IRORI_TARGET={target}");
+    println!("cargo:rustc-env=IRORI_VERSION={}", version());
     println!("cargo:rustc-env=IRORI_COMMIT={}", commit());
     println!("cargo:rustc-env=IRORI_BUILT_AT={}", built_at());
     // Run on every build. Naming any real path here would opt out of Cargo's own change
@@ -17,6 +19,26 @@ fn main() {
     // than the one being run. A path that never exists is always "changed", which is what
     // makes this honest; two `git` calls per build is the price.
     println!("cargo:rerun-if-changed=.irori-always-rerun");
+}
+
+/// The version to report. A release sets `IRORI_VERSION` from the tag; a build made at an exact
+/// tag (a person running `cargo build` after `git tag`) picks it up on its own; anything else
+/// falls back to the workspace's `0.0.0`. A leading `v` is dropped, so the tag `v0.2.0` prints
+/// as `0.2.0`.
+fn version() -> String {
+    if let Ok(version) = std::env::var("IRORI_VERSION") {
+        let version = version.trim().trim_start_matches('v');
+        if !version.is_empty() {
+            return version.to_owned();
+        }
+    }
+    if let Some(tag) = git(&["describe", "--tags", "--exact-match"]) {
+        let version = tag.trim_start_matches('v');
+        if !version.is_empty() {
+            return version.to_owned();
+        }
+    }
+    std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_owned())
 }
 
 /// The short commit, with `-modified` when the working tree has uncommitted changes. `unknown`

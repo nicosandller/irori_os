@@ -25,7 +25,7 @@ Last revised: 2026-09-15. Based on the original `irori-project-plan.md`, revised
 | D4 | **AI dashboards produce generated HTML** | Owner's call. Risks: security (model-written JS) and maintainability. Mitigations are mandatory, not optional: sandboxed iframe, capability-scoped bridge SDK, versioning (§6.3). |
 | D5 | **Frontend is Rust/WASM** | Shared types crate between server and UI; no TS codegen. Leptos (CSR) recommended; confirm with a Phase 0 spike vs Dioxus. |
 | D6 | **v1 persona: tinkerers with MQTT gear** | Matches the MQTT-first device story; enables no-migration trials alongside HA. |
-| D7 | **License: decide later — hard deadline** before the repo goes public *or* the first external contribution, whichever comes first | Relicensing after outside contributions needs every contributor's consent. |
+| D7 | **License: Apache-2.0** | Chosen before the repo went public, so no relicensing-with-consent problem exists. Permissive like Home Assistant: anyone can use, modify and build on it, commercially included (royalty-free by design). Monetization is the extralegal kind: hosted tier, remote access, backups, paid extensions and support (§9). |
 | D8 | **The first-party sequential engine is a closed typed schema + small expression language, no templates.** Other engines may use other shapes. | Validation against the real home is this engine's product. The OS does not own "what a rule is." |
 | D9 | **Traces are emitted by an automation engine, stored separately from state history** | The visualizer needs "condition X read Y and evaluated false", which state history can't reconstruct. The core stores traces; engines write them. |
 | D10 | **The first-party sequential engine is deterministic: injected clock + state source** | Enables backtesting/replay. Other engines (LLM, flow-based) are not required to be deterministic. |
@@ -35,7 +35,7 @@ Last revised: 2026-09-15. Based on the original `irori-project-plan.md`, revised
 | D14 | **HA-familiar domain/service vocabulary** (`light.turn_on`, `binary_sensor`, …) with typed state | LLMs already know it; eases a future HA backend adapter and HA importer. |
 | D15 | **Protocols are integrations behind one interface; the core has no protocol code.** MQTT is the first integration, not part of the core | Replaces the original plan's "MQTT bundled in core". Building MQTT against the interface proves the interface is good enough for Zigbee/Matter/Z-Wave later. |
 | D16 | **Two integration tiers, one contract:** *built-in* (Rust crates compiled in via cargo features, run in-process through the `Integration` trait) and *external* (any language, separate process, same contract over the WS API) | Built-in = fastest, single binary, first-party only. External = crash-isolated, language-agnostic, how nerds and third parties extend Irori. External integrations work in Phase 1 (run from a local path); the install-from-registry flow comes in Phase 3. |
-| D17 | **Barebones default build:** core + CLI + minimal UI (Devices, Extensions, Settings). The MQTT, Demo, ESPHome and Helpers extensions are compiled in by default. **No automation engine** is compiled in; AI is **not** in the default build | "Robust at its smallest". Automations are installed as an extension, like a protocol. `--no-default-features` remains the test that matters. |
+| D17 | **Barebones default build:** core + CLI + minimal UI (Devices, Extensions, Settings). Official extensions are **installable packages in this repo**, not cargo features of the binary. **No automation engine** is compiled in; AI is **not** in the default build | "Robust at its smallest". A click on Install downloads (or, in a checkout, builds) a package; Uninstall deletes it and the devices it brought in. `--no-default-features` remains the test that matters. |
 | D18 | **Nerd friendly as a requirement:** plain-text config (`irori.toml`, `extensions/*.toml`) as the source of truth; an installed engine's own files (this engine: JSON rules) live with that engine; CLI can do everything the UI can, with `--json`; structured logs; `/metrics`; shell completions | Makes the system scriptable, diffable, and git-friendly. SQLite holds runtime data, not the config users author. |
 | D19 | **Performance budgets enforced in CI** (§4.3) | Otherwise "lightning fast" drifts. Benchmarks run on every PR; budget regressions fail the build. |
 | D20 | **Registry and state are separate; availability is its own field; unknown is `null`** | Refines the M0.2 draft (one `Entity` with `Unavailable`/`Unknown` as state values). Keeps state updates small, lets rules be checked against capabilities alone, and keeps the last known value through an outage. See [docs/specs/entities.md](docs/specs/entities.md) §9. |
@@ -82,16 +82,13 @@ The original plan's direction holds. The main changes are (including the follow-
 ```
 ┌──────────────────────────── irori (single binary) ─────────────────────────────┐
 │                                                                                │
-│  BUILT-IN EXTENSIONS (cargo features)          CORE (no protocol code)         │
+│  OFFICIAL EXTENSIONS (packages, not linked)    CORE (no protocol code)         │
 │  ┌──────────────────────────┐                  ┌────────────────────────────┐  │
-│  │ irori-int-mqtt  [default]│── Integration ──►│ extension host             │  │
-│  │  integration: MQTT + HA  │     trait        │  manifests, permissions,   │  │
-│  │  discovery, opt. broker  │                  │  lifecycle, health, config │  │
-│  ├──────────────────────────┤                  ├────────────────────────────┤  │
-│  │ irori-int-demo  [default]│─────────────────►│ registry · state · events  │  │
-│  │  integration: virtual    │                  │ context propagation        │  │
-│  ├──────────────────────────┤                  ├────────────────────────────┤  │
-│  │ zigbee / matter / …      │ (later, opt-in)  │ irori-rules (deterministic)│  │
+│  │ extensions/protocols/*   │── process ──────►│ extension host             │  │
+│  │  ESPHome, MQTT, …        │     JSON-lines   │  catalog, install,         │  │
+│  ├──────────────────────────┤                  │  manifests, lifecycle      │  │
+│  │ extensions/demo          │─────────────────►│ registry · state · events  │  │
+│  │ extensions/helpers       │                  │ context propagation        │  │
 │  └──────────────────────────┘                  │ irori-recorder (SQLite)    │  │
 │                                                └─────────────┬──────────────┘  │
 │                                                ┌─────────────▼──────────────┐  │
@@ -143,12 +140,12 @@ irori_os/
     irori-client/            # typed Rust client for the public API (CLI, external integrations, assist)
     irori-ui/                # Leptos CSR app (built to wasm by `cargo xtask ui`, embedded
                              # via rust-embed; outside the workspace, its own dependency tree)
-    irori/                   # binary: CLI + wiring + embedded assets; cargo features pick integrations
-  integrations/              # first-party extensions whose contribution is an integration
-    irori-int-mqtt/          # rumqttc, HA discovery → registry, command publishing, optional broker
-    irori-int-esphome/       # ESPHome's native API: mDNS discovery, entities, state, commands
-    irori-int-demo/          # virtual lights/sensors/switches; the reference integration to copy
-  extensions/                # (Phase 2c+) first-party dashboards, cards, apps (`irori-ext-*`)
+    irori/                   # binary: CLI + wiring + embedded UI; official extensions are not linked
+  extensions/                # first-party packages (catalog: official.toml); installed, not compiled in
+    official.toml            # what the Extensions page lists
+    protocols/               # extensions that speak a device protocol (ESPHome, MQTT, …)
+    demo/                    # virtual devices
+    helpers/                 # toggles Irori keeps itself
   extras/
     irori-assist/            # AI: LLM providers, rule authoring, explainer, dashboards (opt-in)
   examples/
@@ -165,7 +162,7 @@ irori_os/
 - Integrations depend only on `irori-integration` and `irori-types`.
 - `irori-assist`, external extensions written in Rust, and other tools depend only on `irori-types` and `irori-client` (plus `irori-integration` for external integrations).
 
-**Cargo features on the `irori` binary:** `default = ["int-mqtt", "int-demo", "int-esphome", "int-helpers", "ui"]` (D17); opt-in: `assist`, and future `int-zigbee`, `int-matter`, …. `--no-default-features` must still build, start, and serve the API. That's the "robust at its smallest" test.
+**Cargo features on the `irori` binary:** `default = ["ui"]` (D17); opt-in: `assist`. Official extensions are packages under `extensions/`, not features. `--no-default-features` must still build, start, and serve the API. That's the "robust at its smallest" test.
 
 ### 2.2 Tech stack
 
@@ -576,7 +573,7 @@ The manifest and the integration, dashboard, and card contracts already exist an
   3. **Terminal** (`host_shell = true`): the canonical high-privilege example.
 
 ### 8.3 First new integrations (in order of value for tinkerers)
-1. **ESPHome native API** (ESPHome's default transport, not MQTT). ✅ *Done early on the home-testing path (D26): `integrations/irori-int-esphome`, discovery and all four entity kinds, plaintext and encrypted (D35).*
+1. **ESPHome native API** (ESPHome's default transport, not MQTT). ✅ *Done early on the home-testing path (D26): `extensions/protocols/esphome`, discovery and all four entity kinds, plaintext and encrypted (D35).*
 2. **Z-Wave** via `zwave-js-server` (external)
 3. **Matter** via `rs-matter` (built-in, opt-in feature)
 4. **One vendor cloud connector** (e.g. SwitchBot, which has a documented public API) to prove `cloud_polling`/`cloud_push`, credential handling via `secrets.toml`, and the cloud badge end to end
@@ -590,7 +587,7 @@ The manifest and the integration, dashboard, and card contracts already exist an
 ## 9. Phase 4 — Product and public launch
 
 - Public alpha (target: after Phase 2a), then beta (after 2b).
-- **License decision (D7)** before the repo goes public.
+- **License decision (D7)** — decided, before the repo goes public: Apache-2.0 (see the decision log and `LICENSE`).
 - Docs site; `irori.dev` (check domain and trademark availability early, even in Phase 0).
 - Hosted AI tier as an `LlmProvider` backed by an Irori service (usage credits).
 - Remote access (e.g. an optional relay) and off-site backups as paid conveniences.
@@ -622,7 +619,7 @@ The manifest and the integration, dashboard, and card contracts already exist an
 | Local LLMs too weak for generation | Poor AI experience for privacy-focused users | Validation loops, eval harness, per-feature model choice |
 | SD card wear from the recorder | Hardware failures blamed on Irori | Batched writes, retention, excludes, documented SSD recommendation |
 | Two controllers fighting in shadow mode | Confusing device behavior | Docs plus a UI warning when a device is also commanded by another source (visible via MQTT) |
-| License ambiguity blocks contributors | Can't accept PRs | D7 deadline |
+| ~~License ambiguity blocks contributors~~ | ~~Can't accept PRs~~ | Resolved: Apache-2.0 (D7) |
 
 ---
 
@@ -638,7 +635,7 @@ The manifest and the integration, dashboard, and card contracts already exist an
 8. **Config format details:** TOML for everything, or JSON for rules (current) and TOML for the rest? JSON rules match the schema and LLM output; TOML reads nicer by hand.
 9. **Monetization mechanism:** hosted AI credits vs remote access vs a hosted instance.
 10. **Appliance image:** yes or no (defer to Phase 4 with user data).
-11. **License** (D7 deadline).
+11. ~~**License**~~ → decided: Apache-2.0 (D7).
 12. **Extension id namespacing:** flat slugs (`switchbot`, today's `IntegrationId` format) or namespaced (`author.switchbot`) to avoid collisions in a public registry? Namespacing would need a new id format, since the current slug rules forbid dots. Decide before the registry opens in Phase 3.
 13. **Card composition:** do cards run inside the dashboard's sandbox (simpler, faster) or each in a nested sandbox (stronger isolation)? Decide in the dashboards spec (§6.4).
 14. **Extensions contributing rule building blocks:** should extensions add typed triggers/conditions/actions, or only services and events (which rules can already use)? *Lean: services and events only, to keep D8's closed rule schema.*

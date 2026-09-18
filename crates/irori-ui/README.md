@@ -32,7 +32,7 @@ rustup target add wasm32-unknown-unknown
 there's no binary to rebuild between edits:
 
 ```sh
-cargo run -- serve                       # the core, with the demo devices, on 8480
+cargo run -- serve                       # the core on 8480; Install Demo from /extensions
 cd crates/irori-ui && trunk serve --open # the page on 8080, API proxied to 8480
 ```
 
@@ -41,6 +41,7 @@ cd crates/irori-ui && trunk serve --open # the page on 8080, API proxied to 8480
 | | |
 |---|---|
 | **Home** (`/`) | What Irori is looking after: how many devices and entities, which extensions are running and how many devices each brings in, and Irori's own version, uptime and database. |
+| **Extensions** (`/extensions`) | Official extensions from this repo (protocols, Demo, Helpers). Install copies a package into the instance and starts it; uninstall deletes the package and the devices it brought in. |
 | **Devices** (`/devices`) | Two ways to read the same home, remembered per browser: **Entities** groups everything by the device it came from, with switches; **Devices** is a row per device — what brought it in, make, model, battery, how many entities. **Add device** explains where devices come from — every installed integration, what it's for, and what it can provide — because nothing is typed in by hand yet. |
 | **A device** (`/devices/<id>`) | One device: which integration brought it in, what that integration knows it as (the MAC address, for ESPHome), make, model, firmware, hardware, battery, what it's reached through, and every entity it provides with its controls. |
 

@@ -6,6 +6,8 @@
 /config
 **/*.rs.bk
 .DS_Store
+# QA screenshot output from `cargo xtask qa`
+.qa-shots-*/
 
 # Local Claude Code settings
 .claude/settings.local.json

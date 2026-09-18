@@ -74,11 +74,11 @@ pub struct ExtensionInfo {
     /// Its icon, an SVG document. Sent as `has_icon`, not inline: the page loads it as an image
     /// from its own address, where it can't run script (`docs/specs/extensions.md`).
     #[serde(rename = "has_icon", serialize_with = "is_present")]
-    pub icon: Option<&'static str>,
+    pub icon: Option<String>,
 }
 
 fn is_present<S: serde::Serializer>(
-    icon: &Option<&'static str>,
+    icon: &Option<String>,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     serializer.serialize_bool(icon.is_some())
@@ -260,8 +260,13 @@ impl Core {
     }
 
     /// An extension's icon, if it has one.
-    pub fn extension_icon(&self, extension: &ExtensionId) -> Option<&'static str> {
-        read(&self.0.extensions).get(extension)?.info.as_ref()?.icon
+    pub fn extension_icon(&self, extension: &ExtensionId) -> Option<String> {
+        read(&self.0.extensions)
+            .get(extension)?
+            .info
+            .as_ref()?
+            .icon
+            .clone()
     }
 
     /// The rooms of the home, as the config directory has them.
@@ -603,6 +608,22 @@ impl Core {
         let stamp = self.stamp();
         let events = write(&self.0.home).mark_unavailable(integration, &stamp);
         self.publish(events);
+    }
+
+    /// Removes every device this integration brought in, including ignored ones.
+    pub fn remove_integration(&self, integration: &IntegrationId) {
+        let events = write(&self.0.home).remove_integration(integration);
+        self.publish(events);
+    }
+
+    /// Forgets an extension's overview so it no longer appears as installed.
+    pub fn forget_extension(&self, extension: &ExtensionId) {
+        write(&self.0.extensions).remove(extension);
+    }
+
+    /// Drops the integration's private stored values (pairing keys, helper states, …).
+    pub fn clear_extension_storage(&self, extension: &ExtensionId) {
+        let _ = read(&self.0.storage).clear(extension);
     }
 
     fn link(&self, integration: &IntegrationId, calls: mpsc::Sender<IncomingCall>) {

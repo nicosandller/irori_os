@@ -45,7 +45,7 @@ pub fn Home() -> impl IntoView {
                 <span class="count">{move || counts().1}</span>
                 <span class="label">"entities"</span>
             </A>
-            <span class="tile">
+            <A href="/extensions" attr:class="tile">
                 <span class="count">
                     {move || {
                         let (_, _, running, total) = counts();
@@ -54,7 +54,7 @@ pub fn Home() -> impl IntoView {
                     }}
                 </span>
                 <span class="label">"extensions running"</span>
-            </span>
+            </A>
         </div>
 
         {move || rooms(&live.home.get())}
@@ -139,8 +139,8 @@ pub fn Home() -> impl IntoView {
             </ul>
             <p class="muted">
                 "Extensions are how Irori talks to anything. "
-                <A href="/devices">"Add a device"</A>
-                " to see what each one can bring in."
+                <A href="/extensions">"Install one"</A>
+                " to bring devices in."
             </p>
         </section>
 

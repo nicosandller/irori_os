@@ -5,6 +5,7 @@ mod build_info;
 mod config;
 mod db;
 mod extensions;
+mod packages;
 mod server;
 
 use std::net::SocketAddr;
@@ -16,7 +17,7 @@ use clap::{Parser, Subcommand};
 use irori_core::{Core, ExtensionHost, SystemClock, Timing};
 
 #[derive(Debug, Parser)]
-#[command(name = "irori", version, about = "A fast, modular smart home core")]
+#[command(name = "irori", version = env!("IRORI_VERSION"), about = "A fast, modular smart home core")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -172,7 +173,8 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
     let db = db::open(&data)?;
     tracing::info!(path = %db.path.display(), journal_mode = %db.journal_mode, "database ready");
     let storage = Arc::new(db::SqliteStorage::open(&db)?);
-    let builtins = extensions::builtins()?;
+    let packages_dir = packages::packages_dir(&data);
+    let _ = std::fs::create_dir_all(&packages_dir);
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -199,12 +201,17 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             let settings = config::Config::open(store, &problems, &core);
             tokio::spawn(settings.clone().watch(core.clone()));
             tokio::spawn(settings.clone().remember_arrivals(core.clone()));
-            let host = ExtensionHost::start(&core, builtins, Timing::default())
-                .map_err(anyhow::Error::msg)?;
+            let host = ExtensionHost::start_with_packages(
+                &core,
+                Vec::new(),
+                Timing::default(),
+                packages_dir,
+            )
+            .map_err(anyhow::Error::msg)?;
 
             let served = axum::serve(
                 listener,
-                server::router(server::AppState::new(db, core, settings)),
+                server::router(server::AppState::new(db, core, settings, host.clone())),
             )
             .with_graceful_shutdown(shutdown_signal())
             .await

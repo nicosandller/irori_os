@@ -867,7 +867,9 @@ fn AddDevice() -> impl IntoView {
             <h2>"Where devices come from"</h2>
             <p class="muted">
                 "Irori doesn't talk to devices itself: each kind of device arrives through an "
-                "extension. These are the ones this build has."
+                "extension. These are the ones installed. "
+                <A href="/extensions">"Manage extensions"</A>
+                "."
             </p>
             <ul class="integrations">
                 {move || {

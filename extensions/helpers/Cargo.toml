@@ -15,5 +15,9 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
+[[bin]]
+name = "irori-ext-helpers"
+path = "src/main.rs"
+
 [lints]
 workspace = true

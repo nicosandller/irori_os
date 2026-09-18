@@ -241,7 +241,7 @@ impl JsonSchema for Key {
 mod tests {
     use super::*;
 
-    const KEY: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI==";
+    const KEY: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
 
     #[test]
     fn a_mac_is_read_from_whatever_form_it_was_copied_in() {

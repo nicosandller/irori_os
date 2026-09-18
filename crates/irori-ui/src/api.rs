@@ -129,8 +129,8 @@ fn unreachable(error: gloo_net::Error) -> String {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Health {
     pub version: String,
-    /// The commit this Irori was built from, and when. Every version is `0.0.0` until there are
-    /// releases, so this is how you tell a running Irori from the one you just built.
+    /// The commit this Irori was built from, and when. Development builds are all `0.0.0`, so
+    /// this is how you tell a running Irori from the one you just built.
     #[serde(default)]
     pub commit: String,
     #[serde(default)]
@@ -390,6 +390,49 @@ struct SecretGiven<'a> {
 
 /// Hands an extension a secret it asked for. Irori writes it to `secrets.toml`, restarts the
 /// extension with it, and never sends it back.
+/// An official extension, as the Extensions page lists it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct CatalogEntry {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+    pub description: String,
+    pub version: String,
+    pub official: bool,
+    pub installed: bool,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {
+    let response = Request::get("/api/dev/catalog")
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        return Err(checked(response).await.unwrap_err());
+    }
+    response.json().await.map_err(unreachable)
+}
+
+pub async fn install_extension(id: &str) -> Result<(), String> {
+    let response = Request::post(&format!("/api/dev/extensions/{id}/install"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+pub async fn uninstall_extension(id: &str) -> Result<(), String> {
+    let response = Request::delete(&format!("/api/dev/extensions/{id}"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
 pub async fn give_secret(
     extension: &ExtensionId,
     path: &[String],

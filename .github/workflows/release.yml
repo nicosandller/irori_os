@@ -1,0 +1,189 @@
+name: Release
+
+# Pushing a tag like `v0.2.0` builds the UI, builds the binary and the official extensions for
+# every target, and attaches them to a GitHub Release. `install/install.sh` downloads from there.
+on:
+  push:
+    tags: ["v*"]
+
+# The release job creates the Release and uploads assets; the build jobs only read.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # The binary reports this version (`crates/irori/build.rs`), so a release isn't `0.0.0`.
+  IRORI_VERSION: ${{ github.ref_name }}
+
+jobs:
+  # The wasm UI is built once and shared by every target; without it the binaries embed the
+  # placeholder page a UI-less `cargo build` leaves behind.
+  ui:
+    name: web UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            crates/irori-ui
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+      - name: Build
+        run: cargo xtask ui
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui
+          path: crates/irori/ui
+          retention-days: 1
+
+  build:
+    name: ${{ matrix.asset_os }}-${{ matrix.asset_arch }}
+    needs: ui
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            tool: zigbuild
+            asset_os: linux
+            asset_arch: x64
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            tool: zigbuild
+            asset_os: linux
+            asset_arch: arm64
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            tool: build
+            asset_os: darwin
+            asset_arch: x64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            tool: build
+            asset_os: darwin
+            asset_arch: arm64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      # Static musl builds on Linux need zig; macOS builds link against the system SDK.
+      - if: matrix.tool == 'zigbuild'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - if: matrix.tool == 'zigbuild'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui
+          path: crates/irori/ui
+
+      - name: Build the binary and the official extensions
+        run: |
+          set -euo pipefail
+          cargo ${{ matrix.tool }} --locked --release --target ${{ matrix.target }} \
+            -p irori \
+            -p irori-int-demo -p irori-int-esphome -p irori-int-helpers -p irori-int-mqtt
+
+      - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
+          ASSET_OS: ${{ matrix.asset_os }}
+          ASSET_ARCH: ${{ matrix.asset_arch }}
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/irori-$ASSET_OS-$ASSET_ARCH"
+          mkdir -p "$stage"
+          install -m755 "target/$TARGET/release/irori" "$stage/irori"
+
+          # One extension per id: the manifest, the optional icon, and the binary under bin/.
+          # The source lives under extensions/ once official packages are in the tree; while a
+          # checkout still keeps them under integrations/, the archive is just the binary.
+          have_extensions=false
+          for spec in \
+            "demo:irori-ext-demo:extensions/demo" \
+            "esphome:irori-ext-esphome:extensions/protocols/esphome" \
+            "helpers:irori-ext-helpers:extensions/helpers" \
+            "mqtt:irori-ext-mqtt:extensions/protocols/mqtt"
+          do
+            id="${spec%%:*}"; rest="${spec#*:}"; bin="${rest%%:*}"; src="${rest#*:}"
+            if [[ ! -f "$src/irori-extension.toml" ]]; then
+              echo "no extension package at $src; skipping $id"
+              continue
+            fi
+            have_extensions=true
+            mkdir -p "$stage/extensions/$id/bin"
+            cp "$src/irori-extension.toml" "$stage/extensions/$id/"
+            if [[ -f "$src/icon.svg" ]]; then
+              cp "$src/icon.svg" "$stage/extensions/$id/"
+            fi
+            install -m755 "target/$TARGET/release/$bin" "$stage/extensions/$id/bin/$bin"
+          done
+
+          entries="irori"
+          if [[ "$have_extensions" == true ]]; then
+            entries="irori extensions"
+          fi
+          # shellcheck disable=SC2086
+          tar -czf "$RUNNER_TEMP/irori-$ASSET_OS-$ASSET_ARCH.tar.gz" -C "$stage" $entries
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: irori-${{ matrix.asset_os }}-${{ matrix.asset_arch }}
+          path: ${{ runner.temp }}/irori-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum *.tar.gz >SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          prerelease=""
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            prerelease="--prerelease"
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Irori $GITHUB_REF_NAME" \
+            --generate-notes \
+            $prerelease \
+            dist/*.tar.gz dist/SHA256SUMS

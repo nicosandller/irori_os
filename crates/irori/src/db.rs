@@ -111,6 +111,16 @@ impl irori_integration::Storage for SqliteStorage {
         .map(|_| ())
         .map_err(|e| e.to_string())
     }
+
+    fn clear(&self, extension: &irori_types::ExtensionId) -> Result<(), String> {
+        self.conn()
+            .execute(
+                "DELETE FROM extension_kv WHERE extension = ?1",
+                [extension.as_str()],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
 }
 
 #[cfg(test)]

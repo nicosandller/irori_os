@@ -130,7 +130,7 @@ in `extensions/<id>.toml` (§3.6), and the two are joined.
 
 ```toml
 [esphome.keys]
-"00:11:22:33:44:55" = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=="
+"00:11:22:33:44:55" = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="
 ```
 
 An extension receives exactly its own table, checks it against its own config type, and is

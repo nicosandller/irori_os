@@ -33,6 +33,8 @@ jobs:
 
       - name: rustfmt
         run: cargo fmt --all --check
+      - name: shell scripts parse
+        run: bash -n install/install.sh dev/pi dev/smoke-test.sh
       - name: clippy (all features)
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - name: clippy (barebones, no default features)

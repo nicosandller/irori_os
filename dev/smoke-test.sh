@@ -4,8 +4,8 @@
 #   dev/smoke-test.sh [BASE_URL] [TIMEOUT_SECONDS]
 #
 # Waits for /api/health, checks the database is in WAL mode, checks `/` serves the UI when the
-# `ui` feature is compiled in (and a 404 when it isn't), and, with the demo extension compiled
-# in, that it's running and its devices are listed.
+# `ui` feature is compiled in (and a 404 when it isn't), and that the official extensions
+# catalog lists Demo and ESPHome even when none are installed.
 #
 # It also makes a room called "Smoke test room" and removes it again, which is the only way to
 # prove the server can actually write its config directory (a permissions problem shows up
@@ -47,35 +47,11 @@ else
   echo "ui: not compiled in, / returns 404 as expected"
 fi
 
-if grep -q '"features":\[[^]]*"int-demo"' <<<"$health"; then
-  # "Running" comes a moment before the demo has described its devices, so wait for both.
-  # Each response is captured first: piping into `grep -q` can kill curl with SIGPIPE once it
-  # matches, which `set -o pipefail` would report as a failure.
-  demo_ready() {
-    local extensions states
-    extensions="$(curl -fsS --max-time 2 "$base_url/api/dev/extensions" 2>/dev/null)" || return 1
-    states="$(curl -fsS --max-time 2 "$base_url/api/dev/states" 2>/dev/null)" || return 1
-    # Matched inside the extension's own object, so the check doesn't depend on which order
-    # the fields happen to be serialized in.
-    grep -qE '"demo":\{[^{}]*"state":"running"' <<<"$extensions" &&
-      grep -q '"entity_id":"light.demo_lamp"' <<<"$states"
-  }
-  until demo_ready; do
-    ((SECONDS < deadline)) || fail "the demo extension isn't running with its devices listed within ${timeout}s"
-    sleep 0.2
-  done
-  echo "extensions: demo running, its devices are listed"
-fi
-
-if grep -q '"features":\[[^]]*"int-esphome"' <<<"$health"; then
-  # It should be running whether or not there's an ESPHome device on this network: with none,
-  # it sits listening. Devices are a property of the network, so they aren't asserted here.
-  extensions="$(curl -fsS --max-time 2 "$base_url/api/dev/extensions" 2>/dev/null)" || \
-    fail "can't read the extensions view"
-  grep -qE '"esphome":\{[^{}]*"state":"running"' <<<"$extensions" ||
-    fail "the esphome extension isn't running: $extensions"
-  echo "extensions: esphome running"
-fi
+catalog="$(curl -fsS --max-time 2 "$base_url/api/dev/catalog" 2>/dev/null)" || \
+  fail "can't read the official extensions catalog"
+grep -q '"id":"demo"' <<<"$catalog" || fail "catalog is missing demo: $catalog"
+grep -q '"id":"esphome"' <<<"$catalog" || fail "catalog is missing esphome: $catalog"
+echo "extensions: official catalog lists demo and esphome"
 
 # The config directory: a room can be made, is listed, and can be removed again. Writing is the
 # part worth testing — a read-only or missing directory fails here and nowhere else.
