@@ -36,8 +36,9 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           fail() { echo "::error::tag '$GITHUB_REF_NAME' $1"; exit 1; }
 
-          # Mirror irori-types/build.rs::is_version: a tag that passes here must also build, or
-          # the validate job succeeds and the build jobs fail on the version assert.
+          # Mirror crates/irori-types/src/release_version.rs (used by irori-types/build.rs): a tag
+          # that passes here must also build, or the validate job succeeds and the build jobs fail
+          # on the version assert. Rust checks that file with unit tests; keep this regex in step.
           [[ ${#version} -le 64 ]] || fail "is longer than 64 characters"
           [[ "$version" != *"+"* ]] || fail "has a +build suffix"
           if [[ ! "$version" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})(-(.*))?$ ]]; then

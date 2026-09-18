@@ -16,6 +16,7 @@ mod integration;
 mod kind;
 mod num;
 mod registry;
+mod release_version;
 mod schema;
 mod settings;
 mod state;

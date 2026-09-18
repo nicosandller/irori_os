@@ -325,7 +325,7 @@ if [[ "$no_modify_path" == false && "$system_install" == false ]]; then
     case "$current_shell" in
         fish) config_files=("$XDG_CONFIG_HOME/fish/config.fish") ;;
         zsh) config_files=("${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv" "$XDG_CONFIG_HOME/zsh/.zshrc") ;;
-        bash) config_files=("$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile" "$XDG_CONFIG_HOME/bash/.bashrc") ;;
+        bash) config_files=("$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.bashrc" "$HOME/.profile" "$XDG_CONFIG_HOME/bash/.bashrc") ;;
         *) config_files=("$HOME/.profile" "$XDG_CONFIG_HOME/bash/.bashrc") ;;
     esac
     config_file=""
