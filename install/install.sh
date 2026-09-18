@@ -19,9 +19,17 @@ os=""
 arch=""
 version=""
 
-MUTED='\033[0;2m'
+# The brand palette from assets/ (same values as crates/irori/src/banner.rs): ember `#c4552b` and
+# the warm grey `#9a8f86`. Use 24-bit colour when the terminal advertises it, otherwise the
+# nearest 256-colour; `RED` stays plain so warnings read as warnings.
+if [[ "${COLORTERM:-}" == *truecolor* || "${COLORTERM:-}" == *24bit* ]]; then
+    EMBER='\033[38;2;196;85;43m'
+    MUTED='\033[38;2;154;143;134m'
+else
+    EMBER='\033[38;5;166m'
+    MUTED='\033[38;5;138m'
+fi
 RED='\033[0;31m'
-EMBER='\033[38;5;209m'
 NC='\033[0m'
 
 usage() {
@@ -47,6 +55,63 @@ EOF
 info() { printf "${MUTED}%s${NC}\n" "$*"; }
 warn() { printf "${RED}warning:${NC} %s\n" "$*" >&2; }
 die() { printf "${RED}error:${NC} %s\n" "$*" >&2; exit 1; }
+
+restore_cursor() { printf '\033[?25h' >&2; }
+
+# A solid ember run over a muted track, drawn on stderr so piped stdout stays clean.
+draw_progress() {
+    local bytes="$1" total="$2"
+    [[ "$total" -gt 0 ]] || return 0
+    local percent=$(( bytes * 100 / total ))
+    [[ "$percent" -gt 100 ]] && percent=100
+    local width=40
+    local on=$(( percent * width / 100 ))
+    local off=$(( width - on ))
+    local filled="" empty=""
+    printf -v filled '%*s' "$on" ''
+    printf -v empty '%*s' "$off" ''
+    filled="${filled// /■}"
+    empty="${empty// /·}"
+    printf "\r  ${EMBER}%s${MUTED}%s${NC} %3d%%  " "$filled" "$empty" "$percent" >&2
+}
+
+# curl's own bar can't be coloured, so drive ours off the output file size while curl runs in the
+# background. Only worth it at a terminal; pipes and CI get a quiet download.
+download_with_progress() {
+    local url="$1" out="$2"
+    if [[ ! -t 2 ]]; then
+        curl -fsSL -o "$out" "$url"
+        return $?
+    fi
+
+    local total
+    total="$(curl -fsIL "$url" | awk 'tolower($1) == "content-length:" { n = $2 } END { print n + 0 }')"
+    if [[ -z "$total" || "$total" -le 0 ]]; then
+        curl -fL --progress-bar -o "$out" "$url"
+        return $?
+    fi
+
+    printf '\033[?25l' >&2
+    curl -fsSL -o "$out" "$url" &
+    local pid=$! bytes=0
+    while kill -0 "$pid" 2>/dev/null; do
+        bytes="$(wc -c <"$out" 2>/dev/null || echo 0)"
+        bytes="${bytes//[!0-9]/}"
+        [[ -n "$bytes" ]] || bytes=0
+        draw_progress "$bytes" "$total"
+        sleep 0.1
+    done
+    if ! wait "$pid"; then
+        restore_cursor
+        printf '\n' >&2
+        return 1
+    fi
+    bytes="$(wc -c <"$out" 2>/dev/null || echo 0)"
+    bytes="${bytes//[!0-9]/}"
+    draw_progress "$bytes" "$total"
+    restore_cursor
+    printf '\n' >&2
+}
 
 requested_version="${IRORI_VERSION:-}"
 no_modify_path=false
@@ -166,12 +231,8 @@ else
 
     info "downloading $APP $version for $os-$arch..."
     tmp="$(mktemp -d "${TMPDIR:-/tmp}/irori-install.XXXXXX")"
-    trap 'rm -rf "$tmp"' EXIT
-    if [[ -t 2 ]]; then
-        curl -fL --progress-bar -o "$tmp/$filename" "$url" || die "download failed: $url"
-    else
-        curl -fsSL -o "$tmp/$filename" "$url" || die "download failed: $url"
-    fi
+    trap 'restore_cursor; rm -rf "$tmp"' EXIT
+    download_with_progress "$url" "$tmp/$filename" || die "download failed: $url"
 
     # The release carries checksums; verify before unpacking.
     curl -fsSL -o "$tmp/SHA256SUMS" \
@@ -241,11 +302,22 @@ if [[ -n "$os" && -n "$arch" ]]; then
 fi
 
 printf '\n'
-printf "${EMBER}  ██  ${NC}${MUTED}IroriOS${NC}\n"
-printf "${MUTED}  ██  installed ${NC}%s%s\n" "${version:-local}" "$platform"
+printf "${MUTED}  ┌─────────────────┐${NC}\n"
+printf "${MUTED}  │                 │${NC}\n"
+printf "${MUTED}  │      ${EMBER}█████${MUTED}      │${NC}     ${EMBER}I R O R I O S${NC}\n"
+printf "${MUTED}  │      ${EMBER}█████${MUTED}      │${NC}     ${MUTED}─────────────${NC}\n"
+printf "${MUTED}  │      ${EMBER}█████${MUTED}      │${NC}     ${MUTED}the hearth at the${NC}\n"
+printf "${MUTED}  │                 │${NC}     ${MUTED}center of the home${NC}\n"
+printf "${MUTED}  └─────────────────┘${NC}\n"
 printf '\n'
-info "start it with:"
-printf '  %s run\n' "$APP"
+printf "  ${MUTED}IroriOS ${NC}%s%s${MUTED} installed${NC}\n" "${version:-local}" "$platform"
 printf '\n'
-info "then open http://127.0.0.1:8480"
+printf "  ${MUTED}to start:${NC}\n"
+printf '\n'
+printf "    %s run        ${MUTED}# start the server${NC}\n" "$APP"
+printf "    %s version    ${MUTED}# print the version${NC}\n" "$APP"
+printf '\n'
+printf "  ${MUTED}then open ${NC}http://127.0.0.1:8480${MUTED}  (Ctrl-C to stop)${NC}\n"
+printf '\n'
+printf "  ${MUTED}source code: ${NC}https://github.com/$REPO\n"
 printf '\n'
