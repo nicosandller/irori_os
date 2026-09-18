@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -783,20 +783,37 @@ async fn install_official(State(state): State<AppState>, Path(id): Path<Extensio
             format!("`{id}` isn't an official extension"),
         );
     };
-    let dest = state.0.host.packages_dir().join(id.as_str());
+    // Stage out of any live package's way and let `install_package` decide where it lands, so a
+    // double-click or a race can't overwrite files while a copy is running. A leftover staging
+    // dir is never read as a package again (its name isn't a slug, and `installed_packages`
+    // skips those).
+    let stage = state.0.host.packages_dir().join(staging_dir());
     if let Err(why) = tokio::task::spawn_blocking({
-        let dest = dest.clone();
-        move || crate::packages::install_official(&item, &dest)
+        let stage = stage.clone();
+        move || crate::packages::install_official(&item, &stage)
     })
     .await
     .unwrap_or_else(|e| Err(e.to_string()))
     {
+        let _ = std::fs::remove_dir_all(&stage);
         return refused(StatusCode::BAD_GATEWAY, why);
     }
-    match state.0.host.install_package(dest) {
+    match state.0.host.install_package(stage.clone()) {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(why) => refused(StatusCode::CONFLICT, why),
+        Err(why) => {
+            let _ = std::fs::remove_dir_all(&stage);
+            refused(StatusCode::CONFLICT, why)
+        }
     }
+}
+
+/// A unique directory name under the packages dir for a download in flight.
+fn staging_dir() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock is after 1970")
+        .as_nanos();
+    format!("download-{nanos}")
 }
 
 #[derive(Debug, Deserialize)]
@@ -805,16 +822,22 @@ struct InstallUrl {
 }
 
 async fn install_url(State(state): State<AppState>, Json(body): Json<InstallUrl>) -> Response {
-    if body.url.trim().is_empty() {
+    let url = body.url.trim();
+    if url.is_empty() {
         return refused(StatusCode::BAD_REQUEST, "url is empty".into());
     }
-    let dest = state.0.host.packages_dir().join(format!(
-        "download-{}",
-        state.0.started.elapsed().as_millis()
-    ));
+    // `curl` understands every scheme it was built with, so one gate here keeps the endpoint
+    // from acting as a proxy for file:/ftp:/gopher: or anything else a hostile URL could reach.
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "only http:// and https:// URLs are allowed".into(),
+        );
+    }
+    let dest = state.0.host.packages_dir().join(staging_dir());
     if let Err(why) = tokio::task::spawn_blocking({
         let dest = dest.clone();
-        let url = body.url.clone();
+        let url = url.to_owned();
         move || crate::packages::install_url(&url, &dest)
     })
     .await

@@ -627,6 +627,15 @@ fn installed_packages(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        // Only a package id names a managed package. A leftover staging or download dir isn't
+        // a slug, so a crash in the middle of an install can't make the next start run it.
+        if ExtensionId::try_from(name).is_err() {
+            continue;
+        }
         let path = entry.path();
         if path.join("irori-extension.toml").is_file() {
             packages.push(path);

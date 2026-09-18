@@ -68,6 +68,9 @@ pub fn install_official(item: &Official, dest: &Path) -> Result<(), String> {
 /// is checked to stay inside `dest`, and each regular file's bytes are written by us, so a
 /// `..` member or a symlink inside the archive can never land outside `dest`.
 pub fn install_url(url: &str, dest: &Path) -> Result<(), String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("only http:// and https:// URLs are allowed".into());
+    }
     fs::create_dir_all(dest).map_err(|e| e.to_string())?;
     let archive = dest.join("download.tar.gz");
     run(
