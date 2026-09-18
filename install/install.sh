@@ -343,6 +343,13 @@ if [[ "$no_modify_path" == false && "$system_install" == false ]]; then
         : >"$config_file" || die "couldn't create $config_file"
         add_to_path "$config_file"
     fi
+    # Login bash reads ~/.bash_profile while non-login interactive bash reads ~/.bashrc, and they
+    # don't source each other by default. The single chosen file covers the dominant setups
+    # (macOS login shells; Ubuntu, whose ~/.profile sources ~/.bashrc). When they're separate,
+    # also add the entry to ~/.bashrc so a non-login interactive shell still finds irori.
+    if [[ "$current_shell" == "bash" && -f "$HOME/.bashrc" && -n "$config_file" && "$config_file" != "$HOME/.bashrc" ]]; then
+        add_to_path "$HOME/.bashrc"
+    fi
 fi
 
 # GitHub Actions uses this instead of a shell config.

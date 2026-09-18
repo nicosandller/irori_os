@@ -109,6 +109,13 @@ more than volume: one verified finding beats five guesses.
   primary group for the new user (that's why the unit — and most systemd units driving
   `useradd`-created accounts — name it without an explicit `groupadd`). Don't flag the missing
   group creation.
+- **The Bash PATH setup covers login and interactive shells, and which file wins is decided.**
+  `install/install.sh` writes its block to the first existing Bash startup file, preferring
+  login files (`.bash_profile`, `.bash_login`) over `.bashrc`, and when both files exist and
+  are separate it also appends the block to `~/.bashrc`. Reasonable setups are covered: macOS
+  login shells read `.bash_profile`; Ubuntu's `.profile` sources `.bashrc`. Don't propose
+  rewriting this into sourcing one file from the other, writing to every startup file, or
+  detecting whether `.bash_profile` sources `.bashrc`; the chosen policy is final.
 
 ## What's most useful
 
