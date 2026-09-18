@@ -771,7 +771,7 @@ checked. Revisit when a device needs it.
 A real ESPHome temperature entity is the same surface with a longer id:
 
 ```
-num('sensor.esphome_30_83_98_ca_6a_08_temperature') < 18
+num('sensor.esphome_00_11_22_33_44_55_temperature') < 18
 ```
 
 Ids are what rules write (D36). Names are for display; the editor should show them, the file

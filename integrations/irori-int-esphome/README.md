@@ -48,8 +48,8 @@ The key is written to `secrets.toml` in the config directory, keyed by the devic
 "00:11:22:33:44:55" = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=="
 ```
 
-You can write that by hand instead — the MAC in any common form (`30:83:98:ca:6a:08`,
-`308398ca6a08`) — and it's picked up within a couple of seconds.
+You can write that by hand instead — the MAC in any common form (`00:11:22:33:44:55`,
+`001122334455`) — and it's picked up within a couple of seconds.
 
 - **A wrong key** isn't retried: the device goes back to waiting with "the encryption key doesn't
   match", ready for another one.

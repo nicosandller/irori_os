@@ -115,7 +115,7 @@ reload, no binary rebuild). CI builds it, so downloaded release binaries always 
 ### Rooms, and what to call things
 
 Every device has **one id, one name and one description**. The id is made from the integration
-and the device's hardware address (`esphome_30_83_98_ca_6a_08`) and never changes. The name
+and the device's hardware address (`esphome_00_11_22_33_44_55`) and never changes. The name
 starts as whatever the firmware calls the device, and once you rename it, yours is the only name —
 there's no second one kept in step somewhere else. Names, descriptions and rooms survive restarts,
 because they're written to a directory of plain TOML files:
