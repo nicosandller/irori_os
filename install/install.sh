@@ -372,7 +372,11 @@ printf '\n'
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     if [[ -n "${config_file:-}" ]]; then
         printf "  ${MUTED}%s isn't on this shell's PATH yet. Open a new terminal, or here:${NC}\n" "$INSTALL_DIR"
-        printf "    source %s\n" "$config_file"
+        if [[ "$current_shell" == "fish" ]]; then
+            printf "    source %s\n" "$(fish_quote "$config_file")"
+        else
+            printf "    source %s\n" "$(posix_quote "$config_file")"
+        fi
     else
         printf "  ${MUTED}%s isn't on this shell's PATH yet (PATH was not modified). Add it to your shell config:${NC}\n" "$INSTALL_DIR"
         printf "    %s\n" "$path_line"

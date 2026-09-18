@@ -23,7 +23,10 @@ fn main() {
 /// workspace's `0.0.0`. A leading `v` is dropped, so the tag `v0.2.0` prints as `0.2.0`.
 fn version() -> String {
     if let Ok(version) = std::env::var("IRORI_VERSION") {
-        let version = version.trim().trim_start_matches('v');
+        let version = version.trim();
+        // One leading `v` at most, matching the release workflow's `${GITHUB_REF_NAME#v}`: a
+        // `vv…` tag must not be accepted as a valid version.
+        let version = version.strip_prefix('v').unwrap_or(version);
         if !version.is_empty() {
             assert!(
                 release_version::is_release_version(version),
@@ -33,7 +36,7 @@ fn version() -> String {
         }
     }
     if let Some(tag) = git(&["describe", "--tags", "--exact-match"]) {
-        let version = tag.trim_start_matches('v');
+        let version = tag.strip_prefix('v').unwrap_or(tag.as_str());
         if release_version::is_release_version(version) {
             return version.to_owned();
         }
