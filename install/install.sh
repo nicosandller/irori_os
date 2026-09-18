@@ -304,7 +304,7 @@ fi
 printf '\n'
 printf "${MUTED}  ┌─────────────────┐${NC}\n"
 printf "${MUTED}  │                 │${NC}\n"
-printf "${MUTED}  │      ${EMBER}█████${MUTED}      │${NC}     ${EMBER}I R O R I O S${NC}\n"
+printf "${MUTED}  │      ${EMBER}█████${MUTED}      │${NC}     ${EMBER}I R O R I${MUTED} O S${NC}\n"
 printf "${MUTED}  │      ${EMBER}█████${MUTED}      │${NC}     ${MUTED}─────────────${NC}\n"
 printf "${MUTED}  │      ${EMBER}█████${MUTED}      │${NC}     ${MUTED}the hearth at the${NC}\n"
 printf "${MUTED}  │                 │${NC}     ${MUTED}center of the home${NC}\n"
@@ -312,6 +312,21 @@ printf "${MUTED}  └─────────────────┘${NC}
 printf '\n'
 printf "  ${MUTED}IroriOS ${NC}%s%s${MUTED} installed${NC}\n" "${version:-local}" "$platform"
 printf '\n'
+
+# The install dir isn't on the current shell's PATH until its config is re-read; a fresh terminal
+# gets it, but say so plainly or this window looks broken.
+if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+    case "$current_shell" in
+        fish) reload_hint="source $HOME/.config/fish/config.fish" ;;
+        zsh) reload_hint="source ${ZDOTDIR:-$HOME}/.zshrc" ;;
+        bash) reload_hint="source $HOME/.bashrc" ;;
+        *) reload_hint="source $HOME/.profile" ;;
+    esac
+    printf "  ${MUTED}%s isn't on this shell's PATH yet. Open a new terminal, or here:${NC}\n" "$INSTALL_DIR"
+    printf "    %s\n" "$reload_hint"
+    printf '\n'
+fi
+
 printf "  ${MUTED}to start:${NC}\n"
 printf '\n'
 printf "    %s run        ${MUTED}# start the server${NC}\n" "$APP"
