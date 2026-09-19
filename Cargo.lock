@@ -2531,6 +2531,7 @@ dependencies = [
  "irori-types",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

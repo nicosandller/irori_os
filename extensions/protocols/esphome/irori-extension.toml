@@ -1,7 +1,7 @@
 [extension]
 id = "esphome"
 name = "ESPHome"
-version = "0.1.0"
+version = "0.3.1"
 irori = ">=0.0.0"
 description = "Devices running ESPHome firmware, over ESPHome's native API."
 icon = "icon.svg"
