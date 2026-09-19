@@ -1,5 +1,5 @@
 //! One device: everything Irori knows about it, everything it provides, and the two things
-//! that are yours to decide — what to call it and which room it's in.
+//! that are yours to decide — what to call it and which area it's in.
 //!
 //! The list pages answer "what's going on"; this one answers "what is this thing" — which
 //! integration brought it in, what it calls itself, what firmware it's running, and which
@@ -15,14 +15,14 @@ use leptos_router::hooks::use_params_map;
 
 use crate::api::{self, DeviceEdit, Home};
 
-/// The two picker choices that aren't a room. Neither can collide with an area id: one is empty
+/// The two picker choices that aren't an area. Neither can collide with an area id: one is empty
 /// and the other has a space in it, and a slug can have neither.
 const NOWHERE: &str = "";
 const LET_THE_DEVICE_SAY: &str = "let the device say";
 use crate::devices::{self, Controls};
-use crate::rooms::named;
+use crate::settings::named;
 
-/// What this page shows that isn't a live reading: the device itself, the rooms it could be in,
+/// What this page shows that isn't a live reading: the device itself, the areas it could be in,
 /// and which entities it has.
 ///
 /// Kept apart from the readings on purpose. A chatty device — a presence sensor reports every
@@ -210,7 +210,7 @@ fn page(
         let edit = edit.clone();
         move |chosen: String| {
             // The three the picker offers. "Nowhere" is a decision, not the absence of one:
-            // without it, a device whose firmware names a room would be put straight back.
+            // without it, a device whose firmware names an area would be put straight back.
             let area = match chosen.as_str() {
                 NOWHERE => Some(api::WhereTo::nowhere()),
                 LET_THE_DEVICE_SAY => None,
@@ -272,7 +272,7 @@ fn page(
     };
     let in_room = device.area_id.clone();
     let suggested = device.suggested_area.clone();
-    // The room to say as plain text, until "Edit" turns it into the picker.
+    // The area to say as plain text, until "Edit" turns it into the picker.
     let room_name = in_room.as_ref().and_then(|id| {
         areas
             .iter()
@@ -280,8 +280,8 @@ fn page(
             .map(|area| area.name.to_string())
     });
     // What the device's own suggestion amounts to right now. Irori doesn't send *why* a device
-    // is where it is, and doesn't need to: comparing the suggestion with the rooms that exist
-    // and the room it's in tells all three stories apart.
+    // is where it is, and doesn't need to: comparing the suggestion with the areas that exist
+    // and the area it's in tells all three stories apart.
     let asked_for = suggested.as_ref().and_then(|suggests| {
         areas
             .iter()
@@ -296,13 +296,13 @@ fn page(
     let suggestion = match (&suggested, &asked_for) {
         (None, _) => None,
         (Some(suggests), None) => Some(format!(
-            "The device says it's in \"{suggests}\". Irori doesn't make rooms on its own, but a \
-             room called that would collect it."
+            "The device says it's in \"{suggests}\". Irori doesn't make areas on its own, but an \
+             area called that would collect it."
         )),
         (Some(suggests), Some(room)) if in_room.as_ref() == Some(room) => Some(format!(
             "The device says it's in \"{suggests}\", and it is."
         )),
-        // The room exists and the device isn't in it: somebody decided otherwise.
+        // The area exists and the device isn't in it: somebody decided otherwise.
         (Some(suggests), Some(_)) => Some(format!(
             "The device says it's in \"{suggests}\", but it's been put elsewhere. Choose \
              \"Wherever the device says\" to let it decide again."
@@ -330,7 +330,7 @@ fn page(
         {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
 
         // One card for the device itself: what it is, where it is, and — while "Edit" is open —
-        // the name, description and room that are a person's to decide.
+        // the name, description and area that are a person's to decide.
         <section class="card">
             <h2>"Device information"</h2>
             {move || {
@@ -382,8 +382,8 @@ fn page(
                 <dd>{device.id.to_string()}</dd>
                 <dt>"Through"</dt>
                 <dd>{device.integration.to_string()}</dd>
-                <dt>"Room"</dt>
-                // The room is a reading until "Edit" is open, when it becomes the picker: the
+                <dt>"Area"</dt>
+                // The area is a reading until "Edit" is open, when it becomes the picker: the
                 // page says where a device is without offering to move it by mistake.
                 <dd>
                     {{
@@ -401,7 +401,7 @@ fn page(
                                             .unwrap_or_else(|| NOWHERE.to_owned())
                                     >
                                         <option value=NOWHERE selected=in_room.is_none()>
-                                            "Not in a room"
+                                            "Not in an area"
                                         </option>
                                         {areas
                                             .iter()
@@ -429,7 +429,7 @@ fn page(
                             .into_any()
                         } else {
                             view! {
-                                {room_name.clone().unwrap_or_else(|| "Not in a room".to_owned())}
+                                {room_name.clone().unwrap_or_else(|| "Not in an area".to_owned())}
                             }
                             .into_any()
                         }
@@ -464,7 +464,7 @@ fn page(
             {if areas.is_empty() {
                 view! {
                     <p class="muted small">
-                        "No rooms yet. " <A href="/rooms">"Make one"</A>
+                        "No areas yet. " <A href="/settings">"Make one"</A>
                         " and this device can go in it."
                     </p>
                 }
@@ -902,7 +902,7 @@ mod tests {
         assert_ne!(before, shape_of(&renamed, "radar"));
     }
 
-    /// And so does putting it in a room, which is the other thing this page can do.
+    /// And so does putting it in an area, which is the other thing this page can do.
     #[test]
     fn moving_a_device_changes_the_shape_of_the_page() {
         let reading = reading("2026-09-16T10:00:00Z", false);

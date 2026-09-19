@@ -10,8 +10,8 @@ mod api;
 mod device;
 mod devices;
 mod extensions;
-mod home;
-mod rooms;
+mod settings;
+mod start;
 mod waiting;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -125,7 +125,7 @@ fn App() -> impl IntoView {
             <div class="shell" class:folded=move || folded.get()>
                 <aside class="sidebar">
                     <div class="sidebar-top">
-                        <A href="/" attr:class="mark" attr:title="Irori">
+                        <A href="/" attr:class="mark" attr:title="IroriOS">
                             // Mark A (assets/irori-mark-a-mono.svg): frame follows the text,
                             // ember stays.
                             <svg viewBox="0 0 48 48" role="img" aria-label="IroriOS">
@@ -133,7 +133,7 @@ fn App() -> impl IntoView {
                                     stroke="currentColor" stroke-width="4" />
                                 <rect x="17" y="17" width="14" height="14" rx="1" fill="#c4552b" />
                             </svg>
-                            <span class="label">"Irori"</span>
+                            <span class="label">"IroriOS"</span>
                         </A>
                         <button
                             type="button"
@@ -159,22 +159,34 @@ fn App() -> impl IntoView {
                             })
                             .collect_view()}
                     </nav>
-                    <span class="live" title=move || if live.trouble.get().is_none() { "Live" } else { "No answer" }>
-                        <span class="dot" class:ok=move || live.trouble.get().is_none()></span>
-                        <span class="label">
-                            {move || if live.trouble.get().is_none() { "Live" } else { "No answer" }}
+                    <div class="sidebar-bottom">
+                        <A href="/settings" attr:class="settings-link" attr:title="Settings">
+                            // A cog: the thing that isn't a device, but that the home runs on.
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                                <circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor"
+                                    stroke-width="1.8" />
+                                <path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"
+                                    stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                            </svg>
+                            <span class="label">"Settings"</span>
+                        </A>
+                        <span class="live" title=move || if live.trouble.get().is_none() { "Live" } else { "No answer" }>
+                            <span class="dot" class:ok=move || live.trouble.get().is_none()></span>
+                            <span class="label">
+                                {move || if live.trouble.get().is_none() { "Live" } else { "No answer" }}
+                            </span>
                         </span>
-                    </span>
+                    </div>
                 </aside>
 
                 <main>
                     {move || live.trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
                     <Routes fallback=NotFound>
-                        <Route path=path!("/") view=home::Home />
+                        <Route path=path!("/") view=start::Start />
                         <Route path=path!("/devices") view=devices::Devices />
                         <Route path=path!("/devices/:id") view=device::DevicePage />
-                        <Route path=path!("/rooms") view=rooms::Rooms />
                         <Route path=path!("/extensions") view=extensions::Extensions />
+                        <Route path=path!("/settings") view=settings::Settings />
                     </Routes>
                 </main>
             </div>
@@ -185,23 +197,14 @@ fn App() -> impl IntoView {
 /// Where the sidebar's folded-or-open state is remembered.
 const SIDEBAR_KEY: &str = "irori.sidebar";
 
-/// The sections of the app: address, name, and an icon drawn in 24×24 strokes. Written here, not
-/// taken from any extension, so `inner_html` only ever holds these literals.
-const SECTIONS: [(&str, &str, &str); 4] = [
-    (
-        "/",
-        "Home",
-        r#"<path d="M4 11 12 4l8 7v9h-5v-6H9v6H4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>"#,
-    ),
+/// The pages the sidebar links to, besides Settings: address, name, and an icon drawn in 24×24
+/// strokes. Written here, not taken from any extension, so `inner_html` only ever holds these
+/// literals.
+const SECTIONS: [(&str, &str, &str); 2] = [
     (
         "/devices",
         "Devices",
         r#"<rect x="6" y="6" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>"#,
-    ),
-    (
-        "/rooms",
-        "Rooms",
-        r#"<path d="M4 4h16v16H4zM4 12h7M13 4v9M13 16v4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>"#,
     ),
     (
         "/extensions",
@@ -216,8 +219,8 @@ fn NotFound() -> impl IntoView {
         <section class="card">
             <h1>"There's no page here"</h1>
             <p class="muted">
-                "Irori has a Home page, a Devices page, a Rooms page and an Extensions page. "
-                "The rest is still to come."
+                "IroriOS has a start screen, a Devices page, an Extensions page and a Settings "
+                "page. The rest is still to come."
             </p>
             <p><A href="/">"Back to the start"</A></p>
         </section>
@@ -227,7 +230,7 @@ fn NotFound() -> impl IntoView {
 /// Asks the core for the home again, now, rather than waiting for the next poll.
 ///
 /// Renaming and moving things change more than the thing that was changed — an entity with no
-/// name of its own follows its device, and a room that goes away unplaces everything in it — so
+/// name of its own follows its device, and an area that goes away unplaces everything in it — so
 /// after one of those the whole picture is refetched rather than patched.
 pub fn refresh(live: Live) {
     spawn_local(async move {

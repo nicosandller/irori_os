@@ -1,8 +1,9 @@
 # irori-ui
 
 The web UI: a [Leptos](https://leptos.dev) app compiled to WebAssembly and embedded in the
-`irori` binary, so a single file still serves a working page. Today it's one page — Devices —
-listing everything in the home and switching what can be switched.
+`irori` binary, so a single file still serves a working page. Today it is a few pages — a start
+screen, the devices in the home, the extensions behind them, and the settings — listing
+everything in the home and switching what can be switched.
 
 It shares `irori-types` with the core, so the browser reads the same typed state the server
 writes (ROADMAP tenet 13), and an entity shape can't drift between the two.
@@ -40,10 +41,11 @@ cd crates/irori-ui && trunk serve --open # the page on 8080, API proxied to 8480
 
 | | |
 |---|---|
-| **Home** (`/`) | What Irori is looking after: how many devices and entities, which extensions are running and how many devices each brings in, and Irori's own version, uptime and database. |
+| **Start** (`/`) | What IroriOS is: the wordmark the terminal prints when `irori serve` runs, and how many devices, entities and extensions it is looking after. |
+| **Devices** (`/devices`) | Two ways to read the same home, remembered per browser: **Entities** groups everything by the device it came from, with switches; **Devices** is a row per device — what brought it in, make, model, battery, how many entities, and which area it's in. **Add device** explains where devices come from — every installed integration, what it's for, and what it can provide — because nothing is typed in by hand yet. |
+| **A device** (`/devices/<id>`) | One device: which integration brought it in, what that integration knows it as (the MAC address, for ESPHome), make, model, firmware, hardware, battery, what it's reached through, and every entity it provides with its controls. Its name, description and area are yours to decide. |
 | **Extensions** (`/extensions`) | Official extensions from this repo (protocols, Demo, Helpers). Install copies a package into the instance and starts it; uninstall deletes the package and the devices it brought in. |
-| **Devices** (`/devices`) | Two ways to read the same home, remembered per browser: **Entities** groups everything by the device it came from, with switches; **Devices** is a row per device — what brought it in, make, model, battery, how many entities. **Add device** explains where devices come from — every installed integration, what it's for, and what it can provide — because nothing is typed in by hand yet. |
-| **A device** (`/devices/<id>`) | One device: which integration brought it in, what that integration knows it as (the MAC address, for ESPHome), make, model, firmware, hardware, battery, what it's reached through, and every entity it provides with its controls. |
+| **Settings** (`/settings`) | The instance itself (version, uptime, database, features), the home's arrangement (**Areas** and **Floors**, the same places the Rooms page used to manage), **Users** (none yet — there's nothing to sign in with), and **System**: the machine running the instance — host, operating system, kernel, CPU, memory, and the disk its data sits on, asked again on demand rather than kept. |
 
 Routing is client-side (`leptos_router`), so the binary serves the app for any path that isn't a
 file, and the app decides what to show.
@@ -58,15 +60,16 @@ file, and the app decides what to show.
   (a motion sensor says Motion or Still, a door says Open or Closed).
 - Marks unreachable entities offline, keeping their last known value, and refuses to switch them.
 - Says why a command was refused, under the row it belongs to.
-- Filters by entity name, entity id, or device name.
+- Filters by entity name, entity id, device name, area or make.
+- Makes the areas and floors of the home in **Settings**: name them, put them on floors, and a
+  device's own page is where it's placed.
 - Lists the extensions behind it all, with their status and any reports they lost.
 
-**Not yet:** brightness and colour for lights (the command API takes them; the page sends only
-on and off), areas and floors, history, automations, settings, and any way to change a device —
-renaming, or installing the firmware update whose version the device page shows (ROADMAP M1.8,
-D30). The page **polls** `/api/dev/home` every 2 seconds; the WebSocket API (M1.5) will push
-changes instead, and `src/api.rs` is what goes away then. The binary also serves these files
-**uncompressed** (see the budget below).
+**Not yet:** users and signing in, automations, history beyond a device's last 24 hours, and
+installing the firmware update whose version the device page shows (ROADMAP M1.8, D30). The page
+**polls** `/api/dev/home` every 2 seconds; the WebSocket API (M1.5) will push changes instead,
+and `src/api.rs` is what goes away then. The binary also serves these files **uncompressed**
+(see the budget below).
 
 ## Why Leptos (ROADMAP D27)
 

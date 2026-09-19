@@ -84,6 +84,7 @@ pub fn router(state: AppState) -> Router {
             get(|State(s): State<AppState>| async move { Json(s.0.core.states()) }),
         )
         .route("/api/dev/history/{entity_id}", get(entity_history))
+        .route("/api/dev/system", get(host_info))
         .route(
             "/api/dev/extensions",
             get(|State(s): State<AppState>| async move { Json(s.0.core.extensions()) }),
@@ -142,6 +143,13 @@ async fn home(State(state): State<AppState>) -> Json<HomeView> {
         floors: core.floors(),
         held: core.held_devices(),
     })
+}
+
+/// The machine running Irori, for the Settings page's System menu. Read from the OS each time
+/// it's asked, rather than kept: a Settings page check that cached could shrug at a disk that
+/// filled or a machine that was swapped out from under it.
+async fn host_info(State(state): State<AppState>) -> Json<crate::host_info::HostView> {
+    Json(crate::host_info::read(&state.0.db.path))
 }
 
 /// The last day of an entity's changes, for the expandable table under its row on the Devices
@@ -1206,6 +1214,31 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body)?;
         assert_eq!(json["status"], "ok");
         assert_eq!(json["sqlite"]["journal_mode"], "wal");
+        Ok(())
+    }
+
+    /// The System menu's endpoint answers with the machine the test is running on, and helps
+    /// rather than guesses: the numbers read real, and the rows that the OS refused to say are
+    /// left out rather than made up.
+    #[tokio::test]
+    async fn system_describes_the_machine_the_instance_runs_on() -> anyhow::Result<()> {
+        let (status, _, body) = get("/api/dev/system").await?;
+        assert_eq!(status, StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(&body)?;
+        assert!(
+            json["os"].as_str().is_some_and(|os| !os.is_empty()),
+            "the OS should say what it is: {json}"
+        );
+        assert!(
+            json["arch"] == "aarch64" || json["arch"] == "x86_64",
+            "the architecture should be one this machine is: {json}"
+        );
+        assert!(json["cpu_cores"].as_u64().unwrap_or(0) > 0, "{json}");
+        assert!(json["memory_total"].as_u64().unwrap_or(0) > 0, "{json}");
+        assert!(
+            json["disk"]["total"].as_u64().unwrap_or(0) > 0,
+            "the volume with the data should report its size: {json}"
+        );
         Ok(())
     }
 
