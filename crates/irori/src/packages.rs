@@ -6,6 +6,7 @@
 //! or a GitHub release of this repo.
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -88,10 +89,13 @@ pub fn install_url(url: &str, dest: &Path) -> Result<(), String> {
 }
 
 /// Reads every member of `archive` and writes each regular file under `dest`, refusing names
-/// that could escape it and link members, which `tar -x` would leave lying in wait.
+/// that could escape it and link members, which `tar -x` would leave lying in wait. A written
+/// file keeps the mode the archive records for its member, so a `bin/<name>` entry comes out
+/// executable instead of landing at the 0644 that a plain `File::create` gives it.
 fn install_archive(archive: &Path, dest: &Path) -> Result<(), String> {
     let archive = archive.to_str().ok_or("package path is not UTF-8")?;
     let listing = run_captured("tar", &["-tzf", archive])?;
+    let modes = member_modes(archive)?;
     for name in listing.lines() {
         let normalized = checked_member(name)?;
         if normalized.is_empty() {
@@ -106,8 +110,61 @@ fn install_archive(archive: &Path, dest: &Path) -> Result<(), String> {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         run_to_file("tar", &["-xzOf", archive, name], &out)?;
+        if let Some(mode) = modes.get(&normalized) {
+            fs::set_permissions(&out, PermissionsExt::from_mode(*mode))
+                .map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
+}
+
+/// Permission bits of every member of `archive`, keyed by member name as a context-free
+/// listing names it. Both util-tar flavors open each verbose line with the ten-character mode
+/// string (`-rwxr-xr-x … ./bin/demo`), and end it with the member name. The same `./` is
+/// rubbed off a name here as [`checked_member`] rubs off the name in the short listing, so the
+/// look-ups line up.
+fn member_modes(archive: &str) -> Result<std::collections::BTreeMap<String, u32>, String> {
+    let listing = run_captured("tar", &["-tvzpf", archive])?;
+    let mut modes = std::collections::BTreeMap::new();
+    for line in listing.lines() {
+        let name = line
+            .split_whitespace()
+            .next_back()
+            .unwrap_or("")
+            .strip_prefix("./")
+            .unwrap_or("")
+            .trim_end_matches('/');
+        let Some(mode) = tar_mode(line) else {
+            continue;
+        };
+        if !name.is_empty() {
+            modes.insert(name.to_owned(), mode);
+        }
+    }
+    Ok(modes)
+}
+
+/// The `-rwxrwxrwx` part of a verbose tar line, as the raw bits. Anything outside a regular
+/// file, a directory, or a link (a device node, say) is left out; we never write those.
+fn tar_mode(line: &str) -> Option<u32> {
+    let mode = line.chars().take(10).collect::<String>();
+    if mode.len() != 10 || !mode.starts_with(['-', 'd', 'l']) {
+        return None;
+    }
+    let mut bits = 0u32;
+    for group in 0..3 {
+        let mut value = 0u32;
+        for c in mode[1 + group * 3..4 + group * 3].chars() {
+            value |= match c {
+                'r' => 4,
+                'w' => 2,
+                'x' => 1,
+                _ => 0,
+            };
+        }
+        bits |= value << ((2 - group) * 3);
+    }
+    Some(bits)
 }
 
 /// The path a member must land on under `dest`: its name with a leading root and a trailing
@@ -319,6 +376,57 @@ mod tests {
             std::fs::read_to_string(dest.join("bin/demo")).expect("the binary is extracted"),
             "elf-bytes"
         );
+    }
+
+    #[test]
+    fn an_executable_member_keeps_its_exec_bit() {
+        let tree = tempfile::tempdir().expect("a temp dir");
+        let dest = tree.path().join("dest");
+        let pkg = tree.path().join("pkg");
+        std::fs::create_dir_all(pkg.join("bin")).expect("the pkg dir");
+        std::fs::write(pkg.join("bin/demo"), "elf-bytes").expect("the binary");
+        std::fs::set_permissions(pkg.join("bin/demo"), PermissionsExt::from_mode(0o755))
+            .expect("the binary is marked executable");
+        std::fs::write(pkg.join("irori-extension.toml"), "[extension]\n").expect("the manifest");
+        let archive = tarball(&pkg, "pkg.tar.gz");
+
+        install_archive(&archive, &dest).expect("a clean archive installs");
+
+        let mode = std::fs::metadata(dest.join("bin/demo"))
+            .expect("the binary is extracted")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755, "bin/demo must stay executable");
+        let manifest = std::fs::metadata(dest.join("irori-extension.toml"))
+            .expect("the manifest is extracted")
+            .permissions()
+            .mode();
+        assert_eq!(manifest & 0o777, 0o644, "the manifest stays a plain file");
+    }
+
+    #[test]
+    fn tar_mode_reads_the_mode_off_a_verbose_line() {
+        for (line, expect) in [
+            (
+                "-rwxr-xr-x  0 izitooi izitooi 850736 Sep 19 22:00 ./bin/demo",
+                0o755,
+            ),
+            (
+                "-rw-r--r--  0 izitooi izitooi 427 Sep 18 21:52 ./irori-extension.toml",
+                0o644,
+            ),
+            ("drwxr-xr-x  0 izitooi izitooi 0 Sep 19 22:00 ./bin/", 0o755),
+        ] {
+            let got = tar_mode(line).expect("a verbose line names a mode");
+            assert_eq!(got & 0o7777, expect, "parsing {line}");
+        }
+        for junk in [
+            "",
+            "not-a-mode",
+            "??rw-r--r--  0 izitooi izitooi 1 Jan 1 00:00 ./fx",
+        ] {
+            assert_eq!(tar_mode(junk), None, "no mode in {junk:?}");
+        }
     }
 
     #[test]

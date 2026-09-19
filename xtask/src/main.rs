@@ -2,6 +2,7 @@
 
 mod deps;
 mod docs;
+mod package;
 mod schemas;
 mod ui;
 
@@ -14,6 +15,7 @@ commands:
   check-docs        check the documented default features against the binary's manifest
   schemas [--check] write JSON Schemas from irori-types to schemas/, or check they're fresh
   ui                build the web UI (crates/irori-ui) into the folder the binary embeds
+  package           build every official extension and pack each as a release asset
   install           build the UI, then install the binary so `irori run` works anywhere";
 
 fn main() -> anyhow::Result<()> {
@@ -23,6 +25,7 @@ fn main() -> anyhow::Result<()> {
         Some("check-docs") => docs::run(),
         Some("ui") => ui::run(),
         Some("install") => ui::install(),
+        Some("package") => package::run(),
         Some("schemas") => match &args[1..] {
             [] => schemas::run(false),
             [flag] if flag == "--check" => schemas::run(true),

@@ -1,7 +1,7 @@
 [extension]
 id = "helpers"
 name = "Helpers"
-version = "0.1.0"
+version = "0.3.1"
 irori = ">=0.0.0"
 description = "Values Irori keeps itself rather than a device reporting them, for rules to use."
 icon = "icon.svg"

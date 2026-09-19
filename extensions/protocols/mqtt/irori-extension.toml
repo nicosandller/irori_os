@@ -1,7 +1,7 @@
 [extension]
 id = "mqtt"
 name = "MQTT"
-version = "0.1.0"
+version = "0.3.1"
 irori = ">=0.0.0, <0.1.0"
 description = "MQTT devices through Home Assistant MQTT Discovery. Not implemented yet."
 

@@ -1,8 +1,9 @@
 name: Release
 
 # Pushing a tag like `v0.2.0` validates the tag, builds the UI and the binary for every target,
-# and attaches the archive and `install/install.sh` to a GitHub Release. The installer downloads
-# the binary from there; `releases/latest/download/install.sh` is the one-liner.
+# attaches the archive and `install/install.sh` to a GitHub Release, and builds every official
+# extension as `<bin>-<target>.tar.gz` (the name `packages.rs` downloads them by). The installer
+# downloads the binary from there; `releases/latest/download/install.sh` is the one-liner.
 # Third-party actions are pinned to immutable commit SHAs (the comment names the version),
 # so nothing on the build/publish path can be moved under the job that holds `contents: write`.
 on:
@@ -156,6 +157,20 @@ jobs:
           mkdir -p "$stage"
           install -m755 "target/$TARGET/release/irori" "$stage/irori"
           tar -czf "$RUNNER_TEMP/irori-$ASSET_OS-$ASSET_ARCH.tar.gz" -C "$stage" irori
+
+      - name: Build the extensions
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          cargo xtask package --target "$TARGET" --tool ${{ matrix.tool }} --out "$RUNNER_TEMP/packages"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: extensions-${{ matrix.asset_os }}-${{ matrix.asset_arch }}
+          path: ${{ runner.temp }}/packages/*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
