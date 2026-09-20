@@ -1,9 +1,10 @@
 //! The Settings page: the instance itself, the home's arrangement, and the machine running it.
 //!
 //! Four sections, in the order someone setting a home up is likely to want them: is the instance
-//! I mean to run? the areas and floors that say what's where? the people allowed in (none yet);
-//! and the machine it all runs on. The last of these is asked for on demand rather than kept —
-//! a Settings check that cached could shrug at a disk that filled since the last look.
+//! I mean to run? the floors and areas that say what's where (a card that folds away until
+//! wanted)? the people allowed in (none yet); and the machine it all runs on. The last of these
+//! is asked for on demand rather than kept — a Settings check that cached could shrug at a disk
+//! that filled since the last look.
 
 use irori_types::{Area, AreaId, Device, Name};
 use leptos::prelude::*;
@@ -33,6 +34,10 @@ pub fn Settings() -> impl IntoView {
     });
     let floor_name = RwSignal::new(String::new());
     let floor_level = RwSignal::new("0".to_owned());
+    // Which floor's name and level are being edited, if any: only one at a time.
+    let floor_editing = RwSignal::new(None::<irori_types::FloorId>);
+    let floor_draft_name = RwSignal::new(String::new());
+    let floor_draft_level = RwSignal::new(String::new());
 
     // The machine under the instance. Asked once when the page opens, and again when "Ask again"
     // is clicked: nothing here is worth polling, and the values are only any use if they're the
@@ -69,6 +74,29 @@ pub fn Settings() -> impl IntoView {
         });
     };
 
+    let add_floor = move || {
+        let Some(named) = named(floor_name.get(), trouble) else {
+            return;
+        };
+        let Ok(at) = floor_level.get().trim().parse::<i8>() else {
+            trouble.set(Some(
+                "A floor's level is a whole number: 0 for the entrance, 1 above it, -1 below."
+                    .to_owned(),
+            ));
+            return;
+        };
+        floor_name.set(String::new());
+        spawn_local(async move {
+            match api::add_floor(named, at).await {
+                Ok(()) => {
+                    trouble.set(None);
+                    crate::refresh(live);
+                }
+                Err(why) => trouble.set(Some(why)),
+            }
+        });
+    };
+
     view! {
         <div class="page-head">
             <h1>"Settings"</h1>
@@ -81,7 +109,7 @@ pub fn Settings() -> impl IntoView {
 
         <nav class="settings-menu" aria-label="Sections of Settings">
             <a href="#instance">"Instance"</a>
-            <a href="#areas">"Areas & Floors"</a>
+            <a href="#floors-and-areas">"Floors & areas"</a>
             <a href="#users">"Users"</a>
             <a href="#system">"System"</a>
         </nav>
@@ -123,14 +151,93 @@ pub fn Settings() -> impl IntoView {
             }}
         </section>
 
-        <Floors name=floor_name level=floor_level trouble=trouble />
-
-        <section class="card settings-section" id="areas">
-            <h2>"Areas"</h2>
+        <details class="card settings-section floors" id="floors-and-areas" open>
+            <summary>"Floors and areas"</summary>
             <p class="muted small">
-                "An area is a place you can point at — a kitchen, the hall, the shed. Irori never "
-                "invents one, even when a device says where it thinks it is; a device that asks "
-                "for an area you've made goes straight into it."
+                "Floors are the levels of the home, lowest first; areas are the places on them, "
+                "and the devices live in the areas. Irori never invents an area, even when a "
+                "device says where it thinks it is."
+            </p>
+
+            <div class="room-head">
+                <h2>"Floors"</h2>
+                <span class="muted">
+                    {move || match shape.get().2.len() {
+                        0 => "no floors".to_owned(),
+                        1 => "1 floor".to_owned(),
+                        n => format!("{n} floors"),
+                    }}
+                </span>
+            </div>
+            <p class="muted small">
+                "The level is a whole number: 0 for the entrance floor, 1 above it, -1 for a "
+                "cellar. Make the floors first and the areas below sit on them; renaming a floor "
+                "or moving it keeps its areas on it."
+            </p>
+            <ul class="room-devices">
+                {move || {
+                    shape
+                        .get()
+                        .2
+                        .into_iter()
+                        .map(|floor| {
+                            floor_row(
+                                floor,
+                                floor_editing,
+                                floor_draft_name,
+                                floor_draft_level,
+                                trouble,
+                                live,
+                            )
+                        })
+                        .collect_view()
+                }}
+            </ul>
+            <form
+                class="inline-form"
+                on:submit=move |ev| {
+                    ev.prevent_default();
+                    add_floor();
+                }
+            >
+                <input
+                    type="text"
+                    aria-label="Name of the new floor"
+                    placeholder="Upstairs"
+                    prop:value=floor_name
+                    on:input:target=move |ev| floor_name.set(ev.target().value())
+                />
+                <input
+                    type="number"
+                    class="level"
+                    aria-label="Level"
+                    min="-128"
+                    max="127"
+                    prop:value=floor_level
+                    on:input:target=move |ev| floor_level.set(ev.target().value())
+                />
+                <button
+                    type="submit"
+                    class="add"
+                    disabled=move || floor_name.get().trim().is_empty()
+                >
+                    "Add floor"
+                </button>
+            </form>
+
+            <div class="room-head areas-head">
+                <h2>"Areas"</h2>
+                <span class="muted">
+                    {move || match shape.get().0.len() {
+                        0 => "no areas".to_owned(),
+                        1 => "1 area".to_owned(),
+                        n => format!("{n} areas"),
+                    }}
+                </span>
+            </div>
+            <p class="muted small">
+                "An area is a place you can point at — a kitchen, the hall, the shed. A device "
+                "that asks for an area you've made goes straight into it."
             </p>
             <form
                 class="inline-form"
@@ -233,7 +340,7 @@ pub fn Settings() -> impl IntoView {
                         }
                     })
             }}
-        </section>
+        </details>
 
         <section class="card settings-section" id="users">
             <h2>"Users"</h2>
@@ -512,107 +619,124 @@ fn floor_picker(
     .into_any()
 }
 
-/// Making and removing floors. A separate card above Areas, folded away until someone wants it:
-/// most flats have one.
-#[component]
-fn Floors(
-    name: RwSignal<String>,
-    level: RwSignal<String>,
+/// One floor: its name and level, with the two things you can do to it. Editing swaps the row
+/// for a form, the same way an area renames. A rename or a level change keeps the areas on it.
+fn floor_row(
+    floor: irori_types::Floor,
+    editing: RwSignal<Option<irori_types::FloorId>>,
+    draft_name: RwSignal<String>,
+    draft_level: RwSignal<String>,
     trouble: RwSignal<Option<String>>,
-) -> impl IntoView {
-    let live = expect_context::<crate::Live>();
-    let floors = Memo::new(move |_| live.home.get().floors);
-    let add = move || {
-        let Some(named) = named(name.get(), trouble) else {
-            return;
-        };
-        let Ok(at) = level.get().trim().parse::<i8>() else {
-            trouble.set(Some(
-                "A floor's level is a whole number: 0 for the entrance, 1 above it, -1 below."
-                    .to_owned(),
-            ));
-            return;
-        };
-        name.set(String::new());
-        spawn_local(async move {
-            match api::add_floor(named, at).await {
-                Ok(()) => {
-                    trouble.set(None);
-                    crate::refresh(live);
-                }
-                Err(why) => trouble.set(Some(why)),
-            }
-        });
+    live: crate::Live,
+) -> AnyView {
+    let name = floor.name.to_string();
+    let level = floor.level;
+    let id = floor.id.clone();
+    let being_edited = {
+        let id = id.clone();
+        move || editing.get().as_ref() == Some(&id)
     };
-    view! {
-        <details class="card floors settings-section" id="floors">
-            <summary>
-                {move || match floors.get().len() {
-                    0 => "Floors".to_owned(),
-                    1 => "Floors (1)".to_owned(),
-                    n => format!("Floors ({n})"),
-                }}
-            </summary>
-            <p class="muted small">
-                "Floors group areas, lowest first. The level is a whole number: 0 for the "
-                "entrance floor, 1 above it, -1 for a cellar."
-            </p>
-            <ul class="room-devices">
-                {move || {
-                    floors
-                        .get()
-                        .into_iter()
-                        .map(|floor| {
-                            let id = floor.id.clone();
-                            let remove = move |_| {
-                                let id = id.clone();
-                                spawn_local(async move {
-                                    match api::remove_floor(&id).await {
-                                        Ok(()) => crate::refresh(live),
-                                        Err(why) => trouble.set(Some(why)),
-                                    }
-                                });
-                            };
-                            view! {
-                                <li>
-                                    <span class="name">{floor.name.to_string()}</span>
-                                    <span class="muted small">{format!("level {}", floor.level)}</span>
-                                    <button type="button" class="link" on:click=remove>"Remove"</button>
-                                </li>
-                            }
-                        })
-                        .collect_view()
-                }}
-            </ul>
-            <form
-                class="inline-form"
-                on:submit=move |ev| {
-                    ev.prevent_default();
-                    add();
+    let save = {
+        let id = id.clone();
+        move || {
+            let Some(named) = named(draft_name.get(), trouble) else {
+                return;
+            };
+            let Ok(at) = draft_level.get().trim().parse::<i8>() else {
+                trouble.set(Some(
+                    "A floor's level is a whole number: 0 for the entrance, 1 above it, -1 below."
+                        .to_owned(),
+                ));
+                return;
+            };
+            editing.set(None);
+            let id = id.clone();
+            spawn_local(async move {
+                match api::edit_floor(&id, Some(named), Some(at)).await {
+                    Ok(()) => {
+                        trouble.set(None);
+                        crate::refresh(live);
+                    }
+                    Err(why) => trouble.set(Some(why)),
                 }
-            >
-                <input
-                    type="text"
-                    aria-label="Name of the new floor"
-                    placeholder="Upstairs"
-                    prop:value=name
-                    on:input:target=move |ev| name.set(ev.target().value())
-                />
-                <input
-                    type="number"
-                    class="level"
-                    aria-label="Level"
-                    min="-128"
-                    max="127"
-                    prop:value=level
-                    on:input:target=move |ev| level.set(ev.target().value())
-                />
-                <button type="submit" class="add" disabled=move || name.get().trim().is_empty()>
-                    "Add floor"
-                </button>
-            </form>
-        </details>
+            });
+        }
+    };
+    let start = {
+        let id = id.clone();
+        let name = name.clone();
+        let level = level;
+        move |_| {
+            draft_name.set(name.clone());
+            draft_level.set(level.to_string());
+            editing.set(Some(id.clone()));
+        }
+    };
+    let remove = {
+        let id = id.clone();
+        move |_| {
+            let id = id.clone();
+            spawn_local(async move {
+                match api::remove_floor(&id).await {
+                    Ok(()) => crate::refresh(live),
+                    Err(why) => trouble.set(Some(why)),
+                }
+            });
+        }
+    };
+
+    view! {
+        <li>
+            {move || {
+                if being_edited() {
+                    let save = save.clone();
+                    view! {
+                        <form
+                            class="inline-form"
+                            on:submit=move |ev| {
+                                ev.prevent_default();
+                                save();
+                            }
+                        >
+                            <input
+                                type="text"
+                                aria-label="Name of this floor"
+                                prop:value=draft_name
+                                on:input:target=move |ev| draft_name.set(ev.target().value())
+                            />
+                            <input
+                                type="number"
+                                class="level"
+                                aria-label="Level"
+                                min="-128"
+                                max="127"
+                                prop:value=draft_level
+                                on:input:target=move |ev| draft_level.set(ev.target().value())
+                            />
+                            <button
+                                type="submit"
+                                class="add"
+                                disabled=move || draft_name.get().trim().is_empty()
+                            >
+                                "Save"
+                            </button>
+                            <button type="button" on:click=move |_| editing.set(None)>"Cancel"</button>
+                        </form>
+                    }
+                    .into_any()
+                } else {
+                    view! {
+                        <span class="name">{name.clone()}</span>
+                        <span class="muted small">{format!("level {level}")}</span>
+                        <button type="button" class="link" on:click=start.clone()>"Edit"</button>
+                        <button type="button" class="link" on:click=remove.clone()>"Remove"</button>
+                    }
+                    .into_any()
+                }
+            }}
+        </li>
     }
+    .into_any()
 }
 
 fn in_area(device: Device) -> AnyView {

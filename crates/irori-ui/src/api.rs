@@ -422,6 +422,30 @@ pub async fn add_floor(name: Name, level: i8) -> Result<(), String> {
     checked(response).await
 }
 
+/// A change to a floor: a new name, a new level, or both.
+#[derive(Debug, Serialize)]
+struct FloorEdit {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<Name>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    level: Option<i8>,
+}
+
+/// Renames a floor or moves it to another level. Areas on it stay on it.
+pub async fn edit_floor(
+    id: &irori_types::FloorId,
+    name: Option<Name>,
+    level: Option<i8>,
+) -> Result<(), String> {
+    let response = Request::patch(&format!("/api/dev/floors/{id}"))
+        .json(&FloorEdit { name, level })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
 pub async fn remove_floor(id: &irori_types::FloorId) -> Result<(), String> {
     let response = Request::delete(&format!("/api/dev/floors/{id}"))
         .send()
