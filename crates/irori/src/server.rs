@@ -1230,8 +1230,8 @@ mod tests {
             "the OS should say what it is: {json}"
         );
         assert!(
-            json["arch"] == "aarch64" || json["arch"] == "x86_64",
-            "the architecture should be one this machine is: {json}"
+            json["arch"].as_str().is_some_and(|arch| !arch.is_empty()),
+            "the architecture should say what build this is: {json}"
         );
         assert!(json["cpu_cores"].as_u64().unwrap_or(0) > 0, "{json}");
         assert!(json["memory_total"].as_u64().unwrap_or(0) > 0, "{json}");

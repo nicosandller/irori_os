@@ -38,7 +38,7 @@ pub fn Start() -> impl IntoView {
                     <span class="start-ember"></span>
                 </span>
                 <span class="start-letters">
-                    <span class="start-title">"IroriOS"</span>
+                    <h1 class="start-title">"IroriOS"</h1>
                     <span class="start-rule" aria-hidden="true"></span>
                     <span class="start-tag">"the hearth at the center of the home"</span>
                 </span>

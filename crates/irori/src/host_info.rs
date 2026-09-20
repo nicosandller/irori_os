@@ -72,13 +72,17 @@ pub fn read(data: &Path) -> HostView {
 
     // The volume the data directory is on, by the longest mount it falls under: "/" is every
     // volume's ancestor, but the one the data is actually on answers the honest "how full?".
-    let data = std::path::absolute(data).unwrap_or_else(|_| data.to_path_buf());
+    // `canonicalize` first: a data path that goes through a symlink would otherwise match the
+    // alias's mount (often "/") instead of the volume the database is really on.
+    let data = data
+        .canonicalize()
+        .or_else(|_| std::path::absolute(data))
+        .unwrap_or_else(|_| data.to_path_buf());
     let disks = Disks::new_with_refreshed_list();
     let disk = disks
         .iter()
         .filter(|disk| data.starts_with(disk.mount_point()))
         .max_by_key(|disk| disk.mount_point().as_os_str().len())
-        .or_else(|| disks.iter().next())
         .map(|disk| {
             let total = disk.total_space();
             let available = disk.available_space();
