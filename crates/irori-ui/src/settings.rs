@@ -811,16 +811,10 @@ fn floor_group(
         </div>
         {move || {
             if folded() {
-                return view! {
-                    <p class="muted small">
-                        {match area_count {
-                            0 => "No areas on this floor yet — add one with the +.".to_owned(),
-                            1 => "1 area — folded away; click the floor to open it.".to_owned(),
-                            n => format!("{n} areas — folded away; click the floor to open them."),
-                        }}
-                    </p>
-                }
-                .into_any();
+                // Folded: the counts live in the "Floors" heading and each overflow is their
+                // own surprise, so a closed floor simply shows nothing.
+
+                return ().into_any();
             }
             if on_it.is_empty() {
                 view! {
@@ -907,9 +901,11 @@ fn unfloored_group(
     .into_any()
 }
 
-/// The three small stroke icons the floor and area rows use on their buttons.
+/// The small stroke icons the floor and area rows use on their buttons, plus the grip shown on
+/// each draggable device row.
 #[derive(Clone, Copy)]
 enum Icon {
+    Grip,
     Add,
     Edit,
     Remove,
@@ -917,6 +913,22 @@ enum Icon {
 
 fn icon(kind: Icon) -> AnyView {
     match kind {
+        Icon::Grip => view! {
+            <svg
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                stroke="none"
+                aria-hidden="true"
+            >
+                <circle cx="9" cy="6" r="1.7"></circle>
+                <circle cx="15" cy="6" r="1.7"></circle>
+                <circle cx="9" cy="12" r="1.7"></circle>
+                <circle cx="15" cy="12" r="1.7"></circle>
+                <circle cx="9" cy="18" r="1.7"></circle>
+                <circle cx="15" cy="18" r="1.7"></circle>
+            </svg>
+        }
+        .into_any(),
         Icon::Add => view! {
             <svg
                 viewBox="0 0 24 24"
@@ -1034,6 +1046,7 @@ fn in_area(device: Device, dragging: RwSignal<Option<DeviceId>>) -> AnyView {
             }
             on:dragend=move |_| dragging.set(None)
         >
+            <span class="grip" aria-hidden="true">{icon(Icon::Grip)}</span>
             <A href=format!("/devices/{id}") attr:draggable="false">{name}</A>
             <span class="muted small">{through}</span>
         </li>

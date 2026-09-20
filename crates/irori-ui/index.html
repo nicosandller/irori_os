@@ -266,6 +266,10 @@
     .room-devices li { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem;
                        padding: .35rem 0; border-bottom: 1px solid var(--line); }
     .room-devices li:last-child { border-bottom: none; }
+    .room-devices .grip { display: inline-grid; place-items: center; align-self: center;
+        width: 1.4rem; height: 1.4rem; border: 1px solid var(--line); border-radius: .3rem;
+        color: var(--muted); }
+    .room-devices .grip svg { width: .75rem; height: .75rem; display: block; }
 
     /* Renaming, and choosing a room: small forms that sit inside a heading or a card. */
     .inline-form { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
@@ -381,8 +385,9 @@
                      cursor: pointer; }
     .danger-button:hover { border-color: #b4342c; }
     details.ignored { margin-top: 1.5rem; }
-    details.floors summary { cursor: pointer; font-weight: 500; }
+    details.floors summary { cursor: pointer; font-weight: 500; list-style: none; }
     details.floors summary::-webkit-details-marker { display: none; }
+    details.floors summary::marker { display: none; }
     details.floors summary::before { content: "▾"; margin-right: .5rem; color: var(--ember); }
     details.floors:not([open]) summary::before { content: "▸"; }
     details.floors .inline-form { margin-top: .5rem; }
