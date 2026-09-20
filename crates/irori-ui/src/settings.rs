@@ -145,6 +145,8 @@ pub fn Settings() -> impl IntoView {
             }}
         </section>
 
+        // It folds, but starts open: this is where the home's arrangement is managed, so the
+        // floors, the areas on them, and the unassigned devices are useful to see at once.
         <details class="card settings-section floors" id="floors-and-areas" open>
             <summary>"Floors and areas"</summary>
             <p class="muted small">
