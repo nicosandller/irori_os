@@ -6,6 +6,7 @@ mod config;
 mod db;
 mod extensions;
 mod history;
+mod host_info;
 mod packages;
 mod server;
 

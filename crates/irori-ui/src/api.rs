@@ -18,6 +18,7 @@ const HEALTH_URL: &str = "/api/health";
 const COMMAND_URL: &str = "/api/dev/command";
 const AREAS_URL: &str = "/api/dev/areas";
 const HISTORY_URL: &str = "/api/dev/history";
+const SYSTEM_URL: &str = "/api/dev/system";
 
 /// Everything the page shows. Mirrors `HomeView` on the server; the two meet again in
 /// `irori-types` when the real API lands.
@@ -27,7 +28,7 @@ pub struct Home {
     pub entities: Vec<Entity>,
     pub states: Vec<EntityState>,
     pub extensions: BTreeMap<ExtensionId, Extension>,
-    /// The rooms of the home, from the config directory. Empty until somebody makes one.
+    /// The areas of the home, from the config directory. Empty until somebody makes one.
     #[serde(default)]
     pub areas: Vec<Area>,
     /// Devices kept out of the home: ignored, or new and waiting to be added.
@@ -53,8 +54,8 @@ impl Home {
         self.areas.iter().find(|area| &area.id == id)
     }
 
-    /// What to call the room a device is in, for showing next to it.
-    pub fn room_of(&self, device: &Device) -> Option<String> {
+    /// What to call the area a device is in, for showing next to it.
+    pub fn area_of(&self, device: &Device) -> Option<String> {
         let area = self.area(device.area_id.as_ref()?)?;
         Some(area.name.to_string())
     }
@@ -148,6 +149,58 @@ pub struct Sqlite {
     pub journal_mode: String,
 }
 
+/// What the System section of Settings shows about the machine running Irori, from
+/// `/api/dev/system`. The server reads it from the OS each time it's asked, so an "Ask again"
+/// sees the machine as it is — a disk that filled since the last ask is a disk that filled.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct System {
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub os: String,
+    #[serde(default)]
+    pub os_version: String,
+    #[serde(default)]
+    pub kernel: String,
+    #[serde(default)]
+    pub arch: String,
+    #[serde(default)]
+    pub cpu: String,
+    #[serde(default)]
+    pub cpu_cores: usize,
+    #[serde(default)]
+    pub memory_total: u64,
+    #[serde(default)]
+    pub memory_used: u64,
+    /// How long the machine has been up, in the OS's seconds.
+    #[serde(default)]
+    pub uptime_secs: u64,
+    /// The volume the instance's data is on.
+    #[serde(default)]
+    pub disk: Disk,
+}
+
+/// Enough about a volume to see whether it's getting full.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+pub struct Disk {
+    #[serde(default)]
+    pub mount: String,
+    pub total: u64,
+    pub available: u64,
+    pub used: u64,
+}
+
+pub async fn fetch_system() -> Result<System, String> {
+    let response = Request::get(SYSTEM_URL).send().await.map_err(unreachable)?;
+    if !response.ok() {
+        return Err(format!("{SYSTEM_URL} answered {}", response.status()));
+    }
+    response
+        .json::<System>()
+        .await
+        .map_err(|e| format!("Irori sent something this page can't read: {e}"))
+}
+
 pub async fn fetch_health() -> Result<Health, String> {
     let response = Request::get(HEALTH_URL).send().await.map_err(unreachable)?;
     if !response.ok() {
@@ -230,19 +283,19 @@ pub async fn set_light(
     command(entity_id, "turn_on", Some(data)).await
 }
 
-// --- Rooms and names -----------------------------------------------------------------------
+// --- Areas, names, and where things live ------------------------------------------------
 //
 // These write files in the config directory (`docs/specs/config.md`). Each answers with what the
 // thing became, but the page refetches anyway: a rename can change more than the thing renamed,
 // because entities without a name of their own follow their device.
 
-/// Where to put a device: in a room, in none at all, or back to having said nothing — which
+/// Where to put a device: in an area, in none at all, or back to having said nothing — which
 /// lets whatever the device suggests for itself stand in again.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum WhereTo {
     In(AreaId),
-    /// Serialized as `false`: deliberately no room, suggestion and all.
+    /// Serialized as `false`: deliberately no area, suggestion and all.
     Nowhere(bool),
 }
 
@@ -261,7 +314,7 @@ pub struct DeviceEdit {
     pub name: Option<Option<Name>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<Option<irori_types::Description>>,
-    /// `None` leaves the room alone; `Some(None)` un-says it, letting the device suggest again.
+    /// `None` leaves the area alone; `Some(None)` un-says it, letting the device suggest again.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub area: Option<Option<WhereTo>>,
     /// `Some(true)` keeps the device out of the home; `Some(false)` lets it back in.
@@ -339,7 +392,7 @@ struct AreaFloor<'a> {
     floor: Option<&'a irori_types::FloorId>,
 }
 
-/// Puts a room on a floor, or on none.
+/// Puts an area on a floor, or on none.
 pub async fn set_area_floor(
     id: &AreaId,
     floor: Option<&irori_types::FloorId>,

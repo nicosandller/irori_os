@@ -51,7 +51,16 @@
             border-radius: .4rem; cursor: pointer; flex: none; }
     .fold:hover { color: var(--fg); border-color: var(--line); }
     .fold svg { width: 1rem; height: 1rem; transition: transform .15s; }
-    .sidebar .live { margin-top: auto; padding: .5rem .6rem; }
+    .sidebar-bottom { margin-top: auto; display: flex; flex-direction: column; gap: .25rem; }
+    .sidebar .settings-link { display: flex; align-items: center; gap: .7rem; padding: .5rem .6rem;
+                              border-radius: .4rem; color: var(--muted); text-decoration: none;
+                              font-size: .95rem; white-space: nowrap;
+                              border-left: 2px solid transparent; }
+    .sidebar .settings-link svg { width: 1.25rem; height: 1.25rem; flex: none; }
+    .sidebar .settings-link:hover { color: var(--fg); background: var(--sunk); }
+    .sidebar .settings-link[aria-current="page"] { color: var(--fg); background: var(--sunk);
+                                                   border-left-color: var(--ember); }
+    .sidebar .live { padding: .5rem .6rem; }
 
     /* Folded: icons only. Labels stay in the page for screen readers, and in each link's title. */
     .folded .sidebar .label { position: absolute; width: 1px; height: 1px; overflow: hidden;
@@ -59,7 +68,8 @@
     .folded .sidebar-top { flex-direction: column; }
     .folded .fold svg { transform: rotate(180deg); }
     .folded .sidebar nav a { justify-content: center; padding: .5rem 0; }
-    .folded .sidebar .live { justify-content: center; }
+    .folded .sidebar-bottom { align-items: stretch; }
+    .folded .sidebar .settings-link { justify-content: center; padding: .5rem 0; }
 
     /* A phone has no room beside the page: the sidebar becomes a bar along the top, and folding
        means nothing there. */
@@ -71,7 +81,8 @@
       .sidebar nav { flex-direction: row; }
       .sidebar nav a { padding: .4rem .5rem; border-left: none; }
       .fold { display: none; }
-      .sidebar .live { margin: 0 0 0 auto; padding: 0; }
+      .sidebar-bottom { flex-direction: row; align-items: center; margin: 0 0 0 auto; gap: .25rem; }
+      .sidebar .live { padding: 0; }
       .folded .sidebar .label { position: static; width: auto; height: auto; clip: auto; }
       .folded .sidebar-top { flex-direction: row; }
       main { padding: 1.25rem 1rem 3rem; }
@@ -382,6 +393,28 @@
     .empty { color: var(--muted); }
     .muted { color: var(--muted); }
     a { color: var(--ember); }
+
+    /* The start screen: the IroriOS wordmark as the terminal prints it, big enough to be the
+       first thing a browser lands on. */
+    .start { display: grid; gap: 2.25rem; }
+    .start-wordmark { display: flex; align-items: center; gap: 1.5rem; padding: .5rem 0 .25rem; }
+    .start-box { display: grid; place-items: center; width: 6rem; height: 6rem; flex: none;
+                 border: 2px solid var(--fg); border-radius: .5rem; }
+    .start-ember { width: 2.5rem; height: 2.5rem; border-radius: .25rem; background: var(--ember); }
+    .start-letters { display: grid; gap: .35rem; min-width: 0; }
+    .start-title { margin: 0; font-size: 1.9rem; font-weight: 600; letter-spacing: .3em; line-height: 1.05;
+                   text-indent: .3em; overflow-wrap: anywhere; }
+    .start-rule { width: 9rem; border-bottom: 1px solid var(--fg); opacity: .45; }
+    .start-tag { color: var(--muted); font-size: .95rem; }
+
+    /* Settings: the in-page menu, and the sections it scrolls to. */
+    .settings-menu { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1.5rem; }
+    .settings-menu a { padding: .3rem .7rem; font: .8rem var(--mono); letter-spacing: .05em;
+                       color: var(--muted); text-decoration: none;
+                       border: 1px solid var(--line); border-radius: .4rem; }
+    .settings-menu a:hover { color: var(--fg); border-color: var(--ember); }
+    .settings-section { scroll-margin-top: 1rem; }
+    .settings-section > .inline-form { margin-top: .75rem; }
   </style>
 </head>
 <body></body>

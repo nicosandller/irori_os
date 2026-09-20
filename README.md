@@ -57,7 +57,7 @@ irori run                                  # http://127.0.0.1:8480
 
 `cargo xtask install` copies a binary; it isn't a link to the checkout. **After pulling or
 changing anything, run it again** — the running `irori` is whatever was installed last. Which
-build that is isn't a guess: `irori version` and the Home page show the commit it was built from,
+build that is isn't a guess: `irori version` and the Settings page show the commit it was built from,
 with `-modified` when the tree had uncommitted changes. A build made at a release tag reports
 that version instead of `0.0.0`.
 
@@ -109,9 +109,9 @@ curl -s http://127.0.0.1:8480/api/dev/home     # the whole home in one response
 
 The **web UI** is a separate wasm crate, so `cargo build` alone doesn't need a wasm toolchain and
 serves a placeholder page at `/`. `cargo xtask install` above builds it; `cargo xtask ui` builds
-it without installing. It has a folding sidebar, a Home page (what
-Irori is looking after, by room), a Devices page (devices grouped by integration, entities with
-their switches, and an **Add device** panel), and a Rooms page.
+it without installing. It has a folding sidebar; `/` is an IroriOS start screen, and the pages are
+Devices (devices grouped by integration, entities with their switches, and an **Add device**
+panel), Extensions, and Settings (the instance, areas & floors, users, and the machine itself).
 
 See [crates/irori-ui/README.md](crates/irori-ui/README.md) for working on the UI itself (live
 reload, no binary rebuild). CI builds it, so downloaded release binaries always have it.
@@ -134,7 +134,7 @@ config/
   extensions/     settings for each extension, like your helpers
 ```
 
-Make floors and rooms on the **Rooms** page; name, describe or place a device on its own page, where you can
+Make areas and floors on the Settings page; name, describe or place a device on its own page, where you can
 also **ignore** it — it leaves Irori until you let it back in from the Devices page. Or open
 the files in an editor — Irori picks up changes within a couple of seconds, and a file that
 doesn't parse is ignored with an explanation in the log while the last good version keeps

@@ -35,7 +35,7 @@ pub struct Group {
     pub entities: Vec<(Entity, Option<EntityState>)>,
 }
 
-/// Whether a device matches the shared Devices/Entities search: name, id, room, make, model.
+/// Whether a device matches the shared Devices/Entities search: name, id, area, make, model.
 fn matches_device(home: &Home, device: &Device, needle: &str) -> bool {
     if needle.is_empty() {
         return true;
@@ -51,7 +51,7 @@ fn matches_device(home: &Home, device: &Device, needle: &str) -> bool {
             .unwrap_or_default(),
         device.manufacturer.clone().unwrap_or_default(),
         device.model.clone().unwrap_or_default(),
-        home.room_of(device).unwrap_or_default(),
+        home.area_of(device).unwrap_or_default(),
     ];
     haystack
         .iter()
@@ -66,7 +66,7 @@ pub fn groups(home: &Home, needle: &str) -> Vec<Group> {
     let devices: BTreeMap<_, _> = home.devices.iter().map(|d| (&d.id, d)).collect();
 
     // A device's name is part of what its entities are called in conversation ("the lamp in the
-    // hallway sensor"), so typing it keeps the whole device. Room and make too: the same
+    // hallway sensor"), so typing it keeps the whole device. Area and make too: the same
     // search box is used on the Devices table.
     let matches = |entity: &Entity| {
         needle.is_empty()
@@ -220,7 +220,7 @@ pub fn Devices() -> impl IntoView {
             <input
                 class="filter"
                 type="search"
-                placeholder="Filter by name, id, room or make"
+                placeholder="Filter by name, id, area or make"
                 aria-label="Filter"
                 prop:value=filter
                 on:input:target=move |ev| filter.set(ev.target().value())
@@ -285,7 +285,7 @@ fn table(home: &Home, needle: &str, folded: RwSignal<BTreeSet<String>>) -> AnyVi
         };
         return view! { <p class="empty">{message}</p> }.into_any();
     }
-    let rooms: BTreeMap<Option<AreaId>, String> = home
+    let areas: BTreeMap<Option<AreaId>, String> = home
         .areas
         .iter()
         .map(|area| (Some(area.id.clone()), area.name.to_string()))
@@ -320,7 +320,7 @@ fn table(home: &Home, needle: &str, folded: RwSignal<BTreeSet<String>>) -> AnyVi
                             <span class="visually-hidden">"Integration"</span>
                         </th>
                         <th scope="col">"Device"</th>
-                        <th scope="col">"Room"</th>
+                        <th scope="col">"Area"</th>
                         <th scope="col">"Make"</th>
                         <th scope="col">"Model"</th>
                         <th scope="col">"Battery"</th>
@@ -330,7 +330,7 @@ fn table(home: &Home, needle: &str, folded: RwSignal<BTreeSet<String>>) -> AnyVi
                 {groups
                     .into_iter()
                     .map(|(integration, name, has_icon, devices)| {
-                        group(integration, name, has_icon, devices, &rooms, folded, filtering)
+                        group(integration, name, has_icon, devices, &areas, folded, filtering)
                     })
                     .collect_view()}
             </table>
@@ -345,7 +345,7 @@ fn group(
     name: String,
     has_icon: bool,
     devices: Vec<DeviceRow>,
-    rooms: &BTreeMap<Option<AreaId>, String>,
+    areas: &BTreeMap<Option<AreaId>, String>,
     folded: RwSignal<BTreeSet<String>>,
     filtering: bool,
 ) -> AnyView {
@@ -370,7 +370,7 @@ fn group(
             let id = device.id.to_string();
             let entity_count = entities.len();
             let battery = battery(&entities);
-            let room = rooms.get(&device.area_id).cloned();
+            let room = areas.get(&device.area_id).cloned();
             view! {
                 <tr>
                     <td class="icon-col">{icon(&integration, has_icon)}</td>
@@ -682,7 +682,7 @@ fn ToggleActions(id: String, entity_id: EntityId, name: String) -> impl IntoView
             if typed.trim() == name {
                 return;
             }
-            let Some(named) = crate::rooms::named(typed, trouble) else {
+            let Some(named) = crate::settings::named(typed, trouble) else {
                 return;
             };
             let entity_id = entity_id.clone();
@@ -735,7 +735,7 @@ fn AddToggle() -> impl IntoView {
     let trouble = expect_context::<HelperTrouble>().0;
     let name = RwSignal::new(String::new());
     let add = move || {
-        let Some(named) = crate::rooms::named(name.get(), trouble) else {
+        let Some(named) = crate::settings::named(name.get(), trouble) else {
             return;
         };
         name.set(String::new());
@@ -1406,10 +1406,11 @@ mod tests {
         }
     }
 
-    /// The Devices and Entities views share one search box. Typing a room or a make has to
-    /// keep the entity, not look like a broken filter.
+    /// The Devices and Entities views share one search box. Typing an area or a make has to
+    /// keep the entity, not look like a broken filter, and something that isn't there finds
+    /// nothing.
     #[test]
-    fn filtering_entities_matches_room_and_make() {
+    fn filtering_entities_matches_area_and_make() {
         let home = entity_home();
         assert_eq!(groups(&home, "hall").len(), 1);
         assert_eq!(groups(&home, "espressif").len(), 1);
