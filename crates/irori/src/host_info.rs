@@ -70,30 +70,6 @@ pub fn read(data: &Path) -> HostView {
     let memory_total = system.total_memory();
     let memory_used = system.used_memory();
 
-    // The volume the data directory is on, by the longest mount it falls under: "/" is every
-    // volume's ancestor, but the one the data is actually on answers the honest "how full?".
-    // `canonicalize` first: a data path that goes through a symlink would otherwise match the
-    // alias's mount (often "/") instead of the volume the database is really on.
-    let data = data
-        .canonicalize()
-        .or_else(|_| std::path::absolute(data))
-        .unwrap_or_else(|_| data.to_path_buf());
-    let disks = Disks::new_with_refreshed_list();
-    let disk = disks
-        .iter()
-        .filter(|disk| data.starts_with(disk.mount_point()))
-        .max_by_key(|disk| disk.mount_point().as_os_str().len())
-        .map(|disk| {
-            let total = disk.total_space();
-            let available = disk.available_space();
-            DiskView {
-                mount: disk.mount_point().to_string_lossy().into_owned(),
-                total,
-                available,
-                used: total.saturating_sub(available),
-            }
-        });
-
     HostView {
         host: System::host_name(),
         os: System::name().unwrap_or_else(|| std::env::consts::OS.to_owned()),
@@ -105,12 +81,64 @@ pub fn read(data: &Path) -> HostView {
         memory_total,
         memory_used,
         uptime_secs: System::uptime(),
-        disk: disk.unwrap_or(DiskView {
+        disk: data_disk(data).unwrap_or(DiskView {
             // Without a disk to answer, the row says so rather than guessing at a number.
             mount: String::new(),
             total: 0,
             available: 0,
             used: 0,
         }),
+    }
+}
+
+/// The id of the filesystem a path is on, as the OS numbers them. Equal ids mean the same
+/// volume, even when the same data is reachable through several mount paths.
+#[cfg(unix)]
+fn fsid(path: &Path) -> Option<u64> {
+    rustix::fs::statvfs(path).ok().map(|stat| stat.f_fsid)
+}
+
+/// The volume the data directory is on, as "how full is it?": by filesystem id when one
+/// matches, otherwise by the longest mount the (canonicalized) path falls under. `None` when
+/// nothing matches, so the caller can say so rather than guess.
+fn data_disk(data: &Path) -> Option<DiskView> {
+    let disks = Disks::new_with_refreshed_list();
+
+    // The id is the honest answer: macOS's `/Users` is a firmlink into `/System/Volumes/Data`,
+    // and not even `canonicalize` resolves firmlinks, so a path under `/Users` still lexically
+    // sits inside "/" — the wrong volume to answer "how full?" with. The writable Data volume
+    // answers it, and only its filesystem id says so.
+    #[cfg(unix)]
+    let by_id = fsid(data).and_then(|want| {
+        disks
+            .iter()
+            .find(|disk| fsid(disk.mount_point()) == Some(want))
+    });
+    #[cfg(unix)]
+    if let Some(disk) = by_id {
+        return Some(disk_view(disk));
+    }
+
+    // Fall back to mounts by path: "/" is every volume's ancestor, but the one the data is
+    // actually on answers the honest "how full?".
+    let resolved = data
+        .canonicalize()
+        .or_else(|_| std::path::absolute(data))
+        .unwrap_or_else(|_| data.to_path_buf());
+    disks
+        .iter()
+        .filter(|disk| resolved.starts_with(disk.mount_point()))
+        .max_by_key(|disk| disk.mount_point().as_os_str().len())
+        .map(disk_view)
+}
+
+fn disk_view(disk: &sysinfo::Disk) -> DiskView {
+    let total = disk.total_space();
+    let available = disk.available_space();
+    DiskView {
+        mount: disk.mount_point().to_string_lossy().into_owned(),
+        total,
+        available,
+        used: total.saturating_sub(available),
     }
 }
