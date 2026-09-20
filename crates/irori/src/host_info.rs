@@ -108,23 +108,33 @@ fn data_disk(data: &Path) -> Option<DiskView> {
     // and not even `canonicalize` resolves firmlinks, so a path under `/Users` still lexically
     // sits inside "/" — the wrong volume to answer "how full?" with. The writable Data volume
     // answers it, and only its filesystem id says so.
-    #[cfg(unix)]
-    let by_id = fsid(data).and_then(|want| {
-        disks
-            .iter()
-            .find(|disk| fsid(disk.mount_point()) == Some(want))
-    });
-    #[cfg(unix)]
-    if let Some(disk) = by_id {
-        return Some(disk_view(disk));
-    }
-
-    // Fall back to mounts by path: "/" is every volume's ancestor, but the one the data is
-    // actually on answers the honest "how full?".
     let resolved = data
         .canonicalize()
         .or_else(|_| std::path::absolute(data))
         .unwrap_or_else(|_| data.to_path_buf());
+
+    #[cfg(unix)]
+    if let Some(want) = fsid(data) {
+        // A filesystem id can cover several mounts (a container's named volume and Docker's
+        // small bind-mounted files share the host overlay's id), so scope it to volume-looking
+        // ones first: mounts that hold directories, then ones the data path falls under, and
+        // only then the longest mount. A bind-mounted file like /etc/resolv.conf never wins.
+        let same = disks.iter().filter(|disk| {
+            fsid(disk.mount_point()) == Some(want)
+                && std::fs::metadata(disk.mount_point()).is_ok_and(|meta| meta.is_dir())
+        });
+        let disk = same
+            .clone()
+            .filter(|disk| resolved.starts_with(disk.mount_point()))
+            .max_by_key(|disk| disk.mount_point().as_os_str().len())
+            .or_else(|| same.max_by_key(|disk| disk.mount_point().as_os_str().len()));
+        if let Some(disk) = disk {
+            return Some(disk_view(disk));
+        }
+    }
+
+    // Fall back to mounts by path: "/" is every volume's ancestor, but the one the data is
+    // actually on answers the honest "how full?".
     disks
         .iter()
         .filter(|disk| resolved.starts_with(disk.mount_point()))
