@@ -647,7 +647,6 @@ fn floor_group(
     let start = {
         let id = id.clone();
         let name = name.clone();
-        let level = level;
         move |_| {
             draft_name.set(name.clone());
             draft_level.set(level.to_string());
@@ -739,9 +738,9 @@ fn floor_group(
                     }
                     .into_any()
                 } else {
-                    let folded_now = {
+                    let expanded_now = {
                         let id = id.clone();
-                        move || collapsed.get().contains(&id)
+                        move || !collapsed.get().contains(&id)
                     };
                     let chevron_text = {
                         let id = id.clone();
@@ -768,15 +767,13 @@ fn floor_group(
                         <button
                             type="button"
                             class="chevron"
-                            aria-expanded=folded_now.clone()
+                            aria-expanded=expanded_now.clone()
                             aria-label=fold_label.clone()
                             on:click=toggle_folded.clone()
                         >
                             {chevron_text.clone()}
                         </button>
-                        <h2 class="floor-heading" on:click=toggle_folded.clone()>
-                            {name.clone()}
-                        </h2>
+                        <h2 class="floor-heading">{name.clone()}</h2>
                         <span class="muted small">{format!("level {level}")}</span>
                         <span class="room-actions">
                             <button
@@ -1040,7 +1037,7 @@ fn in_area(device: Device, dragging: RwSignal<Option<DeviceId>>) -> AnyView {
             draggable="true"
             on:dragstart=move |event| {
                 if let Some(data) = event.data_transfer() {
-                    let _ = data.set_data("text/plain", &drag_id.to_string());
+                    let _ = data.set_data("text/plain", drag_id.as_ref());
                 }
                 dragging.set(Some(drag_id.clone()));
             }
