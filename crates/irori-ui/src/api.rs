@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 use gloo_net::http::Request;
 use irori_types::{
-    Area, AreaId, Device, DeviceId, Entity, EntityId, EntityState, ExtensionId, LightTurnOn, Name,
-    Waiting,
+    Area, AreaId, Device, DeviceId, Entity, EntityId, EntityState, ExtensionId, FloorId,
+    LightTurnOn, Name, Waiting,
 };
 use serde::{Deserialize, Serialize};
 
@@ -365,11 +365,18 @@ pub async fn rename_entity(entity_id: &EntityId, name: Option<Name>) -> Result<(
 #[derive(Debug, Serialize)]
 struct AreaRequest {
     name: Name,
+    /// The floor the area sits on. The page makes areas straight onto a floor, so an area
+    /// without one only exists when a floor it was on has gone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    floor: Option<FloorId>,
 }
 
-pub async fn add_area(name: Name) -> Result<(), String> {
+pub async fn add_area(name: Name, floor: Option<&FloorId>) -> Result<(), String> {
     let response = Request::post(AREAS_URL)
-        .json(&AreaRequest { name })
+        .json(&AreaRequest {
+            name,
+            floor: floor.cloned(),
+        })
         .map_err(|e| e.to_string())?
         .send()
         .await
@@ -379,26 +386,7 @@ pub async fn add_area(name: Name) -> Result<(), String> {
 
 pub async fn rename_area(id: &AreaId, name: Name) -> Result<(), String> {
     let response = Request::patch(&format!("{AREAS_URL}/{id}"))
-        .json(&AreaRequest { name })
-        .map_err(|e| e.to_string())?
-        .send()
-        .await
-        .map_err(unreachable)?;
-    checked(response).await
-}
-
-#[derive(Debug, Serialize)]
-struct AreaFloor<'a> {
-    floor: Option<&'a irori_types::FloorId>,
-}
-
-/// Puts an area on a floor, or on none.
-pub async fn set_area_floor(
-    id: &AreaId,
-    floor: Option<&irori_types::FloorId>,
-) -> Result<(), String> {
-    let response = Request::patch(&format!("{AREAS_URL}/{id}"))
-        .json(&AreaFloor { floor })
+        .json(&AreaRequest { name, floor: None })
         .map_err(|e| e.to_string())?
         .send()
         .await
@@ -415,6 +403,30 @@ struct FloorRequest {
 pub async fn add_floor(name: Name, level: i8) -> Result<(), String> {
     let response = Request::post("/api/dev/floors")
         .json(&FloorRequest { name, level })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+/// A change to a floor: a new name, a new level, or both.
+#[derive(Debug, Serialize)]
+struct FloorEdit {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<Name>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    level: Option<i8>,
+}
+
+/// Renames a floor or moves it to another level. Areas on it stay on it.
+pub async fn edit_floor(
+    id: &irori_types::FloorId,
+    name: Option<Name>,
+    level: Option<i8>,
+) -> Result<(), String> {
+    let response = Request::patch(&format!("/api/dev/floors/{id}"))
+        .json(&FloorEdit { name, level })
         .map_err(|e| e.to_string())?
         .send()
         .await
@@ -442,7 +454,7 @@ pub async fn remove_area(id: &AreaId) -> Result<(), String> {
 /// the helpers extension has restarted with it.
 pub async fn add_toggle(name: Name) -> Result<(), String> {
     let response = Request::post("/api/dev/helpers/toggles")
-        .json(&AreaRequest { name })
+        .json(&AreaRequest { name, floor: None })
         .map_err(|e| e.to_string())?
         .send()
         .await

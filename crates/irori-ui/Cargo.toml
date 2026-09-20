@@ -20,7 +20,7 @@ leptos = { version = "0.8.20", features = ["csr"] }
 leptos_router = { version = "0.8.15", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 # Only for remembering which way the device list was last shown.
-web-sys = { version = "0.3", features = ["Storage"] }
+web-sys = { version = "0.3", features = ["Storage", "DragEvent", "DataTransfer"] }
 
 [profile.release]
 # Download size is the budget that matters here (ROADMAP §4.3).

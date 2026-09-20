@@ -266,6 +266,10 @@
     .room-devices li { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem;
                        padding: .35rem 0; border-bottom: 1px solid var(--line); }
     .room-devices li:last-child { border-bottom: none; }
+    .room-devices .grip { display: inline-grid; place-items: center; align-self: center;
+        width: 1.4rem; height: 1.4rem; border: 1px solid var(--line); border-radius: .3rem;
+        color: var(--muted); }
+    .room-devices .grip svg { width: .75rem; height: .75rem; display: block; }
 
     /* Renaming, and choosing a room: small forms that sit inside a heading or a card. */
     .inline-form { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
@@ -381,13 +385,44 @@
                      cursor: pointer; }
     .danger-button:hover { border-color: #b4342c; }
     details.ignored { margin-top: 1.5rem; }
-    details.floors summary { cursor: pointer; font-weight: 500; }
+    details.floors summary { cursor: pointer; font-weight: 500; list-style: none; }
+    details.floors summary::-webkit-details-marker { display: none; }
+    details.floors summary::marker { display: none; }
+    details.floors summary::before { content: "▾"; margin-right: .5rem; color: var(--ember); }
+    details.floors:not([open]) summary::before { content: "▸"; }
     details.floors .inline-form { margin-top: .5rem; }
+    .settings-section > .room-head { margin-top: 1.25rem; }
     .inline-form input.level { width: 5rem; }
     .floor-heading { margin: 1.75rem 0 .75rem; color: var(--muted); font: 500 .75rem var(--mono);
                      letter-spacing: .08em; text-transform: uppercase; }
-    .floor-picker { padding: .3rem .5rem; font: inherit; font-size: .85rem; color: var(--fg);
-                    background: var(--card); border: 1px solid var(--line); border-radius: .4rem; }
+    .chevron { display: inline-grid; place-items: center; width: 1.25rem; height: 1.25rem;
+               padding: 0; margin: 0 .25rem 0 0; border: 1px solid transparent;
+               border-radius: .4rem; background: none; color: var(--muted); cursor: pointer;
+               font-size: .75rem; line-height: 1; }
+    .chevron:hover { border-color: var(--line); color: var(--ember); }
+    .floor-group .room-actions { gap: .25rem; }
+    .room-actions button.icon-button { display: inline-flex; align-items: center;
+        justify-content: center; width: 1.75rem; height: 1.75rem; padding: 0; margin-left: 0;
+        appearance: none; line-height: 0; border: 1px solid var(--line); border-radius: .4rem;
+        background: transparent; color: var(--fg); cursor: pointer; }
+    .room-actions button.icon-button:hover { border-color: var(--ember); color: var(--ember); }
+    .room-actions button.icon-button.solid { background: var(--ember); border-color: var(--ember);
+        color: var(--card); }
+    .room-actions button.icon-button.solid:hover { background: #ab4717; border-color: #ab4717;
+        color: var(--card); }
+    .room-actions button.icon-button.delete { background: #b4342c; border-color: #b4342c;
+        color: var(--card); }
+    .room-actions button.icon-button.delete:hover { background: #982b24; border-color: #982b24;
+        color: var(--card); }
+    .room-actions button.icon-button svg { width: 1rem; height: 1rem; display: block; }
+    .inline-form .add.solid { background: var(--ember); border-color: var(--ember);
+        color: var(--card); }
+    .inline-form .add.solid:hover { background: #ab4717; border-color: #ab4717; color: var(--card); }
+    .room-devices li[draggable="true"] { cursor: grab; }
+    .room-devices li[draggable="true"]:active { cursor: grabbing; }
+    .room-devices.drop-zone { min-height: 1.5rem; border-radius: .4rem; }
+    .room-devices.drop-zone.armed { outline: 2px dashed var(--ember); outline-offset: 3px; }
+    .room-devices.drop-zone.armed li { border-bottom-color: transparent; }
     details.ignored summary { cursor: pointer; font-weight: 500; }
 
     .empty { color: var(--muted); }
