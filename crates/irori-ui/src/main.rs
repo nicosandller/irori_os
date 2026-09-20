@@ -10,6 +10,7 @@ mod api;
 mod device;
 mod devices;
 mod extensions;
+mod floorplan;
 mod settings;
 mod start;
 mod waiting;
@@ -21,6 +22,7 @@ use irori_types::{EntityId, EntityState, LightTurnOn};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::{A, Route, Router, Routes};
+use leptos_router::hooks::use_location;
 use leptos_router::path;
 
 use crate::api::{Health, Home};
@@ -179,18 +181,32 @@ fn App() -> impl IntoView {
                     </div>
                 </aside>
 
-                <main>
-                    {move || live.trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
-                    <Routes fallback=NotFound>
-                        <Route path=path!("/") view=start::Start />
-                        <Route path=path!("/devices") view=devices::Devices />
-                        <Route path=path!("/devices/:id") view=device::DevicePage />
-                        <Route path=path!("/extensions") view=extensions::Extensions />
-                        <Route path=path!("/settings") view=settings::Settings />
-                    </Routes>
-                </main>
+                <Page live=live />
             </div>
         </Router>
+    }
+}
+
+/// The page beside the sidebar.
+///
+/// Its own component so that it can ask the router where we are, which only works inside
+/// `<Router>`. What it asks for: the Floorplan is a canvas rather than a column of cards, so it
+/// takes the whole width the sidebar leaves and sets its own margins.
+#[component]
+fn Page(live: Live) -> impl IntoView {
+    let location = use_location();
+    view! {
+        <main class:full=move || location.pathname.get() == "/floorplan">
+            {move || live.trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
+            <Routes fallback=NotFound>
+                <Route path=path!("/") view=start::Start />
+                <Route path=path!("/floorplan") view=floorplan::Floorplan />
+                <Route path=path!("/devices") view=devices::Devices />
+                <Route path=path!("/devices/:id") view=device::DevicePage />
+                <Route path=path!("/extensions") view=extensions::Extensions />
+                <Route path=path!("/settings") view=settings::Settings />
+            </Routes>
+        </main>
     }
 }
 
@@ -200,7 +216,12 @@ const SIDEBAR_KEY: &str = "irori.sidebar";
 /// The pages the sidebar links to, besides Settings: address, name, and an icon drawn in 24×24
 /// strokes. Written here, not taken from any extension, so `inner_html` only ever holds these
 /// literals.
-const SECTIONS: [(&str, &str, &str); 2] = [
+const SECTIONS: [(&str, &str, &str); 3] = [
+    (
+        "/floorplan",
+        "Floorplan",
+        r#"<path d="M3 4.5h18v15H3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M10 4.5v7M10 11.5h11M15 11.5v8M3 15.5h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>"#,
+    ),
     (
         "/devices",
         "Devices",
@@ -219,8 +240,8 @@ fn NotFound() -> impl IntoView {
         <section class="card">
             <h1>"There's no page here"</h1>
             <p class="muted">
-                "IroriOS has a start screen, a Devices page, an Extensions page and a Settings "
-                "page. The rest is still to come."
+                "IroriOS has a start screen, a Floorplan, a Devices page, an Extensions page "
+                "and a Settings page. The rest is still to come."
             </p>
             <p><A href="/">"Back to the start"</A></p>
         </section>

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use irori_core::{CallError, Command, Core, Event, ExtensionHost, ExtensionOverview};
 use irori_types::{
     Area, AreaId, ContextId, Description, Device, DeviceId, Entity, EntityId, EntityState,
-    ExtensionId, Floor, FloorId, LightTurnOn, Name, Origin, Placement, UserId,
+    ExtensionId, Floor, FloorId, Floorplan, LightTurnOn, Name, Origin, Placement, UserId,
 };
 use tokio::sync::broadcast;
 
@@ -97,6 +97,7 @@ pub fn router(state: AppState) -> Router {
             patch(edit_floor).delete(remove_floor),
         )
         .route("/api/dev/areas/{id}", patch(edit_area).delete(remove_area))
+        .route("/api/dev/floorplan", get(floorplan).put(save_floorplan))
         .route("/api/dev/devices/{id}", patch(edit_device))
         .route("/api/dev/entities/{id}", patch(edit_entity))
         .route("/api/dev/extensions/{id}/secrets", put(give_secret))
@@ -130,6 +131,10 @@ struct HomeView {
     /// Devices a person keeps out of the home, so they can be let back in.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     held: Vec<irori_core::HeldDevice>,
+    /// The home as it's drawn. Left out entirely while nobody has drawn one, which is most
+    /// homes: the Floorplan page then knows to offer a blank canvas rather than an empty plan.
+    #[serde(skip_serializing_if = "Floorplan::is_empty")]
+    floorplan: Floorplan,
 }
 
 async fn home(State(state): State<AppState>) -> Json<HomeView> {
@@ -142,6 +147,7 @@ async fn home(State(state): State<AppState>) -> Json<HomeView> {
         areas: core.areas(),
         floors: core.floors(),
         held: core.held_devices(),
+        floorplan: core.floorplan(),
     })
 }
 
@@ -291,6 +297,32 @@ async fn remove_area(State(state): State<AppState>, Path(id): Path<AreaId>) -> R
         })
         .await;
     match removed {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+async fn floorplan(State(state): State<AppState>) -> Json<Floorplan> {
+    Json(state.0.core.floorplan())
+}
+
+/// Replaces the whole plan.
+///
+/// The whole thing at once, not a wall at a time: the editor holds a working copy while somebody
+/// draws and sends it when they press Save, so a half-finished room never reaches the file, and
+/// Cancel is simply not sending. It is also what makes the page's undo trivially correct — there
+/// is nothing on the server to undo.
+async fn save_floorplan(State(state): State<AppState>, Json(plan): Json<Floorplan>) -> Response {
+    let saved = state
+        .0
+        .config
+        .edit(&state.0.core, |settings| {
+            plan.check().map_err(|why| Refused(why.to_string()))?;
+            settings.floorplan = plan.clone();
+            Ok(())
+        })
+        .await;
+    match saved {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => edit_failed(e),
     }
@@ -1709,6 +1741,68 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "`true` names no room");
 
         host.shutdown().await;
+        Ok(())
+    }
+
+    /// A plan drawn on the Floorplan page lands in `floorplan.toml` and comes back with the
+    /// home, and one that couldn't be drawn is refused rather than written.
+    #[tokio::test]
+    async fn a_plan_is_saved_whole_and_a_door_has_to_fit_its_wall() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+
+        let home = server.read("/api/dev/home").await?;
+        assert!(
+            home.get("floorplan").is_none(),
+            "a home nobody has drawn sends no plan: {home}"
+        );
+
+        let plan = serde_json::json!({
+            "walls": [{
+                "from": [0, 0],
+                "to": [400, 0],
+                "thickness": 20,
+                "openings": [{"kind": "door", "at": 200, "width": 80}],
+            }],
+            "devices": [{"device": "demo_lamp", "at": [120, 90]}],
+        });
+        let (status, body) = server
+            .json("PUT", "/api/dev/floorplan", plan.clone())
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        let written = std::fs::read_to_string(server.config_dir().join("floorplan.toml"))?;
+        assert!(written.contains("from = [0, 0]"), "{written}");
+        assert!(written.contains("kind = \"door\""), "{written}");
+        assert!(written.contains("device = \"demo_lamp\""), "{written}");
+
+        let home = server.read("/api/dev/home").await?;
+        assert_eq!(home["floorplan"]["walls"][0]["to"][0], 400, "{home}");
+        assert_eq!(server.read("/api/dev/floorplan").await?, plan);
+
+        // A door wider than the wall it's in would have to be drawn hanging off the end.
+        let (status, why) = server
+            .json(
+                "PUT",
+                "/api/dev/floorplan",
+                serde_json::json!({
+                    "walls": [{
+                        "from": [0, 0],
+                        "to": [100, 0],
+                        "openings": [{"kind": "door", "at": 50, "width": 300}],
+                    }],
+                }),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{why}");
+        assert!(
+            why["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("hangs off the end")),
+            "{why}"
+        );
+        // And the refused plan changed nothing: the drawn one is still there.
+        assert_eq!(server.read("/api/dev/floorplan").await?, plan);
+
         Ok(())
     }
 

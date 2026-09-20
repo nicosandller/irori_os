@@ -1,0 +1,8 @@
+{
+  "walls": [
+    { "from": [0, 0], "to": [400, 0], "thickness": 20 },
+    { "from": [400, 0], "to": [400, 300], "thickness": 20 },
+    { "from": [400, 300], "to": [0, 300], "thickness": 20 },
+    { "from": [0, 300], "to": [0, 0], "thickness": 20 }
+  ]
+}

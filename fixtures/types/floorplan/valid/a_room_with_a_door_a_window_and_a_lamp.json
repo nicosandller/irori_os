@@ -1,0 +1,24 @@
+{
+  "walls": [
+    {
+      "from": [0, 0],
+      "to": [400, 0],
+      "thickness": 20,
+      "openings": [
+        { "kind": "window", "at": 200, "width": 120 }
+      ]
+    },
+    {
+      "from": [0, 300],
+      "to": [0, 0],
+      "thickness": 10,
+      "openings": [
+        { "kind": "door", "at": 150, "width": 80 }
+      ]
+    }
+  ],
+  "devices": [
+    { "device": "demo_lamp", "at": [120, 90] },
+    { "device": "esphome_34_98_7a_2b_09_00", "at": [-40, 260] }
+  ]
+}

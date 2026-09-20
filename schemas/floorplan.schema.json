@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Floorplan",
+  "description": "Everything drawn on the plan.\n\nEmpty is the ordinary state of a home nobody has drawn yet, not a missing value: there is one\nplan, and it starts blank.",
+  "type": "object",
+  "properties": {
+    "devices": {
+      "description": "Where a device is, for the ones that have been put somewhere.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PlacedDevice"
+      }
+    },
+    "walls": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Wall"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "DeviceId": {
+      "description": "Format of a slug (device id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "Opening": {
+      "description": "A hole in a wall, placed by how far along that wall it is.\n\nAlong the wall rather than at a point of its own, so moving a wall carries its doors with it\nand a door can never end up floating beside the wall it belongs to.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "description": "Centimetres from the wall's `from` end to the middle of the opening.",
+          "type": "integer",
+          "format": "int32"
+        },
+        "kind": {
+          "$ref": "#/$defs/OpeningKind"
+        },
+        "width": {
+          "description": "How wide it is, in centimetres.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "at",
+        "width"
+      ]
+    },
+    "OpeningKind": {
+      "type": "string",
+      "enum": [
+        "door",
+        "window"
+      ]
+    },
+    "PlacedDevice": {
+      "description": "A device put somewhere on the plan.\n\nThe device may not be in the home right now — unplugged, or its extension uninstalled — and\nthe entry stays anyway, as every other config entry does (`docs/specs/config.md` §4). It\nsimply isn't drawn until the device is back.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Point"
+        },
+        "device": {
+          "$ref": "#/$defs/DeviceId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "device",
+        "at"
+      ]
+    },
+    "Point": {
+      "description": "A point on the plan: [x, y] in centimetres.",
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "int32"
+      },
+      "maxItems": 2,
+      "minItems": 2
+    },
+    "Wall": {
+      "description": "A straight run of wall between two points.\n\nOpenings live **inside** the wall they are cut into rather than pointing at it by id. A door\nis a hole in a wall and has nowhere else to be, so this way a wall can't be deleted out from\nunder its own doors and no id has to be handed out to make the link.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/Point"
+        },
+        "openings": {
+          "description": "The doors and windows cut into it, in no particular order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Opening"
+          }
+        },
+        "thickness": {
+          "description": "How thick it is, in centimetres. Drawn, not structural: it only decides how heavy the\nline looks.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 10,
+          "minimum": 0
+        },
+        "to": {
+          "$ref": "#/$defs/Point"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to"
+      ]
+    }
+  }
+}

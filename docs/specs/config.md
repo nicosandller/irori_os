@@ -40,6 +40,7 @@ step.
 config/
   irori.toml      settings for Irori itself: address, log level, extensions turned off
   areas.toml      the floors and rooms of the home
+  floorplan.toml  the home as it is drawn: walls, doors, windows, where devices sit
   devices.toml    what you have said about a device
   entities.toml   what you have said about an entity
   secrets.toml    keys, passwords, tokens — one table per extension
@@ -184,6 +185,52 @@ that join while asking is off, so restarting with asking already on doesn't empt
 What the integration says about a held device is kept, so adding it shows it as it is now. It
 applies while Irori runs.
 
+### 3.7 `floorplan.toml`
+
+The home as a drawing. Nothing discovers this — no integration can tell Irori where a wall is —
+so it is authored intent from end to end, and it lives here rather than in the database with the
+rest of it.
+
+```toml
+[[walls]]
+from = [0, 0]
+to = [500, 0]
+thickness = 20
+
+[[walls.openings]]
+kind = "door"       # "door" or "window"
+at = 250            # centimetres along the wall, from its `from` end, to the middle of the hole
+width = 80
+
+[[devices]]
+device = "demo_lamp"
+at = [120, 90]
+```
+
+Every measurement is a **whole centimetre**, and a point is `[x, y]` — x rightwards, y downwards,
+from an origin that is wherever whoever drew it started. Whole numbers because a plan has to
+compare equal to itself (the core skips work when settings haven't changed, which floats can't
+promise), and because round numbers diff cleanly in the git repository this directory is meant
+to live in. A centimetre is finer than anyone draws a house.
+
+An **opening is part of the wall it is cut into**, not a thing beside it, so it is placed by how
+far along that wall it is. Moving a wall carries its doors with it, deleting a wall takes them
+too, and a door can never end up floating next to the wall it belongs to. `thickness` is drawn,
+not structural: it decides how heavy the line looks, and defaults to 10 cm.
+
+A device is placed by its id, the same one `devices.toml` uses. An entry for a device that isn't
+in the home right now is **kept and simply not drawn** (§4), the same as every other entry here:
+a device that's unplugged for a week comes back to the spot it was put in.
+
+Two rules are enforced rather than warned about, because breaking either leaves a plan that can't
+be drawn at all: a wall must have some length (a wall with none has no direction, so its openings
+have nowhere to sit), and an opening must fit inside its wall. A file that breaks one is rejected
+whole, like any other unparseable file (§6), and the UI is held to exactly the same rules.
+
+The Floorplan page **replaces the whole file at once** when somebody presses Save, rather than
+editing a wall at a time. The editor works on a copy while it is being drawn, so a half-finished
+room never reaches the file and Cancel is simply never sending it.
+
 ### 3.6 `extensions/<id>.toml`
 
 An extension's settings that aren't secret. Irori writes a header comment saying so when it
@@ -282,6 +329,8 @@ Named here so the layout has room for them, specified when they are built:
   `config_schema` before it starts (`docs/specs/extensions.md`). Today the extension's own config
   type checks it, and an extension with invalid settings waits for valid ones.
 - **An entity in a different area than its device** (`Entity.area_id` already allows it).
+- **More on the plan** — rooms as coloured shapes, furniture, and more than one floor. `floorplan.toml`
+  holds one plan today; floors get their own when the editor can switch between them.
 - **More helpers** — numbers, text, timers — once rules can use them.
 
 ## 8. Changes from the roadmap draft

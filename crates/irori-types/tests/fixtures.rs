@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, bail, ensure};
 use irori_types::{
     Area, Device, DeviceDescription, Entity, EntityDescription, EntityState, ExtensionManifest,
-    Floor, ServiceCall, StateReport,
+    Floor, Floorplan, ServiceCall, StateReport,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -123,6 +123,11 @@ fn floors() -> anyhow::Result<()> {
 #[test]
 fn areas() -> anyhow::Result<()> {
     check::<Area>("area")
+}
+
+#[test]
+fn floorplans() -> anyhow::Result<()> {
+    check::<Floorplan>("floorplan")
 }
 
 #[test]

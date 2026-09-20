@@ -281,6 +281,12 @@ impl Core {
         floors
     }
 
+    /// The home as it is drawn: walls, their doors and windows, and where the devices are.
+    /// Blank until somebody draws one.
+    pub fn floorplan(&self) -> irori_types::Floorplan {
+        read(&self.0.home).floorplan().clone()
+    }
+
     /// What a person has said about this home (`docs/specs/config.md`).
     pub fn settings(&self) -> Settings {
         read(&self.0.home).settings().clone()

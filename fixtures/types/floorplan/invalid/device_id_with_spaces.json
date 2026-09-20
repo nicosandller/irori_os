@@ -1,0 +1,5 @@
+{
+  "devices": [
+    { "device": "demo lamp", "at": [0, 0] }
+  ]
+}
