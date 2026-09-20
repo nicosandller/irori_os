@@ -6,7 +6,7 @@
 //! is asked for on demand rather than kept — a Settings check that cached could shrug at a disk
 //! that filled since the last look.
 
-use irori_types::{Area, AreaId, Device, Name};
+use irori_types::{Area, AreaId, Device, DeviceId, Name};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
@@ -24,6 +24,10 @@ pub fn Settings() -> impl IntoView {
     // Which area's name is being edited, if any: only one at a time.
     let editing = RwSignal::new(None::<AreaId>);
     let draft = RwSignal::new(String::new());
+    // Which device is being dragged between areas, if any. A drag only happens on this page, so
+    // the signal lives here: the source rows set it on dragstart, the area lists read it to arm
+    // themselves, and a drop clears it (as does dragend, in case the drag fell somewhere empty).
+    let dragging = RwSignal::new(None::<DeviceId>);
 
     // Only the areas, floors and the devices in them, not what those devices are reporting. A
     // page that redrew every time a sensor spoke would throw away a half-typed name with it.
@@ -194,6 +198,7 @@ pub fn Settings() -> impl IntoView {
                             floor_draft_level,
                             trouble,
                             live,
+                            dragging,
                         )
                     })
                     .collect();
@@ -217,6 +222,7 @@ pub fn Settings() -> impl IntoView {
                         draft,
                         trouble,
                         live,
+                        dragging,
                     ));
                 }
 
@@ -230,20 +236,35 @@ pub fn Settings() -> impl IntoView {
                     .filter(|device| device.area_id.is_none())
                     .cloned()
                     .collect();
-                (!unplaced.is_empty())
-                    .then(|| {
-                        view! {
-                            <section class="card room">
-                                <div class="room-head">
-                                    <h2>"Not in an area"</h2>
-                                    <span class="muted">{count(unplaced.len())}</span>
-                                </div>
-                                <ul class="room-devices">
-                                    {unplaced.into_iter().map(in_area).collect_view()}
-                                </ul>
-                            </section>
-                        }
-                    })
+                view! {
+                    <section class="card room">
+                        <div class="room-head">
+                            <h2>"Not in an area"</h2>
+                            <span class="muted">{count(unplaced.len())}</span>
+                        </div>
+                        <ul
+                            class="room-devices drop-zone"
+                            class:armed=move || dragging.get().is_some()
+                            on:dragover=move |ev| ev.prevent_default()
+                            on:drop=drop_into(dragging, &devices, None, trouble, live)
+                        >
+                            {if unplaced.is_empty() {
+                                view! {
+                                    <li class="muted">
+                                        "Nothing here. Drag a device out of its area to unplace it."
+                                    </li>
+                                }
+                                .into_any()
+                            } else {
+                                unplaced
+                                    .into_iter()
+                                    .map(|device| in_area(device, dragging))
+                                    .collect_view()
+                                    .into_any()
+                            }}
+                        </ul>
+                    </section>
+                }
             }}
 
             <form
@@ -271,7 +292,7 @@ pub fn Settings() -> impl IntoView {
                 />
                 <button
                     type="submit"
-                    class="add"
+                    class="add solid"
                     disabled=move || floor_name.get().trim().is_empty()
                 >
                     "Add floor"
@@ -373,6 +394,7 @@ fn area_card(
     draft: RwSignal<String>,
     trouble: RwSignal<Option<String>>,
     live: crate::Live,
+    dragging: RwSignal<Option<DeviceId>>,
 ) -> AnyView {
     let devices: Vec<Device> = all
         .iter()
@@ -490,7 +512,7 @@ fn area_card(
                     </button>
                     <button
                         type="button"
-                        class="icon-button danger"
+                        class="icon-button delete"
                         aria-label=format!("Remove {display}")
                         on:click=move |_| {
                             let remove = remove.clone();
@@ -501,21 +523,27 @@ fn area_card(
                     </button>
                 </span>
             </div>
-            {if devices.is_empty() {
-                view! {
-                    <p class="muted">
-                        "Nothing in here yet. A device's own page is where you put it in an area."
-                    </p>
-                }
-                .into_any()
-            } else {
-                view! {
-                    <ul class="room-devices">
-                        {devices.into_iter().map(in_area).collect_view()}
-                    </ul>
-                }
-                .into_any()
-            }}
+            <ul
+                class="room-devices drop-zone"
+                class:armed=move || dragging.get().is_some()
+                on:dragover=move |ev| ev.prevent_default()
+                on:drop=drop_into(dragging, all, Some(&area.id), trouble, live)
+            >
+                {if devices.is_empty() {
+                    view! {
+                        <li class="muted">
+                            "Nothing in here yet — drag a device here, or use its own page."
+                        </li>
+                    }
+                    .into_any()
+                } else {
+                    devices
+                        .into_iter()
+                        .map(|device| in_area(device, dragging))
+                        .collect_view()
+                        .into_any()
+                }}
+            </ul>
         </section>
     }
     .into_any()
@@ -539,6 +567,7 @@ fn floor_group(
     draft_level: RwSignal<String>,
     trouble: RwSignal<Option<String>>,
     live: crate::Live,
+    dragging: RwSignal<Option<DeviceId>>,
 ) -> AnyView {
     let name = floor.name.to_string();
     let level = floor.level;
@@ -689,7 +718,7 @@ fn floor_group(
                         <span class="room-actions">
                             <button
                                 type="button"
-                                class="icon-button"
+                                class="icon-button solid"
                                 aria-label="Add an area to this floor"
                                 on:click=toggle_add.clone()
                             >
@@ -705,7 +734,7 @@ fn floor_group(
                             </button>
                             <button
                                 type="button"
-                                class="icon-button danger"
+                                class="icon-button delete"
                                 aria-label="Remove this floor"
                                 on:click=remove.clone()
                             >
@@ -725,7 +754,17 @@ fn floor_group(
         } else {
             on_it
                 .into_iter()
-                .map(|area| area_card(area, devices, area_editing, area_draft, trouble, live))
+                .map(|area| {
+                    area_card(
+                        area,
+                        devices,
+                        area_editing,
+                        area_draft,
+                        trouble,
+                        live,
+                        dragging,
+                    )
+                })
                 .collect_view()
                 .into_any()
         }}
@@ -774,6 +813,7 @@ fn unfloored_group(
     draft: RwSignal<String>,
     trouble: RwSignal<Option<String>>,
     live: crate::Live,
+    dragging: RwSignal<Option<DeviceId>>,
 ) -> AnyView {
     view! {
         <div class="room-head floor-group">
@@ -781,7 +821,9 @@ fn unfloored_group(
         </div>
         {areas
             .into_iter()
-            .map(|area| area_card(area, devices, editing, draft, trouble, live))
+            .map(|area| {
+                area_card(area, devices, editing, draft, trouble, live, dragging)
+            })
             .collect_view()}
     }
     .into_any()
@@ -847,12 +889,71 @@ fn icon(kind: Icon) -> AnyView {
     .into_any()
 }
 
-fn in_area(device: Device) -> AnyView {
+/// The drop side of dragging a device into or out of an area. `into` names the area being
+/// dropped on; `None` means the "Not in an area" list. The same PATCH the device's own page uses
+/// puts it where it was dropped, with `Nowhere` for "out" — deliberately no area, so the
+/// integration's suggestion can't immediately put it straight back. Dropping where it already is
+/// does nothing.
+fn drop_into(
+    dragging: RwSignal<Option<DeviceId>>,
+    all: &[Device],
+    into: Option<&AreaId>,
+    trouble: RwSignal<Option<String>>,
+    live: crate::Live,
+) -> impl Fn(web_sys::DragEvent) + use<> {
+    let all: Vec<Device> = all.to_vec();
+    let into = into.cloned();
+    move |event| {
+        event.prevent_default();
+        let Some(device_id) = dragging.get() else {
+            return;
+        };
+        let Some(device) = all.iter().find(|device| device.id == device_id) else {
+            return;
+        };
+        if device.area_id == into {
+            dragging.set(None);
+            return;
+        }
+        let area = into
+            .as_ref()
+            .map_or_else(api::WhereTo::nowhere, |id| api::WhereTo::In(id.clone()));
+        let edit = api::DeviceEdit {
+            area: Some(Some(area)),
+            ..api::DeviceEdit::default()
+        };
+        let id = device_id.clone();
+        spawn_local(async move {
+            match api::edit_device(&id, &edit).await {
+                Ok(()) => {
+                    trouble.set(None);
+                    crate::refresh(live);
+                }
+                Err(why) => trouble.set(Some(why)),
+            }
+        });
+    }
+}
+
+/// A device row: draggable so it can be dropped onto another area's list or the "Not in an area"
+/// one. Drag sets the shared `dragging` signal; the area lists arm and clear themselves around it.
+fn in_area(device: Device, dragging: RwSignal<Option<DeviceId>>) -> AnyView {
     let id = device.id.to_string();
     let name = device.name.to_string();
     let through = device.integration.to_string();
+    let drag_id = device.id.clone();
     view! {
-        <li>
+        <li
+            draggable="true"
+            on:dragstart=move |event| {
+                if let Some(data) = event.data_transfer() {
+                    let _ = data.set_data("text/plain", &drag_id.to_string());
+                }
+                event.prevent_default();
+                dragging.set(Some(drag_id.clone()));
+            }
+            on:dragend=move |_| dragging.set(None)
+        >
             <A href=format!("/devices/{id}")>{name}</A>
             <span class="muted small">{through}</span>
         </li>

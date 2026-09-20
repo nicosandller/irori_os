@@ -388,12 +388,28 @@
     .floor-heading { margin: 1.75rem 0 .75rem; color: var(--muted); font: 500 .75rem var(--mono);
                      letter-spacing: .08em; text-transform: uppercase; }
     .floor-group .room-actions { gap: .25rem; }
-    .icon-button { display: inline-grid; place-items: center; width: 1.75rem; height: 1.75rem;
-                   padding: 0; border: 1px solid var(--line); border-radius: .4rem;
-                   background: transparent; color: var(--fg); cursor: pointer; }
-    .icon-button:hover { border-color: var(--ember); color: var(--ember); }
-    .icon-button.danger:hover { border-color: #b4342c; color: #b4342c; }
-    .icon-button svg { width: 1rem; height: 1rem; }
+    .room-actions button.icon-button { display: inline-flex; align-items: center;
+        justify-content: center; width: 1.75rem; height: 1.75rem; padding: 0; margin-left: 0;
+        appearance: none; line-height: 0; border: 1px solid var(--line); border-radius: .4rem;
+        background: transparent; color: var(--fg); cursor: pointer; }
+    .room-actions button.icon-button:hover { border-color: var(--ember); color: var(--ember); }
+    .room-actions button.icon-button.solid { background: var(--ember); border-color: var(--ember);
+        color: var(--card); }
+    .room-actions button.icon-button.solid:hover { background: #ab4717; border-color: #ab4717;
+        color: var(--card); }
+    .room-actions button.icon-button.delete { background: #b4342c; border-color: #b4342c;
+        color: var(--card); }
+    .room-actions button.icon-button.delete:hover { background: #982b24; border-color: #982b24;
+        color: var(--card); }
+    .room-actions button.icon-button svg { width: 1rem; height: 1rem; display: block; }
+    .inline-form .add.solid { background: var(--ember); border-color: var(--ember);
+        color: var(--card); }
+    .inline-form .add.solid:hover { background: #ab4717; border-color: #ab4717; color: var(--card); }
+    .room-devices li[draggable="true"] { cursor: grab; }
+    .room-devices li[draggable="true"]:active { cursor: grabbing; }
+    .room-devices.drop-zone { min-height: 1.5rem; border-radius: .4rem; }
+    .room-devices.drop-zone.armed { outline: 2px dashed var(--ember); outline-offset: 3px; }
+    .room-devices.drop-zone.armed li { border-bottom-color: transparent; }
     details.ignored summary { cursor: pointer; font-weight: 500; }
 
     .empty { color: var(--muted); }
