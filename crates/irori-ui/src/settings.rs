@@ -28,6 +28,9 @@ pub fn Settings() -> impl IntoView {
     // the signal lives here: the source rows set it on dragstart, the area lists read it to arm
     // themselves, and a drop clears it (as does dragend, in case the drag fell somewhere empty).
     let dragging = RwSignal::new(None::<DeviceId>);
+    // Which floors have their areas folded away, so a horde of areas doesn't push the rest of
+    // the page down. The chevron on a floor's row flips one on and off; only the areas fold.
+    let collapsed = RwSignal::new(Vec::<irori_types::FloorId>::new());
 
     // Only the areas, floors and the devices in them, not what those devices are reporting. A
     // page that redrew every time a sensor spoke would throw away a half-typed name with it.
@@ -199,6 +202,7 @@ pub fn Settings() -> impl IntoView {
                             trouble,
                             live,
                             dragging,
+                            collapsed,
                         )
                     })
                     .collect();
@@ -239,7 +243,7 @@ pub fn Settings() -> impl IntoView {
                 view! {
                     <section class="card room">
                         <div class="room-head">
-                            <h2>"Not in an area"</h2>
+                            <h2>"Unassigned devices"</h2>
                             <span class="muted">{count(unplaced.len())}</span>
                         </div>
                         <ul
@@ -568,11 +572,34 @@ fn floor_group(
     trouble: RwSignal<Option<String>>,
     live: crate::Live,
     dragging: RwSignal<Option<DeviceId>>,
+    collapsed: RwSignal<Vec<irori_types::FloorId>>,
 ) -> AnyView {
     let name = floor.name.to_string();
     let level = floor.level;
     let id = floor.id.clone();
     let area_count = on_it.len();
+    // Owned copy for the fold closure below, which has to be 'static (it outlives this call).
+    let devices: Vec<Device> = devices.to_vec();
+    let folded = {
+        let id = id.clone();
+        move || collapsed.get().contains(&id)
+    };
+    let toggle_folded = {
+        let id = id.clone();
+        move |_| {
+            if collapsed.get().contains(&id) {
+                collapsed.set(
+                    collapsed
+                        .get()
+                        .into_iter()
+                        .filter(|other| other != &id)
+                        .collect(),
+                );
+            } else {
+                collapsed.update(|list| list.push(id.clone()));
+            }
+        }
+    };
     let being_edited = {
         let id = id.clone();
         move || editing.get().as_ref() == Some(&id)
@@ -712,8 +739,44 @@ fn floor_group(
                     }
                     .into_any()
                 } else {
+                    let folded_now = {
+                        let id = id.clone();
+                        move || collapsed.get().contains(&id)
+                    };
+                    let chevron_text = {
+                        let id = id.clone();
+                        move || {
+                            if collapsed.get().contains(&id) {
+                                "▸"
+                            } else {
+                                "▾"
+                            }
+                        }
+                    };
+                    let fold_label = {
+                        let id = id.clone();
+                        let name = name.clone();
+                        move || {
+                            if collapsed.get().contains(&id) {
+                                format!("Show the areas on {name}")
+                            } else {
+                                format!("Hide the areas on {name}")
+                            }
+                        }
+                    };
                     view! {
-                        <h2 class="floor-heading">{name.clone()}</h2>
+                        <button
+                            type="button"
+                            class="chevron"
+                            aria-expanded=folded_now.clone()
+                            aria-label=fold_label.clone()
+                            on:click=toggle_folded.clone()
+                        >
+                            {chevron_text.clone()}
+                        </button>
+                        <h2 class="floor-heading" on:click=toggle_folded.clone()>
+                            {name.clone()}
+                        </h2>
                         <span class="muted small">{format!("level {level}")}</span>
                         <span class="room-actions">
                             <button
@@ -746,27 +809,42 @@ fn floor_group(
                 }
             }}
         </div>
-        {if on_it.is_empty() {
-            view! {
-                <p class="muted small">"No areas on this floor yet — add one with the +."</p>
+        {move || {
+            if folded() {
+                return view! {
+                    <p class="muted small">
+                        {match area_count {
+                            0 => "No areas on this floor yet — add one with the +.".to_owned(),
+                            1 => "1 area — folded away; click the floor to open it.".to_owned(),
+                            n => format!("{n} areas — folded away; click the floor to open them."),
+                        }}
+                    </p>
+                }
+                .into_any();
             }
-            .into_any()
-        } else {
-            on_it
-                .into_iter()
-                .map(|area| {
-                    area_card(
-                        area,
-                        devices,
-                        area_editing,
-                        area_draft,
-                        trouble,
-                        live,
-                        dragging,
-                    )
-                })
-                .collect_view()
+            if on_it.is_empty() {
+                view! {
+                    <p class="muted small">"No areas on this floor yet — add one with the +."</p>
+                }
                 .into_any()
+            } else {
+                on_it
+                    .iter()
+                    .cloned()
+                    .map(|area| {
+                        area_card(
+                            area,
+                            &devices,
+                            area_editing,
+                            area_draft,
+                            trouble,
+                            live,
+                            dragging,
+                        )
+                    })
+                    .collect_view()
+                    .into_any()
+            }
         }}
         {move || {
             if !being_added() {
@@ -890,8 +968,8 @@ fn icon(kind: Icon) -> AnyView {
 }
 
 /// The drop side of dragging a device into or out of an area. `into` names the area being
-/// dropped on; `None` means the "Not in an area" list. The same PATCH the device's own page uses
-/// puts it where it was dropped, with `Nowhere` for "out" — deliberately no area, so the
+/// dropped on; `None` means the "Unassigned devices" list. The same PATCH the device's own page
+/// uses puts it where it was dropped, with `Nowhere` for "out" — deliberately no area, so the
 /// integration's suggestion can't immediately put it straight back. Dropping where it already is
 /// does nothing.
 fn drop_into(
@@ -935,8 +1013,11 @@ fn drop_into(
     }
 }
 
-/// A device row: draggable so it can be dropped onto another area's list or the "Not in an area"
-/// one. Drag sets the shared `dragging` signal; the area lists arm and clear themselves around it.
+/// A device row: draggable so it can be dropped onto another area's list or the "Unassigned
+/// devices" one. Drag sets the shared `dragging` signal; the area lists arm and clear themselves
+/// around it. Safari is strict about drags: setting the drag data is what starts a drag, and
+/// cancelling `dragstart` (the usual way to stop an anchor's link-drag) ends it before it begins
+/// — so the link inside is simply not draggable, and nothing is cancelled.
 fn in_area(device: Device, dragging: RwSignal<Option<DeviceId>>) -> AnyView {
     let id = device.id.to_string();
     let name = device.name.to_string();
@@ -949,12 +1030,11 @@ fn in_area(device: Device, dragging: RwSignal<Option<DeviceId>>) -> AnyView {
                 if let Some(data) = event.data_transfer() {
                     let _ = data.set_data("text/plain", &drag_id.to_string());
                 }
-                event.prevent_default();
                 dragging.set(Some(drag_id.clone()));
             }
             on:dragend=move |_| dragging.set(None)
         >
-            <A href=format!("/devices/{id}")>{name}</A>
+            <A href=format!("/devices/{id}") attr:draggable="false">{name}</A>
             <span class="muted small">{through}</span>
         </li>
     }

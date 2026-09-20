@@ -401,7 +401,7 @@ fn page(
                                             .unwrap_or_else(|| NOWHERE.to_owned())
                                     >
                                         <option value=NOWHERE selected=in_room.is_none()>
-                                            "Not in an area"
+                                            "Unassigned"
                                         </option>
                                         {areas
                                             .iter()
@@ -429,7 +429,7 @@ fn page(
                             .into_any()
                         } else {
                             view! {
-                                {room_name.clone().unwrap_or_else(|| "Not in an area".to_owned())}
+                                {room_name.clone().unwrap_or_else(|| "Unassigned".to_owned())}
                             }
                             .into_any()
                         }
