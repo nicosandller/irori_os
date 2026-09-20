@@ -18,6 +18,9 @@ pub fn Settings() -> impl IntoView {
     let live = expect_context::<crate::Live>();
     let trouble = RwSignal::new(None::<String>);
     let adding = RwSignal::new(String::new());
+    // Where an area is going: the floor whose + is open, if any. An area is made straight onto
+    // a floor and stays there, so the + next to a floor's name is the only way one lands.
+    let new_area_floor = RwSignal::new(None::<irori_types::FloorId>);
     // Which area's name is being edited, if any: only one at a time.
     let editing = RwSignal::new(None::<AreaId>);
     let draft = RwSignal::new(String::new());
@@ -57,22 +60,6 @@ pub fn Settings() -> impl IntoView {
         });
     };
     Effect::new(move |_| ask());
-
-    let add = move || {
-        let Some(name) = named(adding.get(), trouble) else {
-            return;
-        };
-        adding.set(String::new());
-        spawn_local(async move {
-            match api::add_area(name).await {
-                Ok(()) => {
-                    trouble.set(None);
-                    crate::refresh(live);
-                }
-                Err(why) => trouble.set(Some(why)),
-            }
-        });
-    };
 
     let add_floor = move || {
         let Some(named) = named(floor_name.get(), trouble) else {
@@ -154,8 +141,9 @@ pub fn Settings() -> impl IntoView {
         <details class="card settings-section floors" id="floors-and-areas" open>
             <summary>"Floors and areas"</summary>
             <p class="muted small">
-                "Floors are the levels of the home, lowest first; areas are the places on them, "
-                "and the devices live in the areas. Irori never invents an area, even when a "
+                "Floors are the levels of the home, lowest first, and the areas are the places on "
+                "them. Make a floor, then add the areas that sit on it with the + on its row; an "
+                "area stays on the floor it was made on. Irori never invents an area, even when a "
                 "device says where it thinks it is."
             </p>
 
@@ -171,28 +159,93 @@ pub fn Settings() -> impl IntoView {
             </div>
             <p class="muted small">
                 "The level is a whole number: 0 for the entrance floor, 1 above it, -1 for a "
-                "cellar. Make the floors first and the areas below sit on them; renaming a floor "
-                "or moving it keeps its areas on it."
+                "cellar. Rename a floor or move it to another level and its areas come with it."
             </p>
-            <ul class="room-devices">
-                {move || {
-                    shape
-                        .get()
-                        .2
-                        .into_iter()
-                        .map(|floor| {
-                            floor_row(
-                                floor,
-                                floor_editing,
-                                floor_draft_name,
-                                floor_draft_level,
-                                trouble,
-                                live,
-                            )
-                        })
-                        .collect_view()
-                }}
-            </ul>
+
+            {move || {
+                let (areas, devices, floors) = shape.get();
+                if floors.is_empty() && areas.is_empty() {
+                    return view! {
+                        <p class="empty">
+                            "No floors yet. Make the first one below; its areas come after."
+                        </p>
+                    }
+                    .into_any();
+                }
+
+                let mut groups: Vec<AnyView> = floors
+                    .iter()
+                    .map(|floor| {
+                        let on_it = areas
+                            .iter()
+                            .filter(|area| area.floor_id.as_ref() == Some(&floor.id))
+                            .cloned()
+                            .collect();
+                        floor_group(
+                            floor.clone(),
+                            on_it,
+                            &devices,
+                            editing,
+                            draft,
+                            adding,
+                            new_area_floor,
+                            floor_editing,
+                            floor_draft_name,
+                            floor_draft_level,
+                            trouble,
+                            live,
+                        )
+                    })
+                    .collect();
+
+                // Anything a removed floor left behind, gathered so its areas still have their
+                // tools. There's no + here: a new area is made on a floor.
+                let unfloored: Vec<Area> = areas
+                    .iter()
+                    .filter(|area| {
+                        area.floor_id
+                            .as_ref()
+                            .is_none_or(|id| floors.iter().all(|floor| &floor.id != id))
+                    })
+                    .cloned()
+                    .collect();
+                if !unfloored.is_empty() {
+                    groups.push(unfloored_group(
+                        unfloored,
+                        &devices,
+                        editing,
+                        draft,
+                        trouble,
+                        live,
+                    ));
+                }
+
+                groups.into_iter().collect_view().into_any()
+            }}
+
+            {move || {
+                let (_, devices, _) = shape.get();
+                let unplaced: Vec<Device> = devices
+                    .iter()
+                    .filter(|device| device.area_id.is_none())
+                    .cloned()
+                    .collect();
+                (!unplaced.is_empty())
+                    .then(|| {
+                        view! {
+                            <section class="card room">
+                                <div class="room-head">
+                                    <h2>"Not in an area"</h2>
+                                    <span class="muted">{count(unplaced.len())}</span>
+                                </div>
+                                <ul class="room-devices">
+                                    {unplaced.into_iter().map(in_area).collect_view()}
+                                </ul>
+                            </section>
+                        }
+                    })
+            }}
+
             <form
                 class="inline-form"
                 on:submit=move |ev| {
@@ -224,122 +277,6 @@ pub fn Settings() -> impl IntoView {
                     "Add floor"
                 </button>
             </form>
-
-            <div class="room-head areas-head">
-                <h2>"Areas"</h2>
-                <span class="muted">
-                    {move || match shape.get().0.len() {
-                        0 => "no areas".to_owned(),
-                        1 => "1 area".to_owned(),
-                        n => format!("{n} areas"),
-                    }}
-                </span>
-            </div>
-            <p class="muted small">
-                "An area is a place you can point at — a kitchen, the hall, the shed. A device "
-                "that asks for an area you've made goes straight into it."
-            </p>
-            <form
-                class="inline-form"
-                on:submit=move |ev| {
-                    ev.prevent_default();
-                    add();
-                }
-            >
-                <input
-                    type="text"
-                    aria-label="Name of the new area"
-                    placeholder="Kitchen"
-                    prop:value=adding
-                    on:input:target=move |ev| adding.set(ev.target().value())
-                />
-                <button type="submit" class="add" disabled=move || adding.get().trim().is_empty()>
-                    "Add"
-                </button>
-            </form>
-
-            {move || {
-                let (areas, devices, floors) = shape.get();
-                if areas.is_empty() {
-                    return view! {
-                        <p class="empty">"No areas yet. Add one above, and devices can go in it."</p>
-                    }
-                    .into_any();
-                }
-                if floors.is_empty() {
-                    return areas
-                        .iter()
-                        .map(|area| area_card(area.clone(), &devices, &floors, editing, draft, trouble, live))
-                        .collect_view()
-                        .into_any();
-                }
-                // By floor, lowest first, then the areas that aren't on one.
-                let mut sections: Vec<(String, Vec<Area>)> = floors
-                    .iter()
-                    .map(|floor| {
-                        let on_it = areas
-                            .iter()
-                            .filter(|area| area.floor_id.as_ref() == Some(&floor.id))
-                            .cloned()
-                            .collect();
-                        (floor.name.to_string(), on_it)
-                    })
-                    .collect();
-                let unfloored: Vec<Area> = areas
-                    .iter()
-                    .filter(|area| {
-                        area.floor_id
-                            .as_ref()
-                            .is_none_or(|id| floors.iter().all(|floor| &floor.id != id))
-                    })
-                    .cloned()
-                    .collect();
-                if !unfloored.is_empty() {
-                    sections.push(("On no floor".to_owned(), unfloored));
-                }
-                sections
-                    .into_iter()
-                    .map(|(heading, areas)| {
-                        let areas = if areas.is_empty() {
-                            view! { <p class="muted small">"No areas on this floor yet."</p> }.into_any()
-                        } else {
-                            areas
-                                .into_iter()
-                                .map(|area| area_card(area, &devices, &floors, editing, draft, trouble, live))
-                                .collect_view()
-                                .into_any()
-                        };
-                        view! {
-                            <h2 class="floor-heading">{heading}</h2>
-                            {areas}
-                        }
-                    })
-                    .collect_view()
-                    .into_any()
-            }}
-
-            {move || {
-                let (_, devices, _) = shape.get();
-                let unplaced: Vec<Device> = devices
-                    .iter()
-                    .filter(|device| device.area_id.is_none())
-                    .cloned()
-                    .collect();
-                (!unplaced.is_empty())
-                    .then(|| {
-                        view! {
-                            <section class="card room">
-                                <div class="room-head">
-                                    <h2>"Not in an area"</h2>
-                                    <span class="muted">{count(unplaced.len())}</span>
-                                </div>
-                                <ul class="room-devices">
-                                    {unplaced.into_iter().map(in_area).collect_view()}
-                                </ul>
-                            </section>
-                        }
-                    })
-            }}
         </details>
 
         <section class="card settings-section" id="users">
@@ -425,12 +362,13 @@ pub fn Settings() -> impl IntoView {
     }
 }
 
-/// One area: its name, what's in it, and the two things you can do to it.
+/// One area: its name, what's in it, and the two things you can do to it. Its floor isn't
+/// repeated here — the area sits under its floor's row above — and there's no way to move it:
+/// an area is made on a floor and stays there.
 #[allow(clippy::too_many_arguments)]
 fn area_card(
     area: Area,
     all: &[Device],
-    floors: &[irori_types::Floor],
     editing: RwSignal<Option<AreaId>>,
     draft: RwSignal<String>,
     trouble: RwSignal<Option<String>>,
@@ -442,12 +380,13 @@ fn area_card(
         .cloned()
         .collect();
     let id = area.id.clone();
+    let display = area.name.to_string();
+    let title = display.clone();
     let being_edited = {
         let id = id.clone();
         move || editing.get().as_ref() == Some(&id)
     };
 
-    let picker = floor_picker(&area, floors, trouble, live);
     let rename = {
         let id = id.clone();
         move || {
@@ -470,7 +409,7 @@ fn area_card(
 
     let remove = {
         let id = id.clone();
-        let what = area.name.to_string();
+        let what = display.clone();
         let count = devices.len();
         move || {
             // Nothing is lost by removing an area — the devices stay, and what was said about
@@ -501,9 +440,9 @@ fn area_card(
 
     let start = {
         let id = id.clone();
-        let name = area.name.to_string();
+        let display = display.clone();
         move |_| {
-            draft.set(name.clone());
+            draft.set(display.clone());
             editing.set(Some(id.clone()));
         }
     };
@@ -536,22 +475,29 @@ fn area_card(
                         }
                         .into_any()
                     } else {
-                        view! { <h2>{area.name.to_string()}</h2> }.into_any()
+                        view! { <h2>{title.clone()}</h2> }.into_any()
                     }
                 }}
                 <span class="muted">{count(devices.len())}</span>
                 <span class="room-actions">
-                    {picker}
-                    <button type="button" on:click=start>"Rename"</button>
                     <button
                         type="button"
-                        class="danger"
+                        class="icon-button"
+                        aria-label=format!("Rename {display}")
+                        on:click=start
+                    >
+                        {icon(Icon::Edit)}
+                    </button>
+                    <button
+                        type="button"
+                        class="icon-button danger"
+                        aria-label=format!("Remove {display}")
                         on:click=move |_| {
                             let remove = remove.clone();
                             remove();
                         }
                     >
-                        "Remove"
+                        {icon(Icon::Remove)}
                     </button>
                 </span>
             </div>
@@ -575,54 +521,19 @@ fn area_card(
     .into_any()
 }
 
-/// Which floor an area is on. Only offered once a floor exists.
-fn floor_picker(
-    area: &Area,
-    floors: &[irori_types::Floor],
-    trouble: RwSignal<Option<String>>,
-    live: crate::Live,
-) -> AnyView {
-    if floors.is_empty() {
-        return ().into_any();
-    }
-    let id = area.id.clone();
-    let current = area.floor_id.clone();
-    let chosen = move |value: String| {
-        let id = id.clone();
-        let floor = (!value.is_empty())
-            .then(|| irori_types::FloorId::try_from(value.as_str()).ok())
-            .flatten();
-        spawn_local(async move {
-            match api::set_area_floor(&id, floor.as_ref()).await {
-                Ok(()) => crate::refresh(live),
-                Err(why) => trouble.set(Some(why)),
-            }
-        });
-    };
-    view! {
-        <select
-            class="floor-picker"
-            aria-label="Floor"
-            on:change:target=move |ev| chosen(ev.target().value())
-        >
-            <option value="" selected=current.is_none()>"No floor"</option>
-            {floors
-                .iter()
-                .map(|floor| {
-                    let value = floor.id.to_string();
-                    let selected = current.as_ref() == Some(&floor.id);
-                    view! { <option value=value selected=selected>{floor.name.to_string()}</option> }
-                })
-                .collect_view()}
-        </select>
-    }
-    .into_any()
-}
-
-/// One floor: its name and level, with the two things you can do to it. Editing swaps the row
-/// for a form, the same way an area renames. A rename or a level change keeps the areas on it.
-fn floor_row(
+/// One floor and the areas on it, made to be seen together: the floor's row carries the tools to
+/// rename it, move its level, remove it, and add another area straight onto it — an area is made
+/// on a floor and stays there, so there's no per-area floor picker. Removing a floor that has
+/// areas on it asks first, because everything under it visibly moves to "On no floor".
+#[allow(clippy::too_many_arguments)]
+fn floor_group(
     floor: irori_types::Floor,
+    on_it: Vec<Area>,
+    devices: &[Device],
+    area_editing: RwSignal<Option<AreaId>>,
+    area_draft: RwSignal<String>,
+    adding: RwSignal<String>,
+    new_area_floor: RwSignal<Option<irori_types::FloorId>>,
     editing: RwSignal<Option<irori_types::FloorId>>,
     draft_name: RwSignal<String>,
     draft_level: RwSignal<String>,
@@ -632,9 +543,24 @@ fn floor_row(
     let name = floor.name.to_string();
     let level = floor.level;
     let id = floor.id.clone();
+    let area_count = on_it.len();
     let being_edited = {
         let id = id.clone();
         move || editing.get().as_ref() == Some(&id)
+    };
+    let being_added = {
+        let id = id.clone();
+        move || new_area_floor.get().as_ref() == Some(&id)
+    };
+    let toggle_add = {
+        let id = id.clone();
+        move |_| {
+            if new_area_floor.get().as_ref() == Some(&id) {
+                new_area_floor.set(None);
+            } else {
+                new_area_floor.set(Some(id.clone()));
+            }
+        }
     };
     let save = {
         let id = id.clone();
@@ -674,7 +600,19 @@ fn floor_row(
     };
     let remove = {
         let id = id.clone();
+        let what = name.clone();
         move |_| {
+            if area_count > 0
+                && !window()
+                    .confirm_with_message(&format!(
+                        "Remove {what}? The {} on it will have no floor until you put them on \
+                         another.",
+                        count_of(area_count),
+                    ))
+                    .unwrap_or(false)
+            {
+                return;
+            }
             let id = id.clone();
             spawn_local(async move {
                 match api::remove_floor(&id).await {
@@ -684,9 +622,29 @@ fn floor_row(
             });
         }
     };
+    let add_area = {
+        let id = id.clone();
+        move || {
+            let Some(name) = named(adding.get(), trouble) else {
+                return;
+            };
+            adding.set(String::new());
+            new_area_floor.set(None);
+            let floor = Some(id.clone());
+            spawn_local(async move {
+                match api::add_area(name, floor.as_ref()).await {
+                    Ok(()) => {
+                        trouble.set(None);
+                        crate::refresh(live);
+                    }
+                    Err(why) => trouble.set(Some(why)),
+                }
+            });
+        }
+    };
 
     view! {
-        <li>
+        <div class="room-head floor-group">
             {move || {
                 if being_edited() {
                     let save = save.clone();
@@ -726,15 +684,165 @@ fn floor_row(
                     .into_any()
                 } else {
                     view! {
-                        <span class="name">{name.clone()}</span>
+                        <h2 class="floor-heading">{name.clone()}</h2>
                         <span class="muted small">{format!("level {level}")}</span>
-                        <button type="button" class="link" on:click=start.clone()>"Edit"</button>
-                        <button type="button" class="link" on:click=remove.clone()>"Remove"</button>
+                        <span class="room-actions">
+                            <button
+                                type="button"
+                                class="icon-button"
+                                aria-label="Add an area to this floor"
+                                on:click=toggle_add.clone()
+                            >
+                                {icon(Icon::Add)}
+                            </button>
+                            <button
+                                type="button"
+                                class="icon-button"
+                                aria-label="Rename this floor or change its level"
+                                on:click=start.clone()
+                            >
+                                {icon(Icon::Edit)}
+                            </button>
+                            <button
+                                type="button"
+                                class="icon-button danger"
+                                aria-label="Remove this floor"
+                                on:click=remove.clone()
+                            >
+                                {icon(Icon::Remove)}
+                            </button>
+                        </span>
                     }
                     .into_any()
                 }
             }}
-        </li>
+        </div>
+        {if on_it.is_empty() {
+            view! {
+                <p class="muted small">"No areas on this floor yet — add one with the +."</p>
+            }
+            .into_any()
+        } else {
+            on_it
+                .into_iter()
+                .map(|area| area_card(area, devices, area_editing, area_draft, trouble, live))
+                .collect_view()
+                .into_any()
+        }}
+        {move || {
+            if !being_added() {
+                return ().into_any();
+            }
+            let add_area = add_area.clone();
+            view! {
+                <form
+                    class="inline-form"
+                    on:submit=move |ev| {
+                        ev.prevent_default();
+                        add_area();
+                    }
+                >
+                    <input
+                        type="text"
+                        aria-label="Name of the new area on this floor"
+                        placeholder="Kitchen"
+                        prop:value=adding
+                        on:input:target=move |ev| adding.set(ev.target().value())
+                    />
+                    <button
+                        type="submit"
+                        class="add"
+                        disabled=move || adding.get().trim().is_empty()
+                    >
+                        "Add area"
+                    </button>
+                    <button type="button" on:click=move |_| new_area_floor.set(None)>"Cancel"</button>
+                </form>
+            }
+            .into_any()
+        }}
+    }
+    .into_any()
+}
+
+/// The areas a removed floor left behind, gathered so they still have their tools. There's no +
+/// here: a new area is made on a floor, not on none.
+fn unfloored_group(
+    areas: Vec<Area>,
+    devices: &[Device],
+    editing: RwSignal<Option<AreaId>>,
+    draft: RwSignal<String>,
+    trouble: RwSignal<Option<String>>,
+    live: crate::Live,
+) -> AnyView {
+    view! {
+        <div class="room-head floor-group">
+            <h2 class="floor-heading">"On no floor"</h2>
+        </div>
+        {areas
+            .into_iter()
+            .map(|area| area_card(area, devices, editing, draft, trouble, live))
+            .collect_view()}
+    }
+    .into_any()
+}
+
+/// The three small stroke icons the floor and area rows use on their buttons.
+#[derive(Clone, Copy)]
+enum Icon {
+    Add,
+    Edit,
+    Remove,
+}
+
+fn icon(kind: Icon) -> AnyView {
+    match kind {
+        Icon::Add => view! {
+            <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+            >
+                <path d="M12 5v14"></path>
+                <path d="M5 12h14"></path>
+            </svg>
+        }
+        .into_any(),
+        Icon::Edit => view! {
+            <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+            >
+                <path d="M12 20h9"></path>
+                <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+            </svg>
+        }
+        .into_any(),
+        Icon::Remove => view! {
+            <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+            >
+                <path d="M3 6h18"></path>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path>
+                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            </svg>
+        }
+        .into_any(),
     }
     .into_any()
 }
