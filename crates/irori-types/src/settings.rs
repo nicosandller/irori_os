@@ -8,8 +8,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    Area, AreaId, Description, DeviceId, ExtensionId, Floor, FloorId, IdError, IntegrationId, Name,
-    UniqueId,
+    Area, AreaId, Description, DeviceId, ExtensionId, Floor, FloorId, Floorplan, IdError,
+    IntegrationId, Name, UniqueId,
 };
 
 /// Everything the config directory says.
@@ -19,6 +19,9 @@ pub struct Settings {
     pub floors: Vec<Floor>,
     /// The rooms of the home, ordered by id.
     pub areas: Vec<Area>,
+    /// The home as it is drawn: walls, their doors and windows, and where the devices are.
+    /// Blank until somebody draws it.
+    pub floorplan: Floorplan,
     /// By the device's id, which never changes (ROADMAP D36).
     pub devices: BTreeMap<DeviceId, DeviceSettings>,
     pub entities: BTreeMap<SettingsKey, EntitySettings>,

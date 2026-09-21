@@ -10,7 +10,7 @@
   <a href="dev/README.md"><b>Try it on a Mac</b></a>
 </p>
 
-> Status: the core's registry, live state, and extension host run; a Devices page shows everything and switches it (M0.8, M1.6 first slice); and **ESPHome devices on your network are found and connected automatically**, sensors and all (D26). No rules or automations yet, and no login, so it isn't running a home unattended.
+> Status: the core's registry, live state, and extension host run; a Devices page shows everything and switches it (M0.8, M1.6 first slice); **ESPHome devices on your network are found and connected automatically**, sensors and all (D26); and a **Floorplan** page draws the home — walls, doors and windows — with the devices live on it. No rules or automations yet, and no login, so it isn't running a home unattended.
 
 ## Install
 

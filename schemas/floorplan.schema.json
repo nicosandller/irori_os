@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Floorplan",
+  "description": "Everything drawn, a floor at a time.\n\nKeyed by the floor's id, because a plan **is** the plan of a floor — a house with an upstairs\nhas two of them, drawn one over the other, and the floors are already a thing the home knows\nabout (`docs/specs/config.md` §3.1). A home nobody has divided into floors has nowhere to\ndraw until it has one, which is a question with an obvious answer rather than a reason for a\nsecond shape of plan.\n\nEmpty is the ordinary state of a home nobody has drawn yet, not a missing value.\n\nA floor that has since been removed keeps its plan here, unshown, the same as every other\nentry that outlives what it points at (`docs/specs/config.md` §4): making the floor again\nbrings the drawing back.",
+  "type": "object",
+  "properties": {
+    "floors": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[a-z0-9]+(_[a-z0-9]+)*$": {
+          "$ref": "#/$defs/Level"
+        }
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "AreaId": {
+      "description": "Format of a slug (area id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "DeviceId": {
+      "description": "Format of a slug (device id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "Level": {
+      "description": "One floor of the home as it is drawn.",
+      "type": "object",
+      "properties": {
+        "areas": {
+          "description": "The rooms of this floor, as shapes. An area with no shape here simply isn't drawn; an\narea is a thing the home knows about whether or not anybody has traced it.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlacedArea"
+          }
+        },
+        "devices": {
+          "description": "Where a device is, for the ones that have been put somewhere.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlacedDevice"
+          }
+        },
+        "walls": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Wall"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Opening": {
+      "description": "A hole in a wall, placed by how far along that wall it is.\n\nAlong the wall rather than at a point of its own, so moving a wall carries its doors with it\nand a door can never end up floating beside the wall it belongs to.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "description": "Centimetres from the wall's `from` end to the middle of the opening.",
+          "type": "integer",
+          "format": "int32"
+        },
+        "kind": {
+          "$ref": "#/$defs/OpeningKind"
+        },
+        "width": {
+          "description": "How wide it is, in centimetres. At least one, for the reason [`Wall::thickness`] gives.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "at",
+        "width"
+      ]
+    },
+    "OpeningKind": {
+      "type": "string",
+      "enum": [
+        "door",
+        "window"
+      ]
+    },
+    "PlacedArea": {
+      "description": "A room traced out on the plan: which area it is, and the shape of it.\n\nThe shape is a closed run of corners — the last joins back to the first, so the file doesn't\ncarry the first point twice and can't disagree with itself about where the room closes.",
+      "type": "object",
+      "properties": {
+        "area": {
+          "$ref": "#/$defs/AreaId"
+        },
+        "points": {
+          "description": "At least [`PlacedArea::FEWEST_POINTS`] of them: fewer is a line, not a room, and\n[`Level::check`] turns it down — so the schema does too.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Point"
+          },
+          "minItems": 3
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "area",
+        "points"
+      ]
+    },
+    "PlacedDevice": {
+      "description": "A device put somewhere on the plan.\n\nThe device may not be in the home right now — unplugged, or its extension uninstalled — and\nthe entry stays anyway, as every other config entry does (`docs/specs/config.md` §4). It\nsimply isn't drawn until the device is back.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Point"
+        },
+        "device": {
+          "$ref": "#/$defs/DeviceId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "device",
+        "at"
+      ]
+    },
+    "Point": {
+      "description": "A point on the plan: [x, y] in centimetres.",
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "int32"
+      },
+      "maxItems": 2,
+      "minItems": 2
+    },
+    "Wall": {
+      "description": "A straight run of wall between two points.\n\nOpenings live **inside** the wall they are cut into rather than pointing at it by id. A door\nis a hole in a wall and has nowhere else to be, so this way a wall can't be deleted out from\nunder its own doors and no id has to be handed out to make the link.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/Point"
+        },
+        "openings": {
+          "description": "The doors and windows cut into it, in no particular order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Opening"
+          }
+        },
+        "thickness": {
+          "description": "How thick it is, in centimetres. Drawn, not structural: it only decides how heavy the\nline looks.\n\nAt least one: a wall with no thickness isn't drawable, and [`Level::check`] turns it\ndown — so the schema has to turn it down too, or a document could pass validation and\nstill be refused on load.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 10,
+          "minimum": 1
+        },
+        "to": {
+          "$ref": "#/$defs/Point"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to"
+      ]
+    }
+  }
+}

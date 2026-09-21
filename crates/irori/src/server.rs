@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use irori_core::{CallError, Command, Core, Event, ExtensionHost, ExtensionOverview};
 use irori_types::{
     Area, AreaId, ContextId, Description, Device, DeviceId, Entity, EntityId, EntityState,
-    ExtensionId, Floor, FloorId, LightTurnOn, Name, Origin, Placement, UserId,
+    ExtensionId, Floor, FloorId, Floorplan, LightTurnOn, Name, Origin, Placement, UserId,
 };
 use tokio::sync::broadcast;
 
@@ -97,6 +97,7 @@ pub fn router(state: AppState) -> Router {
             patch(edit_floor).delete(remove_floor),
         )
         .route("/api/dev/areas/{id}", patch(edit_area).delete(remove_area))
+        .route("/api/dev/floorplan", get(floorplan).put(save_floorplan))
         .route("/api/dev/devices/{id}", patch(edit_device))
         .route("/api/dev/entities/{id}", patch(edit_entity))
         .route("/api/dev/extensions/{id}/secrets", put(give_secret))
@@ -130,6 +131,10 @@ struct HomeView {
     /// Devices a person keeps out of the home, so they can be let back in.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     held: Vec<irori_core::HeldDevice>,
+    /// The home as it's drawn. Left out entirely while nobody has drawn one, which is most
+    /// homes: the Floorplan page then knows to offer a blank canvas rather than an empty plan.
+    #[serde(skip_serializing_if = "Floorplan::is_empty")]
+    floorplan: Floorplan,
 }
 
 async fn home(State(state): State<AppState>) -> Json<HomeView> {
@@ -142,6 +147,7 @@ async fn home(State(state): State<AppState>) -> Json<HomeView> {
         areas: core.areas(),
         floors: core.floors(),
         held: core.held_devices(),
+        floorplan: core.floorplan(),
     })
 }
 
@@ -294,6 +300,100 @@ async fn remove_area(State(state): State<AppState>, Path(id): Path<AreaId>) -> R
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => edit_failed(e),
     }
+}
+
+async fn floorplan(State(state): State<AppState>) -> Json<Floorplan> {
+    Json(state.0.core.floorplan())
+}
+
+/// Replaces the whole plan.
+///
+/// The whole thing at once, not a wall at a time: the editor holds a working copy while somebody
+/// draws and sends it when they press Save, so a half-finished room never reaches the file, and
+/// Cancel is simply not sending. It is also what makes the page's undo trivially correct — there
+/// is nothing on the server to undo.
+/// What saving a plan did beyond writing it down.
+#[derive(Debug, Serialize)]
+struct PlanSaved {
+    /// Devices the plan moved into the room they are standing in.
+    placed: usize,
+}
+
+async fn save_floorplan(State(state): State<AppState>, Json(plan): Json<Floorplan>) -> Response {
+    // Which devices the home has heard of, including the ones it is holding back. Read before
+    // the edit, because the edit only gets to see what the config directory says.
+    let known: std::collections::BTreeSet<DeviceId> = state
+        .0
+        .core
+        .devices()
+        .into_iter()
+        .map(|device| device.id)
+        .chain(state.0.core.held_devices().into_iter().map(|held| held.id))
+        .collect();
+    let saved = state
+        .0
+        .config
+        .edit(&state.0.core, |settings| {
+            plan.check().map_err(|why| Refused(why.to_string()))?;
+            settings.floorplan = plan.clone();
+            Ok(place_devices(settings, &known))
+        })
+        .await;
+    match saved {
+        Ok(placed) => Json(PlanSaved { placed }).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+/// Puts each device that was drawn inside a room into that room, and says how many moved.
+///
+/// Dragging a device onto the kitchen floor is a person saying where it is, so it may answer the
+/// question `devices.toml` asks — a plan that knew and didn't say would be a drawing rather than
+/// part of the home. Two things it must not do.
+///
+/// It must not overrule a **deliberate** "not in a room" (`area = false`,
+/// `docs/specs/config.md` §3.2). That answer exists precisely so that a guess — the device's own
+/// `suggested_area` — can't put it back, and a dot standing on a floor is another guess.
+///
+/// And it must not place a device into a room that isn't there: rooms are made in `areas.toml`,
+/// and a plan naming one that has since been deleted is kept rather than obeyed (§6).
+///
+/// `known` is every device the home has heard of, the ones it is holding back included. A plan
+/// can name a device that no longer exists — entries outlive what they point at (§4) — and
+/// writing a `devices.toml` entry for one would turn a stale drawing into a settings entry for a
+/// device nobody has. A device that already has an entry counts as known: something has been
+/// said about it, so there is nothing to invent.
+fn place_devices(
+    settings: &mut irori_types::Settings,
+    known: &std::collections::BTreeSet<DeviceId>,
+) -> usize {
+    let rooms: Vec<(DeviceId, AreaId)> = settings
+        .floorplan
+        .floors
+        .values()
+        .flat_map(|level| {
+            level.devices.iter().filter_map(|placed| {
+                if !known.contains(&placed.device) && !settings.devices.contains_key(&placed.device)
+                {
+                    return None;
+                }
+                let room = level.areas.iter().find(|area| area.contains(placed.at))?;
+                settings.area(&room.area)?;
+                Some((placed.device.clone(), room.area.clone()))
+            })
+        })
+        .collect();
+
+    let mut moved = 0;
+    for (device, room) in rooms {
+        let settings = settings.devices.entry(device).or_default();
+        if settings.area == Placement::Nowhere || settings.area == Placement::In(room.clone()) {
+            continue;
+        }
+        settings.area = Placement::In(room);
+        moved += 1;
+    }
+    moved
 }
 
 async fn floors(State(state): State<AppState>) -> Json<Vec<Floor>> {
@@ -1707,6 +1807,166 @@ mod tests {
             )
             .await?;
         assert_eq!(status, StatusCode::BAD_REQUEST, "`true` names no room");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A plan drawn on the Floorplan page lands in `floorplan.toml` and comes back with the
+    /// home, and one that couldn't be drawn is refused rather than written.
+    #[tokio::test]
+    async fn a_plan_is_saved_whole_and_a_door_has_to_fit_its_wall() -> anyhow::Result<()> {
+        // A real device, because part of what saving a plan does is put devices in the rooms
+        // they were drawn in.
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+
+        let home = server.read("/api/dev/home").await?;
+        assert!(
+            home.get("floorplan").is_none(),
+            "a home nobody has drawn sends no plan: {home}"
+        );
+
+        let plan = serde_json::json!({
+            "floors": {
+                "ground": {
+                    "walls": [{
+                        "from": [0, 0],
+                        "to": [400, 0],
+                        "thickness": 20,
+                        "openings": [{"kind": "door", "at": 200, "width": 80}],
+                    }],
+                    "areas": [{
+                        "area": "kitchen",
+                        "points": [[0, 0], [400, 0], [400, 300], [0, 300]],
+                    }],
+                    "devices": [{"device": "demo_lamp", "at": [120, 90]}],
+                },
+            },
+        });
+        let (status, body) = server
+            .json("PUT", "/api/dev/floorplan", plan.clone())
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["placed"], 0,
+            "there is no room called `kitchen` to put it in yet: {body}"
+        );
+
+        let written = std::fs::read_to_string(server.config_dir().join("floorplan.toml"))?;
+        assert!(written.contains("from = [0, 0]"), "{written}");
+        assert!(written.contains("kind = \"door\""), "{written}");
+        assert!(written.contains("area = \"kitchen\""), "{written}");
+        assert!(written.contains("device = \"demo_lamp\""), "{written}");
+
+        let home = server.read("/api/dev/home").await?;
+        assert_eq!(
+            home["floorplan"]["floors"]["ground"]["walls"][0]["to"][0], 400,
+            "{home}"
+        );
+        assert_eq!(server.read("/api/dev/floorplan").await?, plan);
+
+        // Make the room the lamp was drawn standing in, and saving the same plan again puts the
+        // lamp in it: dragging a device onto a floor is a person saying where it is.
+        server
+            .json(
+                "POST",
+                "/api/dev/areas",
+                serde_json::json!({"name": "Kitchen"}),
+            )
+            .await?;
+        let (_, body) = server
+            .json("PUT", "/api/dev/floorplan", plan.clone())
+            .await?;
+        assert_eq!(body["placed"], 1, "{body}");
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(devices.contains("area = \"kitchen\""), "{devices}");
+
+        // Saying so again moves nothing: it is where the plan says already.
+        let (_, body) = server
+            .json("PUT", "/api/dev/floorplan", plan.clone())
+            .await?;
+        assert_eq!(body["placed"], 0, "{body}");
+
+        // A device deliberately in no room stays in none. That answer exists so a guess can't
+        // overrule it, and a dot standing on a floor is a guess.
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"area": false}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (_, body) = server
+            .json("PUT", "/api/dev/floorplan", plan.clone())
+            .await?;
+        assert_eq!(body["placed"], 0, "{body}");
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(devices.contains("area = false"), "{devices}");
+        assert_eq!(
+            core.devices()
+                .iter()
+                .find(|device| device.id.as_ref() == "demo_lamp")
+                .and_then(|device| device.area_id.clone()),
+            None,
+            "and the core agrees"
+        );
+
+        // A plan naming a device the home has never heard of is kept and simply not drawn. It
+        // must not become a `devices.toml` entry for a device nobody has.
+        let (_, body) = server
+            .json(
+                "PUT",
+                "/api/dev/floorplan",
+                serde_json::json!({
+                    "floors": {
+                        "ground": {
+                            "areas": [{
+                                "area": "kitchen",
+                                "points": [[0, 0], [400, 0], [400, 300], [0, 300]],
+                            }],
+                            "devices": [{"device": "a_device_nobody_has", "at": [120, 90]}],
+                        },
+                    },
+                }),
+            )
+            .await?;
+        assert_eq!(body["placed"], 0, "{body}");
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(!devices.contains("a_device_nobody_has"), "{devices}");
+        // Put the drawn plan back, for what follows.
+        server
+            .json("PUT", "/api/dev/floorplan", plan.clone())
+            .await?;
+
+        // A door wider than the wall it's in would have to be drawn hanging off the end.
+        let (status, why) = server
+            .json(
+                "PUT",
+                "/api/dev/floorplan",
+                serde_json::json!({
+                    "floors": {
+                        "ground": {
+                            "walls": [{
+                                "from": [0, 0],
+                                "to": [100, 0],
+                                "openings": [{"kind": "door", "at": 50, "width": 300}],
+                            }],
+                        },
+                    },
+                }),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{why}");
+        assert!(
+            why["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("hangs off the end")),
+            "{why}"
+        );
+        // And the refused plan changed nothing: the drawn one is still there.
+        assert_eq!(server.read("/api/dev/floorplan").await?, plan);
 
         host.shutdown().await;
         Ok(())

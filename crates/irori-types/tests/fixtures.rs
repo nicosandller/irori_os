@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, bail, ensure};
 use irori_types::{
     Area, Device, DeviceDescription, Entity, EntityDescription, EntityState, ExtensionManifest,
-    Floor, ServiceCall, StateReport,
+    Floor, Floorplan, ServiceCall, StateReport,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -126,6 +126,11 @@ fn areas() -> anyhow::Result<()> {
 }
 
 #[test]
+fn floorplans() -> anyhow::Result<()> {
+    check::<Floorplan>("floorplan")
+}
+
+#[test]
 fn devices() -> anyhow::Result<()> {
     check::<Device>("device")
 }
@@ -192,6 +197,111 @@ fn manifest_warnings_name_ignored_contributions() -> anyhow::Result<()> {
     let terminal = terminal.map_err(anyhow::Error::msg)?;
     assert!(terminal.permissions.full_access());
     assert_eq!(terminal.integration_id(), None);
+    Ok(())
+}
+
+/// The plan's schema and the rules `Floorplan::check` enforces have to agree — and where they
+/// can't, the disagreement has to be deliberate and written down.
+///
+/// They are two statements of the same contract: one for editors and generators, one for the
+/// config reader. Where the schema is looser than the code, a document passes validation and is
+/// then refused on load, which is the worst of both. So every rule is listed here with whether
+/// the schema can express it, and the test checks both halves — that the code refuses it, and
+/// that the schema's answer is the one claimed. A rule that gains or loses a schema constraint
+/// fails here until this list is updated.
+///
+/// This lives in a test rather than in `fixtures/types/floorplan/invalid/` because that harness
+/// asks `serde` to do the refusing, and these documents are well-formed — it is
+/// [`irori_types::Floorplan::check`] that turns them down, not deserialization.
+#[test]
+fn the_plans_schema_refuses_what_the_plan_refuses() -> anyhow::Result<()> {
+    let doc = irori_types::schemas()
+        .into_iter()
+        .find(|doc| doc.name == "floorplan")
+        .context("no floorplan schema")?;
+    let validator = jsonschema::draft202012::new(doc.schema.as_value())
+        .map_err(|e| anyhow::anyhow!("the floorplan schema is not a valid JSON Schema: {e}"))?;
+
+    /// Whether JSON Schema can say this rule, or only Rust can.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Says {
+        Both,
+        /// The schema lets it through on purpose: the rule compares two fields, and JSON Schema
+        /// has no way to say "no wider than the wall it is in".
+        OnlyRust,
+    }
+
+    let floor = |level: serde_json::Value| serde_json::json!({"floors": {"ground": level}});
+    let cases = [
+        (
+            "a wall with no thickness",
+            Says::Both,
+            floor(serde_json::json!({"walls": [
+                {"from": [0, 0], "to": [400, 0], "thickness": 0}
+            ]})),
+        ),
+        (
+            "a door with no width",
+            Says::Both,
+            floor(serde_json::json!({"walls": [
+                {"from": [0, 0], "to": [400, 0],
+                 "openings": [{"kind": "door", "at": 200, "width": 0}]}
+            ]})),
+        ),
+        (
+            "a room with two corners",
+            Says::Both,
+            floor(serde_json::json!({"areas": [
+                {"area": "kitchen", "points": [[0, 0], [400, 0]]}
+            ]})),
+        ),
+        (
+            "a wall that starts and ends in the same place",
+            Says::OnlyRust,
+            floor(serde_json::json!({"walls": [{"from": [7, 7], "to": [7, 7]}]})),
+        ),
+        (
+            "a door hanging off the end of its wall",
+            Says::OnlyRust,
+            floor(serde_json::json!({"walls": [
+                {"from": [0, 0], "to": [100, 0],
+                 "openings": [{"kind": "door", "at": 90, "width": 80}]}
+            ]})),
+        ),
+        (
+            "the same device drawn on two floors",
+            Says::OnlyRust,
+            serde_json::json!({"floors": {
+                "ground": {"devices": [{"device": "demo_lamp", "at": [0, 0]}]},
+                "upstairs": {"devices": [{"device": "demo_lamp", "at": [0, 0]}]}
+            }}),
+        ),
+        (
+            "the same room drawn twice on one floor",
+            Says::OnlyRust,
+            floor(serde_json::json!({"areas": [
+                {"area": "kitchen", "points": [[0, 0], [400, 0], [400, 300]]},
+                {"area": "kitchen", "points": [[0, 0], [400, 0], [400, 300]]}
+            ]})),
+        ),
+    ];
+
+    for (what, says, document) in cases {
+        let plan: irori_types::Floorplan = serde_json::from_value(document.clone())
+            .with_context(|| format!("{what}: it is well-formed, only wrong"))?;
+        ensure!(plan.check().is_err(), "{what}: the plan accepted it");
+        match says {
+            Says::Both => ensure!(
+                !validator.is_valid(&document),
+                "{what}: the schema accepts what the plan refuses. If JSON Schema really can't \
+                 say this rule, move the case to `Says::OnlyRust` and say why"
+            ),
+            Says::OnlyRust => ensure!(
+                validator.is_valid(&document),
+                "{what}: the schema now catches this too — move the case to `Says::Both`"
+            ),
+        }
+    }
     Ok(())
 }
 

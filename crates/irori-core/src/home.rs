@@ -143,6 +143,10 @@ impl Home {
         &self.settings.floors
     }
 
+    pub fn floorplan(&self) -> &irori_types::Floorplan {
+        &self.settings.floorplan
+    }
+
     pub fn settings(&self) -> &Settings {
         &self.settings
     }
@@ -2081,6 +2085,7 @@ mod tests {
             ask_before_adding: false,
             floors: Vec::new(),
             areas: vec![area("study", "Study")],
+            floorplan: irori_types::Floorplan::default(),
             devices: [(
                 key("lamp"),
                 irori_types::DeviceSettings {

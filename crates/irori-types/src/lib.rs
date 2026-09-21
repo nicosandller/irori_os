@@ -12,6 +12,7 @@ mod id;
 
 mod context;
 mod extension;
+mod floorplan;
 mod integration;
 mod kind;
 mod num;
@@ -27,6 +28,9 @@ pub use extension::{
     ApiScope, Contributions, CoreRequirement, ExtensionInfo, ExtensionManifest, HostPath,
     IntegrationContribution, IotClass, NetworkHost, PackagePath, Permissions, ReservedContribution,
     RunCommand, SerialPath, Version,
+};
+pub use floorplan::{
+    Floorplan, Level, Opening, OpeningKind, PlacedArea, PlacedDevice, PlanError, Point, Wall,
 };
 pub use id::{
     AreaId, AttributeKey, ContextId, Description, DeviceId, EntityId, ExtensionId, FloorId,

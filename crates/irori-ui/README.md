@@ -41,6 +41,7 @@ cd crates/irori-ui && trunk serve --open # the page on 8080, API proxied to 8480
 
 | | |
 |---|---|
+| **Floorplan** (`/floorplan`) | The home as a drawing, a floor at a time, with the devices live on it: a lamp that's on glows, and clicking one switches it. A picker on the right says which floor, and the floor below shows faintly while you draw so an upstairs can be lined up with what holds it up. **Edit** (top right) puts a toolbar over the same canvas — walls, doors, windows, rooms, devices — and becomes **Save** and **Cancel**. Whatever is picked up gets a panel for the numbers that can't be dragged: a wall's thickness, an opening's width. Points land on a 10 cm grid, or on a step of your own; the grid drawn under the plan **is** that step, with heavier lines every metre, so what you see is where a point can go. Rooms are traced with corners that prefer the walls to the grid, and a device drawn standing in a room is put in that room in Settings when the plan is saved. Undo and redo (⌘Z, ⇧⌘Z) go back a move at a time. The canvas is the whole view; scroll to zoom, drag the empty plan to move around. |
 | **Start** (`/`) | What IroriOS is: the wordmark the terminal prints when `irori serve` runs, and how many devices, entities and extensions it is looking after. |
 | **Devices** (`/devices`) | Two ways to read the same home, remembered per browser: **Entities** groups everything by the device it came from, with switches; **Devices** is a row per device — what brought it in, make, model, battery, how many entities, and which area it's in. **Add device** explains where devices come from — every installed integration, what it's for, and what it can provide — because nothing is typed in by hand yet. |
 | **A device** (`/devices/<id>`) | One device: which integration brought it in, what that integration knows it as (the MAC address, for ESPHome), make, model, firmware, hardware, battery, what it's reached through, and every entity it provides with its controls. Its name, description and area are yours to decide. |
@@ -63,10 +64,24 @@ file, and the app decides what to show.
 - Filters by entity name, entity id, device name, area or make.
 - Makes the areas and floors of the home in **Settings**: name them, put them on floors, and a
   device's own page is where it's placed.
+- Draws the home in **Floorplan**, a floor at a time: walls in runs that snap to the corners
+  already there (right-click or Escape ends a run), doors and windows cut into those walls, the
+  rooms of the home traced out as shapes, and devices put where they are. Corners weld, so
+  dragging one keeps the room closed, and walls run on into each other far enough that a corner
+  is solid rather than notched. Floors and rooms are the ones Settings already knows about — the
+  plan gives them a shape rather than defining them, though a floor can be added from here as
+  well as from Settings. Everything is in whole centimetres and lands in
+  `config/floorplan.toml` when Save is pressed — the editor works on a copy until then, so
+  Cancel is simply never sending it, and undo goes back through that copy a move at a time.
+  Saving also writes `devices.toml` for any device drawn standing in a room, and says how many
+  it moved; a device deliberately in no room is left alone.
 - Lists the extensions behind it all, with their status and any reports they lost.
 
 **Not yet:** users and signing in, automations, history beyond a device's last 24 hours, and
-installing the firmware update whose version the device page shows (ROADMAP M1.8, D30). The page
+installing the firmware update whose version the device page shows (ROADMAP M1.8, D30). The
+floorplan is mouse-driven and has no furniture and no stairs between floors. Its corners are solid wherever
+two walls meet at any angle, and where three or more do at right angles; a junction of three
+walls one of which runs at an odd angle can still nick the outside of the corner. The page
 **polls** `/api/dev/home` every 2 seconds; the WebSocket API (M1.5) will push changes instead,
 and `src/api.rs` is what goes away then. The binary also serves these files **uncompressed**
 (see the budget below).
@@ -92,10 +107,10 @@ mobile reach that a page served by the core doesn't need. The spikes are in the 
 ## The size budget, and what a browser really downloads
 
 **Budget (ROADMAP §4.3):** under 500 KB brotli for the barebones UI. CI checks it on every pull
-request; the pages together compress to about 230 KB.
+request; the pages together compress to about 380 KB.
 
 That is the budget's unit, not yet what goes over the wire. `irori serve` hands these files out
-**as they are**, so a browser opening the page today downloads roughly **770 KB** — the wasm is
+**as they are**, so a browser opening the page today downloads roughly **1.3 MB** — the wasm is
 most of it. Serving precompressed assets with `Accept-Encoding` negotiation is part of the plan
-(ROADMAP §2.2) and hasn't been done; until it is, read the 230 KB as "this fits, with room", not
+(ROADMAP §2.2) and hasn't been done; until it is, read the 380 KB as "this fits, with room", not
 as the transfer. On a LAN the difference is a fraction of a second; over a slow link it isn't.

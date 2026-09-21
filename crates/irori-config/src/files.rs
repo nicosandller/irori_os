@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use irori_types::{
     Area, AreaId, Description, DeviceId, DeviceSettings, EntitySettings, ExtensionId,
-    ExtensionSettings, Floor, FloorId, Name, Placement, Settings, SettingsKey,
+    ExtensionSettings, Floor, FloorId, Floorplan, Name, Placement, Settings, SettingsKey,
 };
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 pub enum File {
     Irori,
     Areas,
+    Floorplan,
     Devices,
     Entities,
     Secrets,
@@ -25,21 +26,23 @@ pub enum File {
 
 impl File {
     /// Every file, in the order they're read.
-    pub const ALL: [File; 5] = [
+    pub const ALL: [File; 6] = [
         File::Irori,
         File::Areas,
+        File::Floorplan,
         File::Devices,
         File::Entities,
         File::Secrets,
     ];
 
     /// The files that make up [`Settings`], which are saved together.
-    pub const SETTINGS: [File; 3] = [File::Areas, File::Devices, File::Entities];
+    pub const SETTINGS: [File; 4] = [File::Areas, File::Floorplan, File::Devices, File::Entities];
 
     pub fn name(self) -> &'static str {
         match self {
             File::Irori => "irori.toml",
             File::Areas => "areas.toml",
+            File::Floorplan => "floorplan.toml",
             File::Devices => "devices.toml",
             File::Entities => "entities.toml",
             File::Secrets => "secrets.toml",
@@ -148,6 +151,18 @@ struct EntitiesFile {
 struct RawEntity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<Name>,
+}
+
+/// The plan in `floorplan.toml`: the shape of the home, as somebody drew it.
+///
+/// The file is the type — walls with their openings inside them, and placed devices — so there
+/// is no separate TOML shape to keep in step, unlike the files whose ids are table keys. The one
+/// rule beyond parsing is [`Floorplan::check`]: a hand-edited plan is held to what the editor
+/// would have refused to draw.
+pub fn read_floorplan(text: &str) -> Result<Floorplan, String> {
+    let plan: Floorplan = toml::from_str(text).map_err(|e| e.to_string())?;
+    plan.check().map_err(|e| e.to_string())?;
+    Ok(plan)
 }
 
 /// The floors and rooms in `areas.toml`, each ordered by id.
@@ -399,6 +414,10 @@ pub fn write(file: File, settings: &Settings) -> String {
                 })
                 .collect(),
         }),
+        // Not `to_string_pretty`, which puts every number of a coordinate on its own line: a
+        // plan is nothing but coordinates, and `from = [0, 0]` is the point of writing it in
+        // whole centimetres in the first place.
+        File::Floorplan => toml::to_string(&settings.floorplan),
         File::Secrets => unreachable!("secrets are written by `write_secrets`"),
         File::Irori => unreachable!("irori.toml is only ever read"),
         File::Entities => toml::to_string_pretty(&EntitiesFile {
@@ -425,6 +444,16 @@ pub fn write(file: File, settings: &Settings) -> String {
 fn preamble(file: File) -> String {
     let what = match file {
         File::Areas => "The floors and rooms of your home.",
+        File::Floorplan => {
+            "The plan of your home, a floor at a time: the walls, the doors and windows in\n\
+             # them, the rooms traced out, and where your devices sit. Floor and room ids are\n\
+             # the ones in areas.toml.\n\
+             #\n\
+             # Every measurement is in whole centimetres, and a point is written `[x, y]` —\n\
+             # x rightwards, y downwards. A door's `at` is how far along its wall the middle\n\
+             # of it is, measured from the wall's `from` end. A room's `points` are its\n\
+             # corners in order; the last joins back to the first."
+        }
         File::Devices => {
             "What you've said about your devices: what each is called, what it's for, and which\n\
              # room it's in. Each key is the device's id, the same one its page and the API use."
@@ -446,6 +475,8 @@ fn preamble(file: File) -> String {
 
 #[cfg(test)]
 mod tests {
+    use irori_types::{Opening, OpeningKind, PlacedDevice, Point, Wall};
+
     use super::*;
 
     fn key(s: &str) -> SettingsKey {
@@ -602,6 +633,7 @@ mod tests {
                 name: name("Hall"),
                 floor_id: Some("ground".parse().expect("valid")),
             }],
+            floorplan: a_plan(),
             devices: [(
                 "esphome_34_98_7a_2b_09_00"
                     .parse::<DeviceId>()
@@ -636,6 +668,109 @@ mod tests {
             read_entities(&write(File::Entities, &settings)).expect("valid"),
             settings.entities
         );
+        assert_eq!(
+            read_floorplan(&write(File::Floorplan, &settings)).expect("valid"),
+            settings.floorplan
+        );
+    }
+
+    /// Two floors: a wall with a door in it, a wall without, a room traced out, and a device
+    /// standing in it.
+    fn a_plan() -> Floorplan {
+        let mut front = Wall::new(Point::new(0, 0), Point::new(400, 0));
+        front.openings.push(Opening {
+            kind: OpeningKind::Door,
+            at: 200,
+            width: 80,
+        });
+        let ground = irori_types::Level {
+            walls: vec![front, Wall::new(Point::new(400, 0), Point::new(400, 300))],
+            areas: vec![irori_types::PlacedArea {
+                area: "kitchen".parse().expect("valid"),
+                points: vec![
+                    Point::new(0, 0),
+                    Point::new(400, 0),
+                    Point::new(400, 300),
+                    Point::new(0, 300),
+                ],
+            }],
+            devices: vec![PlacedDevice {
+                device: "demo_lamp".parse().expect("valid"),
+                at: Point::new(120, 90),
+            }],
+        };
+        let upstairs = irori_types::Level {
+            walls: vec![Wall::new(Point::new(0, 0), Point::new(400, 0))],
+            ..Default::default()
+        };
+        Floorplan {
+            floors: [
+                ("ground".parse().expect("valid"), ground),
+                ("upstairs".parse().expect("valid"), upstairs),
+            ]
+            .into(),
+        }
+    }
+
+    /// The plan is the one file whose *written* shape is worth pinning down: it is the type
+    /// serialized straight out, so a change to the type changes the file, and a person editing
+    /// their home by hand has to be able to read it.
+    #[test]
+    fn a_plan_is_written_in_centimetres_a_person_can_read() {
+        let settings = Settings {
+            floorplan: a_plan(),
+            ..Settings::default()
+        };
+        let written = write(File::Floorplan, &settings);
+        for line in [
+            "[[floors.ground.walls]]",
+            "from = [0, 0]",
+            "to = [400, 0]",
+            "thickness = 10",
+            "[[floors.ground.walls.openings]]",
+            "kind = \"door\"",
+            "at = 200",
+            "width = 80",
+            "[[floors.ground.areas]]",
+            "area = \"kitchen\"",
+            "points = [[0, 0], [400, 0], [400, 300], [0, 300]]",
+            "[[floors.ground.devices]]",
+            "device = \"demo_lamp\"",
+            "at = [120, 90]",
+            "[[floors.upstairs.walls]]",
+        ] {
+            assert!(written.contains(line), "expected {line:?} in:\n{written}");
+        }
+    }
+
+    /// A plan nobody has drawn is an empty file rather than an absent one, the same as every
+    /// other settings file: the heading explains what would go in it.
+    #[test]
+    fn a_plan_nobody_has_drawn_writes_only_its_heading() {
+        let written = write(File::Floorplan, &Settings::default());
+        assert!(
+            written
+                .lines()
+                .all(|line| line.trim().is_empty() || line.starts_with('#')),
+            "{written}"
+        );
+        assert_eq!(
+            read_floorplan(&written).expect("valid"),
+            Floorplan::default()
+        );
+    }
+
+    /// Hand-edited plans are held to the same rules the editor is, so a door that hangs off the
+    /// end of its wall is a rejected file rather than something the page has to survive drawing.
+    #[test]
+    fn a_plan_whose_door_does_not_fit_its_wall_is_refused() {
+        let error = read_floorplan(
+            "[[floors.ground.walls]]\nfrom = [0, 0]\nto = [100, 0]\n\n\
+             [[floors.ground.walls.openings]]\nkind = \"door\"\nat = 90\nwidth = 80\n",
+        )
+        .expect_err("a door hanging off the end");
+        assert!(error.contains("hangs off the end"), "{error}");
+        assert!(error.contains("ground"), "and which floor it's on: {error}");
     }
 
     /// An entry left with nothing in it is the shape a rename-then-undo leaves behind. Writing

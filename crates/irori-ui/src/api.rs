@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use gloo_net::http::Request;
 use irori_types::{
-    Area, AreaId, Device, DeviceId, Entity, EntityId, EntityState, ExtensionId, FloorId,
+    Area, AreaId, Device, DeviceId, Entity, EntityId, EntityState, ExtensionId, FloorId, Floorplan,
     LightTurnOn, Name, Waiting,
 };
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,9 @@ pub struct Home {
     /// The levels of the home, lowest first.
     #[serde(default)]
     pub floors: Vec<irori_types::Floor>,
+    /// The home as it's drawn. Absent until somebody draws it, which is the same as blank.
+    #[serde(default)]
+    pub floorplan: Floorplan,
 }
 
 /// A device kept out of the home: enough to recognise it and let it in.
@@ -440,6 +443,35 @@ pub async fn remove_floor(id: &irori_types::FloorId) -> Result<(), String> {
         .await
         .map_err(unreachable)?;
     checked(response).await
+}
+
+/// What saving a plan did beyond writing it down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct PlanSaved {
+    /// Devices the plan moved into the room they were drawn standing in.
+    #[serde(default)]
+    pub placed: usize,
+}
+
+/// Saves the plan of the home, whole. The editor keeps a working copy while somebody draws, so
+/// this is only ever sent by Save — and Cancel is simply never sending it.
+pub async fn save_floorplan(plan: &Floorplan) -> Result<PlanSaved, String> {
+    let response = Request::put("/api/dev/floorplan")
+        .json(plan)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        return match checked(response).await {
+            Err(why) => Err(why),
+            Ok(()) => Err("Irori refused that without a reason".into()),
+        };
+    }
+    response
+        .json()
+        .await
+        .map_err(|e| format!("Irori sent something this page can't read: {e}"))
 }
 
 pub async fn remove_area(id: &AreaId) -> Result<(), String> {

@@ -19,8 +19,17 @@ gloo-timers = { version = "0.3.0", features = ["futures"] }
 leptos = { version = "0.8.20", features = ["csr"] }
 leptos_router = { version = "0.8.15", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
-# Only for remembering which way the device list was last shown.
-web-sys = { version = "0.3", features = ["Storage", "DragEvent", "DataTransfer"] }
+# Remembering which way the device list was last shown, dragging devices into areas, and —
+# for the Floorplan — measuring the canvas, which is what turns a pointer into a place on the
+# plan.
+web-sys = { version = "0.3", features = [
+    "Storage",
+    "DragEvent",
+    "DataTransfer",
+    "DomRect",
+    "Element",
+    "WheelEvent",
+] }
 
 [profile.release]
 # Download size is the budget that matters here (ROADMAP §4.3).

@@ -1,0 +1,1 @@
+invalid device id "demo lamp": may only contain lowercase letters a-z, digits, and `_`

@@ -21,7 +21,7 @@ use std::time::SystemTime;
 
 use irori_types::{
     Area, AreaId, DeviceId, DeviceSettings, EntitySettings, ExtensionId, ExtensionSettings, Floor,
-    FloorId, Settings, SettingsKey,
+    FloorId, Floorplan, Settings, SettingsKey,
 };
 
 pub use files::{
@@ -73,6 +73,7 @@ pub struct Store {
     dir: PathBuf,
     irori: Part<IroriSettings>,
     areas: Part<(Vec<Floor>, Vec<Area>)>,
+    floorplan: Part<Floorplan>,
     devices: Part<BTreeMap<DeviceId, DeviceSettings>>,
     entities: Part<BTreeMap<SettingsKey, EntitySettings>>,
     secrets: Part<ExtensionSettings>,
@@ -93,6 +94,7 @@ impl Store {
             dir: dir.into(),
             irori: Part::default(),
             areas: Part::default(),
+            floorplan: Part::default(),
             devices: Part::default(),
             entities: Part::default(),
             secrets: Part::default(),
@@ -115,6 +117,7 @@ impl Store {
         Settings {
             floors: self.areas.value.0.clone(),
             areas: self.areas.value.1.clone(),
+            floorplan: self.floorplan.value.clone(),
             devices: self.devices.value.clone(),
             entities: self.entities.value.clone(),
             ask_before_adding: self.irori.value.devices.new == NewDevices::Ask,
@@ -343,6 +346,7 @@ impl Store {
         match file {
             File::Irori => self.irori.value = files::read_irori(&text)?,
             File::Areas => self.areas.value = files::read_areas(&text)?,
+            File::Floorplan => self.floorplan.value = files::read_floorplan(&text)?,
             File::Devices => self.devices.value = files::read_devices(&text)?,
             File::Entities => self.entities.value = files::read_entities(&text)?,
             File::Secrets => self.secrets.value = files::read_secrets(&text)?,
@@ -357,6 +361,7 @@ impl Store {
         match file {
             File::Irori => self.irori.seen.as_ref(),
             File::Areas => self.areas.seen.as_ref(),
+            File::Floorplan => self.floorplan.seen.as_ref(),
             File::Devices => self.devices.seen.as_ref(),
             File::Entities => self.entities.seen.as_ref(),
             File::Secrets => self.secrets.seen.as_ref(),
@@ -367,6 +372,7 @@ impl Store {
         match file {
             File::Irori => &mut self.irori.seen,
             File::Areas => &mut self.areas.seen,
+            File::Floorplan => &mut self.floorplan.seen,
             File::Devices => &mut self.devices.seen,
             File::Entities => &mut self.entities.seen,
             File::Secrets => &mut self.secrets.seen,
@@ -428,6 +434,7 @@ impl Store {
             written.push(*file);
         }
         self.areas.value = (settings.floors.clone(), settings.areas.clone());
+        self.floorplan.value = settings.floorplan.clone();
         self.devices.value = settings.devices.clone();
         self.entities.value = settings.entities.clone();
         // The files on disk are now these settings, so the next reload must not treat Irori's
@@ -593,6 +600,7 @@ mod tests {
             ask_before_adding: false,
             floors: Vec::new(),
             areas: vec![area("hall", "Hall")],
+            floorplan: irori_types::Floorplan::default(),
             devices: [(device("demo_lamp"), named("Reading lamp"))].into(),
             entities: BTreeMap::new(),
         };
@@ -619,7 +627,7 @@ mod tests {
 
         assert_eq!(
             store.save(&settings).expect("saved"),
-            [File::Areas, File::Devices, File::Entities]
+            [File::Areas, File::Floorplan, File::Devices, File::Entities]
         );
         assert_eq!(store.save(&settings).expect("saved"), Vec::<File>::new());
     }
@@ -732,6 +740,7 @@ mod tests {
             ask_before_adding: false,
             floors: Vec::new(),
             areas: vec![area("kitchen", "Kitchen")],
+            floorplan: irori_types::Floorplan::default(),
             devices: [(device("demo_lamp"), named("Reading lamp"))].into(),
             entities: [(
                 key("demo/lamp-light"),
@@ -860,7 +869,15 @@ mod tests {
             .filter_map(|entry| Some(entry.ok()?.file_name().to_string_lossy().into_owned()))
             .collect();
         left.sort();
-        assert_eq!(left, ["areas.toml", "devices.toml", "entities.toml"]);
+        assert_eq!(
+            left,
+            [
+                "areas.toml",
+                "devices.toml",
+                "entities.toml",
+                "floorplan.toml"
+            ]
+        );
     }
 
     /// An extension's settings come from its own file joined with its secrets; editing the file
@@ -914,11 +931,14 @@ mod tests {
 
     /// A listing error is not "the directory is empty": last-good helper definitions must stay,
     /// or a permission blip would restart the extension with nothing.
-    #[cfg(unix)]
+    ///
+    /// The directory is replaced by an ordinary file rather than made unreadable, which is the
+    /// other way `read_dir` fails with something that isn't `NotFound` — the branch under test.
+    /// Taking the read permission away would be the more obvious setup and doesn't work
+    /// everywhere: **root ignores permission bits**, so that version of this test passes on a
+    /// laptop and fails in a container, where tests run as root (`dev/pi check`).
     #[test]
-    fn an_unreadable_extensions_dir_keeps_the_last_good_settings() {
-        use std::os::unix::fs::PermissionsExt as _;
-
+    fn an_unlistable_extensions_dir_keeps_the_last_good_settings() {
         let home = dir();
         let helpers: ExtensionId = "helpers".parse().expect("valid");
         let mut store = Store::new(home.path());
@@ -930,17 +950,8 @@ mod tests {
         store.save_extension(&helpers, &file).expect("saved");
 
         let dir = home.path().join("extensions");
-        let original = std::fs::metadata(&dir).expect("listed").permissions();
-        let mut locked = original.clone();
-        locked.set_mode(0o000);
-        std::fs::set_permissions(&dir, locked).expect("locked");
-        struct Unlock<'a>(&'a std::path::Path, std::fs::Permissions);
-        impl Drop for Unlock<'_> {
-            fn drop(&mut self) {
-                let _ = std::fs::set_permissions(self.0, self.1.clone());
-            }
-        }
-        let _unlock = Unlock(&dir, original);
+        std::fs::remove_dir_all(&dir).expect("removed");
+        std::fs::write(&dir, "not a directory").expect("written");
 
         let problems = store.reload();
         assert_eq!(problems.len(), 1, "{problems:?}");
