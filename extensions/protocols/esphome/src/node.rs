@@ -1,8 +1,8 @@
 //! One task per ESPHome device: connect, learn what it has, stream its state, carry out
 //! commands, and reconnect when it drops.
 //!
-//! The task never touches the core directly. It sends [`Event`]s to the integration's run loop,
-//! which owns the [`IntegrationContext`], because that context can't be shared (it holds the
+//! The task never touches the core directly. It sends [`Event`]s to the protocol's run loop,
+//! which owns the [`ProtocolContext`], because that context can't be shared (it holds the
 //! receiving end of the call queue).
 
 use std::collections::{HashMap, VecDeque};
@@ -15,11 +15,11 @@ use esphome_client::types::{
     EspHomeMessage, LightCommandRequest, ListEntitiesRequest, PingResponse, SubscribeStatesRequest,
     SwitchCommandRequest,
 };
-use irori_integration::types::{
+use irori_protocol::types::{
     Capabilities, ContextId, DeviceDescription, EntityDescription, LightCapabilities, Service,
     StateReport, UniqueId,
 };
-use irori_integration::{IncomingCall, ServiceError};
+use irori_protocol::{IncomingCall, ServiceError};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
@@ -73,7 +73,7 @@ pub enum Event {
     /// there's nothing to show yet.
     Unreachable { connection: Connection, why: String },
     /// The device refused the encryption key it was given. The task has stopped, because trying
-    /// again with the same key can't go differently; new settings restart the integration.
+    /// again with the same key can't go differently; new settings restart the protocol.
     Locked { connection: Connection, why: String },
 }
 
@@ -97,7 +97,7 @@ const PING_AFTER: Duration = Duration::from_secs(30);
 /// entity is the result; after this long it's a change that happened on its own.
 const CAUSED_BY_WINDOW: Duration = Duration::from_secs(10);
 
-/// Runs one device until the integration stops (its command channel closes), or until it turns
+/// Runs one device until the protocol stops (its command channel closes), or until it turns
 /// out to be locked. `key` is its encryption key, for a device that announced it wants one.
 pub async fn run(
     connection: Connection,
@@ -127,7 +127,7 @@ pub async fn run(
         )
         .await;
         match ended {
-            // The run loop dropped our command channel: the integration is stopping.
+            // The run loop dropped our command channel: the protocol is stopping.
             Ok(Ended::Stopping) => break,
             Ok(Ended::Locked(why)) => {
                 // A device that was here and has since been reflashed with a key is away now,
@@ -165,14 +165,14 @@ pub async fn run(
             retry = FIRST_RETRY;
         }
         // Wait to retry. Commands that arrive meanwhile are refused rather than dropped:
-        // dropping one reaches the caller as "the integration dropped the call" instead of the
+        // dropping one reaches the caller as "the protocol dropped the call" instead of the
         // plain truth, which is that the device isn't there.
         let until = Instant::now() + retry;
         loop {
             tokio::select! {
                 () = tokio::time::sleep_until(until) => break,
                 call = calls.recv() => match call {
-                    // The integration is stopping, or this connection has been replaced.
+                    // The protocol is stopping, or this connection has been replaced.
                     None => return refuse_pending(&mut calls, address).await,
                     Some(incoming) => {
                         let why = format!("{address} isn't connected right now");
@@ -187,7 +187,7 @@ pub async fn run(
 }
 
 /// Answers whatever is still queued on the way out. A command that is simply dropped reaches
-/// its caller as "the integration dropped the call", which says nothing; this says what
+/// its caller as "the protocol dropped the call", which says nothing; this says what
 /// happened. Called wherever this task stops: shutdown, or another connection taking over.
 async fn refuse_pending(calls: &mut mpsc::Receiver<IncomingCall>, address: SocketAddr) {
     calls.close();
@@ -199,7 +199,7 @@ async fn refuse_pending(calls: &mut mpsc::Receiver<IncomingCall>, address: Socke
 
 /// Why a session ended.
 enum Ended {
-    /// The integration is stopping; don't reconnect.
+    /// The protocol is stopping; don't reconnect.
     Stopping,
     /// The device went away, with the reason to show.
     Disconnected(String),
@@ -614,8 +614,8 @@ async fn command(
 
 #[cfg(test)]
 mod tests {
-    use irori_integration::host::incoming_call;
-    use irori_integration::types::{
+    use irori_protocol::host::incoming_call;
+    use irori_protocol::types::{
         Capabilities, ColorTempRange, Context, ContextId, LightTurnOn, Origin, ServiceCall, State,
         UniqueId, UserId,
     };
@@ -646,7 +646,7 @@ mod tests {
     /// no hardware. Announce it the way firmware would, then paste `KEY` into the page:
     ///
     /// ```sh
-    /// cargo test -p irori-int-esphome -- --ignored --nocapture an_encrypted_device_to_try
+    /// cargo test -p irori-protocol-esphome -- --ignored --nocapture an_encrypted_device_to_try
     /// dns-sd -P "Test lock" _esphomelib._tcp local <port> testlock.local 127.0.0.1 \
     ///     mac=aabbccddeeff friendly_name="Test lock" api_encryption=Noise_NNpsk0_25519_ChaChaPoly_SHA256
     /// ```
@@ -746,7 +746,7 @@ mod tests {
             lamp.unique_id,
             map::entity_id(
                 &device.unique_id,
-                irori_integration::types::EntityKind::Light,
+                irori_protocol::types::EntityKind::Light,
                 fake_device::LIGHT_KEY,
             )
             .expect("valid")
@@ -754,7 +754,7 @@ mod tests {
         // 153-500 mireds is 2000-6536 K, and a colour-temperature light dims.
         assert_eq!(
             lamp.capabilities,
-            Capabilities::Light(irori_integration::types::LightCapabilities {
+            Capabilities::Light(irori_protocol::types::LightCapabilities {
                 brightness: true,
                 color_temp_kelvin: Some(ColorTempRange {
                     min: 2000,
@@ -834,12 +834,12 @@ mod tests {
         drop(calls_tx);
         tokio::time::timeout(Duration::from_secs(5), task)
             .await
-            .expect("the task stops when the integration does")
+            .expect("the task stops when the protocol does")
             .expect("it stops without panicking");
     }
 
     /// A command for a device that isn't answering is refused with a reason. Dropping it would
-    /// reach the caller as "the integration dropped the call", which says nothing useful.
+    /// reach the caller as "the protocol dropped the call", which says nothing useful.
     #[tokio::test]
     async fn a_command_for_a_device_that_is_away_is_refused_not_dropped() {
         // Nothing listens on port 1, so the task stays in its retry loop.
@@ -863,12 +863,12 @@ mod tests {
         let Err(error) = answered else {
             panic!("a device that isn't there can't have done it");
         };
-        assert_eq!(error.code, irori_integration::ServiceErrorCode::Unavailable);
+        assert_eq!(error.code, irori_protocol::ServiceErrorCode::Unavailable);
 
         drop(calls_tx);
         tokio::time::timeout(Duration::from_secs(5), task)
             .await
-            .expect("the task stops when the integration does")
+            .expect("the task stops when the protocol does")
             .expect("it stops without panicking");
     }
 }

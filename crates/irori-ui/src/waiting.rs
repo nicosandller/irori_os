@@ -1,5 +1,5 @@
 //! What extensions have found but can't use until someone helps: a device that needs its
-//! encryption key, say (`docs/specs/integrations.md` §6.6).
+//! encryption key, say (`docs/specs/protocols.md` §6.6).
 //!
 //! Generic on purpose. An extension says what it's waiting for and where a secret goes; this
 //! page doesn't know what ESPHome is, and a future extension that needs a pairing code gets the
@@ -108,7 +108,7 @@ fn Item(extension: ExtensionId, through: String, item: Waiting) -> impl IntoView
 
     view! {
         <li>
-            <div class="integration-head">
+            <div class="protocol-head">
                 <span class="name">{item.name.to_string()}</span>
                 <span class="badge">{through}</span>
                 <span class="muted small id">{item.unique_id.to_string()}</span>

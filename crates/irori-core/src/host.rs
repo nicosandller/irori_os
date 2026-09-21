@@ -1,5 +1,5 @@
 //! The extension host: starts built-in extensions, feeds what they say into the core, and restarts
-//! them when they fail (`docs/specs/integrations.md` §3).
+//! them when they fail (`docs/specs/protocols.md` §3).
 
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use irori_integration::Builtin;
-use irori_integration::host::{HostEnd, Op, Reports, connect};
-use irori_integration::{ExtProcess, FromExt, IncomingCall, ToExt, spawn};
+use irori_protocol::Builtin;
+use irori_protocol::host::{HostEnd, Op, Reports, connect};
+use irori_protocol::{ExtProcess, FromExt, IncomingCall, ToExt, spawn};
 use std::collections::BTreeSet;
 
-use irori_types::{EntityKind, ExtensionId, ExtensionManifest, ExtensionSettings, IntegrationId};
+use irori_types::{EntityKind, ExtensionId, ExtensionManifest, ExtensionSettings, ProtocolId};
 use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
@@ -29,7 +29,7 @@ pub struct Timing {
     pub max_retry: Duration,
     /// Running this long resets the wait to `first_retry`.
     pub healthy_after: Duration,
-    /// How long an integration gets to finish after being told to stop.
+    /// How long an protocol gets to finish after being told to stop.
     pub stop_grace: Duration,
 }
 
@@ -198,8 +198,8 @@ impl ExtensionHost {
         if let Some(task) = task {
             let _ = task.await;
         }
-        let integration = IntegrationId::try_from(id.as_str()).map_err(|e| e.to_string())?;
-        self.inner.core.remove_integration(&integration);
+        let protocol = ProtocolId::try_from(id.as_str()).map_err(|e| e.to_string())?;
+        self.inner.core.remove_protocol(&protocol);
         self.inner.core.clear_extension_storage(id);
         self.inner.core.forget_extension(id);
         let dir = self.inner.packages_dir.join(id.as_str());
@@ -301,11 +301,11 @@ async fn supervise(
     for warning in manifest.warnings() {
         tracing::warn!(%extension, "{warning}");
     }
-    let (Some(integration), Some(contribution)) = (
-        manifest.integration_id(),
-        manifest.contributes.integration.first(),
+    let (Some(protocol), Some(contribution)) = (
+        manifest.protocol_id(),
+        manifest.contributes.protocol.first(),
     ) else {
-        // `irori_integration::builtin` only builds extensions with an integration.
+        // `irori_protocol::builtin` only builds extensions with an protocol.
         core.set_status(&extension, ExtensionStatus::Disabled);
         return;
     };
@@ -373,13 +373,13 @@ async fn supervise(
         // Only time spent actually running counts towards `healthy_after`; startup doesn't, and
         // a start that panics never ran at all.
         let mut running_since: Option<Instant> = None;
-        // `Integration::run` may do work before returning its future; a panic there is a crash
+        // `Protocol::run` may do work before returning its future; a panic there is a crash
         // like any other, not the end of supervision.
         let reason = match catch_unwind(AssertUnwindSafe(|| {
             builtin.start(started_with.clone(), ctx)
         })) {
             Ok(Ok(run)) => {
-                core.link(&integration, host_end.calls.clone());
+                core.link(&protocol, host_end.calls.clone());
                 let task = tokio::spawn(run);
                 running_since = Some(Instant::now());
                 core.set_status(&extension, ExtensionStatus::Running);
@@ -388,7 +388,7 @@ async fn supervise(
                 let outcome = pump(
                     &core,
                     &extension,
-                    &integration,
+                    &protocol,
                     &kinds,
                     host_end,
                     task,
@@ -401,8 +401,8 @@ async fn supervise(
                     timing,
                 )
                 .await;
-                core.unlink(&integration);
-                core.mark_unavailable(&integration);
+                core.unlink(&protocol);
+                core.mark_unavailable(&protocol);
                 core.set_waiting(&extension, Vec::new());
                 match outcome {
                     Outcome::Stopped => {
@@ -473,7 +473,7 @@ async fn supervise(
             }
             () = settings_changed(&mut settings, &extension, &started_with) => {
                 // New settings, not another crash: start again now, no backoff
-                // (`docs/specs/integrations.md` §3 step 6).
+                // (`docs/specs/protocols.md` §3 step 6).
                 tracing::info!(%extension, "settings changed; restarting extension");
                 delay = timing.first_retry;
                 continue;
@@ -496,15 +496,15 @@ struct Watching<'a> {
     started_with: &'a serde_json::Value,
 }
 
-/// Feeds the integration's operations and reports into the core until it ends or we stop it.
+/// Feeds the protocol's operations and reports into the core until it ends or we stop it.
 #[allow(clippy::too_many_arguments)]
 async fn pump(
     core: &Core,
     extension: &ExtensionId,
-    integration: &IntegrationId,
+    protocol: &ProtocolId,
     kinds: &[EntityKind],
     host_end: HostEnd,
-    mut task: JoinHandle<Result<(), irori_integration::IntegrationError>>,
+    mut task: JoinHandle<Result<(), irori_protocol::ProtocolError>>,
     watching: Watching<'_>,
     timing: Timing,
 ) -> Outcome {
@@ -518,7 +518,7 @@ async fn pump(
         mut ops,
         reports,
         calls,
-        stop: stop_integration,
+        stop: stop_protocol,
     } = host_end;
     // The core's link holds its own sender; this one isn't needed.
     drop(calls);
@@ -528,7 +528,7 @@ async fn pump(
             biased;
             _ = stop.wait_for(|stop| *stop) => break Outcome::Stopped,
             result = &mut task => {
-                drain(core, extension, integration, kinds, &mut ops, &reports);
+                drain(core, extension, protocol, kinds, &mut ops, &reports);
                 return Outcome::Ended(describe_end(result));
             }
             () = settings_changed(settings, extension, started_with) => {
@@ -537,12 +537,12 @@ async fn pump(
             Ok(_) = disabled.wait_for(|disabled| disabled.contains(extension)) => {
                 break Outcome::Disabled;
             }
-            () = serve(core, extension, integration, kinds, &mut ops, &reports) => {}
+            () = serve(core, extension, protocol, kinds, &mut ops, &reports) => {}
         }
     };
 
     // Told to stop: let it finish within the grace period, still serving what it says.
-    let _ = stop_integration.send(true);
+    let _ = stop_protocol.send(true);
     let grace = tokio::time::sleep(timing.stop_grace);
     tokio::pin!(grace);
     loop {
@@ -550,62 +550,55 @@ async fn pump(
             biased;
             _ = &mut task => {
                 // Whatever it said on its way out still counts.
-                drain(core, extension, integration, kinds, &mut ops, &reports);
+                drain(core, extension, protocol, kinds, &mut ops, &reports);
                 return why;
             }
             () = &mut grace => {
                 tracing::warn!(%extension, "extension didn't stop in time; cancelling it");
                 task.abort();
-                drain(core, extension, integration, kinds, &mut ops, &reports);
+                drain(core, extension, protocol, kinds, &mut ops, &reports);
                 return why;
             }
-            () = serve(core, extension, integration, kinds, &mut ops, &reports) => {}
+            () = serve(core, extension, protocol, kinds, &mut ops, &reports) => {}
         }
     }
 }
 
-/// Applies the next thing the integration says. Operations and state reports are taken in no
-/// fixed order, so an integration busy with one can't starve the other.
+/// Applies the next thing the protocol says. Operations and state reports are taken in no
+/// fixed order, so an protocol busy with one can't starve the other.
 async fn serve(
     core: &Core,
     extension: &ExtensionId,
-    integration: &IntegrationId,
+    protocol: &ProtocolId,
     kinds: &[EntityKind],
     ops: &mut mpsc::Receiver<Op>,
     reports: &Reports,
 ) {
     tokio::select! {
-        Some(op) = ops.recv() => core.apply_op(extension, integration, kinds, op),
+        Some(op) = ops.recv() => core.apply_op(extension, protocol, kinds, op),
         // `ready` takes nothing, so losing this race can't lose reports.
         () = reports.ready() => {
-            core.apply_reports(extension, integration, reports.drain(), reports.take_dropped());
+            core.apply_reports(extension, protocol, reports.drain(), reports.take_dropped());
         }
     }
 }
 
-/// Applies everything the integration said but the core hasn't read yet.
+/// Applies everything the protocol said but the core hasn't read yet.
 fn drain(
     core: &Core,
     extension: &ExtensionId,
-    integration: &IntegrationId,
+    protocol: &ProtocolId,
     kinds: &[EntityKind],
     ops: &mut mpsc::Receiver<Op>,
     reports: &Reports,
 ) {
     while let Ok(op) = ops.try_recv() {
-        core.apply_op(extension, integration, kinds, op);
+        core.apply_op(extension, protocol, kinds, op);
     }
-    core.apply_reports(
-        extension,
-        integration,
-        reports.drain(),
-        reports.take_dropped(),
-    );
+    core.apply_reports(extension, protocol, reports.drain(), reports.take_dropped());
 }
 
-fn describe_end(
-    result: Result<Result<(), irori_integration::IntegrationError>, JoinError>,
-) -> String {
+fn describe_end(result: Result<Result<(), irori_protocol::ProtocolError>, JoinError>) -> String {
     match result {
         Ok(Ok(())) => "stopped on its own without being asked to".into(),
         Ok(Err(error)) => error.to_string(),
@@ -648,7 +641,7 @@ fn installed_packages(dir: &Path) -> Result<Vec<PathBuf>, String> {
 fn read_package_manifest(dir: &Path) -> Result<ExtensionManifest, String> {
     let path = dir.join("irori-extension.toml");
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    irori_integration::parse_manifest(&text)
+    irori_protocol::parse_manifest(&text)
 }
 
 async fn supervise_package(
@@ -662,9 +655,9 @@ async fn supervise_package(
     for warning in manifest.warnings() {
         tracing::warn!(%extension, "{warning}");
     }
-    let (Some(integration), Some(contribution)) = (
-        manifest.integration_id(),
-        manifest.contributes.integration.first(),
+    let (Some(protocol), Some(contribution)) = (
+        manifest.protocol_id(),
+        manifest.contributes.protocol.first(),
     ) else {
         core.set_status(&extension, crate::ExtensionStatus::Disabled);
         return;
@@ -784,13 +777,13 @@ async fn supervise_package(
         }
 
         let (calls_tx, calls_rx) = mpsc::channel(64);
-        core.link(&integration, calls_tx);
+        core.link(&protocol, calls_tx);
         core.set_status(&extension, crate::ExtensionStatus::Running);
         tracing::info!(%extension, "extension started");
         let outcome = pump_process(
             &core,
             &extension,
-            &integration,
+            &protocol,
             &kinds,
             &mut child,
             calls_rx,
@@ -803,8 +796,8 @@ async fn supervise_package(
             timing,
         )
         .await;
-        core.unlink(&integration);
-        core.mark_unavailable(&integration);
+        core.unlink(&protocol);
+        core.mark_unavailable(&protocol);
         core.set_waiting(&extension, Vec::new());
         let _ = child.send(&ToExt::Stop).await;
         let _ = child.child.start_kill();
@@ -858,7 +851,7 @@ async fn supervise_package(
 async fn pump_process(
     core: &Core,
     extension: &ExtensionId,
-    integration: &IntegrationId,
+    protocol: &ProtocolId,
     kinds: &[EntityKind],
     proc: &mut ExtProcess,
     mut calls: mpsc::Receiver<IncomingCall>,
@@ -913,7 +906,7 @@ async fn pump_process(
                 match msg {
                     Ok(from) => {
                         if let Err(reason) = apply_from_ext(
-                            core, extension, integration, kinds, stdin, from, &mut pending_calls,
+                            core, extension, protocol, kinds, stdin, from, &mut pending_calls,
                         ).await {
                             return Outcome::Ended(reason);
                         }
@@ -942,7 +935,7 @@ async fn pump_process(
             msg = ExtProcess::recv_on(stdout) => {
                 if let Ok(from) = msg {
                     let _ = apply_from_ext(
-                        core, extension, integration, kinds, stdin, from, &mut pending_calls,
+                        core, extension, protocol, kinds, stdin, from, &mut pending_calls,
                     ).await;
                 }
             }
@@ -953,7 +946,7 @@ async fn pump_process(
 async fn apply_from_ext(
     core: &Core,
     extension: &ExtensionId,
-    integration: &IntegrationId,
+    protocol: &ProtocolId,
     kinds: &[EntityKind],
     stdin: &mut tokio::process::ChildStdin,
     from: FromExt,
@@ -975,7 +968,7 @@ async fn apply_from_ext(
             let (reply, rx) = oneshot::channel();
             core.apply_op(
                 extension,
-                integration,
+                protocol,
                 kinds,
                 Op::DescribeDevice(device, reply),
             );
@@ -985,7 +978,7 @@ async fn apply_from_ext(
             let (reply, rx) = oneshot::channel();
             core.apply_op(
                 extension,
-                integration,
+                protocol,
                 kinds,
                 Op::DescribeEntity(entity, reply),
             );
@@ -995,7 +988,7 @@ async fn apply_from_ext(
             let (reply, rx) = oneshot::channel();
             core.apply_op(
                 extension,
-                integration,
+                protocol,
                 kinds,
                 Op::RemoveDevice(unique_id, reply),
             );
@@ -1005,7 +998,7 @@ async fn apply_from_ext(
             let (reply, rx) = oneshot::channel();
             core.apply_op(
                 extension,
-                integration,
+                protocol,
                 kinds,
                 Op::RemoveEntity(unique_id, reply),
             );
@@ -1019,24 +1012,24 @@ async fn apply_from_ext(
             let (reply, rx) = oneshot::channel();
             core.apply_op(
                 extension,
-                integration,
+                protocol,
                 kinds,
                 Op::SetAvailability(target, availability, reply),
             );
             send_reply(stdin, reply_id, rx).await
         }
         FromExt::SetHealth { health } => {
-            core.apply_op(extension, integration, kinds, Op::SetHealth(health));
+            core.apply_op(extension, protocol, kinds, Op::SetHealth(health));
             Ok(())
         }
         FromExt::SetWaiting { waiting } => {
-            core.apply_op(extension, integration, kinds, Op::SetWaiting(waiting));
+            core.apply_op(extension, protocol, kinds, Op::SetWaiting(waiting));
             Ok(())
         }
         FromExt::Load { key, .. } => {
             let (reply, rx) = oneshot::channel();
-            core.apply_op(extension, integration, kinds, Op::Load(key, reply));
-            let result = rx.await.unwrap_or(Err(irori_integration::Rejected(
+            core.apply_op(extension, protocol, kinds, Op::Load(key, reply));
+            let result = rx.await.unwrap_or(Err(irori_protocol::Rejected(
                 "the core is shutting down".into(),
             )));
             let (value, error) = match result {
@@ -1055,11 +1048,11 @@ async fn apply_from_ext(
         }
         FromExt::Store { key, value, .. } => {
             let (reply, rx) = oneshot::channel();
-            core.apply_op(extension, integration, kinds, Op::Store(key, value, reply));
+            core.apply_op(extension, protocol, kinds, Op::Store(key, value, reply));
             send_reply(stdin, reply_id, rx).await
         }
         FromExt::StateReport { report } => {
-            core.apply_reports(extension, integration, vec![report], 0);
+            core.apply_reports(extension, protocol, vec![report], 0);
             Ok(())
         }
         FromExt::ServiceResult { id, error } => {
@@ -1077,7 +1070,7 @@ async fn apply_from_ext(
 async fn send_reply(
     stdin: &mut tokio::process::ChildStdin,
     id: Option<u64>,
-    rx: tokio::sync::oneshot::Receiver<Result<(), irori_integration::Rejected>>,
+    rx: tokio::sync::oneshot::Receiver<Result<(), irori_protocol::Rejected>>,
 ) -> Result<(), String> {
     let error = match rx.await {
         Ok(Ok(())) => None,

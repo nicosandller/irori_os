@@ -1,6 +1,6 @@
-//! What the ESPHome integration can be told: encryption keys, by device.
+//! What the ESPHome protocol can be told: encryption keys, by device.
 //!
-//! Kept in `secrets.toml`, in the integration's own table (`docs/specs/config.md` §3.4):
+//! Kept in `secrets.toml`, in the protocol's own table (`docs/specs/config.md` §3.4):
 //!
 //! ```toml
 //! [esphome.keys]
@@ -18,7 +18,7 @@ use base64::Engine as _;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer};
 
-/// The integration's settings.
+/// The protocol's settings.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
@@ -53,7 +53,7 @@ fn keys_by_mac<'de, D: Deserializer<'de>>(
 /// A key as it was given: usable, or why not.
 ///
 /// A key that isn't a key is that device's problem and nobody else's. Refusing the whole table
-/// would fail the integration and disconnect every device it runs — all over one mistyped paste.
+/// would fail the protocol and disconnect every device it runs — all over one mistyped paste.
 /// So a bad key is kept as the reason its device is still waiting, and everything else carries on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GivenKey(pub Result<Key, String>);

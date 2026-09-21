@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{ContextId, ExtensionId, IntegrationId, TokenId, UserId};
+use crate::{ContextId, ExtensionId, ProtocolId, TokenId, UserId};
 
 /// Why something happened. Every state change and service call carries one, so any change can
 /// be traced back to its cause (`docs/specs/entities.md` §6).
@@ -19,8 +19,8 @@ pub struct Context {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Origin {
-    /// Reported by a device through an integration, e.g. someone pressed a physical switch.
-    Device { integration: IntegrationId },
+    /// Reported by a device through an protocol, e.g. someone pressed a physical switch.
+    Device { protocol: ProtocolId },
     /// A person, through the UI or CLI.
     User { user_id: UserId },
     /// An automation engine run (any installed engine, not a core scheduler).

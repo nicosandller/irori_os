@@ -9,24 +9,24 @@
 //! initial = false          # what it is before anyone has switched it; optional
 //! ```
 //!
-//! Each toggle is a `switch.<id>` entity with no device. Its value is kept in the integration's
-//! own storage (`docs/specs/integrations.md` §5), so it survives Irori restarting — and this
-//! integration restarting, which is how a new or removed toggle arrives.
+//! Each toggle is a `switch.<id>` entity with no device. Its value is kept in the protocol's
+//! own storage (`docs/specs/protocols.md` §5), so it survives Irori restarting — and this
+//! protocol restarting, which is how a new or removed toggle arrives.
 //!
 //! Only toggles so far. Numbers, text and timers need entity kinds Irori doesn't have yet, and
 //! they come with rules (ROADMAP M1.4), which are what helpers are for.
 
 use std::collections::BTreeMap;
 
-use irori_integration::types::{
+use irori_protocol::types::{
     Capabilities, EntityDescription, Name, ObjectId, Service, State, StateReport,
     SwitchCapabilities, SwitchState, UniqueId,
 };
-use irori_integration::{Integration, IntegrationContext, IntegrationError, ServiceError};
+use irori_protocol::{Protocol, ProtocolContext, ProtocolError, ServiceError};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-/// The helpers integration.
+/// The helpers protocol.
 #[derive(Debug)]
 pub struct Helpers;
 
@@ -48,21 +48,21 @@ pub struct Toggle {
     pub initial: bool,
 }
 
-impl Integration for Helpers {
+impl Protocol for Helpers {
     type Config = Settings;
     const MANIFEST: &'static str = include_str!("../irori-extension.toml");
     const ICON: Option<&'static str> = Some(include_str!("../icon.svg"));
 
-    async fn run(settings: Settings, ctx: IntegrationContext) -> Result<(), IntegrationError> {
+    async fn run(settings: Settings, ctx: ProtocolContext) -> Result<(), ProtocolError> {
         run(settings, ctx).await
     }
 }
 
-/// Where the list of entities this integration last described is kept, so one whose toggle has
+/// Where the list of entities this protocol last described is kept, so one whose toggle has
 /// been deleted from the file can be removed rather than left behind.
 const DESCRIBED: &str = "described";
 
-fn unique_id(toggle: &ObjectId) -> Result<UniqueId, IntegrationError> {
+fn unique_id(toggle: &ObjectId) -> Result<UniqueId, ProtocolError> {
     Ok(UniqueId::try_from(format!("toggle-{toggle}"))?)
 }
 
@@ -70,7 +70,7 @@ fn value_key(toggle: &ObjectId) -> String {
     format!("toggle.{toggle}")
 }
 
-async fn run(settings: Settings, mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
+async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
     // What was here last time and isn't now goes.
     let before: Vec<String> = ctx
         .load(DESCRIBED)
@@ -146,7 +146,7 @@ async fn run(settings: Settings, mut ctx: IntegrationContext) -> Result<(), Inte
 fn report(
     unique_id: UniqueId,
     on: bool,
-    caused_by: Option<irori_integration::types::ContextId>,
+    caused_by: Option<irori_protocol::types::ContextId>,
 ) -> StateReport {
     StateReport {
         unique_id,

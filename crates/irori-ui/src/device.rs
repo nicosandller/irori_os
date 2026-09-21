@@ -2,7 +2,7 @@
 //! that are yours to decide — what to call it and which area it's in.
 //!
 //! The list pages answer "what's going on"; this one answers "what is this thing" — which
-//! integration brought it in, what it calls itself, what firmware it's running, and which
+//! protocol brought it in, what it calls itself, what firmware it's running, and which
 //! entities belong to it.
 
 use irori_types::{
@@ -377,11 +377,11 @@ fn page(
             }}
             <dl>
                 // One id, the same one as in this page's address and in the config files. It's
-                // made from the integration and its permanent handle, so it never changes.
+                // made from the protocol and its permanent handle, so it never changes.
                 <dt>"ID"</dt>
                 <dd>{device.id.to_string()}</dd>
                 <dt>"Through"</dt>
-                <dd>{device.integration.to_string()}</dd>
+                <dd>{device.protocol.to_string()}</dd>
                 <dt>"Area"</dt>
                 // The area is a reading until "Edit" is open, when it becomes the picker: the
                 // page says where a device is without offering to move it by mistake.
@@ -819,7 +819,7 @@ mod tests {
     fn device() -> Device {
         Device {
             id: "radar".parse().expect("a valid device id"),
-            integration: "esphome".parse().expect("a valid integration id"),
+            protocol: "esphome".parse().expect("a valid protocol id"),
             unique_id: "00:11:22:33:44:55".parse().expect("a valid unique id"),
             name: "Radar".parse().expect("a valid name"),
             description: None,
@@ -838,7 +838,7 @@ mod tests {
             id: "binary_sensor.radar_moving"
                 .parse()
                 .expect("a valid entity id"),
-            integration: "esphome".parse().expect("a valid integration id"),
+            protocol: "esphome".parse().expect("a valid protocol id"),
             unique_id: "00:11:22:33:44:55-moving"
                 .parse()
                 .expect("a valid unique id"),
@@ -928,7 +928,7 @@ mod tests {
     fn history_readings_use_the_rows_words() {
         let sensor = Entity {
             id: "sensor.water_temp".parse().expect("a valid entity id"),
-            integration: "radar".parse().expect("a valid integration id"),
+            protocol: "radar".parse().expect("a valid protocol id"),
             unique_id: "00:11:22:33:44:55-temp".parse().expect("a valid unique id"),
             name: "Water temperature".parse().expect("a valid name"),
             device_id: Some("radar".parse().expect("a valid device id")),

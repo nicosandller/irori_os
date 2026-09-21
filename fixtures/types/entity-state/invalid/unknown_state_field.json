@@ -13,7 +13,7 @@
     "id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
     "origin": {
       "type": "device",
-      "integration": "mqtt"
+      "protocol": "mqtt"
     }
   }
 }

@@ -170,10 +170,10 @@ slug_id!(
     "device id"
 );
 slug_id!(
-    /// Identifies an integration, e.g. `mqtt`. Equals the id of the extension that contributes
+    /// Identifies an protocol, e.g. `mqtt`. Equals the id of the extension that contributes
     /// it (ROADMAP D25).
-    IntegrationId,
-    "integration id"
+    ProtocolId,
+    "protocol id"
 );
 slug_id!(
     /// Identifies an extension, e.g. `esphome`. See `docs/specs/extensions.md`.
@@ -331,8 +331,8 @@ impl JsonSchema for ContextId {
     }
 }
 
-/// The stable identifier an integration gives a device or entity, e.g. a Zigbee IEEE address.
-/// Unique within that integration; 1–255 characters, no control characters.
+/// The stable identifier an protocol gives a device or entity, e.g. a Zigbee IEEE address.
+/// Unique within that protocol; 1–255 characters, no control characters.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct UniqueId(String);
@@ -361,7 +361,7 @@ impl JsonSchema for UniqueId {
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
             "type": "string",
-            "description": "Stable id assigned by the integration (e.g. a Zigbee IEEE address). Unique within the integration.",
+            "description": "Stable id assigned by the protocol (e.g. a Zigbee IEEE address). Unique within the protocol.",
             "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$",
             "minLength": 1,
             "maxLength": 255,

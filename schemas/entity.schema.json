@@ -32,14 +32,14 @@
       "description": "`<kind>.<object_id>`. Its kind must match `capabilities.kind`.",
       "$ref": "#/$defs/EntityId"
     },
-    "integration": {
-      "$ref": "#/$defs/IntegrationId"
-    },
     "name": {
       "$ref": "#/$defs/Name"
     },
+    "protocol": {
+      "$ref": "#/$defs/ProtocolId"
+    },
     "unique_id": {
-      "description": "The integration's stable id for this entity. Survives renames of `id`.",
+      "description": "The protocol's stable id for this entity. Survives renames of `id`.",
       "$ref": "#/$defs/UniqueId"
     }
   },
@@ -140,7 +140,7 @@
   ],
   "required": [
     "id",
-    "integration",
+    "protocol",
     "unique_id",
     "name",
     "capabilities"
@@ -353,19 +353,19 @@
         }
       ]
     },
-    "IntegrationId": {
-      "description": "Format of a slug (integration id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
-      "type": "string",
-      "maxLength": 64,
-      "minLength": 1,
-      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
-    },
     "Name": {
       "description": "A human-readable name. 1-100 characters, no leading or trailing whitespace.",
       "type": "string",
       "maxLength": 100,
       "minLength": 1,
       "pattern": "^[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F]([^\\u0000-\\u001F\\u007F-\\u009F]*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F])?$"
+    },
+    "ProtocolId": {
+      "description": "Format of a slug (protocol id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
     "SensorClass": {
       "type": "string",
@@ -419,7 +419,7 @@
       ]
     },
     "UniqueId": {
-      "description": "Stable id assigned by the integration (e.g. a Zigbee IEEE address). Unique within the integration.",
+      "description": "Stable id assigned by the protocol (e.g. a Zigbee IEEE address). Unique within the protocol.",
       "type": "string",
       "maxLength": 255,
       "minLength": 1,

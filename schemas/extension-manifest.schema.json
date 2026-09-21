@@ -40,7 +40,7 @@
           "const": "events:read"
         },
         {
-          "description": "Call services on any entity, e.g. turn on a light another integration provides.",
+          "description": "Call services on any entity, e.g. turn on a light another protocol provides.",
           "type": "string",
           "const": "services:call"
         }
@@ -82,11 +82,11 @@
             "additionalProperties": true
           }
         },
-        "integration": {
+        "protocol": {
           "description": "At most one per extension in this version (ROADMAP D25).",
           "type": "array",
           "items": {
-            "$ref": "#/$defs/IntegrationContribution"
+            "$ref": "#/$defs/ProtocolContribution"
           },
           "maxItems": 1
         }
@@ -168,7 +168,7 @@
           ]
         },
         "icon": {
-          "description": "A square SVG, relative to the package root, shown beside the extension and its devices so\nthey can be told apart at a glance. Always displayed as an image, never inlined into a\npage, so it can't run script. A built-in extension embeds the file as well\n(`Integration::ICON`).",
+          "description": "A square SVG, relative to the package root, shown beside the extension and its devices so\nthey can be told apart at a glance. Always displayed as an image, never inlined into a\npage, so it can't run script. A built-in extension embeds the file as well\n(`Protocol::ICON`).",
           "anyOf": [
             {
               "$ref": "#/$defs/PackagePath"
@@ -179,7 +179,7 @@
           ]
         },
         "id": {
-          "description": "Also the id of the integration it contributes, if any (ROADMAP D25).",
+          "description": "Also the id of the protocol it contributes, if any (ROADMAP D25).",
           "$ref": "#/$defs/ExtensionId"
         },
         "irori": {
@@ -207,43 +207,8 @@
       "maxLength": 255,
       "pattern": "^((\\$CONFIG|\\$DATA)(/[A-Za-z0-9_][A-Za-z0-9._-]*)*|/|(/[A-Za-z0-9_][A-Za-z0-9._-]*)+)$"
     },
-    "IntegrationContribution": {
-      "description": "A `[[contributes.integration]]` entry: the extension brings in devices and entities.",
-      "type": "object",
-      "properties": {
-        "entity_kinds": {
-          "description": "The kinds of entity it creates. It must handle the standard services of each kind.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/EntityKind"
-          },
-          "minItems": 1,
-          "uniqueItems": true
-        },
-        "iot_class": {
-          "description": "Where its devices live and how it hears about changes. Shown as a badge.",
-          "$ref": "#/$defs/IotClass"
-        },
-        "run": {
-          "description": "How to start it, for external extensions. Built-in extensions leave this out.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RunCommand"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "iot_class",
-        "entity_kinds"
-      ]
-    },
     "IotClass": {
-      "description": "Where an integration's devices live and how it learns about changes (ROADMAP D24).",
+      "description": "Where an protocol's devices live and how it learns about changes (ROADMAP D24).",
       "oneOf": [
         {
           "description": "On the local network; devices report changes as they happen.",
@@ -298,7 +263,7 @@
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9._-]*(/[A-Za-z0-9_][A-Za-z0-9._-]*)*$"
     },
     "Permissions": {
-      "description": "The `[permissions]` table (ROADMAP D23). Everything defaults to \"no access\".\n\nAn integration never needs a permission to manage its own devices and entities or to\nreceive service calls for them; these cover reaching anything beyond that.",
+      "description": "The `[permissions]` table (ROADMAP D23). Everything defaults to \"no access\".\n\nAn protocol never needs a permission to manage its own devices and entities or to\nreceive service calls for them; these cover reaching anything beyond that.",
       "type": "object",
       "properties": {
         "api": {
@@ -343,6 +308,41 @@
         }
       },
       "additionalProperties": false
+    },
+    "ProtocolContribution": {
+      "description": "A `[[contributes.protocol]]` entry: the extension brings in devices and entities.",
+      "type": "object",
+      "properties": {
+        "entity_kinds": {
+          "description": "The kinds of entity it creates. It must handle the standard services of each kind.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityKind"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "iot_class": {
+          "description": "Where its devices live and how it hears about changes. Shown as a badge.",
+          "$ref": "#/$defs/IotClass"
+        },
+        "run": {
+          "description": "How to start it, for external extensions. Built-in extensions leave this out.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunCommand"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "iot_class",
+        "entity_kinds"
+      ]
     },
     "RunCommand": {
       "description": "How the core starts an external extension's process.",

@@ -571,7 +571,7 @@
       ]
     },
     "EventName": {
-      "description": "Slug, or `integration.event` (one dot).",
+      "description": "Slug, or `protocol.event` (one dot).",
       "type": "string"
     },
     "ExprString": {

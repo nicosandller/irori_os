@@ -1,6 +1,6 @@
 {
   "id": "esphome_34_98_7a_2b_09_00",
-  "integration": "esphome",
+  "protocol": "esphome",
   "unique_id": "34:98:7a:2b:09:00",
   "name": "Hallway radar",
   "description": "By the front door, facing the stairs",

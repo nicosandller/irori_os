@@ -1,6 +1,6 @@
 //! The plan of the home: its walls, the openings in them, and where the devices sit.
 //!
-//! This is drawing, not discovery. No integration can tell Irori where a wall is, so a floorplan
+//! This is drawing, not discovery. No protocol can tell Irori where a wall is, so a floorplan
 //! is authored intent through and through and lives in the config directory with the rest of it
 //! (`docs/specs/config.md` §3.7).
 

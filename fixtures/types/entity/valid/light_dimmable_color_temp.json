@@ -1,6 +1,6 @@
 {
   "id": "light.hallway",
-  "integration": "mqtt",
+  "protocol": "mqtt",
   "unique_id": "0x00158d0002c3d4e5_light",
   "name": "Hallway ceiling",
   "device_id": "hallway_ceiling_bulb",

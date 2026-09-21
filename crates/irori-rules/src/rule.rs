@@ -994,7 +994,7 @@ pub enum SunEvent {
     Midnight,
 }
 
-/// Slug, or `integration.event` (one dot).
+/// Slug, or `protocol.event` (one dot).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct EventName(String);
 
@@ -1021,7 +1021,7 @@ fn parse_event_name(text: &str) -> Result<(), InvariantError> {
         Some((left, right)) => {
             if right.contains('.') {
                 return Err(inv(format!(
-                    "invalid event name {text:?}: at most one dot (`integration.event`)"
+                    "invalid event name {text:?}: at most one dot (`protocol.event`)"
                 )));
             }
             left.parse::<ObjectId>().map_err(|e| inv(e.to_string()))?;

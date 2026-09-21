@@ -1,11 +1,11 @@
 //! Enforces the dependency rules from ROADMAP §2.1 over `cargo metadata`:
 //!
-//! - `irori-core` and `irori-rules` have no integration implementation (`irori-int-*`), no AI
-//!   crate, and no protocol library anywhere in their (non-dev) dependency tree. The integration
-//!   SDK (`irori-integration`) is allowed: the core hosts integrations through its trait. Because
+//! - `irori-core` and `irori-rules` have no protocol implementation (`irori-protocol-*`), no AI
+//!   crate, and no protocol library anywhere in their (non-dev) dependency tree. The protocol
+//!   SDK (`irori-protocol`) is allowed: the core hosts protocols through its trait. Because
 //!   the check is transitive, the SDK can't bring in a protocol library either.
-//! - Crates may only depend on the workspace crates their layer allows (e.g. integrations
-//!   depend only on `irori-types` and `irori-integration`).
+//! - Crates may only depend on the workspace crates their layer allows (e.g. protocols
+//!   depend only on `irori-types` and `irori-protocol`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
@@ -17,11 +17,11 @@ use serde::Deserialize;
 const PROTOCOL_FREE: &[&str] = &["irori-core", "irori-rules"];
 
 /// Never allowed in a protocol-free crate's tree. Prefix match with a trailing `*`.
-/// `irori-integration` (the SDK, not an integration) is deliberately absent.
+/// `irori-protocol` (the SDK, not an protocol) is deliberately absent.
 const BANNED_IN_PROTOCOL_FREE: &[&str] = &[
-    "irori-int-*",
+    "irori-protocol-*",
     "irori-assist",
-    // Protocol libraries belong in integrations.
+    // Protocol libraries belong in protocols.
     "rumqttc",
     "rumqttd",
     "paho-mqtt",
@@ -34,10 +34,10 @@ const BANNED_IN_PROTOCOL_FREE: &[&str] = &[
 /// Crates not listed here are unrestricted.
 const ALLOWED_WORKSPACE_DEPS: &[(&str, &[&str])] = &[
     ("irori-types", &[]),
-    ("irori-integration", &["irori-types"]),
+    ("irori-protocol", &["irori-types"]),
     ("irori-rules", &["irori-types"]),
     ("irori-client", &["irori-types"]),
-    ("irori-int-*", &["irori-types", "irori-integration"]),
+    ("irori-protocol-*", &["irori-types", "irori-protocol"]),
     ("irori-assist", &["irori-types", "irori-client"]),
 ];
 
@@ -268,15 +268,15 @@ mod tests {
             &[
                 "irori-core",
                 "irori-types",
-                "irori-integration",
-                "irori-int-mqtt",
+                "irori-protocol",
+                "irori-protocol-mqtt",
             ],
             &[
                 ("irori-core", "irori-types"),
-                ("irori-core", "irori-integration"),
-                ("irori-integration", "irori-types"),
-                ("irori-int-mqtt", "irori-integration"),
-                ("irori-int-mqtt", "rumqttc"),
+                ("irori-core", "irori-protocol"),
+                ("irori-protocol", "irori-types"),
+                ("irori-protocol-mqtt", "irori-protocol"),
+                ("irori-protocol-mqtt", "rumqttc"),
             ],
         );
         assert_eq!(check(&g), Vec::<String>::new());
@@ -285,39 +285,37 @@ mod tests {
     #[test]
     fn transitive_protocol_dependency_in_core_is_reported_with_path() {
         let g = graph(
-            &["irori-core", "irori-integration"],
+            &["irori-core", "irori-protocol"],
             &[
-                ("irori-core", "irori-integration"),
-                ("irori-integration", "some-helper"),
+                ("irori-core", "irori-protocol"),
+                ("irori-protocol", "some-helper"),
                 ("some-helper", "rumqttc"),
             ],
         );
         let violations = check(&g);
         assert_eq!(violations.len(), 1, "{violations:?}");
-        assert!(
-            violations[0].contains("irori-core -> irori-integration -> some-helper -> rumqttc")
-        );
+        assert!(violations[0].contains("irori-core -> irori-protocol -> some-helper -> rumqttc"));
     }
 
     #[test]
-    fn integration_depending_on_core_is_reported() {
+    fn protocol_depending_on_core_is_reported() {
         let g = graph(
-            &["irori-int-demo", "irori-core"],
-            &[("irori-int-demo", "irori-core")],
+            &["irori-protocol-demo", "irori-core"],
+            &[("irori-protocol-demo", "irori-core")],
         );
         let violations = check(&g);
         assert_eq!(violations.len(), 1, "{violations:?}");
-        assert!(violations[0].contains("`irori-int-demo`"));
+        assert!(violations[0].contains("`irori-protocol-demo`"));
     }
 
     #[test]
     fn versions_of_the_same_crate_are_not_merged() {
         // Core reaches helper v1; only helper v2 (used elsewhere) depends on rumqttc.
         let g = graph(
-            &["irori-core", "irori-int-mqtt"],
+            &["irori-core", "irori-protocol-mqtt"],
             &[
                 ("irori-core", "helper@1"),
-                ("irori-int-mqtt", "helper@2"),
+                ("irori-protocol-mqtt", "helper@2"),
                 ("helper@2", "rumqttc"),
             ],
         );

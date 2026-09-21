@@ -3,7 +3,7 @@ resolver = "3"
 members = [
     "crates/irori-types",
     "crates/irori-core",
-    "crates/irori-integration",
+    "crates/irori-protocol",
     "crates/irori-rules",
     "crates/irori-recorder",
     "crates/irori-config",
@@ -34,16 +34,16 @@ repository = "https://github.com/nicosandller/irori_os"
 # Internal crates
 irori-types = { path = "crates/irori-types" }
 irori-core = { path = "crates/irori-core" }
-irori-integration = { path = "crates/irori-integration" }
+irori-protocol = { path = "crates/irori-protocol" }
 irori-rules = { path = "crates/irori-rules" }
 irori-recorder = { path = "crates/irori-recorder" }
 irori-config = { path = "crates/irori-config" }
 irori-api = { path = "crates/irori-api" }
 irori-client = { path = "crates/irori-client" }
-irori-int-mqtt = { path = "extensions/protocols/mqtt" }
-irori-int-demo = { path = "extensions/demo" }
-irori-int-esphome = { path = "extensions/protocols/esphome" }
-irori-int-helpers = { path = "extensions/helpers" }
+irori-protocol-mqtt = { path = "extensions/protocols/mqtt" }
+irori-protocol-demo = { path = "extensions/demo" }
+irori-protocol-esphome = { path = "extensions/protocols/esphome" }
+irori-protocol-helpers = { path = "extensions/helpers" }
 irori-assist = { path = "extras/irori-assist" }
 
 # External crates
@@ -92,8 +92,8 @@ todo = "warn"
 unwrap_used = "warn"
 
 [profile.release]
-# Size and speed both matter (ROADMAP §4.3). Keep unwinding: the integration host
-# relies on catching panics to isolate a crashing integration (M1.1).
+# Size and speed both matter (ROADMAP §4.3). Keep unwinding: the protocol host
+# relies on catching panics to isolate a crashing protocol (M1.1).
 lto = "fat"
 codegen-units = 1
 strip = true

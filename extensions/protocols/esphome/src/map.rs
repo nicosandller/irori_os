@@ -10,8 +10,8 @@ use esphome_client::types::{
     ListEntitiesBinarySensorResponse, ListEntitiesLightResponse, ListEntitiesSensorResponse,
     ListEntitiesSwitchResponse, SensorStateResponse, SwitchStateResponse,
 };
-use irori_integration::IntegrationError;
-use irori_integration::types::{
+use irori_protocol::ProtocolError;
+use irori_protocol::types::{
     BinarySensorCapabilities, BinarySensorClass, BinarySensorState, Capabilities, ColorMode,
     ColorTempRange, DeviceDescription, EntityDescription, EntityKind, LightCapabilities,
     LightState, Name, SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType,
@@ -51,14 +51,14 @@ mod color_mode {
 
 /// How the device is identified to Irori: its MAC address, or its node name when a device
 /// doesn't report one (the `host` platform on a machine without a MAC, for instance).
-pub fn device_id(info: &DeviceInfoResponse) -> Result<UniqueId, IntegrationError> {
+pub fn device_id(info: &DeviceInfoResponse) -> Result<UniqueId, ProtocolError> {
     let id = if info.mac_address.is_empty() {
         &info.name
     } else {
         &info.mac_address
     };
     if id.is_empty() {
-        return Err(IntegrationError::new(
+        return Err(ProtocolError::new(
             "the device reported neither a MAC address nor a name, so there's nothing stable to \
              identify it by",
         ));
@@ -73,17 +73,13 @@ pub fn device_id(info: &DeviceInfoResponse) -> Result<UniqueId, IntegrationError
 /// entity is not allowed to change kind (`docs/specs/entities.md` §4), so the core would refuse
 /// the new one and the entity would vanish. With the kind in the id they are simply two
 /// different entities, and the old one is removed as any disappeared entity is.
-pub fn entity_id(
-    device: &UniqueId,
-    kind: EntityKind,
-    key: u32,
-) -> Result<UniqueId, IntegrationError> {
+pub fn entity_id(device: &UniqueId, kind: EntityKind, key: u32) -> Result<UniqueId, ProtocolError> {
     Ok(UniqueId::try_from(format!("{device}-{kind}-{key}"))?)
 }
 
-pub fn device(info: &DeviceInfoResponse) -> Result<DeviceDescription, IntegrationError> {
+pub fn device(info: &DeviceInfoResponse) -> Result<DeviceDescription, ProtocolError> {
     let name = first_non_empty(&[&info.friendly_name, &info.name])
-        .ok_or_else(|| IntegrationError::new("the device reported no name"))?;
+        .ok_or_else(|| ProtocolError::new("the device reported no name"))?;
     Ok(DeviceDescription {
         unique_id: device_id(info)?,
         name: Name::try_from(name)?,
@@ -101,7 +97,7 @@ pub fn device(info: &DeviceInfoResponse) -> Result<DeviceDescription, Integratio
 pub fn light(
     device: &UniqueId,
     entity: &ListEntitiesLightResponse,
-) -> Result<EntityDescription, IntegrationError> {
+) -> Result<EntityDescription, ProtocolError> {
     let modes = &entity.supported_color_modes;
     let color_temp = modes.iter().any(|m| color_mode::has_color_temp(*m));
     Ok(EntityDescription {
@@ -123,7 +119,7 @@ pub fn light(
 pub fn switch(
     device: &UniqueId,
     entity: &ListEntitiesSwitchResponse,
-) -> Result<EntityDescription, IntegrationError> {
+) -> Result<EntityDescription, ProtocolError> {
     Ok(EntityDescription {
         unique_id: entity_id(device, EntityKind::Switch, entity.key)?,
         name: Some(Name::try_from(entity.name.as_str())?),
@@ -142,7 +138,7 @@ pub fn switch(
 pub fn sensor(
     device: &UniqueId,
     entity: &ListEntitiesSensorResponse,
-) -> Result<EntityDescription, IntegrationError> {
+) -> Result<EntityDescription, ProtocolError> {
     Ok(EntityDescription {
         unique_id: entity_id(device, EntityKind::Sensor, entity.key)?,
         name: Some(Name::try_from(entity.name.as_str())?),
@@ -167,7 +163,7 @@ pub fn sensor(
 pub fn binary_sensor(
     device: &UniqueId,
     entity: &ListEntitiesBinarySensorResponse,
-) -> Result<EntityDescription, IntegrationError> {
+) -> Result<EntityDescription, ProtocolError> {
     Ok(EntityDescription {
         unique_id: entity_id(device, EntityKind::BinarySensor, entity.key)?,
         name: Some(Name::try_from(entity.name.as_str())?),

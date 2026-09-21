@@ -25,7 +25,7 @@ pub fn run() -> anyhow::Result<()> {
         ));
     }
 
-    // D17 used to list compiled-in integrations. Official extensions are packages now, so
+    // D17 used to list compiled-in protocols. Official extensions are packages now, so
     // default features must not include `int-*`, and D17 must not claim they are compiled in.
     let d17 = roadmap
         .lines()

@@ -1,6 +1,6 @@
 {
   "id": "fan.bedroom",
-  "integration": "mqtt",
+  "protocol": "mqtt",
   "unique_id": "fan",
   "name": "Bedroom fan",
   "capabilities": {

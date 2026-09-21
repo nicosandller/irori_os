@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::num::{Num, whole};
 
 use crate::{
-    AreaId, Description, DeviceId, EntityId, EntityKind, FloorId, IntegrationId, InvariantError,
-    Name, UniqueId,
+    AreaId, Description, DeviceId, EntityId, EntityKind, FloorId, InvariantError, Name, ProtocolId,
+    UniqueId,
 };
 
 /// A level of the home, e.g. the ground floor.
@@ -32,20 +32,20 @@ pub struct Area {
     pub floor_id: Option<FloorId>,
 }
 
-/// A physical or virtual thing an integration talks to, e.g. a Zigbee motion sensor. A device
+/// A physical or virtual thing an protocol talks to, e.g. a Zigbee motion sensor. A device
 /// has one or more entities.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Device {
     /// The device's one id, everywhere: page addresses, config files, the API, rules. Made once
-    /// from the integration and its permanent handle for the device, never from a name, so it
+    /// from the protocol and its permanent handle for the device, never from a name, so it
     /// doesn't change when the device is renamed (ROADMAP D36).
     pub id: DeviceId,
-    /// The integration that provides this device.
-    pub integration: IntegrationId,
-    /// The integration's stable id for the device, e.g. the Zigbee IEEE address.
+    /// The protocol that provides this device.
+    pub protocol: ProtocolId,
+    /// The protocol's stable id for the device, e.g. the Zigbee IEEE address.
     pub unique_id: UniqueId,
-    /// Its one name. Starts as whatever its integration reports, and once a person names it,
+    /// Its one name. Starts as whatever its protocol reports, and once a person names it,
     /// that name is the only one — there is no second name kept alongside (D36).
     pub name: Name,
     /// What it's for, in a person's words. Only ever set by a person.
@@ -83,8 +83,8 @@ pub struct Device {
 pub struct Entity {
     /// `<kind>.<object_id>`. Its kind must match `capabilities.kind`.
     pub id: EntityId,
-    pub integration: IntegrationId,
-    /// The integration's stable id for this entity. Survives renames of `id`.
+    pub protocol: ProtocolId,
+    /// The protocol's stable id for this entity. Survives renames of `id`.
     pub unique_id: UniqueId,
     pub name: Name,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -99,7 +99,7 @@ pub struct Entity {
 #[serde(deny_unknown_fields)]
 struct RawEntity {
     id: EntityId,
-    integration: IntegrationId,
+    protocol: ProtocolId,
     unique_id: UniqueId,
     name: Name,
     #[serde(default)]
@@ -121,7 +121,7 @@ impl TryFrom<RawEntity> for Entity {
     fn try_from(raw: RawEntity) -> Result<Self, InvariantError> {
         let entity = Entity {
             id: raw.id,
-            integration: raw.integration,
+            protocol: raw.protocol,
             unique_id: raw.unique_id,
             name: raw.name,
             device_id: raw.device_id,

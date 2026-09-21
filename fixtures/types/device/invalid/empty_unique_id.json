@@ -1,6 +1,6 @@
 {
   "id": "demo_lamp",
-  "integration": "demo",
+  "protocol": "demo",
   "unique_id": "",
   "name": "Demo lamp"
 }

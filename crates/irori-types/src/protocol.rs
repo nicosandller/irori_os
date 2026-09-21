@@ -1,6 +1,6 @@
-//! What an integration and the core say to each other. See `docs/specs/integrations.md`.
+//! What an protocol and the core say to each other. See `docs/specs/protocols.md`.
 //!
-//! Integrations refer to their devices and entities by `unique_id`, their own permanent handle.
+//! Protocols refer to their devices and entities by `unique_id`, their own permanent handle.
 //! The core assigns the user-facing ids (`DeviceId`, `EntityId`), which the user may rename.
 
 use std::borrow::Cow;
@@ -16,9 +16,9 @@ use crate::{
     State, UniqueId,
 };
 
-/// Something an integration found but can't use yet, because it needs a person first: a device
+/// Something an protocol found but can't use yet, because it needs a person first: a device
 /// that wants an encryption key, one that has to be paired, an account that has to be signed in
-/// to. See `docs/specs/integrations.md` §6.6.
+/// to. See `docs/specs/protocols.md` §6.6.
 ///
 /// Not a device in the registry. It has no entities and nothing is known about it beyond what
 /// it announced, so putting it there would show a device that can't do anything. It's listed on
@@ -94,12 +94,12 @@ impl SecretRequest {
     }
 }
 
-/// A device as an integration describes it. The core adds it to the registry, or updates the
+/// A device as an protocol describes it. The core adds it to the registry, or updates the
 /// entry with the same `unique_id`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceDescription {
-    /// The integration's permanent handle for the device, e.g. its MAC address.
+    /// The protocol's permanent handle for the device, e.g. its MAC address.
     pub unique_id: UniqueId,
     pub name: Name,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -169,13 +169,13 @@ impl DeviceDescription {
     }
 }
 
-/// An entity as an integration describes it. The core adds it to the registry, or updates the
+/// An entity as an protocol describes it. The core adds it to the registry, or updates the
 /// entry with the same `unique_id`.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(transform = crate::schema::entity_description_name_or_device)]
 pub struct EntityDescription {
-    /// The integration's permanent handle for the entity.
+    /// The protocol's permanent handle for the entity.
     pub unique_id: UniqueId,
     /// Leave out for a device's main feature (e.g. the relay of a smart plug): the entity then
     /// uses its device's name, and must have `device_unique_id`.
@@ -239,7 +239,7 @@ impl EntityDescription {
     }
 }
 
-/// A new value for one entity, from its integration. The core adds the timestamps and context,
+/// A new value for one entity, from its protocol. The core adds the timestamps and context,
 /// and checks the value against the entity's kind and capabilities.
 ///
 /// Reporting a value doesn't change the entity's availability; that's reported separately.
@@ -255,7 +255,7 @@ pub struct StateReport {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(schema_with = "crate::schema::attributes_schema")]
     pub attributes: Attributes,
-    /// The context of the service call that caused this change, when the integration knows it
+    /// The context of the service call that caused this change, when the protocol knows it
     /// (e.g. the device confirmed a command). Otherwise the change is attributed to the device.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caused_by: Option<ContextId>,
@@ -300,24 +300,24 @@ impl StateReport {
     }
 }
 
-/// The core asking an integration to act on one of its entities.
+/// The core asking an protocol to act on one of its entities.
 ///
-/// By the time an integration receives a call, the core has checked that the entity exists,
+/// By the time an protocol receives a call, the core has checked that the entity exists,
 /// belongs to it, is of the service's kind, and supports what's asked (e.g. `brightness` only on
 /// a dimmable light).
 ///
 /// There's no `entity_id`: that's the user's name for the entity and may change, while the
-/// integration only ever uses its own `unique_id`.
+/// protocol only ever uses its own `unique_id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceCall {
-    /// Which entity, in the integration's own terms.
+    /// Which entity, in the protocol's own terms.
     pub unique_id: UniqueId,
     pub service: Service,
     /// Why it's being called. Pass its id back as `caused_by` when reporting the result.
     pub context: Context,
 }
 
-/// A service and its data. The standard services of every entity kind; each integration handles
+/// A service and its data. The standard services of every entity kind; each protocol handles
 /// the ones for the kinds it provides.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Service {
@@ -513,7 +513,7 @@ impl JsonSchema for ServiceCall {
             .collect();
         json_schema!({
             "type": "object",
-            "description": "The core asking an integration to act on one of its entities.",
+            "description": "The core asking an protocol to act on one of its entities.",
             "properties": {
                 "service": generator.subschema_for::<ServiceName>(),
                 "unique_id": generator.subschema_for::<UniqueId>(),

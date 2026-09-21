@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "DeviceDescription",
-  "description": "A device as an integration describes it. The core adds it to the registry, or updates the\nentry with the same `unique_id`.",
+  "description": "A device as an protocol describes it. The core adds it to the registry, or updates the\nentry with the same `unique_id`.",
   "type": "object",
   "properties": {
     "hw_version": {
@@ -43,7 +43,7 @@
       ]
     },
     "unique_id": {
-      "description": "The integration's permanent handle for the device, e.g. its MAC address.",
+      "description": "The protocol's permanent handle for the device, e.g. its MAC address.",
       "$ref": "#/$defs/UniqueId"
     },
     "via_device_unique_id": {
@@ -72,7 +72,7 @@
       "pattern": "^[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F]([^\\u0000-\\u001F\\u007F-\\u009F]*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F])?$"
     },
     "UniqueId": {
-      "description": "Stable id assigned by the integration (e.g. a Zigbee IEEE address). Unique within the integration.",
+      "description": "Stable id assigned by the protocol (e.g. a Zigbee IEEE address). Unique within the protocol.",
       "type": "string",
       "maxLength": 255,
       "minLength": 1,

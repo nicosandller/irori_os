@@ -141,7 +141,7 @@ pub(crate) fn one_color_setting(schema: &mut Schema) {
 pub(crate) fn attributes_schema(generator: &mut SchemaGenerator) -> Schema {
     json_schema!({
         "type": "object",
-        "description": "Free-form extras from the integration, e.g. Zigbee link quality. Readable by rules but not type-checked.",
+        "description": "Free-form extras from the protocol, e.g. Zigbee link quality. Readable by rules but not type-checked.",
         "propertyNames": generator.subschema_for::<AttributeKey>(),
     })
 }

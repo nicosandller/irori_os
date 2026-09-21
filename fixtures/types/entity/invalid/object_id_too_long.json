@@ -1,6 +1,6 @@
 {
   "id": "light.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "integration": "mqtt",
+  "protocol": "mqtt",
   "unique_id": "bulb",
   "name": "Too long",
   "capabilities": {

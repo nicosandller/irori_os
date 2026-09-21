@@ -268,7 +268,7 @@ pub fn refresh(live: Live) {
 }
 
 /// Sends a command, then puts the entity's new state on the page without waiting for the next
-/// refresh: the core answers once the integration has confirmed.
+/// refresh: the core answers once the protocol has confirmed.
 fn send_command(
     entity_id: EntityId,
     home: RwSignal<Home>,

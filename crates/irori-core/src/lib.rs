@@ -1,5 +1,5 @@
 //! The core: registry, live state, events, service calls, and the extension host. Contains no
-//! protocol code; devices arrive through integrations (`docs/specs/integrations.md`).
+//! protocol code; devices arrive through protocols (`docs/specs/protocols.md`).
 
 mod clock;
 mod context_id;
@@ -12,11 +12,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
-use irori_integration::host::{Op, incoming_call};
-use irori_integration::{IncomingCall, Rejected, ServiceErrorCode};
+use irori_protocol::host::{Op, incoming_call};
+use irori_protocol::{IncomingCall, Rejected, ServiceErrorCode};
 use irori_types::{
     Area, Context, ContextId, Description, Device, Entity, EntityId, EntityKind, EntityState,
-    ExtensionId, ExtensionSettings, IntegrationId, IotClass, Name, Origin, ServiceCall, Settings,
+    ExtensionId, ExtensionSettings, IotClass, Name, Origin, ProtocolId, ServiceCall, Settings,
     SettingsKey, StateReport, Timestamp, Version, Waiting,
 };
 use serde::Serialize;
@@ -65,8 +65,8 @@ pub struct ExtensionInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<Description>,
     pub version: Version,
-    /// Which kinds of entity its integration can provide, from the manifest. Empty for an
-    /// extension that contributes no integration.
+    /// Which kinds of entity its protocol can provide, from the manifest. Empty for an
+    /// extension that contributes no protocol.
     pub entity_kinds: Vec<EntityKind>,
     /// Where its devices live and what they need: `local_push`, `cloud_polling`, and so on.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -98,8 +98,8 @@ pub struct ExtensionOverview {
     pub rejected_reports: u64,
     /// Reports dropped because too many entities were waiting for the core.
     pub dropped_reports: u64,
-    /// What it has found but can't use until a person helps (`docs/specs/integrations.md`
-    /// §6.6). Empty while it isn't running: a list from a stopped integration is out of date.
+    /// What it has found but can't use until a person helps (`docs/specs/protocols.md`
+    /// §6.6). Empty while it isn't running: a list from a stopped protocol is out of date.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub waiting: Vec<Waiting>,
 }
@@ -144,7 +144,7 @@ impl Drop for ReleaseWhenIdle<'_> {
 /// or the caller dropping the future.
 struct Delivery<'a> {
     core: &'a Core,
-    integration: IntegrationId,
+    protocol: ProtocolId,
     context_id: ContextId,
     entity_id: EntityId,
     delivered: bool,
@@ -154,7 +154,7 @@ impl Drop for Delivery<'_> {
     fn drop(&mut self) {
         if !self.delivered {
             self.core
-                .forget_call(&self.integration, &self.context_id, &self.entity_id);
+                .forget_call(&self.protocol, &self.context_id, &self.entity_id);
         }
     }
 }
@@ -170,7 +170,7 @@ struct Shared {
     // Never held across an `.await`: every change is a short synchronous step.
     home: RwLock<Home>,
     events: broadcast::Sender<Event>,
-    links: RwLock<HashMap<IntegrationId, mpsc::Sender<IncomingCall>>>,
+    links: RwLock<HashMap<ProtocolId, mpsc::Sender<IncomingCall>>>,
     /// One lock per entity, so calls on the same entity happen one after another.
     busy: Mutex<HashMap<EntityId, Arc<tokio::sync::Mutex<()>>>>,
     extensions: RwLock<BTreeMap<ExtensionId, ExtensionOverview>>,
@@ -180,8 +180,8 @@ struct Shared {
     /// Extensions a person has turned off (`irori.toml`). Watched like settings: turning one off
     /// stops it, turning it back on starts it.
     disabled: watch::Sender<BTreeSet<ExtensionId>>,
-    /// Each integration's small private values (`docs/specs/integrations.md` §5).
-    storage: RwLock<Arc<dyn irori_integration::Storage>>,
+    /// Each protocol's small private values (`docs/specs/protocols.md` §5).
+    storage: RwLock<Arc<dyn irori_protocol::Storage>>,
 }
 
 fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
@@ -211,7 +211,7 @@ impl Core {
             extensions: RwLock::default(),
             extension_settings: watch::Sender::new(ExtensionSettings::default()),
             disabled: watch::Sender::new(BTreeSet::new()),
-            storage: RwLock::new(Arc::new(irori_integration::MemoryStorage::default())),
+            storage: RwLock::new(Arc::new(irori_protocol::MemoryStorage::default())),
         }))
     }
 
@@ -312,7 +312,7 @@ impl Core {
     }
 
     /// Replaces every extension's settings. An extension whose own settings changed is restarted
-    /// with the new ones; the rest aren't touched (`docs/specs/integrations.md` §3).
+    /// with the new ones; the rest aren't touched (`docs/specs/protocols.md` §3).
     ///
     /// Like [`Core::apply_settings`], this is how settings reach the core whether they were typed
     /// into a file or sent from the UI; the core never reads the disk.
@@ -330,9 +330,9 @@ impl Core {
         self.0.extension_settings.subscribe()
     }
 
-    /// Where integrations' stored values are kept. Until this is called they last only as long as
+    /// Where protocols' stored values are kept. Until this is called they last only as long as
     /// the process; set it before starting extensions.
-    pub fn use_storage(&self, storage: Arc<dyn irori_integration::Storage>) {
+    pub fn use_storage(&self, storage: Arc<dyn irori_protocol::Storage>) {
         *write(&self.0.storage) = storage;
     }
 
@@ -356,10 +356,10 @@ impl Core {
         check_key(key)?;
         if let Some(value) = value {
             let size = serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len());
-            if size > irori_integration::MAX_STORED_VALUE {
+            if size > irori_protocol::MAX_STORED_VALUE {
                 return Err(Rejected(format!(
                     "`{key}` is {size} bytes as JSON; stored values are at most {} bytes",
-                    irori_integration::MAX_STORED_VALUE
+                    irori_protocol::MAX_STORED_VALUE
                 )));
             }
         }
@@ -384,7 +384,7 @@ impl Core {
         self.0.disabled.subscribe()
     }
 
-    /// Asks an entity to do something, and waits for its integration's answer (at most
+    /// Asks an entity to do something, and waits for its protocol's answer (at most
     /// [`SERVICE_CALL_TIMEOUT`]). `context` says who's asking.
     pub async fn call_service(
         &self,
@@ -396,7 +396,7 @@ impl Core {
         let deadline = tokio::time::Instant::now() + SERVICE_CALL_TIMEOUT;
 
         // One call at a time per entity: two toggles arriving together must not both read the
-        // same "off" and both turn it on. Held until the integration answers, so the second
+        // same "off" and both turn it on. Held until the protocol answers, so the second
         // toggle sees the result of the first.
         let busy = Arc::clone(
             self.0
@@ -416,20 +416,20 @@ impl Core {
 
         let resolved = read(&self.0.home).resolve(entity_id, command)?;
         let sender = read(&self.0.links)
-            .get(&resolved.integration)
+            .get(&resolved.protocol)
             .cloned()
-            .ok_or_else(|| CallError::NotRunning(resolved.integration.clone()))?;
-        // Both recorded before sending, because the integration may answer and report before
+            .ok_or_else(|| CallError::NotRunning(resolved.protocol.clone()))?;
+        // Both recorded before sending, because the protocol may answer and report before
         // this task runs again. The guard undoes them unless the call is delivered, including
         // when the caller drops this future mid-send.
         {
             let mut home = write(&self.0.home);
-            home.record_call(&resolved.integration, context.id.clone(), self.now());
+            home.record_call(&resolved.protocol, context.id.clone(), self.now());
             home.record_command(entity_id, &resolved.service);
         }
         let mut delivery = Delivery {
             core: self,
-            integration: resolved.integration.clone(),
+            protocol: resolved.protocol.clone(),
             context_id: context.id.clone(),
             entity_id: entity_id.clone(),
             delivered: false,
@@ -445,11 +445,11 @@ impl Core {
             service: resolved.service.clone(),
             context,
         });
-        let integration = resolved.integration.clone();
-        // The registry can change while a call is being prepared (an integration re-describing
+        let protocol = resolved.protocol.clone();
+        // The registry can change while a call is being prepared (an protocol re-describing
         // or removing the entity), so check again right before sending. A change after this
-        // point reaches the integration, which answers with an error like any other device
-        // trouble (`docs/specs/integrations.md` §7.3).
+        // point reaches the protocol, which answers with an error like any other device
+        // trouble (`docs/specs/protocols.md` §7.3).
         if !read(&self.0.home).still_dispatchable(entity_id, &resolved) {
             return Err(CallError::NotSupported(format!(
                 "`{entity_id}` changed while the call was being prepared; try again"
@@ -459,11 +459,11 @@ impl Core {
         if !matches!(sent, Ok(Ok(()))) {
             return Err(match sent {
                 Err(_) => CallError::Timeout,
-                _ => CallError::NotRunning(integration),
+                _ => CallError::NotRunning(protocol),
             });
         }
         delivery.delivered = true;
-        // Only once the integration has it: a call that never went out wasn't made.
+        // Only once the protocol has it: a call that never went out wasn't made.
         self.publish(vec![called]);
 
         let outcome = match tokio::time::timeout_at(deadline, result).await {
@@ -474,7 +474,7 @@ impl Core {
                 ServiceErrorCode::Failed => CallError::Failed(e.message),
             }),
             Ok(Err(_)) => Err(CallError::Failed(
-                "the integration dropped the call without answering".into(),
+                "the protocol dropped the call without answering".into(),
             )),
         };
         if outcome.is_err() {
@@ -484,14 +484,9 @@ impl Core {
         outcome
     }
 
-    fn forget_call(
-        &self,
-        integration: &IntegrationId,
-        context_id: &ContextId,
-        entity_id: &EntityId,
-    ) {
+    fn forget_call(&self, protocol: &ProtocolId, context_id: &ContextId, entity_id: &EntityId) {
         let mut home = write(&self.0.home);
-        home.forget_call(integration, context_id);
+        home.forget_call(protocol, context_id);
         home.forget_command(entity_id);
     }
 
@@ -524,30 +519,30 @@ impl Core {
     fn apply_op(
         &self,
         extension: &ExtensionId,
-        integration: &IntegrationId,
+        protocol: &ProtocolId,
         kinds: &[EntityKind],
         op: Op,
     ) {
         let (result, reply) = match op {
             Op::DescribeDevice(device, reply) => (
-                self.change(|home, _| home.describe_device(integration, device)),
+                self.change(|home, _| home.describe_device(protocol, device)),
                 reply,
             ),
             Op::DescribeEntity(entity, reply) => (
-                self.change(|home, stamp| home.describe_entity(integration, kinds, entity, stamp)),
+                self.change(|home, stamp| home.describe_entity(protocol, kinds, entity, stamp)),
                 reply,
             ),
             Op::RemoveDevice(unique_id, reply) => (
-                self.change(|home, _| home.remove_device(integration, &unique_id)),
+                self.change(|home, _| home.remove_device(protocol, &unique_id)),
                 reply,
             ),
             Op::RemoveEntity(unique_id, reply) => (
-                self.change(|home, _| home.remove_entity(integration, &unique_id)),
+                self.change(|home, _| home.remove_entity(protocol, &unique_id)),
                 reply,
             ),
             Op::SetAvailability(target, availability, reply) => (
                 self.change(|home, stamp| {
-                    home.set_availability(integration, target, availability, stamp)
+                    home.set_availability(protocol, target, availability, stamp)
                 }),
                 reply,
             ),
@@ -564,8 +559,8 @@ impl Core {
                 self.set_status(
                     extension,
                     match health {
-                        irori_integration::Health::Running => ExtensionStatus::Running,
-                        irori_integration::Health::Degraded(reason) => {
+                        irori_protocol::Health::Running => ExtensionStatus::Running,
+                        irori_protocol::Health::Degraded(reason) => {
                             ExtensionStatus::Degraded { reason }
                         }
                     },
@@ -574,7 +569,7 @@ impl Core {
             }
         };
         if let Err(rejected) = &result {
-            tracing::warn!(%extension, %rejected, "rejected an operation from an integration");
+            tracing::warn!(%extension, %rejected, "rejected an operation from an protocol");
         }
         let _ = reply.send(result);
     }
@@ -582,7 +577,7 @@ impl Core {
     fn apply_reports(
         &self,
         extension: &ExtensionId,
-        integration: &IntegrationId,
+        protocol: &ProtocolId,
         reports: Vec<StateReport>,
         dropped: u64,
     ) {
@@ -596,7 +591,7 @@ impl Core {
         let mut rejected_count = 0;
         for report in reports {
             if let Err(rejected) =
-                self.change(|home, stamp| home.report_state(integration, report, stamp))
+                self.change(|home, stamp| home.report_state(protocol, report, stamp))
             {
                 tracing::warn!(%extension, %rejected, "rejected a state report");
                 rejected_count += 1;
@@ -610,15 +605,15 @@ impl Core {
         }
     }
 
-    fn mark_unavailable(&self, integration: &IntegrationId) {
+    fn mark_unavailable(&self, protocol: &ProtocolId) {
         let stamp = self.stamp();
-        let events = write(&self.0.home).mark_unavailable(integration, &stamp);
+        let events = write(&self.0.home).mark_unavailable(protocol, &stamp);
         self.publish(events);
     }
 
-    /// Removes every device this integration brought in, including ignored ones.
-    pub fn remove_integration(&self, integration: &IntegrationId) {
-        let events = write(&self.0.home).remove_integration(integration);
+    /// Removes every device this protocol brought in, including ignored ones.
+    pub fn remove_protocol(&self, protocol: &ProtocolId) {
+        let events = write(&self.0.home).remove_protocol(protocol);
         self.publish(events);
     }
 
@@ -627,17 +622,17 @@ impl Core {
         write(&self.0.extensions).remove(extension);
     }
 
-    /// Drops the integration's private stored values (pairing keys, helper states, …).
+    /// Drops the protocol's private stored values (pairing keys, helper states, …).
     pub fn clear_extension_storage(&self, extension: &ExtensionId) {
         let _ = read(&self.0.storage).clear(extension);
     }
 
-    fn link(&self, integration: &IntegrationId, calls: mpsc::Sender<IncomingCall>) {
-        write(&self.0.links).insert(integration.clone(), calls);
+    fn link(&self, protocol: &ProtocolId, calls: mpsc::Sender<IncomingCall>) {
+        write(&self.0.links).insert(protocol.clone(), calls);
     }
 
-    fn unlink(&self, integration: &IntegrationId) {
-        write(&self.0.links).remove(integration);
+    fn unlink(&self, protocol: &ProtocolId) {
+        write(&self.0.links).remove(protocol);
     }
 
     /// Records what an extension is, before it starts. Called once per extension by the host.
@@ -746,15 +741,15 @@ mod tests {
     #[test]
     fn an_undelivered_call_is_forgotten() {
         let core = Core::new(Arc::new(SystemClock));
-        let integration = IntegrationId::try_from("demo").expect("valid");
+        let protocol = ProtocolId::try_from("demo").expect("valid");
         let context_id = context_id::new_context_id(core.now());
         let record = || {
-            write(&core.0.home).record_call(&integration, context_id.clone(), core.now());
-            assert!(read(&core.0.home).knows_call(&integration, &context_id));
+            write(&core.0.home).record_call(&protocol, context_id.clone(), core.now());
+            assert!(read(&core.0.home).knows_call(&protocol, &context_id));
         };
         let guard = |delivered| Delivery {
             core: &core,
-            integration: integration.clone(),
+            protocol: protocol.clone(),
             context_id: context_id.clone(),
             entity_id: EntityId::try_from("light.lamp").expect("valid"),
             delivered,
@@ -762,10 +757,10 @@ mod tests {
 
         record();
         drop(guard(false));
-        assert!(!read(&core.0.home).knows_call(&integration, &context_id));
+        assert!(!read(&core.0.home).knows_call(&protocol, &context_id));
 
         record();
         drop(guard(true));
-        assert!(read(&core.0.home).knows_call(&integration, &context_id));
+        assert!(read(&core.0.home).knows_call(&protocol, &context_id));
     }
 }

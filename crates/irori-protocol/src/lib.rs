@@ -1,11 +1,11 @@
-//! The integration SDK: what a built-in integration implements, and the handle it uses to talk
-//! to the core. See `docs/specs/integrations.md`.
+//! The protocol SDK: what a built-in protocol implements, and the handle it uses to talk
+//! to the core. See `docs/specs/protocols.md`.
 //!
-//! An integration implements [`Integration`]. The core starts it with its settings and an
-//! [`IntegrationContext`], which offers exactly the operations of the contract: describe devices
+//! An protocol implements [`Protocol`]. The core starts it with its settings and an
+//! [`ProtocolContext`], which offers exactly the operations of the contract: describe devices
 //! and entities, report state and availability, set health, and handle service calls.
 //!
-//! The other end of the context lives in the core ([`host`]); integrations never see it.
+//! The other end of the context lives in the core ([`host`]); protocols never see it.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -27,21 +27,21 @@ pub use irori_types as types;
 mod process;
 pub use process::{ExtProcess, FromExt, ToExt, serve, spawn};
 
-/// A built-in integration.
+/// A built-in protocol.
 ///
 /// ```ignore
-/// impl Integration for Demo {
+/// impl Protocol for Demo {
 ///     type Config = Config;
 ///     const MANIFEST: &'static str = include_str!("../irori-extension.toml");
 ///
-///     async fn run(config: Config, ctx: IntegrationContext) -> Result<(), IntegrationError> {
+///     async fn run(config: Config, ctx: ProtocolContext) -> Result<(), ProtocolError> {
 ///         describe_devices(&ctx).await?;
 ///         // … handle `ctx.next_call()` until it returns `None`
 ///         Ok(())
 ///     }
 /// }
 /// ```
-pub trait Integration: Send + 'static {
+pub trait Protocol: Send + 'static {
     /// Its settings. The core deserializes them before starting it; the config schema shown to
     /// people is generated from this type.
     type Config: DeserializeOwned + JsonSchema + Send + 'static;
@@ -53,20 +53,20 @@ pub trait Integration: Send + 'static {
     /// A built-in has no package directory to read it from at runtime, so it carries the file.
     const ICON: Option<&'static str> = None;
 
-    /// Runs until told to stop ([`IntegrationContext::next_call`] returns `None`). Returning an
+    /// Runs until told to stop ([`ProtocolContext::next_call`] returns `None`). Returning an
     /// error, returning without being told to stop, or panicking marks it failed, and the core
     /// starts it again after a delay.
     fn run(
         config: Self::Config,
-        ctx: IntegrationContext,
-    ) -> impl Future<Output = Result<(), IntegrationError>> + Send;
+        ctx: ProtocolContext,
+    ) -> impl Future<Output = Result<(), ProtocolError>> + Send;
 }
 
 /// The most a stored value may take, as JSON (spec §5). Small on purpose: this is for pairing
 /// keys and remembered switches, not history, which the recorder keeps.
 pub const MAX_STORED_VALUE: usize = 64 * 1024;
 
-/// Where each integration's small private values live (spec §5). The core holds one and checks
+/// Where each protocol's small private values live (spec §5). The core holds one and checks
 /// the limits; the binary backs it with the database, and tests use [`MemoryStorage`].
 pub trait Storage: Send + Sync + fmt::Debug {
     fn load(
@@ -129,34 +129,34 @@ impl Storage for MemoryStorage {
     }
 }
 
-/// Settings for an integration that has none. Accepts only an empty table.
+/// Settings for an protocol that has none. Accepts only an empty table.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NoSettings {}
 
-/// Why an integration stopped working. Shown to people, so say what went wrong in their terms.
-pub struct IntegrationError(String);
+/// Why an protocol stopped working. Shown to people, so say what went wrong in their terms.
+pub struct ProtocolError(String);
 
-impl IntegrationError {
+impl ProtocolError {
     pub fn new(message: impl Into<String>) -> Self {
         Self(message.into())
     }
 }
 
-impl fmt::Display for IntegrationError {
+impl fmt::Display for ProtocolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
 }
 
-impl fmt::Debug for IntegrationError {
+impl fmt::Debug for ProtocolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.0, f)
     }
 }
 
-/// Any error converts, so `?` works in [`Integration::run`].
-impl<E: std::error::Error> From<E> for IntegrationError {
+/// Any error converts, so `?` works in [`Protocol::run`].
+impl<E: std::error::Error> From<E> for ProtocolError {
     fn from(error: E) -> Self {
         Self(error.to_string())
     }
@@ -174,7 +174,7 @@ impl fmt::Display for Rejected {
 
 impl std::error::Error for Rejected {}
 
-/// What the integration says about itself (spec §6.5).
+/// What the protocol says about itself (spec §6.5).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Health {
@@ -192,7 +192,7 @@ pub enum AvailabilityTarget {
     Entities(Vec<UniqueId>),
 }
 
-/// A failed service call, as the integration reports it (spec §7.3).
+/// A failed service call, as the protocol reports it (spec §7.3).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ServiceError {
     pub code: ServiceErrorCode,
@@ -241,9 +241,9 @@ impl IncomingCall {
     }
 }
 
-/// The integration's handle to the core. Offers exactly the operations of the contract.
+/// The protocol's handle to the core. Offers exactly the operations of the contract.
 #[derive(Debug)]
-pub struct IntegrationContext {
+pub struct ProtocolContext {
     ops: mpsc::Sender<host::Op>,
     reports: Arc<ReportQueue>,
     calls: mpsc::Receiver<IncomingCall>,
@@ -252,7 +252,7 @@ pub struct IntegrationContext {
 
 const CORE_GONE: &str = "the core is shutting down";
 
-impl IntegrationContext {
+impl ProtocolContext {
     async fn request(&self, op: impl FnOnce(host::Reply) -> host::Op) -> Result<(), Rejected> {
         let (reply, result) = oneshot::channel();
         self.ops
@@ -300,7 +300,7 @@ impl IntegrationContext {
     }
 
     /// Reads a value it stored earlier, or `None` if there isn't one (spec §5). Kept across
-    /// restarts of the integration and of Irori.
+    /// restarts of the protocol and of Irori.
     pub async fn load(&self, key: &str) -> Result<Option<serde_json::Value>, Rejected> {
         let (reply, answer) = oneshot::channel();
         self.ops
@@ -310,7 +310,7 @@ impl IntegrationContext {
         answer.await.map_err(|_| Rejected(CORE_GONE.into()))?
     }
 
-    /// Keeps a small value under `key`, private to this integration: at most
+    /// Keeps a small value under `key`, private to this protocol: at most
     /// [`MAX_STORED_VALUE`] bytes as JSON, under a key of 1–128 characters.
     pub async fn store(&self, key: &str, value: serde_json::Value) -> Result<(), Rejected> {
         self.request(|reply| host::Op::Store(key.to_owned(), Some(value), reply))
@@ -339,7 +339,7 @@ impl IntegrationContext {
         self.reports.push(report);
     }
 
-    /// The next service call, or `None` once the integration should stop. After `None`, finish
+    /// The next service call, or `None` once the protocol should stop. After `None`, finish
     /// up and return from `run` within 5 seconds.
     pub async fn next_call(&mut self) -> Option<IncomingCall> {
         if *self.stop.borrow() {
@@ -352,7 +352,7 @@ impl IntegrationContext {
         }
     }
 
-    /// Resolves once the integration should stop. For integrations that don't take calls in the
+    /// Resolves once the protocol should stop. For protocols that don't take calls in the
     /// same loop.
     pub async fn stopped(&mut self) {
         let _ = self.stop.wait_for(|stop| *stop).await;
@@ -360,7 +360,7 @@ impl IntegrationContext {
 }
 
 /// How many entities can have a state report waiting for the core at once. Bounds the core's
-/// memory even if an integration reports for ever-new entities faster than the core keeps up.
+/// memory even if an protocol reports for ever-new entities faster than the core keeps up.
 pub const MAX_PENDING_ENTITIES: usize = 4096;
 
 /// Pending state reports, one per entity: a newer report replaces an unread older one.
@@ -399,7 +399,7 @@ impl ReportQueue {
     }
 }
 
-/// A built-in integration, ready for the core to start.
+/// A built-in protocol, ready for the core to start.
 pub struct Builtin {
     pub manifest: ExtensionManifest,
     /// JSON Schema for its settings, generated from its config type.
@@ -409,9 +409,9 @@ pub struct Builtin {
     start: StartFn,
 }
 
-type RunFuture = Pin<Box<dyn Future<Output = Result<(), IntegrationError>> + Send>>;
+type RunFuture = Pin<Box<dyn Future<Output = Result<(), ProtocolError>> + Send>>;
 type StartFn =
-    Box<dyn Fn(serde_json::Value, IntegrationContext) -> Result<RunFuture, String> + Send + Sync>;
+    Box<dyn Fn(serde_json::Value, ProtocolContext) -> Result<RunFuture, String> + Send + Sync>;
 
 impl fmt::Debug for Builtin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -422,27 +422,27 @@ impl fmt::Debug for Builtin {
 }
 
 impl Builtin {
-    /// Checks `config` against the integration's config type, then returns the future that runs
+    /// Checks `config` against the protocol's config type, then returns the future that runs
     /// it. The error says what's wrong with the settings.
     pub fn start(
         &self,
         config: serde_json::Value,
-        ctx: IntegrationContext,
+        ctx: ProtocolContext,
     ) -> Result<RunFuture, String> {
         (self.start)(config, ctx)
     }
 }
 
-/// Prepares a built-in integration: parses and checks its manifest, and generates its config
-/// schema. Fails if the manifest is invalid or doesn't describe a built-in integration.
-pub fn builtin<I: Integration>() -> Result<Builtin, String> {
+/// Prepares a built-in protocol: parses and checks its manifest, and generates its config
+/// schema. Fails if the manifest is invalid or doesn't describe a built-in protocol.
+pub fn builtin<I: Protocol>() -> Result<Builtin, String> {
     let manifest = parse_manifest(I::MANIFEST)?;
     let id = &manifest.extension.id;
-    match manifest.contributes.integration.as_slice() {
+    match manifest.contributes.protocol.as_slice() {
         [_] => {}
         _ => {
             return Err(format!(
-                "extension `{id}`: a built-in integration needs a `[[contributes.integration]]` entry"
+                "extension `{id}`: a built-in protocol needs a `[[contributes.protocol]]` entry"
             ));
         }
     }
@@ -457,13 +457,13 @@ pub fn builtin<I: Integration>() -> Result<Builtin, String> {
         }
         (Some(path), None) => {
             return Err(format!(
-                "extension `{id}`: the manifest names the icon `{path}`, but the integration \
+                "extension `{id}`: the manifest names the icon `{path}`, but the protocol \
                  doesn't embed it (`const ICON`)"
             ));
         }
         (None, Some(_)) => {
             return Err(format!(
-                "extension `{id}`: the integration embeds an icon the manifest doesn't name \
+                "extension `{id}`: the protocol embeds an icon the manifest doesn't name \
                  (`icon = \"icon.svg\"`)"
             ));
         }
@@ -480,8 +480,8 @@ pub fn builtin<I: Integration>() -> Result<Builtin, String> {
     })
 }
 
-/// Why settings couldn't be turned into the integration's config type. Names the shape, never a
-/// value: settings hold secrets, and the reason is logged and shown (`docs/specs/integrations.md`
+/// Why settings couldn't be turned into the protocol's config type. Names the shape, never a
+/// value: settings hold secrets, and the reason is logged and shown (`docs/specs/protocols.md`
 /// §3).
 pub(crate) fn invalid_settings(err: serde_json::Error) -> String {
     format!("invalid settings: {}", redact_serde_value(&err.to_string()))
@@ -581,13 +581,13 @@ pub fn parse_manifest(toml_text: &str) -> Result<ExtensionManifest, String> {
     serde_json::from_value(json).map_err(|e| format!("invalid manifest: {e}"))
 }
 
-/// The core's end of an [`IntegrationContext`]. Used by the core's extension host only.
+/// The core's end of an [`ProtocolContext`]. Used by the core's extension host only.
 pub mod host {
     use super::*;
 
     pub type Reply = oneshot::Sender<Result<(), Rejected>>;
 
-    /// An operation from the integration that needs the core's answer (spec §5).
+    /// An operation from the protocol that needs the core's answer (spec §5).
     #[derive(Debug)]
     pub enum Op {
         DescribeDevice(DeviceDescription, Reply),
@@ -605,7 +605,7 @@ pub mod host {
         Store(String, Option<serde_json::Value>, Reply),
     }
 
-    /// Bounded, so a runaway integration waits instead of growing the core's memory.
+    /// Bounded, so a runaway protocol waits instead of growing the core's memory.
     const OPS_CAPACITY: usize = 256;
     const CALLS_CAPACITY: usize = 64;
 
@@ -646,13 +646,13 @@ pub mod host {
         }
     }
 
-    /// A connected pair: the context goes to the integration, the other end stays in the core.
-    pub fn connect() -> (IntegrationContext, HostEnd) {
+    /// A connected pair: the context goes to the protocol, the other end stays in the core.
+    pub fn connect() -> (ProtocolContext, HostEnd) {
         let (ops_tx, ops_rx) = mpsc::channel(OPS_CAPACITY);
         let (calls_tx, calls_rx) = mpsc::channel(CALLS_CAPACITY);
         let (stop_tx, stop_rx) = watch::channel(false);
         let reports = Arc::new(ReportQueue::default());
-        let ctx = IntegrationContext {
+        let ctx = ProtocolContext {
             ops: ops_tx,
             reports: Arc::clone(&reports),
             calls: calls_rx,
@@ -667,7 +667,7 @@ pub mod host {
         (ctx, host)
     }
 
-    /// Builds a call for the integration, with the channel its reply comes back on.
+    /// Builds a call for the protocol, with the channel its reply comes back on.
     pub fn incoming_call(
         call: ServiceCall,
     ) -> (IncomingCall, oneshot::Receiver<Result<(), ServiceError>>) {
@@ -762,7 +762,7 @@ mod tests {
     }
 
     struct NoRun;
-    impl Integration for NoRun {
+    impl Protocol for NoRun {
         type Config = NoSettings;
         const MANIFEST: &'static str = r#"
             [extension]
@@ -771,12 +771,12 @@ mod tests {
             version = "0.1.0"
             irori = ">=0.1.0"
 
-            [[contributes.integration]]
+            [[contributes.protocol]]
             iot_class = "local_push"
             entity_kinds = ["switch"]
             run = { command = "bin/thing" }
         "#;
-        async fn run(_: NoSettings, _: IntegrationContext) -> Result<(), IntegrationError> {
+        async fn run(_: NoSettings, _: ProtocolContext) -> Result<(), ProtocolError> {
             Ok(())
         }
     }
@@ -791,17 +791,17 @@ mod tests {
     macro_rules! with_icon {
         ($name:ident, $manifest_icon:expr, $icon:expr) => {
             struct $name;
-            impl Integration for $name {
+            impl Protocol for $name {
                 type Config = NoSettings;
                 const MANIFEST: &'static str = concat!(
                     "[extension]\nid = \"lamp\"\nname = \"Lamp\"\nversion = \"0.1.0\"\n",
                     "irori = \">=0.0.0\"\n",
                     $manifest_icon,
-                    "\n[[contributes.integration]]\niot_class = \"local_push\"\n",
+                    "\n[[contributes.protocol]]\niot_class = \"local_push\"\n",
                     "entity_kinds = [\"light\"]\n"
                 );
                 const ICON: Option<&'static str> = $icon;
-                async fn run(_: NoSettings, _: IntegrationContext) -> Result<(), IntegrationError> {
+                async fn run(_: NoSettings, _: ProtocolContext) -> Result<(), ProtocolError> {
                     Ok(())
                 }
             }

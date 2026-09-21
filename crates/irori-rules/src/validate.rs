@@ -799,7 +799,7 @@ mod tests {
         let id: EntityId = id.parse().unwrap();
         Entity {
             id: id.clone(),
-            integration: "demo".parse().unwrap(),
+            protocol: "demo".parse().unwrap(),
             unique_id: UniqueId::try_from(id.as_str().replace('.', "-")).unwrap(),
             name: Name::try_from("x").unwrap(),
             device_id: None,

@@ -9,7 +9,7 @@ category = "demo"
 description = "Virtual devices for trying Irori without hardware: a study lamp and plug, a hallway light, motion, illuminance, and an mmWave with occupancy and target distance."
 version = "0.3.1"
 source = "extensions/demo"
-crate = "irori-int-demo"
+crate = "irori-protocol-demo"
 bin = "irori-ext-demo"
 
 [[extension]]
@@ -19,7 +19,7 @@ category = "protocol"
 description = "Devices running ESPHome firmware, over ESPHome's native API."
 version = "0.3.1"
 source = "extensions/protocols/esphome"
-crate = "irori-int-esphome"
+crate = "irori-protocol-esphome"
 bin = "irori-ext-esphome"
 
 [[extension]]
@@ -29,7 +29,7 @@ category = "protocol"
 description = "MQTT devices through Home Assistant MQTT Discovery. Not implemented yet."
 version = "0.3.1"
 source = "extensions/protocols/mqtt"
-crate = "irori-int-mqtt"
+crate = "irori-protocol-mqtt"
 bin = "irori-ext-mqtt"
 
 [[extension]]
@@ -39,5 +39,5 @@ category = "helpers"
 description = "Values Irori keeps itself rather than a device reporting them: toggles, to begin with."
 version = "0.3.1"
 source = "extensions/helpers"
-crate = "irori-int-helpers"
+crate = "irori-protocol-helpers"
 bin = "irori-ext-helpers"
