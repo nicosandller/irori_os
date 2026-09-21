@@ -23,7 +23,7 @@ Home Assistant (HA) is an extraordinary project: ~2,800 integrations and million
 | "Why didn't my automation fire?" is hard to answer | Traces were retrofitted onto an engine not designed around them | **Traces are an output of the engine by construction** — every node records what it read, what it decided, and why |
 | No way to know what a new rule *would* do | The engine is coupled to wall-clock time and live state | A **deterministic, replayable engine** (injected clock + state source) that can backtest a rule against recorded history |
 | Install and upgrade are heavy (Supervisor, containers, OS images) | Python runtime + dependency graph | **One static binary**: `curl` → running setup wizard in seconds |
-| Beyond defaults, everything depends on HACS with variable quality | Custom code runs in-process, touching internals; backend integrations, frontend cards, and add-ons each have their own separate mechanism | One **extension** system for everything: an extension declares what it *contributes* (integrations, dashboards, cards, apps) and what permissions it needs. One install flow, one permission prompt, typed contracts per contribution, and third-party code isolated in separate processes or sandboxes |
+| Beyond defaults, everything depends on HACS with variable quality | Custom code runs in-process, touching internals; backend integrations, frontend cards, and add-ons each have their own separate mechanism | One **extension** system for everything: an extension declares what it *contributes* (protocols, dashboards, cards, apps) and what permissions it needs. One install flow, one permission prompt, typed contracts per contribution, and third-party code isolated in separate processes or sandboxes |
 | Multi-user permissions and per-user dashboards are recurring forum complaints | Bolted on late | Designed into the API model early, shipped after the core loop is proven |
 
 ## 3. The core insight
@@ -62,7 +62,7 @@ No YAML. No Jinja. No custom cards to install. And you installed the whole thing
 
 1. **Lightning fast and lightweight.** Rust, one static binary, no runtime dependencies. Performance is a *budget* measured in CI (memory, startup, event latency, binary size), not a hope. It should feel instant on a Raspberry Pi and barely register on anything bigger.
 2. **Modular — everything beyond the core is an extension, even MQTT, even automations.** The core knows about devices, entities, state, and events; it does *not* know about any protocol, vendor, dashboard, app, or rule language. Everything else ships as an **extension** that declares what it *contributes*:
-   - **Integrations** bring devices in: protocols (MQTT, Zigbee, Matter, Z-Wave, ESPHome) and vendor APIs (Tesla, SwitchBot, …).
+   - **Protocols** bring devices in: MQTT, Zigbee, Matter, Z-Wave, ESPHome, and vendor APIs (Tesla, SwitchBot, …).
    - **Automation engines** subscribe to those events, call services, and emit traces. The first-party sequential engine is one of them, installed like any other extension, not compiled into the OS.
    - **Dashboards** are pre-built views that bind to whatever matching devices your home has.
    - **Cards** are visualizations used inside dashboards.
@@ -76,7 +76,7 @@ No YAML. No Jinja. No custom cards to install. And you installed the whole thing
 7. **Deterministic and replayable.** The first-party sequential engine never reads the wall clock or global state directly; both are injected. Replay is a feature, not a test trick. Other engines may choose otherwise.
 8. **Small core, public API.** Core = registry, state, event bus, extension host, recorder, API. Extensions (including automation engines), AI features, and the UI use only public contracts — enforced by crate boundaries, not good intentions.
 9. **Least privilege for extensions.** Every extension declares its permissions (which devices it may control, network hosts, serial ports, host shell or files) and the owner approves them at install. A card can't reach what it didn't declare; a terminal app is labeled for what it is (full access to the machine).
-10. **Local-first.** The core never needs the internet. Cloud integrations are clearly labeled as such. AI is an optional add-on and bring-your-own: a cloud API key or a local model. A hosted tier may exist later as a convenience, never a requirement.
+10. **Local-first.** The core never needs the internet. Cloud protocols are clearly labeled as such. AI is an optional add-on and bring-your-own: a cloud API key or a local model. A hosted tier may exist later as a convenience, never a requirement.
 11. **Install in seconds.** `curl` → running setup wizard, sensible defaults.
 12. **Borrow ecosystems, don't rebuild them.** Speak HA's MQTT Discovery protocol, wrap `zwave-js-server`, use `rs-matter`. Use HA-familiar domain/service vocabulary where it fits — LLMs already know it.
 13. **Rust end to end.** Core and web UI share the same type definitions. An engine that ships a WASM editor shares *its* types with *its* page — not with the OS.
@@ -92,7 +92,7 @@ Not (yet) for: non-technical households, people whose homes are mostly cloud-API
 ## 7. What Irori is not
 
 - **Not an operating system.** "IroriOS" is a brand. Irori is a userspace process on stock Linux (an appliance image may exist later as packaging only).
-- **Not an HA replacement at launch.** No attempt to match integration coverage. The MQTT integration is the v1 device story; the extension system is what makes the rest possible.
+- **Not an HA replacement at launch.** No attempt to match protocol coverage. The MQTT extension is the v1 device story; the extension system is what makes the rest possible.
 - **Not batteries-included.** The default install is deliberately minimal; features are opt-in.
 - **Not reimplementing radio stacks** (Zigbee/Z-Wave/Matter) in the core.
 - **Not a template language.** If a rule needs arbitrary code, write an extension that offers it as a typed service.
@@ -103,7 +103,7 @@ Not (yet) for: non-technical households, people whose homes are mostly cloud-API
 Assume the gap narrows over time. Irori wins by coherence, not by any one feature.
 
 - **Home Assistant** — actively improving dashboards and automation UX release after release, and adding AI surfaces (LLM conversation agents, AI Task, an MCP server integration). The benchmark and the ecosystem we borrow from. *(Verify the specifics of recent 2026.x releases before public positioning.)*
-- **VS Code and Grafana** — not smart home tools, but the models for Irori's extension system: VS Code has one extension package that declares "contribution points"; Grafana has typed plugin kinds (data source, panel, app) that map closely onto integration, card, and app.
+- **VS Code and Grafana** — not smart home tools, but the models for Irori's extension system: VS Code has one extension package that declares "contribution points"; Grafana has typed plugin kinds (data source, panel, app) that map closely onto protocol, card, and app.
 - **Node-RED** — the best-known visual, flow-based automation tool, often used alongside HA. Prior art for the visualizer and debug UX; its weakness (flows as the programming model get unwieldy, weak typing) is instructive.
 - **openHAB** — Java, rules DSL + Blockly; prior art for typed items and rule languages.
 - **Homey (Athom)** — consumer-grade "Flows"; a good reference for approachable automation UI.

@@ -26,13 +26,13 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     // D17 used to list compiled-in protocols. Official extensions are packages now, so
-    // default features must not include `int-*`, and D17 must not claim they are compiled in.
+    // default features must not include `protocol-*`, and D17 must not claim they are compiled in.
     let d17 = roadmap
         .lines()
         .find(|line| line.starts_with("| D17 |"))
         .context("ROADMAP has no D17 row")?
         .to_lowercase();
-    for feature in defaults.iter().filter(|f| f.starts_with("int-")) {
+    for feature in compiled_in_protocols(&defaults) {
         problems.push(format!(
             "default features still compile `{feature}` into the binary; official extensions are packages"
         ));
@@ -87,6 +87,15 @@ fn default_features(manifest: &str) -> anyhow::Result<Vec<String>> {
         .collect())
 }
 
+/// Default features that would compile a protocol extension into the binary — always a bug now
+/// that official extensions are packages (D17), not cargo features.
+fn compiled_in_protocols(defaults: &[String]) -> Vec<&String> {
+    defaults
+        .iter()
+        .filter(|f| f.starts_with("protocol-"))
+        .collect()
+}
+
 fn quote_list(features: &[String]) -> String {
     features
         .iter()
@@ -113,11 +122,18 @@ mod tests {
     #[test]
     fn the_default_feature_list_is_read_from_the_manifest() {
         let manifest = "[package]\nname = \"irori\"\n\n[features]\n\
-                        default = [\"int-mqtt\", \"ui\"]\nint-mqtt = []\n";
+                        default = [\"protocol-mqtt\", \"ui\"]\nprotocol-mqtt = []\n";
         assert_eq!(
             default_features(manifest).expect("a default list"),
-            ["int-mqtt", "ui"]
+            ["protocol-mqtt", "ui"]
         );
+    }
+
+    #[test]
+    fn a_protocol_feature_compiled_into_defaults_is_reported() {
+        let defaults = ["protocol-mqtt".to_owned(), "ui".to_owned()];
+        assert_eq!(compiled_in_protocols(&defaults), vec![&defaults[0]]);
+        assert!(compiled_in_protocols(&["ui".to_owned()]).is_empty());
     }
 
     #[test]

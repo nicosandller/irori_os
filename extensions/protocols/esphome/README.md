@@ -16,7 +16,7 @@ flash and it runs alongside an existing Home Assistant setup without touching it
 - **Switches them.** A command goes out as a `LightCommandRequest` or `SwitchCommandRequest`;
   the new state comes back as a report, traced to whoever asked for it.
 - **Survives devices going away**: entities stay, marked offline with their last value, and the
-  integration reconnects (1 s, doubling to a minute).
+  extension reconnects (1 s, doubling to a minute).
 - **Talks to encrypted devices** once it has their key (below).
 
 ## A note on trust
@@ -38,7 +38,7 @@ so in the log, and the limit is recorded as decision D29 rather than left to be 
 
 A device that announces `api_encryption` is **not** connected to until Irori has its key. It shows
 up under **Devices → Add device → Found, and waiting for you**, by the name it announced; paste the
-`key:` from its YAML and Irori restarts the ESPHome integration with it (a few seconds, during
+`key:` from its YAML and Irori restarts the ESPHome extension with it (a few seconds, during
 which every ESPHome device reconnects).
 
 The key is written to `secrets.toml` in the config directory, keyed by the device's MAC address:
@@ -74,7 +74,7 @@ would say otherwise. Current firmware announces it.
 ## Trying it without hardware
 
 ESPHome can compile a config for **your own machine** instead of an ESP32 (its `host` platform),
-which is how this integration was developed:
+which is how this extension was developed:
 
 ```sh
 pip install esphome

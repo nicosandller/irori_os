@@ -97,7 +97,7 @@ Or straight from the checkout, without installing — the same commands after `c
 ```sh
 cargo run -- run                                # http://127.0.0.1:8480
 cargo run -- run --log-level debug
-cargo run --no-default-features -- run          # barebones: no integrations, no UI
+cargo run --no-default-features -- run          # barebones: no extensions, no UI
 ```
 
 The temporary API, for looking at the home without the page:
@@ -110,7 +110,7 @@ curl -s http://127.0.0.1:8480/api/dev/home     # the whole home in one response
 The **web UI** is a separate wasm crate, so `cargo build` alone doesn't need a wasm toolchain and
 serves a placeholder page at `/`. `cargo xtask install` above builds it; `cargo xtask ui` builds
 it without installing. It has a folding sidebar; `/` is an IroriOS start screen, and the pages are
-Devices (devices grouped by integration, entities with their switches, and an **Add device**
+Devices (devices grouped by extension, entities with their switches, and an **Add device**
 panel), Extensions, and Settings (the instance, areas & floors, users, and the machine itself).
 
 See [crates/irori-ui/README.md](crates/irori-ui/README.md) for working on the UI itself (live
@@ -118,7 +118,7 @@ reload, no binary rebuild). CI builds it, so downloaded release binaries always 
 
 ### Rooms, and what to call things
 
-Every device has **one id, one name and one description**. The id is made from the integration
+Every device has **one id, one name and one description**. The id is made from the protocol
 and the device's hardware address (`esphome_00_11_22_33_44_55`) and never changes. The name
 starts as whatever the firmware calls the device, and once you rename it, yours is the only name —
 there's no second one kept in step somewhere else. Names, descriptions and rooms survive restarts,

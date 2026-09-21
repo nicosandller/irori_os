@@ -16,9 +16,9 @@ more than volume: one verified finding beats five guesses.
 
 ## Decisions already made (don't flag these)
 
-- `irori-core` depends on `irori-integration`. That crate is the integration SDK (the
-  `Integration` trait), not an integration; the core's integration host needs it. What
-  ROADMAP §2.1 forbids is `irori-int-*` crates and protocol libraries, which
+- `irori-core` depends on `irori-protocol`. That crate is the protocol SDK (the
+  `Protocol` trait), not a protocol extension; the core's extension host needs it. What
+  ROADMAP §2.1 forbids is `irori-protocol-*` crates and protocol libraries, which
   `cargo xtask check-deps` enforces.
 - `rustup toolchain install` with no arguments, in `dev/Dockerfile`, installs the toolchain
   named in `rust-toolchain.toml`. It's intentional and works.
@@ -36,28 +36,32 @@ more than volume: one verified finding beats five guesses.
   Python, Rust `jsonschema`) read them. Don't flag literals whose extra digits are lost in
   that conversion (e.g. `1.0000000000000001` reading as `1`); Irori doesn't do
   arbitrary-precision parsing.
-- **Built-in integrations may not block, and the core doesn't isolate them from that.** They
-  run as Tokio tasks on the shared runtime on purpose: they're first-party code shipped with the
-  core, and the contract (`docs/specs/integrations.md` §3) says they must not block. Third-party
-  code runs as a separate process instead. Don't propose per-integration runtimes or threads for
+- **Built-in protocol extensions may not block, and the core doesn't isolate them from that.**
+  They run as Tokio tasks on the shared runtime on purpose: they're first-party code shipped with
+  the core, and the contract (`docs/specs/protocols.md` §3) says they must not block. Third-party
+  code runs as a separate process instead. Don't propose per-extension runtimes or threads for
   the built-ins; the cost on a Raspberry Pi isn't worth a rule we already enforce by review.
-- **The official `irori-int-*` extensions are linked into the binary, not shipped as packages.**
-  Their manifests leave out `run` because they aren't external packages, and there is no
-  `irori-ext-*` executable to build. The release archive is the `irori` binary alone, and
-  `install/install.sh` doesn't install an `extensions/` tree until the host loads external
-  packages at startup. Don't ask for extension binaries to be packaged, or for the installer to
-  copy extensions, before that lands.
-- **The built-in manifests don't cap the `irori` requirement.** The official `irori-int-*`
-  manifests use `>=0.0.0` with no upper bound because they're compiled into the core and always
-  ship with it; the old `<0.1.0` cap made a tagged build reject its own integrations. Upper bounds
-  matter for external packages, which are loaded separately.
+- **The official `irori-protocol-*` extensions are shipped as packages, not linked into the
+  binary.** Each has its own `irori-ext-<name>` binary (`extensions/official.toml` lists them),
+  built and released separately by `cargo xtask package` and downloaded by the running `irori`
+  from a GitHub release (`crates/irori/src/packages.rs`); `ExtensionHost::start_with_packages`
+  loads them from a packages directory at startup with an empty built-in list
+  (`crates/irori/src/main.rs`). This is newer than it looks: earlier notes in this file described
+  them as compiled in, which stopped being true without ROADMAP being updated to say so — flag
+  further ROADMAP drift here rather than trusting old notes like this one at face value.
+  Don't propose adding them back as cargo features.
+- **Most built-in manifests don't cap the `irori` requirement, but `mqtt`'s does.** `demo`,
+  `helpers`, and `esphome` use `>=0.0.0`; `mqtt` alone has `>=0.0.0, <0.1.0`
+  (`extensions/protocols/mqtt/irori-extension.toml`). Don't assume this is settled either way
+  without checking the manifest — flag the inconsistency if it looks unintentional, but it isn't
+  automatically a bug.
 - **`last_reported` starts when an entity is registered, and is never null.** Describing an
-  entity is the integration telling Irori about it, and "has never reported a value" is already
+  entity is the protocol telling Irori about it, and "has never reported a value" is already
   visible as `state: null` (`docs/specs/entities.md` §5.1). Don't propose making the field
   optional or adding a sentinel for entities that have only been described.
 - **The per-entity call turnstile is best-effort ordering, not mutual exclusion.** Two commands
   can overlap at a device when a caller gives up mid-call. What keeps `toggle` correct is the
-  remembered command in `Home::commanded` (`docs/specs/integrations.md` §7.1), which survives a
+  remembered command in `Home::commanded` (`docs/specs/protocols.md` §7.1), which survives a
   cancelled caller. Don't propose moving call supervision off the caller's future to close that
   window; the restructuring isn't worth it for a cancelled command arriving a moment early.
 - **`crates/irori-ui` is outside the Cargo workspace on purpose.** It builds for
@@ -73,11 +77,11 @@ more than volume: one verified finding beats five guesses.
   API, and pushing changes waits for the WebSocket API in M1.5. Don't propose WebSockets, SSE,
   ETags, or caching headers for it yet.
 - **Plaintext ESPHome devices are adopted without authentication, on purpose and knowingly.**
-  ESPHome's native API has no device authentication of its own, so `irori-int-esphome` connects
+  ESPHome's native API has no device authentication of its own, so `irori-protocol-esphome` connects
   to whatever announces `_esphomelib._tcp`. This is decision **D29**: the alternatives (an
   allowlist, a record of which devices were adopted, or the encryption keys that make it moot)
   all need somewhere to keep a decision, which is the config dir in M0.7. It's written up in
-  `integrations/irori-int-esphome/README.md`, and every device's first connection warns in the
+  `extensions/protocols/esphome/README.md`, and every device's first connection warns in the
   log. Don't raise unauthenticated adoption, mDNS spoofing, or device-id impersonation again
   until encryption lands. **Still worth reporting:** a flaw in the encrypted path once it
   exists, anything that widens exposure beyond the local network, or a way this reaches past
@@ -88,8 +92,8 @@ more than volume: one verified finding beats five guesses.
   the same version from a registry, which `cargo xtask install` never does. Don't propose adding
   it to `xtask/src/ui.rs`.
 - **A device has one id, one name and one description (ROADMAP D36).** Don't suggest showing the
-  firmware's or integration's name next to a name a person chose, keeping a "display name"
-  separately, or deriving a device id from its name. Device ids are made from the integration and
+  firmware's or protocol's name next to a name a person chose, keeping a "display name"
+  separately, or deriving a device id from its name. Device ids are made from the protocol and
   its handle on purpose, so a rename can never move them.
 - **Check files before claiming what they contain.** Quote the actual line, for example the
   value in a fixture, rather than inferring it.

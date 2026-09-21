@@ -43,7 +43,7 @@ dev/pi down            # stop (data is kept)
 dev/pi down --wipe     # stop and delete the data volume, like a fresh SD card
 ```
 
-The barebones build (no integrations, no UI) must always work too:
+The barebones build (no extensions, no UI) must always work too:
 
 ```sh
 dev/pi up --barebones
