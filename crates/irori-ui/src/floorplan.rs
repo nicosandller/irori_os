@@ -21,12 +21,43 @@ use leptos::task::spawn_local;
 use crate::api::{self, Home};
 use crate::devices::Controls;
 
-/// What the editor rounds to, in centimetres. Fine enough to draw a real room, coarse enough
-/// that two walls meant to meet actually do.
+/// What the editor rounds to by default, in centimetres. Fine enough to draw a real room,
+/// coarse enough that two walls meant to meet actually do.
 const SNAP: i32 = 10;
+
+/// The range a custom snap can be set to, in centimetres. One centimetre is as fine as a plan
+/// goes; a metre is as coarse as is still drawing rather than guessing.
+const SNAP_RANGE: std::ops::RangeInclusive<i32> = 1..=100;
 
 /// The spacing of the drawn grid, in centimetres: one square metre.
 const GRID: i32 = 100;
+
+/// How far apart the editor lets a point land.
+///
+/// Two settings rather than a number with a default, because they are two different intentions:
+/// **Grid** is "I'm drawing a house and 10 cm is plenty", and never needs thinking about.
+/// **Custom** is "this wall really is 137 cm", and is worth the slider it costs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Snap {
+    Grid,
+    /// A step of somebody's own, in centimetres, inside [`SNAP_RANGE`].
+    Custom(i32),
+}
+
+impl Snap {
+    /// The step to round to, in centimetres. Never zero: a plan is whole centimetres either way,
+    /// so the finest custom step is already no rounding at all.
+    fn step(self) -> i32 {
+        match self {
+            Snap::Grid => SNAP,
+            Snap::Custom(step) => step.clamp(*SNAP_RANGE.start(), *SNAP_RANGE.end()),
+        }
+    }
+
+    fn is_custom(self) -> bool {
+        matches!(self, Snap::Custom(_))
+    }
+}
 
 /// How close, in screen pixels, a click has to be to something to count as a click *on* it.
 /// In pixels rather than centimetres so it stays the same size under the pointer at any zoom.
@@ -111,8 +142,8 @@ impl Tool {
                  away. Drag the empty plan to move around, and scroll to zoom."
             }
             Tool::Wall => {
-                "Click to start a wall, then click for each corner. Escape ends the run. Ends \
-                 snap to the corners already there."
+                "Click to start a wall, then click for each corner. Right-click or Escape ends \
+                 the run. Ends snap to the corners already there."
             }
             Tool::Door => "Click a wall to cut a door into it.",
             Tool::Window => "Click a wall to cut a window into it.",
@@ -174,6 +205,10 @@ pub fn Floorplan() -> impl IntoView {
     let running = RwSignal::new(None::<Point>);
     let pointer = RwSignal::new(None::<Point>);
     let arming = RwSignal::new(None::<DeviceId>);
+    let snap = RwSignal::new(Snap::Grid);
+    // What the next wall drawn will be. Changing a wall's thickness sets this too, so drawing
+    // an outside wall, thickening it, and carrying on gives thick walls the rest of the way.
+    let thickness = RwSignal::new(Wall::DEFAULT_THICKNESS);
     let view = RwSignal::new(Viewport::default());
     let drag = RwSignal::new(None::<Drag>);
     let dragged = RwSignal::new(false);
@@ -377,7 +412,8 @@ pub fn Floorplan() -> impl IntoView {
             && let Some(wall) = plan.walls.get(w)
         {
             for (to_end, end) in [(false, wall.from), (true, wall.to)] {
-                if end.distance_to(Point::new(round(world.0), round(world.1))) <= reach * 1.5 {
+                let away = (world.0 - f64::from(end.x)).hypot(world.1 - f64::from(end.y));
+                if away <= reach * 1.5 {
                     drag.set(Some(Drag::Corner { wall: w, to_end }));
                     return;
                 }
@@ -415,7 +451,14 @@ pub fn Floorplan() -> impl IntoView {
         let world = here.world(screen.0, screen.1);
 
         if editing.get_untracked() && running.get_untracked().is_some() {
-            pointer.set(Some(place(&draft.get_untracked(), world, here, None)));
+            let to = place(
+                &draft.get_untracked(),
+                world,
+                here,
+                snap.get_untracked(),
+                None,
+            );
+            pointer.set(Some(to));
         }
 
         let Some(holding) = drag.get_untracked() else {
@@ -438,12 +481,13 @@ pub fn Floorplan() -> impl IntoView {
                 let Some(was) = plan.walls.get(wall).map(|wall| ends(wall, to_end)) else {
                     return;
                 };
-                let to = place(&plan, world, here, Some(was));
+                let to = place(&plan, world, here, snap.get_untracked(), Some(was));
                 draft.update(|plan| shift(plan, &[(was, to)]));
             }
             Drag::Wall { wall, grab } => {
                 dragged.set(true);
-                let by = (round(world.0 - grab.0), round(world.1 - grab.1));
+                let step = snap.get_untracked().step();
+                let by = (round(world.0 - grab.0, step), round(world.1 - grab.1, step));
                 if by == (0, 0) {
                     return;
                 }
@@ -475,7 +519,8 @@ pub fn Floorplan() -> impl IntoView {
             }
             Drag::Device { device } => {
                 dragged.set(true);
-                let to = Point::new(round(world.0), round(world.1));
+                let step = snap.get_untracked().step();
+                let to = Point::new(round(world.0, step), round(world.1, step));
                 draft.update(|plan| {
                     if let Some(placed) = plan.devices.get_mut(device) {
                         placed.at = to;
@@ -499,10 +544,20 @@ pub fn Floorplan() -> impl IntoView {
         match tool.get_untracked() {
             Tool::Select => {}
             Tool::Wall => {
-                let to = place(&draft.get_untracked(), world, here, None);
+                let to = place(
+                    &draft.get_untracked(),
+                    world,
+                    here,
+                    snap.get_untracked(),
+                    None,
+                );
                 match running.get_untracked() {
                     Some(from) if from != to => {
-                        draft.update(|plan| plan.walls.push(Wall::new(from, to)));
+                        let built = Wall {
+                            thickness: thickness.get_untracked(),
+                            ..Wall::new(from, to)
+                        };
+                        draft.update(|plan| plan.walls.push(built));
                         running.set(Some(to));
                     }
                     // The first click of a run, or a second click in the same spot, which would
@@ -549,7 +604,8 @@ pub fn Floorplan() -> impl IntoView {
                     return;
                 };
                 trouble.set(None);
-                let at = Point::new(round(world.0), round(world.1));
+                let step = snap.get_untracked().step();
+                let at = Point::new(round(world.0, step), round(world.1, step));
                 draft.update(|plan| {
                     plan.devices.retain(|placed| placed.device != device);
                     plan.devices.push(PlacedDevice { device, at });
@@ -557,6 +613,24 @@ pub fn Floorplan() -> impl IntoView {
                 });
                 arming.set(None);
             }
+        }
+    };
+
+    // Right-click backs out, the way it ends a run of points in every drawing program: it stops
+    // the wall being drawn, and stops a device waiting to be put down. The browser's own menu is
+    // held back only while editing — there's nothing to back out of while reading the plan, and
+    // taking the menu away then would be taking something for nothing.
+    let on_right_click = move |event: ev::MouseEvent| {
+        if !editing.get_untracked() {
+            return;
+        }
+        event.prevent_default();
+        if running.get_untracked().is_some() {
+            stop_drawing();
+        } else if arming.get_untracked().is_some() {
+            arming.set(None);
+        } else {
+            picked.set(None);
         }
     };
 
@@ -612,10 +686,12 @@ pub fn Floorplan() -> impl IntoView {
                 on:mouseup=on_up
                 on:mouseleave=on_up
                 on:click=on_click
+                on:contextmenu=on_right_click
                 on:wheel=on_wheel
             >
                 <svg class="plan" aria-hidden="true">
                     {move || editing.get().then(|| grid(view.get()))}
+                    {move || shown.get().is_empty().then(watermark)}
                     {move || {
                         let here = view.get();
                         let plan = shown.get();
@@ -623,7 +699,9 @@ pub fn Floorplan() -> impl IntoView {
                         plan.walls
                             .iter()
                             .enumerate()
-                            .map(|(w, wall)| drawn_wall(wall, w, here, chosen))
+                            .map(|(w, wall)| {
+                                drawn_wall(wall, w, joints(&plan, w), here, chosen)
+                            })
                             .collect_view()
                     }}
                     {move || {
@@ -752,27 +830,238 @@ pub fn Floorplan() -> impl IntoView {
                 <DevicePicker plan=shown arming=arming live=live />
             })}
 
+            {move || editing.get().then(|| view! {
+                <Inspector draft=draft picked=picked thickness=thickness />
+            })}
+
             <div class="plan-foot">
                 <div class="zoom">
                     <button type="button" aria-label="Zoom out" on:click=move |_| zoom_by(1.0 / 1.25)>"−"</button>
                     <button type="button" aria-label="Zoom in" on:click=move |_| zoom_by(1.25)>"+"</button>
                     <button type="button" on:click=move |_| fit()>"Fit"</button>
                 </div>
+                {move || editing.get().then(|| view! { <SnapControl snap=snap /> })}
                 <p class="hint">
                     {move || if editing.get() {
-                        tool.get().hint().to_owned()
+                        tool.get().hint()
                     } else if shown.get().is_empty() {
-                        "Nothing drawn yet. Edit, then draw the walls of your home and put your \
-                         devices where they are.".to_owned()
+                        ""
                     } else {
                         "The devices on the plan show what they're doing. Click one to switch it."
-                            .to_owned()
                     }}
                 </p>
             </div>
 
             {move || trouble.get().map(|why| view! { <p class="plan-banner">{why}</p> })}
         </div>
+    }
+}
+
+/// How far apart points may land: the grid, or a step of your own.
+///
+/// Two controls rather than one, because the two settings are asked for differently. Grid is the
+/// answer almost always and should cost one glance; a step of your own is a deliberate thing to
+/// want, and only then is a slider worth the room it takes.
+#[component]
+fn SnapControl(snap: RwSignal<Snap>) -> impl IntoView {
+    view! {
+        <div class="snap">
+            <span class="snap-label" id="snap-label">"Snap"</span>
+            <div class="switcher" role="group" aria-labelledby="snap-label">
+                <button
+                    type="button"
+                    class:chosen=move || !snap.get().is_custom()
+                    aria-pressed=move || (!snap.get().is_custom()).to_string()
+                    on:click=move |_| snap.set(Snap::Grid)
+                >
+                    "Grid"
+                </button>
+                <button
+                    type="button"
+                    class:chosen=move || snap.get().is_custom()
+                    aria-pressed=move || snap.get().is_custom().to_string()
+                    // Starting from whatever the grid is keeps the plan still at the moment of
+                    // switching: nothing already drawn moves, and the next point is the first
+                    // thing the new step applies to.
+                    on:click=move |_| snap.update(|snap| {
+                        if !snap.is_custom() {
+                            *snap = Snap::Custom(snap.step());
+                        }
+                    })
+                >
+                    "Custom"
+                </button>
+            </div>
+            {move || snap.get().is_custom().then(|| view! {
+                <label class="snap-step">
+                    <span class="visually-hidden">"Snap step in centimetres"</span>
+                    <input
+                        type="range"
+                        min=*SNAP_RANGE.start()
+                        max=*SNAP_RANGE.end()
+                        step="1"
+                        prop:value=move || snap.get().step()
+                        on:input=move |event| {
+                            if let Ok(step) = event_target_value(&event).parse::<i32>() {
+                                snap.set(Snap::Custom(step));
+                            }
+                        }
+                    />
+                    <output>{move || format!("{} cm", snap.get().step())}</output>
+                </label>
+            })}
+        </div>
+    }
+}
+
+/// What's picked up, and the one or two numbers worth changing about it.
+///
+/// Only the things a number can say. Where a wall *is* is said by dragging it, which is quicker
+/// than any field would be; how thick it is can't be dragged at all, so it lives here.
+#[component]
+fn Inspector(
+    draft: RwSignal<Floorplan>,
+    picked: RwSignal<Option<Pick>>,
+    thickness: RwSignal<u32>,
+) -> impl IntoView {
+    move || {
+        let plan = draft.get();
+        match picked.get()? {
+            Pick::Wall(w) => {
+                let wall = plan.walls.get(w)?;
+                let (length, thick) = (wall.length(), wall.thickness);
+                Some(view! {
+                    <div class="inspector">
+                        <h2>"Wall"</h2>
+                        <p class="measure-row">
+                            <span>"Length"</span>
+                            <span class="figure">{metres(length)}</span>
+                        </p>
+                        <label class="slider">
+                            <span>"Thickness"</span>
+                            <input
+                                type="range"
+                                min=*Wall::THICKNESS_RANGE.start()
+                                max=*Wall::THICKNESS_RANGE.end()
+                                step="1"
+                                prop:value=thick
+                                on:input=move |event| {
+                                    let Ok(next) = event_target_value(&event).parse::<u32>() else {
+                                        return;
+                                    };
+                                    let next = next.clamp(
+                                        *Wall::THICKNESS_RANGE.start(),
+                                        *Wall::THICKNESS_RANGE.end(),
+                                    );
+                                    // Remembered for the next wall drawn, so a run of outside
+                                    // walls needs saying once.
+                                    thickness.set(next);
+                                    draft.update(|plan| {
+                                        if let Some(wall) = plan.walls.get_mut(w) {
+                                            wall.thickness = next;
+                                        }
+                                    });
+                                }
+                            />
+                            <output class="figure">{format!("{thick} cm")}</output>
+                        </label>
+                    </div>
+                }.into_any())
+            }
+            Pick::Opening(w, o) => {
+                let wall = plan.walls.get(w)?;
+                let opening = wall.openings.get(o)?;
+                let (kind, width) = (opening.kind, opening.width);
+                // An opening can't be wider than the wall it's cut into, so the slider stops
+                // where the wall does rather than letting a plan be made that can't be saved.
+                let widest = wall.length().floor().max(1.0) as u32;
+                Some(view! {
+                    <div class="inspector">
+                        <h2>{kind.label()}</h2>
+                        <label class="slider">
+                            <span>"Width"</span>
+                            <input
+                                type="range"
+                                min=1
+                                max=widest
+                                step="1"
+                                prop:value=width
+                                on:input=move |event| {
+                                    let Ok(next) = event_target_value(&event).parse::<u32>() else {
+                                        return;
+                                    };
+                                    draft.update(|plan| {
+                                        let Some(wall) = plan.walls.get_mut(w) else { return };
+                                        let length = wall.length();
+                                        let Some(opening) = wall.openings.get_mut(o) else {
+                                            return;
+                                        };
+                                        opening.width =
+                                            next.clamp(1, length.floor().max(1.0) as u32);
+                                        // Widening one near the end of its wall slides it back
+                                        // in rather than letting it hang off.
+                                        opening.at = fit_opening(
+                                            f64::from(opening.at),
+                                            opening.width,
+                                            length,
+                                        );
+                                    });
+                                }
+                            />
+                            <output class="figure">{format!("{width} cm")}</output>
+                        </label>
+                    </div>
+                }.into_any())
+            }
+            Pick::Device(d) => {
+                let placed = plan.devices.get(d)?;
+                Some(
+                    view! {
+                        <div class="inspector">
+                            <h2>"Device"</h2>
+                            <p class="muted small">{placed.device.to_string()}</p>
+                            <p class="muted small">"Drag it to move it."</p>
+                        </div>
+                    }
+                    .into_any(),
+                )
+            }
+        }
+    }
+}
+
+/// A room, faintly, where the plan will go: what this page is for, said in the shape of the
+/// thing rather than in a sentence at the bottom of the screen.
+///
+/// Drawn in the canvas's own pixels rather than in centimetres, so it sits in the middle and
+/// stays the same size whatever the zoom happens to be — it is a picture of a floorplan, not a
+/// floorplan, and zooming in on it would be a promise the page can't keep.
+fn watermark() -> impl IntoView {
+    view! {
+        <g class="watermark">
+            <svg x="50%" y="50%" overflow="visible">
+                <g transform="translate(-150 -125)">
+                    // The outside of a small flat: a way in at the bottom, a window on top.
+                    <path d="M0 0 H120 M180 0 H300 M300 0 V210 M300 210 H190 M120 210 H0 M0 210 V0"
+                        fill="none" stroke-width="10" stroke-linecap="square" />
+                    // The window in the top wall and the door in the bottom one.
+                    <path d="M120 0 H180" stroke-width="3" />
+                    <path d="M190 210 a60 60 0 0 0 -60 -60" fill="none" stroke-width="3" />
+                    <path d="M130 210 V150" stroke-width="3" />
+                    // One inside wall, with a doorway in it.
+                    <path d="M190 210 V120 M190 60 V0" fill="none" stroke-width="10"
+                        stroke-linecap="square" />
+                    // And something switched on in the corner.
+                    <circle cx="70" cy="70" r="12" fill="none" stroke-width="3" />
+                    <path d="M70 40 V28 M70 112 V100 M40 70 H28 M112 70 H100"
+                        stroke-width="3" stroke-linecap="round" />
+                </g>
+            </svg>
+            <text x="50%" y="50%" dy="130" text-anchor="middle">"Nothing drawn yet"</text>
+            <text x="50%" y="50%" dy="156" text-anchor="middle" class="watermark-lede">
+                "Press Edit to draw the walls of your home"
+            </text>
+        </g>
     }
 }
 
@@ -996,17 +1285,30 @@ fn grid(view: Viewport) -> impl IntoView {
 }
 
 /// One wall: the stretches of it that are still solid, and the doors and windows in the gaps.
+///
+/// `joints` is how far each end runs past the point it was drawn to, so that a corner comes out
+/// solid; see [`joints`].
 fn drawn_wall(
     wall: &Wall,
     index: usize,
+    joints: (f64, f64),
     view: Viewport,
     picked: Option<Pick>,
 ) -> impl IntoView + use<> {
     let thickness = f64::from(wall.thickness);
     let chosen = picked == Some(Pick::Wall(index));
+    let length = wall.length();
     let runs = solid_runs(wall)
         .into_iter()
         .map(|(start, end)| {
+            // Only the ends that really are the ends of the wall get the joint: the sides of a
+            // doorway are the ends of a run too, and they must stay where the door is.
+            let start = if start <= 0.0 { -joints.0 } else { start };
+            let end = if end >= length {
+                length + joints.1
+            } else {
+                end
+            };
             let (a, _, _) = along(wall, start);
             let (b, _, _) = along(wall, end);
             view! {
@@ -1116,9 +1418,9 @@ fn handles(wall: &Wall, view: Viewport) -> impl IntoView + use<> {
 
 // --- Geometry -----------------------------------------------------------------------------
 
-fn round(value: f64) -> i32 {
-    let snap = f64::from(SNAP);
-    (value / snap).round() as i32 * SNAP
+/// Rounds a measurement to the nearest multiple of `step` centimetres.
+fn round(value: f64, step: i32) -> i32 {
+    (value / f64::from(step)).round() as i32 * step
 }
 
 /// Where a new point goes: onto a corner that's already there if one is within reach, and onto
@@ -1126,7 +1428,13 @@ fn round(value: f64) -> i32 {
 ///
 /// `except` leaves one corner out — the one being dragged. Without it a corner could never be
 /// moved off the grid square it started on, because it would keep snapping to itself.
-fn place(plan: &Floorplan, world: (f64, f64), view: Viewport, except: Option<Point>) -> Point {
+fn place(
+    plan: &Floorplan,
+    world: (f64, f64),
+    view: Viewport,
+    snap: Snap,
+    except: Option<Point>,
+) -> Point {
     let reach = CORNER * view.cm_per_pixel();
     let mut nearest: Option<(f64, Point)> = None;
     for corner in plan.walls.iter().flat_map(|wall| [wall.from, wall.to]) {
@@ -1140,7 +1448,10 @@ fn place(plan: &Floorplan, world: (f64, f64), view: Viewport, except: Option<Poi
     }
     match nearest {
         Some((_, corner)) => corner,
-        None => Point::new(round(world.0), round(world.1)),
+        None => {
+            let step = snap.step();
+            Point::new(round(world.0, step), round(world.1, step))
+        }
     }
 }
 
@@ -1189,6 +1500,70 @@ fn on_wall_at(from: Point, to: Point, world: (f64, f64)) -> (f64, f64) {
     let share = (((world.0 - ax) * dx + (world.1 - ay) * dy) / square).clamp(0.0, 1.0);
     let (px, py) = (ax + dx * share, ay + dy * share);
     (share * square.sqrt(), (world.0 - px).hypot(world.1 - py))
+}
+
+/// How far each end of a wall has to run past the point it was drawn to for its corners to come
+/// out solid, in centimetres: `(from, to)`.
+///
+/// Walls are drawn as thick lines with flat ends, so two of them meeting at a right angle stop
+/// on the corner point and leave a square notch missing from the outside of it — small, but the
+/// one thing that makes a plan look unfinished. Running each wall on by the **mitre distance**
+/// fills it: half the thickness divided by the tangent of half the angle between them, which is
+/// exactly half the thickness at a right angle, nothing at all where two walls carry straight
+/// on, and more as the corner closes up.
+///
+/// A free end — one no other wall meets — gets nothing, because a wall that stops in the middle
+/// of a room stops where it was drawn. Where several walls meet, the largest of the distances
+/// wins: the overshoot lands inside the other walls, where it can't be seen.
+fn joints(plan: &Floorplan, index: usize) -> (f64, f64) {
+    let Some(wall) = plan.walls.get(index) else {
+        return (0.0, 0.0);
+    };
+    let half = f64::from(wall.thickness) / 2.0;
+    // Past about 15° the mitre runs away to nothing useful, so it's cut off — a sliver at a very
+    // sharp corner beats a spike shooting across the plan.
+    let limit = half * 4.0;
+
+    let reach = |corner: Point, away: Point| {
+        // The wall's own direction, pointing away from this corner.
+        let mine = direction(corner, away);
+        let mut most = 0.0_f64;
+        for (other, from, to) in plan
+            .walls
+            .iter()
+            .enumerate()
+            .filter(|(which, _)| *which != index)
+            .map(|(_, other)| (other, other.from, other.to))
+        {
+            let _ = other;
+            let theirs = if from == corner {
+                direction(corner, to)
+            } else if to == corner {
+                direction(corner, from)
+            } else {
+                continue;
+            };
+            // The angle at the corner, between the two walls running away from it.
+            let cos = (mine.0 * theirs.0 + mine.1 * theirs.1).clamp(-1.0, 1.0);
+            let angle = cos.acos();
+            let tan = (angle / 2.0).tan();
+            let distance = if tan.abs() < 1e-6 { limit } else { half / tan };
+            most = most.max(distance.clamp(0.0, limit));
+        }
+        most
+    };
+
+    (reach(wall.from, wall.to), reach(wall.to, wall.from))
+}
+
+/// The unit vector from one point towards another, or a default when they're the same place.
+fn direction(from: Point, to: Point) -> (f64, f64) {
+    let (dx, dy) = (f64::from(to.x - from.x), f64::from(to.y - from.y));
+    let length = dx.hypot(dy);
+    if length <= f64::EPSILON {
+        return (1.0, 0.0);
+    }
+    (dx / length, dy / length)
 }
 
 /// A point a given distance along a wall, with the wall's direction and its left-hand normal.
@@ -1474,17 +1849,23 @@ mod tests {
             ..Floorplan::default()
         };
         assert_eq!(
-            place(&plan, (399.0, 4.0), view, None),
+            place(&plan, (399.0, 4.0), view, Snap::Grid, None),
             Point::new(403, 0),
             "close to the far corner"
         );
         assert_eq!(
-            place(&plan, (252.0, 97.0), view, None),
+            place(&plan, (252.0, 97.0), view, Snap::Grid, None),
             Point::new(250, 100),
             "nowhere near one: the grid"
         );
         assert_eq!(
-            place(&plan, (399.0, 4.0), view, Some(Point::new(403, 0))),
+            place(
+                &plan,
+                (399.0, 4.0),
+                view,
+                Snap::Grid,
+                Some(Point::new(403, 0))
+            ),
             Point::new(400, 0),
             "the corner being dragged doesn't catch itself"
         );
@@ -1553,6 +1934,97 @@ mod tests {
         let mut plan = before.clone();
         shift(&mut plan, &[(Point::new(0, 0), Point::new(100, 0))]);
         assert_eq!(plan, before);
+    }
+
+    /// The point of a step of your own: a wall that really is 137 cm long.
+    #[test]
+    fn a_custom_step_is_what_points_round_to() {
+        let view = Viewport {
+            scale: 0.5,
+            pan: (0.0, 0.0),
+        };
+        let empty = Floorplan::default();
+        let at = |snap| place(&empty, (137.4, 62.6), view, snap, None);
+
+        assert_eq!(at(Snap::Grid), Point::new(140, 60));
+        assert_eq!(
+            at(Snap::Custom(1)),
+            Point::new(137, 63),
+            "to the centimetre"
+        );
+        assert_eq!(at(Snap::Custom(25)), Point::new(125, 75));
+        assert_eq!(
+            at(Snap::Custom(0)),
+            at(Snap::Custom(1)),
+            "a step below the range is the finest one, never a division by zero"
+        );
+        assert_eq!(
+            at(Snap::Custom(10_000)),
+            at(Snap::Custom(100)),
+            "and above it"
+        );
+    }
+
+    /// Switching to a custom step starts from whatever was in force, so nothing on the plan
+    /// moves at the moment of switching.
+    #[test]
+    fn a_custom_step_starts_where_the_grid_left_off() {
+        assert_eq!(Snap::Grid.step(), SNAP);
+        assert_eq!(Snap::Custom(Snap::Grid.step()).step(), SNAP);
+        assert!(!Snap::Grid.is_custom());
+        assert!(Snap::Custom(SNAP).is_custom());
+    }
+
+    /// The gap this closes: two walls meeting at a right angle stop on the corner and leave a
+    /// square notch out of the outside of it. Each has to run on by half its thickness.
+    #[test]
+    fn a_corner_runs_on_far_enough_to_come_out_solid() {
+        let plan = Floorplan {
+            walls: vec![
+                wall((0, 0), (400, 0)),
+                wall((400, 0), (400, 300)),
+                wall((600, 600), (900, 600)),
+            ],
+            ..Floorplan::default()
+        };
+        let half = f64::from(Wall::DEFAULT_THICKNESS) / 2.0;
+
+        let (from, to) = joints(&plan, 0);
+        assert_eq!(from, 0.0, "a free end stops where it was drawn");
+        assert!(
+            (to - half).abs() < 1e-9,
+            "a right angle runs on by half: {to}"
+        );
+        let (from, _) = joints(&plan, 1);
+        assert!(
+            (from - half).abs() < 1e-9,
+            "and so does the other wall: {from}"
+        );
+        assert_eq!(
+            joints(&plan, 2),
+            (0.0, 0.0),
+            "a wall on its own gets nothing"
+        );
+    }
+
+    /// Two walls carrying straight on need nothing; a hairpin needs more than a right angle,
+    /// but not without limit.
+    #[test]
+    fn how_far_a_corner_runs_on_follows_the_angle() {
+        let straight = Floorplan {
+            walls: vec![wall((0, 0), (400, 0)), wall((400, 0), (800, 0))],
+            ..Floorplan::default()
+        };
+        assert!(joints(&straight, 0).1 < 1e-6, "nothing to fill");
+
+        let sharp = Floorplan {
+            walls: vec![wall((0, 0), (400, 0)), wall((400, 0), (0, 40))],
+            ..Floorplan::default()
+        };
+        let half = f64::from(Wall::DEFAULT_THICKNESS) / 2.0;
+        let run = joints(&sharp, 0).1;
+        assert!(run > half, "a sharper corner needs more: {run}");
+        assert!(run <= half * 4.0, "but the spike is cut off: {run}");
     }
 
     #[test]

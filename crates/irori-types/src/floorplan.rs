@@ -91,13 +91,19 @@ pub struct Wall {
     pub openings: Vec<Opening>,
 }
 
-/// An interior wall in a home is about 10 cm; an exterior one more. One number, because the
-/// editor has no tool for changing it yet.
 fn default_thickness() -> u32 {
-    10
+    Wall::DEFAULT_THICKNESS
 }
 
 impl Wall {
+    /// What a wall is drawn as until somebody says otherwise: an interior wall in a home is
+    /// about 10 cm, and an exterior one more.
+    pub const DEFAULT_THICKNESS: u32 = 10;
+
+    /// How thin and how thick a wall may be drawn, in centimetres. A wall thinner than a
+    /// centimetre wouldn't be visible at any zoom; one thicker than a metre isn't a wall.
+    pub const THICKNESS_RANGE: std::ops::RangeInclusive<u32> = 1..=100;
+
     pub fn new(from: Point, to: Point) -> Self {
         Self {
             from,
