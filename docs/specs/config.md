@@ -215,25 +215,34 @@ in the extension's private storage (`integrations.md` §5) through restarts. Rem
 removes its entity and forgets its value.
 ### 3.7 `floorplan.toml`
 
-The home as a drawing. Nothing discovers this — no integration can tell Irori where a wall is —
-so it is authored intent from end to end, and it lives here rather than in the database with the
-rest of it.
+The home as a drawing, **a floor at a time**. Nothing discovers this — no integration can tell
+Irori where a wall is — so it is authored intent from end to end, and it lives here rather than
+in the database with the rest of it.
 
 ```toml
-[[walls]]
+[[floors.ground.walls]]
 from = [0, 0]
 to = [500, 0]
 thickness = 20
 
-[[walls.openings]]
+[[floors.ground.walls.openings]]
 kind = "door"       # "door" or "window"
 at = 250            # centimetres along the wall, from its `from` end, to the middle of the hole
 width = 80
 
-[[devices]]
+[[floors.ground.areas]]
+area = "kitchen"
+points = [[0, 0], [300, 0], [300, 250], [0, 250]]
+
+[[floors.ground.devices]]
 device = "demo_lamp"
 at = [120, 90]
 ```
+
+Keyed by the **floor's id** from §3.1, because a plan *is* the plan of a floor: a house with an
+upstairs has two of them, drawn one over the other. A home nobody has divided into floors has
+nowhere to draw until it has one, which is a question with an obvious answer rather than a reason
+for a second shape of file.
 
 Every measurement is a **whole centimetre**, and a point is `[x, y]` — x rightwards, y downwards,
 from an origin that is wherever whoever drew it started. Whole numbers because a plan has to
@@ -246,14 +255,23 @@ far along that wall it is. Moving a wall carries its doors with it, deleting a w
 too, and a door can never end up floating next to the wall it belongs to. `thickness` is drawn,
 not structural: it decides how heavy the line looks, and defaults to 10 cm.
 
-A device is placed by its id, the same one `devices.toml` uses. An entry for a device that isn't
-in the home right now is **kept and simply not drawn** (§4), the same as every other entry here:
-a device that's unplugged for a week comes back to the spot it was put in.
+An **area is given a shape here, not defined here.** Rooms are made in `areas.toml` (§3.1); this
+only says where one is, as a closed run of corners — the last joins back to the first, so the
+file can't disagree with itself about where the room closes. A room with no shape is simply not
+drawn. The same room may be traced on more than one floor (a stairwell, a double-height hall),
+but only once per floor: a room in two pieces on one floor is a room somebody drew twice.
 
-Two rules are enforced rather than warned about, because breaking either leaves a plan that can't
-be drawn at all: a wall must have some length (a wall with none has no direction, so its openings
-have nowhere to sit), and an opening must fit inside its wall. A file that breaks one is rejected
-whole, like any other unparseable file (§6), and the UI is held to exactly the same rules.
+A device is placed by its id, the same one `devices.toml` uses. An entry for a device that isn't
+in the home right now is **kept and simply not drawn** (§4), as is an entry for a floor or room
+that has since been removed — a device unplugged for a week comes back to the spot it was put in,
+and making a deleted floor again brings its drawing back.
+
+Three rules are enforced rather than warned about, because breaking any of them leaves a plan
+that can't be drawn at all: a wall must have some length (a wall with none has no direction, so
+its openings have nowhere to sit), an opening must fit inside its wall, and a room's shape needs
+at least three corners. A file that breaks one is rejected whole, like any other unparseable file
+(§6), and the UI is held to exactly the same rules. A refusal says which floor it is about,
+because that is the first thing anybody needs in order to go and look.
 
 The Floorplan page **replaces the whole file at once** when somebody presses Save, rather than
 editing a wall at a time. The editor works on a copy while it is being drawn, so a half-finished
@@ -329,8 +347,8 @@ Named here so the layout has room for them, specified when they are built:
   `config_schema` before it starts (`docs/specs/extensions.md`). Today the extension's own config
   type checks it, and an extension with invalid settings waits for valid ones.
 - **An entity in a different area than its device** (`Entity.area_id` already allows it).
-- **More on the plan** — rooms as coloured shapes, furniture, and more than one floor. `floorplan.toml`
-  holds one plan today; floors get their own when the editor can switch between them.
+- **More on the plan** — furniture, stairs between floors, and an area that spans one without
+  being traced on each.
 - **More helpers** — numbers, text, timers — once rules can use them.
 
 ## 8. Changes from the roadmap draft

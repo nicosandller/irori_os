@@ -1757,13 +1757,21 @@ mod tests {
         );
 
         let plan = serde_json::json!({
-            "walls": [{
-                "from": [0, 0],
-                "to": [400, 0],
-                "thickness": 20,
-                "openings": [{"kind": "door", "at": 200, "width": 80}],
-            }],
-            "devices": [{"device": "demo_lamp", "at": [120, 90]}],
+            "floors": {
+                "ground": {
+                    "walls": [{
+                        "from": [0, 0],
+                        "to": [400, 0],
+                        "thickness": 20,
+                        "openings": [{"kind": "door", "at": 200, "width": 80}],
+                    }],
+                    "areas": [{
+                        "area": "kitchen",
+                        "points": [[0, 0], [400, 0], [400, 300], [0, 300]],
+                    }],
+                    "devices": [{"device": "demo_lamp", "at": [120, 90]}],
+                },
+            },
         });
         let (status, body) = server
             .json("PUT", "/api/dev/floorplan", plan.clone())
@@ -1773,10 +1781,14 @@ mod tests {
         let written = std::fs::read_to_string(server.config_dir().join("floorplan.toml"))?;
         assert!(written.contains("from = [0, 0]"), "{written}");
         assert!(written.contains("kind = \"door\""), "{written}");
+        assert!(written.contains("area = \"kitchen\""), "{written}");
         assert!(written.contains("device = \"demo_lamp\""), "{written}");
 
         let home = server.read("/api/dev/home").await?;
-        assert_eq!(home["floorplan"]["walls"][0]["to"][0], 400, "{home}");
+        assert_eq!(
+            home["floorplan"]["floors"]["ground"]["walls"][0]["to"][0], 400,
+            "{home}"
+        );
         assert_eq!(server.read("/api/dev/floorplan").await?, plan);
 
         // A door wider than the wall it's in would have to be drawn hanging off the end.
@@ -1785,11 +1797,15 @@ mod tests {
                 "PUT",
                 "/api/dev/floorplan",
                 serde_json::json!({
-                    "walls": [{
-                        "from": [0, 0],
-                        "to": [100, 0],
-                        "openings": [{"kind": "door", "at": 50, "width": 300}],
-                    }],
+                    "floors": {
+                        "ground": {
+                            "walls": [{
+                                "from": [0, 0],
+                                "to": [100, 0],
+                                "openings": [{"kind": "door", "at": 50, "width": 300}],
+                            }],
+                        },
+                    },
                 }),
             )
             .await?;

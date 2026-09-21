@@ -1,31 +1,61 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Floorplan",
-  "description": "Everything drawn on the plan.\n\nEmpty is the ordinary state of a home nobody has drawn yet, not a missing value: there is one\nplan, and it starts blank.",
+  "description": "Everything drawn, a floor at a time.\n\nKeyed by the floor's id, because a plan **is** the plan of a floor — a house with an upstairs\nhas two of them, drawn one over the other, and the floors are already a thing the home knows\nabout (`docs/specs/config.md` §3.1). A home nobody has divided into floors has nowhere to\ndraw until it has one, which is a question with an obvious answer rather than a reason for a\nsecond shape of plan.\n\nEmpty is the ordinary state of a home nobody has drawn yet, not a missing value.\n\nA floor that has since been removed keeps its plan here, unshown, the same as every other\nentry that outlives what it points at (`docs/specs/config.md` §4): making the floor again\nbrings the drawing back.",
   "type": "object",
   "properties": {
-    "devices": {
-      "description": "Where a device is, for the ones that have been put somewhere.",
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/PlacedDevice"
-      }
-    },
-    "walls": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/Wall"
+    "floors": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[a-z0-9]+(_[a-z0-9]+)*$": {
+          "$ref": "#/$defs/Level"
+        }
       }
     }
   },
   "additionalProperties": false,
   "$defs": {
+    "AreaId": {
+      "description": "Format of a slug (area id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
     "DeviceId": {
       "description": "Format of a slug (device id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
       "type": "string",
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "Level": {
+      "description": "One floor of the home as it is drawn.",
+      "type": "object",
+      "properties": {
+        "areas": {
+          "description": "The rooms of this floor, as shapes. An area with no shape here simply isn't drawn; an\narea is a thing the home knows about whether or not anybody has traced it.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlacedArea"
+          }
+        },
+        "devices": {
+          "description": "Where a device is, for the ones that have been put somewhere.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlacedDevice"
+          }
+        },
+        "walls": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Wall"
+          }
+        }
+      },
+      "additionalProperties": false
     },
     "Opening": {
       "description": "A hole in a wall, placed by how far along that wall it is.\n\nAlong the wall rather than at a point of its own, so moving a wall carries its doors with it\nand a door can never end up floating beside the wall it belongs to.",
@@ -58,6 +88,26 @@
       "enum": [
         "door",
         "window"
+      ]
+    },
+    "PlacedArea": {
+      "description": "A room traced out on the plan: which area it is, and the shape of it.\n\nThe shape is a closed run of corners — the last joins back to the first, so the file doesn't\ncarry the first point twice and can't disagree with itself about where the room closes.",
+      "type": "object",
+      "properties": {
+        "area": {
+          "$ref": "#/$defs/AreaId"
+        },
+        "points": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Point"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "area",
+        "points"
       ]
     },
     "PlacedDevice": {

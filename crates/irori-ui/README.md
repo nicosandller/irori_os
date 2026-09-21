@@ -41,7 +41,7 @@ cd crates/irori-ui && trunk serve --open # the page on 8080, API proxied to 8480
 
 | | |
 |---|---|
-| **Floorplan** (`/floorplan`) | The home as a drawing, with the devices live on it: a lamp that's on glows, and clicking one switches it. **Edit** (top right) puts a toolbar over the same canvas — walls, doors, windows, and devices — and becomes **Save** and **Cancel**. Whatever is picked up gets a panel for the numbers that can't be dragged: a wall's thickness, an opening's width. Points land on a 10 cm grid, or on a step of your own; the grid drawn under the plan **is** that step, with heavier lines every metre, so what you see is where a point can go. The canvas is the whole view; scroll to zoom, drag the empty plan to move around. |
+| **Floorplan** (`/floorplan`) | The home as a drawing, a floor at a time, with the devices live on it: a lamp that's on glows, and clicking one switches it. A picker on the right says which floor, and the floor below shows faintly while you draw so an upstairs can be lined up with what holds it up. **Edit** (top right) puts a toolbar over the same canvas — walls, doors, windows, rooms, devices — and becomes **Save** and **Cancel**. Whatever is picked up gets a panel for the numbers that can't be dragged: a wall's thickness, an opening's width. Points land on a 10 cm grid, or on a step of your own; the grid drawn under the plan **is** that step, with heavier lines every metre, so what you see is where a point can go. Rooms are traced with corners that prefer the walls to the grid. The canvas is the whole view; scroll to zoom, drag the empty plan to move around. |
 | **Start** (`/`) | What IroriOS is: the wordmark the terminal prints when `irori serve` runs, and how many devices, entities and extensions it is looking after. |
 | **Devices** (`/devices`) | Two ways to read the same home, remembered per browser: **Entities** groups everything by the device it came from, with switches; **Devices** is a row per device — what brought it in, make, model, battery, how many entities, and which area it's in. **Add device** explains where devices come from — every installed integration, what it's for, and what it can provide — because nothing is typed in by hand yet. |
 | **A device** (`/devices/<id>`) | One device: which integration brought it in, what that integration knows it as (the MAC address, for ESPHome), make, model, firmware, hardware, battery, what it's reached through, and every entity it provides with its controls. Its name, description and area are yours to decide. |
@@ -64,18 +64,19 @@ file, and the app decides what to show.
 - Filters by entity name, entity id, device name, area or make.
 - Makes the areas and floors of the home in **Settings**: name them, put them on floors, and a
   device's own page is where it's placed.
-- Draws the home in **Floorplan**: walls in runs that snap to the corners already there
-  (right-click or Escape ends a run), doors and windows cut into those walls, and devices put
-  where they are. Corners weld, so dragging one keeps the room closed, and walls run on into
-  each other far enough that a corner is solid rather than notched. Everything is in whole
-  centimetres and lands in `config/floorplan.toml` when Save is pressed — the editor works on a
-  copy until then, so Cancel is simply never sending it.
+- Draws the home in **Floorplan**, a floor at a time: walls in runs that snap to the corners
+  already there (right-click or Escape ends a run), doors and windows cut into those walls, the
+  rooms of the home traced out as shapes, and devices put where they are. Corners weld, so
+  dragging one keeps the room closed, and walls run on into each other far enough that a corner
+  is solid rather than notched. Floors and rooms are the ones Settings already knows about — the
+  plan gives them a shape rather than defining them. Everything is in whole centimetres and
+  lands in `config/floorplan.toml` when Save is pressed — the editor works on a copy until then,
+  so Cancel is simply never sending it.
 - Lists the extensions behind it all, with their status and any reports they lost.
 
 **Not yet:** users and signing in, automations, history beyond a device's last 24 hours, and
 installing the firmware update whose version the device page shows (ROADMAP M1.8, D30). The
-floorplan is one plan, mouse-driven, and has no rooms as shapes, no furniture and no undo; a
-home with several floors draws them all on the one plan for now. Its corners are solid wherever
+floorplan is mouse-driven and has no furniture, no stairs between floors and no undo. Its corners are solid wherever
 two walls meet at any angle, and where three or more do at right angles; a junction of three
 walls one of which runs at an odd angle can still nick the outside of the corner. The page
 **polls** `/api/dev/home` every 2 seconds; the WebSocket API (M1.5) will push changes instead,

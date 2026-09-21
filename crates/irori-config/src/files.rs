@@ -445,10 +445,14 @@ fn preamble(file: File) -> String {
     let what = match file {
         File::Areas => "The floors and rooms of your home.",
         File::Floorplan => {
-            "The plan of your home: the walls, the doors and windows in them, and where\n\
-             # your devices sit. Every measurement is in whole centimetres, and a point is\n\
-             # written `[x, y]` — x rightwards, y downwards. A door's `at` is how far along\n\
-             # its wall the middle of it is, measured from the wall's `from` end."
+            "The plan of your home, a floor at a time: the walls, the doors and windows in\n\
+             # them, the rooms traced out, and where your devices sit. Floor and room ids are\n\
+             # the ones in areas.toml.\n\
+             #\n\
+             # Every measurement is in whole centimetres, and a point is written `[x, y]` —\n\
+             # x rightwards, y downwards. A door's `at` is how far along its wall the middle\n\
+             # of it is, measured from the wall's `from` end. A room's `points` are its\n\
+             # corners in order; the last joins back to the first."
         }
         File::Devices => {
             "What you've said about your devices: what each is called, what it's for, and which\n\
@@ -670,7 +674,8 @@ mod tests {
         );
     }
 
-    /// A wall with a door in it, a wall without, and a device standing in the room.
+    /// Two floors: a wall with a door in it, a wall without, a room traced out, and a device
+    /// standing in it.
     fn a_plan() -> Floorplan {
         let mut front = Wall::new(Point::new(0, 0), Point::new(400, 0));
         front.openings.push(Opening {
@@ -678,12 +683,32 @@ mod tests {
             at: 200,
             width: 80,
         });
-        Floorplan {
+        let ground = irori_types::Level {
             walls: vec![front, Wall::new(Point::new(400, 0), Point::new(400, 300))],
+            areas: vec![irori_types::PlacedArea {
+                area: "kitchen".parse().expect("valid"),
+                points: vec![
+                    Point::new(0, 0),
+                    Point::new(400, 0),
+                    Point::new(400, 300),
+                    Point::new(0, 300),
+                ],
+            }],
             devices: vec![PlacedDevice {
                 device: "demo_lamp".parse().expect("valid"),
                 at: Point::new(120, 90),
             }],
+        };
+        let upstairs = irori_types::Level {
+            walls: vec![Wall::new(Point::new(0, 0), Point::new(400, 0))],
+            ..Default::default()
+        };
+        Floorplan {
+            floors: [
+                ("ground".parse().expect("valid"), ground),
+                ("upstairs".parse().expect("valid"), upstairs),
+            ]
+            .into(),
         }
     }
 
@@ -698,17 +723,21 @@ mod tests {
         };
         let written = write(File::Floorplan, &settings);
         for line in [
-            "[[walls]]",
+            "[[floors.ground.walls]]",
             "from = [0, 0]",
             "to = [400, 0]",
             "thickness = 10",
-            "[[walls.openings]]",
+            "[[floors.ground.walls.openings]]",
             "kind = \"door\"",
             "at = 200",
             "width = 80",
-            "[[devices]]",
+            "[[floors.ground.areas]]",
+            "area = \"kitchen\"",
+            "points = [[0, 0], [400, 0], [400, 300], [0, 300]]",
+            "[[floors.ground.devices]]",
             "device = \"demo_lamp\"",
             "at = [120, 90]",
+            "[[floors.upstairs.walls]]",
         ] {
             assert!(written.contains(line), "expected {line:?} in:\n{written}");
         }
@@ -736,11 +765,12 @@ mod tests {
     #[test]
     fn a_plan_whose_door_does_not_fit_its_wall_is_refused() {
         let error = read_floorplan(
-            "[[walls]]\nfrom = [0, 0]\nto = [100, 0]\n\n[[walls.openings]]\n\
-             kind = \"door\"\nat = 90\nwidth = 80\n",
+            "[[floors.ground.walls]]\nfrom = [0, 0]\nto = [100, 0]\n\n\
+             [[floors.ground.walls.openings]]\nkind = \"door\"\nat = 90\nwidth = 80\n",
         )
         .expect_err("a door hanging off the end");
         assert!(error.contains("hangs off the end"), "{error}");
+        assert!(error.contains("ground"), "and which floor it's on: {error}");
     }
 
     /// An entry left with nothing in it is the shape a rename-then-undo leaves behind. Writing

@@ -1,5 +1,7 @@
 {
-  "devices": [
-    { "device": "demo lamp", "at": [0, 0] }
-  ]
+  "floors": {
+    "ground": {
+      "devices": [{ "device": "demo lamp", "at": [0, 0] }]
+    }
+  }
 }

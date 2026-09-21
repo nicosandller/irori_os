@@ -11,8 +11,8 @@
 //! grid and the device markers agree about where anything is at any zoom.
 
 use irori_types::{
-    Capabilities, Device, DeviceId, EntityId, Floorplan, Opening, OpeningKind, PlacedDevice, Point,
-    State, Wall,
+    AreaId, Capabilities, Device, DeviceId, EntityId, FloorId, Floorplan, Level, Opening,
+    OpeningKind, PlacedArea, PlacedDevice, Point, State, Wall,
 };
 use leptos::ev;
 use leptos::html::Div;
@@ -74,6 +74,31 @@ const CORNER: f64 = 18.0;
 const MIN_SCALE: f64 = 0.06;
 const MAX_SCALE: f64 = 1.5;
 
+/// Where the floor last looked at is remembered. A preference about this screen rather than
+/// something about the home, so it belongs to the browser.
+const FLOOR_KEY: &str = "irori.floorplan.floor";
+
+/// What's drawn on one floor, or nothing at all — which is what a home with no floors has, and
+/// what a floor nobody has drawn on has.
+fn on_floor(plan: &Floorplan, floor: Option<&FloorId>) -> Level {
+    floor
+        .and_then(|floor| plan.level(floor))
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Changes the floor being drawn, making its plan if this is the first thing to go on it.
+fn on_level(
+    draft: RwSignal<Floorplan>,
+    floor: RwSignal<Option<FloorId>>,
+    change: impl FnOnce(&mut Level),
+) {
+    let Some(floor) = floor.get_untracked() else {
+        return;
+    };
+    draft.update(|plan| change(plan.level_mut(&floor)));
+}
+
 /// Where the plan sits in the canvas: how many screen pixels one centimetre of home takes up,
 /// and where the plan's origin has been pushed to.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -123,6 +148,9 @@ enum Tool {
     Wall,
     Door,
     Window,
+    /// Trace out a room. Needs one chosen from the list first, and its corners prefer the walls
+    /// already drawn to the grid.
+    Area,
     /// Put a device somewhere. Needs one chosen from the list first.
     Device,
 }
@@ -149,6 +177,11 @@ impl Tool {
             }
             Tool::Door => "Click a wall to cut a door into it.",
             Tool::Window => "Click a wall to cut a window into it.",
+            Tool::Area => {
+                "Choose a room, then click round its corners. Corners land on the walls you've \
+                 drawn before they land on the grid. Click the first corner again, or \
+                 right-click, to close it."
+            }
             Tool::Device => "Choose a device, then click where it lives.",
         }
     }
@@ -160,6 +193,8 @@ enum Pick {
     Wall(usize),
     /// A door or window: which wall, and which of its openings.
     Opening(usize, usize),
+    /// A room traced out on this floor.
+    Area(usize),
     Device(usize),
 }
 
@@ -187,6 +222,16 @@ enum Drag {
         wall: usize,
         opening: usize,
     },
+    /// Moving a whole room, keeping the offset it was grabbed at.
+    Area {
+        area: usize,
+        grab: (f64, f64),
+    },
+    /// Moving one corner of a room.
+    AreaCorner {
+        area: usize,
+        corner: usize,
+    },
     Device {
         device: usize,
     },
@@ -207,6 +252,12 @@ pub fn Floorplan() -> impl IntoView {
     let running = RwSignal::new(None::<Point>);
     let pointer = RwSignal::new(None::<Point>);
     let arming = RwSignal::new(None::<DeviceId>);
+    // The room being traced, and which room it is. A shape only becomes part of the plan when
+    // it closes, so backing out of one leaves nothing behind.
+    let tracing = RwSignal::new(Vec::<Point>::new());
+    let arming_area = RwSignal::new(None::<AreaId>);
+    // Which floor is being looked at. `None` only while the home has no floors at all.
+    let floor = RwSignal::new(None::<FloorId>);
     let snap = RwSignal::new(Snap::Grid);
     // What the next wall drawn will be. Changing a wall's thickness sets this too, so drawing
     // an outside wall, thickening it, and carrying on gives thick walls the rest of the way.
@@ -225,6 +276,43 @@ pub fn Floorplan() -> impl IntoView {
         } else {
             live.home.get().floorplan.clone()
         }
+    });
+
+    // The floors of the home, lowest first, as the core has them.
+    let floors = Memo::new(move |_| live.home.get().floors);
+
+    // Which floor to open on: the one remembered in this browser if it's still there, else the
+    // lowest. Kept honest as floors come and go, so a floor deleted in Settings doesn't leave
+    // the page drawing on something that no longer exists.
+    Effect::new(move |_| {
+        let floors = floors.get();
+        let known = |id: &FloorId| floors.iter().any(|floor| &floor.id == id);
+        if floor.get_untracked().is_some_and(|id| known(&id)) {
+            return;
+        }
+        let remembered = crate::devices::stored(FLOOR_KEY)
+            .and_then(|id| id.parse::<FloorId>().ok())
+            .filter(known);
+        floor.set(remembered.or_else(|| floors.first().map(|floor| floor.id.clone())));
+    });
+    Effect::new(move |_| {
+        if let Some(id) = floor.get() {
+            crate::devices::remember(FLOOR_KEY, id.as_ref());
+        }
+    });
+
+    // Everything below draws and edits one floor at a time.
+    let level = Memo::new(move |_| on_floor(&shown.get(), floor.get().as_ref()));
+    // The floor under this one, drawn faintly so an upstairs can be lined up with it.
+    let beneath = Memo::new(move |_| {
+        let floors = floors.get();
+        let here = floor.get()?;
+        let index = floors.iter().position(|floor| floor.id == here)?;
+        let below = floors.get(index.checked_sub(1)?)?;
+        let plan = shown.get();
+        plan.level(&below.id)
+            .filter(|level| !level.walls.is_empty())
+            .cloned()
     });
 
     // Where the canvas is in the window, so a pointer position can be turned into a place on the
@@ -247,8 +335,7 @@ pub fn Floorplan() -> impl IntoView {
     // Frames the whole plan, with a margin. Used once when a drawn home first arrives, and by
     // the Fit button afterwards.
     let fit = move || {
-        let plan = shown.get_untracked();
-        let Some((low, high)) = extent(&plan) else {
+        let Some((low, high)) = extent(&level.get_untracked()) else {
             view.set(Viewport::default());
             return;
         };
@@ -283,27 +370,28 @@ pub fn Floorplan() -> impl IntoView {
     // every click after it would land somewhere else than it looked.
     let framed = RwSignal::new(false);
     Effect::new(move |_| {
-        let plan = live.home.get().floorplan;
-        if framed.get_untracked()
-            || editing.get_untracked()
-            || plan.is_empty()
-            || canvas.get().is_none()
-        {
+        let drawn = !on_floor(&live.home.get().floorplan, floor.get().as_ref()).is_empty();
+        if framed.get_untracked() || editing.get_untracked() || !drawn || canvas.get().is_none() {
             return;
         }
         framed.set(true);
         fit();
     });
 
+    // Puts down everything half-drawn: the run of wall, the room being traced, and whatever
+    // was waiting to be placed. Nothing half-drawn is part of the plan, so this loses nothing
+    // that was ever in it.
     let stop_drawing = move || {
         running.set(None);
         pointer.set(None);
+        tracing.set(Vec::new());
     };
 
     let start_editing = move || {
         draft.set(live.home.get_untracked().floorplan.clone());
         picked.set(None);
         arming.set(None);
+        arming_area.set(None);
         tool.set(Tool::Select);
         stop_drawing();
         trouble.set(None);
@@ -314,11 +402,15 @@ pub fn Floorplan() -> impl IntoView {
         editing.set(false);
         picked.set(None);
         arming.set(None);
+        arming_area.set(None);
         stop_drawing();
         trouble.set(None);
     };
 
     let save = move || {
+        // A floor somebody opened, drew on, and cleared again shouldn't leave a heading in the
+        // file for a plan that isn't there.
+        draft.update(Floorplan::tidy);
         let plan = draft.get_untracked();
         saving.set(true);
         spawn_local(async move {
@@ -328,8 +420,10 @@ pub fn Floorplan() -> impl IntoView {
                     editing.set(false);
                     picked.set(None);
                     arming.set(None);
+                    arming_area.set(None);
                     running.set(None);
                     pointer.set(None);
+                    tracing.set(Vec::new());
                     // The plan the page shows now comes from the home again, so fetch it rather
                     // than waiting up to two seconds to agree with what was just saved.
                     crate::refresh(live);
@@ -344,22 +438,27 @@ pub fn Floorplan() -> impl IntoView {
         let Some(pick) = picked.get_untracked() else {
             return;
         };
-        draft.update(|plan| match pick {
+        on_level(draft, floor, |level| match pick {
             Pick::Wall(w) => {
-                if w < plan.walls.len() {
-                    plan.walls.remove(w);
+                if w < level.walls.len() {
+                    level.walls.remove(w);
                 }
             }
             Pick::Opening(w, o) => {
-                if let Some(wall) = plan.walls.get_mut(w)
+                if let Some(wall) = level.walls.get_mut(w)
                     && o < wall.openings.len()
                 {
                     wall.openings.remove(o);
                 }
             }
+            Pick::Area(a) => {
+                if a < level.areas.len() {
+                    level.areas.remove(a);
+                }
+            }
             Pick::Device(d) => {
-                if d < plan.devices.len() {
-                    plan.devices.remove(d);
+                if d < level.devices.len() {
+                    level.devices.remove(d);
                 }
             }
         });
@@ -375,10 +474,12 @@ pub fn Floorplan() -> impl IntoView {
         }
         match event.key().as_str() {
             "Escape" => {
-                if running.get_untracked().is_some() {
+                if running.get_untracked().is_some() || !tracing.get_untracked().is_empty() {
                     stop_drawing();
-                } else if arming.get_untracked().is_some() {
+                } else if arming.get_untracked().is_some() || arming_area.get_untracked().is_some()
+                {
                     arming.set(None);
+                    arming_area.set(None);
                 } else {
                     picked.set(None);
                 }
@@ -405,24 +506,40 @@ pub fn Floorplan() -> impl IntoView {
             return;
         }
         let world = here.world(screen.0, screen.1);
-        let plan = draft.get_untracked();
+        let here_level = level.get_untracked();
         let reach = REACH * here.cm_per_pixel();
+        // Handles are the smallest thing on the canvas to aim at, so they get a wider reach than
+        // the things they belong to.
+        let handle = reach * 1.5;
+        let near = |point: Point| {
+            (world.0 - f64::from(point.x)).hypot(world.1 - f64::from(point.y)) <= handle
+        };
 
-        // A corner of the wall already picked up comes first: its handles are drawn on top, and
-        // they're the smallest thing on the canvas to aim at.
-        if let Some(Pick::Wall(w)) = picked.get_untracked()
-            && let Some(wall) = plan.walls.get(w)
-        {
-            for (to_end, end) in [(false, wall.from), (true, wall.to)] {
-                let away = (world.0 - f64::from(end.x)).hypot(world.1 - f64::from(end.y));
-                if away <= reach * 1.5 {
-                    drag.set(Some(Drag::Corner { wall: w, to_end }));
+        // A corner of whatever is already picked up comes first: the handles are drawn on top
+        // of everything else, so they should be caught before it.
+        match picked.get_untracked() {
+            Some(Pick::Wall(w)) => {
+                if let Some(wall) = here_level.walls.get(w) {
+                    for (to_end, end) in [(false, wall.from), (true, wall.to)] {
+                        if near(end) {
+                            drag.set(Some(Drag::Corner { wall: w, to_end }));
+                            return;
+                        }
+                    }
+                }
+            }
+            Some(Pick::Area(a)) => {
+                if let Some(area) = here_level.areas.get(a)
+                    && let Some(corner) = area.points.iter().position(|point| near(*point))
+                {
+                    drag.set(Some(Drag::AreaCorner { area: a, corner }));
                     return;
                 }
             }
+            _ => {}
         }
 
-        match pick_at(&plan, world, reach) {
+        match pick_at(&here_level, world, reach) {
             Some(Pick::Opening(w, o)) => {
                 picked.set(Some(Pick::Opening(w, o)));
                 drag.set(Some(Drag::Opening {
@@ -434,6 +551,13 @@ pub fn Floorplan() -> impl IntoView {
                 picked.set(Some(Pick::Wall(w)));
                 drag.set(Some(Drag::Wall {
                     wall: w,
+                    grab: world,
+                }));
+            }
+            Some(Pick::Area(a)) => {
+                picked.set(Some(Pick::Area(a)));
+                drag.set(Some(Drag::Area {
+                    area: a,
                     grab: world,
                 }));
             }
@@ -452,15 +576,21 @@ pub fn Floorplan() -> impl IntoView {
         let here = view.get_untracked();
         let world = here.world(screen.0, screen.1);
 
-        if editing.get_untracked() && running.get_untracked().is_some() {
-            let to = place(
-                &draft.get_untracked(),
-                world,
-                here,
-                snap.get_untracked(),
-                None,
-            );
-            pointer.set(Some(to));
+        if editing.get_untracked() {
+            let tool = tool.get_untracked();
+            if running.get_untracked().is_some() {
+                let to = place(
+                    &level.get_untracked(),
+                    world,
+                    here,
+                    snap.get_untracked(),
+                    None,
+                );
+                pointer.set(Some(to));
+            } else if tool == Tool::Area && !tracing.get_untracked().is_empty() {
+                let to = trace_at(&level.get_untracked(), world, here, snap.get_untracked());
+                pointer.set(Some(to));
+            }
         }
 
         let Some(holding) = drag.get_untracked() else {
@@ -479,12 +609,12 @@ pub fn Floorplan() -> impl IntoView {
             }
             Drag::Corner { wall, to_end } => {
                 dragged.set(true);
-                let plan = draft.get_untracked();
-                let Some(was) = plan.walls.get(wall).map(|wall| ends(wall, to_end)) else {
+                let here_level = level.get_untracked();
+                let Some(was) = here_level.walls.get(wall).map(|wall| ends(wall, to_end)) else {
                     return;
                 };
-                let to = place(&plan, world, here, snap.get_untracked(), Some(was));
-                draft.update(|plan| shift(plan, &[(was, to)]));
+                let to = place(&here_level, world, here, snap.get_untracked(), Some(was));
+                on_level(draft, floor, |level| shift(level, &[(was, to)]));
             }
             Drag::Wall { wall, grab } => {
                 dragged.set(true);
@@ -494,12 +624,12 @@ pub fn Floorplan() -> impl IntoView {
                     return;
                 }
                 let moved = |point: Point| Point::new(point.x + by.0, point.y + by.1);
-                draft.update(|plan| {
-                    let Some(wall) = plan.walls.get(wall) else {
+                on_level(draft, floor, |level| {
+                    let Some(wall) = level.walls.get(wall) else {
                         return;
                     };
                     let (from, to) = (wall.from, wall.to);
-                    shift(plan, &[(from, moved(from)), (to, moved(to))]);
+                    shift(level, &[(from, moved(from)), (to, moved(to))]);
                 });
                 // The grab moves with the wall, so the rounding can't accumulate into a drift.
                 drag.set(Some(Drag::Wall {
@@ -509,8 +639,8 @@ pub fn Floorplan() -> impl IntoView {
             }
             Drag::Opening { wall, opening } => {
                 dragged.set(true);
-                draft.update(|plan| {
-                    if let Some(wall) = plan.walls.get_mut(wall) {
+                on_level(draft, floor, |level| {
+                    if let Some(wall) = level.walls.get_mut(wall) {
                         let length = wall.length();
                         if let Some(hole) = wall.openings.get_mut(opening) {
                             let (along, _) = on_wall_at(wall.from, wall.to, world);
@@ -519,12 +649,52 @@ pub fn Floorplan() -> impl IntoView {
                     }
                 });
             }
+            Drag::Area { area, grab } => {
+                dragged.set(true);
+                let step = snap.get_untracked().step();
+                let by = (round(world.0 - grab.0, step), round(world.1 - grab.1, step));
+                if by == (0, 0) {
+                    return;
+                }
+                on_level(draft, floor, |level| {
+                    if let Some(placed) = level.areas.get_mut(area) {
+                        for point in &mut placed.points {
+                            *point = Point::new(point.x + by.0, point.y + by.1);
+                        }
+                    }
+                });
+                drag.set(Some(Drag::Area {
+                    area,
+                    grab: (grab.0 + f64::from(by.0), grab.1 + f64::from(by.1)),
+                }));
+            }
+            Drag::AreaCorner { area, corner } => {
+                dragged.set(true);
+                // A corner being dragged mustn't catch on itself, so it is left out of what the
+                // snapping looks at — the same rule a wall's own end is held to.
+                let mut without = level.get_untracked();
+                if let Some(placed) = without.areas.get_mut(area)
+                    && corner < placed.points.len()
+                {
+                    placed.points.remove(corner);
+                }
+                let to = trace_at(&without, world, here, snap.get_untracked());
+                on_level(draft, floor, |level| {
+                    if let Some(point) = level
+                        .areas
+                        .get_mut(area)
+                        .and_then(|placed| placed.points.get_mut(corner))
+                    {
+                        *point = to;
+                    }
+                });
+            }
             Drag::Device { device } => {
                 dragged.set(true);
                 let step = snap.get_untracked().step();
                 let to = Point::new(round(world.0, step), round(world.1, step));
-                draft.update(|plan| {
-                    if let Some(placed) = plan.devices.get_mut(device) {
+                on_level(draft, floor, |level| {
+                    if let Some(placed) = level.devices.get_mut(device) {
                         placed.at = to;
                     }
                 });
@@ -547,7 +717,7 @@ pub fn Floorplan() -> impl IntoView {
             Tool::Select => {}
             Tool::Wall => {
                 let to = place(
-                    &draft.get_untracked(),
+                    &level.get_untracked(),
                     world,
                     here,
                     snap.get_untracked(),
@@ -559,7 +729,7 @@ pub fn Floorplan() -> impl IntoView {
                             thickness: thickness.get_untracked(),
                             ..Wall::new(from, to)
                         };
-                        draft.update(|plan| plan.walls.push(built));
+                        on_level(draft, floor, |level| level.walls.push(built));
                         running.set(Some(to));
                     }
                     // The first click of a run, or a second click in the same spot, which would
@@ -573,8 +743,7 @@ pub fn Floorplan() -> impl IntoView {
                     return;
                 };
                 let reach = REACH * here.cm_per_pixel() * 2.0;
-                let plan = draft.get_untracked();
-                let Some(w) = nearest_wall(&plan, world, reach) else {
+                let Some(w) = nearest_wall(&level.get_untracked(), world, reach) else {
                     trouble.set(Some(format!(
                         "A {} goes in a wall. Click on one.",
                         kind.label().to_lowercase()
@@ -582,8 +751,8 @@ pub fn Floorplan() -> impl IntoView {
                     return;
                 };
                 trouble.set(None);
-                draft.update(|plan| {
-                    if let Some(wall) = plan.walls.get_mut(w) {
+                on_level(draft, floor, |level| {
+                    if let Some(wall) = level.walls.get_mut(w) {
                         let length = wall.length();
                         let (along, _) = on_wall_at(wall.from, wall.to, world);
                         // A wall too short for the usual door gets a door the width of the wall
@@ -598,6 +767,39 @@ pub fn Floorplan() -> impl IntoView {
                     }
                 });
             }
+            Tool::Area => {
+                let Some(area) = arming_area.get_untracked() else {
+                    trouble.set(Some("Choose a room first, then click round it.".into()));
+                    return;
+                };
+                trouble.set(None);
+                let to = trace_at(&level.get_untracked(), world, here, snap.get_untracked());
+                let mut corners = tracing.get_untracked();
+                // Clicking the first corner again closes the shape, which is how anybody who has
+                // ever drawn a polygon expects to finish one.
+                if corners.len() >= PlacedArea::FEWEST_POINTS && corners.first() == Some(&to) {
+                    let points = corners;
+                    on_level(draft, floor, |level| {
+                        // Redrawing a room replaces its old shape: one shape per room per floor
+                        // is what the plan allows, and moving a wall is why somebody would.
+                        level.areas.retain(|placed| placed.area != area);
+                        level.areas.push(PlacedArea {
+                            area: area.clone(),
+                            points,
+                        });
+                        picked.set(Some(Pick::Area(level.areas.len() - 1)));
+                    });
+                    stop_drawing();
+                    arming_area.set(None);
+                    return;
+                }
+                // Two clicks in the same place is one corner, not a corner with no length.
+                if corners.last() != Some(&to) {
+                    corners.push(to);
+                    tracing.set(corners);
+                }
+                pointer.set(Some(to));
+            }
             Tool::Device => {
                 let Some(device) = arming.get_untracked() else {
                     trouble.set(Some(
@@ -608,10 +810,10 @@ pub fn Floorplan() -> impl IntoView {
                 trouble.set(None);
                 let step = snap.get_untracked().step();
                 let at = Point::new(round(world.0, step), round(world.1, step));
-                draft.update(|plan| {
-                    plan.devices.retain(|placed| placed.device != device);
-                    plan.devices.push(PlacedDevice { device, at });
-                    picked.set(Some(Pick::Device(plan.devices.len() - 1)));
+                on_level(draft, floor, |level| {
+                    level.devices.retain(|placed| placed.device != device);
+                    level.devices.push(PlacedDevice { device, at });
+                    picked.set(Some(Pick::Device(level.devices.len() - 1)));
                 });
                 arming.set(None);
             }
@@ -627,10 +829,28 @@ pub fn Floorplan() -> impl IntoView {
             return;
         }
         event.prevent_default();
-        if running.get_untracked().is_some() {
+        let corners = tracing.get_untracked();
+        if !corners.is_empty() {
+            // Enough corners and it is a room; too few and there was never a shape to keep.
+            if corners.len() >= PlacedArea::FEWEST_POINTS
+                && let Some(area) = arming_area.get_untracked()
+            {
+                on_level(draft, floor, |level| {
+                    level.areas.retain(|placed| placed.area != area);
+                    level.areas.push(PlacedArea {
+                        area: area.clone(),
+                        points: corners,
+                    });
+                    picked.set(Some(Pick::Area(level.areas.len() - 1)));
+                });
+                arming_area.set(None);
+            }
             stop_drawing();
-        } else if arming.get_untracked().is_some() {
+        } else if running.get_untracked().is_some() {
+            stop_drawing();
+        } else if arming.get_untracked().is_some() || arming_area.get_untracked().is_some() {
             arming.set(None);
+            arming_area.set(None);
         } else {
             picked.set(None);
         }
@@ -693,18 +913,35 @@ pub fn Floorplan() -> impl IntoView {
             >
                 <svg class="plan" aria-hidden="true">
                     {move || editing.get().then(|| grid(view.get(), snap.get()))}
-                    // Not while editing: its caption says to press Edit, and once somebody
-                    // has, the canvas should be the empty surface they're drawing on.
-                    {move || (!editing.get() && shown.get().is_empty()).then(watermark)}
+                    // The floor below, faintly, so an upstairs can be lined up with what holds
+                    // it up. Only while drawing: reading a plan, it would just be clutter.
+                    {move || {
+                        let below = editing.get().then(|| beneath.get()).flatten()?;
+                        Some(ghost(&below, view.get()))
+                    }}
                     {move || {
                         let here = view.get();
-                        let plan = shown.get();
+                        let level = level.get();
                         let chosen = editing.get().then(|| picked.get()).flatten();
-                        plan.walls
+                        level
+                            .areas
+                            .iter()
+                            .enumerate()
+                            .map(|(a, placed)| {
+                                drawn_area(placed, here, chosen == Some(Pick::Area(a)))
+                            })
+                            .collect_view()
+                    }}
+                    {move || {
+                        let here = view.get();
+                        let level = level.get();
+                        let chosen = editing.get().then(|| picked.get()).flatten();
+                        level
+                            .walls
                             .iter()
                             .enumerate()
                             .map(|(w, wall)| {
-                                drawn_wall(wall, w, joints(&plan, w), here, chosen)
+                                drawn_wall(wall, w, joints(&level, w), here, chosen)
                             })
                             .collect_view()
                     }}
@@ -715,22 +952,59 @@ pub fn Floorplan() -> impl IntoView {
                         Some(pending(from, to, view.get()))
                     }}
                     {move || {
+                        let corners = tracing.get();
+                        (!corners.is_empty()).then(|| tracing_shape(&corners, pointer.get(), view.get()))
+                    }}
+                    {move || {
                         let chosen = editing.get().then(|| picked.get()).flatten();
-                        let Some(Pick::Wall(w)) = chosen else { return None };
-                        let plan = shown.get();
-                        let wall = plan.walls.get(w)?;
-                        Some(handles(wall, view.get()))
+                        let level = level.get();
+                        let corners: Vec<Point> = match chosen? {
+                            Pick::Wall(w) => {
+                                let wall = level.walls.get(w)?;
+                                vec![wall.from, wall.to]
+                            }
+                            Pick::Area(a) => level.areas.get(a)?.points.clone(),
+                            _ => return None,
+                        };
+                        Some(handles(&corners, view.get()))
                     }}
                 </svg>
 
+                // Not while editing: once somebody has pressed Edit, the canvas should be the
+                // empty surface they're drawing on.
+                {move || (!editing.get() && level.get().is_empty()).then(|| view! {
+                    <EmptyPlan floors=floors live=live trouble=trouble />
+                })}
+
                 <div class="markers">
+                    // A room's name, in the middle of it, at a size the zoom doesn't change.
                     {move || {
                         let home = live.home.get();
-                        let plan = shown.get();
+                        let here = view.get();
+                        level.get()
+                            .areas
+                            .iter()
+                            .filter_map(|placed| {
+                                let area = home.area(&placed.area)?;
+                                let (x, y) = here.screen(placed.middle()?);
+                                Some(view! {
+                                    <span
+                                        class="room-label"
+                                        style=format!("left:{x}px;top:{y}px")
+                                    >
+                                        {area.name.to_string()}
+                                    </span>
+                                })
+                            })
+                            .collect_view()
+                    }}
+                    {move || {
+                        let home = live.home.get();
                         let here = view.get();
                         let is_editing = editing.get();
                         let chosen = is_editing.then(|| picked.get()).flatten();
-                        plan.devices
+                        level.get()
+                            .devices
                             .iter()
                             .enumerate()
                             .filter_map(|(index, placed)| {
@@ -757,9 +1031,8 @@ pub fn Floorplan() -> impl IntoView {
                 </div>
 
                 {move || {
-                    let (Some(from), Some(to)) = (running.get(), pointer.get()) else {
-                        return None;
-                    };
+                    let to = pointer.get()?;
+                    let from = running.get().or_else(|| tracing.get().last().copied())?;
                     let here = view.get();
                     let (x, y) = here.screen(to);
                     Some(view! {
@@ -787,10 +1060,13 @@ pub fn Floorplan() -> impl IntoView {
                                 </button>
                             </>
                         }.into_any()
-                    } else {
+                    } else if floor.get().is_some() {
                         view! {
                             <button type="button" on:click=move |_| start_editing()>"Edit"</button>
                         }.into_any()
+                    } else {
+                        // Nowhere to draw yet. The canvas says why, and offers the fix.
+                        ().into_any()
                     }}
                 </div>
             </div>
@@ -831,11 +1107,18 @@ pub fn Floorplan() -> impl IntoView {
             })}
 
             {move || (editing.get() && tool.get() == Tool::Device).then(|| view! {
-                <DevicePicker plan=shown arming=arming live=live />
+                <DevicePicker level=level arming=arming live=live />
             })}
 
+            {move || (editing.get() && tool.get() == Tool::Area).then(|| view! {
+                <AreaPicker level=level floor=floor arming=arming_area live=live />
+            })}
+
+            <FloorPicker floors=floors floor=floor plan=shown />
+
             {move || editing.get().then(|| view! {
-                <Inspector draft=draft picked=picked thickness=thickness />
+                <Inspector draft=draft floor=floor level=level picked=picked
+                    thickness=thickness live=live />
             })}
 
             <div class="plan-foot">
@@ -846,9 +1129,11 @@ pub fn Floorplan() -> impl IntoView {
                 </div>
                 {move || editing.get().then(|| view! { <SnapControl snap=snap /> })}
                 <p class="hint">
-                    {move || if editing.get() {
+                    {move || if floors.get().is_empty() {
+                        ""
+                    } else if editing.get() {
                         tool.get().hint()
-                    } else if shown.get().is_empty() {
+                    } else if level.get().is_empty() {
                         ""
                     } else {
                         "The devices on the plan show what they're doing. Click one to switch it."
@@ -857,6 +1142,124 @@ pub fn Floorplan() -> impl IntoView {
             </div>
 
             {move || trouble.get().map(|why| view! { <p class="plan-banner">{why}</p> })}
+        </div>
+    }
+}
+
+/// Which floor is being looked at.
+///
+/// Highest at the top, like the buttons in a lift, because that is the one arrangement of floors
+/// nobody has to be taught. A floor with nothing drawn on it says so, so an upstairs that was
+/// never traced doesn't look like one that failed to load. Nothing at all for a home with no
+/// floors — there the whole canvas is the empty state.
+#[component]
+fn FloorPicker(
+    floors: Memo<Vec<irori_types::Floor>>,
+    floor: RwSignal<Option<FloorId>>,
+    plan: Memo<Floorplan>,
+) -> impl IntoView {
+    move || {
+        let floors = floors.get();
+        // One floor is nothing to choose between, and no floors has its own empty state on the
+        // canvas. Either way a picker here would be a label pretending to be a control.
+        if floors.len() < 2 {
+            return None;
+        }
+        let plan = plan.get();
+        Some(view! {
+            <div class="floor-picker" role="group" aria-label="Floors">
+                {floors
+                    .into_iter()
+                    .rev()
+                    .map(|level| {
+                        let id = level.id.clone();
+                        let (chosen, pressed) = (id.clone(), id.clone());
+                        let drawn = plan.level(&level.id).is_some_and(|level| !level.is_empty());
+                        view! {
+                            <button
+                                type="button"
+                                class:chosen=move || floor.get().as_ref() == Some(&chosen)
+                                aria-pressed=move || {
+                                    (floor.get().as_ref() == Some(&pressed)).to_string()
+                                }
+                                on:click=move |_| floor.set(Some(id.clone()))
+                            >
+                                <span class="floor-name">{level.name.to_string()}</span>
+                                <span class="floor-level">
+                                    {if drawn { "drawn" } else { "empty" }}
+                                </span>
+                            </button>
+                        }
+                    })
+                    .collect_view()}
+            </div>
+        })
+    }
+}
+
+/// The rooms that can be traced on this floor. An area is a thing the home already knows about
+/// (Settings makes them); this only gives one a shape.
+#[component]
+fn AreaPicker(
+    level: Memo<Level>,
+    floor: RwSignal<Option<FloorId>>,
+    arming: RwSignal<Option<AreaId>>,
+    live: crate::Live,
+) -> impl IntoView {
+    view! {
+        <div class="device-picker">
+            <h2>"Rooms"</h2>
+            <ul>
+                {move || {
+                    let home = live.home.get();
+                    let here = floor.get();
+                    let traced = level.get();
+                    // The rooms of this floor, and the ones nobody has put on a floor at all —
+                    // which are the ones somebody drawing this floor might mean.
+                    let mut rooms: Vec<_> = home
+                        .areas
+                        .iter()
+                        .filter(|area| area.floor_id.is_none() || area.floor_id == here)
+                        .cloned()
+                        .collect();
+                    rooms.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+                    if rooms.is_empty() {
+                        return view! {
+                            <li class="muted">"No rooms on this floor yet. Settings makes them."</li>
+                        }
+                        .into_any();
+                    }
+                    rooms
+                        .into_iter()
+                        .map(|area| {
+                            let id = area.id.clone();
+                            let armed = id.clone();
+                            let drawn = traced.areas.iter().any(|placed| placed.area == area.id);
+                            view! {
+                                <li>
+                                    <button
+                                        type="button"
+                                        class:chosen=move || arming.get().as_ref() == Some(&armed)
+                                        on:click=move |_| arming.update(|current| {
+                                            *current = if current.as_ref() == Some(&id) {
+                                                None
+                                            } else {
+                                                Some(id.clone())
+                                            };
+                                        })
+                                    >
+                                        <span class="name">{area.name.to_string()}</span>
+                                        {drawn.then(|| view! {
+                                            <span class="badge">"drawn"</span>
+                                        })}
+                                    </button>
+                                </li>
+                            }
+                        })
+                        .collect_view()
+                        .into_any()
+                }}
+            </ul>
         </div>
     }
 }
@@ -925,14 +1328,17 @@ fn SnapControl(snap: RwSignal<Snap>) -> impl IntoView {
 #[component]
 fn Inspector(
     draft: RwSignal<Floorplan>,
+    floor: RwSignal<Option<FloorId>>,
+    level: Memo<Level>,
     picked: RwSignal<Option<Pick>>,
     thickness: RwSignal<u32>,
+    live: crate::Live,
 ) -> impl IntoView {
     move || {
-        let plan = draft.get();
+        let here = level.get();
         match picked.get()? {
             Pick::Wall(w) => {
-                let wall = plan.walls.get(w)?;
+                let wall = here.walls.get(w)?;
                 let (length, thick) = (wall.length(), wall.thickness);
                 Some(view! {
                     <div class="inspector">
@@ -960,8 +1366,8 @@ fn Inspector(
                                     // Remembered for the next wall drawn, so a run of outside
                                     // walls needs saying once.
                                     thickness.set(next);
-                                    draft.update(|plan| {
-                                        if let Some(wall) = plan.walls.get_mut(w) {
+                                    on_level(draft, floor, |level| {
+                                        if let Some(wall) = level.walls.get_mut(w) {
                                             wall.thickness = next;
                                         }
                                     });
@@ -973,7 +1379,7 @@ fn Inspector(
                 }.into_any())
             }
             Pick::Opening(w, o) => {
-                let wall = plan.walls.get(w)?;
+                let wall = here.walls.get(w)?;
                 let opening = wall.openings.get(o)?;
                 let (kind, width) = (opening.kind, opening.width);
                 // An opening can't be wider than the wall it's cut into, so the slider stops
@@ -994,8 +1400,8 @@ fn Inspector(
                                     let Ok(next) = event_target_value(&event).parse::<u32>() else {
                                         return;
                                     };
-                                    draft.update(|plan| {
-                                        let Some(wall) = plan.walls.get_mut(w) else { return };
+                                    on_level(draft, floor, |level| {
+                                        let Some(wall) = level.walls.get_mut(w) else { return };
                                         let length = wall.length();
                                         let Some(opening) = wall.openings.get_mut(o) else {
                                             return;
@@ -1017,12 +1423,45 @@ fn Inspector(
                     </div>
                 }.into_any())
             }
+            Pick::Area(a) => {
+                let placed = here.areas.get(a)?;
+                let home = live.home.get();
+                let name = home
+                    .area(&placed.area)
+                    .map(|area| area.name.to_string())
+                    // A room that has since been deleted from Settings keeps its shape; saying
+                    // its id is more honest than showing nothing.
+                    .unwrap_or_else(|| placed.area.to_string());
+                let corners = placed.points.len();
+                Some(
+                    view! {
+                        <div class="inspector">
+                            <h2>"Room"</h2>
+                            <p class="name">{name}</p>
+                            <p class="measure-row">
+                                <span>"Corners"</span>
+                                <span class="figure">{corners.to_string()}</span>
+                            </p>
+                            <p class="muted small">"Drag it, or drag a corner."</p>
+                        </div>
+                    }
+                    .into_any(),
+                )
+            }
             Pick::Device(d) => {
-                let placed = plan.devices.get(d)?;
+                let placed = here.devices.get(d)?;
+                let home = live.home.get();
+                let name = home
+                    .devices
+                    .iter()
+                    .find(|device| device.id == placed.device)
+                    .map(|device| device.name.to_string())
+                    .unwrap_or_else(|| placed.device.to_string());
                 Some(
                     view! {
                         <div class="inspector">
                             <h2>"Device"</h2>
+                            <p class="name">{name}</p>
                             <p class="muted small">{placed.device.to_string()}</p>
                             <p class="muted small">"Drag it to move it."</p>
                         </div>
@@ -1034,15 +1473,20 @@ fn Inspector(
     }
 }
 
-/// A small flat, faintly, where the plan will go: what this page is for, said in the shape of
-/// the thing rather than in a sentence at the bottom of the screen.
+/// The whole of an empty plan: a small flat drawn faintly, what the page is for in a line, and
+/// — for a home with no floors — the one button that gets it started.
 ///
-/// Drawn the way the editor would draw it — walls with holes in them, a door with its swing, the
-/// devices as pips — so it is a promise the page keeps rather than a decoration. In the canvas's
-/// own pixels rather than in centimetres, so it sits in the middle and stays the same size
-/// whatever the zoom is: it is a picture of a floorplan, not one, and zooming in on it would be
-/// a promise the page can't keep.
-fn watermark() -> impl IntoView {
+/// The drawing is what this page is for, said in the shape of the thing rather than in a
+/// sentence at the bottom of the screen, and it is drawn the way the editor draws things: walls
+/// with holes in them, doors with their swing, devices as pips. In its own pixels rather than in
+/// centimetres, so it sits in the middle at the same size whatever the zoom is — it is a picture
+/// of a floorplan, not one.
+#[component]
+fn EmptyPlan(
+    floors: Memo<Vec<irori_types::Floor>>,
+    live: crate::Live,
+    trouble: RwSignal<Option<String>>,
+) -> impl IntoView {
     // A one-bedroom flat, 520 × 360 as drawn: living room on the left, bedroom top right,
     // bathroom below it. Openings are gaps in the wall paths, exactly as a real plan has them.
     let walls = concat!(
@@ -1056,50 +1500,90 @@ fn watermark() -> impl IntoView {
         // The wall between the bedroom and the bathroom, with its doorway.
         "M320 200 H400 M470 200 H520",
     );
+    let making = RwSignal::new(false);
+    let make_ground_floor = move || {
+        making.set(true);
+        spawn_local(async move {
+            let name = "Ground floor".parse().expect("a name Irori itself wrote");
+            match api::add_floor(name, 0).await {
+                Ok(()) => {
+                    trouble.set(None);
+                    crate::refresh(live);
+                }
+                Err(why) => trouble.set(Some(why)),
+            }
+            making.set(false);
+        });
+    };
+
     view! {
-        <g class="watermark">
-            <svg x="50%" y="50%" overflow="visible">
-                <g transform="translate(-260 -205)">
-                    <path class="wm-wall" d=walls fill="none" stroke-width="11"
-                        stroke-linecap="square" />
+        <div class="empty-plan">
+            <svg class="watermark" viewBox="-8 -8 536 376" aria-hidden="true">
+                <path class="wm-wall" d=walls fill="none" stroke-width="11"
+                    stroke-linecap="square" />
 
-                    // The windows: a pane across each gap, with a jamb at either end.
-                    <path class="wm-glass" d="M70 0 H150 M240 0 H320 M0 150 V240" />
-                    <path class="wm-jamb" d="M70 -6 V6 M150 -6 V6 M240 -6 V6 M320 -6 V6
-                                             M-6 150 H6 M-6 240 H6" />
+                // The windows: a pane across each gap, with a jamb at either end.
+                <path class="wm-glass" d="M70 0 H150 M240 0 H320 M0 150 V240" />
+                <path class="wm-jamb" d="M70 -6 V6 M150 -6 V6 M240 -6 V6 M320 -6 V6
+                                         M-6 150 H6 M-6 240 H6" />
 
-                    // The front door, standing open into the living room, and the two inside
-                    // doors — the way every plan since the drawing board has shown one.
-                    <path class="wm-swing" fill="none"
-                        d="M220 360 V280 M220 280 A80 80 0 0 0 300 360" />
-                    <path class="wm-swing" fill="none"
-                        d="M320 110 H400 M400 110 A80 80 0 0 0 320 190" />
-                    <path class="wm-swing" fill="none"
-                        d="M470 200 V270 M470 270 A70 70 0 0 0 400 200" />
+                // The front door, standing open into the living room, and the two inside doors —
+                // the way every plan since the drawing board has shown one.
+                <path class="wm-swing" fill="none"
+                    d="M220 360 V280 M220 280 A80 80 0 0 0 300 360" />
+                <path class="wm-swing" fill="none"
+                    d="M320 110 H400 M400 110 A80 80 0 0 0 320 190" />
+                <path class="wm-swing" fill="none"
+                    d="M470 200 V270 M470 270 A70 70 0 0 0 400 200" />
 
-                    // Enough furniture to read as somebody's home: a bed under the windows, a
-                    // sofa and a table in the living room, a bath and a basin.
-                    <rect class="wm-thing" x="350" y="25" width="140" height="105" rx="6" />
-                    <path class="wm-thing" d="M350 60 H490" />
-                    <rect class="wm-thing" x="35" y="65" width="48" height="130" rx="10" />
-                    <path class="wm-thing" d="M68 78 V182" />
-                    <circle class="wm-thing" cx="170" cy="150" r="42" />
-                    <rect class="wm-thing" x="340" y="230" width="60" height="110" rx="10" />
-                    <circle class="wm-thing" cx="480" cy="320" r="20" />
+                // Enough furniture to read as somebody's home: a bed under the windows, a sofa
+                // and a table in the living room, a bath and a basin.
+                <rect class="wm-thing" x="350" y="25" width="140" height="105" rx="6" />
+                <path class="wm-thing" d="M350 60 H490" />
+                <rect class="wm-thing" x="35" y="65" width="48" height="130" rx="10" />
+                <path class="wm-thing" d="M68 78 V182" />
+                <circle class="wm-thing" cx="170" cy="150" r="42" />
+                <rect class="wm-thing" x="340" y="230" width="60" height="110" rx="10" />
+                <circle class="wm-thing" cx="480" cy="320" r="20" />
 
-                    // And the point of the page: devices, where they are.
-                    <g class="wm-pip">
-                        <circle cx="170" cy="150" r="9" />
-                        <circle cx="420" cy="78" r="9" />
-                        <circle cx="120" cy="300" r="9" />
-                    </g>
+                // And the point of the page: devices, where they are.
+                <g class="wm-pip">
+                    <circle cx="170" cy="150" r="9" />
+                    <circle cx="420" cy="78" r="9" />
+                    <circle cx="120" cy="300" r="9" />
                 </g>
             </svg>
-            <text x="50%" y="50%" dy="195" text-anchor="middle">"Nothing drawn yet"</text>
-            <text x="50%" y="50%" dy="221" text-anchor="middle" class="watermark-lede">
-                "Press Edit to draw the walls of your home"
-            </text>
-        </g>
+
+            {move || if floors.get().is_empty() {
+                // Not an error and not a dead end: a plan is the plan of a floor, and this home
+                // hasn't got one. Settings is where floors are really managed; this is the one
+                // click that saves a trip there on a first run.
+                view! {
+                    <>
+                        <p class="empty-title">"A plan belongs to a floor"</p>
+                        <p class="empty-lede">"and this home hasn't got one yet"</p>
+                        <button
+                            type="button"
+                            class="solid"
+                            disabled=move || making.get()
+                            on:click=move |_| make_ground_floor()
+                        >
+                            {move || if making.get() { "Adding…" } else { "Add a ground floor" }}
+                        </button>
+                        <p class="empty-lede">"More of them in Settings."</p>
+                    </>
+                }
+                .into_any()
+            } else {
+                view! {
+                    <>
+                        <p class="empty-title">"Nothing drawn on this floor yet"</p>
+                        <p class="empty-lede">"Press Edit to draw its walls"</p>
+                    </>
+                }
+                .into_any()
+            }}
+        </div>
     }
 }
 
@@ -1107,7 +1591,7 @@ fn watermark() -> impl IntoView {
 /// clicking one again moves it rather than adding a second of the same thing.
 #[component]
 fn DevicePicker(
-    plan: Memo<Floorplan>,
+    level: Memo<Level>,
     arming: RwSignal<Option<DeviceId>>,
     live: crate::Live,
 ) -> impl IntoView {
@@ -1117,7 +1601,7 @@ fn DevicePicker(
             <ul>
                 {move || {
                     let home = live.home.get();
-                    let placed = plan.get();
+                    let placed = level.get();
                     let mut devices = home.devices.clone();
                     devices.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
                     if devices.is_empty() {
@@ -1467,14 +1951,106 @@ fn pending(from: Point, to: Point, view: Viewport) -> impl IntoView {
     }
 }
 
-/// The two ends of the wall that's picked up, to drag. Sized in screen pixels, which at this
-/// zoom means dividing by the scale.
-fn handles(wall: &Wall, view: Viewport) -> impl IntoView + use<> {
+/// The corners of whatever is picked up, to drag: the two ends of a wall, or every corner of a
+/// room. Sized in screen pixels, which at this zoom means dividing by the scale.
+fn handles(corners: &[Point], view: Viewport) -> impl IntoView + use<> {
     let radius = 6.0 / view.scale;
+    let corners: Vec<Point> = corners.to_vec();
     view! {
         <g class="handles" transform=transform(view)>
-            <circle cx=wall.from.x cy=wall.from.y r=radius vector-effect="non-scaling-stroke" />
-            <circle cx=wall.to.x cy=wall.to.y r=radius vector-effect="non-scaling-stroke" />
+            {corners
+                .into_iter()
+                .map(|point| view! {
+                    <circle cx=point.x cy=point.y r=radius vector-effect="non-scaling-stroke" />
+                })
+                .collect_view()}
+        </g>
+    }
+}
+
+/// A room, as a shape under the walls with its floor tinted.
+///
+/// The tint is picked from the room's id, so the same room is the same colour every time the
+/// page is opened and two rooms side by side are almost never the same. Low enough that it reads
+/// as a wash over the paper rather than as a block of colour — a plan is drawn in lines.
+fn drawn_area(placed: &PlacedArea, view: Viewport, chosen: bool) -> impl IntoView + use<> {
+    let points = placed
+        .points
+        .iter()
+        .map(|point| format!("{},{}", point.x, point.y))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let tint = tint_of(placed.area.as_str());
+    view! {
+        <g class="areas" transform=transform(view)>
+            <polygon
+                class=format!("area tint-{tint}")
+                class:chosen=chosen
+                points=points
+                vector-effect="non-scaling-stroke"
+            />
+        </g>
+    }
+}
+
+/// Which of the tints a room gets. A sum of its id's bytes: stable across restarts and across
+/// browsers, which a hash with a random seed would not be.
+fn tint_of(id: &str) -> u32 {
+    const TINTS: u32 = 6;
+    id.bytes().fold(0u32, |sum, byte| {
+        sum.wrapping_mul(31).wrapping_add(u32::from(byte))
+    }) % TINTS
+}
+
+/// The floor below, as an outline. Something to line an upstairs up with, and nothing more: no
+/// openings, no rooms, no devices, and nothing on it can be clicked.
+fn ghost(below: &Level, view: Viewport) -> impl IntoView + use<> {
+    let lines = below
+        .walls
+        .iter()
+        .map(|wall| {
+            view! {
+                <line
+                    x1=wall.from.x y1=wall.from.y x2=wall.to.x y2=wall.to.y
+                    stroke-width=wall.thickness
+                />
+            }
+        })
+        .collect_view();
+    view! { <g class="ghost" transform=transform(view)>{lines}</g> }
+}
+
+/// The room being traced: the corners so far, and the line out to the pointer.
+fn tracing_shape(
+    corners: &[Point],
+    pointer: Option<Point>,
+    view: Viewport,
+) -> impl IntoView + use<> {
+    let mut points: Vec<Point> = corners.to_vec();
+    if let Some(pointer) = pointer {
+        points.push(pointer);
+    }
+    let path = points
+        .iter()
+        .map(|point| format!("{},{}", point.x, point.y))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let radius = 4.0 / view.scale;
+    let first = corners.first().copied();
+    view! {
+        <g class="tracing" transform=transform(view)>
+            <polygon points=path vector-effect="non-scaling-stroke" />
+            {corners
+                .iter()
+                .map(|point| view! {
+                    <circle cx=point.x cy=point.y r=radius vector-effect="non-scaling-stroke" />
+                })
+                .collect_view()}
+            // The corner a click closes the shape on, marked so it can be aimed at.
+            {first.map(|point| view! {
+                <circle class="close" cx=point.x cy=point.y r=radius * 2.0
+                    vector-effect="non-scaling-stroke" />
+            })}
         </g>
     }
 }
@@ -1492,7 +2068,7 @@ fn round(value: f64, step: i32) -> i32 {
 /// `except` leaves one corner out — the one being dragged. Without it a corner could never be
 /// moved off the grid square it started on, because it would keep snapping to itself.
 fn place(
-    plan: &Floorplan,
+    level: &Level,
     world: (f64, f64),
     view: Viewport,
     snap: Snap,
@@ -1500,7 +2076,7 @@ fn place(
 ) -> Point {
     let reach = CORNER * view.cm_per_pixel();
     let mut nearest: Option<(f64, Point)> = None;
-    for corner in plan.walls.iter().flat_map(|wall| [wall.from, wall.to]) {
+    for corner in level.walls.iter().flat_map(|wall| [wall.from, wall.to]) {
         if Some(corner) == except {
             continue;
         }
@@ -1532,8 +2108,8 @@ fn ends(wall: &Wall, to_end: bool) -> Point {
 ///
 /// A move that would leave some wall with no length is dropped rather than applied: such a plan
 /// can't be drawn and the core would refuse to save it, and the drag has a next frame anyway.
-fn shift(plan: &mut Floorplan, moves: &[(Point, Point)]) {
-    let mut next = plan.clone();
+fn shift(level: &mut Level, moves: &[(Point, Point)]) {
+    let mut next = level.clone();
     for wall in &mut next.walls {
         for end in [&mut wall.from, &mut wall.to] {
             if let Some((_, to)) = moves.iter().find(|(was, _)| was == end) {
@@ -1548,7 +2124,7 @@ fn shift(plan: &mut Floorplan, moves: &[(Point, Point)]) {
     for wall in &mut next.walls {
         trim(wall);
     }
-    *plan = next;
+    *level = next;
 }
 
 /// How far along a segment a point falls, and how far off it — both in centimetres, with the
@@ -1578,8 +2154,8 @@ fn on_wall_at(from: Point, to: Point, world: (f64, f64)) -> (f64, f64) {
 /// A free end — one no other wall meets — gets nothing, because a wall that stops in the middle
 /// of a room stops where it was drawn. Where several walls meet, the largest of the distances
 /// wins: the overshoot lands inside the other walls, where it can't be seen.
-fn joints(plan: &Floorplan, index: usize) -> (f64, f64) {
-    let Some(wall) = plan.walls.get(index) else {
+fn joints(level: &Level, index: usize) -> (f64, f64) {
+    let Some(wall) = level.walls.get(index) else {
         return (0.0, 0.0);
     };
     let half = f64::from(wall.thickness) / 2.0;
@@ -1591,7 +2167,7 @@ fn joints(plan: &Floorplan, index: usize) -> (f64, f64) {
         // The wall's own direction, pointing away from this corner.
         let mine = direction(corner, away);
         let mut most = 0.0_f64;
-        for (other, from, to) in plan
+        for (other, from, to) in level
             .walls
             .iter()
             .enumerate()
@@ -1633,8 +2209,13 @@ fn direction(from: Point, to: Point) -> (f64, f64) {
 
 /// A point a given distance along a wall, with the wall's direction and its left-hand normal.
 fn along(wall: &Wall, at: f64) -> ((f64, f64), (f64, f64), (f64, f64)) {
-    let (ax, ay) = (f64::from(wall.from.x), f64::from(wall.from.y));
-    let (dx, dy) = (f64::from(wall.to.x) - ax, f64::from(wall.to.y) - ay);
+    point_along(wall.from, wall.to, at)
+}
+
+/// The same, for a segment that isn't a wall yet.
+fn point_along(from: Point, to: Point, at: f64) -> ((f64, f64), (f64, f64), (f64, f64)) {
+    let (ax, ay) = (f64::from(from.x), f64::from(from.y));
+    let (dx, dy) = (f64::from(to.x) - ax, f64::from(to.y) - ay);
     let length = dx.hypot(dy);
     if length <= f64::EPSILON {
         return ((ax, ay), (1.0, 0.0), (0.0, 1.0));
@@ -1687,8 +2268,9 @@ fn fit_opening(wanted: f64, width: u32, length: f64) -> i32 {
 }
 
 /// The wall nearest a point, if one is within reach.
-fn nearest_wall(plan: &Floorplan, world: (f64, f64), reach: f64) -> Option<usize> {
-    plan.walls
+fn nearest_wall(level: &Level, world: (f64, f64), reach: f64) -> Option<usize> {
+    level
+        .walls
         .iter()
         .enumerate()
         .filter_map(|(index, wall)| {
@@ -1701,9 +2283,9 @@ fn nearest_wall(plan: &Floorplan, world: (f64, f64), reach: f64) -> Option<usize
 
 /// What's under a point on the plan. An opening wins over the wall it's cut into: it is the
 /// smaller, more specific thing, and it's drawn on top.
-fn pick_at(plan: &Floorplan, world: (f64, f64), reach: f64) -> Option<Pick> {
+fn pick_at(level: &Level, world: (f64, f64), reach: f64) -> Option<Pick> {
     let mut best: Option<(f64, Pick)> = None;
-    for (index, wall) in plan.walls.iter().enumerate() {
+    for (index, wall) in level.walls.iter().enumerate() {
         let (at, off) = on_wall_at(wall.from, wall.to, world);
         if off > reach + f64::from(wall.thickness) / 2.0 {
             continue;
@@ -1719,7 +2301,90 @@ fn pick_at(plan: &Floorplan, world: (f64, f64), reach: f64) -> Option<Pick> {
             best = Some((weight, found));
         }
     }
-    best.map(|(_, found)| found)
+    // A room only wins where no wall does: it is the big thing underneath, and picking one up by
+    // clicking the wall along its edge would make the walls impossible to get at.
+    best.map(|(_, found)| found).or_else(|| {
+        level
+            .areas
+            .iter()
+            .position(|placed| inside(&placed.points, world))
+            .map(Pick::Area)
+    })
+}
+
+/// Whether a point falls inside a shape, by the crossing-number rule: count the edges a ray cast
+/// from the point crosses, and an odd count means inside. Works for the L-shaped and worse rooms
+/// that real homes have, which is why it isn't a bounding box.
+fn inside(points: &[Point], world: (f64, f64)) -> bool {
+    let mut within = false;
+    let mut previous = match points.last() {
+        Some(point) => (f64::from(point.x), f64::from(point.y)),
+        None => return false,
+    };
+    for point in points {
+        let current = (f64::from(point.x), f64::from(point.y));
+        if (current.1 > world.1) != (previous.1 > world.1) {
+            let span = previous.1 - current.1;
+            if span.abs() > f64::EPSILON {
+                let crossing = current.0 + (world.1 - current.1) / span * (previous.0 - current.0);
+                if world.0 < crossing {
+                    within = !within;
+                }
+            }
+        }
+        previous = current;
+    }
+    within
+}
+
+/// Where a corner of a room goes, in order of preference: onto a corner something already has,
+/// then onto the line of a wall, and only then onto the grid.
+///
+/// Rooms are bounded by walls, so a corner of one almost always wants to be *on* a wall rather
+/// than near it — and the grid can't be relied on for that, because a wall put down before the
+/// snap step was changed needn't sit on it. Walls win over the grid; they don't replace it, so a
+/// room can still be traced across open floor.
+fn trace_at(level: &Level, world: (f64, f64), view: Viewport, snap: Snap) -> Point {
+    let reach = CORNER * view.cm_per_pixel();
+    let corners = level
+        .walls
+        .iter()
+        .flat_map(|wall| [wall.from, wall.to])
+        .chain(
+            level
+                .areas
+                .iter()
+                .flat_map(|placed| placed.points.iter().copied()),
+        );
+    let mut nearest: Option<(f64, Point)> = None;
+    for corner in corners {
+        let away = (world.0 - f64::from(corner.x)).hypot(world.1 - f64::from(corner.y));
+        if away <= reach && nearest.is_none_or(|(best, _)| away < best) {
+            nearest = Some((away, corner));
+        }
+    }
+    if let Some((_, corner)) = nearest {
+        return corner;
+    }
+    // Not on a corner, but perhaps along a wall: the nearest point on its line, rounded to the
+    // centimetre so the file still holds whole numbers.
+    let mut along: Option<(f64, Point)> = None;
+    for wall in &level.walls {
+        let (at, off) = on_wall_at(wall.from, wall.to, world);
+        if off > reach {
+            continue;
+        }
+        let (point, _, _) = point_along(wall.from, wall.to, at);
+        let on = Point::new(point.0.round() as i32, point.1.round() as i32);
+        if along.is_none_or(|(best, _)| off < best) {
+            along = Some((off, on));
+        }
+    }
+    if let Some((_, on)) = along {
+        return on;
+    }
+    let step = snap.step();
+    Point::new(round(world.0, step), round(world.1, step))
 }
 
 /// A dragged wall end can push an opening off the end of the shortened wall, which the core
@@ -1733,12 +2398,18 @@ fn trim(wall: &mut Wall) {
 }
 
 /// The furthest corners of everything drawn, for framing it.
-fn extent(plan: &Floorplan) -> Option<(Point, Point)> {
-    let points = plan
+fn extent(level: &Level) -> Option<(Point, Point)> {
+    let points = level
         .walls
         .iter()
         .flat_map(|wall| [wall.from, wall.to])
-        .chain(plan.devices.iter().map(|placed| placed.at));
+        .chain(
+            level
+                .areas
+                .iter()
+                .flat_map(|placed| placed.points.iter().copied()),
+        )
+        .chain(level.devices.iter().map(|placed| placed.at));
     let mut bounds: Option<(Point, Point)> = None;
     for point in points {
         bounds = Some(match bounds {
@@ -1771,7 +2442,7 @@ fn typing() -> bool {
 
 /// The tools, in the order they're used: pick things up, draw walls, put things in them.
 /// Icons are 24×24 strokes written here, so `inner_html` only ever holds these literals.
-const TOOLS: [(Tool, &str, &str); 5] = [
+const TOOLS: [(Tool, &str, &str); 6] = [
     (
         Tool::Select,
         "Select",
@@ -1793,6 +2464,11 @@ const TOOLS: [(Tool, &str, &str); 5] = [
         r#"<path d="M3 12h3M18 12h3" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/><path d="M6 9v6M18 9v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M6 12h12" stroke="currentColor" stroke-width="1.6"/>"#,
     ),
     (
+        Tool::Area,
+        "Room",
+        r#"<path d="M3.5 20.5V8l8.5-4.5L20.5 8v12.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M3.5 14h7V20.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>"#,
+    ),
+    (
         Tool::Device,
         "Device",
         r#"<rect x="6" y="6" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.4" fill="currentColor"/>"#,
@@ -1808,6 +2484,17 @@ mod tests {
 
     fn wall(from: (i32, i32), to: (i32, i32)) -> Wall {
         Wall::new(Point::new(from.0, from.1), Point::new(to.0, to.1))
+    }
+
+    fn points(corners: &[(i32, i32)]) -> Vec<Point> {
+        corners.iter().map(|(x, y)| Point::new(*x, *y)).collect()
+    }
+
+    fn room(id: &str, corners: &[(i32, i32)]) -> PlacedArea {
+        PlacedArea {
+            area: id.parse().expect("a valid area id"),
+            points: points(corners),
+        }
     }
 
     #[test]
@@ -1894,11 +2581,11 @@ mod tests {
             width: 80,
         });
         trim(&mut short);
-        let plan = Floorplan {
+        let level = Level {
             walls: vec![short],
-            ..Floorplan::default()
+            ..Level::default()
         };
-        assert!(plan.check().is_ok(), "{plan:?}");
+        assert!(level.walls[0].openings[0].at <= 60, "{level:?}");
     }
 
     /// Corners are what rooms are made of: a new point within reach of one lands exactly on it,
@@ -1909,9 +2596,9 @@ mod tests {
             scale: 0.5,
             pan: (0.0, 0.0),
         };
-        let plan = Floorplan {
+        let plan = Level {
             walls: vec![wall((0, 0), (403, 0))],
-            ..Floorplan::default()
+            ..Level::default()
         };
         assert_eq!(
             place(&plan, (399.0, 4.0), view, Snap::Grid, None),
@@ -1939,14 +2626,14 @@ mod tests {
     /// The point of welding: a room drawn closed stays closed when a corner is pulled about.
     #[test]
     fn dragging_a_corner_carries_every_wall_that_meets_there() {
-        let mut plan = Floorplan {
+        let mut plan = Level {
             walls: vec![
                 wall((0, 0), (600, 0)),
                 wall((600, 0), (600, 450)),
                 wall((600, 450), (0, 450)),
                 wall((0, 450), (0, 0)),
             ],
-            ..Floorplan::default()
+            ..Level::default()
         };
         shift(&mut plan, &[(Point::new(600, 0), Point::new(700, -50))]);
 
@@ -1961,19 +2648,22 @@ mod tests {
             Point::new(600, 450),
             "the far corner stays"
         );
-        assert!(plan.check().is_ok());
+        assert!(
+            plan.walls.iter().all(|wall| wall.from != wall.to),
+            "and nothing was flattened"
+        );
     }
 
     /// Moving a wall stretches the walls joined to it rather than tearing the room open.
     #[test]
     fn dragging_a_whole_wall_takes_its_neighbours_with_it() {
-        let mut plan = Floorplan {
+        let mut plan = Level {
             walls: vec![
                 wall((0, 0), (600, 0)),
                 wall((600, 0), (600, 450)),
                 wall((0, 450), (0, 0)),
             ],
-            ..Floorplan::default()
+            ..Level::default()
         };
         shift(
             &mut plan,
@@ -1992,9 +2682,9 @@ mod tests {
     /// which is a plan that can't be drawn. The frame is dropped instead.
     #[test]
     fn a_drag_that_would_flatten_a_wall_is_dropped() {
-        let before = Floorplan {
+        let before = Level {
             walls: vec![wall((0, 0), (100, 0))],
-            ..Floorplan::default()
+            ..Level::default()
         };
         let mut plan = before.clone();
         shift(&mut plan, &[(Point::new(0, 0), Point::new(100, 0))]);
@@ -2008,7 +2698,7 @@ mod tests {
             scale: 0.5,
             pan: (0.0, 0.0),
         };
-        let empty = Floorplan::default();
+        let empty = Level::default();
         let at = |snap| place(&empty, (137.4, 62.6), view, snap, None);
 
         assert_eq!(at(Snap::Grid), Point::new(140, 60));
@@ -2044,13 +2734,13 @@ mod tests {
     /// square notch out of the outside of it. Each has to run on by half its thickness.
     #[test]
     fn a_corner_runs_on_far_enough_to_come_out_solid() {
-        let plan = Floorplan {
+        let plan = Level {
             walls: vec![
                 wall((0, 0), (400, 0)),
                 wall((400, 0), (400, 300)),
                 wall((600, 600), (900, 600)),
             ],
-            ..Floorplan::default()
+            ..Level::default()
         };
         let half = f64::from(Wall::DEFAULT_THICKNESS) / 2.0;
 
@@ -2076,15 +2766,15 @@ mod tests {
     /// but not without limit.
     #[test]
     fn how_far_a_corner_runs_on_follows_the_angle() {
-        let straight = Floorplan {
+        let straight = Level {
             walls: vec![wall((0, 0), (400, 0)), wall((400, 0), (800, 0))],
-            ..Floorplan::default()
+            ..Level::default()
         };
         assert!(joints(&straight, 0).1 < 1e-6, "nothing to fill");
 
-        let sharp = Floorplan {
+        let sharp = Level {
             walls: vec![wall((0, 0), (400, 0)), wall((400, 0), (0, 40))],
-            ..Floorplan::default()
+            ..Level::default()
         };
         let half = f64::from(Wall::DEFAULT_THICKNESS) / 2.0;
         let run = joints(&sharp, 0).1;
@@ -2100,9 +2790,9 @@ mod tests {
             at: 200,
             width: 80,
         });
-        let plan = Floorplan {
+        let plan = Level {
             walls: vec![front, wall((0, 300), (400, 300))],
-            ..Floorplan::default()
+            ..Level::default()
         };
         assert_eq!(
             pick_at(&plan, (200.0, 2.0), 20.0),
@@ -2111,6 +2801,96 @@ mod tests {
         assert_eq!(pick_at(&plan, (50.0, 2.0), 20.0), Some(Pick::Wall(0)));
         assert_eq!(pick_at(&plan, (50.0, 298.0), 20.0), Some(Pick::Wall(1)));
         assert_eq!(pick_at(&plan, (200.0, 150.0), 20.0), None, "empty room");
+    }
+
+    /// An L-shaped room is the point of counting crossings rather than testing a box: the
+    /// notch has to be outside the room even though it's inside its bounds.
+    #[test]
+    fn what_is_inside_a_room_counts_crossings() {
+        let ell = points(&[
+            (0, 0),
+            (400, 0),
+            (400, 200),
+            (200, 200),
+            (200, 400),
+            (0, 400),
+        ]);
+        assert!(inside(&ell, (100.0, 100.0)), "the top-left");
+        assert!(inside(&ell, (300.0, 100.0)), "the arm");
+        assert!(inside(&ell, (100.0, 300.0)), "the leg");
+        assert!(!inside(&ell, (300.0, 300.0)), "the notch is outside");
+        assert!(!inside(&ell, (500.0, 100.0)), "and so is the garden");
+        assert!(
+            !inside(&[], (0.0, 0.0)),
+            "a shape with no corners holds nothing"
+        );
+    }
+
+    /// A room's corners want to be on the walls, which is why walls beat the grid. The grid is
+    /// still there for tracing across open floor.
+    #[test]
+    fn a_rooms_corner_prefers_a_wall_to_the_grid() {
+        let view = Viewport {
+            scale: 0.5,
+            pan: (0.0, 0.0),
+        };
+        // A wall whose ends are nowhere near the 10 cm grid.
+        let level = Level {
+            walls: vec![wall((3, 7), (403, 7))],
+            ..Level::default()
+        };
+        let at = |world| trace_at(&level, world, view, Snap::Grid);
+
+        assert_eq!(at((8.0, 12.0)), Point::new(3, 7), "a corner of the wall");
+        assert_eq!(
+            at((200.0, 14.0)),
+            Point::new(200, 7),
+            "along the wall, off the grid"
+        );
+        assert_eq!(
+            at((198.0, 402.0)),
+            Point::new(200, 400),
+            "out in the open: the grid"
+        );
+    }
+
+    /// Rooms share their corners with each other as well as with the walls, so a second room
+    /// traced beside the first sits flush against it.
+    #[test]
+    fn a_rooms_corner_also_catches_another_rooms() {
+        let view = Viewport {
+            scale: 0.5,
+            pan: (0.0, 0.0),
+        };
+        let level = Level {
+            areas: vec![room("kitchen", &[(0, 0), (403, 0), (403, 307), (0, 307)])],
+            ..Level::default()
+        };
+        assert_eq!(
+            trace_at(&level, (400.0, 304.0), view, Snap::Grid),
+            Point::new(403, 307)
+        );
+    }
+
+    /// Walls are the thing a click is usually after; a room is the big shape underneath.
+    #[test]
+    fn a_click_on_a_wall_gets_the_wall_not_the_room_behind_it() {
+        let level = Level {
+            walls: vec![wall((0, 0), (400, 0))],
+            areas: vec![room("kitchen", &[(0, 0), (400, 0), (400, 300), (0, 300)])],
+            ..Level::default()
+        };
+        assert_eq!(pick_at(&level, (200.0, 2.0), 20.0), Some(Pick::Wall(0)));
+        assert_eq!(pick_at(&level, (200.0, 150.0), 20.0), Some(Pick::Area(0)));
+        assert_eq!(pick_at(&level, (600.0, 150.0), 20.0), None);
+    }
+
+    /// The same room is the same colour every time, whoever opens the page.
+    #[test]
+    fn a_rooms_tint_is_its_own_and_stays_put() {
+        assert_eq!(tint_of("kitchen"), tint_of("kitchen"));
+        assert!(tint_of("kitchen") < 6);
+        assert!(tint_of("") < 6, "even an id that is somehow empty");
     }
 
     #[test]
@@ -2122,17 +2902,18 @@ mod tests {
 
     #[test]
     fn the_whole_plan_can_be_framed() {
-        let plan = Floorplan {
+        let plan = Level {
             walls: vec![wall((-50, 0), (400, 0)), wall((400, 0), (400, 300))],
             devices: vec![PlacedDevice {
                 device: "demo_lamp".parse().expect("a valid device id"),
                 at: Point::new(120, 420),
             }],
+            ..Level::default()
         };
         assert_eq!(
             extent(&plan),
             Some((Point::new(-50, 0), Point::new(400, 420)))
         );
-        assert_eq!(extent(&Floorplan::default()), None);
+        assert_eq!(extent(&Level::default()), None);
     }
 }

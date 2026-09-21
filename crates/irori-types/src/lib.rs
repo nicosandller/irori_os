@@ -29,7 +29,9 @@ pub use extension::{
     IntegrationContribution, IotClass, NetworkHost, PackagePath, Permissions, ReservedContribution,
     RunCommand, SerialPath, Version,
 };
-pub use floorplan::{Floorplan, Opening, OpeningKind, PlacedDevice, PlanError, Point, Wall};
+pub use floorplan::{
+    Floorplan, Level, Opening, OpeningKind, PlacedArea, PlacedDevice, PlanError, Point, Wall,
+};
 pub use id::{
     AreaId, AttributeKey, ContextId, Description, DeviceId, EntityId, ExtensionId, FloorId,
     IdError, IntegrationId, Name, ObjectId, RuleId, SLUG_MAX_LEN, TokenId, UniqueId, UserId,

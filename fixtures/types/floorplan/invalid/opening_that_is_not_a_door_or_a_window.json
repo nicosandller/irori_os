@@ -1,9 +1,13 @@
 {
-  "walls": [
-    {
-      "from": [0, 0],
-      "to": [400, 0],
-      "openings": [{ "kind": "hatch", "at": 200, "width": 60 }]
+  "floors": {
+    "ground": {
+      "walls": [
+        {
+          "from": [0, 0],
+          "to": [400, 0],
+          "openings": [{ "kind": "hatch", "at": 200, "width": 60 }]
+        }
+      ]
     }
-  ]
+  }
 }
