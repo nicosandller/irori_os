@@ -269,6 +269,14 @@ fn the_plans_schema_refuses_what_the_plan_refuses() -> anyhow::Result<()> {
             ]})),
         ),
         (
+            "the same device drawn on two floors",
+            Says::OnlyRust,
+            serde_json::json!({"floors": {
+                "ground": {"devices": [{"device": "demo_lamp", "at": [0, 0]}]},
+                "upstairs": {"devices": [{"device": "demo_lamp", "at": [0, 0]}]}
+            }}),
+        ),
+        (
             "the same room drawn twice on one floor",
             Says::OnlyRust,
             floor(serde_json::json!({"areas": [

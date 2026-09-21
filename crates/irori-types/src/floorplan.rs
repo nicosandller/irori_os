@@ -316,6 +316,23 @@ impl Floorplan {
                 .check()
                 .map_err(|PlanError(why)| PlanError(format!("on floor `{floor}`, {why}")))?;
         }
+        // A device is one object and is in one place, so it is on the plan once — across every
+        // floor, not once per floor as a room's shape is. A room can honestly be traced on two
+        // floors (a stairwell, a double-height hall); a lamp cannot be in two of them, and a
+        // plan that said so would leave whoever read it to pick, which is not a thing a reader
+        // should have to do.
+        let mut placed = BTreeMap::new();
+        for (floor, level) in &self.floors {
+            for device in &level.devices {
+                if let Some(already) = placed.insert(&device.device, floor) {
+                    return Err(PlanError(format!(
+                        "`{}` is drawn on two floors, `{already}` and `{floor}`; a device is in \
+                         one place",
+                        device.device
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -518,6 +535,43 @@ mod tests {
             .is_err(),
             "the same room drawn twice on one floor"
         );
+    }
+
+    /// The counterpart of the rule above: a room can honestly be in two places, a device
+    /// cannot. Whoever read a plan that said otherwise would have to pick one.
+    #[test]
+    fn a_device_is_drawn_once_in_the_whole_home() {
+        let lamp = || PlacedDevice {
+            device: "demo_lamp".parse().expect("a valid device id"),
+            at: Point::new(120, 90),
+        };
+        let level = Level {
+            devices: vec![lamp()],
+            ..Level::default()
+        };
+        assert!(on_ground(level.clone()).check().is_ok(), "once is fine");
+
+        let twice = Floorplan {
+            floors: [
+                (ground(), level.clone()),
+                ("upstairs".parse().expect("a valid floor id"), level),
+            ]
+            .into(),
+        };
+        let error = twice.check().expect_err("the same lamp on two floors");
+        assert!(error.to_string().contains("demo_lamp"), "{error}");
+
+        let same_floor = Floorplan {
+            floors: [(
+                ground(),
+                Level {
+                    devices: vec![lamp(), lamp()],
+                    ..Level::default()
+                },
+            )]
+            .into(),
+        };
+        assert!(same_floor.check().is_err(), "or twice on one floor");
     }
 
     /// The same room may be traced on two floors — a stairwell, a double-height hall — because

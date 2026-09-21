@@ -1217,7 +1217,17 @@ pub fn Floorplan() -> impl IntoView {
                     {move || if editing.get() {
                         view! {
                             <>
-                                <button type="button" on:click=move |_| cancel()>"Cancel"</button>
+                                <button
+                                    type="button"
+                                    // Not while a save is in flight. Cancelling would let a new
+                                    // edit start before the answer came back, and the answer —
+                                    // which closes the editor and empties the history — would
+                                    // land on that new edit instead of the one it belonged to.
+                                    disabled=move || saving.get()
+                                    on:click=move |_| cancel()
+                                >
+                                    "Cancel"
+                                </button>
                                 <button
                                     type="button"
                                     class="solid"
