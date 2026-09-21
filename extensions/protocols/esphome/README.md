@@ -1,4 +1,4 @@
-# irori-int-esphome
+# irori-protocol-esphome
 
 Devices running [ESPHome](https://esphome.io) firmware, over ESPHome's **native API** — the
 protocol ESPHome speaks to Home Assistant. No MQTT broker, no cloud, nothing to set up: the
@@ -86,7 +86,7 @@ For the encrypted flow there's a quicker way, with no ESPHome install: an encryp
 device, announced over mDNS the way firmware does (macOS's `dns-sd`; `avahi-publish` on Linux):
 
 ```sh
-cargo test -p irori-int-esphome -- --ignored --nocapture an_encrypted_device_to_try
+cargo test -p irori-protocol-esphome -- --ignored --nocapture an_encrypted_device_to_try
 # prints its port and key; then, in another terminal:
 dns-sd -P "Test lock" _esphomelib._tcp local <port> testlock.local 127.0.0.1 \
     mac=aabbccddeeff "friendly_name=Test lock" api_encryption=Noise_NNpsk0_25519_ChaChaPoly_SHA256

@@ -171,7 +171,7 @@ Irori, and is never shown again.
 If your ESPHome config has an `area:`, Irori notices it but doesn't act on it by itself: make a
 room by that name and the device walks into it (see above).
 
-See [integrations/irori-int-esphome/README.md](integrations/irori-int-esphome/README.md), which
+See [extensions/protocols/esphome/README.md](extensions/protocols/esphome/README.md), which
 also explains how to try both kinds of device without hardware.
 
 ## Run it like a Raspberry Pi (Docker)
@@ -226,13 +226,13 @@ CI runs on every pull request (and on every push to `main`). It builds `x86_64` 
 
 ```
 assets/        brand: logo marks, banner, favicon, social card (see assets/README.md)
-docs/specs/    specifications: entities.md, extensions.md, integrations.md, config.md
+docs/specs/    specifications: entities.md, extensions.md, protocols.md, config.md
 schemas/       JSON Schemas generated from irori-types (`cargo xtask schemas`)
 fixtures/      golden examples, valid and invalid, checked by the tests
-crates/        irori-types, irori-core, irori-integration, irori-rules, irori-recorder,
+crates/        irori-types, irori-core, irori-protocol, irori-rules, irori-recorder,
                irori-config, irori-api, irori-client, irori (the binary), and irori-ui
                (the Leptos web UI: wasm, built by `cargo xtask ui`, outside the workspace)
-integrations/  irori-int-mqtt, irori-int-demo, irori-int-esphome
+extensions/    first-party extensions: protocols/mqtt, protocols/esphome, demo, helpers
 extras/        irori-assist (opt-in AI, never in the default build)
 xtask/         repository automation (`cargo xtask …`)
 ```
