@@ -277,6 +277,18 @@ The Floorplan page **replaces the whole file at once** when somebody presses Sav
 editing a wall at a time. The editor works on a copy while it is being drawn, so a half-finished
 room never reaches the file and Cancel is simply never sending it.
 
+**Saving a plan also answers `devices.toml`.** A device drawn standing inside a room is a person
+saying which room it is in, so the save puts it there (§3.2, `area`). A plan that knew and didn't
+say would be a drawing rather than part of the home. Two limits, and they are the point:
+
+- A **deliberate** `area = false` is never overruled. That answer exists so that a guess — the
+  device's own `suggested_area` — can't put the device back, and a dot standing on a floor is
+  another guess. Only `area` that is absent, or names some other room, is changed.
+- A room that isn't in `areas.toml` is not used, the same as anywhere else a missing reference
+  is kept rather than obeyed (§6).
+
+The save says how many devices it moved, so a write to a second file is never silent.
+
 ## 4. What a decision is attached to
 
 **A device** is attached to its id. A device's id is made from its integration and the

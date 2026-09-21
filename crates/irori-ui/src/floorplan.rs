@@ -74,6 +74,20 @@ const CORNER: f64 = 18.0;
 const MIN_SCALE: f64 = 0.06;
 const MAX_SCALE: f64 = 1.5;
 
+/// How much of the canvas the chrome around it takes up, in screen pixels, when a plan is being
+/// framed into what's left.
+#[derive(Debug, Clone, Copy)]
+struct Insets {
+    top: f64,
+    bottom: f64,
+    left: f64,
+    right: f64,
+}
+
+/// How many steps back the editor can go. Far more than anyone reaches for, and still only a
+/// few hundred kilobytes of plans.
+const HISTORY: usize = 100;
+
 /// Where the floor last looked at is remembered. A preference about this screen rather than
 /// something about the home, so it belongs to the browser.
 const FLOOR_KEY: &str = "irori.floorplan.floor";
@@ -267,7 +281,17 @@ pub fn Floorplan() -> impl IntoView {
     let dragged = RwSignal::new(false);
     let saving = RwSignal::new(false);
     let trouble = RwSignal::new(None::<String>);
+    // Something that went right and is worth saying anyway — a save that also wrote
+    // `devices.toml`. Kept apart from `trouble` so good news never wears the colour of bad.
+    let note = RwSignal::new(None::<String>);
+    // Where the plan has been and where it can go again. Whole plans rather than a list of
+    // changes: a plan is a few kilobytes, and a snapshot can't be wrong about what undoing it
+    // means the way a replayed change can.
+    let past = RwSignal::new(Vec::<Floorplan>::new());
+    let future = RwSignal::new(Vec::<Floorplan>::new());
     let canvas = NodeRef::<Div>::new();
+    // Measured when framing the plan, so the panels on the right don't end up sitting over it.
+    let side = NodeRef::<Div>::new();
 
     // What's on screen: the copy while it's being drawn, the home's own plan otherwise.
     let shown = Memo::new(move |_| {
@@ -347,21 +371,45 @@ pub fn Floorplan() -> impl IntoView {
         if width <= 0.0 || height <= 0.0 {
             return;
         }
-        let margin = 64.0;
+        // Fitting means fitting into what's *left* of the canvas: the title sits over the top,
+        // the tools down the left, the zoom and the hint along the bottom, and the floors and
+        // the inspector down the right. A plan framed into the whole rectangle would come out
+        // with a wall under the panels, which is exactly what "Fit" is pressed to undo.
+        let margin = 24.0;
+        let gutters = Insets {
+            top: 56.0 + margin,
+            bottom: 56.0 + margin,
+            left: 56.0 + margin,
+            // Measured rather than guessed: the column is as wide as its widest floor name, and
+            // isn't there at all for a home with one floor and nothing picked up.
+            right: side
+                .get_untracked()
+                .map_or(0.0, |node| node.get_bounding_client_rect().width())
+                + margin * 2.0,
+        };
+        let room = (
+            width - gutters.left - gutters.right,
+            height - gutters.top - gutters.bottom,
+        );
+        if room.0 <= 0.0 || room.1 <= 0.0 {
+            return;
+        }
         // Every coordinate becomes a `f64` before any arithmetic: a plan can hold points at
         // opposite ends of `i32` (`Point::distance_to` says why), and framing one must give a
         // silly zoom rather than overflow.
         let (left, right) = (f64::from(low.x), f64::from(high.x));
         let (top, bottom) = (f64::from(low.y), f64::from(high.y));
         let (span_x, span_y) = ((right - left).max(100.0), (bottom - top).max(100.0));
-        let scale = ((width - margin * 2.0) / span_x)
-            .min((height - margin * 2.0) / span_y)
+        let scale = (room.0 / span_x)
+            .min(room.1 / span_y)
             .clamp(MIN_SCALE, MAX_SCALE);
+        // The middle of what's left, not the middle of the canvas.
+        let middle = (gutters.left + room.0 / 2.0, gutters.top + room.1 / 2.0);
         view.set(Viewport {
             scale,
             pan: (
-                width / 2.0 - (left + right) / 2.0 * scale,
-                height / 2.0 - (top + bottom) / 2.0 * scale,
+                middle.0 - (left + right) / 2.0 * scale,
+                middle.1 - (top + bottom) / 2.0 * scale,
             ),
         });
     };
@@ -380,6 +428,49 @@ pub fn Floorplan() -> impl IntoView {
         fit();
     });
 
+    // Called once at the start of each thing a person does, not once per change: a wall dragged
+    // across the room is one move to undo, however many times the pointer reported it.
+    let remember = move || {
+        past.update(|past| {
+            past.push(draft.get_untracked());
+            if past.len() > HISTORY {
+                past.remove(0);
+            }
+        });
+        // Going somewhere new is what ends a chain of redos, in every program that has them.
+        future.update(Vec::clear);
+    };
+
+    let step_back = move || {
+        past.update(|past| {
+            let Some(before) = past.pop() else { return };
+            future.update(|future| future.push(draft.get_untracked()));
+            draft.set(before);
+        });
+        // What was picked up may not exist any more, and a half-drawn wall belongs to the state
+        // that was undone.
+        picked.set(None);
+        running.set(None);
+        pointer.set(None);
+        tracing.set(Vec::new());
+    };
+
+    let step_forward = move || {
+        future.update(|future| {
+            let Some(next) = future.pop() else { return };
+            past.update(|past| past.push(draft.get_untracked()));
+            draft.set(next);
+        });
+        picked.set(None);
+        running.set(None);
+        pointer.set(None);
+        tracing.set(Vec::new());
+    };
+
+    // The same thing, for the marker and the inspector, which are components rather than
+    // closures over this state.
+    let remember_cb = Callback::new(move |()| remember());
+
     // Puts down everything half-drawn: the run of wall, the room being traced, and whatever
     // was waiting to be placed. Nothing half-drawn is part of the plan, so this loses nothing
     // that was ever in it.
@@ -391,22 +482,28 @@ pub fn Floorplan() -> impl IntoView {
 
     let start_editing = move || {
         draft.set(live.home.get_untracked().floorplan.clone());
+        past.set(Vec::new());
+        future.set(Vec::new());
         picked.set(None);
         arming.set(None);
         arming_area.set(None);
         tool.set(Tool::Select);
         stop_drawing();
         trouble.set(None);
+        note.set(None);
         editing.set(true);
     };
 
     let cancel = move || {
         editing.set(false);
+        past.set(Vec::new());
+        future.set(Vec::new());
         picked.set(None);
         arming.set(None);
         arming_area.set(None);
         stop_drawing();
         trouble.set(None);
+        note.set(None);
     };
 
     let save = move || {
@@ -417,9 +514,20 @@ pub fn Floorplan() -> impl IntoView {
         saving.set(true);
         spawn_local(async move {
             match api::save_floorplan(&plan).await {
-                Ok(()) => {
+                Ok(saved) => {
                     trouble.set(None);
+                    // A plan that moved devices into rooms says so: it wrote `devices.toml` as
+                    // well as the plan, and a config write nobody was told about is a surprise.
+                    note.set(match saved.placed {
+                        0 => None,
+                        1 => Some("Saved. One device is now in the room it stands in.".into()),
+                        many => Some(format!(
+                            "Saved. {many} devices are now in the rooms they stand in."
+                        )),
+                    });
                     editing.set(false);
+                    past.set(Vec::new());
+                    future.set(Vec::new());
                     picked.set(None);
                     arming.set(None);
                     arming_area.set(None);
@@ -440,6 +548,7 @@ pub fn Floorplan() -> impl IntoView {
         let Some(pick) = picked.get_untracked() else {
             return;
         };
+        remember();
         on_level(draft, floor, |level| match pick {
             Pick::Wall(w) => {
                 if w < level.walls.len() {
@@ -490,6 +599,19 @@ pub fn Floorplan() -> impl IntoView {
                 event.prevent_default();
                 remove_picked();
             }
+            // Both spellings of redo, because both are somebody's habit.
+            "z" | "Z" if event.meta_key() || event.ctrl_key() => {
+                event.prevent_default();
+                if event.shift_key() {
+                    step_forward();
+                } else {
+                    step_back();
+                }
+            }
+            "y" | "Y" if event.ctrl_key() => {
+                event.prevent_default();
+                step_forward();
+            }
             _ => {}
         }
     });
@@ -524,6 +646,7 @@ pub fn Floorplan() -> impl IntoView {
                 if let Some(wall) = here_level.walls.get(w) {
                     for (to_end, end) in [(false, wall.from), (true, wall.to)] {
                         if near(end) {
+                            remember();
                             drag.set(Some(Drag::Corner { wall: w, to_end }));
                             return;
                         }
@@ -534,6 +657,7 @@ pub fn Floorplan() -> impl IntoView {
                 if let Some(area) = here_level.areas.get(a)
                     && let Some(corner) = area.points.iter().position(|point| near(*point))
                 {
+                    remember();
                     drag.set(Some(Drag::AreaCorner { area: a, corner }));
                     return;
                 }
@@ -544,6 +668,7 @@ pub fn Floorplan() -> impl IntoView {
         match pick_at(&here_level, world, reach) {
             Some(Pick::Opening(w, o)) => {
                 picked.set(Some(Pick::Opening(w, o)));
+                remember();
                 drag.set(Some(Drag::Opening {
                     wall: w,
                     opening: o,
@@ -551,6 +676,7 @@ pub fn Floorplan() -> impl IntoView {
             }
             Some(Pick::Wall(w)) => {
                 picked.set(Some(Pick::Wall(w)));
+                remember();
                 drag.set(Some(Drag::Wall {
                     wall: w,
                     grab: world,
@@ -558,6 +684,7 @@ pub fn Floorplan() -> impl IntoView {
             }
             Some(Pick::Area(a)) => {
                 picked.set(Some(Pick::Area(a)));
+                remember();
                 drag.set(Some(Drag::Area {
                     area: a,
                     grab: world,
@@ -735,6 +862,7 @@ pub fn Floorplan() -> impl IntoView {
                 );
                 match running.get_untracked() {
                     Some(from) if from != to => {
+                        remember();
                         let built = Wall {
                             thickness: thickness.get_untracked(),
                             ..Wall::new(from, to)
@@ -761,6 +889,7 @@ pub fn Floorplan() -> impl IntoView {
                     return;
                 };
                 trouble.set(None);
+                remember();
                 on_level(draft, floor, |level| {
                     if let Some(wall) = level.walls.get_mut(w) {
                         let length = wall.length();
@@ -789,6 +918,7 @@ pub fn Floorplan() -> impl IntoView {
                 // ever drawn a polygon expects to finish one.
                 if corners.len() >= PlacedArea::FEWEST_POINTS && corners.first() == Some(&to) {
                     let points = corners;
+                    remember();
                     on_level(draft, floor, |level| {
                         // Redrawing a room replaces its old shape: one shape per room per floor
                         // is what the plan allows, and moving a wall is why somebody would.
@@ -818,6 +948,7 @@ pub fn Floorplan() -> impl IntoView {
                     return;
                 };
                 trouble.set(None);
+                remember();
                 let step = snap.get_untracked().step();
                 let at = Point::new(round(world.0, step), round(world.1, step));
                 on_level(draft, floor, |level| {
@@ -845,6 +976,7 @@ pub fn Floorplan() -> impl IntoView {
             if corners.len() >= PlacedArea::FEWEST_POINTS
                 && let Some(area) = arming_area.get_untracked()
             {
+                remember();
                 on_level(draft, floor, |level| {
                     level.areas.retain(|placed| placed.area != area);
                     level.areas.push(PlacedArea {
@@ -1034,6 +1166,7 @@ pub fn Floorplan() -> impl IntoView {
                                     picked,
                                     drag,
                                     dragged,
+                                    remember_cb,
                                 ))
                             })
                             .collect_view()
@@ -1106,6 +1239,25 @@ pub fn Floorplan() -> impl IntoView {
                     <span class="tool-gap"></span>
                     <button
                         type="button"
+                        title="Undo (⌘Z)"
+                        aria-label="Undo"
+                        disabled=move || past.get().is_empty()
+                        on:click=move |_| step_back()
+                    >
+                        <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=UNDO></svg>
+                    </button>
+                    <button
+                        type="button"
+                        title="Redo (⇧⌘Z)"
+                        aria-label="Redo"
+                        disabled=move || future.get().is_empty()
+                        on:click=move |_| step_forward()
+                    >
+                        <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=REDO></svg>
+                    </button>
+                    <span class="tool-gap"></span>
+                    <button
+                        type="button"
                         title="Remove what's picked up"
                         aria-label="Remove what's picked up"
                         disabled=move || picked.get().is_none()
@@ -1124,12 +1276,15 @@ pub fn Floorplan() -> impl IntoView {
                 <AreaPicker level=level floor=floor arming=arming_area live=live />
             })}
 
-            <FloorPicker floors=floors floor=floor plan=shown />
-
-            {move || editing.get().then(|| view! {
-                <Inspector draft=draft floor=floor level=level picked=picked
-                    thickness=thickness live=live />
-            })}
+            // The right-hand column: which floor, and what's picked up under it. One column so
+            // the two can't sit on top of each other, and so `fit` has one thing to measure.
+            <div class="plan-side" node_ref=side>
+                <FloorPicker floors=floors floor=floor plan=shown live=live trouble=trouble />
+                {move || editing.get().then(|| view! {
+                    <Inspector draft=draft floor=floor level=level picked=picked
+                        thickness=thickness live=live remember=remember_cb />
+                })}
+            </div>
 
             <div class="plan-foot">
                 <div class="zoom">
@@ -1152,27 +1307,78 @@ pub fn Floorplan() -> impl IntoView {
             </div>
 
             {move || trouble.get().map(|why| view! { <p class="plan-banner">{why}</p> })}
+            {move || note.get().map(|said| view! {
+                <p class="plan-banner note">{said}</p>
+            })}
         </div>
     }
 }
 
-/// Which floor is being looked at.
+/// Which floor is being looked at, and how to add another.
 ///
 /// Highest at the top, like the buttons in a lift, because that is the one arrangement of floors
 /// nobody has to be taught. A floor with nothing drawn on it says so, so an upstairs that was
-/// never traced doesn't look like one that failed to load. Nothing at all for a home with no
-/// floors — there the whole canvas is the empty state.
+/// never traced doesn't look like one that failed to load.
+///
+/// Adding one from here writes `areas.toml`, the same as Settings does — floors are one thing
+/// with one home, and this is the page where it becomes obvious that another is needed.
 #[component]
 fn FloorPicker(
     floors: Memo<Vec<irori_types::Floor>>,
     floor: RwSignal<Option<FloorId>>,
     plan: Memo<Floorplan>,
+    live: crate::Live,
+    trouble: RwSignal<Option<String>>,
 ) -> impl IntoView {
+    let adding = RwSignal::new(false);
+    let busy = RwSignal::new(false);
+    let name = RwSignal::new(String::new());
+    let above = RwSignal::new(String::new());
+
+    // A new floor goes above the highest one unless told otherwise, because that is the one
+    // people add.
+    let next_level = move || {
+        floors
+            .get()
+            .iter()
+            .map(|floor| floor.level)
+            .max()
+            .map_or(0, |highest| highest.saturating_add(1))
+    };
+    let open = move || {
+        name.set(String::new());
+        above.set(next_level().to_string());
+        adding.set(true);
+    };
+
+    let add = move || {
+        let Ok(named) = name.get_untracked().trim().parse::<irori_types::Name>() else {
+            trouble.set(Some("A floor needs a name.".into()));
+            return;
+        };
+        let Ok(level) = above.get_untracked().trim().parse::<i8>() else {
+            trouble.set(Some("A floor's level is a whole number: 0, 1, -1.".into()));
+            return;
+        };
+        busy.set(true);
+        spawn_local(async move {
+            match api::add_floor(named, level).await {
+                Ok(()) => {
+                    trouble.set(None);
+                    adding.set(false);
+                    crate::refresh(live);
+                }
+                Err(why) => trouble.set(Some(why)),
+            }
+            busy.set(false);
+        });
+    };
+
     move || {
         let floors = floors.get();
-        // One floor is nothing to choose between, and no floors has its own empty state on the
-        // canvas. Either way a picker here would be a label pretending to be a control.
-        if floors.len() < 2 {
+        // No floors at all has its own empty state on the canvas, which offers the same button
+        // with more room to explain itself.
+        if floors.is_empty() {
             return None;
         }
         let plan = plan.get();
@@ -1202,6 +1408,54 @@ fn FloorPicker(
                         }
                     })
                     .collect_view()}
+
+                {move || if adding.get() {
+                    view! {
+                        <form
+                            class="add-floor"
+                            on:submit=move |event: ev::SubmitEvent| {
+                                event.prevent_default();
+                                add();
+                            }
+                        >
+                            <label>
+                                <span class="visually-hidden">"What the floor is called"</span>
+                                <input
+                                    type="text"
+                                    placeholder="Upstairs"
+                                    autofocus
+                                    prop:value=move || name.get()
+                                    on:input=move |e| name.set(event_target_value(&e))
+                                />
+                            </label>
+                            <label class="level">
+                                <span>"Level"</span>
+                                <input
+                                    type="number"
+                                    step="1"
+                                    prop:value=move || above.get()
+                                    on:input=move |e| above.set(event_target_value(&e))
+                                />
+                            </label>
+                            <div class="add-floor-actions">
+                                <button type="button" on:click=move |_| adding.set(false)>
+                                    "Cancel"
+                                </button>
+                                <button type="submit" class="solid" disabled=move || busy.get()>
+                                    {move || if busy.get() { "Adding…" } else { "Add" }}
+                                </button>
+                            </div>
+                        </form>
+                    }
+                    .into_any()
+                } else {
+                    view! {
+                        <button class="add-another" type="button" on:click=move |_| open()>
+                            "+ Add a floor"
+                        </button>
+                    }
+                    .into_any()
+                }}
             </div>
         })
     }
@@ -1343,6 +1597,7 @@ fn Inspector(
     picked: RwSignal<Option<Pick>>,
     thickness: RwSignal<u32>,
     live: crate::Live,
+    remember: Callback<()>,
 ) -> impl IntoView {
     move || {
         let here = level.get();
@@ -1365,6 +1620,8 @@ fn Inspector(
                                 max=*Wall::THICKNESS_RANGE.end()
                                 step="1"
                                 prop:value=thick
+                                on:pointerdown=move |_| remember.run(())
+                                on:keydown=move |_| remember.run(())
                                 on:input=move |event| {
                                     let Ok(next) = event_target_value(&event).parse::<u32>() else {
                                         return;
@@ -1406,6 +1663,8 @@ fn Inspector(
                                 max=widest
                                 step="1"
                                 prop:value=width
+                                on:pointerdown=move |_| remember.run(())
+                                on:keydown=move |_| remember.run(())
                                 on:input=move |event| {
                                     let Ok(next) = event_target_value(&event).parse::<u32>() else {
                                         return;
@@ -1679,6 +1938,7 @@ fn marker(
     picked: RwSignal<Option<Pick>>,
     drag: RwSignal<Option<Drag>>,
     dragged: RwSignal<bool>,
+    remember: Callback<()>,
 ) -> impl IntoView + use<> {
     let (x, y) = view.screen(placed.at);
     let look = looks(home, &device.id);
@@ -1716,6 +1976,7 @@ fn marker(
                 event.stop_propagation();
                 dragged.set(false);
                 picked.set(Some(Pick::Device(index)));
+                remember.run(());
                 drag.set(Some(Drag::Device { device: index }));
             }
             on:click=move |event: ev::MouseEvent| {
@@ -2484,6 +2745,10 @@ const TOOLS: [(Tool, &str, &str); 6] = [
         r#"<rect x="6" y="6" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.4" fill="currentColor"/>"#,
     ),
 ];
+
+/// Back a step, and forward again.
+const UNDO: &str = r#"<path d="M4 9h10a5 5 0 0 1 0 10H8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 5 4 9l4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
+const REDO: &str = r#"<path d="M20 9H10a5 5 0 0 0 0 10h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="m16 5 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
 
 /// Take away what's picked up.
 const BIN: &str = r#"<path d="M4 7h16M10 7V5h4v2M6 7l1 13h10l1-13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;

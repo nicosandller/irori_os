@@ -312,6 +312,13 @@ async fn floorplan(State(state): State<AppState>) -> Json<Floorplan> {
 /// draws and sends it when they press Save, so a half-finished room never reaches the file, and
 /// Cancel is simply not sending. It is also what makes the page's undo trivially correct — there
 /// is nothing on the server to undo.
+/// What saving a plan did beyond writing it down.
+#[derive(Debug, Serialize)]
+struct PlanSaved {
+    /// Devices the plan moved into the room they are standing in.
+    placed: usize,
+}
+
 async fn save_floorplan(State(state): State<AppState>, Json(plan): Json<Floorplan>) -> Response {
     let saved = state
         .0
@@ -319,13 +326,51 @@ async fn save_floorplan(State(state): State<AppState>, Json(plan): Json<Floorpla
         .edit(&state.0.core, |settings| {
             plan.check().map_err(|why| Refused(why.to_string()))?;
             settings.floorplan = plan.clone();
-            Ok(())
+            Ok(place_devices(settings))
         })
         .await;
     match saved {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(placed) => Json(PlanSaved { placed }).into_response(),
         Err(e) => edit_failed(e),
     }
+}
+
+/// Puts each device that was drawn inside a room into that room, and says how many moved.
+///
+/// Dragging a device onto the kitchen floor is a person saying where it is, so it may answer the
+/// question `devices.toml` asks — a plan that knew and didn't say would be a drawing rather than
+/// part of the home. Two things it must not do.
+///
+/// It must not overrule a **deliberate** "not in a room" (`area = false`,
+/// `docs/specs/config.md` §3.2). That answer exists precisely so that a guess — the device's own
+/// `suggested_area` — can't put it back, and a dot standing on a floor is another guess.
+///
+/// And it must not place a device into a room that isn't there: rooms are made in `areas.toml`,
+/// and a plan naming one that has since been deleted is kept rather than obeyed (§6).
+fn place_devices(settings: &mut irori_types::Settings) -> usize {
+    let rooms: Vec<(DeviceId, AreaId)> = settings
+        .floorplan
+        .floors
+        .values()
+        .flat_map(|level| {
+            level.devices.iter().filter_map(|placed| {
+                let room = level.areas.iter().find(|area| area.contains(placed.at))?;
+                settings.area(&room.area)?;
+                Some((placed.device.clone(), room.area.clone()))
+            })
+        })
+        .collect();
+
+    let mut moved = 0;
+    for (device, room) in rooms {
+        let settings = settings.devices.entry(device).or_default();
+        if settings.area == Placement::Nowhere || settings.area == Placement::In(room.clone()) {
+            continue;
+        }
+        settings.area = Placement::In(room);
+        moved += 1;
+    }
+    moved
 }
 
 async fn floors(State(state): State<AppState>) -> Json<Vec<Floor>> {
@@ -1748,7 +1793,10 @@ mod tests {
     /// home, and one that couldn't be drawn is refused rather than written.
     #[tokio::test]
     async fn a_plan_is_saved_whole_and_a_door_has_to_fit_its_wall() -> anyhow::Result<()> {
-        let server = Server::new(core())?;
+        // A real device, because part of what saving a plan does is put devices in the rooms
+        // they were drawn in.
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
 
         let home = server.read("/api/dev/home").await?;
         assert!(
@@ -1776,7 +1824,11 @@ mod tests {
         let (status, body) = server
             .json("PUT", "/api/dev/floorplan", plan.clone())
             .await?;
-        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["placed"], 0,
+            "there is no room called `kitchen` to put it in yet: {body}"
+        );
 
         let written = std::fs::read_to_string(server.config_dir().join("floorplan.toml"))?;
         assert!(written.contains("from = [0, 0]"), "{written}");
@@ -1790,6 +1842,53 @@ mod tests {
             "{home}"
         );
         assert_eq!(server.read("/api/dev/floorplan").await?, plan);
+
+        // Make the room the lamp was drawn standing in, and saving the same plan again puts the
+        // lamp in it: dragging a device onto a floor is a person saying where it is.
+        server
+            .json(
+                "POST",
+                "/api/dev/areas",
+                serde_json::json!({"name": "Kitchen"}),
+            )
+            .await?;
+        let (_, body) = server
+            .json("PUT", "/api/dev/floorplan", plan.clone())
+            .await?;
+        assert_eq!(body["placed"], 1, "{body}");
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(devices.contains("area = \"kitchen\""), "{devices}");
+
+        // Saying so again moves nothing: it is where the plan says already.
+        let (_, body) = server
+            .json("PUT", "/api/dev/floorplan", plan.clone())
+            .await?;
+        assert_eq!(body["placed"], 0, "{body}");
+
+        // A device deliberately in no room stays in none. That answer exists so a guess can't
+        // overrule it, and a dot standing on a floor is a guess.
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/demo_lamp",
+                serde_json::json!({"area": false}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (_, body) = server
+            .json("PUT", "/api/dev/floorplan", plan.clone())
+            .await?;
+        assert_eq!(body["placed"], 0, "{body}");
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(devices.contains("area = false"), "{devices}");
+        assert_eq!(
+            core.devices()
+                .iter()
+                .find(|device| device.id.as_ref() == "demo_lamp")
+                .and_then(|device| device.area_id.clone()),
+            None,
+            "and the core agrees"
+        );
 
         // A door wider than the wall it's in would have to be drawn hanging off the end.
         let (status, why) = server
@@ -1819,6 +1918,7 @@ mod tests {
         // And the refused plan changed nothing: the drawn one is still there.
         assert_eq!(server.read("/api/dev/floorplan").await?, plan);
 
+        host.shutdown().await;
         Ok(())
     }
 

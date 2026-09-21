@@ -536,8 +536,7 @@
                             display: flex; align-items: center; gap: 1rem;
                             padding: 1rem 1.25rem; pointer-events: none; }
     .floorplan .plan-head h1 { font-size: 1.15rem; text-shadow: 0 1px 3px var(--bg); }
-    .floorplan .plan-actions { margin-left: auto; display: flex; gap: .5rem;
-                               pointer-events: auto; }
+    .floorplan .plan-actions { display: flex; gap: .5rem; pointer-events: auto; }
     .floorplan .plan-actions button { padding: .35rem .8rem; font: inherit; font-size: .85rem;
                                       color: var(--fg); background: var(--card);
                                       border: 1px solid var(--line); border-radius: .4rem;
@@ -614,8 +613,7 @@
     .floorplan .watermark .wm-pip circle { fill: var(--ember); stroke: none; opacity: .22; }
 
     /* What's picked up, and the numbers worth changing about it. */
-    .floorplan .inspector { position: absolute; top: 4rem; right: 1.25rem; z-index: 2;
-                            width: 12rem; padding: .7rem .8rem; background: var(--card);
+    .floorplan .inspector { width: 12rem; padding: .7rem .8rem; background: var(--card);
                             border: 1px solid var(--line); border-radius: .5rem;
                             box-shadow: 0 1px 4px rgb(0 0 0 / .1); }
     .floorplan .inspector h2 { margin: 0 0 .5rem; font: .65rem var(--mono); letter-spacing: .08em;
@@ -641,13 +639,14 @@
     .floorplan .snap-step output { min-width: 3.4rem; font: .75rem var(--mono);
                                    font-variant-numeric: tabular-nums; color: var(--muted); }
 
-    /* Which floor, on the right edge — highest at the top, like the buttons in a lift. */
-    .floorplan .floor-picker { position: absolute; top: 50%; right: 1.25rem; z-index: 2;
-                               transform: translateY(-50%); display: flex;
-                               flex-direction: column; gap: .2rem; max-height: 50%;
-                               overflow-y: auto; padding: .3rem; background: var(--card);
-                               border: 1px solid var(--line); border-radius: .5rem;
-                               box-shadow: 0 1px 4px rgb(0 0 0 / .1); }
+    /* The right-hand column: which floor, and what's picked up under it. */
+    .floorplan .plan-side { position: absolute; top: 1rem; right: 1.25rem; z-index: 2;
+                            display: flex; flex-direction: column; align-items: stretch;
+                            gap: .5rem; max-height: calc(100% - 6rem); }
+    .floorplan .floor-picker { display: flex; flex-direction: column; gap: .2rem;
+                               min-width: 9rem; overflow-y: auto; padding: .3rem;
+                               background: var(--card); border: 1px solid var(--line);
+                               border-radius: .5rem; box-shadow: 0 1px 4px rgb(0 0 0 / .1); }
     .floorplan .floor-picker button { display: grid; gap: .1rem; min-width: 7rem;
                                       padding: .35rem .55rem; font: inherit; text-align: left;
                                       color: var(--fg); background: transparent;
@@ -660,6 +659,25 @@
     .floorplan .floor-level { font: .6rem var(--mono); letter-spacing: .08em;
                               text-transform: uppercase; color: var(--muted); }
     .floorplan .floor-picker button.chosen .floor-level { color: var(--card); opacity: .8; }
+    .floorplan .add-another { color: var(--muted); font-size: .8rem; }
+    .floorplan .add-another:hover { color: var(--ember); }
+    .floorplan .add-floor { display: grid; gap: .35rem; padding: .35rem .2rem .2rem;
+                            border-top: 1px solid var(--line); margin-top: .2rem; }
+    .floorplan .add-floor input { width: 100%; padding: .3rem .45rem; font: inherit;
+                                  font-size: .85rem; color: var(--fg); background: var(--bg);
+                                  border: 1px solid var(--line); border-radius: .35rem; }
+    .floorplan .add-floor input:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
+    .floorplan .add-floor .level { display: flex; align-items: center; gap: .4rem;
+                                   color: var(--muted); font: .65rem var(--mono);
+                                   letter-spacing: .08em; text-transform: uppercase; }
+    .floorplan .add-floor .level input { width: 3.5rem; font-family: var(--mono); }
+    .floorplan .add-floor-actions { display: flex; gap: .3rem; justify-content: flex-end; }
+    .floorplan .add-floor-actions button { min-width: 0; padding: .25rem .6rem; font-size: .8rem;
+                                           border-color: var(--line); }
+    .floorplan .add-floor-actions button.solid { background: var(--ember);
+                                                 border-color: var(--ember); color: var(--card); }
+    .floorplan .add-floor-actions button.solid:hover { background: #ab4717;
+                                                       border-color: #ab4717; }
 
     .floorplan .inspector .name { font-size: .9rem; overflow-wrap: anywhere; }
 
@@ -675,6 +693,7 @@
     .floorplan .hint { margin: 0; flex: 1 1 16rem; min-width: 0; color: var(--muted);
                        font-size: .8rem; text-shadow: 0 1px 3px var(--bg); }
     .floorplan .hint:empty { display: none; }
+    .floorplan .plan-banner.note { color: var(--fg); border-color: var(--line); }
     .floorplan .plan-banner { position: absolute; left: 50%; bottom: 4.5rem; z-index: 3;
                               transform: translateX(-50%); margin: 0; padding: .5rem .8rem;
                               color: var(--ember); background: var(--card);
@@ -687,9 +706,9 @@
                             flex-direction: row; justify-content: center; }
       .floorplan .tool-gap { width: 1px; height: auto; margin: .3rem .2rem; }
       .floorplan .device-picker { top: 4rem; left: 1rem; right: 1rem; width: auto; }
-      .floorplan .inspector { top: auto; bottom: 8.5rem; left: 1rem; right: 1rem; width: auto; }
-      .floorplan .floor-picker { top: 4rem; right: 1rem; left: auto; max-height: 40%;
-                                 transform: none; }
+      .floorplan .inspector { width: auto; }
+      .floorplan .plan-side { top: 4rem; right: 1rem; max-height: 45%; }
+      .floorplan .floor-picker { min-width: 0; }
       .floorplan .plan-foot { align-items: flex-start; }
     }
   </style>

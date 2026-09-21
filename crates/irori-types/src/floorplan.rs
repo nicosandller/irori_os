@@ -141,6 +141,35 @@ impl PlacedArea {
     /// The fewest corners a shape can have and still be one.
     pub const FEWEST_POINTS: usize = 3;
 
+    /// Whether a point falls inside the shape.
+    ///
+    /// By the crossing-number rule: count the edges a ray cast from the point crosses, and an
+    /// odd count means inside. Not a bounding box, because the L-shaped and worse rooms real
+    /// homes have would swallow half the hallway. Lives here rather than in the editor because
+    /// the server asks the same question when it works out which room a device is standing in.
+    pub fn contains(&self, point: Point) -> bool {
+        let (x, y) = (f64::from(point.x), f64::from(point.y));
+        let mut within = false;
+        let Some(last) = self.points.last() else {
+            return false;
+        };
+        let mut previous = (f64::from(last.x), f64::from(last.y));
+        for corner in &self.points {
+            let current = (f64::from(corner.x), f64::from(corner.y));
+            if (current.1 > y) != (previous.1 > y) {
+                let span = previous.1 - current.1;
+                if span.abs() > f64::EPSILON {
+                    let crossing = current.0 + (y - current.1) / span * (previous.0 - current.0);
+                    if x < crossing {
+                        within = !within;
+                    }
+                }
+            }
+            previous = current;
+        }
+        within
+    }
+
     /// The middle of it, for putting the room's name. The average of the corners rather than the
     /// true centroid: it is where a label looks right, and for the rectangles and L-shapes rooms
     /// actually are, the two are close enough that nobody could tell them apart.
@@ -508,6 +537,32 @@ mod tests {
             .into(),
         };
         assert!(plan.check().is_ok());
+    }
+
+    /// An L-shaped room is why this counts crossings rather than testing a box: the notch has
+    /// to be outside the room even though it's inside its bounds.
+    #[test]
+    fn what_is_inside_a_room_counts_crossings() {
+        let ell = area(
+            "hall",
+            &[
+                (0, 0),
+                (400, 0),
+                (400, 200),
+                (200, 200),
+                (200, 400),
+                (0, 400),
+            ],
+        );
+        assert!(ell.contains(Point::new(100, 100)), "the top-left");
+        assert!(ell.contains(Point::new(300, 100)), "the arm");
+        assert!(ell.contains(Point::new(100, 300)), "the leg");
+        assert!(!ell.contains(Point::new(300, 300)), "the notch is outside");
+        assert!(!ell.contains(Point::new(500, 100)), "and so is the garden");
+        assert!(
+            !area("empty", &[]).contains(Point::new(0, 0)),
+            "a shape with no corners holds nothing"
+        );
     }
 
     #[test]
