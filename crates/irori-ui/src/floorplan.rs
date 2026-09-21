@@ -3363,7 +3363,11 @@ mod tests {
     #[test]
     fn a_rooms_name_goes_where_it_was_dragged() {
         let mut kitchen = room("kitchen", &[(0, 0), (400, 0), (400, 300), (0, 300)]);
-        assert_eq!(label_at(&kitchen), Some(Point::new(200, 150)), "in the middle");
+        assert_eq!(
+            label_at(&kitchen),
+            Some(Point::new(200, 150)),
+            "in the middle"
+        );
         kitchen.label = Point::new(40, -60);
         assert_eq!(
             label_at(&kitchen),
