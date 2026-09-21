@@ -185,6 +185,34 @@ that join while asking is off, so restarting with asking already on doesn't empt
 What the integration says about a held device is kept, so adding it shows it as it is now. It
 applies while Irori runs.
 
+### 3.6 `extensions/<id>.toml`
+
+An extension's settings that aren't secret. Irori writes a header comment saying so when it
+creates the file.
+
+```toml
+# extensions/helpers.toml
+[toggles.guests_are_over]
+name = "Guests are over"
+initial = false
+```
+
+The extension receives this file **joined** with its table in `secrets.toml` (§3.4), as one table,
+checked against its own config type. A key present in both is a mistake: the secret wins, so a
+password isn't silently replaced by a placeholder, and the clash is logged once, naming the key
+but not its value. Changing either file restarts the extension (ROADMAP D34). A file for an
+extension that isn't installed is kept and does nothing.
+
+Unlike `secrets.toml`, this file is meant to be committed, and the API reads it: an endpoint that
+edits it does so on behalf of the extension it belongs to — the helpers endpoints write
+`extensions/helpers.toml` — never as a general "write any extension's settings" call.
+
+**Helpers** keep their definitions here. A toggle is a switch Irori keeps itself — "guests are
+over", "holiday mode" — with the entity id `switch.<id>`. `name` is its one name: renaming the
+entity from the UI rewrites it here, not in `entities.toml`, so there's no second name (D36).
+`initial` is its value before anyone has switched it; after that, the value it was left at is kept
+in the extension's private storage (`integrations.md` §5) through restarts. Removing a toggle
+removes its entity and forgets its value.
 ### 3.7 `floorplan.toml`
 
 The home as a drawing. Nothing discovers this — no integration can tell Irori where a wall is —
@@ -231,34 +259,6 @@ The Floorplan page **replaces the whole file at once** when somebody presses Sav
 editing a wall at a time. The editor works on a copy while it is being drawn, so a half-finished
 room never reaches the file and Cancel is simply never sending it.
 
-### 3.6 `extensions/<id>.toml`
-
-An extension's settings that aren't secret. Irori writes a header comment saying so when it
-creates the file.
-
-```toml
-# extensions/helpers.toml
-[toggles.guests_are_over]
-name = "Guests are over"
-initial = false
-```
-
-The extension receives this file **joined** with its table in `secrets.toml` (§3.4), as one table,
-checked against its own config type. A key present in both is a mistake: the secret wins, so a
-password isn't silently replaced by a placeholder, and the clash is logged once, naming the key
-but not its value. Changing either file restarts the extension (ROADMAP D34). A file for an
-extension that isn't installed is kept and does nothing.
-
-Unlike `secrets.toml`, this file is meant to be committed, and the API reads it: an endpoint that
-edits it does so on behalf of the extension it belongs to — the helpers endpoints write
-`extensions/helpers.toml` — never as a general "write any extension's settings" call.
-
-**Helpers** keep their definitions here. A toggle is a switch Irori keeps itself — "guests are
-over", "holiday mode" — with the entity id `switch.<id>`. `name` is its one name: renaming the
-entity from the UI rewrites it here, not in `entities.toml`, so there's no second name (D36).
-`initial` is its value before anyone has switched it; after that, the value it was left at is kept
-in the extension's private storage (`integrations.md` §5) through restarts. Removing a toggle
-removes its entity and forgets its value.
 ## 4. What a decision is attached to
 
 **A device** is attached to its id. A device's id is made from its integration and the

@@ -33,8 +33,14 @@ impl Point {
     }
 
     /// How far it is from another point, in centimetres.
+    ///
+    /// Each coordinate becomes a `f64` before anything is subtracted. A plan is whatever
+    /// somebody typed into the file, so two points really can sit at opposite ends of `i32`,
+    /// and subtracting those first would overflow — a panic where the answer wanted was
+    /// "very far apart", on the path [`Floorplan::check`] uses to *reject* such a plan.
     pub fn distance_to(self, other: Point) -> f64 {
-        let (dx, dy) = (f64::from(other.x - self.x), f64::from(other.y - self.y));
+        let dx = f64::from(other.x) - f64::from(self.x);
+        let dy = f64::from(other.y) - f64::from(self.y);
         dx.hypot(dy)
     }
 }
@@ -238,6 +244,31 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Point>("[120,-30]").expect("json"),
             point
+        );
+    }
+
+    /// A plan is whatever somebody typed into the file, so two points really can sit at
+    /// opposite ends of `i32`. Measuring that must answer "very far apart" rather than panic,
+    /// because the measuring is what `check` uses to turn it down.
+    #[test]
+    fn two_points_at_the_ends_of_the_world_can_still_be_measured() {
+        let far = Point::new(i32::MIN, i32::MIN).distance_to(Point::new(i32::MAX, i32::MAX));
+        assert!(far.is_finite() && far > 6e9, "{far}");
+
+        let plan = Floorplan {
+            walls: vec![Wall {
+                openings: vec![Opening {
+                    kind: OpeningKind::Door,
+                    at: 0,
+                    width: 80,
+                }],
+                ..Wall::new(Point::new(i32::MIN, 0), Point::new(i32::MAX, 0))
+            }],
+            ..Floorplan::default()
+        };
+        assert!(
+            plan.check().is_err(),
+            "a door at one end of a wall that long"
         );
     }
 

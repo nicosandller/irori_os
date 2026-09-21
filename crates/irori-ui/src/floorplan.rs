@@ -11,7 +11,8 @@
 //! grid and the device markers agree about where anything is at any zoom.
 
 use irori_types::{
-    Device, DeviceId, EntityId, Floorplan, Opening, OpeningKind, PlacedDevice, Point, State, Wall,
+    Capabilities, Device, DeviceId, EntityId, Floorplan, Opening, OpeningKind, PlacedDevice, Point,
+    State, Wall,
 };
 use leptos::ev;
 use leptos::html::Div;
@@ -1188,25 +1189,32 @@ fn marker(
     let (x, y) = view.screen(placed.at);
     let look = looks(home, &device.id);
     let name = device.name.to_string();
-    let title = match look.on {
-        Some(true) => format!("{name} — on"),
-        Some(false) => format!("{name} — off"),
-        None => name.clone(),
+    let (on, offline) = (look.on, look.offline);
+    // A marker is a control only while reading the plan: a device that can't be switched, or
+    // that isn't answering, must not look like one that can be. In edit mode it is a thing to
+    // move instead, so it stays live whatever the device is doing.
+    let switchable = look.switch.is_some() && !offline;
+    let title = match (offline, on) {
+        (true, _) => format!("{name} — not answering"),
+        (false, Some(true)) => format!("{name} — on"),
+        (false, Some(false)) => format!("{name} — off"),
+        (false, None) => name.clone(),
     };
     let switch = look.switch.clone();
-    let on = look.on;
 
     view! {
         <button
             type="button"
             class="marker"
             class:on=move || on == Some(true)
-            class:offline=move || look.offline
+            class:offline=offline
             class:chosen=chosen
             class:movable=editing
+            class:switchable=!editing && switchable
             style=format!("left:{x}px;top:{y}px")
             title=title
-            aria-pressed=(!editing).then(|| on.map(|on| on.to_string())).flatten()
+            disabled=!editing && !switchable
+            aria-pressed=(!editing && switchable).then(|| on.map(|on| on.to_string())).flatten()
             on:mousedown=move |event: ev::MouseEvent| {
                 if !editing {
                     return;
@@ -1218,13 +1226,13 @@ fn marker(
             }
             on:click=move |event: ev::MouseEvent| {
                 event.stop_propagation();
-                if editing {
+                if editing || !switchable {
                     return;
                 }
-                let (Some(entity), Some(on)) = (switch.clone(), on) else {
-                    return;
-                };
-                controls.set_on.run((entity, !on));
+                let Some(entity) = switch.clone() else { return };
+                // An entity that hasn't said yet is turned on, which is what asking for
+                // "the other one" means when there is no current one.
+                controls.set_on.run((entity, !on.unwrap_or(false)));
             }
         >
             <span class="pip"></span>
@@ -1235,8 +1243,11 @@ fn marker(
 
 /// What a device looks like on the plan right now.
 struct Look {
-    /// Whether anything it provides is switched on, if anything it provides can be.
+    /// Whether the entity a click would switch is on. `None` when it can be switched but hasn't
+    /// said yet — a device that has only just joined — which is still worth a click.
     on: Option<bool>,
+    /// Whether *that* entity is unreachable. Not whether anything on the device is: a lamp with
+    /// a flaky signal sensor is still a lamp you can switch.
     offline: bool,
     /// The entity a click switches, if there is one.
     switch: Option<EntityId>,
@@ -1244,43 +1255,41 @@ struct Look {
 
 /// A device's state, as the plan shows it: the first light or switch it provides speaks for it.
 ///
-/// A device is usually one thing — a lamp, a plug — and when it isn't (a lamp with a sensor in
-/// it) the switchable part is what someone reaching for a floorplan wants to press.
+/// Chosen by what the entity **can do**, not by what it has said. An entity that has reported
+/// nothing yet still has a light's or a switch's capabilities, and a marker that refused to
+/// switch it until it had spoken would be a dead control on a device that works — the Devices
+/// page turns such an entity on from an unknown state, and so does this.
 fn looks(home: &Home, device: &DeviceId) -> Look {
-    let mut offline = false;
-    let mut found: Option<(EntityId, Option<bool>)> = None;
-    for entity in home
+    let found = home
         .entities
         .iter()
         .filter(|entity| entity.device_id.as_ref() == Some(device))
-    {
-        let state = home
-            .states
-            .iter()
-            .find(|state| state.entity_id == entity.id);
-        if state.is_some_and(|state| state.availability == irori_types::Availability::Unavailable) {
-            offline = true;
-        }
-        let on = match state.and_then(|state| state.state.as_ref()) {
+        .find(|entity| {
+            matches!(
+                entity.capabilities,
+                Capabilities::Light(_) | Capabilities::Switch(_)
+            )
+        });
+    let Some(entity) = found else {
+        return Look {
+            on: None,
+            offline: false,
+            switch: None,
+        };
+    };
+    let state = home
+        .states
+        .iter()
+        .find(|state| state.entity_id == entity.id);
+    Look {
+        on: match state.and_then(|state| state.state.as_ref()) {
             Some(State::Light(light)) => Some(light.on),
             Some(State::Switch(switch)) => Some(switch.on),
-            _ => continue,
-        };
-        if found.is_none() {
-            found = Some((entity.id.clone(), on));
-        }
-    }
-    match found {
-        Some((entity, on)) => Look {
-            on,
-            offline,
-            switch: Some(entity),
+            _ => None,
         },
-        None => Look {
-            on: None,
-            offline,
-            switch: None,
-        },
+        offline: state
+            .is_some_and(|state| state.availability == irori_types::Availability::Unavailable),
+        switch: Some(entity.id.clone()),
     }
 }
 
@@ -1612,7 +1621,9 @@ fn joints(plan: &Floorplan, index: usize) -> (f64, f64) {
 
 /// The unit vector from one point towards another, or a default when they're the same place.
 fn direction(from: Point, to: Point) -> (f64, f64) {
-    let (dx, dy) = (f64::from(to.x - from.x), f64::from(to.y - from.y));
+    // Each coordinate first, then the subtraction: see `Point::distance_to`.
+    let dx = f64::from(to.x) - f64::from(from.x);
+    let dy = f64::from(to.y) - f64::from(from.y);
     let length = dx.hypot(dy);
     if length <= f64::EPSILON {
         return (1.0, 0.0);

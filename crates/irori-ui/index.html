@@ -493,7 +493,11 @@
                          color: var(--fg); background: var(--card); cursor: pointer;
                          border: 1px solid var(--line); border-radius: 1rem;
                          box-shadow: 0 1px 3px rgb(0 0 0 / .12); white-space: nowrap; }
-    .floorplan .marker:hover { border-color: var(--ember); }
+    .floorplan .marker.switchable:hover, .floorplan .marker.movable:hover {
+        border-color: var(--ember); }
+    /* Not a control: a device with nothing to switch, or one that isn't answering. It still
+       shows what it knows, it just doesn't invite a click. */
+    .floorplan .marker:disabled { cursor: default; }
     .floorplan .marker .pip { width: .55rem; height: .55rem; flex: none; border-radius: 50%;
                               background: var(--muted); }
     .floorplan .marker.on { border-color: var(--ember); }
