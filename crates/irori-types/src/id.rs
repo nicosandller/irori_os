@@ -170,7 +170,7 @@ slug_id!(
     "device id"
 );
 slug_id!(
-    /// Identifies an protocol, e.g. `mqtt`. Equals the id of the extension that contributes
+    /// Identifies a protocol, e.g. `mqtt`. Equals the id of the extension that contributes
     /// it (ROADMAP D25).
     ProtocolId,
     "protocol id"
@@ -331,7 +331,7 @@ impl JsonSchema for ContextId {
     }
 }
 
-/// The stable identifier an protocol gives a device or entity, e.g. a Zigbee IEEE address.
+/// The stable identifier a protocol gives a device or entity, e.g. a Zigbee IEEE address.
 /// Unique within that protocol; 1–255 characters, no control characters.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]

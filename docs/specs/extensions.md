@@ -4,23 +4,23 @@ Status: **accepted for Phase 0** (M0.6, part A). Changes go through a PR that up
 the types in `crates/irori-types`, the generated `schemas/`, and the examples in
 `fixtures/types/` together; CI fails if the last three disagree.
 
-The runtime contract for integrations is in [integrations.md](integrations.md) (part B).
+The runtime contract for protocol extensions is in [protocols.md](protocols.md) (part B).
 
 ---
 
 ## 1. Purpose
 
-Everything beyond the core is an **extension** (ROADMAP D21): the ESPHome integration, a future
+Everything beyond the core is an **extension** (ROADMAP D21): the ESPHome extension, a future
 SwitchBot connector, a dashboard, a terminal app. An extension is one package with a manifest
 that says:
 
 - **who it is:** id, name, version, and which versions of Irori it works with;
-- **what it contributes:** an integration now; dashboards, cards, and apps later (D22);
+- **what it contributes:** a protocol now; dashboards, cards, and apps later (D22);
 - **what it may access:** the local network, internet hosts, serial ports, files, a shell (D23).
 
 Official first-party extensions live in this repo under `extensions/` and are **not** linked
 into the `irori` binary. Each is a folder with a program in it. Tests may still start the same
-crate in-process through the `Integration` trait. From the UI they look the same.
+crate in-process through the `Protocol` trait. From the UI they look the same.
 
 ## 2. The model at a glance
 
@@ -29,7 +29,7 @@ flowchart LR
     manifest["irori-extension.toml"] --> info["[extension]<br/>id · name · version · irori"]
     manifest --> contributes["[contributes]"]
     manifest --> permissions["[permissions]<br/>lan · network · serial · host_fs · host_shell · api"]
-    contributes --> integration["integration<br/>(Phase 1)"]
+    contributes --> protocol["protocol<br/>(Phase 1)"]
     contributes -.-> dashboard["dashboard · card<br/>(Phase 2c, reserved)"]
     contributes -.-> app["app<br/>(Phase 3, reserved)"]
 ```
@@ -67,7 +67,7 @@ irori = ">=0.1.0, <0.2.0"
 description = "SwitchBot plugs, meters, and curtains, through the SwitchBot cloud API."
 config_schema = "config.schema.json"
 
-[[contributes.integration]]
+[[contributes.protocol]]
 iot_class = "cloud_polling"
 entity_kinds = ["switch", "sensor"]
 run = { command = "bin/switchbot" }
@@ -82,13 +82,13 @@ More, valid and invalid, in `fixtures/types/extension-manifest/`.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `id` | slug (`^[a-z0-9]+(_[a-z0-9]+)*$`, 1–64 chars) | yes | Also the id of the integration it contributes (D25), so it appears in `Device.integration` |
+| `id` | slug (`^[a-z0-9]+(_[a-z0-9]+)*$`, 1–64 chars) | yes | Also the id of the protocol it contributes (D25), so it appears in `Device.protocol` |
 | `name` | `Name` | yes | Shown in the UI |
 | `version` | version, see below | yes | |
 | `irori` | requirement, see below | yes | Which versions of Irori it works with |
 | `description` | 1–500 chars, one line | no | |
 | `config_schema` | package path | no | JSON Schema (draft 2020-12) for its settings. External extensions only: a built-in extension's schema is generated from its Rust config type |
-| `icon` | package path | no | A square SVG shown beside the extension and its devices. Always displayed as an image (`<img>`, served with a no-script content policy), never inlined into a page. A built-in extension embeds the same file (`Integration::ICON`), and the two must agree |
+| `icon` | package path | no | A square SVG shown beside the extension and its devices. Always displayed as an image (`<img>`, served with a no-script content policy), never inlined into a page. A built-in extension embeds the same file (`Protocol::ICON`), and the two must agree |
 
 **Versions** are [Semantic Versioning](https://semver.org) `MAJOR.MINOR.PATCH` with an optional
 pre-release: `1.4.0`, `0.3.0-beta.1`. No build metadata (`+abc`), so two equal versions are
@@ -108,25 +108,25 @@ outside the package, and there are no hidden files.
 
 ## 6. `[contributes]`
 
-One list per contribution kind, written as TOML arrays of tables (`[[contributes.integration]]`).
+One list per contribution kind, written as TOML arrays of tables (`[[contributes.protocol]]`).
 
 | Kind | Status | What it is |
 |---|---|---|
-| `integration` | **Phase 1**, specified below and in [integrations.md](integrations.md) | Brings in devices and entities: a protocol (ESPHome, MQTT, Zigbee) or a vendor API |
+| `protocol` | **Phase 1**, specified below and in [protocols.md](protocols.md) | Brings in devices and entities — MQTT, ESPHome, Zigbee, or a vendor API |
 | `dashboard` | Reserved for Phase 2c (ROADMAP §6.4) | A pre-built view that binds to matching devices |
 | `card` | Reserved for Phase 2c | A visualization used inside dashboards |
 | `app` | Reserved for Phase 3 (ROADMAP §8.2) | A tool with its own page, served by the extension |
 | `automation` | Reserved | An automation engine. The core does not ship one; engines are installed as extensions. This version reads the contribution and ignores it with a warning, like dashboard/card. |
 
-### 6.1 Integration
+### 6.1 Protocol
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `iot_class` | `local_push` \| `local_polling` \| `cloud_push` \| `cloud_polling` | yes | Shown as a badge; `cloud_*` means it needs the internet (D24) |
-| `entity_kinds` | list of entity kinds, at least one, no repeats | yes | The kinds it creates. It must handle the standard services of each ([integrations.md](integrations.md) §6) |
+| `entity_kinds` | list of entity kinds, at least one, no repeats | yes | The kinds it creates. It must handle the standard services of each ([protocols.md](protocols.md) §6) |
 | `run` | `{ command = <package path>, args = [<string>…] }` | external only | How the core starts it. Built-in extensions leave it out |
 
-**At most one integration per extension** in this version (D25). The integration's id is the
+**At most one protocol per extension** in this version (D25). The protocol's id is the
 extension id.
 
 ### 6.2 Kinds this version doesn't implement
@@ -135,13 +135,13 @@ An extension may contribute kinds a given Irori doesn't implement: the reserved 
 kinds added in a later Irori. This version **reads them, ignores them, and shows a warning**
 (`contributes.dashboard isn't supported by this version of Irori yet; ignoring it`); they're
 never an error. So an extension can ship a dashboard for newer Irori and still provide its
-integration on older ones.
+protocol on older ones.
 
 They must still be lists of tables. Their fields aren't checked until the version that
 implements them.
 
 **Everything else unknown is an error.** An unknown field in `[extension]`, `[permissions]`, or
-an integration entry, or an unknown top-level table, is almost always a typo, so it fails loudly.
+a protocol entry, or an unknown top-level table, is almost always a typo, so it fails loudly.
 A manifest that needs a newer Irori for such a field says so in `irori`.
 
 ## 7. `[permissions]`
@@ -158,7 +158,7 @@ increase on update needs approval again (D23).
 | `host_shell` | bool | Running commands on the machine |
 | `api` | list of scopes, no repeats | Irori API access beyond its own devices: `registry:read`, `states:read`, `events:read`, `services:call` |
 
-**No permission is needed** for what every integration does: creating and updating its own
+**No permission is needed** for what every protocol extension does: creating and updating its own
 devices and entities, reporting their state, and handling service calls for them.
 
 **Full access.** `host_shell = true`, or any `host_fs` path outside `$CONFIG` and `$DATA`, means
@@ -196,18 +196,18 @@ stateDiagram-v2
 | `disabled` | Turned off in `irori.toml` (`[extensions] disabled`) | — |
 | `starting` | Being set up | — |
 | `running` | Working | — |
-| `degraded` | Working, with a problem it reported, e.g. one of four devices unreachable | The integration's own message |
+| `degraded` | Working, with a problem it reported, e.g. one of four devices unreachable | The extension's own message |
 | `failed` | Not working | Why, e.g. `requires Irori >=0.2.0`, an invalid setting, or the crash; plus when the next retry is |
 
 An extension's state is the worst of its contributions'. Supervision and retries are in
-[integrations.md](integrations.md) §3.
+[protocols.md](protocols.md) §3.
 
 ## 9. Validation
 
 Same layers as [entities.md](entities.md) §7:
 
 1. **JSON Schema** (`schemas/extension-manifest.schema.json`): shapes, patterns, enums, unknown
-   fields, at most one integration, no repeated list items.
+   fields, at most one protocol, no repeated list items.
 2. **Rust types** (`irori-types`): everything above, plus what JSON Schema can't express: the
    `irori` upper bound must be above the lower (`*.schema-allows.toml` in the fixtures).
    `description` is one line: no control characters and no Unicode line or paragraph separators.
@@ -221,7 +221,7 @@ Warnings for ignored contribution kinds come from layer 2 (`ExtensionManifest::w
 
 | Topic | Where it's decided |
 |---|---|
-| Integration lifecycle, services, and messages | [integrations.md](integrations.md) |
+| Protocol lifecycle, services, and messages | [protocols.md](protocols.md) |
 | Turning extensions off, and where their settings live | [config.md](config.md) §3.4–3.5. Approved permissions: planned for `extensions/<id>.toml` |
 | Signing, registry index, `install`/`update` | Phase 3 (ROADMAP §8.1) |
 | Dashboard, card, and app fields | The phases that build them (§6) |
@@ -232,8 +232,8 @@ Warnings for ignored contribution kinds come from layer 2 (`ExtensionManifest::w
 
 ROADMAP M0.6 sketched the manifest. This spec changes it:
 
-- **`services` is gone from the integration entry.** Declaring `entity_kinds` already says which
-  standard services it handles ([integrations.md](integrations.md) §6). Custom services are an
+- **`services` is gone from the protocol entry.** Declaring `entity_kinds` already says which
+  standard services it handles ([protocols.md](protocols.md) §6). Custom services are an
   open question there.
 - **`lan` is its own permission**, separate from `network`. Local devices (ESPHome, Hue bridges)
   have addresses the author can't know in advance, and "on your network" versus "on the internet"

@@ -239,7 +239,7 @@
       "description": "Where a context started.",
       "oneOf": [
         {
-          "description": "Reported by a device through an protocol, e.g. someone pressed a physical switch.",
+          "description": "Reported by a device through a protocol, e.g. someone pressed a physical switch.",
           "type": "object",
           "properties": {
             "protocol": {

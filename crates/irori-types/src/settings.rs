@@ -231,7 +231,7 @@ impl ExtensionSettings {
     }
 }
 
-/// What a setting is attached to: an protocol and its own permanent handle for the thing
+/// What a setting is attached to: a protocol and its own permanent handle for the thing
 /// (`docs/specs/config.md` §4).
 ///
 /// Not a `DeviceId` or `EntityId`. Those are also made from the protocol and permanent handle
@@ -262,7 +262,7 @@ impl std::fmt::Display for SettingsKey {
 impl std::str::FromStr for SettingsKey {
     type Err = IdError;
 
-    /// Splits at the *first* `/`: an protocol id is a slug and can't contain one, but a
+    /// Splits at the *first* `/`: a protocol id is a slug and can't contain one, but a
     /// unique id is whatever the protocol chose and often can.
     fn from_str(value: &str) -> Result<Self, IdError> {
         let (protocol, unique_id) = value.split_once('/').unwrap_or((value, ""));

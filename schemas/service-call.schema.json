@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ServiceCall",
-  "description": "The core asking an protocol to act on one of its entities.",
+  "description": "The core asking a protocol to act on one of its entities.",
   "type": "object",
   "properties": {
     "context": {
@@ -206,7 +206,7 @@
       "description": "Where a context started.",
       "oneOf": [
         {
-          "description": "Reported by a device through an protocol, e.g. someone pressed a physical switch.",
+          "description": "Reported by a device through a protocol, e.g. someone pressed a physical switch.",
           "type": "object",
           "properties": {
             "protocol": {

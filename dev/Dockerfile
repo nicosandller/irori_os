@@ -25,7 +25,7 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/target \
     cargo build --locked --release -p irori $FEATURES \
-      -p irori-int-demo -p irori-int-esphome -p irori-int-helpers -p irori-int-mqtt \
+      -p irori-protocol-demo -p irori-protocol-esphome -p irori-protocol-helpers -p irori-protocol-mqtt \
     && cp /target/release/irori /irori \
     && mkdir -p /official/demo/bin /official/esphome/bin /official/helpers/bin /official/mqtt/bin \
     && cp extensions/demo/irori-extension.toml extensions/demo/icon.svg /official/demo/ \

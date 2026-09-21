@@ -1,4 +1,4 @@
-//! What an protocol and the core say to each other. See `docs/specs/protocols.md`.
+//! What a protocol and the core say to each other. See `docs/specs/protocols.md`.
 //!
 //! Protocols refer to their devices and entities by `unique_id`, their own permanent handle.
 //! The core assigns the user-facing ids (`DeviceId`, `EntityId`), which the user may rename.
@@ -16,7 +16,7 @@ use crate::{
     State, UniqueId,
 };
 
-/// Something an protocol found but can't use yet, because it needs a person first: a device
+/// Something a protocol found but can't use yet, because it needs a person first: a device
 /// that wants an encryption key, one that has to be paired, an account that has to be signed in
 /// to. See `docs/specs/protocols.md` §6.6.
 ///
@@ -94,7 +94,7 @@ impl SecretRequest {
     }
 }
 
-/// A device as an protocol describes it. The core adds it to the registry, or updates the
+/// A device as a protocol describes it. The core adds it to the registry, or updates the
 /// entry with the same `unique_id`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -169,7 +169,7 @@ impl DeviceDescription {
     }
 }
 
-/// An entity as an protocol describes it. The core adds it to the registry, or updates the
+/// An entity as a protocol describes it. The core adds it to the registry, or updates the
 /// entry with the same `unique_id`.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -300,9 +300,9 @@ impl StateReport {
     }
 }
 
-/// The core asking an protocol to act on one of its entities.
+/// The core asking a protocol to act on one of its entities.
 ///
-/// By the time an protocol receives a call, the core has checked that the entity exists,
+/// By the time a protocol receives a call, the core has checked that the entity exists,
 /// belongs to it, is of the service's kind, and supports what's asked (e.g. `brightness` only on
 /// a dimmable light).
 ///
@@ -513,7 +513,7 @@ impl JsonSchema for ServiceCall {
             .collect();
         json_schema!({
             "type": "object",
-            "description": "The core asking an protocol to act on one of its entities.",
+            "description": "The core asking a protocol to act on one of its entities.",
             "properties": {
                 "service": generator.subschema_for::<ServiceName>(),
                 "unique_id": generator.subschema_for::<UniqueId>(),

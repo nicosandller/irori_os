@@ -29,7 +29,7 @@ pub struct Timing {
     pub max_retry: Duration,
     /// Running this long resets the wait to `first_retry`.
     pub healthy_after: Duration,
-    /// How long an protocol gets to finish after being told to stop.
+    /// How long a protocol gets to finish after being told to stop.
     pub stop_grace: Duration,
 }
 
@@ -305,7 +305,7 @@ async fn supervise(
         manifest.protocol_id(),
         manifest.contributes.protocol.first(),
     ) else {
-        // `irori_protocol::builtin` only builds extensions with an protocol.
+        // `irori_protocol::builtin` only builds extensions with a protocol.
         core.set_status(&extension, ExtensionStatus::Disabled);
         return;
     };
@@ -565,7 +565,7 @@ async fn pump(
 }
 
 /// Applies the next thing the protocol says. Operations and state reports are taken in no
-/// fixed order, so an protocol busy with one can't starve the other.
+/// fixed order, so a protocol busy with one can't starve the other.
 async fn serve(
     core: &Core,
     extension: &ExtensionId,

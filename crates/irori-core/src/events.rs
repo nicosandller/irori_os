@@ -40,7 +40,7 @@ pub enum Event {
         extension_id: ExtensionId,
         status: ExtensionStatus,
     },
-    /// A service call was sent to an protocol.
+    /// A service call was sent to a protocol.
     ServiceCalled {
         entity_id: EntityId,
         service: ServiceName,

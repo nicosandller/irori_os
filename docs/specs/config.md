@@ -10,7 +10,7 @@ The CLI command tree that mirrors this (M1.7) is not in this spec; see ROADMAP �
 
 ## 1. Purpose
 
-An integration tells Irori what a device *is*. Only a person can say what it's *for*: that the
+A protocol tells Irori what a device *is*. Only a person can say what it's *for*: that the
 board called `sensor-fusion-radar` is the hallway one, and that the hallway is a room.
 
 Those decisions have to live somewhere, or they vanish at the next restart. They live in a
@@ -92,8 +92,8 @@ optional. `name` and `description` are the device's **only** name and descriptio
 in Irori keeps a second one to fall out of step with (ROADMAP D36).
 
 `ignored = true` keeps the device out of the home altogether: it isn't listed, can't be switched,
-and nothing it reports is kept. Its integration may go on talking to it; Irori just doesn't let
-it in. What the integration says meanwhile is remembered, so taking `ignored` away puts the device
+and nothing it reports is kept. Its protocol may go on talking to it; Irori just doesn't let
+it in. What the protocol says meanwhile is remembered, so taking `ignored` away puts the device
 back as it is now, without a restart.
 
 `added = true` records that the device is in the home: a person added it while Irori was asking
@@ -120,7 +120,7 @@ two have to be different types rather than different spellings. `area = true` is
 ### 3.3 `entities.toml`
 
 ```toml
-[entities."esphome/34:98:7a:2b:09:00-binary_sensor-1594977085"]   # <integration>/<unique_id>
+[entities."esphome/34:98:7a:2b:09:00-binary_sensor-1594977085"]   # <protocol>/<unique_id>
 name = "Hallway occupancy"
 ```
 
@@ -135,7 +135,7 @@ in `extensions/<id>.toml` (§3.6), and the two are joined.
 ```
 
 An extension receives exactly its own table, checks it against its own config type, and is
-restarted when that table changes ([integrations.md](integrations.md) §3). What's inside is the
+restarted when that table changes ([protocols.md](protocols.md) §3). What's inside is the
 extension's business: the ESPHome extension's shape is in its README.
 
 Handled as a secret throughout:
@@ -146,7 +146,7 @@ Handled as a secret throughout:
   would print the line). Settings types don't print their values in `Debug`. A value an
   extension rejects is described without being repeated.
 - **The API writes it but never reads it back**, and writes only where an extension is asking
-  ([integrations.md](integrations.md) §6.6).
+  ([protocols.md](protocols.md) §6.6).
 - **Kept out of git.** The rest of the directory is meant to be committed; this file isn't. When
   Irori writes `secrets.toml` into a directory with no `.gitignore`, it adds one naming it, so
   `git add .` in the config directory can't pick it up by accident. An existing `.gitignore` is
@@ -176,13 +176,13 @@ default. `[server]` is read at startup; changing it while Irori runs logs that a
 needed. `[extensions] disabled` applies while Irori runs: naming an extension stops it, removing
 it starts it again.
 
-`[devices] new` is what happens when an integration finds a device nobody has decided about.
+`[devices] new` is what happens when a protocol finds a device nobody has decided about.
 `"add"` puts it in the home straight away. `"ask"` holds it back, as if ignored, until a person
 adds it (`added = true`) or ignores it (`ignored = true`) from the Devices page — the way to stop
 a busy network filling the home with a neighbour's plugs. A device that already has a
 `devices.toml` entry is not new: it stays in the home. Irori writes `added = true` for devices
 that join while asking is off, so restarting with asking already on doesn't empty the home.
-What the integration says about a held device is kept, so adding it shows it as it is now. It
+What the protocol says about a held device is kept, so adding it shows it as it is now. It
 applies while Irori runs.
 
 ### 3.6 `extensions/<id>.toml`
@@ -211,11 +211,11 @@ edits it does so on behalf of the extension it belongs to — the helpers endpoi
 over", "holiday mode" — with the entity id `switch.<id>`. `name` is its one name: renaming the
 entity from the UI rewrites it here, not in `entities.toml`, so there's no second name (D36).
 `initial` is its value before anyone has switched it; after that, the value it was left at is kept
-in the extension's private storage (`integrations.md` §5) through restarts. Removing a toggle
+in the extension's private storage (`protocols.md` §5) through restarts. Removing a toggle
 removes its entity and forgets its value.
 ### 3.7 `floorplan.toml`
 
-The home as a drawing, **a floor at a time**. Nothing discovers this — no integration can tell
+The home as a drawing, **a floor at a time**. Nothing discovers this — no protocol can tell
 Irori where a wall is — so it is authored intent from end to end, and it lives here rather than
 in the database with the rest of it.
 
@@ -291,16 +291,16 @@ The save says how many devices it moved, so a write to a second file is never si
 
 ## 4. What a decision is attached to
 
-**A device** is attached to its id. A device's id is made from its integration and the
-integration's permanent handle for it — `esphome_34_98_7a_2b_09_00` from `esphome` and the MAC
+**A device** is attached to its id. A device's id is made from its protocol and the
+protocol's permanent handle for it — `esphome_34_98_7a_2b_09_00` from `esphome` and the MAC
 address — and from nothing else, so it's the same after every restart and whatever the device is
 called. Handles that slug to the same id (differing only in case or punctuation) are refused
 rather than numbered in arrival order; a handle too long for an id keeps its start and gains a
 hash of the whole.
 
-**An entity** is attached to `<integration>/<unique_id>`, which for an ESPHome entity is the id
-`docs/specs/integrations.md` §4 defines. An entity id is readable (`sensor.<device id>_temperature`)
-and built from what its integration calls it, so the integration's handle is the one thing that
+**An entity** is attached to `<protocol>/<unique_id>`, which for an ESPHome entity is the id
+`docs/specs/protocols.md` §4 defines. An entity id is readable (`sensor.<device id>_temperature`)
+and built from what its protocol calls it, so the protocol's handle is the one thing that
 can't drift from it.
 
 An entry for something Irori has never seen is kept, not dropped: a device that is unplugged for
@@ -311,9 +311,9 @@ now" and "this entry is stale" look identical from here.
 
 | Field | Wins |
 |---|---|
-| Device name | yours, else the integration's — shown alone, never beside the other |
-| Device description | yours; integrations don't set one |
-| Entity name | yours, else the integration's, else the device's name |
+| Device name | yours, else the protocol's — shown alone, never beside the other |
+| Device description | yours; protocols don't set one |
+| Entity name | yours, else the protocol's, else the device's name |
 | Device area | yours (a room, or a deliberate none), else an existing area whose name matches the device's `suggested_area` |
 
 `suggested_area` is what the device says about itself — ESPHome's `area:`, for one. Irori

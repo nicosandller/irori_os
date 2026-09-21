@@ -418,7 +418,7 @@ fn group(
     .into_any()
 }
 
-/// An protocol's icon, or its initial when it has none. Always an `<img>`: an extension's SVG
+/// A protocol's icon, or its initial when it has none. Always an `<img>`: an extension's SVG
 /// is loaded as an image, where it can't run script (`docs/specs/extensions.md`).
 pub fn icon(protocol: &str, has_icon: bool) -> AnyView {
     if has_icon {
@@ -438,8 +438,7 @@ pub fn icon(protocol: &str, has_icon: bool) -> AnyView {
             .next()
             .map(|c| c.to_ascii_uppercase().to_string())
             .unwrap_or_default();
-        view! { <span class="protocol-icon letter" aria-hidden="true">{initial}</span> }
-            .into_any()
+        view! { <span class="protocol-icon letter" aria-hidden="true">{initial}</span> }.into_any()
     }
 }
 

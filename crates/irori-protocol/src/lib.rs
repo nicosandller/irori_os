@@ -1,7 +1,7 @@
 //! The protocol SDK: what a built-in protocol implements, and the handle it uses to talk
 //! to the core. See `docs/specs/protocols.md`.
 //!
-//! An protocol implements [`Protocol`]. The core starts it with its settings and an
+//! A protocol implements [`Protocol`]. The core starts it with its settings and an
 //! [`ProtocolContext`], which offers exactly the operations of the contract: describe devices
 //! and entities, report state and availability, set health, and handle service calls.
 //!
@@ -129,12 +129,12 @@ impl Storage for MemoryStorage {
     }
 }
 
-/// Settings for an protocol that has none. Accepts only an empty table.
+/// Settings for a protocol that has none. Accepts only an empty table.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NoSettings {}
 
-/// Why an protocol stopped working. Shown to people, so say what went wrong in their terms.
+/// Why a protocol stopped working. Shown to people, so say what went wrong in their terms.
 pub struct ProtocolError(String);
 
 impl ProtocolError {
@@ -360,7 +360,7 @@ impl ProtocolContext {
 }
 
 /// How many entities can have a state report waiting for the core at once. Bounds the core's
-/// memory even if an protocol reports for ever-new entities faster than the core keeps up.
+/// memory even if a protocol reports for ever-new entities faster than the core keeps up.
 pub const MAX_PENDING_ENTITIES: usize = 4096;
 
 /// Pending state reports, one per entity: a newer report replaces an unread older one.

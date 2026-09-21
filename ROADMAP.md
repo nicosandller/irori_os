@@ -167,7 +167,14 @@ irori_os/
     irori-client/            # typed Rust client for the public API (CLI, external extensions, assist)
     irori-ui/                # Leptos CSR app (built to wasm by `cargo xtask ui`, embedded
                              # via rust-embed; outside the workspace, its own dependency tree)
-    irori/                   # binary: CLI + wiring + embedded assets; cargo features pick protocols
+    irori/                   # binary: CLI + wiring + embedded assets; loads official extensions
+                             # as packages at runtime (`ExtensionHost::start_with_packages`), not
+                             # via cargo features — see "Cargo features on the `irori` binary" below.
+                             # ⚠️ Also updated 2026-09-21: `irori` no longer depends on the protocol
+                             # crates directly at all, which is a step past D16's "built-in tier is
+                             # compiled in via cargo features" — every official extension, not just
+                             # external ones, now runs as its own process the host spawns. D16
+                             # itself hasn't been revisited; flagging rather than rewriting it here.
   extensions/                # first-party extensions of every contribution kind, one dir each
     protocols/mqtt/          # rumqttc, HA discovery → registry, command publishing, optional broker
     protocols/esphome/       # ESPHome's native API: mDNS discovery, entities, state, commands
@@ -233,7 +240,7 @@ irori_os/
 
 Goal: the decisions that are expensive to change later are written down and prototyped. **Little product code, lots of leverage.** (Formerly "Phase 0" — kept as an area rather than a first phase; see D42.)
 
-> **What actually happened, in order (D26 — history, not a plan for what comes next):** M0.1 ✅ → M0.2 ✅ → M0.6 ✅ → M1.1 (trimmed) ✅ → M0.8 UI spike ✅ + Devices page ✅ → ESPHome extension ✅ → M0.7 config dir ✅ → M0.3 spec + validation 🔶 (done as a library, per D41 it ships as an extension, not linked into the core) → M0.4, M0.5 still ⏳.
+> **What actually happened, in order (D26 — history, not a plan for what comes next):** M0.1 ✅ → M0.2 ✅ → M0.6 ✅ → M1.1 (trimmed) ✅ → M0.8 UI spike ✅ + Devices page ✅ → ESPHome extension ✅ → M0.7 config dir ✅ → M0.3 spec + validation ✅ (done as a library; the runtime that uses it is separately tracked under M1.4, per D41) → M0.4, M0.5 still ⏳.
 
 ### M0.1 Workspace and toolchain ✅
 
@@ -255,13 +262,13 @@ Goal: the decisions that are expensive to change later are written down and prot
 - `Context { id, parent_id?, origin: Device | User(id) | Automation { extension, run_id } | Api(token_id) }`.
 - v1 kinds: `light`, `switch`, `sensor`, `binary_sensor`. Next: `cover`, `climate`, `button`/`event`, `lock`.
 
-### M0.3 Spec: first-party sequential engine → `docs/specs/rules.md` 🔶
+### M0.3 Spec: first-party sequential engine → `docs/specs/rules.md` ✅
 
-> 🔶 The spec ([docs/specs/rules.md](docs/specs/rules.md), written in full) and the 3-layer validation
-> it describes (parse, AST allow-list, registry type-check — `crates/irori-rules`) shipped in PR #9.
-> What's genuinely still missing is the part that waits and calls services — the scheduler/runtime —
-> which per D41 was never meant to land here: it ships later as a downloadable extension, not as
-> part of `irori serve`. This line went unmarked for a while after the spec landed; fixed 2026-09-21.
+> ✅ The spec ([docs/specs/rules.md](docs/specs/rules.md), written in full) and the 3-layer validation
+> it describes (parse, AST allow-list, registry type-check — `crates/irori-rules`) shipped in PR #9 —
+> this milestone's own scope is done. The part that waits and calls services (the scheduler/runtime)
+> was never this milestone's job: per D41 it ships later as a downloadable extension, tracked
+> separately under M1.4. This line went unmarked for a while after the spec landed; fixed 2026-09-21.
 
 This is **an engine**, not the OS. The core does not load or run it. Draft shape:
 
@@ -456,11 +463,12 @@ below (M1.x) don't have to land in this order — see D42 and §0a.)
 ### M1.4 Rules engine runtime (≈5–7 wks — the heart; don't rush it) ⏳
 
 > ⚠️ **Scope changed, 2026-09-21:** this milestone sits under "Core MVP" as if the runtime below ships
-> compiled into `irori serve`. Per D41 it doesn't — the schema, parser, and validation (§M0.3) are a
-> library the core never links, and the scheduler described here ships later as a downloadable
-> extension, same as any other automation engine (D8, D21). `crates/irori-rules`'s own module doc says
-> as much: "the engine that waits and calls services is later, and it will load as an extension, not
-> as part of `irori serve`." Nothing below this note is started yet.
+> compiled into `irori serve`. Per D41 it doesn't — the scheduler described here ships later as a
+> downloadable extension, same as any other automation engine (D8, D21), separately from the schema,
+> parser, and validation that M0.3 already delivered as a library (✅, done, not affected by this).
+> `crates/irori-rules`'s own module doc says as much: "the engine that waits and calls services is
+> later, and it will load as an extension, not as part of `irori serve`." Nothing below this note is
+> started yet.
 
 - `irori-rules` is pure: `trait Clock`, `trait StateView`, `trait ServiceCaller`; a runtime adapter wires them to the real core.
 - Implements the Phase 0 spec: triggers, conditions, actions, modes, waits with timeouts, `for` durations, expressions.
@@ -568,7 +576,7 @@ Irori connects to the same MQTT broker as an existing HA + Zigbee2MQTT setup. Re
 ### 4.3 Performance budgets ("lightning fast, lightweight") ⚠️
 
 > ⚠️ *Added 2026-09-21:* only the UI bundle row below is actually gated in `ci.yml` today (the
-> "Download stays inside the budget" step). The other six rows have no benchmark or CI check yet —
+> "Download stays inside the budget" step). The other seven rows have no benchmark or CI check yet —
 > D19's "regression over budget fails the build" only holds for this one metric so far.
 
 Initial targets, to be recalibrated from the Phase 0 baseline (still outstanding — see §3's exit criteria). Measured in CI (benchmarks and a load generator) and on a real Raspberry Pi 4 before each release. A regression over budget fails the build.

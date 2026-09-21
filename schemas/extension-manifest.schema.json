@@ -208,7 +208,7 @@
       "pattern": "^((\\$CONFIG|\\$DATA)(/[A-Za-z0-9_][A-Za-z0-9._-]*)*|/|(/[A-Za-z0-9_][A-Za-z0-9._-]*)+)$"
     },
     "IotClass": {
-      "description": "Where an protocol's devices live and how it learns about changes (ROADMAP D24).",
+      "description": "Where a protocol's devices live and how it learns about changes (ROADMAP D24).",
       "oneOf": [
         {
           "description": "On the local network; devices report changes as they happen.",
@@ -263,7 +263,7 @@
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9._-]*(/[A-Za-z0-9_][A-Za-z0-9._-]*)*$"
     },
     "Permissions": {
-      "description": "The `[permissions]` table (ROADMAP D23). Everything defaults to \"no access\".\n\nAn protocol never needs a permission to manage its own devices and entities or to\nreceive service calls for them; these cover reaching anything beyond that.",
+      "description": "The `[permissions]` table (ROADMAP D23). Everything defaults to \"no access\".\n\nA protocol never needs a permission to manage its own devices and entities or to\nreceive service calls for them; these cover reaching anything beyond that.",
       "type": "object",
       "properties": {
         "api": {

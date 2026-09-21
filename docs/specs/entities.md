@@ -8,12 +8,12 @@ together; CI fails if the last three disagree.
 
 ## 1. Purpose
 
-This is the vocabulary every other part of Irori speaks: integrations report devices and
+This is the vocabulary every other part of Irori speaks: extensions report devices and
 state in it, rules read and act on it, the recorder stores it, the API and UI show it, and AI
 features generate against it. It has to be:
 
 - **Typed.** A light's brightness is a number from 1 to 255, not "whatever string the
-  integration sent". Rules can be checked before they run (ROADMAP D8).
+  extension sent". Rules can be checked before they run (ROADMAP D8).
 - **Familiar.** Domain names and fields follow Home Assistant where that doesn't cost typing
   (D14), because people and LLMs already know them.
 - **Strict at the edges.** Unknown fields and malformed ids are rejected with a message that
@@ -51,10 +51,10 @@ and its JSON Schema carries the same rule.
 
 | Type | Format | Example |
 |---|---|---|
-| Slug ids: `FloorId`, `AreaId`, `DeviceId`, `IntegrationId`, `UserId`, `RuleId`, `TokenId`, `AttributeKey` | `^[a-z0-9]+(_[a-z0-9]+)*$`, 1–64 chars: lowercase letters and digits in words joined by single `_` | `ground_floor` |
+| Slug ids: `FloorId`, `AreaId`, `DeviceId`, `ProtocolId`, `UserId`, `RuleId`, `TokenId`, `AttributeKey` | `^[a-z0-9]+(_[a-z0-9]+)*$`, 1–64 chars: lowercase letters and digits in words joined by single `_` | `ground_floor` |
 | `EntityId` | `<kind>.<object_id>`; `kind` is one of the kinds in §4.4, `object_id` is a slug | `binary_sensor.hallway_motion` |
 | `ContextId` | ULID: 26 chars, uppercase Crockford base32, first char `0`–`7` | `01K5B2Q9A1B2C3D4E5F6G7H8J9` |
-| `UniqueId` | Opaque, 1–255 chars, no control characters. Chosen by the integration, unique within it | `0x00158d0001a2b3c4` |
+| `UniqueId` | Opaque, 1–255 chars, no control characters. Chosen by the protocol, unique within it | `0x00158d0001a2b3c4` |
 | `Name` | 1–100 chars, no leading/trailing whitespace, no control characters. Any language | `Küche · Decke` |
 
 Why these choices:
@@ -66,9 +66,9 @@ Why these choices:
   Home Assistant.
 - **ULIDs for contexts** sort by creation time, which makes "what caused what" chains easy to
   order. The core generates them from its injected clock (D10); types never read the clock.
-- **`id` vs `unique_id`.** `unique_id` is the integration's permanent handle (a Zigbee
+- **`id` vs `unique_id`.** `unique_id` is the protocol's permanent handle (a Zigbee
   address). `id` is the user-facing name and may change. Pairing a device again or restarting
-  maps back to the same entry through `(integration, unique_id)`.
+  maps back to the same entry through `(protocol, unique_id)`.
 
 ## 4. Registry
 
@@ -95,14 +95,14 @@ A room or zone.
 
 ### 4.3 Device
 
-A physical or virtual thing an integration talks to. It has one or more entities.
+A physical or virtual thing a protocol talks to. It has one or more entities.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `id` | `DeviceId` | yes | Its **one** id, everywhere. Made once from `integration` and `unique_id` — `esphome_00_11_22_33_44_55` — and never from a name, so it never changes (ROADMAP D36) |
-| `integration` | `IntegrationId` | yes | The integration that provides it |
-| `unique_id` | `UniqueId` | yes | Unique within `integration` |
-| `name` | `Name` | yes | Its one name: a person's, else what the integration reports. Never two side by side |
+| `id` | `DeviceId` | yes | Its **one** id, everywhere. Made once from `protocol` and `unique_id` — `esphome_00_11_22_33_44_55` — and never from a name, so it never changes (ROADMAP D36) |
+| `protocol` | `ProtocolId` | yes | The protocol that provides it |
+| `unique_id` | `UniqueId` | yes | Unique within `protocol` |
+| `name` | `Name` | yes | Its one name: a person's, else what the protocol reports. Never two side by side |
 | `description` | `Description` | no | What it's for, in a person's words |
 | `manufacturer`, `model`, `sw_version`, `hw_version` | string | no | As reported; informational only |
 | `area_id` | `AreaId` | no | |
@@ -116,9 +116,9 @@ motion sensor are three entities.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `id` | `EntityId` | yes | Its kind must match `capabilities.kind`. `<kind>.<device id>_<name the integration gave it>`, or the integration's `suggested_object_id`: never a name a person chose, so no rename leaves an id that says something else |
-| `integration` | `IntegrationId` | yes | |
-| `unique_id` | `UniqueId` | yes | Unique within `integration`; survives renames of `id` |
+| `id` | `EntityId` | yes | Its kind must match `capabilities.kind`. `<kind>.<device id>_<name the protocol gave it>`, or the protocol's `suggested_object_id`: never a name a person chose, so no rename leaves an id that says something else |
+| `protocol` | `ProtocolId` | yes | |
+| `unique_id` | `UniqueId` | yes | Unique within `protocol`; survives renames of `id` |
 | `name` | `Name` | yes | |
 | `device_id` | `DeviceId` | no | Entities without a device are allowed (e.g. a computed value) |
 | `area_id` | `AreaId` | no | **Overrides** the device's area. Effective area = `entity.area_id` ?? `device.area_id` |
@@ -142,7 +142,7 @@ additive change: a new tag in `Capabilities` and `State`.
 | | `state_class` | `measurement` \| `total` \| `total_increasing` | absent | How values accumulate, for statistics |
 | `binary_sensor` | `device_class` | `motion` \| `occupancy` \| `door` \| `window` \| `moisture` \| `smoke` \| `gas` \| `vibration` \| `plug` \| `connectivity` \| `problem` \| `battery` | absent | Says what `on` means |
 
-Device classes are closed lists: an integration maps what it knows and leaves the rest absent.
+Device classes are closed lists: a protocol maps what it knows and leaves the rest absent.
 New classes are additive.
 
 ## 5. State
@@ -154,18 +154,18 @@ New classes are additive.
 | `entity_id` | `EntityId` | yes | Its kind must match `state.kind` |
 | `availability` | `available` \| `unavailable` | yes | Is the device reachable? |
 | `state` | object tagged by `kind`, or `null` | yes, even when `null` | The typed value; `null` means **unknown** |
-| `attributes` | map of `AttributeKey` → any JSON | no | Integration extras; see §5.4 |
+| `attributes` | map of `AttributeKey` → any JSON | no | Protocol extras; see §5.4 |
 | `last_changed` | `Timestamp` | yes | `state` or `availability` changed |
 | `last_updated` | `Timestamp` | yes | `state`, `availability`, or `attributes` changed |
-| `last_reported` | `Timestamp` | yes | The integration last reported anything about it, even an identical value |
+| `last_reported` | `Timestamp` | yes | The protocol last reported anything about it, even an identical value |
 | `context` | `Context` | yes | What caused the last change (§6) |
 
 Timestamps are RFC 3339 with an offset, written in UTC (`2026-09-15T22:04:31.12Z`). Always
 `last_changed ≤ last_updated`. `last_reported` is what tells a stale sensor (no reports for hours)
-from a steady one (same value, reported every minute), so it only moves when the integration says
-something. It starts when the entity is registered: describing an entity **is** the integration
+from a steady one (same value, reported every minute), so it only moves when the protocol says
+something. It starts when the entity is registered: describing an entity **is** the protocol
 telling Irori about it, and an entity that has never reported a value shows that as `state: null`.
-So it's never empty. It can be earlier than the other two: when an integration crashes, Irori marks its
+So it's never empty. It can be earlier than the other two: when a protocol crashes, Irori marks its
 entities unavailable without hearing from them, and the page can still say "offline, last heard
 from 3 hours ago".
 
@@ -205,7 +205,7 @@ precision is lost converting. Services will accept `brightness_pct` for people (
 
 ### 5.4 Attributes
 
-A free-form map for integration-specific extras (`linkquality`, `battery_voltage`, …). Keys are
+A free-form map for protocol-specific extras (`linkquality`, `battery_voltage`, …). Keys are
 slugs; values are any JSON. Rules may read them, but they're **not type-checked**, so
 anything the core or rules rely on must become a typed field instead. Attributes are the
 escape hatch, not the model.
@@ -224,7 +224,7 @@ the motion sensor reported at 22:04:12").
 
 | `origin.type` | Fields | Meaning |
 |---|---|---|
-| `device` | `integration` | Reported by a device, e.g. someone pressed a physical switch |
+| `device` | `protocol` | Reported by a device, e.g. someone pressed a physical switch |
 | `user` | `user_id` | A person, through the UI or CLI |
 | `automation` | `extension`, `run_id` (ULID) | An installed automation engine's run. The engine (not the core) owns what a "rule" is. |
 | `api` | `token_id` | An API client with an access token |
@@ -246,7 +246,7 @@ Data is validated in layers. This spec covers the first two; the core adds the t
    only Rust enforces.
 3. **Against the registry** (the core): a device's `area_id` exists, a state's value matches
    the entity's capabilities (`brightness` only if dimmable, sensor `value` matches
-   `value_type`), `unique_id` is unique per integration, `via_device_id` has no cycles.
+   `value_type`), `unique_id` is unique per protocol, `via_device_id` has no cycles.
 
 **Error messages are part of the contract.** They name the field or value and say what's
 allowed, e.g. ``entity `light.hallway` is a light, but its state is for a switch``. The
@@ -261,11 +261,11 @@ consumers; API versioning is part of the API spec (M0.5).
 
 | Topic | Where it's decided |
 |---|---|
-| Services (`light.turn_on` and its parameters) | [Integration contract](integrations.md) §7 (what integrations receive); API and rules specs (how people and rules call them) |
+| Services (`light.turn_on` and its parameters) | [Protocol contract](protocols.md) §7 (what protocol extensions receive); API and rules specs (how people and rules call them) |
 | How automations treat `unavailable` and `null` state | Each engine decides. The first-party sequential engine fails closed ([rules.md](rules.md) §9). |
 | Run and trace ids and formats | Trace spec (M0.4) |
 | Registry and state over the API | API spec (M0.5) |
-| How integrations create and update entries | [Integration contract](integrations.md) §5–§6 |
+| How protocol extensions create and update entries | [Protocol contract](protocols.md) §5–§6 |
 | How users rename entities or assign areas in files | Config spec (M0.7) |
 | Renaming an entity `id` and rewriting rules that use it | Open question 1 |
 | Hidden/disabled entities, icons, entity categories | Later, when the UI needs them |

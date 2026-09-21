@@ -160,14 +160,14 @@
     .tiles .label { display: block; color: var(--muted); font-size: .8rem; }
 
     /* Extensions, on the home page and in the add-device panel. */
-    .extensions, .integrations { margin: 0; padding: 0; list-style: none; }
+    .extensions, .protocols { margin: 0; padding: 0; list-style: none; }
     .extensions li { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem;
                      padding: .4rem 0; border-bottom: 1px solid var(--line); }
     .extensions li:last-child { border-bottom: none; }
-    .integrations li { padding: .75rem 0; border-bottom: 1px solid var(--line); }
-    .integrations li:last-child { border-bottom: none; }
-    .integration-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem; }
-    .integrations p { margin: .25rem 0 0; }
+    .protocols li { padding: .75rem 0; border-bottom: 1px solid var(--line); }
+    .protocols li:last-child { border-bottom: none; }
+    .protocol-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem; }
+    .protocols p { margin: .25rem 0 0; }
     .name { font-weight: 500; }
     .state { color: var(--muted); font: .7rem var(--mono); letter-spacing: .08em;
              text-transform: uppercase; }
@@ -333,11 +333,11 @@
                          white-space: nowrap; }
     .history-note { margin: 0; padding: .5rem .75rem; }
 
-    /* The device table, grouped by integration: a header row per group that folds it away. */
+    /* The device table, grouped by protocol: a header row per group that folds it away. */
     table.devices .icon-col { width: 2.25rem; padding-right: 0; }
-    .integration-icon { display: inline-block; width: 20px; height: 20px; vertical-align: middle;
+    .protocol-icon { display: inline-block; width: 20px; height: 20px; vertical-align: middle;
                         flex: none; }
-    .integration-icon.letter { display: inline-grid; place-items: center; border-radius: 4px;
+    .protocol-icon.letter { display: inline-grid; place-items: center; border-radius: 4px;
                                background: var(--sunk); color: var(--muted);
                                font: 600 .7rem/1 var(--mono); }
     table.devices .group-head th { padding: 0; background: var(--sunk); }

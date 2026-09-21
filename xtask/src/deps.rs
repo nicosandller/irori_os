@@ -17,7 +17,7 @@ use serde::Deserialize;
 const PROTOCOL_FREE: &[&str] = &["irori-core", "irori-rules"];
 
 /// Never allowed in a protocol-free crate's tree. Prefix match with a trailing `*`.
-/// `irori-protocol` (the SDK, not an protocol) is deliberately absent.
+/// `irori-protocol` (the SDK, not a protocol) is deliberately absent.
 const BANNED_IN_PROTOCOL_FREE: &[&str] = &[
     "irori-protocol-*",
     "irori-assist",

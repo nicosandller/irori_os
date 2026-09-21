@@ -141,7 +141,7 @@ mod tests {
         Ok(())
     }
 
-    /// What an protocol keeps is there after Irori restarts, and only for that protocol.
+    /// What a protocol keeps is there after Irori restarts, and only for that protocol.
     #[test]
     fn stored_values_outlast_a_restart_and_stay_private() -> anyhow::Result<()> {
         use irori_protocol::Storage as _;

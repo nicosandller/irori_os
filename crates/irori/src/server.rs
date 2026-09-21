@@ -190,7 +190,7 @@ async fn entity_history(
 // --- Rooms, names, and where things live ---------------------------------------------------
 //
 // Each of these changes a file in the config directory and then tells the core
-// (`docs/specs/config.md`). None of them touch what an protocol reports: taking a name away
+// (`docs/specs/config.md`). None of them touch what a protocol reports: taking a name away
 // gives the protocol's name back, rather than leaving whatever was on screen.
 
 async fn areas(State(state): State<AppState>) -> Json<Vec<Area>> {
@@ -2103,7 +2103,7 @@ mod tests {
 
     // --- Secrets ----------------------------------------------------------------------------
 
-    /// An protocol that won't do anything without a key, and says where the key goes.
+    /// A protocol that won't do anything without a key, and says where the key goes.
     struct Safe;
 
     #[derive(Debug, Deserialize, schemars::JsonSchema)]

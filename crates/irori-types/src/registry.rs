@@ -32,7 +32,7 @@ pub struct Area {
     pub floor_id: Option<FloorId>,
 }
 
-/// A physical or virtual thing an protocol talks to, e.g. a Zigbee motion sensor. A device
+/// A physical or virtual thing a protocol talks to, e.g. a Zigbee motion sensor. A device
 /// has one or more entities.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

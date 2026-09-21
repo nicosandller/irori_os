@@ -199,7 +199,7 @@ impl ProtocolContribution {
     }
 }
 
-/// Where an protocol's devices live and how it learns about changes (ROADMAP D24).
+/// Where a protocol's devices live and how it learns about changes (ROADMAP D24).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum IotClass {
@@ -232,7 +232,7 @@ pub struct RunCommand {
 
 /// The `[permissions]` table (ROADMAP D23). Everything defaults to "no access".
 ///
-/// An protocol never needs a permission to manage its own devices and entities or to
+/// A protocol never needs a permission to manage its own devices and entities or to
 /// receive service calls for them; these cover reaching anything beyond that.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

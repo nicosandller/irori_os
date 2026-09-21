@@ -446,7 +446,7 @@ impl Core {
             context,
         });
         let protocol = resolved.protocol.clone();
-        // The registry can change while a call is being prepared (an protocol re-describing
+        // The registry can change while a call is being prepared (a protocol re-describing
         // or removing the entity), so check again right before sending. A change after this
         // point reaches the protocol, which answers with an error like any other device
         // trouble (`docs/specs/protocols.md` §7.3).
@@ -569,7 +569,7 @@ impl Core {
             }
         };
         if let Err(rejected) = &result {
-            tracing::warn!(%extension, %rejected, "rejected an operation from an protocol");
+            tracing::warn!(%extension, %rejected, "rejected an operation from a protocol");
         }
         let _ = reply.send(result);
     }

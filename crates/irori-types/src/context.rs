@@ -19,7 +19,7 @@ pub struct Context {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Origin {
-    /// Reported by a device through an protocol, e.g. someone pressed a physical switch.
+    /// Reported by a device through a protocol, e.g. someone pressed a physical switch.
     Device { protocol: ProtocolId },
     /// A person, through the UI or CLI.
     User { user_id: UserId },

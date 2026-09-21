@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Device",
-  "description": "A physical or virtual thing an protocol talks to, e.g. a Zigbee motion sensor. A device\nhas one or more entities.",
+  "description": "A physical or virtual thing a protocol talks to, e.g. a Zigbee motion sensor. A device\nhas one or more entities.",
   "type": "object",
   "properties": {
     "area_id": {

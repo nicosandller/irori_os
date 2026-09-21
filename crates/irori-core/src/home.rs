@@ -976,7 +976,7 @@ impl Home {
         Ok(self.set_availability_of(ids, availability, stamp.now, context, Reported::Yes))
     }
 
-    /// Marks every entity of an protocol unavailable, e.g. because it crashed or stopped.
+    /// Marks every entity of a protocol unavailable, e.g. because it crashed or stopped.
     pub fn mark_unavailable(&mut self, protocol: &ProtocolId, stamp: &Stamp) -> Vec<Event> {
         let ids = self
             .entities
@@ -1167,7 +1167,7 @@ fn placed(settings: &Settings, chosen: &Placement, suggested: Option<&Name>) -> 
     }
 }
 
-/// A change Irori made itself, e.g. after an protocol crashed.
+/// A change Irori made itself, e.g. after a protocol crashed.
 fn system_context(stamp: &Stamp) -> Context {
     Context {
         id: stamp.context_id.clone(),
@@ -1336,7 +1336,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// An id for a new area, from what it's called and what's already there.
 ///
 /// Areas are the one thing a person creates directly, so their ids are made here rather than by
-/// an protocol — and by the same rules as every other id, so `Kitchen` becomes `kitchen` and a
+/// a protocol — and by the same rules as every other id, so `Kitchen` becomes `kitchen` and a
 /// second `Kitchen` becomes `kitchen_2` instead of an error.
 pub fn new_area_id(name: &Name, existing: &[Area]) -> AreaId {
     let id = unique_id_for(&slugify(name.as_str()), "area", |candidate| {
@@ -1747,7 +1747,7 @@ mod tests {
         assert!(home.devices.is_empty() && home.entities.is_empty());
         assert_eq!(home.held_devices().len(), 1);
 
-        // And an protocol that removes it while ignored is taken at its word.
+        // And a protocol that removes it while ignored is taken at its word.
         home.remove_device(&protocol(), &uid("lamp"))
             .expect("removed");
         assert!(home.held_devices().is_empty());
