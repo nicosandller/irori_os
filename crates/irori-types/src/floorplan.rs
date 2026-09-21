@@ -131,6 +131,9 @@ impl Level {
 #[serde(deny_unknown_fields)]
 pub struct PlacedArea {
     pub area: AreaId,
+    /// At least [`PlacedArea::FEWEST_POINTS`] of them: fewer is a line, not a room, and
+    /// [`Level::check`] turns it down — so the schema does too.
+    #[schemars(length(min = 3))]
     pub points: Vec<Point>,
 }
 
@@ -165,7 +168,12 @@ pub struct Wall {
     pub to: Point,
     /// How thick it is, in centimetres. Drawn, not structural: it only decides how heavy the
     /// line looks.
+    ///
+    /// At least one: a wall with no thickness isn't drawable, and [`Level::check`] turns it
+    /// down — so the schema has to turn it down too, or a document could pass validation and
+    /// still be refused on load.
     #[serde(default = "default_thickness")]
+    #[schemars(range(min = 1))]
     pub thickness: u32,
     /// The doors and windows cut into it, in no particular order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -210,7 +218,8 @@ pub struct Opening {
     pub kind: OpeningKind,
     /// Centimetres from the wall's `from` end to the middle of the opening.
     pub at: i32,
-    /// How wide it is, in centimetres.
+    /// How wide it is, in centimetres. At least one, for the reason [`Wall::thickness`] gives.
+    #[schemars(range(min = 1))]
     pub width: u32,
 }
 

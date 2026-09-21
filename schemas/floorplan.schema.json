@@ -70,10 +70,10 @@
           "$ref": "#/$defs/OpeningKind"
         },
         "width": {
-          "description": "How wide it is, in centimetres.",
+          "description": "How wide it is, in centimetres. At least one, for the reason [`Wall::thickness`] gives.",
           "type": "integer",
           "format": "uint32",
-          "minimum": 0
+          "minimum": 1
         }
       },
       "additionalProperties": false,
@@ -98,10 +98,12 @@
           "$ref": "#/$defs/AreaId"
         },
         "points": {
+          "description": "At least [`PlacedArea::FEWEST_POINTS`] of them: fewer is a line, not a room, and\n[`Level::check`] turns it down — so the schema does too.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/Point"
-          }
+          },
+          "minItems": 3
         }
       },
       "additionalProperties": false,
@@ -152,11 +154,11 @@
           }
         },
         "thickness": {
-          "description": "How thick it is, in centimetres. Drawn, not structural: it only decides how heavy the\nline looks.",
+          "description": "How thick it is, in centimetres. Drawn, not structural: it only decides how heavy the\nline looks.\n\nAt least one: a wall with no thickness isn't drawable, and [`Level::check`] turns it\ndown — so the schema has to turn it down too, or a document could pass validation and\nstill be refused on load.",
           "type": "integer",
           "format": "uint32",
           "default": 10,
-          "minimum": 0
+          "minimum": 1
         },
         "to": {
           "$ref": "#/$defs/Point"

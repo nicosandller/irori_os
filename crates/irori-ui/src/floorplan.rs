@@ -348,18 +348,20 @@ pub fn Floorplan() -> impl IntoView {
             return;
         }
         let margin = 64.0;
-        let (span_x, span_y) = (
-            f64::from(high.x - low.x).max(100.0),
-            f64::from(high.y - low.y).max(100.0),
-        );
+        // Every coordinate becomes a `f64` before any arithmetic: a plan can hold points at
+        // opposite ends of `i32` (`Point::distance_to` says why), and framing one must give a
+        // silly zoom rather than overflow.
+        let (left, right) = (f64::from(low.x), f64::from(high.x));
+        let (top, bottom) = (f64::from(low.y), f64::from(high.y));
+        let (span_x, span_y) = ((right - left).max(100.0), (bottom - top).max(100.0));
         let scale = ((width - margin * 2.0) / span_x)
             .min((height - margin * 2.0) / span_y)
             .clamp(MIN_SCALE, MAX_SCALE);
         view.set(Viewport {
             scale,
             pan: (
-                width / 2.0 - f64::from(low.x + high.x) / 2.0 * scale,
-                height / 2.0 - f64::from(low.y + high.y) / 2.0 * scale,
+                width / 2.0 - (left + right) / 2.0 * scale,
+                height / 2.0 - (top + bottom) / 2.0 * scale,
             ),
         });
     };
@@ -623,7 +625,12 @@ pub fn Floorplan() -> impl IntoView {
                 if by == (0, 0) {
                     return;
                 }
-                let moved = |point: Point| Point::new(point.x + by.0, point.y + by.1);
+                // Saturating for the same reason `fit` converts before it subtracts: a plan
+                // can hold a point at the end of `i32`, and dragging it further should stop
+                // rather than panic.
+                let moved = |point: Point| {
+                    Point::new(point.x.saturating_add(by.0), point.y.saturating_add(by.1))
+                };
                 on_level(draft, floor, |level| {
                     let Some(wall) = level.walls.get(wall) else {
                         return;
@@ -659,7 +666,10 @@ pub fn Floorplan() -> impl IntoView {
                 on_level(draft, floor, |level| {
                     if let Some(placed) = level.areas.get_mut(area) {
                         for point in &mut placed.points {
-                            *point = Point::new(point.x + by.0, point.y + by.1);
+                            *point = Point::new(
+                                point.x.saturating_add(by.0),
+                                point.y.saturating_add(by.1),
+                            );
                         }
                     }
                 });

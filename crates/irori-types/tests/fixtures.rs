@@ -200,6 +200,55 @@ fn manifest_warnings_name_ignored_contributions() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The plan's schema and the rules `Floorplan::check` enforces have to agree.
+///
+/// They are two statements of the same contract — one for editors and generators, one for the
+/// config reader — and where they disagree, a document passes validation and is then refused on
+/// load, which is the worst of both. These are the three rules a schema can express, so it has
+/// to: a wall has thickness, an opening has width, and a room has corners enough to be a shape.
+#[test]
+fn the_plans_schema_refuses_what_the_plan_refuses() -> anyhow::Result<()> {
+    let doc = irori_types::schemas()
+        .into_iter()
+        .find(|doc| doc.name == "floorplan")
+        .context("no floorplan schema")?;
+    let validator = jsonschema::draft202012::new(doc.schema.as_value())
+        .map_err(|e| anyhow::anyhow!("the floorplan schema is not a valid JSON Schema: {e}"))?;
+
+    let cases = [
+        (
+            "a wall with no thickness",
+            serde_json::json!({"floors": {"ground": {"walls": [
+                {"from": [0, 0], "to": [400, 0], "thickness": 0}
+            ]}}}),
+        ),
+        (
+            "a door with no width",
+            serde_json::json!({"floors": {"ground": {"walls": [
+                {"from": [0, 0], "to": [400, 0],
+                 "openings": [{"kind": "door", "at": 200, "width": 0}]}
+            ]}}}),
+        ),
+        (
+            "a room with two corners",
+            serde_json::json!({"floors": {"ground": {"areas": [
+                {"area": "kitchen", "points": [[0, 0], [400, 0]]}
+            ]}}}),
+        ),
+    ];
+
+    for (what, document) in cases {
+        let plan: irori_types::Floorplan = serde_json::from_value(document.clone())
+            .with_context(|| format!("{what}: it is well-formed, only wrong"))?;
+        ensure!(plan.check().is_err(), "{what}: the plan accepted it");
+        ensure!(
+            !validator.is_valid(&document),
+            "{what}: the schema accepted what the plan refuses"
+        );
+    }
+    Ok(())
+}
+
 /// Every schema has a fixtures folder, and every fixtures folder has a schema.
 #[test]
 fn every_schema_has_fixtures() -> anyhow::Result<()> {
