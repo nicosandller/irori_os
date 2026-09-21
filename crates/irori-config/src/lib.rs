@@ -931,11 +931,14 @@ mod tests {
 
     /// A listing error is not "the directory is empty": last-good helper definitions must stay,
     /// or a permission blip would restart the extension with nothing.
-    #[cfg(unix)]
+    ///
+    /// The directory is replaced by an ordinary file rather than made unreadable, which is the
+    /// other way `read_dir` fails with something that isn't `NotFound` — the branch under test.
+    /// Taking the read permission away would be the more obvious setup and doesn't work
+    /// everywhere: **root ignores permission bits**, so that version of this test passes on a
+    /// laptop and fails in a container, where tests run as root (`dev/pi check`).
     #[test]
-    fn an_unreadable_extensions_dir_keeps_the_last_good_settings() {
-        use std::os::unix::fs::PermissionsExt as _;
-
+    fn an_unlistable_extensions_dir_keeps_the_last_good_settings() {
         let home = dir();
         let helpers: ExtensionId = "helpers".parse().expect("valid");
         let mut store = Store::new(home.path());
@@ -947,17 +950,8 @@ mod tests {
         store.save_extension(&helpers, &file).expect("saved");
 
         let dir = home.path().join("extensions");
-        let original = std::fs::metadata(&dir).expect("listed").permissions();
-        let mut locked = original.clone();
-        locked.set_mode(0o000);
-        std::fs::set_permissions(&dir, locked).expect("locked");
-        struct Unlock<'a>(&'a std::path::Path, std::fs::Permissions);
-        impl Drop for Unlock<'_> {
-            fn drop(&mut self) {
-                let _ = std::fs::set_permissions(self.0, self.1.clone());
-            }
-        }
-        let _unlock = Unlock(&dir, original);
+        std::fs::remove_dir_all(&dir).expect("removed");
+        std::fs::write(&dir, "not a directory").expect("written");
 
         let problems = store.reload();
         assert_eq!(problems.len(), 1, "{problems:?}");
