@@ -246,6 +246,11 @@ enum Drag {
         area: usize,
         corner: usize,
     },
+    /// Moving a room's name, keeping where on it the pointer went down.
+    AreaLabel {
+        area: usize,
+        grab: (f64, f64),
+    },
     Device {
         device: usize,
     },
@@ -850,6 +855,27 @@ pub fn Floorplan() -> impl IntoView {
                     }
                 });
             }
+            Drag::AreaLabel { area, grab } => {
+                dragged.set(true);
+                let step = snap.get_untracked().step();
+                let by = (round(world.0 - grab.0, step), round(world.1 - grab.1, step));
+                if by == (0, 0) {
+                    return;
+                }
+                on_level(draft, floor, |level| {
+                    if let Some(placed) = level.areas.get_mut(area) {
+                        placed.label = Point::new(
+                            placed.label.x.saturating_add(by.0),
+                            placed.label.y.saturating_add(by.1),
+                        );
+                    }
+                });
+                // The grab moves with the label, so the rounding can't accumulate into a drift.
+                drag.set(Some(Drag::AreaLabel {
+                    area,
+                    grab: (grab.0 + f64::from(by.0), grab.1 + f64::from(by.1)),
+                }));
+            }
         }
     };
 
@@ -940,6 +966,7 @@ pub fn Floorplan() -> impl IntoView {
                         level.areas.push(PlacedArea {
                             area: area.clone(),
                             points,
+                            label: Point::new(0, 0),
                         });
                         picked.set(Some(Pick::Area(level.areas.len() - 1)));
                     });
@@ -1007,6 +1034,7 @@ pub fn Floorplan() -> impl IntoView {
                     level.areas.push(PlacedArea {
                         area: area.clone(),
                         points: corners,
+                        label: Point::new(0, 0),
                     });
                     picked.set(Some(Pick::Area(level.areas.len() - 1)));
                 });
@@ -1144,20 +1172,41 @@ pub fn Floorplan() -> impl IntoView {
                 })}
 
                 <div class="markers">
-                    // A room's name, in the middle of it, at a size the zoom doesn't change.
+                    // A room's name, in the middle of it unless it's been dragged somewhere else
+                    // on the room. HTML rather than drawn, so its size doesn't follow the zoom;
+                    // and while editing it is a thing to grab, which is why `.movable` (the
+                    // style that turns a name's pointer-events back on) follows `editing`.
                     {move || {
                         let home = live.home.get();
                         let here = view.get();
+                        let is_editing = editing.get();
                         level.get()
                             .areas
                             .iter()
-                            .filter_map(|placed| {
+                            .enumerate()
+                            .filter_map(|(index, placed)| {
                                 let area = home.area(&placed.area)?;
-                                let (x, y) = here.screen(placed.middle()?);
+                                let at = label_at(placed)?;
+                                let (x, y) = here.screen(at);
+                                let grab = (f64::from(at.x), f64::from(at.y));
                                 Some(view! {
                                     <span
                                         class="room-label"
+                                        class:movable=is_editing
                                         style=format!("left:{x}px;top:{y}px")
+                                        on:mousedown=move |event: ev::MouseEvent| {
+                                            if !is_editing {
+                                                return;
+                                            }
+                                            event.stop_propagation();
+                                            dragged.set(false);
+                                            picked.set(Some(Pick::Area(index)));
+                                            remember();
+                                            drag.set(Some(Drag::AreaLabel { area: index, grab }));
+                                        }
+                                        on:click=move |event: ev::MouseEvent| {
+                                            event.stop_propagation();
+                                        }
                                     >
                                         {area.name.to_string()}
                                     </span>
@@ -1753,7 +1802,7 @@ fn Inspector(
                                 <span>"Corners"</span>
                                 <span class="figure">{corners.to_string()}</span>
                             </p>
-                            <p class="muted small">"Drag it, or drag a corner."</p>
+                            <p class="muted small">"Drag it, drag a corner, or drag its name."</p>
                         </div>
                     }
                     .into_any(),
@@ -2736,6 +2785,17 @@ fn trim(wall: &mut Wall) {
     }
 }
 
+/// Where a room's name is drawn, in centimetres: the middle of the room, shifted by however far
+/// the label was dragged.
+fn label_at(placed: &PlacedArea) -> Option<Point> {
+    placed.middle().map(|middle| {
+        Point::new(
+            middle.x.saturating_add(placed.label.x),
+            middle.y.saturating_add(placed.label.y),
+        )
+    })
+}
+
 /// The furthest corners of everything drawn, for framing it.
 fn extent(level: &Level) -> Option<(Point, Point)> {
     let points = level
@@ -2837,6 +2897,7 @@ mod tests {
         PlacedArea {
             area: id.parse().expect("a valid area id"),
             points: points(corners),
+            label: Point::new(0, 0),
         }
     }
 
@@ -3296,6 +3357,24 @@ mod tests {
         assert_eq!(metres(40.0), "40 cm");
         assert_eq!(metres(100.0), "1.00 m");
         assert_eq!(metres(425.0), "4.25 m");
+    }
+
+    /// A room's name sits at the middle until it's dragged, and then where it was put.
+    #[test]
+    fn a_rooms_name_goes_where_it_was_dragged() {
+        let mut kitchen = room("kitchen", &[(0, 0), (400, 0), (400, 300), (0, 300)]);
+        assert_eq!(label_at(&kitchen), Some(Point::new(200, 150)), "in the middle");
+        kitchen.label = Point::new(40, -60);
+        assert_eq!(
+            label_at(&kitchen),
+            Some(Point::new(240, 90)),
+            "shifted by the drag"
+        );
+        assert_eq!(
+            label_at(&room("empty", &[])),
+            None,
+            "a room with no corners has no name to put"
+        );
     }
 
     #[test]

@@ -135,6 +135,18 @@ pub struct PlacedArea {
     /// [`Level::check`] turns it down — so the schema does too.
     #[schemars(length(min = 3))]
     pub points: Vec<Point>,
+    /// Where the room's name is drawn, as an offset from [`PlacedArea::middle`]. Dragged to move
+    /// the label, and kept as an offset rather than a place of its own so the label travels with
+    /// the room: stretch a wall and the name stays where it was put, relative to the room.
+    #[serde(
+        default = "default_label",
+        skip_serializing_if = "PlacedArea::label_is_middle"
+    )]
+    pub label: Point,
+}
+
+fn default_label() -> Point {
+    Point::new(0, 0)
 }
 
 impl PlacedArea {
@@ -182,6 +194,12 @@ impl PlacedArea {
             (x + f64::from(point.x), y + f64::from(point.y))
         });
         Some(Point::new((x / count) as i32, (y / count) as i32))
+    }
+
+    /// Whether the name hasn't been moved: a label at the middle is the default and needn't be
+    /// written to the file.
+    fn label_is_middle(label: &Point) -> bool {
+        label.x == 0 && label.y == 0
     }
 }
 
@@ -413,6 +431,7 @@ mod tests {
         PlacedArea {
             area: id.parse().expect("a valid area id"),
             points: points.iter().map(|(x, y)| Point::new(*x, *y)).collect(),
+            label: Point::new(0, 0),
         }
     }
 
@@ -624,6 +643,29 @@ mod tests {
         let square = area("kitchen", &[(0, 0), (400, 0), (400, 300), (0, 300)]);
         assert_eq!(square.middle(), Some(Point::new(200, 150)));
         assert_eq!(area("empty", &[]).middle(), None);
+    }
+
+    /// A label somebody moved is written next to the middle, as the offset it was dragged to; a
+    /// label nobody touched is the default and doesn't clutter the file.
+    #[test]
+    fn a_moved_label_is_written_and_a_middle_one_is_not() {
+        let moved = PlacedArea {
+            label: Point::new(30, -40),
+            ..area("kitchen", &[(0, 0), (400, 0), (400, 300), (0, 300)])
+        };
+        let json = serde_json::to_string(&moved).expect("json");
+        assert!(json.contains("\"label\":[30,-40]"), "{json}");
+        let back: PlacedArea = serde_json::from_str(&json).expect("json");
+        assert_eq!(back.label, Point::new(30, -40));
+
+        let at_the_middle = area("kitchen", &[(0, 0), (400, 0), (400, 300), (0, 300)]);
+        let json = serde_json::to_string(&at_the_middle).expect("json");
+        assert!(!json.contains("label"), "{json}");
+        let from_file: PlacedArea = serde_json::from_str(
+            r#"{"area":"kitchen","points":[[0,0],[400,0],[400,300],[0,300]]}"#,
+        )
+        .expect("an old plan, without a label");
+        assert_eq!(from_file.label, Point::new(0, 0));
     }
 
     /// The plan a first run has: one that says nothing, and writes nothing.
