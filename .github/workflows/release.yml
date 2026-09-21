@@ -4,6 +4,13 @@ name: Release
 # attaches the archive and `install/install.sh` to a GitHub Release, and builds every official
 # extension as `<bin>-<target>.tar.gz` (the name `packages.rs` downloads them by). The installer
 # downloads the binary from there; `releases/latest/download/install.sh` is the one-liner.
+#
+# A release can also be started from the GitHub web UI: 'Draft a new release', type a NEW tag
+# (e.g. `v0.4.1`, which GitHub creates on publish) and pick the commit/branch it points at.
+# Publishing pushes the tag and fires this workflow; the binaries are then uploaded into that
+# existing release rather than creating a second one. If the tag already exists the workflow
+# won't run at all, so always type a version you haven't tagged yet.
+#
 # Third-party actions are pinned to immutable commit SHAs (the comment names the version),
 # so nothing on the build/publish path can be moved under the job that holds `contents: write`.
 on:
@@ -205,12 +212,20 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          tag="$GITHUB_REF_NAME"
           prerelease=""
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+          if [[ "$tag" == *-* ]]; then
             prerelease="--prerelease"
           fi
-          gh release create "$GITHUB_REF_NAME" \
-            --title "Irori $GITHUB_REF_NAME" \
-            --generate-notes \
-            $prerelease \
-            dist/*.tar.gz dist/SHA256SUMS install/install.sh
+          # A release started from the web UI published this tag already and holds it; upload the
+          # built assets into it instead of clobbering its notes with a second release. On a plain
+          # tag push there is no release yet, so create one.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/*.tar.gz dist/SHA256SUMS install/install.sh --clobber
+          else
+            gh release create "$tag" \
+              --title "Irori $tag" \
+              --generate-notes \
+              $prerelease \
+              dist/*.tar.gz dist/SHA256SUMS install/install.sh
+          fi
