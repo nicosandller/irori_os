@@ -465,7 +465,9 @@
         cursor: crosshair; }
     .floorplan .plan { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 
+    /* Metres heavy, the snap step faint under them: what you see is what a point lands on. */
     .floorplan .grid path { stroke: var(--line); stroke-width: 1; }
+    .floorplan .grid .fine-line { opacity: .45; }
     .floorplan .wall { stroke: var(--fg); stroke-linecap: butt; }
     .floorplan .wall.chosen { stroke: var(--ember); }
     .floorplan .jamb { stroke: var(--fg); stroke-linecap: butt; }
@@ -559,7 +561,13 @@
     /* A room, faintly, where the plan will go. Sits in the middle of the canvas whatever the
        zoom is: it's a picture of a floorplan, not one. */
     .floorplan .watermark { pointer-events: none; }
-    .floorplan .watermark path, .floorplan .watermark circle { stroke: var(--fg); opacity: .12; }
+    .floorplan .watermark .wm-wall { stroke: var(--fg); opacity: .16; }
+    .floorplan .watermark .wm-glass { stroke: var(--fg); stroke-width: 2.5; opacity: .16; }
+    .floorplan .watermark .wm-jamb { stroke: var(--fg); stroke-width: 3; opacity: .14; }
+    .floorplan .watermark .wm-swing { stroke: var(--fg); stroke-width: 2.5; opacity: .13; }
+    .floorplan .watermark .wm-thing { fill: none; stroke: var(--fg); stroke-width: 2.5;
+                                      opacity: .10; }
+    .floorplan .watermark .wm-pip circle { fill: var(--ember); stroke: none; opacity: .22; }
     .floorplan .watermark text { fill: var(--muted); font: 500 .95rem var(--sans); opacity: .8; }
     .floorplan .watermark .watermark-lede { font-size: .82rem; font-weight: 400; opacity: .65; }
 

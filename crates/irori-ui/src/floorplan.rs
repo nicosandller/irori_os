@@ -82,11 +82,12 @@ struct Viewport {
 }
 
 impl Default for Viewport {
-    /// A little under half a pixel per centimetre — a five-metre room is about 220 pixels
-    /// across — with the origin off the top-left corner so a plan drawn from (0, 0) is on screen.
+    /// Six pixels to ten centimetres — a five-metre room is about 300 pixels across — with the
+    /// origin off the top-left corner so a plan drawn from (0, 0) is on screen. Chosen so the
+    /// default snap step is a grid somebody can see from the moment the page opens.
     fn default() -> Self {
         Self {
-            scale: 0.45,
+            scale: 0.6,
             pan: (90.0, 90.0),
         }
     }
@@ -690,8 +691,10 @@ pub fn Floorplan() -> impl IntoView {
                 on:wheel=on_wheel
             >
                 <svg class="plan" aria-hidden="true">
-                    {move || editing.get().then(|| grid(view.get()))}
-                    {move || shown.get().is_empty().then(watermark)}
+                    {move || editing.get().then(|| grid(view.get(), snap.get()))}
+                    // Not while editing: its caption says to press Edit, and once somebody
+                    // has, the canvas should be the empty surface they're drawing on.
+                    {move || (!editing.get() && shown.get().is_empty()).then(watermark)}
                     {move || {
                         let here = view.get();
                         let plan = shown.get();
@@ -1030,35 +1033,69 @@ fn Inspector(
     }
 }
 
-/// A room, faintly, where the plan will go: what this page is for, said in the shape of the
-/// thing rather than in a sentence at the bottom of the screen.
+/// A small flat, faintly, where the plan will go: what this page is for, said in the shape of
+/// the thing rather than in a sentence at the bottom of the screen.
 ///
-/// Drawn in the canvas's own pixels rather than in centimetres, so it sits in the middle and
-/// stays the same size whatever the zoom happens to be — it is a picture of a floorplan, not a
-/// floorplan, and zooming in on it would be a promise the page can't keep.
+/// Drawn the way the editor would draw it — walls with holes in them, a door with its swing, the
+/// devices as pips — so it is a promise the page keeps rather than a decoration. In the canvas's
+/// own pixels rather than in centimetres, so it sits in the middle and stays the same size
+/// whatever the zoom is: it is a picture of a floorplan, not one, and zooming in on it would be
+/// a promise the page can't keep.
 fn watermark() -> impl IntoView {
+    // A one-bedroom flat, 520 × 360 as drawn: living room on the left, bedroom top right,
+    // bathroom below it. Openings are gaps in the wall paths, exactly as a real plan has them.
+    let walls = concat!(
+        // Outside: two windows along the top, one in the left wall, the front door at the bottom.
+        "M0 0 H70 M150 0 H240 M320 0 H520 ",
+        "M520 0 V360 ",
+        "M520 360 H300 M220 360 H0 ",
+        "M0 360 V240 M0 150 V0 ",
+        // The wall between the living room and the bedroom, with its doorway.
+        "M320 0 V110 M320 190 V360 ",
+        // The wall between the bedroom and the bathroom, with its doorway.
+        "M320 200 H400 M470 200 H520",
+    );
     view! {
         <g class="watermark">
             <svg x="50%" y="50%" overflow="visible">
-                <g transform="translate(-150 -125)">
-                    // The outside of a small flat: a way in at the bottom, a window on top.
-                    <path d="M0 0 H120 M180 0 H300 M300 0 V210 M300 210 H190 M120 210 H0 M0 210 V0"
-                        fill="none" stroke-width="10" stroke-linecap="square" />
-                    // The window in the top wall and the door in the bottom one.
-                    <path d="M120 0 H180" stroke-width="3" />
-                    <path d="M190 210 a60 60 0 0 0 -60 -60" fill="none" stroke-width="3" />
-                    <path d="M130 210 V150" stroke-width="3" />
-                    // One inside wall, with a doorway in it.
-                    <path d="M190 210 V120 M190 60 V0" fill="none" stroke-width="10"
+                <g transform="translate(-260 -205)">
+                    <path class="wm-wall" d=walls fill="none" stroke-width="11"
                         stroke-linecap="square" />
-                    // And something switched on in the corner.
-                    <circle cx="70" cy="70" r="12" fill="none" stroke-width="3" />
-                    <path d="M70 40 V28 M70 112 V100 M40 70 H28 M112 70 H100"
-                        stroke-width="3" stroke-linecap="round" />
+
+                    // The windows: a pane across each gap, with a jamb at either end.
+                    <path class="wm-glass" d="M70 0 H150 M240 0 H320 M0 150 V240" />
+                    <path class="wm-jamb" d="M70 -6 V6 M150 -6 V6 M240 -6 V6 M320 -6 V6
+                                             M-6 150 H6 M-6 240 H6" />
+
+                    // The front door, standing open into the living room, and the two inside
+                    // doors — the way every plan since the drawing board has shown one.
+                    <path class="wm-swing" fill="none"
+                        d="M220 360 V280 M220 280 A80 80 0 0 0 300 360" />
+                    <path class="wm-swing" fill="none"
+                        d="M320 110 H400 M400 110 A80 80 0 0 0 320 190" />
+                    <path class="wm-swing" fill="none"
+                        d="M470 200 V270 M470 270 A70 70 0 0 0 400 200" />
+
+                    // Enough furniture to read as somebody's home: a bed under the windows, a
+                    // sofa and a table in the living room, a bath and a basin.
+                    <rect class="wm-thing" x="350" y="25" width="140" height="105" rx="6" />
+                    <path class="wm-thing" d="M350 60 H490" />
+                    <rect class="wm-thing" x="35" y="65" width="48" height="130" rx="10" />
+                    <path class="wm-thing" d="M68 78 V182" />
+                    <circle class="wm-thing" cx="170" cy="150" r="42" />
+                    <rect class="wm-thing" x="340" y="230" width="60" height="110" rx="10" />
+                    <circle class="wm-thing" cx="480" cy="320" r="20" />
+
+                    // And the point of the page: devices, where they are.
+                    <g class="wm-pip">
+                        <circle cx="170" cy="150" r="9" />
+                        <circle cx="420" cy="78" r="9" />
+                        <circle cx="120" cy="300" r="9" />
+                    </g>
                 </g>
             </svg>
-            <text x="50%" y="50%" dy="130" text-anchor="middle">"Nothing drawn yet"</text>
-            <text x="50%" y="50%" dy="156" text-anchor="middle" class="watermark-lede">
+            <text x="50%" y="50%" dy="195" text-anchor="middle">"Nothing drawn yet"</text>
+            <text x="50%" y="50%" dy="221" text-anchor="middle" class="watermark-lede">
                 "Press Edit to draw the walls of your home"
             </text>
         </g>
@@ -1260,25 +1297,42 @@ fn transform(view: Viewport) -> String {
     )
 }
 
-/// A square metre of grid, over enough of the plan that panning doesn't run off it.
-fn grid(view: Viewport) -> impl IntoView {
+/// The grid, over enough of the plan that panning doesn't run off it.
+///
+/// Two of them. The heavy lines are metres, which is how anyone reads a room. The faint ones are
+/// the **snap step** — the places a point can actually land — because a grid you can see and a
+/// grid you snap to being different things is the one way a grid can lie. They come and go with
+/// the zoom: closer together than a few pixels and they stop being a grid and start being a grey
+/// wash, so below that only the metres are drawn.
+fn grid(view: Viewport, snap: Snap) -> impl IntoView {
     let span = 6000;
+    let step = snap.step();
+    let fine = (step < GRID && f64::from(step) * view.scale >= 4.0).then_some(step);
     view! {
         <g class="grid" transform=transform(view)>
             <defs>
-                <pattern
-                    id="metre"
-                    width=GRID
-                    height=GRID
-                    patternUnits="userSpaceOnUse"
-                >
+                {fine.map(|step| view! {
+                    <pattern id="snap-step" width=step height=step patternUnits="userSpaceOnUse">
+                        <path
+                            class="fine-line"
+                            d=format!("M {step} 0 H 0 V {step}")
+                            fill="none"
+                            vector-effect="non-scaling-stroke"
+                        />
+                    </pattern>
+                })}
+                <pattern id="metre" width=GRID height=GRID patternUnits="userSpaceOnUse">
                     <path
+                        class="metre-line"
                         d=format!("M {GRID} 0 H 0 V {GRID}")
                         fill="none"
                         vector-effect="non-scaling-stroke"
                     />
                 </pattern>
             </defs>
+            {fine.map(|_| view! {
+                <rect x=-span y=-span width=span * 2 height=span * 2 fill="url(#snap-step)" />
+            })}
             <rect x=-span y=-span width=span * 2 height=span * 2 fill="url(#metre)" />
         </g>
     }
