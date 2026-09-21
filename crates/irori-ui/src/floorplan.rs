@@ -2329,8 +2329,19 @@ fn tracing_shape(
 // --- Geometry -----------------------------------------------------------------------------
 
 /// Rounds a measurement to the nearest multiple of `step` centimetres.
+///
+/// Panning is unbounded, so `value` really can be enormous — far off the plan, at the lowest
+/// zoom, is a number with ten digits in it. The count of steps is therefore clamped to the
+/// largest **whole multiple** an `i32` can hold before it is multiplied back up: casting alone
+/// isn't enough, because a float-to-int cast saturates to `i32::MAX` and multiplying *that* by
+/// the step is the overflow. Clamping the count rather than the product also means a point at
+/// the edge of the world still lands on the grid rather than just inside it.
 fn round(value: f64, step: i32) -> i32 {
-    (value / f64::from(step)).round() as i32 * step
+    let step = step.max(1);
+    let span = f64::from(step);
+    let most = (f64::from(i32::MAX) / span).trunc();
+    let steps = (value / span).round().clamp(-most, most) as i32;
+    steps * step
 }
 
 /// Where a new point goes: onto a corner that's already there if one is within reach, and onto
@@ -2964,6 +2975,37 @@ mod tests {
         let mut plan = before.clone();
         shift(&mut plan, &[(Point::new(0, 0), Point::new(100, 0))]);
         assert_eq!(plan, before);
+    }
+
+    /// Panning has no end, so a point can be asked for a very long way from anywhere anyone
+    /// would draw. Rounding one has to answer with a number rather than overflow on the way.
+    #[test]
+    fn rounding_a_point_at_the_edge_of_the_world_stays_inside_it() {
+        for step in [1, 10, 25, 100] {
+            for value in [
+                f64::from(i32::MAX),
+                f64::from(i32::MIN),
+                1e18,
+                -1e18,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ] {
+                let rounded = round(value, step);
+                assert_eq!(
+                    rounded % step,
+                    0,
+                    "{value} to the nearest {step} is still on the grid"
+                );
+                // The multiplication that used to overflow, done again where a panic would show.
+                assert!(
+                    i64::from(rounded).abs() <= i64::from(i32::MAX),
+                    "{value} to the nearest {step} fits"
+                );
+            }
+        }
+        assert_eq!(round(137.4, 10), 140, "and it still rounds");
+        assert_eq!(round(-137.4, 10), -140);
+        assert_eq!(round(137.4, 0), 137, "a step of nothing is a step of one");
     }
 
     /// The point of a step of your own: a wall that really is 137 cm long.
