@@ -325,6 +325,20 @@ pub fn Floorplan() -> impl IntoView {
         }
     });
 
+    // What's picked up is an index into the floor it was picked up on, and a run of wall is a
+    // point on it. Carrying either to another floor would be the editor pointing at whatever
+    // happens to sit at that index over there — so changing floors puts everything down.
+    Effect::new(move |_| {
+        floor.track();
+        picked.set(None);
+        running.set(None);
+        pointer.set(None);
+        tracing.set(Vec::new());
+        arming.set(None);
+        arming_area.set(None);
+        drag.set(None);
+    });
+
     // Everything below draws and edits one floor at a time.
     let level = Memo::new(move |_| on_floor(&shown.get(), floor.get().as_ref()));
     // The floor under this one, drawn faintly so an upstairs can be lined up with it.
@@ -951,6 +965,17 @@ pub fn Floorplan() -> impl IntoView {
                 remember();
                 let step = snap.get_untracked().step();
                 let at = Point::new(round(world.0, step), round(world.1, step));
+                // A device is in one place. Putting it down here takes it off wherever it was,
+                // including another floor — the picker offers every device whatever floor is
+                // showing, so this is the ordinary way to move one upstairs.
+                let here = floor.get_untracked();
+                draft.update(|plan| {
+                    for (id, level) in &mut plan.floors {
+                        if Some(id) != here.as_ref() {
+                            level.devices.retain(|placed| placed.device != device);
+                        }
+                    }
+                });
                 on_level(draft, floor, |level| {
                     level.devices.retain(|placed| placed.device != device);
                     level.devices.push(PlacedDevice { device, at });
@@ -1227,9 +1252,16 @@ pub fn Floorplan() -> impl IntoView {
                                 class:chosen=move || tool.get() == which
                                 on:click=move |_| {
                                     tool.set(which);
-                                    running.set(None);
-                                    pointer.set(None);
-                                    if which != Tool::Device { arming.set(None); }
+                                    // Whatever was half-drawn belongs to the tool being put
+                                    // down, or coming back to it later would finish a shape
+                                    // nobody remembers starting.
+                                    stop_drawing();
+                                    if which != Tool::Device {
+                                        arming.set(None);
+                                    }
+                                    if which != Tool::Area {
+                                        arming_area.set(None);
+                                    }
                                 }
                             >
                                 <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=*icon></svg>
@@ -1269,7 +1301,7 @@ pub fn Floorplan() -> impl IntoView {
             })}
 
             {move || (editing.get() && tool.get() == Tool::Device).then(|| view! {
-                <DevicePicker level=level arming=arming live=live />
+                <DevicePicker plan=shown arming=arming live=live />
             })}
 
             {move || (editing.get() && tool.get() == Tool::Area).then(|| view! {
@@ -1856,11 +1888,14 @@ fn EmptyPlan(
     }
 }
 
-/// The devices of the home, to pick one to place. Already-placed devices stay in the list —
-/// clicking one again moves it rather than adding a second of the same thing.
+/// The devices of the home, to pick one to place.
+///
+/// Every device, whatever floor is showing, and already-placed ones stay in the list: a device
+/// is in one place, so clicking one again moves it — to another spot, or to another floor —
+/// rather than adding a second of the same thing.
 #[component]
 fn DevicePicker(
-    level: Memo<Level>,
+    plan: Memo<Floorplan>,
     arming: RwSignal<Option<DeviceId>>,
     live: crate::Live,
 ) -> impl IntoView {
@@ -1870,7 +1905,7 @@ fn DevicePicker(
             <ul>
                 {move || {
                     let home = live.home.get();
-                    let placed = level.get();
+                    let placed = plan.get();
                     let mut devices = home.devices.clone();
                     devices.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
                     if devices.is_empty() {
@@ -1883,10 +1918,11 @@ fn DevicePicker(
                         .map(|device| {
                             let id = device.id.clone();
                             let armed = id.clone();
-                            let on_plan = placed
-                                .devices
-                                .iter()
-                                .any(|entry| entry.device == device.id);
+                            // Anywhere on the plan, not just this floor: a device is in one
+                            // place, and putting it down here is how it moves between floors.
+                            let on_plan = placed.floors.values().any(|level| {
+                                level.devices.iter().any(|entry| entry.device == device.id)
+                            });
                             view! {
                                 <li>
                                     <button
@@ -2392,11 +2428,22 @@ fn ends(wall: &Wall, to_end: bool) -> Point {
 /// can't be drawn and the core would refuse to save it, and the drag has a next frame anyway.
 fn shift(level: &mut Level, moves: &[(Point, Point)]) {
     let mut next = level.clone();
+    let moved = |point: &mut Point| {
+        if let Some((_, to)) = moves.iter().find(|(was, _)| was == point) {
+            *point = *to;
+        }
+    };
     for wall in &mut next.walls {
-        for end in [&mut wall.from, &mut wall.to] {
-            if let Some((_, to)) = moves.iter().find(|(was, _)| was == end) {
-                *end = *to;
-            }
+        moved(&mut wall.from);
+        moved(&mut wall.to);
+    }
+    // Rooms traced onto those corners come too. A room is a note about where the walls are, so
+    // a wall that moves and leaves its room behind has left the note pointing at nothing. The
+    // other way round is not true: nudging a room's outline is somebody saying the room ends
+    // somewhere other than the middle of the wall, and the wall should stay where it was built.
+    for area in &mut next.areas {
+        for corner in &mut area.points {
+            moved(corner);
         }
     }
     if next.walls.iter().any(|wall| wall.from == wall.to) {
@@ -2937,6 +2984,30 @@ mod tests {
         assert!(
             plan.walls.iter().all(|wall| wall.from != wall.to),
             "and nothing was flattened"
+        );
+    }
+
+    /// A room is a note about where the walls are, so a wall that moves takes the room with it.
+    /// The other way round is deliberately not true, and the second half of this says so.
+    #[test]
+    fn moving_a_wall_takes_the_room_traced_on_it() {
+        let mut plan = Level {
+            walls: vec![wall((0, 0), (600, 0)), wall((600, 0), (600, 450))],
+            areas: vec![room("kitchen", &[(0, 0), (600, 0), (600, 450), (0, 450)])],
+            ..Level::default()
+        };
+        shift(&mut plan, &[(Point::new(600, 0), Point::new(700, -50))]);
+
+        assert_eq!(plan.walls[0].to, Point::new(700, -50), "the wall");
+        assert_eq!(
+            plan.areas[0].points[1],
+            Point::new(700, -50),
+            "and the room's corner standing on it"
+        );
+        assert_eq!(
+            plan.areas[0].points[2],
+            Point::new(600, 450),
+            "but only that corner"
         );
     }
 

@@ -320,13 +320,23 @@ struct PlanSaved {
 }
 
 async fn save_floorplan(State(state): State<AppState>, Json(plan): Json<Floorplan>) -> Response {
+    // Which devices the home has heard of, including the ones it is holding back. Read before
+    // the edit, because the edit only gets to see what the config directory says.
+    let known: std::collections::BTreeSet<DeviceId> = state
+        .0
+        .core
+        .devices()
+        .into_iter()
+        .map(|device| device.id)
+        .chain(state.0.core.held_devices().into_iter().map(|held| held.id))
+        .collect();
     let saved = state
         .0
         .config
         .edit(&state.0.core, |settings| {
             plan.check().map_err(|why| Refused(why.to_string()))?;
             settings.floorplan = plan.clone();
-            Ok(place_devices(settings))
+            Ok(place_devices(settings, &known))
         })
         .await;
     match saved {
@@ -347,13 +357,26 @@ async fn save_floorplan(State(state): State<AppState>, Json(plan): Json<Floorpla
 ///
 /// And it must not place a device into a room that isn't there: rooms are made in `areas.toml`,
 /// and a plan naming one that has since been deleted is kept rather than obeyed (§6).
-fn place_devices(settings: &mut irori_types::Settings) -> usize {
+///
+/// `known` is every device the home has heard of, the ones it is holding back included. A plan
+/// can name a device that no longer exists — entries outlive what they point at (§4) — and
+/// writing a `devices.toml` entry for one would turn a stale drawing into a settings entry for a
+/// device nobody has. A device that already has an entry counts as known: something has been
+/// said about it, so there is nothing to invent.
+fn place_devices(
+    settings: &mut irori_types::Settings,
+    known: &std::collections::BTreeSet<DeviceId>,
+) -> usize {
     let rooms: Vec<(DeviceId, AreaId)> = settings
         .floorplan
         .floors
         .values()
         .flat_map(|level| {
             level.devices.iter().filter_map(|placed| {
+                if !known.contains(&placed.device) && !settings.devices.contains_key(&placed.device)
+                {
+                    return None;
+                }
                 let room = level.areas.iter().find(|area| area.contains(placed.at))?;
                 settings.area(&room.area)?;
                 Some((placed.device.clone(), room.area.clone()))
@@ -1889,6 +1912,33 @@ mod tests {
             None,
             "and the core agrees"
         );
+
+        // A plan naming a device the home has never heard of is kept and simply not drawn. It
+        // must not become a `devices.toml` entry for a device nobody has.
+        let (_, body) = server
+            .json(
+                "PUT",
+                "/api/dev/floorplan",
+                serde_json::json!({
+                    "floors": {
+                        "ground": {
+                            "areas": [{
+                                "area": "kitchen",
+                                "points": [[0, 0], [400, 0], [400, 300], [0, 300]],
+                            }],
+                            "devices": [{"device": "a_device_nobody_has", "at": [120, 90]}],
+                        },
+                    },
+                }),
+            )
+            .await?;
+        assert_eq!(body["placed"], 0, "{body}");
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(!devices.contains("a_device_nobody_has"), "{devices}");
+        // Put the drawn plan back, for what follows.
+        server
+            .json("PUT", "/api/dev/floorplan", plan.clone())
+            .await?;
 
         // A door wider than the wall it's in would have to be drawn hanging off the end.
         let (status, why) = server
