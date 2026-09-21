@@ -69,6 +69,10 @@ const REACH: f64 = 12.0;
 /// gap that only shows up later.
 const CORNER: f64 = 18.0;
 
+/// How far from a corner the live angle label sits, in screen pixels, so it floats off the
+/// corner it names rather than over it.
+const ANGLE_OFFSET: f64 = 26.0;
+
 /// The limits of the zoom, in screen pixels per centimetre. At the low end a 30-metre house
 /// fits; at the high end a centimetre is a pixel and a half.
 const MIN_SCALE: f64 = 0.06;
@@ -1206,6 +1210,56 @@ pub fn Floorplan() -> impl IntoView {
                     Some(view! {
                         <span class="measure" style=format!("left:{x}px;top:{y}px")>
                             {metres(from.distance_to(to))}
+                        </span>
+                    })
+                }}
+
+                // The angle of the corner the next line turns on, updating as it is dragged: at
+                // the node the new segment shares with the one before it, between that wall — or
+                // that side of a room — and the line reaching for the pointer. Straight on reads
+                // as 0°, a square corner as 90°, and a line that ran back on itself as 180°.
+                {move || {
+                    if !editing.get() {
+                        return None;
+                    }
+                    let to = pointer.get()?;
+                    let level = level.get();
+                    let (behind, node) = match tool.get() {
+                        Tool::Wall => {
+                            let from = running.get()?;
+                            (level.walls.iter().rev().find(|wall| wall.to == from)?.from, from)
+                        }
+                        Tool::Area => {
+                            let corners = tracing.get();
+                            let node = *corners.last()?;
+                            (*corners.get(corners.len() - 2)?, node)
+                        }
+                        _ => return None,
+                    };
+                    // The pointer back on the corner is no angle at all, just a line still at
+                    // its start.
+                    if node.distance_to(to) < 0.5 {
+                        return None;
+                    }
+                    // Where the label goes: along the bisector of the turn, which for a square
+                    // corner is the 45° line into the room, and for a straight-on wall reads as
+                    // ahead of it. A turn that ran all the way back has no bisector to speak of,
+                    // so it gets a label to one side instead.
+                    let (ix, iy) = direction(behind, node);
+                    let (ox, oy) = direction(node, to);
+                    let (mut bx, mut by) = (ix + ox, iy + oy);
+                    let reach = bx.hypot(by);
+                    if reach < 1e-6 {
+                        (bx, by) = (-iy, ix);
+                    } else {
+                        (bx, by) = (bx / reach, by / reach);
+                    }
+                    let here = view.get();
+                    let (x, y) = here.screen(node);
+                    let (lx, ly) = (x + bx * ANGLE_OFFSET, y + by * ANGLE_OFFSET);
+                    Some(view! {
+                        <span class="angle" style=format!("left:{lx}px;top:{ly}px")>
+                            {format!("{:.0}°", turn_angle(behind, node, to))}
                         </span>
                     })
                 }}
@@ -2546,6 +2600,16 @@ fn direction(from: Point, to: Point) -> (f64, f64) {
     (dx / length, dy / length)
 }
 
+/// The angle a line being drawn makes with the line it follows, at the corner they share, in
+/// degrees: straight on is 0°, a square corner 90°, doubling back is 180°. What a corner of a
+/// room is meant to be read as, so it is what the live angle label says.
+fn turn_angle(behind: Point, node: Point, onward: Point) -> f64 {
+    let (ix, iy) = direction(behind, node);
+    let (ox, oy) = direction(node, onward);
+    let cos = (ix * ox + iy * oy).clamp(-1.0, 1.0);
+    cos.acos().to_degrees()
+}
+
 /// A point a given distance along a wall, with the wall's direction and its left-hand normal.
 fn along(wall: &Wall, at: f64) -> ((f64, f64), (f64, f64), (f64, f64)) {
     point_along(wall.from, wall.to, at)
@@ -3178,6 +3242,39 @@ mod tests {
         let run = joints(&sharp, 0).1;
         assert!(run > half, "a sharper corner needs more: {run}");
         assert!(run <= half * 4.0, "but the spike is cut off: {run}");
+    }
+
+    /// The angle a corner is read as: straight on is nothing, a square corner is a square
+    /// corner, and the sign of the turn doesn't matter because the label says the size of it.
+    #[test]
+    fn the_turn_angle_reads_the_way_a_corner_is_built() {
+        let angle = |node: (i32, i32), onward: (i32, i32)| {
+            turn_angle(
+                Point::new(0, 0),
+                Point::new(node.0, node.1),
+                Point::new(onward.0, onward.1),
+            )
+        };
+        assert!(
+            (angle((100, 0), (200, 0)) - 0.0).abs() < 1e-9,
+            "straight on"
+        );
+        assert!(
+            (angle((100, 0), (100, 100)) - 90.0).abs() < 1e-9,
+            "a square corner one way"
+        );
+        assert!(
+            (angle((100, 0), (100, -100)) - 90.0).abs() < 1e-9,
+            "and the other"
+        );
+        assert!(
+            (angle((100, 0), (150, 50)) - 45.0).abs() < 1e-9,
+            "a skirt of a corner"
+        );
+        assert!(
+            (angle((100, 0), (0, 0)) - 180.0).abs() < 1e-9,
+            "doubling straight back"
+        );
     }
 
     #[test]

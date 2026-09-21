@@ -508,6 +508,13 @@
                           background: var(--ember); color: var(--card);
                           font: .7rem var(--mono); white-space: nowrap; }
 
+    /* The angle the next line makes with the one before it, at the corner it turns on. */
+    .floorplan .angle { position: absolute; transform: translate(-50%, -50%);
+                        padding: .1rem .35rem; border-radius: .25rem; pointer-events: none;
+                        background: var(--card); color: var(--ember);
+                        border: 1px solid var(--line); font: .7rem var(--mono);
+                        white-space: nowrap; }
+
     /* Devices on the plan. HTML rather than SVG: a marker is a control with a name, and its
        size must not follow the zoom — a label is either readable or it isn't. */
     .floorplan .markers { position: absolute; inset: 0; pointer-events: none; }
