@@ -311,23 +311,22 @@ fn build_from_checkout(item: &Official, root: &Path, dest: &Path) -> Result<(), 
 /// an option here) — so a download failure doesn't point back at a path that was already ruled
 /// out.
 fn download_github(item: &Official, dest: &Path, hint: &str) -> Result<(), String> {
-    let target = env!("IRORI_TARGET");
     // The release workflow uploads every official extension's tarball under the *app's* tag
     // (`irori_types::VERSION`), not the extension's own declared `version` — `official.toml`
     // rarely bumps an extension's version between app releases, so using it here would ask
     // GitHub for whatever old release last carried that number, silently installing a stale
     // (and possibly manifest-incompatible) build instead of the one this binary shipped with.
-    let url = format!(
-        "https://github.com/{GITHUB_REPO}/releases/download/v{}/{bin}-{target}.tar.gz",
-        irori_types::VERSION,
-        bin = item.bin
-    );
+    let url = release_asset_url(irori_types::VERSION, env!("IRORI_TARGET"), &item.bin);
     install_url(&url, dest).map_err(|e| {
         format!(
             "couldn't download {url}: {e}. {hint}; \
              a Pi image should ship packages under /usr/share/irori/extensions."
         )
     })
+}
+
+fn release_asset_url(version: &str, target: &str, bin: &str) -> String {
+    format!("https://github.com/{GITHUB_REPO}/releases/download/v{version}/{bin}-{target}.tar.gz")
 }
 
 fn copy_package(from: &Path, dest: &Path) -> Result<(), String> {
@@ -429,6 +428,18 @@ mod tests {
     #[test]
     fn a_missing_command_is_not_runnable() {
         assert!(!command_runs("irori-packages-test-no-such-command"));
+    }
+
+    #[test]
+    fn the_release_url_uses_the_app_version_not_the_extensions_own() {
+        // Regression test: this used to take `item.version` (the extension's own, rarely-bumped
+        // declared version) instead of the app's, silently downloading a stale release.
+        let url = release_asset_url("0.4.2", "aarch64-apple-darwin", "irori-ext-demo");
+        assert_eq!(
+            url,
+            "https://github.com/nicosandller/irori_os/releases/download/\
+             v0.4.2/irori-ext-demo-aarch64-apple-darwin.tar.gz"
+        );
     }
 
     #[test]
