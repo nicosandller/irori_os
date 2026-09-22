@@ -140,10 +140,9 @@ fn card(
         <section class="ext-card">
             <span class="ext-category">{category_label(&entry.category)}</span>
             <div class="ext-card-head">
-                // The icon endpoint reads a running extension's own manifest (`core.extension_icon`),
-                // so it only has bytes to serve once something is installed — before that, even a
-                // catalog entry that ships an icon falls back to its initial, same as one with none.
-                {icon(&entry.id, entry.icon && entry.installed)}
+                // `entry.icon` already reflects whether the icon endpoint has bytes to serve
+                // right now (the server checks the same live state), so nothing to combine here.
+                {icon(&entry.id, entry.icon)}
                 <div class="ext-card-title">
                     <span class="name">{entry.name.clone()}</span>
                     <span class="muted small">{entry.version.clone()}</span>

@@ -136,7 +136,17 @@ impl ExtensionHost {
         }
         if packages_dir.is_dir() {
             for package in installed_packages(&packages_dir)? {
-                host.spawn_package(package)?;
+                // A package already on disk is never a reason to refuse to start: an id that
+                // collided with a builtin because it used to be a package (helpers, before D45)
+                // is now stale, and a manifest that fails to parse belongs to whoever installed
+                // it, not to every other extension. Either way, this package just doesn't run.
+                if let Err(reason) = host.spawn_package(package.clone()) {
+                    tracing::warn!(
+                        package = %package.display(),
+                        %reason,
+                        "not starting a package found on disk at startup"
+                    );
+                }
             }
         }
         Ok(host)

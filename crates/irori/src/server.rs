@@ -841,6 +841,12 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
             .into_iter()
             .map(|item| {
                 let overview = running.get(&item.id);
+                // Live, not the catalog's own claim: an installed extension's manifest is only
+                // read once its supervised task actually describes it, which can be a moment
+                // after `installed` turns true, and a manifest missing `run` or a protocol
+                // contribution never gets described at all (host.rs). Either way, this says
+                // whether `extension_icon` actually has bytes right now.
+                let icon = state.0.core.extension_icon(&item.id).is_some();
                 CatalogEntry {
                     id: item.id,
                     name: item.name.to_string(),
@@ -849,7 +855,7 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                     version: item.version,
                     official: true,
                     installed: overview.is_some(),
-                    icon: item.icon,
+                    icon,
                     state: overview.map(|o| match &o.status {
                         irori_core::ExtensionStatus::Disabled => "disabled",
                         irori_core::ExtensionStatus::Starting => "starting",

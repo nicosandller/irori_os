@@ -28,10 +28,6 @@ pub struct Official {
     #[serde(rename = "crate")]
     pub crate_name: String,
     pub bin: String,
-    /// Whether it ships an `icon.svg` (its manifest's own `icon` field says so too, but the
-    /// catalog is read from this file alone, without parsing every extension's manifest).
-    #[serde(default)]
-    pub icon: bool,
 }
 
 #[derive(Debug, Deserialize)]

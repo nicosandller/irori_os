@@ -11,7 +11,6 @@ version = "0.3.1"
 source = "extensions/demo"
 crate = "irori-protocol-demo"
 bin = "irori-ext-demo"
-icon = true
 
 [[extension]]
 id = "esphome"
@@ -22,7 +21,6 @@ version = "0.3.1"
 source = "extensions/protocols/esphome"
 crate = "irori-protocol-esphome"
 bin = "irori-ext-esphome"
-icon = true
 
 [[extension]]
 id = "mqtt"

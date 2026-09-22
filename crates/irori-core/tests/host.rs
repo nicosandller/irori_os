@@ -630,6 +630,34 @@ async fn unrepresentable_timings_are_refused() {
     assert!(ExtensionHost::start(&core, vec![], zero).is_err());
 }
 
+/// A package left on disk from before an extension became a builtin (helpers, D45) must not
+/// crash the next start: the id collision is between old state and new code, not a bug to
+/// refuse to boot over.
+#[tokio::test]
+async fn a_stale_package_sharing_a_builtins_id_is_skipped_not_fatal() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let stale = packages_dir.path().join("lamp");
+    std::fs::create_dir_all(&stale).expect("made the stale package dir");
+    std::fs::write(stale.join("irori-extension.toml"), LAMP_MANIFEST).expect("wrote the manifest");
+
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![builtin::<Lamp>().expect("valid")],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("a stale package on disk must not fail startup");
+
+    eventually(
+        "the builtin runs despite the stale package sharing its id",
+        || status(&core, "lamp") == Some(ExtensionStatus::Running),
+    )
+    .await;
+
+    host.shutdown().await;
+}
+
 #[test]
 fn duplicate_extension_ids_are_refused() {
     let runtime = tokio::runtime::Builder::new_current_thread()
