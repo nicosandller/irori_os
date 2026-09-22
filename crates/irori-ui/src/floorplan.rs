@@ -862,14 +862,30 @@ pub fn Floorplan() -> impl IntoView {
                 if by == (0, 0) {
                     return;
                 }
+                // A label dragged out of its own room would be pointing at nothing, so a
+                // candidate that lands outside the polygon is dropped rather than persisted.
+                let mut moved = false;
                 on_level(draft, floor, |level| {
                     if let Some(placed) = level.areas.get_mut(area) {
-                        placed.label = Point::new(
+                        let candidate = Point::new(
                             placed.label.x.saturating_add(by.0),
                             placed.label.y.saturating_add(by.1),
                         );
+                        let inside = placed.middle().is_some_and(|middle| {
+                            placed.contains(Point::new(
+                                middle.x.saturating_add(candidate.x),
+                                middle.y.saturating_add(candidate.y),
+                            ))
+                        });
+                        if inside {
+                            placed.label = candidate;
+                            moved = true;
+                        }
                     }
                 });
+                if !moved {
+                    return;
+                }
                 // The grab moves with the label, so the rounding can't accumulate into a drift.
                 drag.set(Some(Drag::AreaLabel {
                     area,
@@ -961,12 +977,18 @@ pub fn Floorplan() -> impl IntoView {
                     remember();
                     on_level(draft, floor, |level| {
                         // Redrawing a room replaces its old shape: one shape per room per floor
-                        // is what the plan allows, and moving a wall is why somebody would.
+                        // is what the plan allows, and moving a wall is why somebody would. The
+                        // label is attached to the room, not the shape, so its offset survives.
+                        let label = level
+                            .areas
+                            .iter()
+                            .find(|placed| placed.area == area)
+                            .map_or(Point::new(0, 0), |placed| placed.label);
                         level.areas.retain(|placed| placed.area != area);
                         level.areas.push(PlacedArea {
                             area: area.clone(),
                             points,
-                            label: Point::new(0, 0),
+                            label,
                         });
                         picked.set(Some(Pick::Area(level.areas.len() - 1)));
                     });
@@ -1030,11 +1052,18 @@ pub fn Floorplan() -> impl IntoView {
             {
                 remember();
                 on_level(draft, floor, |level| {
+                    // Same rule as the click-to-close path: keep the room's label offset across
+                    // the shape it just replaced.
+                    let label = level
+                        .areas
+                        .iter()
+                        .find(|placed| placed.area == area)
+                        .map_or(Point::new(0, 0), |placed| placed.label);
                     level.areas.retain(|placed| placed.area != area);
                     level.areas.push(PlacedArea {
                         area: area.clone(),
                         points: corners,
-                        label: Point::new(0, 0),
+                        label,
                     });
                     picked.set(Some(Pick::Area(level.areas.len() - 1)));
                 });
@@ -1186,9 +1215,13 @@ pub fn Floorplan() -> impl IntoView {
                             .enumerate()
                             .filter_map(|(index, placed)| {
                                 let area = home.area(&placed.area)?;
-                                let at = label_at(placed)?;
-                                let (x, y) = here.screen(at);
-                                let grab = (f64::from(at.x), f64::from(at.y));
+                                let label_point = label_at(placed)?;
+                                let (x, y) = here.screen(label_point);
+                                // Falls back to the label's own centre only if the event carries
+                                // no usable position, so a click at either end of the text still
+                                // grabs the point under the pointer rather than snapping the
+                                // label's centre there on the first move.
+                                let fallback = (f64::from(label_point.x), f64::from(label_point.y));
                                 Some(view! {
                                     <span
                                         class="room-label"
@@ -1202,6 +1235,11 @@ pub fn Floorplan() -> impl IntoView {
                                             dragged.set(false);
                                             picked.set(Some(Pick::Area(index)));
                                             remember();
+                                            let grab = at(&event)
+                                                .map(|screen| {
+                                                    view.get_untracked().world(screen.0, screen.1)
+                                                })
+                                                .unwrap_or(fallback);
                                             drag.set(Some(Drag::AreaLabel { area: index, grab }));
                                         }
                                         on:click=move |event: ev::MouseEvent| {
