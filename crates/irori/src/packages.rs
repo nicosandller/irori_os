@@ -57,10 +57,30 @@ pub fn install_official(item: &Official, dest: &Path) -> Result<(), String> {
     {
         return Ok(());
     }
-    if let Some(root) = workspace_root() {
+    // A checkout is only a build source if there is a cargo to build with: an installed
+    // release runs on machines that have this repo cloned (this one, for instance) but no
+    // Rust toolchain on the binary's PATH, and finding a checkout there shouldn't turn "click
+    // Install" into "go install Rust" when the GitHub release is right there instead.
+    if let Some(root) = workspace_root()
+        && cargo_runnable()
+    {
         return build_from_checkout(item, &root, dest);
     }
     download_github(item, dest)
+}
+
+fn cargo_runnable() -> bool {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    command_runs(&cargo)
+}
+
+fn command_runs(cmd: &str) -> bool {
+    Command::new(cmd)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// Install from a tarball URL (non-official, or a pinned official asset).
@@ -353,6 +373,18 @@ mod tests {
             .expect("tar is on PATH");
         assert!(status.success());
         archive
+    }
+
+    #[test]
+    fn a_missing_command_is_not_runnable() {
+        assert!(!command_runs("irori-packages-test-no-such-command"));
+    }
+
+    #[test]
+    fn a_real_command_is_runnable() {
+        // `true` ignores `--version` and just exits 0, the same shape a real `cargo --version`
+        // would take — this is standing in for "cargo is on PATH", not testing cargo itself.
+        assert!(command_runs("true"));
     }
 
     #[test]
