@@ -3,9 +3,9 @@
 //! Source of the code is this repo. The running binary never links it. Install copies a package
 //! into `$DATA/extensions/<id>/` from, in order: packages shipped beside the binary
 //! (`IRORI_OFFICIAL_PACKAGES` or `/usr/share/irori/extensions`), a checkout of this repo (builds
-//! the crate — only in a debug build with cargo on its PATH, so an installed release always
-//! downloads instead, the same as a machine with no checkout at all), or a GitHub release of
-//! this repo.
+//! the crate — only when this isn't the release workflow's own binary, and cargo is on its
+//! PATH, so a distributed release always downloads instead, the same as a machine with no
+//! checkout at all), or a GitHub release of this repo.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -59,16 +59,17 @@ pub fn install_official(item: &Official, dest: &Path) -> Result<(), String> {
     {
         return Ok(());
     }
-    // Building from a checkout is a `cargo run`/`cargo build` convenience, not something a
-    // release binary should ever do: a release runs on machines that may well have this repo
+    // Building from a checkout is a developer convenience, not something the binary this repo
+    // actually ships should ever do: that binary runs on machines that may well have the repo
     // cloned too (this one, for instance), and a real install should exercise the same GitHub
-    // download every other consumer's install does, cargo on the PATH or not.
-    if cfg!(debug_assertions) {
+    // download every other consumer's install does. `cfg!(debug_assertions)` can't tell those
+    // apart — `cargo xtask install` builds in release mode too — so this checks what actually
+    // does instead; see `is_distributed_release`.
+    if !is_distributed_release() {
         match workspace_root() {
             Some(root) if cargo_runnable() => return build_from_checkout(item, &root, dest),
-            // A checkout is there but unusable, or a release binary skipped looking for one:
-            // either way, pointing at "run from a checkout" as the fix would send them right
-            // back to the path that was just ruled out.
+            // A checkout is there but unusable: pointing at "run from a checkout" as the fix
+            // would send them right back to the path that was just ruled out.
             Some(_) => {
                 return download_github(
                     item,
@@ -88,8 +89,17 @@ pub fn install_official(item: &Official, dest: &Path) -> Result<(), String> {
     download_github(
         item,
         dest,
-        "a release binary always downloads, never builds from a checkout",
+        "a distributed release always downloads, never builds from a checkout",
     )
+}
+
+/// Whether this reports a real version rather than the workspace's own `0.0.0`: the release
+/// workflow sets `IRORI_VERSION`, and a build made with `HEAD` sitting on an exact release tag
+/// picks the same version up on its own (see `irori_types`'s `build.rs`) — both cases where
+/// downloading is the right call even for a checkout with a perfectly good cargo in it. A plain
+/// `cargo build`, `cargo build --release`, and `cargo xtask install` all still report `0.0.0`.
+fn is_distributed_release() -> bool {
+    irori_types::VERSION != "0.0.0"
 }
 
 fn cargo_runnable() -> bool {
@@ -404,6 +414,13 @@ mod tests {
     #[test]
     fn a_missing_command_is_not_runnable() {
         assert!(!command_runs("irori-packages-test-no-such-command"));
+    }
+
+    #[test]
+    fn this_test_binary_is_not_a_distributed_release() {
+        // The assumption `install_official` leans on: an ordinary `cargo test` build reports
+        // the workspace's own `0.0.0`, the same as `cargo build` or `cargo xtask install` would.
+        assert!(!is_distributed_release());
     }
 
     #[test]
