@@ -84,6 +84,7 @@ areas below so re-prioritizing means editing this, not moving sections around.
 | D42 | **This roadmap is organized into areas, not sequential phases.** The only place a working order is stated is §0a, a short list meant to be rewritten often | Priorities here get reworked constantly (floorplan jumped the queue twice), and a phase-numbered document made every reorder look like a rewrite of the plan itself rather than an update to one list. Milestone ids (`M0.x`, `M1.x`) are kept as stable references even though the "0"/"1" no longer means "phase" — renumbering them would break every cross-reference in this document for no benefit. |
 | D43 | **Floorplan is planned to become a first-party core extension**, not code hardwired into `irori-ui` | It shipped fast as part of the UI crate to get it in front of real use (PR #16), but it's a full page with its own nav entry and config-file writes — the same shape Helpers has (D40) and the shape future built-in features should have, per D21's "extensions are the single unit of modularity." None of today's contribution kinds (`protocol`, `dashboard`/`card` — sandboxed iframes, Phase 2c — or `app` — proxied external process, Phase 3) cleanly fit "a first-party page with direct registry and config-dir access." Mechanism is open — see §11 Q15. |
 | D44 | **There is no "integration" concept. There are only extensions, grouped into categories.** The one category defined so far is **`protocol`** (an extension that brings in devices — MQTT, ESPHome, and, in the demo/helpers case, something that behaves like one without a wire protocol behind it). What was `Integration` in code is now the `Protocol` trait (`crates/irori-protocol`, formerly `irori-integration`); `IntegrationId` is `ProtocolId`; `[[contributes.integration]]` is `[[contributes.protocol]]`; the official extension crates are `irori-protocol-<name>` (formerly `irori-int-<name>`); `docs/specs/integrations.md` is `docs/specs/protocols.md` | Owner's direction: "extension" is the only unit (D21); "integration" was a second word for the same thing, left over from the original HA-inspired draft. Renamed the code and this document. *Updated 2026-09-21:* the deeper spec prose (`docs/specs/{protocols,extensions,config,entities,rules}.md`) has now had its own pass too — read by hand rather than sed, since those documents also use "protocol" for the literal wire protocol (MQTT, Zigbee, ESPHome's native API), which a blind find-and-replace would have collided with (e.g. "Protocols are protocols behind one interface"). |
+| D45 | **Helpers moved from an installable package to built into `irori`, always running.** *Partially revises D40 — helpers still use the protocol contract (D40 stands), but are no longer on the Extensions page's install/uninstall list, and there is no `irori-ext-helpers` binary or `run` in their manifest.* The crate moved from `extensions/helpers/` to `crates/irori-helpers/`, dropped `irori-protocol-` from its name (it isn't shipped like the protocol extensions are), and `irori`'s startup passes it to `ExtensionHost` as a builtin (`irori_protocol::builtin::<irori_helpers::Helpers>()`) instead of loading it from `extensions/official.toml` | Owner's direction, 2026-09-22: helpers ("guests are over", "holiday mode") are core to what a home needs, not an optional add-on a person might skip or remove — nothing else in the model can produce a switch with no device behind it. Being installable also invited an easy mistake: uninstalling helpers would delete every toggle's stored value with no more warning than uninstalling MQTT. Settings still live at `extensions/helpers.toml` (D34's per-extension settings mechanism didn't need to change) and its entities are still ordinary `switch.*` entities (docs/specs/rules.md K12) — only how it starts and whether it can be removed changed. |
 
 ### Review notes on the original plan (kept for context)
 
@@ -165,6 +166,9 @@ irori_os/
     irori-config/            # load/validate/watch the plain-text config dir (hot reload)
     irori-api/               # axum WS/HTTP, auth, /metrics, static UI serving
     irori-client/            # typed Rust client for the public API (CLI, external extensions, assist)
+    irori-helpers/           # toggles Irori keeps itself (D40, D45) — built in, always running,
+                             # not an installable extension; proves the protocol contract works
+                             # for something that isn't a real device protocol
     irori-ui/                # Leptos CSR app (built to wasm by `cargo xtask ui`, embedded
                              # via rust-embed; outside the workspace, its own dependency tree)
     irori/                   # binary: CLI + wiring + embedded assets; loads official extensions
@@ -175,12 +179,10 @@ irori_os/
                              # compiled in via cargo features" — every official extension, not just
                              # external ones, now runs as its own process the host spawns. D16
                              # itself hasn't been revisited; flagging rather than rewriting it here.
-  extensions/                # first-party extensions of every contribution kind, one dir each
+  extensions/                # installable extensions of every contribution kind, one dir each
     protocols/mqtt/          # rumqttc, HA discovery → registry, command publishing, optional broker
     protocols/esphome/       # ESPHome's native API: mDNS discovery, entities, state, commands
     demo/                    # virtual lights/sensors/switches; the reference protocol extension to copy
-    helpers/                 # toggles Irori keeps itself (D40) — proves the protocol contract works
-                             # for something that isn't a real device protocol
                              # ⚠️ Superseded, 2026-09-21: an earlier draft split a top-level
                              # `integrations/` (a word this document no longer uses, D44) from a
                              # Phase-2c+ `extensions/`; the actual layout puts every first-party

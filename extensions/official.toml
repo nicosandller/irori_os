@@ -32,12 +32,5 @@ source = "extensions/protocols/mqtt"
 crate = "irori-protocol-mqtt"
 bin = "irori-ext-mqtt"
 
-[[extension]]
-id = "helpers"
-name = "Helpers"
-category = "helpers"
-description = "Values Irori keeps itself rather than a device reporting them: toggles, to begin with."
-version = "0.3.1"
-source = "extensions/helpers"
-crate = "irori-protocol-helpers"
-bin = "irori-ext-helpers"
+# Helpers aren't listed here: they're core to Irori (crates/irori-helpers), built in and always
+# running, not an installable package.

@@ -461,7 +461,7 @@ const STUBBORN_MANIFEST: &str = r#"
 "#;
 
 #[tokio::test(start_paused = true)]
-async fn an_protocol_that_ignores_stop_is_cancelled_after_the_grace_period() {
+async fn a_protocol_that_ignores_stop_is_cancelled_after_the_grace_period() {
     let core = Core::new(Arc::new(SystemClock));
     let host = start(&core, builtin::<Stubborn>().expect("valid"));
     eventually("running", || {
@@ -628,6 +628,76 @@ async fn unrepresentable_timings_are_refused() {
         ..Timing::default()
     };
     assert!(ExtensionHost::start(&core, vec![], zero).is_err());
+}
+
+/// A package left on disk from before an extension became a builtin (helpers, D45) must not
+/// crash the next start: the id collision is between old state and new code, not a bug to
+/// refuse to boot over.
+#[tokio::test]
+async fn a_stale_package_sharing_a_builtins_id_is_skipped_not_fatal() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let stale = packages_dir.path().join("lamp");
+    std::fs::create_dir_all(&stale).expect("made the stale package dir");
+    std::fs::write(stale.join("irori-extension.toml"), LAMP_MANIFEST).expect("wrote the manifest");
+
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![builtin::<Lamp>().expect("valid")],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("a stale package on disk must not fail startup");
+
+    eventually(
+        "the builtin runs despite the stale package sharing its id",
+        || status(&core, "lamp") == Some(ExtensionStatus::Running),
+    )
+    .await;
+
+    host.shutdown().await;
+}
+
+/// A package whose own manifest is broken — not sharing anyone's id — still needs to say so on
+/// the Extensions page, rather than looking like it was never installed at all.
+#[tokio::test]
+async fn a_broken_packages_own_manifest_reports_failed_not_missing() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let broken = packages_dir.path().join("broken");
+    std::fs::create_dir_all(&broken).expect("made the package dir");
+    std::fs::write(
+        broken.join("irori-extension.toml"),
+        "this is not valid toml{{{",
+    )
+    .expect("wrote a broken manifest");
+
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("a broken package on disk must not fail startup");
+
+    let id = ExtensionId::try_from("broken").expect("valid");
+    eventually(
+        "the broken package is reported failed, not silently absent",
+        || {
+            matches!(
+                status(&core, "broken"),
+                Some(ExtensionStatus::Failed { .. })
+            )
+        },
+    )
+    .await;
+    let overview = core.extensions().get(&id).cloned().expect("present");
+    assert!(
+        matches!(&overview.status, ExtensionStatus::Failed { reason, .. } if !reason.is_empty()),
+        "{overview:?}"
+    );
+
+    host.shutdown().await;
 }
 
 #[test]

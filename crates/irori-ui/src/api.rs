@@ -521,6 +521,7 @@ pub struct CatalogEntry {
     pub version: String,
     pub official: bool,
     pub installed: bool,
+    pub icon: bool,
     #[serde(default)]
     pub state: Option<String>,
     #[serde(default)]

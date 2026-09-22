@@ -25,15 +25,13 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/target \
     cargo build --locked --release -p irori $FEATURES \
-      -p irori-protocol-demo -p irori-protocol-esphome -p irori-protocol-helpers -p irori-protocol-mqtt \
+      -p irori-protocol-demo -p irori-protocol-esphome -p irori-protocol-mqtt \
     && cp /target/release/irori /irori \
-    && mkdir -p /official/demo/bin /official/esphome/bin /official/helpers/bin /official/mqtt/bin \
+    && mkdir -p /official/demo/bin /official/esphome/bin /official/mqtt/bin \
     && cp extensions/demo/irori-extension.toml extensions/demo/icon.svg /official/demo/ \
     && cp /target/release/irori-ext-demo /official/demo/bin/ \
     && cp extensions/protocols/esphome/irori-extension.toml extensions/protocols/esphome/icon.svg /official/esphome/ \
     && cp /target/release/irori-ext-esphome /official/esphome/bin/ \
-    && cp extensions/helpers/irori-extension.toml extensions/helpers/icon.svg /official/helpers/ \
-    && cp /target/release/irori-ext-helpers /official/helpers/bin/ \
     && cp extensions/protocols/mqtt/irori-extension.toml /official/mqtt/ \
     && cp /target/release/irori-ext-mqtt /official/mqtt/bin/
 

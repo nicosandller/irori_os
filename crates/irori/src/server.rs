@@ -841,6 +841,12 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
             .into_iter()
             .map(|item| {
                 let overview = running.get(&item.id);
+                // Live, not the catalog's own claim: an installed extension's manifest is only
+                // read once its supervised task actually describes it, which can be a moment
+                // after `installed` turns true, and a manifest missing `run` or a protocol
+                // contribution never gets described at all (host.rs). Either way, this says
+                // whether `extension_icon` actually has bytes right now.
+                let icon = state.0.core.has_extension_icon(&item.id);
                 CatalogEntry {
                     id: item.id,
                     name: item.name.to_string(),
@@ -849,6 +855,7 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                     version: item.version,
                     official: true,
                     installed: overview.is_some(),
+                    icon,
                     state: overview.map(|o| match &o.status {
                         irori_core::ExtensionStatus::Disabled => "disabled",
                         irori_core::ExtensionStatus::Starting => "starting",
@@ -878,6 +885,7 @@ struct CatalogEntry {
     version: String,
     official: bool,
     installed: bool,
+    icon: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     state: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1566,6 +1574,31 @@ mod tests {
         let (_, _, body) = get_from(core.clone(), "/api/dev/extensions").await?;
         let extensions: serde_json::Value = serde_json::from_slice(&body)?;
         assert_eq!(extensions["demo"]["state"], "running");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// The catalog's `icon` field is whether `extension_icon` can serve bytes for it *right now*
+    /// (running, with an icon in its manifest) — not a static claim from the catalog file — so
+    /// the Extensions page never points an `<img>` at a file that isn't there yet, or ever.
+    #[tokio::test]
+    async fn the_catalog_reports_whether_an_icon_is_actually_servable() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let (status, _, body) = get_from(core.clone(), "/api/dev/catalog").await?;
+        assert_eq!(status, StatusCode::OK);
+        let catalog: serde_json::Value = serde_json::from_slice(&body)?;
+        let entries = catalog.as_array().expect("a list");
+        let demo = entries
+            .iter()
+            .find(|e| e["id"] == "demo")
+            .expect("demo is official");
+        assert_eq!(demo["icon"], true, "{catalog}");
+        let mqtt = entries
+            .iter()
+            .find(|e| e["id"] == "mqtt")
+            .expect("mqtt is official");
+        assert_eq!(mqtt["icon"], false, "{catalog}");
 
         host.shutdown().await;
         Ok(())
@@ -2361,10 +2394,7 @@ mod tests {
     async fn helpers(core: &Core) -> anyhow::Result<irori_core::ExtensionHost> {
         irori_core::ExtensionHost::start(
             core,
-            vec![
-                irori_protocol::builtin::<irori_protocol_helpers::Helpers>()
-                    .map_err(anyhow::Error::msg)?,
-            ],
+            vec![irori_protocol::builtin::<irori_helpers::Helpers>().map_err(anyhow::Error::msg)?],
             irori_core::Timing::default(),
         )
         .map_err(anyhow::Error::msg)
