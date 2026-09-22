@@ -1,9 +1,11 @@
 //! Official catalog, and how a click on Install turns a listing into a package on disk.
 //!
 //! Source of the code is this repo. The running binary never links it. Install copies a package
-//! into `$DATA/extensions/<id>/` from, in order: a checkout of this repo (builds the crate),
-//! packages shipped beside the binary (`IRORI_OFFICIAL_PACKAGES` or `/usr/share/irori/extensions`),
-//! or a GitHub release of this repo.
+//! into `$DATA/extensions/<id>/` from, in order: packages shipped beside the binary
+//! (`IRORI_OFFICIAL_PACKAGES` or `/usr/share/irori/extensions`), a checkout of this repo (builds
+//! the crate — only in a debug build with cargo on its PATH, so an installed release always
+//! downloads instead, the same as a machine with no checkout at all), or a GitHub release of
+//! this repo.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -61,13 +63,33 @@ pub fn install_official(item: &Official, dest: &Path) -> Result<(), String> {
     // release binary should ever do: a release runs on machines that may well have this repo
     // cloned too (this one, for instance), and a real install should exercise the same GitHub
     // download every other consumer's install does, cargo on the PATH or not.
-    if cfg!(debug_assertions)
-        && let Some(root) = workspace_root()
-        && cargo_runnable()
-    {
-        return build_from_checkout(item, &root, dest);
+    if cfg!(debug_assertions) {
+        match workspace_root() {
+            Some(root) if cargo_runnable() => return build_from_checkout(item, &root, dest),
+            // A checkout is there but unusable, or a release binary skipped looking for one:
+            // either way, pointing at "run from a checkout" as the fix would send them right
+            // back to the path that was just ruled out.
+            Some(_) => {
+                return download_github(
+                    item,
+                    dest,
+                    "this checkout has no cargo on its PATH to build with",
+                );
+            }
+            None => {
+                return download_github(
+                    item,
+                    dest,
+                    "in a git checkout, Install builds from source",
+                );
+            }
+        }
     }
-    download_github(item, dest)
+    download_github(
+        item,
+        dest,
+        "a release binary always downloads, never builds from a checkout",
+    )
 }
 
 fn cargo_runnable() -> bool {
@@ -265,7 +287,10 @@ fn build_from_checkout(item: &Official, root: &Path, dest: &Path) -> Result<(), 
     stage_package(&source, &binary, dest, &item.bin)
 }
 
-fn download_github(item: &Official, dest: &Path) -> Result<(), String> {
+/// `hint` explains, for this call, why a source build wasn't tried (or that one was and isn't
+/// an option here) — so a download failure doesn't point back at a path that was already ruled
+/// out.
+fn download_github(item: &Official, dest: &Path, hint: &str) -> Result<(), String> {
     let target = env!("IRORI_TARGET");
     let url = format!(
         "https://github.com/{GITHUB_REPO}/releases/download/v{}/{bin}-{target}.tar.gz",
@@ -274,7 +299,7 @@ fn download_github(item: &Official, dest: &Path) -> Result<(), String> {
     );
     install_url(&url, dest).map_err(|e| {
         format!(
-            "couldn't download {url}: {e}. In a git checkout, Install builds from source; \
+            "couldn't download {url}: {e}. {hint}; \
              a Pi image should ship packages under /usr/share/irori/extensions."
         )
     })
