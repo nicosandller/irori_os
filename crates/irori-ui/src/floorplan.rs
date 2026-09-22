@@ -69,6 +69,14 @@ const REACH: f64 = 12.0;
 /// gap that only shows up later.
 const CORNER: f64 = 18.0;
 
+/// How far from a corner the live angle label sits, in screen pixels, so it floats off the
+/// corner it names rather than over it.
+const ANGLE_OFFSET: f64 = 26.0;
+
+/// How far from a corner the arc of the corner reaches, in the plan's own centimetres. Far
+/// enough to read across the corner without reaching for the wall itself.
+const ANGLE_ARC: f64 = 55.0;
+
 /// The limits of the zoom, in screen pixels per centimetre. At the low end a 30-metre house
 /// fits; at the high end a centimetre is a pixel and a half.
 const MIN_SCALE: f64 = 0.06;
@@ -269,6 +277,10 @@ pub fn Floorplan() -> impl IntoView {
     let picked = RwSignal::new(None::<Pick>);
     // Where the current run of wall has got to, and where the pointer is, both snapped.
     let running = RwSignal::new(None::<Point>);
+    // The corner the run's last committed segment came from — `None` until the run has laid at
+    // least one wall, so the live angle at `running` isn't guessed from some unrelated wall that
+    // happens to end at the same point.
+    let wall_behind = RwSignal::new(None::<Point>);
     let pointer = RwSignal::new(None::<Point>);
     let arming = RwSignal::new(None::<DeviceId>);
     // The room being traced, and which room it is. A shape only becomes part of the plan when
@@ -337,6 +349,7 @@ pub fn Floorplan() -> impl IntoView {
         floor.track();
         picked.set(None);
         running.set(None);
+        wall_behind.set(None);
         pointer.set(None);
         tracing.set(Vec::new());
         arming.set(None);
@@ -470,6 +483,7 @@ pub fn Floorplan() -> impl IntoView {
         // that was undone.
         picked.set(None);
         running.set(None);
+        wall_behind.set(None);
         pointer.set(None);
         tracing.set(Vec::new());
     };
@@ -482,6 +496,7 @@ pub fn Floorplan() -> impl IntoView {
         });
         picked.set(None);
         running.set(None);
+        wall_behind.set(None);
         pointer.set(None);
         tracing.set(Vec::new());
     };
@@ -495,6 +510,7 @@ pub fn Floorplan() -> impl IntoView {
     // that was ever in it.
     let stop_drawing = move || {
         running.set(None);
+        wall_behind.set(None);
         pointer.set(None);
         tracing.set(Vec::new());
     };
@@ -551,6 +567,7 @@ pub fn Floorplan() -> impl IntoView {
                     arming.set(None);
                     arming_area.set(None);
                     running.set(None);
+                    wall_behind.set(None);
                     pointer.set(None);
                     tracing.set(Vec::new());
                     // The plan the page shows now comes from the home again, so fetch it rather
@@ -924,6 +941,7 @@ pub fn Floorplan() -> impl IntoView {
                             ..Wall::new(from, to)
                         };
                         on_level(draft, floor, |level| level.walls.push(built));
+                        wall_behind.set(Some(from));
                         running.set(Some(to));
                     }
                     // The first click of a run, or a second click in the same spot, which would
@@ -1180,6 +1198,39 @@ pub fn Floorplan() -> impl IntoView {
                         (!corners.is_empty()).then(|| tracing_shape(&corners, pointer.get(), view.get()))
                     }}
                     {move || {
+                        let (behind, node) = drawing_junction(
+                            tool.get(),
+                            running.get(),
+                            wall_behind.get(),
+                            &tracing.get(),
+                        )?;
+                        let to = pointer.get()?;
+                        // The pointer back on the corner is no angle at all, just a line still
+                        // at its start.
+                        if node.distance_to(to) < 0.5 {
+                            return None;
+                        }
+                        // The corner's own arc, between the wall already there and the line
+                        // reaching for the pointer, tracing the angle the label says in words.
+                        let points = arc_points(behind, node, to, ANGLE_ARC);
+                        if points.is_empty() {
+                            return None;
+                        }
+                        let joined = points
+                            .iter()
+                            .map(|[x, y]| format!("{x},{y}"))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        Some(view! {
+                            <g class="angle-arc" transform=transform(view.get())>
+                                <polyline
+                                    points=joined
+                                    vector-effect="non-scaling-stroke"
+                                />
+                            </g>
+                        })
+                    }}
+                    {move || {
                         let chosen = editing.get().then(|| picked.get()).flatten();
                         let level = level.get();
                         let corners: Vec<Point> = match chosen? {
@@ -1293,6 +1344,50 @@ pub fn Floorplan() -> impl IntoView {
                     Some(view! {
                         <span class="measure" style=format!("left:{x}px;top:{y}px")>
                             {metres(from.distance_to(to))}
+                        </span>
+                    })
+                }}
+
+                // The angle of the corner the next line turns on, updating as it is dragged: at
+                // the node the new segment shares with the one before it, between that wall — or
+                // that side of a room — and the line reaching for the pointer. Straight through
+                // reads as 180°, a square corner as 90°, and a line that ran back over the wall
+                // as 0°.
+                {move || {
+                    if !editing.get() {
+                        return None;
+                    }
+                    let to = pointer.get()?;
+                    let (behind, node) = drawing_junction(
+                        tool.get(),
+                        running.get(),
+                        wall_behind.get(),
+                        &tracing.get(),
+                    )?;
+                    // The pointer back on the corner is no angle at all, just a line still at
+                    // its start.
+                    if node.distance_to(to) < 0.5 {
+                        return None;
+                    }
+                    // Where the label goes: along the bisector of the corner, which for a square
+                    // corner is the 45° line into the room, and for a straight-through wall
+                    // reads as ahead of it. A corner that is a straight line has no bisector to
+                    // speak of, so it gets a label to one side instead.
+                    let (bx0, by0) = direction(node, behind);
+                    let (bx1, by1) = direction(node, to);
+                    let (mut bx, mut by) = (bx0 + bx1, by0 + by1);
+                    let reach = bx.hypot(by);
+                    if reach < 1e-6 {
+                        (bx, by) = (-by0, bx0);
+                    } else {
+                        (bx, by) = (bx / reach, by / reach);
+                    }
+                    let here = view.get();
+                    let (x, y) = here.screen(node);
+                    let (lx, ly) = (x + bx * ANGLE_OFFSET, y + by * ANGLE_OFFSET);
+                    Some(view! {
+                        <span class="angle" style=format!("left:{lx}px;top:{ly}px")>
+                            {format!("{:.0}°", angle_at(behind, node, to))}
                         </span>
                     })
                 }}
@@ -2633,6 +2728,81 @@ fn direction(from: Point, to: Point) -> (f64, f64) {
     (dx / length, dy / length)
 }
 
+/// The angle of the corner the two lines make at the node — the side the wall and the line
+/// being drawn actually enclose, which is the angle a corner of a room is meant to be read as,
+/// so it is what the live label says and what the arc of the corner traces. Straight through is
+/// 180°, a square corner 90°, doubling back 0°.
+fn angle_at(behind: Point, node: Point, onward: Point) -> f64 {
+    let (bx, by) = direction(node, behind);
+    let (ox, oy) = direction(node, onward);
+    let cos = (bx * ox + by * oy).clamp(-1.0, 1.0);
+    cos.acos().to_degrees()
+}
+
+/// The line already drawn and the corner it ends at, for the line being drawn to turn on: the
+/// wall the run has just laid and the run's node, or a room's last corner and the one before it.
+/// Walls and rooms both, while a run or a trace is in progress. Takes the run's own last corner
+/// rather than searching the level's walls for one that happens to end at the node: a run that
+/// hasn't laid a segment yet has no corner to turn on, even if some unrelated wall in the plan
+/// happens to end at the same point.
+fn drawing_junction(
+    tool: Tool,
+    running: Option<Point>,
+    wall_behind: Option<Point>,
+    tracing: &[Point],
+) -> Option<(Point, Point)> {
+    match tool {
+        Tool::Wall => Some((wall_behind?, running?)),
+        Tool::Area => {
+            let node = *tracing.last()?;
+            let behind = *tracing.get(tracing.len().checked_sub(2)?)?;
+            Some((behind, node))
+        }
+        _ => None,
+    }
+}
+
+/// Points along the arc of a corner, in the plan's centimetres, ready for a `<polyline>` to
+/// trace: from the point on the wall already drawn, back along it to the corner, then round to
+/// the line reaching for the pointer. The two ends sit on the two drawn lines — that is what
+/// makes it read as the angle between them — and it sweeps the side the corner actually bends
+/// to. A square corner sweeps a quarter circle; a wall that runs straight on, or doubles back,
+/// has no arc worth drawing.
+fn arc_points(behind: Point, node: Point, onward: Point, radius: f64) -> Vec<[f64; 2]> {
+    let (bx, by) = direction(node, behind);
+    let (ox, oy) = direction(node, onward);
+    // A short snapped run can be closer to the corner than the arc's usual radius; clamped to
+    // both segments, the arc still lands on the two lines rather than floating past one of them.
+    let radius = radius
+        .min(node.distance_to(behind))
+        .min(node.distance_to(onward));
+    let start = by.atan2(bx);
+    let mut sweep = oy.atan2(ox) - start;
+    // The shorter way around, signed: the corner bends one way or the other, and the sign of
+    // the sweep is the side its inside is on.
+    while sweep > std::f64::consts::PI {
+        sweep -= std::f64::consts::TAU;
+    }
+    while sweep < -std::f64::consts::PI {
+        sweep += std::f64::consts::TAU;
+    }
+    // Straight through and doubling back are the two degenerate corners: either way the two
+    // lines are the same line, and there is no wedge to trace.
+    if sweep.abs() < 0.05 || sweep.abs() > std::f64::consts::PI - 0.05 {
+        return Vec::new();
+    }
+    let steps = 24;
+    let (nx, ny) = (f64::from(node.x), f64::from(node.y));
+    // The arc opens from the wall itself — the first point is back along it from the node — so
+    // it is rooted in the drawing rather than floating off the wall's far end.
+    (0..=steps)
+        .map(|i| {
+            let angle = start + sweep * (i as f64 / steps as f64);
+            [nx + radius * angle.cos(), ny + radius * angle.sin()]
+        })
+        .collect()
+}
+
 /// A point a given distance along a wall, with the wall's direction and its left-hand normal.
 fn along(wall: &Wall, at: f64) -> ((f64, f64), (f64, f64), (f64, f64)) {
     point_along(wall.from, wall.to, at)
@@ -3277,6 +3447,91 @@ mod tests {
         let run = joints(&sharp, 0).1;
         assert!(run > half, "a sharper corner needs more: {run}");
         assert!(run <= half * 4.0, "but the spike is cut off: {run}");
+    }
+
+    /// The angle a corner is read as — the one its two lines actually enclose: a wall running
+    /// straight through a node is 180°, a square corner is 90°, and the side the corner bends
+    /// to doesn't matter because the label says the size of it.
+    #[test]
+    fn the_angle_reads_the_corner_the_wall_and_line_enclose() {
+        let angle = |node: (i32, i32), onward: (i32, i32)| {
+            angle_at(
+                Point::new(0, 0),
+                Point::new(node.0, node.1),
+                Point::new(onward.0, onward.1),
+            )
+        };
+        assert!(
+            (angle((100, 0), (200, 0)) - 180.0).abs() < 1e-9,
+            "straight through"
+        );
+        assert!(
+            (angle((100, 0), (100, 100)) - 90.0).abs() < 1e-9,
+            "a square corner one way"
+        );
+        assert!(
+            (angle((100, 0), (100, -100)) - 90.0).abs() < 1e-9,
+            "and the other"
+        );
+        assert!(
+            (angle((100, 0), (150, 50)) - 135.0).abs() < 1e-9,
+            "a skirt of a corner"
+        );
+        assert!(
+            (angle((100, 0), (0, 0)) - 0.0).abs() < 1e-9,
+            "doubling straight back"
+        );
+    }
+
+    /// The arc of a corner traces the corner itself: it opens from a point back on the wall and
+    /// sweeps round to the line reaching for the pointer, so its two ends sit on the two lines
+    /// and it curves the side the corner bends to. Straight through and doubling back are the
+    /// degenerate corners — the two lines are the one line — and draw nothing at all.
+    #[test]
+    fn the_arc_of_a_corner_sits_between_the_two_lines() {
+        let arc = |node: (i32, i32), onward: (i32, i32)| {
+            arc_points(
+                Point::new(0, 0),
+                Point::new(node.0, node.1),
+                Point::new(onward.0, onward.1),
+                100.0,
+            )
+        };
+
+        let right = arc((100, 0), (100, 100));
+        assert_eq!(right.len(), 25, "one point per step, and both ends");
+        let (first, last) = (
+            *right.first().expect("the arc always has a first point"),
+            *right.last().expect("and a last"),
+        );
+        let begin = |[x, y]: [f64; 2]| x.abs() < 1e-9 && y.abs() < 1e-9;
+        let done = |[x, y]: [f64; 2]| (x - 100.0).abs() < 1e-9 && (y - 100.0).abs() < 1e-9;
+        assert!(
+            begin(first),
+            "starts back along the east-west wall: {first:?}"
+        );
+        assert!(done(last), "ends on the north-south line: {last:?}");
+        let middle = right[12];
+        assert!(
+            middle[0] < 100.0 && middle[1] > 0.0,
+            "sweeps through the corner itself: {middle:?}"
+        );
+
+        let left = arc((100, 0), (100, -100));
+        let left_middle = left[12];
+        assert!(
+            left_middle[0] < 100.0 && left_middle[1] < 0.0,
+            "curves the other way: {left_middle:?}"
+        );
+
+        assert!(
+            arc((100, 0), (200, 0)).is_empty(),
+            "straight through has nothing to draw"
+        );
+        assert!(
+            arc((100, 0), (0, 0)).is_empty(),
+            "and neither has a line doubling back over the wall"
+        );
     }
 
     #[test]
