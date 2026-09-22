@@ -1579,10 +1579,11 @@ mod tests {
         Ok(())
     }
 
-    /// The catalog says which official extensions ship an icon, so the Extensions page never
-    /// points an `<img>` at a file that isn't there.
+    /// The catalog's `icon` field is whether `extension_icon` can serve bytes for it *right now*
+    /// (running, with an icon in its manifest) — not a static claim from the catalog file — so
+    /// the Extensions page never points an `<img>` at a file that isn't there yet, or ever.
     #[tokio::test]
-    async fn the_catalog_says_which_extensions_have_an_icon() -> anyhow::Result<()> {
+    async fn the_catalog_reports_whether_an_icon_is_actually_servable() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
         let (status, _, body) = get_from(core.clone(), "/api/dev/catalog").await?;
         assert_eq!(status, StatusCode::OK);

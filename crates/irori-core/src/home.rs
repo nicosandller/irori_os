@@ -1891,7 +1891,7 @@ mod tests {
     /// The protocol keeps describing the device while a person's name is in force. Its name
     /// must not win back, and the new manufacturer or firmware version must still land.
     #[test]
-    fn an_protocol_that_describes_a_renamed_device_again_doesnt_rename_it_back() {
+    fn a_protocol_that_describes_a_renamed_device_again_doesnt_rename_it_back() {
         let mut home = home_with_lamp();
         home.settle(Settings {
             devices: [(key("lamp"), called("Reading lamp"))].into(),

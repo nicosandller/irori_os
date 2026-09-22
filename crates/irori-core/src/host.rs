@@ -140,11 +140,30 @@ impl ExtensionHost {
                 // collided with a builtin because it used to be a package (helpers, before D45)
                 // is now stale, and a manifest that fails to parse belongs to whoever installed
                 // it, not to every other extension. Either way, this package just doesn't run.
-                if let Err(reason) = host.spawn_package(package.clone()) {
-                    tracing::warn!(
-                        package = %package.display(),
-                        %reason,
-                        "not starting a package found on disk at startup"
+                let Err(reason) = host.spawn_package(package.clone()) else {
+                    continue;
+                };
+                tracing::warn!(
+                    package = %package.display(),
+                    %reason,
+                    "not starting a package found on disk at startup"
+                );
+                // A directory name is only ever scanned here once it's already a valid id
+                // (`installed_packages`). If nothing is running under it, this package's own
+                // manifest is what's broken, not a collision — say so on the Extensions page
+                // instead of the package silently vanishing into "not installed".
+                if let Some(id) = package
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| ExtensionId::try_from(name).ok())
+                    && !host.is_running(&id)
+                {
+                    core.set_status(
+                        &id,
+                        crate::ExtensionStatus::Failed {
+                            reason,
+                            retry_at: None,
+                        },
                     );
                 }
             }

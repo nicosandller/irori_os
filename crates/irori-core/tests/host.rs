@@ -461,7 +461,7 @@ const STUBBORN_MANIFEST: &str = r#"
 "#;
 
 #[tokio::test(start_paused = true)]
-async fn an_protocol_that_ignores_stop_is_cancelled_after_the_grace_period() {
+async fn a_protocol_that_ignores_stop_is_cancelled_after_the_grace_period() {
     let core = Core::new(Arc::new(SystemClock));
     let host = start(&core, builtin::<Stubborn>().expect("valid"));
     eventually("running", || {
@@ -654,6 +654,48 @@ async fn a_stale_package_sharing_a_builtins_id_is_skipped_not_fatal() {
         || status(&core, "lamp") == Some(ExtensionStatus::Running),
     )
     .await;
+
+    host.shutdown().await;
+}
+
+/// A package whose own manifest is broken — not sharing anyone's id — still needs to say so on
+/// the Extensions page, rather than looking like it was never installed at all.
+#[tokio::test]
+async fn a_broken_packages_own_manifest_reports_failed_not_missing() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let broken = packages_dir.path().join("broken");
+    std::fs::create_dir_all(&broken).expect("made the package dir");
+    std::fs::write(
+        broken.join("irori-extension.toml"),
+        "this is not valid toml{{{",
+    )
+    .expect("wrote a broken manifest");
+
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("a broken package on disk must not fail startup");
+
+    let id = ExtensionId::try_from("broken").expect("valid");
+    eventually(
+        "the broken package is reported failed, not silently absent",
+        || {
+            matches!(
+                status(&core, "broken"),
+                Some(ExtensionStatus::Failed { .. })
+            )
+        },
+    )
+    .await;
+    let overview = core.extensions().get(&id).cloned().expect("present");
+    assert!(
+        matches!(&overview.status, ExtensionStatus::Failed { reason, .. } if !reason.is_empty()),
+        "{overview:?}"
+    );
 
     host.shutdown().await;
 }
