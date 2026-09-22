@@ -57,11 +57,12 @@ pub fn install_official(item: &Official, dest: &Path) -> Result<(), String> {
     {
         return Ok(());
     }
-    // A checkout is only a build source if there is a cargo to build with: an installed
-    // release runs on machines that have this repo cloned (this one, for instance) but no
-    // Rust toolchain on the binary's PATH, and finding a checkout there shouldn't turn "click
-    // Install" into "go install Rust" when the GitHub release is right there instead.
-    if let Some(root) = workspace_root()
+    // Building from a checkout is a `cargo run`/`cargo build` convenience, not something a
+    // release binary should ever do: a release runs on machines that may well have this repo
+    // cloned too (this one, for instance), and a real install should exercise the same GitHub
+    // download every other consumer's install does, cargo on the PATH or not.
+    if cfg!(debug_assertions)
+        && let Some(root) = workspace_root()
         && cargo_runnable()
     {
         return build_from_checkout(item, &root, dest);
