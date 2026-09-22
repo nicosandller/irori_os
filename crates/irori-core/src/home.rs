@@ -1,16 +1,15 @@
 //! The home: the registry (what exists) and live state (what it's doing), changed one operation at
 //! a time. Pure and synchronous, so every rule of the contract is easy to test. The spec's "what
-//! the core checks" (`docs/specs/integrations.md` §8) lives here.
+//! the core checks" (`docs/specs/protocols.md` §8) lives here.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
-use irori_integration::{AvailabilityTarget, Rejected};
+use irori_protocol::{AvailabilityTarget, Rejected};
 use irori_types::{
     Area, AreaId, Availability, Capabilities, ColorMode, Context, ContextId, Device,
     DeviceDescription, DeviceId, Entity, EntityDescription, EntityId, EntityKind, EntityState,
-    IntegrationId, LightCapabilities, LightTurnOn, Name, Origin, Placement, SLUG_MAX_LEN,
-    SensorValue, SensorValueType, Service, Settings, SettingsKey, State, StateReport, Timestamp,
-    UniqueId,
+    LightCapabilities, LightTurnOn, Name, Origin, Placement, ProtocolId, SLUG_MAX_LEN, SensorValue,
+    SensorValueType, Service, Settings, SettingsKey, State, StateReport, Timestamp, UniqueId,
 };
 
 use crate::Event;
@@ -23,14 +22,14 @@ pub(crate) struct Stamp {
     pub context_id: ContextId,
 }
 
-type Key = (IntegrationId, UniqueId);
+type Key = (ProtocolId, UniqueId);
 
 /// How long a delivered service call can be named in `caused_by`: the window for a device to
-/// confirm a command, even when its integration is busy.
+/// confirm a command, even when its protocol is busy.
 const CALL_WINDOW: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
-/// A memory bound per integration: past this many calls within the window, the oldest are
-/// forgotten. Far more than any home sends to one integration in five minutes.
+/// A memory bound per protocol: past this many calls within the window, the oldest are
+/// forgotten. Far more than any home sends to one protocol in five minutes.
 const MAX_RECENT_CALLS: usize = 1024;
 
 #[derive(Debug, Default)]
@@ -40,17 +39,17 @@ pub(crate) struct Home {
     entities: BTreeMap<EntityId, Entity>,
     entity_keys: HashMap<Key, EntityId>,
     states: BTreeMap<EntityId, EntityState>,
-    /// What each integration calls its devices, kept even while a person's name is being shown,
+    /// What each protocol calls its devices, kept even while a person's name is being shown,
     /// so removing that name restores the original rather than freezing it.
     reported_device_names: HashMap<DeviceId, Name>,
     /// The same for entities. An entity that is *absent* here was described without a name, and
     /// uses (and follows) its device's name.
     reported_entity_names: HashMap<EntityId, Name>,
     /// What a person has said about all this (`docs/specs/config.md`). Overrides what the
-    /// integrations report.
+    /// protocols report.
     settings: Settings,
-    /// What each integration last said about its devices and entities, as it said it. Kept so
-    /// a device can be taken out of the home and put back without asking the integration again.
+    /// What each protocol last said about its devices and entities, as it said it. Kept so
+    /// a device can be taken out of the home and put back without asking the protocol again.
     device_descriptions: HashMap<DeviceId, DeviceDescription>,
     entity_descriptions: HashMap<EntityId, (Vec<EntityKind>, EntityDescription)>,
     /// Devices a person has ignored: out of the registry, but remembered.
@@ -60,21 +59,21 @@ pub(crate) struct Home {
     /// What the core last told an entity to be, until the device reports back. `Toggle` uses it,
     /// so two toggles in a row don't both see the old value while the first is still in flight.
     commanded: HashMap<EntityId, bool>,
-    recent_calls: HashMap<IntegrationId, VecDeque<(ContextId, Timestamp)>>,
+    recent_calls: HashMap<ProtocolId, VecDeque<(ContextId, Timestamp)>>,
 }
 
 /// A device a person has chosen to keep out of the home (`docs/specs/config.md` §3.2).
 ///
-/// Everything its integration says about it lands here instead of in the registry: nothing is
+/// Everything its protocol says about it lands here instead of in the registry: nothing is
 /// listed, nothing can be switched, nothing is recorded. The latest of it is kept, so stopping
 /// ignoring the device puts it back as it is now, not as it was.
 #[derive(Debug, Clone)]
 struct Ignored {
-    integration: IntegrationId,
+    protocol: ProtocolId,
     description: DeviceDescription,
     entities: BTreeMap<UniqueId, (Vec<EntityKind>, EntityDescription)>,
     reports: BTreeMap<UniqueId, StateReport>,
-    /// What the integration last said about whether the device can be reached.
+    /// What the protocol last said about whether the device can be reached.
     available: bool,
 }
 
@@ -83,7 +82,7 @@ struct Ignored {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct HeldDevice {
     pub id: DeviceId,
-    pub integration: IntegrationId,
+    pub protocol: ProtocolId,
     pub name: Name,
     pub why: Held,
 }
@@ -98,10 +97,10 @@ pub enum Held {
     New,
 }
 
-/// A service call resolved to the integration that handles it.
+/// A service call resolved to the protocol that handles it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Resolved {
-    pub integration: IntegrationId,
+    pub protocol: ProtocolId,
     pub unique_id: UniqueId,
     pub service: Service,
 }
@@ -123,14 +122,12 @@ impl Home {
         self.states.get(entity_id)
     }
 
-    fn device_id(&self, integration: &IntegrationId, unique_id: &UniqueId) -> Option<&DeviceId> {
-        self.device_keys
-            .get(&(integration.clone(), unique_id.clone()))
+    fn device_id(&self, protocol: &ProtocolId, unique_id: &UniqueId) -> Option<&DeviceId> {
+        self.device_keys.get(&(protocol.clone(), unique_id.clone()))
     }
 
-    fn entity_id(&self, integration: &IntegrationId, unique_id: &UniqueId) -> Option<&EntityId> {
-        self.entity_keys
-            .get(&(integration.clone(), unique_id.clone()))
+    fn entity_id(&self, protocol: &ProtocolId, unique_id: &UniqueId) -> Option<&EntityId> {
+        self.entity_keys.get(&(protocol.clone(), unique_id.clone()))
     }
 
     // --- Settings -------------------------------------------------------------------------
@@ -174,7 +171,7 @@ impl Home {
             .filter_map(|(id, held)| {
                 Some(HeldDevice {
                     id: id.clone(),
-                    integration: held.integration.clone(),
+                    protocol: held.protocol.clone(),
                     name: self.name_for_device(id, &held.description.name),
                     why: self.held(id)?,
                 })
@@ -182,7 +179,7 @@ impl Home {
             .collect()
     }
 
-    /// Takes a device out of the home, keeping what its integration said so it can come back.
+    /// Takes a device out of the home, keeping what its protocol said so it can come back.
     fn ignore(&mut self, id: &DeviceId, _stamp: &Stamp) -> Vec<Event> {
         let (Some(device), Some(description)) = (
             self.devices.get(id).cloned(),
@@ -191,7 +188,7 @@ impl Home {
             return vec![];
         };
         let mut ignored = Ignored {
-            integration: device.integration.clone(),
+            protocol: device.protocol.clone(),
             description,
             entities: BTreeMap::new(),
             reports: BTreeMap::new(),
@@ -227,11 +224,11 @@ impl Home {
         // Removed first, then recorded as ignored: the other way round, removal would take the
         // entities for already-ignored ones and leave them in the registry without their device.
         let events = self
-            .remove_device(&device.integration, &device.unique_id)
+            .remove_device(&device.protocol, &device.unique_id)
             .unwrap_or_default();
         for entity in &owned {
             self.ignored_entities.insert(
-                (device.integration.clone(), entity.unique_id.clone()),
+                (device.protocol.clone(), entity.unique_id.clone()),
                 id.clone(),
             );
         }
@@ -239,39 +236,39 @@ impl Home {
         events
     }
 
-    /// Puts an ignored device back, as its integration last described it.
+    /// Puts an ignored device back, as its protocol last described it.
     fn restore(&mut self, id: &DeviceId, stamp: &Stamp) -> Vec<Event> {
         let Some(ignored) = self.ignored.remove(id) else {
             return vec![];
         };
-        let integration = ignored.integration;
+        let protocol = ignored.protocol;
         for unique_id in ignored.entities.keys() {
             self.ignored_entities
-                .remove(&(integration.clone(), unique_id.clone()));
+                .remove(&(protocol.clone(), unique_id.clone()));
         }
         let mut events = Vec::new();
-        // Each step is what the integration said and the core accepted before; if one is
+        // Each step is what the protocol said and the core accepted before; if one is
         // refused now (the registry changed meanwhile), the rest still go back.
         events.extend(
-            self.describe_device(&integration, ignored.description.clone())
+            self.describe_device(&protocol, ignored.description.clone())
                 .unwrap_or_default(),
         );
         for (kinds, description) in ignored.entities.into_values() {
             events.extend(
-                self.describe_entity(&integration, &kinds, description, stamp)
+                self.describe_entity(&protocol, &kinds, description, stamp)
                     .unwrap_or_default(),
             );
         }
         for report in ignored.reports.into_values() {
             events.extend(
-                self.report_state(&integration, report, stamp)
+                self.report_state(&protocol, report, stamp)
                     .unwrap_or_default(),
             );
         }
         if !ignored.available {
             events.extend(
                 self.set_availability(
-                    &integration,
+                    &protocol,
                     AvailabilityTarget::Device(ignored.description.unique_id),
                     Availability::Unavailable,
                     stamp,
@@ -285,12 +282,12 @@ impl Home {
     pub fn entity_key(&self, id: &EntityId) -> Option<SettingsKey> {
         let entity = self.entities.get(id)?;
         Some(SettingsKey::new(
-            entity.integration.clone(),
+            entity.protocol.clone(),
             entity.unique_id.clone(),
         ))
     }
 
-    /// What a device is called: the name a person gave it, else the one its integration reports
+    /// What a device is called: the name a person gave it, else the one its protocol reports
     /// (`docs/specs/config.md` §5). One name, never two side by side (ROADMAP D36).
     fn name_for_device(&self, id: &DeviceId, reported: &Name) -> Name {
         self.settings
@@ -321,7 +318,7 @@ impl Home {
         placed(&self.settings, &chosen, suggested)
     }
 
-    /// What an entity is called: the name a person gave it, else the one its integration
+    /// What an entity is called: the name a person gave it, else the one its protocol
     /// reports, else its device's name — which it goes on following.
     fn name_for_entity(&self, id: &EntityId, device_id: Option<&DeviceId>) -> Name {
         if let Some(chosen) = self
@@ -408,14 +405,14 @@ impl Home {
 
     pub fn describe_device(
         &mut self,
-        integration: &IntegrationId,
+        protocol: &ProtocolId,
         description: DeviceDescription,
     ) -> Result<Vec<Event>, Rejected> {
         description
             .validate()
             .map_err(|e| Rejected(e.to_string()))?;
         let unique_id = &description.unique_id;
-        let ignored_id = device_id_for(integration, unique_id);
+        let ignored_id = device_id_for(protocol, unique_id);
         if self.is_held(&ignored_id) {
             match self.ignored.get_mut(&ignored_id) {
                 Some(ignored) => ignored.description = description,
@@ -423,7 +420,7 @@ impl Home {
                     self.ignored.insert(
                         ignored_id,
                         Ignored {
-                            integration: integration.clone(),
+                            protocol: protocol.clone(),
                             description,
                             entities: BTreeMap::new(),
                             reports: BTreeMap::new(),
@@ -438,17 +435,17 @@ impl Home {
         let via_unique_id = description
             .via_device_unique_id
             .clone()
-            .filter(|via| !self.ignored.contains_key(&device_id_for(integration, via)));
+            .filter(|via| !self.ignored.contains_key(&device_id_for(protocol, via)));
         let via = match &via_unique_id {
-            Some(via) => Some(self.device_id(integration, via).cloned().ok_or_else(|| {
+            Some(via) => Some(self.device_id(protocol, via).cloned().ok_or_else(|| {
                 Rejected(format!(
-                    "device `{unique_id}`: via_device_unique_id `{via}` isn't a device this integration described"
+                    "device `{unique_id}`: via_device_unique_id `{via}` isn't a device this protocol described"
                 ))
             })?),
             None => None,
         };
 
-        if let Some(id) = self.device_id(integration, unique_id).cloned() {
+        if let Some(id) = self.device_id(protocol, unique_id).cloned() {
             if let Some(via_id) = &via
                 && self.reaches(via_id, &id)
             {
@@ -490,7 +487,7 @@ impl Home {
                     .collect();
                 for entity_id in following {
                     // Not every entity of a renamed device follows it: one with a name of its
-                    // own, from the integration or from a person, keeps it.
+                    // own, from the protocol or from a person, keeps it.
                     let name = self.name_for_entity(&entity_id, Some(&id));
                     let entity = self.entities.get_mut(&entity_id).expect("just listed");
                     if entity.name == name {
@@ -508,7 +505,7 @@ impl Home {
 
         // The one id, from what never changes: never from a name, so a rename can't move it and
         // it's the same after every restart (ROADMAP D36).
-        let id = device_id_for(integration, &description.unique_id);
+        let id = device_id_for(protocol, &description.unique_id);
         if let Some(holder) = self.devices.get(&id) {
             // Two handles that differ only in case or punctuation. Vanishingly rare for real
             // hardware addresses, and refusing says so plainly where renumbering one of them
@@ -534,7 +531,7 @@ impl Home {
         );
         let device = Device {
             id: id.clone(),
-            integration: integration.clone(),
+            protocol: protocol.clone(),
             unique_id: description.unique_id.clone(),
             name,
             description: settings.and_then(|settings| settings.description.clone()),
@@ -549,7 +546,7 @@ impl Home {
         self.reported_device_names
             .insert(id.clone(), description.name);
         self.device_keys
-            .insert((integration.clone(), description.unique_id), id.clone());
+            .insert((protocol.clone(), description.unique_id), id.clone());
         self.devices.insert(id, device.clone());
         Ok(vec![Event::DeviceAdded { device }])
     }
@@ -569,7 +566,7 @@ impl Home {
 
     pub fn describe_entity(
         &mut self,
-        integration: &IntegrationId,
+        protocol: &ProtocolId,
         kinds: &[EntityKind],
         description: EntityDescription,
         stamp: &Stamp,
@@ -585,10 +582,10 @@ impl Home {
             )));
         }
         if let Some(device) = &description.device_unique_id {
-            let device_id = device_id_for(integration, device);
+            let device_id = device_id_for(protocol, device);
             if let Some(ignored) = self.ignored.get_mut(&device_id) {
                 self.ignored_entities
-                    .insert((integration.clone(), unique_id.clone()), device_id);
+                    .insert((protocol.clone(), unique_id.clone()), device_id);
                 ignored
                     .entities
                     .insert(unique_id.clone(), (kinds.to_vec(), description));
@@ -598,9 +595,9 @@ impl Home {
         let described = (kinds.to_vec(), description.clone());
         let device = match &description.device_unique_id {
             Some(device) => {
-                let id = self.device_id(integration, device).ok_or_else(|| {
+                let id = self.device_id(protocol, device).ok_or_else(|| {
                     Rejected(format!(
-                        "entity `{unique_id}`: device_unique_id `{device}` isn't a device this integration described (describe the device first)"
+                        "entity `{unique_id}`: device_unique_id `{device}` isn't a device this protocol described (describe the device first)"
                     ))
                 })?;
                 Some(&self.devices[id])
@@ -609,7 +606,7 @@ impl Home {
         };
         let device_id = device.map(|d| d.id.clone());
 
-        if let Some(id) = self.entity_id(integration, unique_id).cloned() {
+        if let Some(id) = self.entity_id(protocol, unique_id).cloned() {
             let entity = self.entities.get_mut(&id).expect("keys and entities agree");
             if entity.id.kind() != kind {
                 return Err(Rejected(format!(
@@ -641,7 +638,7 @@ impl Home {
                 }]
             };
             // If its abilities shrank (e.g. a firmware update removed RGB), a stored value that
-            // no longer fits is forgotten: unknown until the integration reports again.
+            // no longer fits is forgotten: unknown until the protocol reports again.
             let entity = self.entities[&id].clone();
             let old = self.states[&id].clone();
             if old
@@ -666,10 +663,10 @@ impl Home {
                     new_state: Box::new(new),
                 });
             }
-            // Being described means the integration is back in touch with it (e.g. after a
-            // restart). If the device is still offline, the integration says so next.
-            let context = device_context(integration, stamp, None);
-            // Describing an entity is the integration telling Irori about it, so it counts as
+            // Being described means the protocol is back in touch with it (e.g. after a
+            // restart). If the device is still offline, the protocol says so next.
+            let context = device_context(protocol, stamp, None);
+            // Describing an entity is the protocol telling Irori about it, so it counts as
             // hearing from it (`docs/specs/entities.md` §5.1).
             events.extend(self.set_availability_of(
                 vec![id],
@@ -687,7 +684,7 @@ impl Home {
             .settings
             .entities
             .get(&SettingsKey::new(
-                integration.clone(),
+                protocol.clone(),
                 description.unique_id.clone(),
             ))
             .and_then(|settings| settings.name.clone());
@@ -698,7 +695,7 @@ impl Home {
                 unreachable!("EntityDescription::validate requires a name or a device")
             }
         };
-        // The id is built from the device's id and the name the integration gave the entity —
+        // The id is built from the device's id and the name the protocol gave the entity —
         // never from a name a person chose, and never from the device's name, so renaming either
         // can't leave an id that says something else (ROADMAP D36).
         let base = match (&description.suggested_object_id, &description.name, device) {
@@ -716,7 +713,7 @@ impl Home {
         let id = EntityId::new(kind, &object_id).expect("unique_id_for returns a slug");
         let entity = Entity {
             id: id.clone(),
-            integration: integration.clone(),
+            protocol: protocol.clone(),
             unique_id: description.unique_id.clone(),
             name,
             device_id,
@@ -739,7 +736,7 @@ impl Home {
         }
         self.entity_descriptions.insert(id.clone(), described);
         self.entity_keys
-            .insert((integration.clone(), description.unique_id), id.clone());
+            .insert((protocol.clone(), description.unique_id), id.clone());
         self.entities.insert(id.clone(), entity.clone());
         self.states.insert(id.clone(), state.clone());
         Ok(vec![
@@ -754,10 +751,10 @@ impl Home {
 
     pub fn remove_entity(
         &mut self,
-        integration: &IntegrationId,
+        protocol: &ProtocolId,
         unique_id: &UniqueId,
     ) -> Result<Vec<Event>, Rejected> {
-        let key = (integration.clone(), unique_id.clone());
+        let key = (protocol.clone(), unique_id.clone());
         if let Some(device) = self.ignored_entities.remove(&key) {
             if let Some(ignored) = self.ignored.get_mut(&device) {
                 ignored.entities.remove(unique_id);
@@ -767,7 +764,7 @@ impl Home {
         }
         let id = self.entity_keys.remove(&key).ok_or_else(|| {
             Rejected(format!(
-                "can't remove entity `{unique_id}`: this integration has no such entity"
+                "can't remove entity `{unique_id}`: this protocol has no such entity"
             ))
         })?;
         self.entity_descriptions.remove(&id);
@@ -780,20 +777,20 @@ impl Home {
 
     pub fn remove_device(
         &mut self,
-        integration: &IntegrationId,
+        protocol: &ProtocolId,
         unique_id: &UniqueId,
     ) -> Result<Vec<Event>, Rejected> {
-        let key = (integration.clone(), unique_id.clone());
-        if let Some(ignored) = self.ignored.remove(&device_id_for(integration, unique_id)) {
+        let key = (protocol.clone(), unique_id.clone());
+        if let Some(ignored) = self.ignored.remove(&device_id_for(protocol, unique_id)) {
             for entity in ignored.entities.keys() {
                 self.ignored_entities
-                    .remove(&(integration.clone(), entity.clone()));
+                    .remove(&(protocol.clone(), entity.clone()));
             }
             return Ok(vec![]);
         }
         let id = self.device_keys.remove(&key).ok_or_else(|| {
             Rejected(format!(
-                "can't remove device `{unique_id}`: this integration has no such device"
+                "can't remove device `{unique_id}`: this protocol has no such device"
             ))
         })?;
         self.device_descriptions.remove(&id);
@@ -805,7 +802,7 @@ impl Home {
             .cloned()
             .collect();
         for entity in owned {
-            events.extend(self.remove_entity(&entity.integration, &entity.unique_id)?);
+            events.extend(self.remove_entity(&entity.protocol, &entity.unique_id)?);
         }
         for device in self.devices.values_mut() {
             if device.via_device_id.as_ref() == Some(&id) {
@@ -820,23 +817,23 @@ impl Home {
         Ok(events)
     }
 
-    /// Removes every device this integration owns, in the home or ignored.
-    pub fn remove_integration(&mut self, integration: &IntegrationId) -> Vec<Event> {
+    /// Removes every device this protocol owns, in the home or ignored.
+    pub fn remove_protocol(&mut self, protocol: &ProtocolId) -> Vec<Event> {
         let live: Vec<UniqueId> = self
             .devices
             .values()
-            .filter(|device| &device.integration == integration)
+            .filter(|device| &device.protocol == protocol)
             .map(|device| device.unique_id.clone())
             .collect();
         let ignored: Vec<UniqueId> = self
             .ignored
             .values()
-            .filter(|held| &held.integration == integration)
+            .filter(|held| &held.protocol == protocol)
             .map(|held| held.description.unique_id.clone())
             .collect();
         let mut events = Vec::new();
         for unique_id in live.into_iter().chain(ignored) {
-            if let Ok(ev) = self.remove_device(integration, &unique_id) {
+            if let Ok(ev) = self.remove_device(protocol, &unique_id) {
                 events.extend(ev);
             }
         }
@@ -847,7 +844,7 @@ impl Home {
 
     pub fn report_state(
         &mut self,
-        integration: &IntegrationId,
+        protocol: &ProtocolId,
         report: StateReport,
         stamp: &Stamp,
     ) -> Result<Vec<Event>, Rejected> {
@@ -855,7 +852,7 @@ impl Home {
         let unique_id = &report.unique_id;
         if let Some(device) = self
             .ignored_entities
-            .get(&(integration.clone(), unique_id.clone()))
+            .get(&(protocol.clone(), unique_id.clone()))
         {
             if let Some(ignored) = self.ignored.get_mut(device) {
                 // Kept without its cause: by the time it's put back, no call is waiting on it.
@@ -865,9 +862,9 @@ impl Home {
             }
             return Ok(vec![]);
         }
-        let id = self.entity_id(integration, unique_id).cloned().ok_or_else(|| {
+        let id = self.entity_id(protocol, unique_id).cloned().ok_or_else(|| {
             Rejected(format!(
-                "state report for `{unique_id}`: this integration has no such entity (describe it first)"
+                "state report for `{unique_id}`: this protocol has no such entity (describe it first)"
             ))
         })?;
         if let Some(state) = &report.state {
@@ -875,7 +872,7 @@ impl Home {
         }
         let parent = match &report.caused_by {
             Some(caused_by)
-                if self.recent_calls.get(integration).is_some_and(|calls| {
+                if self.recent_calls.get(protocol).is_some_and(|calls| {
                     calls
                         .iter()
                         .any(|(id, at)| id == caused_by && within_call_window(*at, stamp.now))
@@ -885,7 +882,7 @@ impl Home {
             }
             Some(caused_by) => {
                 return Err(Rejected(format!(
-                    "state report for `{unique_id}`: caused_by `{caused_by}` isn't a service call sent to this integration in the last 5 minutes"
+                    "state report for `{unique_id}`: caused_by `{caused_by}` isn't a service call sent to this protocol in the last 5 minutes"
                 )));
             }
             None => None,
@@ -907,7 +904,7 @@ impl Home {
             if state_changed {
                 new.last_changed = now;
             }
-            new.context = device_context(integration, stamp, parent);
+            new.context = device_context(protocol, stamp, parent);
         }
         self.states.insert(id.clone(), new.clone());
         Ok(if changed {
@@ -923,14 +920,14 @@ impl Home {
 
     pub fn set_availability(
         &mut self,
-        integration: &IntegrationId,
+        protocol: &ProtocolId,
         target: AvailabilityTarget,
         availability: Availability,
         stamp: &Stamp,
     ) -> Result<Vec<Event>, Rejected> {
         let target = match target {
             AvailabilityTarget::Device(device) => {
-                if let Some(ignored) = self.ignored.get_mut(&device_id_for(integration, &device)) {
+                if let Some(ignored) = self.ignored.get_mut(&device_id_for(protocol, &device)) {
                     ignored.available = availability == Availability::Available;
                     return Ok(vec![]);
                 }
@@ -942,7 +939,7 @@ impl Home {
                     .filter(|u| {
                         !self
                             .ignored_entities
-                            .contains_key(&(integration.clone(), u.clone()))
+                            .contains_key(&(protocol.clone(), u.clone()))
                     })
                     .collect();
                 if kept.is_empty() {
@@ -953,9 +950,9 @@ impl Home {
         };
         let ids: Vec<EntityId> = match &target {
             AvailabilityTarget::Device(device) => {
-                let device_id = self.device_id(integration, device).ok_or_else(|| {
+                let device_id = self.device_id(protocol, device).ok_or_else(|| {
                     Rejected(format!(
-                        "can't set availability of device `{device}`: this integration has no such device"
+                        "can't set availability of device `{device}`: this protocol has no such device"
                     ))
                 })?;
                 self.entities
@@ -967,24 +964,24 @@ impl Home {
             AvailabilityTarget::Entities(unique_ids) => unique_ids
                 .iter()
                 .map(|u| {
-                    self.entity_id(integration, u).cloned().ok_or_else(|| {
+                    self.entity_id(protocol, u).cloned().ok_or_else(|| {
                         Rejected(format!(
-                            "can't set availability of entity `{u}`: this integration has no such entity"
+                            "can't set availability of entity `{u}`: this protocol has no such entity"
                         ))
                     })
                 })
                 .collect::<Result<_, _>>()?,
         };
-        let context = device_context(integration, stamp, None);
+        let context = device_context(protocol, stamp, None);
         Ok(self.set_availability_of(ids, availability, stamp.now, context, Reported::Yes))
     }
 
-    /// Marks every entity of an integration unavailable, e.g. because it crashed or stopped.
-    pub fn mark_unavailable(&mut self, integration: &IntegrationId, stamp: &Stamp) -> Vec<Event> {
+    /// Marks every entity of a protocol unavailable, e.g. because it crashed or stopped.
+    pub fn mark_unavailable(&mut self, protocol: &ProtocolId, stamp: &Stamp) -> Vec<Event> {
         let ids = self
             .entities
             .values()
-            .filter(|e| &e.integration == integration)
+            .filter(|e| &e.protocol == protocol)
             .map(|e| e.id.clone())
             .collect();
         let context = system_context(stamp);
@@ -1011,7 +1008,7 @@ impl Home {
                 continue;
             };
             if old.availability == availability {
-                // Nothing changed, but hearing it again from the integration is a report.
+                // Nothing changed, but hearing it again from the protocol is a report.
                 if reported == Reported::Yes {
                     old.last_reported = now.max(old.last_reported);
                 }
@@ -1039,7 +1036,7 @@ impl Home {
 
     // --- Services -------------------------------------------------------------------------
 
-    /// Turns a request on an entity into the service call its integration receives, checking
+    /// Turns a request on an entity into the service call its protocol receives, checking
     /// what the entity supports. Resolves `Toggle` from the current state.
     pub fn resolve(&self, entity_id: &EntityId, command: Command) -> Result<Resolved, CallError> {
         let entity = self
@@ -1084,24 +1081,24 @@ impl Home {
             }
         };
         Ok(Resolved {
-            integration: entity.integration.clone(),
+            protocol: entity.protocol.clone(),
             unique_id: entity.unique_id.clone(),
             service,
         })
     }
 
-    /// Forgets a call that never reached its integration.
-    pub fn forget_call(&mut self, integration: &IntegrationId, context_id: &ContextId) {
-        if let Some(calls) = self.recent_calls.get_mut(integration) {
+    /// Forgets a call that never reached its protocol.
+    pub fn forget_call(&mut self, protocol: &ProtocolId, context_id: &ContextId) {
+        if let Some(calls) = self.recent_calls.get_mut(protocol) {
             calls.retain(|(id, _)| id != context_id);
         }
     }
 
     /// Whether a report may name this call in `caused_by`.
     #[cfg(test)]
-    pub fn knows_call(&self, integration: &IntegrationId, context_id: &ContextId) -> bool {
+    pub fn knows_call(&self, protocol: &ProtocolId, context_id: &ContextId) -> bool {
         self.recent_calls
-            .get(integration)
+            .get(protocol)
             .is_some_and(|calls| calls.iter().any(|(id, _)| id == context_id))
     }
 
@@ -1111,10 +1108,10 @@ impl Home {
     }
 
     /// Whether a resolved call still matches the registry: the same entity, still owned by that
-    /// integration under that `unique_id`, and still able to do what's asked.
+    /// protocol under that `unique_id`, and still able to do what's asked.
     pub fn still_dispatchable(&self, entity_id: &EntityId, resolved: &Resolved) -> bool {
         self.entities.get(entity_id).is_some_and(|entity| {
-            entity.integration == resolved.integration
+            entity.protocol == resolved.protocol
                 && entity.unique_id == resolved.unique_id
                 && match (&entity.capabilities, &resolved.service) {
                     (Capabilities::Light(caps), Service::LightTurnOn(data)) => {
@@ -1140,13 +1137,8 @@ impl Home {
 
     /// Remembers a call's context for [`CALL_WINDOW`], so a state report can say it was caused
     /// by it.
-    pub fn record_call(
-        &mut self,
-        integration: &IntegrationId,
-        context_id: ContextId,
-        now: Timestamp,
-    ) {
-        let calls = self.recent_calls.entry(integration.clone()).or_default();
+    pub fn record_call(&mut self, protocol: &ProtocolId, context_id: ContextId, now: Timestamp) {
+        let calls = self.recent_calls.entry(protocol.clone()).or_default();
         while calls
             .front()
             .is_some_and(|(_, at)| !within_call_window(*at, now))
@@ -1175,7 +1167,7 @@ fn placed(settings: &Settings, chosen: &Placement, suggested: Option<&Name>) -> 
     }
 }
 
-/// A change Irori made itself, e.g. after an integration crashed.
+/// A change Irori made itself, e.g. after a protocol crashed.
 fn system_context(stamp: &Stamp) -> Context {
     Context {
         id: stamp.context_id.clone(),
@@ -1192,7 +1184,7 @@ fn within_call_window(called_at: Timestamp, now: Timestamp) -> bool {
     (-window..=window).contains(&age)
 }
 
-/// Whether a change comes from the integration saying something (it moves `last_reported`
+/// Whether a change comes from the protocol saying something (it moves `last_reported`
 /// even when nothing changed), or from the core, e.g. after a crash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reported {
@@ -1200,16 +1192,12 @@ enum Reported {
     No,
 }
 
-fn device_context(
-    integration: &IntegrationId,
-    stamp: &Stamp,
-    parent: Option<ContextId>,
-) -> Context {
+fn device_context(protocol: &ProtocolId, stamp: &Stamp, parent: Option<ContextId>) -> Context {
     Context {
         id: stamp.context_id.clone(),
         parent_id: parent,
         origin: Origin::Device {
-            integration: integration.clone(),
+            protocol: protocol.clone(),
         },
     }
 }
@@ -1304,15 +1292,15 @@ pub(crate) fn slugify(text: &str) -> String {
     slug.trim_end_matches('_').to_owned()
 }
 
-/// A device's id: its integration and the integration's permanent handle for it, as a slug —
+/// A device's id: its protocol and the protocol's permanent handle for it, as a slug —
 /// `esphome_00_11_22_33_44_55`. A pure function of the two, so it's the same after every restart
 /// and whatever the device is called (ROADMAP D36).
 ///
 /// A handle too long for an id keeps its beginning and gains a hash of the whole canonical
-/// input (integration plus handle), so two long integrations that share a prefix — or two long
+/// input (protocol plus handle), so two long protocols that share a prefix — or two long
 /// handles that start the same — still get different ids.
-pub fn device_id_for(integration: &IntegrationId, unique_id: &UniqueId) -> DeviceId {
-    let canonical = format!("{integration} {unique_id}");
+pub fn device_id_for(protocol: &ProtocolId, unique_id: &UniqueId) -> DeviceId {
+    let canonical = format!("{protocol} {unique_id}");
     let mut slug = String::new();
     let mut separate = false;
     for c in canonical.chars() {
@@ -1326,8 +1314,8 @@ pub fn device_id_for(integration: &IntegrationId, unique_id: &UniqueId) -> Devic
             separate = true;
         }
     }
-    // A handle with nothing a slug can keep (`玄関`) would leave just the integration's name.
-    let lossless_enough = slug.len() > integration.as_str().len();
+    // A handle with nothing a slug can keep (`玄関`) would leave just the protocol's name.
+    let lossless_enough = slug.len() > protocol.as_str().len();
     if slug.len() > SLUG_MAX_LEN || !lossless_enough {
         let hash = format!("{:016x}", fnv1a(canonical.as_bytes()));
         let keep = SLUG_MAX_LEN - hash.len() - 1;
@@ -1348,7 +1336,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// An id for a new area, from what it's called and what's already there.
 ///
 /// Areas are the one thing a person creates directly, so their ids are made here rather than by
-/// an integration — and by the same rules as every other id, so `Kitchen` becomes `kitchen` and a
+/// a protocol — and by the same rules as every other id, so `Kitchen` becomes `kitchen` and a
 /// second `Kitchen` becomes `kitchen_2` instead of an error.
 pub fn new_area_id(name: &Name, existing: &[Area]) -> AreaId {
     let id = unique_id_for(&slugify(name.as_str()), "area", |candidate| {
@@ -1391,8 +1379,8 @@ mod tests {
         SwitchCapabilities, SwitchState,
     };
 
-    fn integration() -> IntegrationId {
-        IntegrationId::try_from("demo").expect("valid")
+    fn protocol() -> ProtocolId {
+        ProtocolId::try_from("demo").expect("valid")
     }
 
     fn uid(s: &str) -> UniqueId {
@@ -1474,10 +1462,10 @@ mod tests {
     /// A home with one lamp device and its nameless main light.
     fn home_with_lamp() -> Home {
         let mut home = Home::default();
-        home.describe_device(&integration(), device("lamp", "Desk lamp"))
+        home.describe_device(&protocol(), device("lamp", "Desk lamp"))
             .expect("device");
         home.describe_entity(
-            &integration(),
+            &protocol(),
             &ALL,
             entity("lamp-light", None, Some("lamp"), dimmable()),
             &stamp(0),
@@ -1507,11 +1495,11 @@ mod tests {
 
     /// Device settings are by the device's id, the same id its page and the API use.
     fn key(unique: &str) -> DeviceId {
-        device_id_for(&integration(), &uid(unique))
+        device_id_for(&protocol(), &uid(unique))
     }
 
     fn entity_key(unique: &str) -> SettingsKey {
-        SettingsKey::new(integration(), uid(unique))
+        SettingsKey::new(protocol(), uid(unique))
     }
 
     fn called(what: &str) -> irori_types::DeviceSettings {
@@ -1579,7 +1567,7 @@ mod tests {
 
     /// The whole of what Home Assistant gets wrong here: a device has one id, and nothing a
     /// person names it can change it — not a rename, not a restart after one, not the firmware
-    /// calling it something else. The id is the integration and its permanent handle.
+    /// calling it something else. The id is the protocol and its permanent handle.
     #[test]
     fn a_devices_id_never_changes_whatever_it_is_called() {
         let id = key("lamp");
@@ -1593,7 +1581,7 @@ mod tests {
         assert!(home.devices.contains_key(&id));
         assert_eq!(home.entities[&lamp_id()].name.as_str(), "Reading lamp");
 
-        // As after a restart: settings first, then the integration describes it again, under
+        // As after a restart: settings first, then the protocol describes it again, under
         // a name its firmware has since changed.
         let mut restarted = Home::default();
         restarted.settle(Settings {
@@ -1601,11 +1589,11 @@ mod tests {
             ..Settings::default()
         });
         restarted
-            .describe_device(&integration(), device("lamp", "Lamp v2"))
+            .describe_device(&protocol(), device("lamp", "Lamp v2"))
             .expect("device");
         restarted
             .describe_entity(
-                &integration(),
+                &protocol(),
                 &ALL,
                 entity("lamp-light", None, Some("lamp"), dimmable()),
                 &stamp(0),
@@ -1621,9 +1609,9 @@ mod tests {
 
     #[test]
     fn device_ids_are_readable_where_they_can_be_and_distinct_where_they_cant() {
-        let id = |integration: &str, unique: &str| {
+        let id = |protocol: &str, unique: &str| {
             device_id_for(
-                &IntegrationId::try_from(integration).expect("valid"),
+                &ProtocolId::try_from(protocol).expect("valid"),
                 &uid(unique),
             )
             .to_string()
@@ -1642,7 +1630,7 @@ mod tests {
         assert!(id("demo", &long_a).len() <= SLUG_MAX_LEN);
         // A pure function: asked twice, the same answer.
         assert_eq!(id("demo", &long_a), id("demo", &long_a));
-        // Two long integration ids that share a slug prefix, same handle: the hash covers both,
+        // Two long protocol ids that share a slug prefix, same handle: the hash covers both,
         // so truncation can't make them collide.
         let prefix = "i".repeat(60);
         let left = format!("{prefix}a");
@@ -1650,7 +1638,7 @@ mod tests {
         assert_ne!(
             id(&left, "same-handle"),
             id(&right, "same-handle"),
-            "hash must include the integration, not only the handle"
+            "hash must include the protocol, not only the handle"
         );
     }
 
@@ -1659,10 +1647,10 @@ mod tests {
     #[test]
     fn two_devices_whose_ids_would_collide_are_refused_rather_than_renumbered() {
         let mut home = Home::default();
-        home.describe_device(&integration(), device("AB", "One"))
+        home.describe_device(&protocol(), device("AB", "One"))
             .expect("first");
         let refused = home
-            .describe_device(&integration(), device("ab", "Two"))
+            .describe_device(&protocol(), device("ab", "Two"))
             .expect_err("same id");
         assert!(refused.0.contains("demo_ab"), "{}", refused.0);
     }
@@ -1682,14 +1670,14 @@ mod tests {
         }
     }
 
-    /// Ignoring a device takes it and its entities out of the home. What its integration goes
+    /// Ignoring a device takes it and its entities out of the home. What its protocol goes
     /// on saying is kept, not refused — so nothing is counted as a rejected report — and letting
     /// it back in restores it as it is now, not as it was when it left.
     #[test]
     fn an_ignored_device_leaves_the_home_and_comes_back_as_it_is_now() {
         let mut home = home_with_lamp();
         home.report_state(
-            &integration(),
+            &protocol(),
             report("lamp-light", Some(light(false, Some(10)))),
             &stamp(1),
         )
@@ -1706,17 +1694,17 @@ mod tests {
         assert_eq!(home.held_devices().len(), 1);
         assert_eq!(home.held_devices()[0].name.as_str(), "Desk lamp");
 
-        // The integration carries on as usual, and nothing it says is an error.
-        home.describe_device(&integration(), device("lamp", "Desk lamp v2"))
+        // The protocol carries on as usual, and nothing it says is an error.
+        home.describe_device(&protocol(), device("lamp", "Desk lamp v2"))
             .expect("described while ignored");
         home.report_state(
-            &integration(),
+            &protocol(),
             report("lamp-light", Some(light(true, Some(200)))),
             &stamp(2),
         )
         .expect("reported while ignored");
         home.set_availability(
-            &integration(),
+            &protocol(),
             AvailabilityTarget::Device(uid("lamp")),
             Availability::Available,
             &stamp(2),
@@ -1747,10 +1735,10 @@ mod tests {
     fn a_device_ignored_in_advance_never_arrives() {
         let mut home = Home::default();
         home.settle(ignoring("lamp"));
-        home.describe_device(&integration(), device("lamp", "Desk lamp"))
+        home.describe_device(&protocol(), device("lamp", "Desk lamp"))
             .expect("device");
         home.describe_entity(
-            &integration(),
+            &protocol(),
             &ALL,
             entity("lamp-light", None, Some("lamp"), dimmable()),
             &stamp(0),
@@ -1759,8 +1747,8 @@ mod tests {
         assert!(home.devices.is_empty() && home.entities.is_empty());
         assert_eq!(home.held_devices().len(), 1);
 
-        // And an integration that removes it while ignored is taken at its word.
-        home.remove_device(&integration(), &uid("lamp"))
+        // And a protocol that removes it while ignored is taken at its word.
+        home.remove_device(&protocol(), &uid("lamp"))
             .expect("removed");
         assert!(home.held_devices().is_empty());
     }
@@ -1787,16 +1775,16 @@ mod tests {
         };
         let mut home = Home::default();
         home.settle(asking(&["plug"]));
-        home.describe_device(&integration(), device("lamp", "Desk lamp"))
+        home.describe_device(&protocol(), device("lamp", "Desk lamp"))
             .expect("lamp");
         home.describe_entity(
-            &integration(),
+            &protocol(),
             &ALL,
             entity("lamp-light", None, Some("lamp"), dimmable()),
             &stamp(0),
         )
         .expect("light");
-        home.describe_device(&integration(), device("plug", "Plug"))
+        home.describe_device(&protocol(), device("plug", "Plug"))
             .expect("plug");
 
         assert_eq!(
@@ -1827,7 +1815,7 @@ mod tests {
             devices: [(key("lamp"), called("Reading lamp"))].into(),
             ..Settings::default()
         });
-        home.describe_device(&integration(), device("lamp", "Desk lamp"))
+        home.describe_device(&protocol(), device("lamp", "Desk lamp"))
             .expect("lamp");
         assert!(home.devices.contains_key(&key("lamp")));
         assert!(home.held_devices().is_empty());
@@ -1849,9 +1837,9 @@ mod tests {
             .into(),
             ..Settings::default()
         });
-        home.describe_device(&integration(), device("lamp", "Desk lamp"))
+        home.describe_device(&protocol(), device("lamp", "Desk lamp"))
             .expect("lamp");
-        home.describe_device(&integration(), device("plug", "Plug"))
+        home.describe_device(&protocol(), device("plug", "Plug"))
             .expect("plug");
         let mut why: Vec<_> = home
             .held_devices()
@@ -1900,10 +1888,10 @@ mod tests {
         );
     }
 
-    /// The integration keeps describing the device while a person's name is in force. Its name
+    /// The protocol keeps describing the device while a person's name is in force. Its name
     /// must not win back, and the new manufacturer or firmware version must still land.
     #[test]
-    fn an_integration_that_describes_a_renamed_device_again_doesnt_rename_it_back() {
+    fn an_protocol_that_describes_a_renamed_device_again_doesnt_rename_it_back() {
         let mut home = home_with_lamp();
         home.settle(Settings {
             devices: [(key("lamp"), called("Reading lamp"))].into(),
@@ -1912,24 +1900,24 @@ mod tests {
 
         let mut again = device("lamp", "Desk lamp");
         again.sw_version = Some("2026.9.0".to_owned());
-        let events = home.describe_device(&integration(), again).expect("again");
+        let events = home.describe_device(&protocol(), again).expect("again");
 
         assert_eq!(device_named(&home, "demo_lamp"), "Reading lamp");
         assert_eq!(
             home.devices[&DeviceId::try_from("demo_lamp").expect("valid")].sw_version,
             Some("2026.9.0".to_owned()),
-            "what the integration is entitled to say still lands"
+            "what the protocol is entitled to say still lands"
         );
         assert_eq!(events.len(), 1, "only the device changed: {events:?}");
     }
 
-    /// An entity named by its integration, or by a person, has a name of its own and keeps it
+    /// An entity named by its protocol, or by a person, has a name of its own and keeps it
     /// when the device is renamed.
     #[test]
     fn only_entities_without_a_name_of_their_own_follow_the_device() {
         let mut home = home_with_lamp();
         home.describe_entity(
-            &integration(),
+            &protocol(),
             &ALL,
             entity(
                 "lamp-power",
@@ -1969,7 +1957,7 @@ mod tests {
                 .name
                 .as_str(),
             "Power",
-            "a name the integration gave the entity is its own too"
+            "a name the protocol gave the entity is its own too"
         );
     }
 
@@ -2006,7 +1994,7 @@ mod tests {
         let mut home = Home::default();
         let mut described = device("lamp", "Desk lamp");
         described.suggested_area = Some(name("Study"));
-        home.describe_device(&integration(), described)
+        home.describe_device(&protocol(), described)
             .expect("device");
         let id = DeviceId::try_from("demo_lamp").expect("valid");
         assert_eq!(home.devices[&id].area_id, None, "no such room yet");
@@ -2027,7 +2015,7 @@ mod tests {
         let mut home = Home::default();
         let mut described = device("lamp", "Desk lamp");
         described.suggested_area = Some(name("Study"));
-        home.describe_device(&integration(), described)
+        home.describe_device(&protocol(), described)
             .expect("device");
         let id = DeviceId::try_from("demo_lamp").expect("valid");
 
@@ -2056,7 +2044,7 @@ mod tests {
         let mut home = Home::default();
         let mut described = device("lamp", "Desk lamp");
         described.suggested_area = Some(name("Study"));
-        home.describe_device(&integration(), described)
+        home.describe_device(&protocol(), described)
             .expect("device");
 
         home.settle(Settings {
@@ -2075,7 +2063,7 @@ mod tests {
         assert_eq!(home.devices[&id].area_id, None);
     }
 
-    /// Settings are read before any integration starts, so the common case is a device arriving
+    /// Settings are read before any protocol starts, so the common case is a device arriving
     /// into a home that already has an opinion about it. It should never appear under its old
     /// name, not even for an instant.
     #[test]
@@ -2107,7 +2095,7 @@ mod tests {
         });
 
         let events = home
-            .describe_device(&integration(), device("lamp", "Desk lamp"))
+            .describe_device(&protocol(), device("lamp", "Desk lamp"))
             .expect("device");
         let Some(Event::DeviceAdded { device }) = events.first() else {
             panic!("a device was added: {events:?}");
@@ -2121,7 +2109,7 @@ mod tests {
         );
 
         home.describe_entity(
-            &integration(),
+            &protocol(),
             &ALL,
             entity("lamp-light", None, Some("lamp"), dimmable()),
             &stamp(0),
@@ -2180,22 +2168,22 @@ mod tests {
         // Two devices with the same name are still two ids: names aren't what ids are made of.
         let mut home = Home::default();
         for unique in ["a", "b"] {
-            home.describe_device(&integration(), device(unique, "玄関 light"))
+            home.describe_device(&protocol(), device(unique, "玄関 light"))
                 .expect("device");
         }
         let ids: Vec<_> = home.devices().map(|d| d.id.to_string()).collect();
         assert_eq!(ids, ["demo_a", "demo_b"]);
     }
 
-    /// An entity's id is its device's id and the name its integration gave it: never a name a
+    /// An entity's id is its device's id and the name its protocol gave it: never a name a
     /// person chose, so no rename can leave an id that says something else.
     #[test]
     fn entities_get_ids_from_their_devices_id_and_their_own_reported_name() {
         let mut home = home_with_lamp();
-        home.describe_device(&integration(), device("sensor", "Hallway sensor"))
+        home.describe_device(&protocol(), device("sensor", "Hallway sensor"))
             .expect("device");
         home.describe_entity(
-            &integration(),
+            &protocol(),
             &ALL,
             entity(
                 "sensor-motion",
@@ -2222,7 +2210,7 @@ mod tests {
         let mut home = home_with_lamp();
         let again = home
             .describe_entity(
-                &integration(),
+                &protocol(),
                 &ALL,
                 entity("lamp-light", None, Some("lamp"), dimmable()),
                 &stamp(1),
@@ -2233,7 +2221,7 @@ mod tests {
 
         let err = home
             .describe_entity(
-                &integration(),
+                &protocol(),
                 &ALL,
                 entity(
                     "lamp-light",
@@ -2256,7 +2244,7 @@ mod tests {
         let mut home = Home::default();
         let err = home
             .describe_entity(
-                &integration(),
+                &protocol(),
                 &[EntityKind::Switch],
                 entity("x", Some("X"), None, dimmable()),
                 &stamp(0),
@@ -2270,7 +2258,7 @@ mod tests {
 
         let err = home
             .describe_entity(
-                &integration(),
+                &protocol(),
                 &ALL,
                 entity("x", None, Some("missing"), dimmable()),
                 &stamp(0),
@@ -2278,18 +2266,18 @@ mod tests {
             .expect_err("no device");
         assert!(err.0.contains("describe the device first"), "{err}");
 
-        home.describe_device(&integration(), device("hub", "Hub"))
+        home.describe_device(&protocol(), device("hub", "Hub"))
             .expect("hub");
         let mut child = device("child", "Child");
         child.via_device_unique_id = Some(uid("hub"));
-        home.describe_device(&integration(), child).expect("child");
+        home.describe_device(&protocol(), child).expect("child");
         let mut hub = device("hub", "Hub");
         hub.via_device_unique_id = Some(uid("child"));
-        let err = home.describe_device(&integration(), hub).expect_err("loop");
+        let err = home.describe_device(&protocol(), hub).expect_err("loop");
         assert!(err.0.contains("would make a loop"), "{err}");
 
-        // Another integration can't reach this one's devices.
-        let other = IntegrationId::try_from("other").expect("valid");
+        // Another protocol can't reach this one's devices.
+        let other = ProtocolId::try_from("other").expect("valid");
         let err = home
             .describe_entity(
                 &other,
@@ -2299,7 +2287,7 @@ mod tests {
             )
             .expect_err("foreign device");
         assert!(
-            err.0.contains("isn't a device this integration described"),
+            err.0.contains("isn't a device this protocol described"),
             "{err}"
         );
     }
@@ -2309,7 +2297,7 @@ mod tests {
         let mut home = home_with_lamp();
         let events = home
             .report_state(
-                &integration(),
+                &protocol(),
                 report("lamp-light", Some(light(true, Some(128)))),
                 &stamp(10),
             )
@@ -2322,7 +2310,7 @@ mod tests {
         // The same value again: only last_reported moves, and nothing is published.
         let events = home
             .report_state(
-                &integration(),
+                &protocol(),
                 report("lamp-light", Some(light(true, Some(128)))),
                 &stamp(20),
             )
@@ -2334,7 +2322,7 @@ mod tests {
 
         // A clock that steps back never breaks the timestamp order.
         home.report_state(
-            &integration(),
+            &protocol(),
             report("lamp-light", Some(light(false, Some(128)))),
             &stamp(5),
         )
@@ -2350,7 +2338,7 @@ mod tests {
         let mut home = home_with_lamp();
         let err = home
             .report_state(
-                &integration(),
+                &protocol(),
                 report("lamp-light", Some(State::Switch(SwitchState { on: true }))),
                 &stamp(1),
             )
@@ -2366,12 +2354,12 @@ mod tests {
             l.rgb = Some([255, 0, 0]);
         }
         let err = home
-            .report_state(&integration(), report("lamp-light", Some(rgb)), &stamp(1))
+            .report_state(&protocol(), report("lamp-light", Some(rgb)), &stamp(1))
             .expect_err("no rgb");
         assert!(err.0.contains("doesn't support RGB color"), "{err}");
 
         home.describe_entity(
-            &integration(),
+            &protocol(),
             &ALL,
             entity(
                 "temp",
@@ -2389,7 +2377,7 @@ mod tests {
         .expect("sensor");
         let err = home
             .report_state(
-                &integration(),
+                &protocol(),
                 report(
                     "temp",
                     Some(State::Sensor(SensorState {
@@ -2406,7 +2394,7 @@ mod tests {
         );
 
         let err = home
-            .report_state(&integration(), report("nope", None), &stamp(1))
+            .report_state(&protocol(), report("nope", None), &stamp(1))
             .expect_err("unknown");
         assert!(err.0.contains("describe it first"), "{err}");
     }
@@ -2419,11 +2407,7 @@ mod tests {
             l.color_mode = Some(ColorMode::Rgb);
         }
         let err = home
-            .report_state(
-                &integration(),
-                report("lamp-light", Some(rgb_mode)),
-                &stamp(1),
-            )
+            .report_state(&protocol(), report("lamp-light", Some(rgb_mode)), &stamp(1))
             .expect_err("no rgb");
         assert!(
             err.0
@@ -2436,14 +2420,14 @@ mod tests {
     fn narrowed_capabilities_forget_a_value_that_no_longer_fits() {
         let mut home = home_with_lamp();
         home.report_state(
-            &integration(),
+            &protocol(),
             report("lamp-light", Some(light(true, Some(80)))),
             &stamp(1),
         )
         .expect("fits");
         let not_dimmable = Capabilities::Light(LightCapabilities::default());
         home.describe_entity(
-            &integration(),
+            &protocol(),
             &ALL,
             entity("lamp-light", None, Some("lamp"), not_dimmable.clone()),
             &stamp(2),
@@ -2456,13 +2440,13 @@ mod tests {
 
         // A value that still fits is kept.
         home.report_state(
-            &integration(),
+            &protocol(),
             report("lamp-light", Some(light(true, None))),
             &stamp(3),
         )
         .expect("fits");
         home.describe_entity(
-            &integration(),
+            &protocol(),
             &ALL,
             entity("lamp-light", None, Some("lamp"), not_dimmable),
             &stamp(4),
@@ -2475,18 +2459,18 @@ mod tests {
     }
 
     #[test]
-    fn caused_by_must_be_a_call_to_this_integration() {
+    fn caused_by_must_be_a_call_to_this_protocol() {
         let mut home = home_with_lamp();
         let call = stamp(1).context_id;
         let mut confirmed = report("lamp-light", Some(light(false, None)));
         confirmed.caused_by = Some(call.clone());
         let err = home
-            .report_state(&integration(), confirmed.clone(), &stamp(2))
+            .report_state(&protocol(), confirmed.clone(), &stamp(2))
             .expect_err("unknown call");
         assert!(err.0.contains("in the last 5 minutes"), "{err}");
 
-        home.record_call(&integration(), call.clone(), stamp(1).now);
-        home.report_state(&integration(), confirmed, &stamp(2))
+        home.record_call(&protocol(), call.clone(), stamp(1).now);
+        home.report_state(&protocol(), confirmed, &stamp(2))
             .expect("known call");
         assert_eq!(
             home.state(&lamp_id()).expect("state").context.parent_id,
@@ -2498,12 +2482,12 @@ mod tests {
     fn unavailable_keeps_the_last_value() {
         let mut home = home_with_lamp();
         home.report_state(
-            &integration(),
+            &protocol(),
             report("lamp-light", Some(light(true, Some(50)))),
             &stamp(1),
         )
         .expect("fits");
-        let events = home.mark_unavailable(&integration(), &stamp(2));
+        let events = home.mark_unavailable(&protocol(), &stamp(2));
         assert_eq!(events.len(), 1);
         let state = home.state(&lamp_id()).expect("state");
         assert_eq!(state.availability, Availability::Unavailable);
@@ -2511,7 +2495,7 @@ mod tests {
         assert!(matches!(state.context.origin, Origin::System));
 
         home.set_availability(
-            &integration(),
+            &protocol(),
             AvailabilityTarget::Device(uid("lamp")),
             Availability::Available,
             &stamp(3),
@@ -2524,23 +2508,23 @@ mod tests {
     }
 
     #[test]
-    fn names_follow_the_integration_and_nameless_entities_follow_their_device() {
+    fn names_follow_the_protocol_and_nameless_entities_follow_their_device() {
         let mut home = home_with_lamp();
         let events = home
-            .describe_device(&integration(), device("lamp", "Reading lamp"))
+            .describe_device(&protocol(), device("lamp", "Reading lamp"))
             .expect("renamed");
         assert_eq!(events.len(), 2, "device and its nameless entity updated");
         let lamp = home.entities.get(&lamp_id()).expect("same id");
         assert_eq!(lamp.name.as_str(), "Reading lamp");
 
         home.describe_entity(
-            &integration(),
+            &protocol(),
             &ALL,
             entity("lamp-light", Some("Bulb"), Some("lamp"), dimmable()),
             &stamp(1),
         )
         .expect("named now");
-        home.describe_device(&integration(), device("lamp", "Desk lamp"))
+        home.describe_device(&protocol(), device("lamp", "Desk lamp"))
             .expect("renamed");
         assert_eq!(home.entities[&lamp_id()].name.as_str(), "Bulb");
     }
@@ -2550,7 +2534,7 @@ mod tests {
         let mut home = home_with_lamp();
         let events = home
             .set_availability(
-                &integration(),
+                &protocol(),
                 AvailabilityTarget::Device(uid("lamp")),
                 Availability::Available,
                 &stamp(5),
@@ -2563,7 +2547,7 @@ mod tests {
         );
 
         // A crash changes availability, but nothing was heard: last_reported stays.
-        home.mark_unavailable(&integration(), &stamp(6));
+        home.mark_unavailable(&protocol(), &stamp(6));
         let state = home.state(&lamp_id()).expect("state");
         assert_eq!(state.availability, Availability::Unavailable);
         assert_eq!(state.last_changed, stamp(6).now);
@@ -2572,9 +2556,9 @@ mod tests {
             .validate()
             .expect("valid with last_reported before last_changed");
 
-        // The integration saying so itself is a report.
+        // The protocol saying so itself is a report.
         home.set_availability(
-            &integration(),
+            &protocol(),
             AvailabilityTarget::Device(uid("lamp")),
             Availability::Available,
             &stamp(8),
@@ -2590,19 +2574,19 @@ mod tests {
     fn calls_can_be_confirmed_for_five_minutes_even_after_many_others() {
         let mut home = home_with_lamp();
         let call = stamp(100).context_id;
-        home.record_call(&integration(), call.clone(), stamp(100).now);
+        home.record_call(&protocol(), call.clone(), stamp(100).now);
         for i in 0..200 {
-            home.record_call(&integration(), stamp(101 + i).context_id, stamp(101).now);
+            home.record_call(&protocol(), stamp(101 + i).context_id, stamp(101).now);
         }
         let mut confirmed = report("lamp-light", Some(light(false, None)));
         confirmed.caused_by = Some(call.clone());
-        home.report_state(&integration(), confirmed.clone(), &stamp(100 + 300))
+        home.report_state(&protocol(), confirmed.clone(), &stamp(100 + 300))
             .expect("within five minutes, after 200 other calls");
 
         let mut late = confirmed;
         late.state = Some(light(true, None));
         let err = home
-            .report_state(&integration(), late, &stamp(100 + 301))
+            .report_state(&protocol(), late, &stamp(100 + 301))
             .expect_err("too late");
         assert!(err.0.contains("in the last 5 minutes"), "{err}");
     }
@@ -2611,15 +2595,15 @@ mod tests {
     fn the_call_window_survives_a_clock_correction() {
         let mut home = home_with_lamp();
         let call = stamp(1_000).context_id;
-        home.record_call(&integration(), call.clone(), stamp(1_000).now);
+        home.record_call(&protocol(), call.clone(), stamp(1_000).now);
         let mut confirmed = report("lamp-light", Some(light(false, None)));
         confirmed.caused_by = Some(call);
         // The clock stepped back a minute between the call and its confirmation.
-        home.report_state(&integration(), confirmed.clone(), &stamp(940))
+        home.report_state(&protocol(), confirmed.clone(), &stamp(940))
             .expect("still within the window");
         // A clock a day behind isn't a correction; that call isn't recent.
         let err = home
-            .report_state(&integration(), confirmed, &stamp(1_000 - 86_400))
+            .report_state(&protocol(), confirmed, &stamp(1_000 - 86_400))
             .expect_err("far outside the window");
         assert!(err.0.contains("in the last 5 minutes"), "{err}");
     }
@@ -2628,7 +2612,7 @@ mod tests {
     fn toggle_follows_the_last_command_until_the_device_reports() {
         let mut home = home_with_lamp();
         home.report_state(
-            &integration(),
+            &protocol(),
             report("lamp-light", Some(light(false, None))),
             &stamp(1),
         )
@@ -2646,7 +2630,7 @@ mod tests {
 
         // Once the lamp reports, its own word counts again.
         home.report_state(
-            &integration(),
+            &protocol(),
             report("lamp-light", Some(light(true, None))),
             &stamp(2),
         )
@@ -2676,7 +2660,7 @@ mod tests {
             )
             .expect("dimmable for now");
         home.describe_entity(
-            &integration(),
+            &protocol(),
             &ALL,
             entity(
                 "lamp-light",
@@ -2690,7 +2674,7 @@ mod tests {
         assert!(!home.still_dispatchable(&lamp_id(), &bright));
 
         // And once it's gone entirely.
-        home.remove_entity(&integration(), &uid("lamp-light"))
+        home.remove_entity(&protocol(), &uid("lamp-light"))
             .expect("exists");
         assert!(!home.still_dispatchable(&lamp_id(), &resolved));
     }
@@ -2699,20 +2683,20 @@ mod tests {
     fn describing_an_entity_again_counts_as_hearing_from_it() {
         let mut home = home_with_lamp();
         home.report_state(
-            &integration(),
+            &protocol(),
             report("lamp-light", Some(light(true, None))),
             &stamp(10),
         )
         .expect("fits");
-        home.mark_unavailable(&integration(), &stamp(20));
+        home.mark_unavailable(&protocol(), &stamp(20));
         assert_eq!(
             home.state(&lamp_id()).expect("state").last_reported,
             stamp(10).now
         );
 
-        // The integration restarts and describes it again: back online, and heard from.
+        // The protocol restarts and describes it again: back online, and heard from.
         home.describe_entity(
-            &integration(),
+            &protocol(),
             &ALL,
             entity("lamp-light", None, Some("lamp"), dimmable()),
             &stamp(30),
@@ -2727,12 +2711,12 @@ mod tests {
     fn forgotten_calls_cant_be_blamed() {
         let mut home = home_with_lamp();
         let call = stamp(1).context_id;
-        home.record_call(&integration(), call.clone(), stamp(1).now);
-        home.forget_call(&integration(), &call);
+        home.record_call(&protocol(), call.clone(), stamp(1).now);
+        home.forget_call(&protocol(), &call);
         let mut confirmed = report("lamp-light", Some(light(false, None)));
         confirmed.caused_by = Some(call);
         assert!(
-            home.report_state(&integration(), confirmed, &stamp(2))
+            home.report_state(&protocol(), confirmed, &stamp(2))
                 .is_err()
         );
     }
@@ -2741,12 +2725,12 @@ mod tests {
     fn removing_a_device_removes_its_entities() {
         let mut home = home_with_lamp();
         let events = home
-            .remove_device(&integration(), &uid("lamp"))
+            .remove_device(&protocol(), &uid("lamp"))
             .expect("exists");
         assert_eq!(events.len(), 2);
         assert_eq!(home.entities().count(), 0);
         assert_eq!(home.states().count(), 0);
-        assert!(home.remove_device(&integration(), &uid("lamp")).is_err());
+        assert!(home.remove_device(&protocol(), &uid("lamp")).is_err());
     }
 
     #[test]
@@ -2760,7 +2744,7 @@ mod tests {
         assert_eq!(resolved.unique_id, uid("lamp-light"));
 
         home.report_state(
-            &integration(),
+            &protocol(),
             report("lamp-light", Some(light(true, None))),
             &stamp(1),
         )

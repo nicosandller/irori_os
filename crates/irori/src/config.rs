@@ -45,7 +45,7 @@ pub enum EditError {
 }
 
 impl Config {
-    /// Reads the directory and tells the core what it says, before any integration starts — so a
+    /// Reads the directory and tells the core what it says, before any protocol starts — so a
     /// device that arrives in the first second already has the name its owner gave it.
     ///
     /// A directory that isn't there, or files that don't parse, are logged and survived: Irori
@@ -367,7 +367,10 @@ mod tests {
         let host = irori_core::ExtensionHost::start(
             &core,
             // The demo alone: ESPHome would find whatever is on this network partway through.
-            vec![irori_integration::builtin::<irori_int_demo::Demo>().map_err(anyhow::Error::msg)?],
+            vec![
+                irori_protocol::builtin::<irori_protocol_demo::Demo>()
+                    .map_err(anyhow::Error::msg)?,
+            ],
             irori_core::Timing::default(),
         )
         .map_err(anyhow::Error::msg)?;
@@ -413,7 +416,7 @@ mod tests {
             let host = irori_core::ExtensionHost::start(
                 &core,
                 vec![
-                    irori_integration::builtin::<irori_int_demo::Demo>()
+                    irori_protocol::builtin::<irori_protocol_demo::Demo>()
                         .map_err(anyhow::Error::msg)?,
                 ],
                 irori_core::Timing::default(),
@@ -443,7 +446,10 @@ mod tests {
         assert!(core.settings().ask_before_adding);
         let host = irori_core::ExtensionHost::start(
             &core,
-            vec![irori_integration::builtin::<irori_int_demo::Demo>().map_err(anyhow::Error::msg)?],
+            vec![
+                irori_protocol::builtin::<irori_protocol_demo::Demo>()
+                    .map_err(anyhow::Error::msg)?,
+            ],
             irori_core::Timing::default(),
         )
         .map_err(anyhow::Error::msg)?;
@@ -509,7 +515,10 @@ mod tests {
         let _config = Config::open_dir(dir.path(), &core);
         let host = irori_core::ExtensionHost::start(
             &core,
-            vec![irori_integration::builtin::<irori_int_demo::Demo>().map_err(anyhow::Error::msg)?],
+            vec![
+                irori_protocol::builtin::<irori_protocol_demo::Demo>()
+                    .map_err(anyhow::Error::msg)?,
+            ],
             irori_core::Timing::default(),
         )
         .map_err(anyhow::Error::msg)?;

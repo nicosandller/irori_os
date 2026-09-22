@@ -981,7 +981,7 @@ fn icon(kind: Icon) -> AnyView {
 /// The drop side of dragging a device into or out of an area. `into` names the area being
 /// dropped on; `None` means the "Unassigned devices" list. The same PATCH the device's own page
 /// uses puts it where it was dropped, with `Nowhere` for "out" — deliberately no area, so the
-/// integration's suggestion can't immediately put it straight back. Dropping where it already is
+/// protocol's suggestion can't immediately put it straight back. Dropping where it already is
 /// does nothing.
 fn drop_into(
     dragging: RwSignal<Option<DeviceId>>,
@@ -1032,7 +1032,7 @@ fn drop_into(
 fn in_area(device: Device, dragging: RwSignal<Option<DeviceId>>) -> AnyView {
     let id = device.id.to_string();
     let name = device.name.to_string();
-    let through = device.integration.to_string();
+    let through = device.protocol.to_string();
     let drag_id = device.id.clone();
     view! {
         <li

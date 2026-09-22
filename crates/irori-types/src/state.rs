@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::num::{Num, whole};
 use crate::{AttributeKey, Context, EntityId, EntityKind, InvariantError, Timestamp};
 
-/// Free-form extra data from the integration, e.g. Zigbee link quality. Readable by rules, but
+/// Free-form extra data from the protocol, e.g. Zigbee link quality. Readable by rules, but
 /// not type-checked: anything the core relies on is a typed field instead.
 pub type Attributes = BTreeMap<AttributeKey, serde_json::Value>;
 
@@ -32,7 +32,7 @@ pub struct EntityState {
     pub last_changed: Timestamp,
     /// When `state`, `availability`, or `attributes` last changed.
     pub last_updated: Timestamp,
-    /// When the integration last reported anything, even an identical value.
+    /// When the protocol last reported anything, even an identical value.
     pub last_reported: Timestamp,
     /// What caused the last change.
     pub context: Context,
@@ -99,7 +99,7 @@ impl EntityState {
                 .map_err(|e| InvariantError(format!("entity `{}`: {e}", self.entity_id)))?;
         }
         // `last_reported` has no order with the others: Irori can change an entity without
-        // hearing from it (marking it unavailable after its integration crashed).
+        // hearing from it (marking it unavailable after its protocol crashed).
         if self.last_changed > self.last_updated {
             return Err(InvariantError(format!(
                 "entity `{}` timestamps must satisfy last_changed <= last_updated",

@@ -1,9 +1,9 @@
-//! A stand-in ESPHome device, so the integration can be tested without hardware.
+//! A stand-in ESPHome device, so the protocol can be tested without hardware.
 //!
 //! It speaks the plaintext framing of ESPHome's native API — a `0x00` marker, then the payload
 //! length and message type as LEB128 varints — and answers the handshake, the entity listing,
 //! the state subscription, and commands. The message bodies themselves come from the same
-//! generated types the integration uses, so only the framing is written out here.
+//! generated types the protocol uses, so only the framing is written out here.
 //!
 //! [`start_encrypted`] is the same device with an encryption key: the device side of ESPHome's
 //! `Noise_NNpsk0_25519_ChaChaPoly_SHA256` handshake, then every message encrypted. Real
@@ -291,7 +291,7 @@ fn entities() -> Vec<EspHomeMessage> {
             device_class: "motion".to_owned(),
             ..Default::default()
         }),
-        // Irori has no fan kind yet; the integration should skip it and keep the rest.
+        // Irori has no fan kind yet; the protocol should skip it and keep the rest.
         EspHomeMessage::ListEntitiesFanResponse(esphome_client::types::ListEntitiesFanResponse {
             key: FAN_KEY,
             name: "Ceiling fan".to_owned(),

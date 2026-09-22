@@ -36,7 +36,7 @@ It has to be:
   drive it with the same API the core uses.
 - **Familiar where that doesn't cost typing.** Services are `light.turn_on` (D14). Brightness in
   state is 1–255; people and rules may write `brightness_pct` and the core turns it into
-  brightness before the integration sees the call ([integrations.md](integrations.md) §7.1).
+  brightness before the protocol sees the call ([protocols.md](protocols.md) §7.1).
 
 ---
 
@@ -51,13 +51,13 @@ It has to be:
 | K5 | **Unavailable and unknown never silently count as a value.** `num()` / `on()` / `text()` require `available` and a non-null state; otherwise the expr errors and the condition is false. State **triggers** fire on typed-value changes only, and only while available. `for` resets if the entity becomes unavailable. Last-known is for the UI, not for automations. | [entities.md](entities.md) §5.2 left this to M0.3. Using last-known while a sensor is offline would turn lights on from a three-hour-old lux reading. |
 | K6 | **Top-level conditions run once**, after the trigger and before the first action. They are not re-checked after a wait. Re-check with an `if` on the later action (the guests-over helper lives there). | HA's most common hallway footgun, documented rather than papered over. |
 | K7 | **Modes: `single` (default), `restart`, `queued(max)`, `parallel(max)`.** `max` is required and capped at 32. Restart is what the hallway rule wants: a new motion pulse aborts the wait and starts again. | Unbounded parallel on a Pi 4 is how a chatty PIR takes the box down. |
-| K8 | **In-flight service calls are not cancelled** when a run is superseded or aborted. Waits and delays are. | The integration may already have the call ([integrations.md](integrations.md) §7). Cancelling after delivery is a race the core refuses to pretend it won. |
+| K8 | **In-flight service calls are not cancelled** when a run is superseded or aborted. Waits and delays are. | The protocol may already have the call ([protocols.md](protocols.md) §7). Cancelling after delivery is a race the core refuses to pretend it won. |
 | K9 | **Wait timeout continues the run** by default (`on_timeout: "continue"`). Service-call failure **stops** the run (`on_error: "stop"`). | After 10 minutes of occupancy the hallway light should still go off. A failed `turn_on` should not walk into `turn_off`. |
 | K10 | **Node path = location in the tree** (`triggers/0`, `actions/2/then/0`). Rule version = SHA-256 of canonical JSON of the definition, **excluding `enabled`**. Traces (M0.4) key `(rule_id, rule_version, node_path)`. | Inserting a node shifts later paths; old traces still match because they point at a version. Toggling enabled must not fork that history. |
-| K11 | **People-facing service data** (`brightness_pct`, `light.toggle`) lives on the rule. The core adapter converts to `Command` / `LightTurnOn` (`brightness` 1–255, toggle resolved). Integrations never see `brightness_pct` (already true: `fixtures/types/service-call/invalid/brightness_pct_is_for_people.json`). | entities.md §5.3, integrations.md §7.1. |
-| K12 | **Helpers are ordinary switch entities.** `switch.guests_over` is the first real condition. No special helper node. | D40. The helpers extension is already the proof that the integration contract is enough. |
+| K11 | **People-facing service data** (`brightness_pct`, `light.toggle`) lives on the rule. The core adapter converts to `Command` / `LightTurnOn` (`brightness` 1–255, toggle resolved). Protocols never see `brightness_pct` (already true: `fixtures/types/service-call/invalid/brightness_pct_is_for_people.json`). | entities.md §5.3, protocols.md §7.1. |
+| K12 | **Helpers are ordinary switch entities.** `switch.guests_over` is the first real condition. No special helper node. | D40. The helpers extension is already the proof that the protocol contract is enough. |
 | K13 | **Two gates.** `time` triggers, time-window conditions, `hour()`, `minute()`: unarmed until `irori.toml` has an IANA timezone. `sun` triggers/conditions: unarmed until it has timezone **and** lat/lon. | Civil `07:00` needs a zone. Sunrise needs coordinates. [config.md](config.md) §7 reserves location as one hole; this spec must not arm sun on timezone alone. |
-| K14 | **No protocol in the rule schema.** An event trigger names an event (`mqtt.message`); it does not name an MQTT topic as a core field. The MQTT integration (when it emits events) owns topics. | D15. The integration contract today has no "emit event" operation; this spec defines the rule side and a core `Event::Bus` shape. Wiring integrations onto it is a small addendum to integrations.md when MQTT needs it. |
+| K14 | **No protocol in the rule schema.** An event trigger names an event (`mqtt.message`); it does not name an MQTT topic as a core field. The MQTT extension (when it emits events) owns topics. | D15. The protocol contract today has no "emit event" operation; this spec defines the rule side and a core `Event::Bus` shape. Wiring extensions onto it is a small addendum to protocols.md when MQTT needs it. |
 | K15 | **No auth model for rules.** A rule calling `light.turn_off` is the same as the owner doing it in the UI. | D12 is not built. Rules are owner-authored config on disk. |
 | K16 | **`irori-rules` is this engine, not the OS.** It depends only on workspace crate `irori-types` among workspace crates. It is **not** a dependency of `irori` / `irori-core`. Traits `Clock`, `StateView`, `ServiceCaller` live here; a future extension host provides the adapter. `cel` 0.14.5 with **`default-features = false`**. | `xtask/src/deps.rs`. |
 
@@ -285,10 +285,10 @@ A timezone without coordinates still leaves `sun` unarmed; `time` triggers may a
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `event` | event name | yes | Slug, or `integration_id.event_name` (one dot) |
+| `event` | event name | yes | Slug, or `protocol_id.event_name` (one dot) |
 | `data` | object, ≤ 16 keys | no | **Exact** match on those keys (JSON equality). Extra keys on the event are fine |
 
-The core stays protocol-agnostic: there is no `topic` field on the trigger. An MQTT integration
+The core stays protocol-agnostic: there is no `topic` field on the trigger. An MQTT extension
 that wants rules to react to a raw message **emits a named event** (e.g. `mqtt.message`) whose
 payload may include `topic`. The match, if any, is generic:
 
@@ -299,15 +299,15 @@ payload may include `topic`. The match, if any, is generic:
 That example is illustrative. It is not a core type, and this spec does not add MQTT to
 `irori-rules`.
 
-**v1 event producers.** The integration contract ([integrations.md](integrations.md) §5) has no
+**v1 event producers.** The protocol contract ([protocols.md](protocols.md) §5) has no
 "emit event" operation today — ROADMAP M0.6 mentioned it; the accepted spec dropped it. v1
 therefore:
 
 - Defines `Event::Bus { event, data, context }` on the core bus (alongside `StateChanged`, … in
   `crates/irori-core/src/events.rs`) for the engine to subscribe to.
-- Lets a rule **fire** an event (§7.7), so rule-to-rule chaining works without integrations.
-- Leaves "integrations emit named events" as an addendum to integrations.md when the first
-  integration needs it (MQTT). The trigger shape does not change.
+- Lets a rule **fire** an event (§7.7), so rule-to-rule chaining works without protocol extensions.
+- Leaves "protocols emit named events" as an addendum to protocols.md when the first
+  protocol needs it (MQTT). The trigger shape does not change.
 
 **No trigger variables.** An expression cannot read `trigger.to_state` or the event payload
 beyond the exact `data` match. If a run needs the payload, that is a later additive (`event()`
@@ -466,7 +466,7 @@ clock, not on `std::thread::sleep` and not on tokio's time without going through
 brightness = clamp(round(brightness_pct * 255 / 100), 1, 255)
 ```
 
-60 → 153. The integration's `ServiceCall` never contains `brightness_pct`.
+60 → 153. The protocol's `ServiceCall` never contains `brightness_pct`.
 
 Semantic check: the entity exists, its kind matches the service, capabilities cover what's
 asked (brightness only if dimmable, kelvin in range). The core *also* checks again at call time
@@ -1069,7 +1069,7 @@ pub struct RuleCall {
 pub enum RuleCallError {
     UnknownEntity(EntityId),
     NotSupported(String),
-    NotRunning(IntegrationId),
+    NotRunning(ProtocolId),
     Unavailable(String),
     Failed(String),
     Timeout, // 10 s, same as SERVICE_CALL_TIMEOUT
@@ -1418,8 +1418,8 @@ is an obvious M1.4 win if 39 µs is allocation-dominated. Wasm compile of `cel` 
 | YAML rules | never (D18; JSON matches the schema and LLM output) |
 | Area / device / list targets | later; v1 is one entity per `call` |
 | Numeric / text / timer helpers | D40, after this |
-| Custom integration services (`esphome.reboot`) | [integrations.md](integrations.md) open question 1 |
-| Integrations emitting bus events | addendum to integrations.md when MQTT needs it |
+| Custom protocol services (`esphome.reboot`) | [protocols.md](protocols.md) open question 1 |
+| Protocols emitting bus events | addendum to protocols.md when MQTT needs it |
 | Local time actually firing | after an IANA timezone lands in `irori.toml` |
 | Sun actually firing | after timezone **and** lat/lon land in `irori.toml` |
 | Unit conversion in `num()` | [entities.md](entities.md) open question 3; `num` is the stored number |
@@ -1464,7 +1464,7 @@ changes these:
   needs timezone **and** lat/lon. The draft listed them together; arming sun on timezone
   alone would compute sunrise at (0, 0).
 - **Event triggers are protocol-agnostic.** The draft's "including raw MQTT messages" is an
-  integration-emitted named event, not an MQTT topic field on the core schema. The integration
+  protocol-emitted named event, not an MQTT topic field on the core schema. The protocol
   contract does not emit events yet; rule-to-rule `event` actions still work.
 - **Version hash excludes `enabled`.** The draft said "every save creates a version"; toggling
   a switch is not a definition change.
@@ -1510,8 +1510,8 @@ Would make guests-over work as a top-level condition, and would surprise every r
 
 ### 23.6 Cancelling in-flight service calls on restart
 
-Looks cleaner on a sequence diagram. The integration may already have the command
-([integrations.md](integrations.md) §7.3 replies after the device *accepted*, not after state
+Looks cleaner on a sequence diagram. The protocol may already have the command
+([protocols.md](protocols.md) §7.3 replies after the device *accepted*, not after state
 confirmed). Pretending we can unsend it breaks D0. Waits cancel; calls don't.
 
 ---
@@ -1529,10 +1529,10 @@ confirmed). Pretending we can unsend it breaks D0. Waits cancel; calls don't.
    class or wasm cannot compile `cel` when M1.6 needs it. Status stays **draft** until those
    two are measured, not because the engine choice is unmade.
 
-3. **Integrations emitting bus events.** Trigger shape is done. Does `IntegrationContext` gain
+3. **Protocols emitting bus events.** Trigger shape is done. Does `ProtocolContext` gain
    `emit(event, data)` in v1 of the engine, or only when MQTT lands? **Lean: add the method with
-   M1.4 even if no built-in integration uses it yet**, so the Python external example can. Small
-   integrations.md addendum.
+   M1.4 even if no built-in protocol uses it yet**, so the Python external example can. Small
+   protocols.md addendum.
 
 4. **`irori.toml` location shape.** When it lands: IANA timezone (`Europe/Brussels`) for `time`
    / `hour()` / `minute()`, plus lat/lon for `sun`. Both are required for sun; timezone alone
@@ -1545,7 +1545,7 @@ confirmed). Pretending we can unsend it breaks D0. Waits cancel; calls don't.
    UTC with a warning. Keep the failure until a timezone exists, consistent with `time`
    triggers (not with sun).
 
-7. **Custom services** ([integrations.md](integrations.md) OQ1). Rules v1 call only the
+7. **Custom services** ([protocols.md](protocols.md) OQ1). Rules v1 call only the
    standard list in §7.1. Adding `esphome.reboot` later is a new `RuleService` variant, not a
    free-form string (free-form would undo D8).
 
@@ -1566,7 +1566,7 @@ confirmed). Pretending we can unsend it breaks D0. Waits cancel; calls don't.
 - [ROADMAP.md](../../ROADMAP.md) — M0.3, M0.8, M1.4, D8–D10, D14, D18, D36, D40, D41 (to land with PR 1), §4.3 budgets
 - [entities.md](entities.md) — registry vs state, availability, context `Origin::Automation`, brightness 1–255
 - [config.md](config.md) — last-good reload, atomic writes, `rules/<id>.json` reserved, helpers.toml
-- [integrations.md](integrations.md) — services, toggle resolution, `brightness_pct`, 10 s timeout
+- [protocols.md](protocols.md) — services, toggle resolution, `brightness_pct`, 10 s timeout
 - [extensions.md](extensions.md) — helpers as an extension
 - `crates/irori-rules` — M0.8 CEL spike (`src/expr.rs`, `cel` 0.14.5); engine is M1.4
 - `crates/irori-types` — `RuleId`, `Context` / `Origin::Automation`, `EntityState`, `ServiceName`, `LightTurnOn`
@@ -1680,7 +1680,7 @@ implement modes, waits, or service calls here.
 - Core adapter implementing `Clock` / `StateView` / `ServiceCaller` / `EventBus` / `TraceSink`
   / `IdGen` / `Engine::handle`
 - Arming rules on config reload inside `irori-core`
-- `Event::Bus` + integration `emit` (unless a tiny type lands in PR 2 for the `event` action
+- `Event::Bus` + protocol `emit` (unless a tiny type lands in PR 2 for the `event` action
   JSON)
 - Recorder `rule_versions` / `rule_runs` (M1.3)
 - UI Automations page (M1.6); wasm compile of `cel`

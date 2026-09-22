@@ -190,8 +190,8 @@ async fn entity_history(
 // --- Rooms, names, and where things live ---------------------------------------------------
 //
 // Each of these changes a file in the config directory and then tells the core
-// (`docs/specs/config.md`). None of them touch what an integration reports: taking a name away
-// gives the integration's name back, rather than leaving whatever was on screen.
+// (`docs/specs/config.md`). None of them touch what a protocol reports: taking a name away
+// gives the protocol's name back, rather than leaving whatever was on screen.
 
 async fn areas(State(state): State<AppState>) -> Json<Vec<Area>> {
     Json(state.0.core.areas())
@@ -622,7 +622,7 @@ async fn edit_entity(
     };
     // A helper's name lives where the helper is defined. Writing it to entities.toml as well
     // would give it two names, one in each file (ROADMAP D36).
-    if key.integration.as_str() == HELPERS.as_str()
+    if key.protocol.as_str() == HELPERS.as_str()
         && let Some(toggle) = key.unique_id.as_str().strip_prefix("toggle-")
     {
         let Some(Some(name)) = request.name.clone() else {
@@ -786,7 +786,7 @@ impl std::fmt::Debug for SecretGiven {
 /// writing it into `secrets.toml`. The extension is restarted with it.
 ///
 /// **Only where it asked.** The path has to be one the extension lists as waiting right now
-/// (`docs/specs/integrations.md` §6.6). There is no sign-in yet (D12), so this endpoint must not
+/// (`docs/specs/protocols.md` §6.6). There is no sign-in yet (D12), so this endpoint must not
 /// be a way to put anything into anyone's settings; this way it can only answer a question an
 /// extension is actually asking. The value is never echoed back, logged, or readable afterwards.
 async fn give_secret(
@@ -1004,7 +1004,7 @@ enum CommandName {
     Toggle,
 }
 
-/// Asks an entity to do something and answers with its state once the integration confirms, so
+/// Asks an entity to do something and answers with its state once the protocol confirms, so
 /// the page can show the result without waiting for its next refresh.
 ///
 /// There's no sign-in yet (ROADMAP D12, M1.5), so every command is attributed to one
@@ -1025,7 +1025,7 @@ async fn command(State(state): State<AppState>, Json(request): Json<CommandReque
     let who = core.new_context(Origin::User {
         user_id: UNAUTHENTICATED.clone(),
     });
-    // Subscribed before the call: the integration reports the new state and answers the call in
+    // Subscribed before the call: the protocol reports the new state and answers the call in
     // the same breath, and the report must not slip past while the call is still in flight.
     let changes = core.subscribe();
     match core
@@ -1041,7 +1041,7 @@ async fn command(State(state): State<AppState>, Json(request): Json<CommandReque
 }
 
 /// How long to wait for the change a command caused before answering with what's on file. The
-/// integration has already confirmed by this point, so the report is usually a moment away.
+/// protocol has already confirmed by this point, so the report is usually a moment away.
 const SETTLE: Duration = Duration::from_millis(500);
 
 /// Waits for the state change this command caused. Answers `None` when there wasn't one: a light
@@ -1367,7 +1367,10 @@ mod tests {
         let core = core();
         let host = irori_core::ExtensionHost::start(
             &core,
-            vec![irori_integration::builtin::<irori_int_demo::Demo>().map_err(anyhow::Error::msg)?],
+            vec![
+                irori_protocol::builtin::<irori_protocol_demo::Demo>()
+                    .map_err(anyhow::Error::msg)?,
+            ],
             irori_core::Timing::default(),
         )
         .map_err(anyhow::Error::msg)?;
@@ -1624,7 +1627,7 @@ mod tests {
     }
 
     /// Renaming a device renames the entities that were following its name, and taking the name
-    /// away gives the integration's name back rather than leaving the chosen one stuck.
+    /// away gives the protocol's name back rather than leaving the chosen one stuck.
     #[tokio::test]
     async fn a_rename_carries_the_entities_and_can_be_undone() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
@@ -2100,7 +2103,7 @@ mod tests {
 
     // --- Secrets ----------------------------------------------------------------------------
 
-    /// An integration that won't do anything without a key, and says where the key goes.
+    /// A protocol that won't do anything without a key, and says where the key goes.
     struct Safe;
 
     #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -2110,7 +2113,7 @@ mod tests {
         code: Option<String>,
     }
 
-    impl irori_integration::Integration for Safe {
+    impl irori_protocol::Protocol for Safe {
         type Config = SafeSettings;
         const MANIFEST: &'static str = r#"
             [extension]
@@ -2119,14 +2122,14 @@ mod tests {
             version = "0.1.0"
             irori = ">=0.0.0"
 
-            [[contributes.integration]]
+            [[contributes.protocol]]
             iot_class = "local_push"
             entity_kinds = ["switch"]
         "#;
         async fn run(
             settings: SafeSettings,
-            mut ctx: irori_integration::IntegrationContext,
-        ) -> Result<(), irori_integration::IntegrationError> {
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
             if settings.code.is_none() {
                 ctx.set_waiting(vec![irori_types::Waiting {
                     unique_id: "vault".parse()?,
@@ -2149,7 +2152,7 @@ mod tests {
         let core = core();
         let host = irori_core::ExtensionHost::start(
             &core,
-            vec![irori_integration::builtin::<Safe>().map_err(anyhow::Error::msg)?],
+            vec![irori_protocol::builtin::<Safe>().map_err(anyhow::Error::msg)?],
             irori_core::Timing::default(),
         )
         .map_err(anyhow::Error::msg)?;
@@ -2359,7 +2362,7 @@ mod tests {
         irori_core::ExtensionHost::start(
             core,
             vec![
-                irori_integration::builtin::<irori_int_helpers::Helpers>()
+                irori_protocol::builtin::<irori_protocol_helpers::Helpers>()
                     .map_err(anyhow::Error::msg)?,
             ],
             irori_core::Timing::default(),
@@ -2382,8 +2385,8 @@ mod tests {
     /// changes its one name, in the file that defines it, and removing it removes the entity.
     #[tokio::test]
     async fn a_toggle_keeps_its_value_and_has_one_name() -> anyhow::Result<()> {
-        let storage: Arc<dyn irori_integration::Storage> =
-            Arc::new(irori_integration::MemoryStorage::default());
+        let storage: Arc<dyn irori_protocol::Storage> =
+            Arc::new(irori_protocol::MemoryStorage::default());
         let core = core();
         core.use_storage(Arc::clone(&storage));
         let server = Server::new(core.clone())?;

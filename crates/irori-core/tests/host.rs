@@ -1,4 +1,4 @@
-//! The extension host end to end: integrations started, fed into the core, called, supervised.
+//! The extension host end to end: protocols started, fed into the core, called, supervised.
 //! Time is paused, so waits of seconds or minutes run instantly.
 
 use std::collections::BTreeMap;
@@ -9,26 +9,24 @@ use std::time::Duration;
 use irori_core::{
     CallError, Command, Core, Event, ExtensionHost, ExtensionStatus, SystemClock, Timing,
 };
-use irori_integration::types::{
+use irori_protocol::types::{
     Availability, Capabilities, Context, ContextId, DeviceDescription, EntityDescription, EntityId,
     ExtensionId, LightCapabilities, LightState, LightTurnOn, Name, Origin, Service, State,
     StateReport, UniqueId, UserId, Version,
 };
-use irori_integration::{
-    Health, Integration, IntegrationContext, IntegrationError, NoSettings, builtin,
-};
+use irori_protocol::{Health, NoSettings, Protocol, ProtocolContext, ProtocolError, builtin};
 
 fn uid(s: &str) -> UniqueId {
     UniqueId::try_from(s).expect("valid")
 }
 
 /// The lamp's entity id under the extension that described it: ids are made from the device's
-/// id, which is the integration and its handle for the device (ROADMAP D36).
-fn lamp_id(integration: &str) -> EntityId {
-    EntityId::try_from(format!("light.{integration}_lamp")).expect("valid")
+/// id, which is the protocol and its handle for the device (ROADMAP D36).
+fn lamp_id(protocol: &str) -> EntityId {
+    EntityId::try_from(format!("light.{protocol}_lamp")).expect("valid")
 }
 
-async fn describe_lamp(ctx: &IntegrationContext) -> Result<(), IntegrationError> {
+async fn describe_lamp(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
     ctx.describe_device(DeviceDescription {
         unique_id: uid("lamp"),
         name: Name::try_from("Lamp")?,
@@ -98,17 +96,17 @@ fn status(core: &Core, id: &str) -> Option<ExtensionStatus> {
         .map(|overview| overview.status.clone())
 }
 
-fn start(core: &Core, builtin: irori_integration::Builtin) -> ExtensionHost {
+fn start(core: &Core, builtin: irori_protocol::Builtin) -> ExtensionHost {
     ExtensionHost::start(core, vec![builtin], Timing::default()).expect("unique ids")
 }
 
 // --- A well-behaved lamp ------------------------------------------------------------------
 
 struct Lamp;
-impl Integration for Lamp {
+impl Protocol for Lamp {
     type Config = NoSettings;
     const MANIFEST: &'static str = LAMP_MANIFEST;
-    async fn run(_: NoSettings, mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
+    async fn run(_: NoSettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
         describe_lamp(&ctx).await?;
         ctx.report_state(light(true, Some(100), None));
         while let Some(incoming) = ctx.next_call().await {
@@ -129,7 +127,7 @@ const LAMP_MANIFEST: &str = r#"
     version = "0.1.0"
     irori = ">=0.0.0"
 
-    [[contributes.integration]]
+    [[contributes.protocol]]
     iot_class = "local_push"
     entity_kinds = ["light"]
 "#;
@@ -202,7 +200,7 @@ async fn devices_appear_and_commands_round_trip_with_their_context() {
 /// A lamp like a real one: it accepts the command at once, but its new value only arrives a
 /// moment later.
 struct SlowLamp;
-impl Integration for SlowLamp {
+impl Protocol for SlowLamp {
     type Config = NoSettings;
     const MANIFEST: &'static str = r#"
         [extension]
@@ -211,11 +209,11 @@ impl Integration for SlowLamp {
         version = "0.1.0"
         irori = ">=0.0.0"
 
-        [[contributes.integration]]
+        [[contributes.protocol]]
         iot_class = "local_push"
         entity_kinds = ["light"]
     "#;
-    async fn run(_: NoSettings, mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
+    async fn run(_: NoSettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
         describe_lamp(&ctx).await?;
         ctx.report_state(light(true, None, None));
         while let Some(incoming) = ctx.next_call().await {
@@ -260,7 +258,7 @@ async fn two_toggles_at_once_cancel_each_other_out() {
 static TURN_OFFS: AtomicUsize = AtomicUsize::new(0);
 
 struct BrokenLamp;
-impl Integration for BrokenLamp {
+impl Protocol for BrokenLamp {
     type Config = NoSettings;
     const MANIFEST: &'static str = r#"
         [extension]
@@ -269,18 +267,18 @@ impl Integration for BrokenLamp {
         version = "0.1.0"
         irori = ">=0.0.0"
 
-        [[contributes.integration]]
+        [[contributes.protocol]]
         iot_class = "local_push"
         entity_kinds = ["light"]
     "#;
-    async fn run(_: NoSettings, mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
+    async fn run(_: NoSettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
         describe_lamp(&ctx).await?;
         ctx.report_state(light(true, None, None));
         while let Some(incoming) = ctx.next_call().await {
             if matches!(incoming.call.service, Service::LightTurnOff) {
                 TURN_OFFS.fetch_add(1, Ordering::SeqCst);
             }
-            incoming.reply(Err(irori_integration::ServiceError::unavailable(
+            incoming.reply(Err(irori_protocol::ServiceError::unavailable(
                 "the lamp is unplugged",
             )));
         }
@@ -316,10 +314,10 @@ async fn a_failed_command_doesnt_change_what_the_core_thinks() {
 static CRASHY_RUNS: AtomicUsize = AtomicUsize::new(0);
 
 struct Crashy;
-impl Integration for Crashy {
+impl Protocol for Crashy {
     type Config = NoSettings;
     const MANIFEST: &'static str = CRASHY_MANIFEST;
-    async fn run(_: NoSettings, ctx: IntegrationContext) -> Result<(), IntegrationError> {
+    async fn run(_: NoSettings, ctx: ProtocolContext) -> Result<(), ProtocolError> {
         describe_lamp(&ctx).await?;
         ctx.report_state(light(true, None, None));
         let run = CRASHY_RUNS.fetch_add(1, Ordering::SeqCst);
@@ -339,13 +337,13 @@ const CRASHY_MANIFEST: &str = r#"
     version = "0.1.0"
     irori = ">=0.0.0"
 
-    [[contributes.integration]]
+    [[contributes.protocol]]
     iot_class = "local_push"
     entity_kinds = ["light"]
 "#;
 
 #[tokio::test(start_paused = true)]
-async fn a_crashing_integration_is_restarted_with_growing_delays() {
+async fn a_crashing_protocol_is_restarted_with_growing_delays() {
     let core = Core::new(Arc::new(SystemClock));
     let host = start(&core, builtin::<Crashy>().expect("valid"));
 
@@ -393,7 +391,7 @@ static EAGER_STARTS: AtomicUsize = AtomicUsize::new(0);
 
 /// Panics before it even returns its future.
 struct PanicsOnStart;
-impl Integration for PanicsOnStart {
+impl Protocol for PanicsOnStart {
     type Config = NoSettings;
     const MANIFEST: &'static str = r#"
         [extension]
@@ -402,15 +400,15 @@ impl Integration for PanicsOnStart {
         version = "0.1.0"
         irori = ">=0.0.0"
 
-        [[contributes.integration]]
+        [[contributes.protocol]]
         iot_class = "local_push"
         entity_kinds = ["light"]
     "#;
     #[allow(clippy::manual_async_fn)]
     fn run(
         _: NoSettings,
-        _: IntegrationContext,
-    ) -> impl std::future::Future<Output = Result<(), IntegrationError>> + Send {
+        _: ProtocolContext,
+    ) -> impl std::future::Future<Output = Result<(), ProtocolError>> + Send {
         EAGER_STARTS.fetch_add(1, Ordering::SeqCst);
         panic!("bad wiring");
         #[allow(unreachable_code)]
@@ -440,10 +438,10 @@ async fn a_panic_while_starting_is_a_crash_that_gets_retried() {
 // --- Stopping -----------------------------------------------------------------------------
 
 struct Stubborn;
-impl Integration for Stubborn {
+impl Protocol for Stubborn {
     type Config = NoSettings;
     const MANIFEST: &'static str = STUBBORN_MANIFEST;
-    async fn run(_: NoSettings, ctx: IntegrationContext) -> Result<(), IntegrationError> {
+    async fn run(_: NoSettings, ctx: ProtocolContext) -> Result<(), ProtocolError> {
         let _keep = ctx;
         // Ignores the request to stop.
         std::future::pending::<()>().await;
@@ -457,13 +455,13 @@ const STUBBORN_MANIFEST: &str = r#"
     version = "0.1.0"
     irori = ">=0.0.0"
 
-    [[contributes.integration]]
+    [[contributes.protocol]]
     iot_class = "local_push"
     entity_kinds = ["light"]
 "#;
 
 #[tokio::test(start_paused = true)]
-async fn an_integration_that_ignores_stop_is_cancelled_after_the_grace_period() {
+async fn an_protocol_that_ignores_stop_is_cancelled_after_the_grace_period() {
     let core = Core::new(Arc::new(SystemClock));
     let host = start(&core, builtin::<Stubborn>().expect("valid"));
     eventually("running", || {
@@ -479,10 +477,10 @@ async fn an_integration_that_ignores_stop_is_cancelled_after_the_grace_period() 
 // --- Calls that never come back, health, versions -----------------------------------------
 
 struct Silent;
-impl Integration for Silent {
+impl Protocol for Silent {
     type Config = NoSettings;
     const MANIFEST: &'static str = SILENT_MANIFEST;
-    async fn run(_: NoSettings, mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
+    async fn run(_: NoSettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
         describe_lamp(&ctx).await?;
         ctx.set_health(Health::Degraded("1 of 1 lamps is sulking".into()))
             .await;
@@ -500,7 +498,7 @@ const SILENT_MANIFEST: &str = r#"
     version = "0.1.0"
     irori = ">=0.0.0"
 
-    [[contributes.integration]]
+    [[contributes.protocol]]
     iot_class = "local_push"
     entity_kinds = ["light"]
 "#;
@@ -538,7 +536,7 @@ async fn calls_time_out_and_health_is_shown() {
 }
 
 struct FromTheFuture;
-impl Integration for FromTheFuture {
+impl Protocol for FromTheFuture {
     type Config = NoSettings;
     const MANIFEST: &'static str = r#"
         [extension]
@@ -547,11 +545,11 @@ impl Integration for FromTheFuture {
         version = "0.1.0"
         irori = ">=9.0.0"
 
-        [[contributes.integration]]
+        [[contributes.protocol]]
         iot_class = "local_push"
         entity_kinds = ["light"]
     "#;
-    async fn run(_: NoSettings, _: IntegrationContext) -> Result<(), IntegrationError> {
+    async fn run(_: NoSettings, _: ProtocolContext) -> Result<(), ProtocolError> {
         Ok(())
     }
 }
@@ -577,7 +575,7 @@ async fn incompatible_extensions_fail_without_retrying() {
 // --- Lost reports are counted ------------------------------------------------------------
 
 struct Confused;
-impl Integration for Confused {
+impl Protocol for Confused {
     type Config = NoSettings;
     const MANIFEST: &'static str = r#"
         [extension]
@@ -586,11 +584,11 @@ impl Integration for Confused {
         version = "0.1.0"
         irori = ">=0.0.0"
 
-        [[contributes.integration]]
+        [[contributes.protocol]]
         iot_class = "local_push"
         entity_kinds = ["light"]
     "#;
-    async fn run(_: NoSettings, mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
+    async fn run(_: NoSettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
         // Reports for an entity it never described.
         ctx.report_state(light(true, None, None));
         ctx.stopped().await;
@@ -667,23 +665,20 @@ struct KeyedSettings {
 
 static STARTED_WITH: std::sync::Mutex<Vec<Option<String>>> = std::sync::Mutex::new(Vec::new());
 
-impl Integration for Keyed {
+impl Protocol for Keyed {
     type Config = KeyedSettings;
     const MANIFEST: &'static str = KEYED_MANIFEST;
-    async fn run(
-        settings: KeyedSettings,
-        mut ctx: IntegrationContext,
-    ) -> Result<(), IntegrationError> {
+    async fn run(settings: KeyedSettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
         STARTED_WITH
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(settings.key.clone());
         if settings.key.is_none() {
-            ctx.set_waiting(vec![irori_integration::types::Waiting {
+            ctx.set_waiting(vec![irori_protocol::types::Waiting {
                 unique_id: uid("locked"),
                 name: Name::try_from("Locked box")?,
                 reason: "it wants a key".into(),
-                secret: Some(irori_integration::types::SecretRequest {
+                secret: Some(irori_protocol::types::SecretRequest {
                     path: vec!["key".into()],
                     label: "Key".into(),
                     hint: None,
@@ -702,7 +697,7 @@ const KEYED_MANIFEST: &str = r#"
     version = "0.1.0"
     irori = ">=0.0.0"
 
-    [[contributes.integration]]
+    [[contributes.protocol]]
     iot_class = "local_push"
     entity_kinds = ["light"]
 "#;
@@ -710,11 +705,11 @@ const KEYED_MANIFEST: &str = r#"
 fn keyed_settings(
     extension: &str,
     table: serde_json::Value,
-) -> irori_integration::types::ExtensionSettings {
+) -> irori_protocol::types::ExtensionSettings {
     let serde_json::Value::Object(table) = table else {
         panic!("a table");
     };
-    irori_integration::types::ExtensionSettings::new(
+    irori_protocol::types::ExtensionSettings::new(
         [(ExtensionId::try_from(extension).expect("valid"), table)].into(),
     )
 }
@@ -795,7 +790,7 @@ struct CrashUntilKeyedSettings {
     #[serde(default)]
     key: Option<String>,
 }
-impl Integration for CrashUntilKeyed {
+impl Protocol for CrashUntilKeyed {
     type Config = CrashUntilKeyedSettings;
     const MANIFEST: &'static str = r#"
         [extension]
@@ -804,14 +799,14 @@ impl Integration for CrashUntilKeyed {
         version = "0.1.0"
         irori = ">=0.0.0"
 
-        [[contributes.integration]]
+        [[contributes.protocol]]
         iot_class = "local_push"
         entity_kinds = ["light"]
     "#;
     async fn run(
         settings: CrashUntilKeyedSettings,
-        mut ctx: IntegrationContext,
-    ) -> Result<(), IntegrationError> {
+        mut ctx: ProtocolContext,
+    ) -> Result<(), ProtocolError> {
         RETRY_RUNS.fetch_add(1, Ordering::SeqCst);
         if settings.key.is_none() {
             panic!("no key");
@@ -822,7 +817,7 @@ impl Integration for CrashUntilKeyed {
 }
 
 /// Changing settings during the crash backoff must restart now, not after the current delay
-/// (`docs/specs/integrations.md` §3 step 6).
+/// (`docs/specs/protocols.md` §3 step 6).
 #[tokio::test(start_paused = true)]
 async fn a_settings_change_during_retry_restarts_without_waiting_out_the_delay() {
     let core = Core::new(Arc::new(SystemClock));
@@ -926,7 +921,7 @@ struct Counter;
 static COUNTED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
 static TOO_BIG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-impl Integration for Counter {
+impl Protocol for Counter {
     type Config = NoSettings;
     const MANIFEST: &'static str = r#"
         [extension]
@@ -935,11 +930,11 @@ impl Integration for Counter {
         version = "0.1.0"
         irori = ">=0.0.0"
 
-        [[contributes.integration]]
+        [[contributes.protocol]]
         iot_class = "local_push"
         entity_kinds = ["switch"]
     "#;
-    async fn run(_: NoSettings, mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
+    async fn run(_: NoSettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
         let starts = ctx
             .load("starts")
             .await?
@@ -951,7 +946,7 @@ impl Integration for Counter {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(starts);
-        let huge = serde_json::json!("x".repeat(irori_integration::MAX_STORED_VALUE));
+        let huge = serde_json::json!("x".repeat(irori_protocol::MAX_STORED_VALUE));
         let refused = ctx.store("huge", huge).await.err().map(|e| e.to_string());
         *TOO_BIG
             .lock()
@@ -961,7 +956,7 @@ impl Integration for Counter {
     }
 }
 
-/// A stored value is there when the integration starts again; one over the limit is refused
+/// A stored value is there when the protocol starts again; one over the limit is refused
 /// with a reason rather than silently cut.
 #[tokio::test(start_paused = true)]
 async fn stored_values_outlast_a_restart_and_have_a_size_limit() {

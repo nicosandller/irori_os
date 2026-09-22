@@ -5,7 +5,7 @@
   "type": "object",
   "properties": {
     "attributes": {
-      "description": "Free-form extras from the integration, e.g. Zigbee link quality. Readable by rules but not type-checked.",
+      "description": "Free-form extras from the protocol, e.g. Zigbee link quality. Readable by rules but not type-checked.",
       "type": "object",
       "propertyNames": {
         "$ref": "#/$defs/AttributeKey"
@@ -28,7 +28,7 @@
       "$ref": "#/$defs/Timestamp"
     },
     "last_reported": {
-      "description": "When the integration last reported anything, even an identical value.",
+      "description": "When the protocol last reported anything, even an identical value.",
       "$ref": "#/$defs/Timestamp"
     },
     "last_updated": {
@@ -235,22 +235,15 @@
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
-    "IntegrationId": {
-      "description": "Format of a slug (integration id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
-      "type": "string",
-      "maxLength": 64,
-      "minLength": 1,
-      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
-    },
     "Origin": {
       "description": "Where a context started.",
       "oneOf": [
         {
-          "description": "Reported by a device through an integration, e.g. someone pressed a physical switch.",
+          "description": "Reported by a device through a protocol, e.g. someone pressed a physical switch.",
           "type": "object",
           "properties": {
-            "integration": {
-              "$ref": "#/$defs/IntegrationId"
+            "protocol": {
+              "$ref": "#/$defs/ProtocolId"
             },
             "type": {
               "type": "string",
@@ -260,7 +253,7 @@
           "additionalProperties": false,
           "required": [
             "type",
-            "integration"
+            "protocol"
           ]
         },
         {
@@ -336,6 +329,13 @@
           ]
         }
       ]
+    },
+    "ProtocolId": {
+      "description": "Format of a slug (protocol id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
     "SensorValue": {
       "description": "A sensor reading: a finite number or text, matching the sensor's `value_type`.",

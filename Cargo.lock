@@ -932,9 +932,9 @@ dependencies = [
  "irori-assist",
  "irori-config",
  "irori-core",
- "irori-int-demo",
- "irori-int-helpers",
- "irori-integration",
+ "irori-protocol",
+ "irori-protocol-demo",
+ "irori-protocol-helpers",
  "irori-types",
  "mime_guess",
  "rusqlite",
@@ -992,7 +992,7 @@ name = "irori-core"
 version = "0.0.0"
 dependencies = [
  "getrandom 0.4.3",
- "irori-integration",
+ "irori-protocol",
  "irori-types",
  "jiff",
  "schemars",
@@ -1003,10 +1003,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "irori-int-demo"
+name = "irori-protocol"
 version = "0.0.0"
 dependencies = [
- "irori-integration",
+ "irori-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "irori-protocol-demo"
+version = "0.0.0"
+dependencies = [
+ "irori-protocol",
  "irori-types",
  "schemars",
  "serde",
@@ -1015,12 +1027,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "irori-int-esphome"
+name = "irori-protocol-esphome"
 version = "0.0.0"
 dependencies = [
  "base64",
  "esphome-client",
- "irori-integration",
+ "irori-protocol",
  "irori-types",
  "schemars",
  "serde",
@@ -1032,10 +1044,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "irori-int-helpers"
+name = "irori-protocol-helpers"
 version = "0.0.0"
 dependencies = [
- "irori-integration",
+ "irori-protocol",
  "irori-types",
  "schemars",
  "serde",
@@ -1044,26 +1056,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "irori-int-mqtt"
+name = "irori-protocol-mqtt"
 version = "0.0.0"
 dependencies = [
- "irori-integration",
+ "irori-protocol",
  "irori-types",
  "schemars",
  "serde",
  "tokio",
-]
-
-[[package]]
-name = "irori-integration"
-version = "0.0.0"
-dependencies = [
- "irori-types",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
- "toml",
 ]
 
 [[package]]

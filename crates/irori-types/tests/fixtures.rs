@@ -184,7 +184,7 @@ fn manifest_warnings_name_ignored_contributions() -> anyhow::Result<()> {
         ]
     );
     assert_eq!(
-        manifest.integration_id().map(String::from).as_deref(),
+        manifest.protocol_id().map(String::from).as_deref(),
         Some("home_overview")
     );
 
@@ -196,7 +196,7 @@ fn manifest_warnings_name_ignored_contributions() -> anyhow::Result<()> {
     let (_, terminal) = load::<ExtensionManifest>(&dir.join("terminal_app_full_access.toml"))?;
     let terminal = terminal.map_err(anyhow::Error::msg)?;
     assert!(terminal.permissions.full_access());
-    assert_eq!(terminal.integration_id(), None);
+    assert_eq!(terminal.protocol_id(), None);
     Ok(())
 }
 

@@ -1,5 +1,5 @@
-//! Virtual devices, for trying Irori without hardware. Also the reference integration: copy this
-//! to start a new one (`docs/specs/integrations.md`).
+//! Virtual devices, for trying Irori without hardware. Also the reference protocol: copy this
+//! to start a new one (`docs/specs/protocols.md`).
 //!
 //! Study: a dimmable lamp and a plug. Hallway: a ceiling light, a PIR, an illuminance sensor,
 //! and an mmWave with occupancy and target distance — a scene for designing automations. Sensor
@@ -8,22 +8,22 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use irori_integration::types::{
+use irori_protocol::types::{
     BinarySensorCapabilities, BinarySensorClass, BinarySensorState, Capabilities, ColorMode,
     ColorTempRange, ContextId, DeviceDescription, EntityDescription, LightCapabilities, LightState,
     LightTurnOn, Name, ObjectId, SensorCapabilities, SensorClass, SensorState, SensorValue,
     SensorValueType, Service, State, StateClass, StateReport, SwitchCapabilities, SwitchClass,
     SwitchState, UniqueId,
 };
-use irori_integration::{Integration, IntegrationContext, IntegrationError, ServiceError};
+use irori_protocol::{Protocol, ProtocolContext, ProtocolError, ServiceError};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-/// The demo integration.
+/// The demo protocol.
 #[derive(Debug)]
 pub struct Demo;
 
-/// Settings for the demo integration.
+/// Settings for the demo protocol.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -55,17 +55,17 @@ impl Default for Config {
     }
 }
 
-impl Integration for Demo {
+impl Protocol for Demo {
     type Config = Config;
     const MANIFEST: &'static str = include_str!("../irori-extension.toml");
     const ICON: Option<&'static str> = Some(include_str!("../icon.svg"));
 
-    async fn run(config: Config, ctx: IntegrationContext) -> Result<(), IntegrationError> {
+    async fn run(config: Config, ctx: ProtocolContext) -> Result<(), ProtocolError> {
         run(config, ctx).await
     }
 }
 
-// Device ids are the integration and these handles (`demo_lamp`), so they don't repeat "demo".
+// Device ids are the protocol and these handles (`demo_lamp`), so they don't repeat "demo".
 const LAMP: &str = "lamp";
 const LAMP_LIGHT: &str = "lamp-light";
 const PLUG: &str = "plug";
@@ -83,7 +83,7 @@ const MMWAVE: &str = "mmwave";
 const MMWAVE_OCCUPANCY: &str = "mmwave-occupancy";
 const MMWAVE_DISTANCE: &str = "mmwave-target-distance";
 
-async fn run(config: Config, mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
+async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
     describe(&ctx).await?;
 
     let mut lamp = LightState {
@@ -180,7 +180,7 @@ fn apply_light(light: &mut LightState, on: Option<&LightTurnOn>) {
     }
 }
 
-async fn report_sensors(ctx: &IntegrationContext, tick: u64) -> Result<(), IntegrationError> {
+async fn report_sensors(ctx: &ProtocolContext, tick: u64) -> Result<(), ProtocolError> {
     ctx.report_state(report(
         SENSOR_MOTION,
         Some(State::BinarySensor(BinarySensorState {
@@ -261,7 +261,7 @@ fn round1(n: f64) -> f64 {
     (n * 10.0).round() / 10.0
 }
 
-async fn describe(ctx: &IntegrationContext) -> Result<(), IntegrationError> {
+async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
     ctx.describe_device(device(LAMP, "Demo lamp", "Virtual lamp", "Study")?)
         .await?;
     ctx.describe_entity(EntityDescription {
@@ -416,7 +416,7 @@ async fn describe(ctx: &IntegrationContext) -> Result<(), IntegrationError> {
     Ok(())
 }
 
-fn id(unique_id: &str) -> Result<UniqueId, IntegrationError> {
+fn id(unique_id: &str) -> Result<UniqueId, ProtocolError> {
     Ok(UniqueId::try_from(unique_id)?)
 }
 
@@ -429,7 +429,7 @@ fn device(
     name: &str,
     model: &str,
     room: &str,
-) -> Result<DeviceDescription, IntegrationError> {
+) -> Result<DeviceDescription, ProtocolError> {
     Ok(DeviceDescription {
         unique_id: id(unique_id)?,
         name: Name::try_from(name)?,
@@ -446,7 +446,7 @@ fn report(
     unique_id: &str,
     state: Option<State>,
     caused_by: Option<ContextId>,
-) -> Result<StateReport, IntegrationError> {
+) -> Result<StateReport, ProtocolError> {
     Ok(StateReport {
         unique_id: id(unique_id)?,
         state,
@@ -461,20 +461,20 @@ mod tests {
 
     #[test]
     fn manifest_and_config_are_valid() {
-        let builtin = irori_integration::builtin::<Demo>().expect("valid built-in");
+        let builtin = irori_protocol::builtin::<Demo>().expect("valid built-in");
         assert_eq!(builtin.manifest.extension.id.as_str(), "demo");
         assert!(builtin.manifest.warnings().is_empty());
     }
 
     #[tokio::test]
     async fn settings_outside_the_advertised_range_are_refused() {
-        let builtin = irori_integration::builtin::<Demo>().expect("valid built-in");
+        let builtin = irori_protocol::builtin::<Demo>().expect("valid built-in");
         for secs in [
             serde_json::json!(0),
             serde_json::json!(3601),
             serde_json::json!(1.5),
         ] {
-            let (ctx, _host) = irori_integration::host::connect();
+            let (ctx, _host) = irori_protocol::host::connect();
             let err = builtin
                 .start(serde_json::json!({ "sensor_interval_secs": secs }), ctx)
                 .err()
@@ -485,7 +485,7 @@ mod tests {
             );
         }
         for secs in [serde_json::json!(60), serde_json::json!(60.0)] {
-            let (ctx, _host) = irori_integration::host::connect();
+            let (ctx, _host) = irori_protocol::host::connect();
             let started = builtin.start(serde_json::json!({ "sensor_interval_secs": secs }), ctx);
             assert!(started.is_ok());
         }

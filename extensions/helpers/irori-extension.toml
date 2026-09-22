@@ -7,7 +7,7 @@ description = "Values Irori keeps itself rather than a device reporting them, fo
 icon = "icon.svg"
 
 # Nothing leaves this machine: the values live in Irori's own database.
-[[contributes.integration]]
+[[contributes.protocol]]
 iot_class = "local_push"
 entity_kinds = ["switch"]
 run = { command = "bin/irori-ext-helpers" }

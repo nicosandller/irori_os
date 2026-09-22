@@ -28,7 +28,7 @@ pub struct Controls {
 }
 
 /// One device and the entities it provides. `device` is `None` for entities that belong to no
-/// device, which the integration contract allows.
+/// device, which the protocol contract allows.
 #[derive(Debug)]
 pub struct Group {
     pub device: Option<Device>,
@@ -43,7 +43,7 @@ fn matches_device(home: &Home, device: &Device, needle: &str) -> bool {
     let haystack = [
         device.name.to_string(),
         device.id.to_string(),
-        device.integration.to_string(),
+        device.protocol.to_string(),
         device
             .description
             .as_ref()
@@ -126,7 +126,7 @@ const FOLDED_KEY: &str = "irori.devices.folded";
 /// The three ways to look at what's in the home.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Showing {
-    /// One row per device, grouped by the integration it came through. The default: a device is
+    /// One row per device, grouped by the protocol it came through. The default: a device is
     /// the thing a person bought and put somewhere.
     Devices,
     /// Every entity with its reading and its switch, grouped by device.
@@ -246,14 +246,14 @@ pub fn Devices() -> impl IntoView {
 /// A device with its entities and what they're reporting: one row of the device table.
 type DeviceRow = (Device, Vec<(Entity, Option<EntityState>)>);
 
-/// One row per device: what it is and where it is, grouped by the integration it came through.
+/// One row per device: what it is and where it is, grouped by the protocol it came through.
 ///
 /// Built from the devices rather than from their entities, so a device Irori is connected to
 /// still appears when it provides nothing Irori can model — a Bluetooth proxy, say. Those are
 /// invisible in the entity view by their nature, and being unable to find them would be worse.
 fn table(home: &Home, needle: &str, folded: RwSignal<BTreeSet<String>>) -> AnyView {
     let needle = needle.trim().to_lowercase();
-    let mut by_integration: BTreeMap<String, Vec<DeviceRow>> = BTreeMap::new();
+    let mut by_protocol: BTreeMap<String, Vec<DeviceRow>> = BTreeMap::new();
     for device in home
         .devices
         .iter()
@@ -272,12 +272,12 @@ fn table(home: &Home, needle: &str, folded: RwSignal<BTreeSet<String>>) -> AnyVi
                 (entity.clone(), state)
             })
             .collect();
-        by_integration
-            .entry(device.integration.to_string())
+        by_protocol
+            .entry(device.protocol.to_string())
             .or_default()
             .push((device.clone(), entities));
     }
-    if by_integration.is_empty() {
+    if by_protocol.is_empty() {
         let message = if home.devices.is_empty() {
             "No devices yet. Extensions bring them in; \"Add device\" says how."
         } else {
@@ -290,20 +290,20 @@ fn table(home: &Home, needle: &str, folded: RwSignal<BTreeSet<String>>) -> AnyVi
         .iter()
         .map(|area| (Some(area.id.clone()), area.name.to_string()))
         .collect();
-    let mut groups: Vec<_> = by_integration
+    let mut groups: Vec<_> = by_protocol
         .into_iter()
-        .map(|(integration, mut devices)| {
+        .map(|(protocol, mut devices)| {
             devices.sort_by(|(a, _), (b, _)| (&a.name, &a.id).cmp(&(&b.name, &b.id)));
             let extension = home
                 .extensions
                 .iter()
-                .find(|(id, _)| id.as_str() == integration);
+                .find(|(id, _)| id.as_str() == protocol);
             let name = extension
                 .map(|(_, extension)| extension.name.clone())
                 .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| integration.clone());
+                .unwrap_or_else(|| protocol.clone());
             let has_icon = extension.is_some_and(|(_, extension)| extension.has_icon);
-            (integration, name, has_icon, devices)
+            (protocol, name, has_icon, devices)
         })
         .collect();
     groups.sort_by_key(|group| group.1.to_lowercase());
@@ -317,7 +317,7 @@ fn table(home: &Home, needle: &str, folded: RwSignal<BTreeSet<String>>) -> AnyVi
                 <thead>
                     <tr>
                         <th scope="col" class="icon-col">
-                            <span class="visually-hidden">"Integration"</span>
+                            <span class="visually-hidden">"Protocol"</span>
                         </th>
                         <th scope="col">"Device"</th>
                         <th scope="col">"Area"</th>
@@ -329,8 +329,8 @@ fn table(home: &Home, needle: &str, folded: RwSignal<BTreeSet<String>>) -> AnyVi
                 </thead>
                 {groups
                     .into_iter()
-                    .map(|(integration, name, has_icon, devices)| {
-                        group(integration, name, has_icon, devices, &areas, folded, filtering)
+                    .map(|(protocol, name, has_icon, devices)| {
+                        group(protocol, name, has_icon, devices, &areas, folded, filtering)
                     })
                     .collect_view()}
             </table>
@@ -339,9 +339,9 @@ fn table(home: &Home, needle: &str, folded: RwSignal<BTreeSet<String>>) -> AnyVi
     .into_any()
 }
 
-/// One integration's devices: a header that folds them away, and a row each.
+/// One protocol's devices: a header that folds them away, and a row each.
 fn group(
-    integration: String,
+    protocol: String,
     name: String,
     has_icon: bool,
     devices: Vec<DeviceRow>,
@@ -350,11 +350,11 @@ fn group(
     filtering: bool,
 ) -> AnyView {
     let open = {
-        let key = integration.clone();
+        let key = protocol.clone();
         move || filtering || !folded.get().contains(&key)
     };
     let toggle = {
-        let key = integration.clone();
+        let key = protocol.clone();
         move |_| {
             folded.update(|folded| {
                 if !folded.remove(&key) {
@@ -373,7 +373,7 @@ fn group(
             let room = areas.get(&device.area_id).cloned();
             view! {
                 <tr>
-                    <td class="icon-col">{icon(&integration, has_icon)}</td>
+                    <td class="icon-col">{icon(&protocol, has_icon)}</td>
                     <th scope="row">
                         <A href=format!("/devices/{id}")>{device.name.to_string()}</A>
                         {device.description.as_ref().map(|description| view! {
@@ -389,7 +389,7 @@ fn group(
             }
         })
         .collect_view();
-    let header_icon = icon(&integration, has_icon);
+    let header_icon = icon(&protocol, has_icon);
     let folded_class = {
         let open = open.clone();
         move || !open()
@@ -418,14 +418,14 @@ fn group(
     .into_any()
 }
 
-/// An integration's icon, or its initial when it has none. Always an `<img>`: an extension's SVG
+/// A protocol's icon, or its initial when it has none. Always an `<img>`: an extension's SVG
 /// is loaded as an image, where it can't run script (`docs/specs/extensions.md`).
-pub fn icon(integration: &str, has_icon: bool) -> AnyView {
+pub fn icon(protocol: &str, has_icon: bool) -> AnyView {
     if has_icon {
         view! {
             <img
-                class="integration-icon"
-                src=format!("/api/dev/extensions/{integration}/icon.svg")
+                class="protocol-icon"
+                src=format!("/api/dev/extensions/{protocol}/icon.svg")
                 alt=""
                 width="20"
                 height="20"
@@ -433,13 +433,12 @@ pub fn icon(integration: &str, has_icon: bool) -> AnyView {
         }
         .into_any()
     } else {
-        let initial = integration
+        let initial = protocol
             .chars()
             .next()
             .map(|c| c.to_ascii_uppercase().to_string())
             .unwrap_or_default();
-        view! { <span class="integration-icon letter" aria-hidden="true">{initial}</span> }
-            .into_any()
+        view! { <span class="protocol-icon letter" aria-hidden="true">{initial}</span> }.into_any()
     }
 }
 
@@ -466,7 +465,7 @@ fn Ignored() -> impl IntoView {
                         {format!("{count} ignored device{}", if count == 1 { "" } else { "s" })}
                     </summary>
                     <p class="muted small">
-                        "Kept out of Irori. Their integrations may still talk to them; nothing "
+                        "Kept out of Irori. Their protocols may still talk to them; nothing "
                         "they say reaches the home."
                     </p>
                     {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
@@ -492,7 +491,7 @@ fn Ignored() -> impl IntoView {
                                 view! {
                                     <li>
                                         <span class="name">{device.name.to_string()}</span>
-                                        <span class="muted small">{device.integration.clone()}</span>
+                                        <span class="muted small">{device.protocol.clone()}</span>
                                         <button type="button" class="link" on:click=let_back>
                                             "Let back in"
                                         </button>
@@ -571,9 +570,9 @@ fn NewDevices() -> impl IntoView {
                                 let (add, ignore) = (device.id.clone(), device.id.clone());
                                 view! {
                                     <li>
-                                        {icon(&device.integration, has_icon(live, &device.integration))}
+                                        {icon(&device.protocol, has_icon(live, &device.protocol))}
                                         <span class="name">{device.name.to_string()}</span>
-                                        <span class="muted small">{device.integration.clone()}</span>
+                                        <span class="muted small">{device.protocol.clone()}</span>
                                         <span class="room-actions">
                                             <button type="button" on:click=move |_| decide(vec![add.clone()], true)>
                                                 "Add"
@@ -593,12 +592,12 @@ fn NewDevices() -> impl IntoView {
     }
 }
 
-fn has_icon(live: crate::Live, integration: &str) -> bool {
+fn has_icon(live: crate::Live, protocol: &str) -> bool {
     live.home
         .get_untracked()
         .extensions
         .iter()
-        .any(|(id, extension)| id.as_str() == integration && extension.has_icon)
+        .any(|(id, extension)| id.as_str() == protocol && extension.has_icon)
 }
 
 /// The helpers in the home: the switches Irori keeps itself, each with its switch and a way to
@@ -608,7 +607,7 @@ fn helpers(home: &Home, controls: Controls) -> AnyView {
     let mut toggles: Vec<_> = home
         .entities
         .iter()
-        .filter(|entity| entity.integration.as_str() == HELPERS)
+        .filter(|entity| entity.protocol.as_str() == HELPERS)
         .filter_map(|entity| {
             let id = entity
                 .unique_id
@@ -662,7 +661,7 @@ fn helpers(home: &Home, controls: Controls) -> AnyView {
     .into_any()
 }
 
-/// The integration that keeps helpers.
+/// The protocol that keeps helpers.
 const HELPERS: &str = "helpers";
 
 /// Renaming and removing a toggle. A toggle has one name, kept with its definition in
@@ -841,7 +840,7 @@ pub fn remember(key: &str, value: &str) {
 
 /// Where devices come from, and how to get more of them.
 ///
-/// There's no "scan now" button because there's nothing to scan on demand: integrations that
+/// There's no "scan now" button because there's nothing to scan on demand: protocols that
 /// find devices are always listening. What a person *can* do here is unlock what they found but
 /// couldn't use — a device waiting for its encryption key.
 #[component]
@@ -857,7 +856,7 @@ fn AddDevice() -> impl IntoView {
                 let devices = home
                     .devices
                     .iter()
-                    .filter(|device| device.integration.as_str() == id.as_str())
+                    .filter(|device| device.protocol.as_str() == id.as_str())
                     .count();
                 (extension.clone(), devices)
             })
@@ -874,7 +873,7 @@ fn AddDevice() -> impl IntoView {
                 <A href="/extensions">"Manage extensions"</A>
                 "."
             </p>
-            <ul class="integrations">
+            <ul class="protocols">
                 {move || {
                     extensions
                         .get()
@@ -883,7 +882,7 @@ fn AddDevice() -> impl IntoView {
                             let kinds = extension.entity_kinds.join(", ");
                             view! {
                                 <li>
-                                    <div class="integration-head">
+                                    <div class="protocol-head">
                                         <span class="name">{extension.name.clone()}</span>
                                         <span class="badge">{how(&extension.iot_class)}</span>
                                         <span class="state" class:ok=extension.state == "running">
@@ -1371,7 +1370,7 @@ mod tests {
     fn entity_home() -> Home {
         let device = Device {
             id: "radar".parse().expect("valid"),
-            integration: "esphome".parse().expect("valid"),
+            protocol: "esphome".parse().expect("valid"),
             unique_id: "00:11:22:33:44:55".parse().expect("valid"),
             name: "Radar".parse().expect("valid"),
             description: None,
@@ -1385,7 +1384,7 @@ mod tests {
         };
         let entity = Entity {
             id: "binary_sensor.radar_moving".parse().expect("valid"),
-            integration: device.integration.clone(),
+            protocol: device.protocol.clone(),
             unique_id: "moving".parse().expect("valid"),
             name: "Moving".parse().expect("valid"),
             device_id: Some(device.id.clone()),

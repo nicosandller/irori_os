@@ -1,14 +1,14 @@
 //! Devices running [ESPHome](https://esphome.io) firmware, over ESPHome's native API.
 //!
-//! ESPHome devices announce themselves on the local network, so this integration needs no
+//! ESPHome devices announce themselves on the local network, so this protocol needs no
 //! setting up: it listens for them, connects, and everything they have shows up in the home.
 //! Each device gets its own task ([`node`]); this module owns the loop that talks to the core,
 //! because the core's handle can't be shared.
 //!
 //! **Encrypted devices** need their key, kept in `secrets.toml` ([`settings`]). A device that
 //! wants one and has none, or whose key doesn't match, isn't retried: it's listed as waiting
-//! (`docs/specs/integrations.md` §6.6), where the UI offers to take the key, and a new key
-//! restarts the integration.
+//! (`docs/specs/protocols.md` §6.6), where the UI offers to take the key, and a new key
+//! restarts the protocol.
 
 #[cfg(test)]
 mod fake_device;
@@ -20,27 +20,27 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use irori_integration::types::{Availability, Name, SecretRequest, UniqueId, Waiting};
-use irori_integration::{
-    AvailabilityTarget, Health, IncomingCall, Integration, IntegrationContext, IntegrationError,
+use irori_protocol::types::{Availability, Name, SecretRequest, UniqueId, Waiting};
+use irori_protocol::{
+    AvailabilityTarget, Health, IncomingCall, Protocol, ProtocolContext, ProtocolError,
     ServiceError,
 };
 
 use crate::settings::{Mac, Settings};
 use tokio::sync::mpsc;
 
-/// The ESPHome integration.
+/// The ESPHome protocol.
 #[derive(Debug)]
 pub struct Esphome;
 
-impl Integration for Esphome {
+impl Protocol for Esphome {
     // Discovery finds the devices; the one thing a person has to supply is the key for a device
     // that encrypts its connection.
     type Config = Settings;
     const MANIFEST: &'static str = include_str!("../irori-extension.toml");
     const ICON: Option<&'static str> = Some(include_str!("../icon.svg"));
 
-    async fn run(settings: Settings, ctx: IntegrationContext) -> Result<(), IntegrationError> {
+    async fn run(settings: Settings, ctx: ProtocolContext) -> Result<(), ProtocolError> {
         run(settings, ctx).await
     }
 }
@@ -100,7 +100,7 @@ struct Devices {
     /// named by what it called itself rather than by an address.
     announced: BTreeMap<SocketAddr, Announced>,
     /// Devices that need a key before they can be used, by MAC. Not retried in this run: the
-    /// settings can't change without the integration being restarted.
+    /// settings can't change without the protocol being restarted.
     waiting: BTreeMap<Mac, Waiting>,
 }
 
@@ -134,7 +134,7 @@ fn needs_key(mac: &Mac, name: &str, why: &str) -> Option<Waiting> {
     })
 }
 
-async fn run(settings: Settings, mut ctx: IntegrationContext) -> Result<(), IntegrationError> {
+async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
     let (events_tx, mut events) = mpsc::channel(EVENT_QUEUE);
     let (discovered, listener) = discovery()?;
     let mut discovered = discovered;
@@ -158,12 +158,12 @@ async fn run(settings: Settings, mut ctx: IntegrationContext) -> Result<(), Inte
                     Some(Ok(announced)) => {
                         arrive(announced, &settings, &mut devices, &events_tx);
                     }
-                    // Discovery is how this integration finds anything, so losing it is not
+                    // Discovery is how this protocol finds anything, so losing it is not
                     // something to carry on quietly with: fail, and let the core restart us
-                    // (`docs/specs/integrations.md` §5).
-                    Some(Err(why)) => break Err(IntegrationError::new(why)),
+                    // (`docs/specs/protocols.md` §5).
+                    Some(Err(why)) => break Err(ProtocolError::new(why)),
                     None => {
-                        break Err(IntegrationError::new(
+                        break Err(ProtocolError::new(
                             "stopped listening for ESPHome devices",
                         ));
                     }
@@ -269,7 +269,7 @@ fn connect(
 }
 
 /// Gives the device tasks a moment to finish, then stops them. A task can be waiting on a
-/// connection that will never answer, and the contract gives the integration 5 seconds to be
+/// connection that will never answer, and the contract gives the protocol 5 seconds to be
 /// gone; waiting for ever isn't one of the options.
 async fn stop(tasks: Vec<tokio::task::JoinHandle<()>>) {
     let aborts: Vec<_> = tasks
@@ -336,9 +336,9 @@ fn current(devices: &Devices, connection: node::Connection) -> bool {
 /// Applies what a device task reported to the core.
 async fn apply(
     event: node::Event,
-    ctx: &IntegrationContext,
+    ctx: &ProtocolContext,
     devices: &mut Devices,
-) -> Result<(), IntegrationError> {
+) -> Result<(), ProtocolError> {
     match event {
         node::Event::Arrived {
             connection,
@@ -428,7 +428,7 @@ async fn apply(
                 .get(&address)
                 .map(|task| task.commands.clone())
                 .ok_or_else(|| {
-                    IntegrationError::new(format!("`{device_id}` arrived with no task behind it"))
+                    ProtocolError::new(format!("`{device_id}` arrived with no task behind it"))
                 })?;
             devices.unreachable.remove(&address);
             // Whatever it was waiting for, it has it now.
@@ -509,7 +509,7 @@ async fn apply(
         }
         node::Event::Unreachable { connection, why } => {
             // Not from a connection that has since been replaced: that address is somebody
-            // else's business now, and counting it would leave this integration degraded over
+            // else's business now, and counting it would leave this protocol degraded over
             // a device that is perfectly well somewhere else.
             if !current(devices, connection) {
                 return Ok(());
@@ -525,7 +525,7 @@ async fn apply(
     Ok(())
 }
 
-/// What the Extensions view says about this integration.
+/// What the Extensions view says about this protocol.
 fn health(devices: &Devices) -> Health {
     let offline = devices.nodes.values().filter(|node| !node.online).count();
     if devices.unreachable.is_empty() && offline == 0 && devices.waiting.is_empty() {
@@ -557,10 +557,10 @@ fn health(devices: &Devices) -> Health {
 /// network it runs on. See the README.
 type Discovered = mpsc::Receiver<Result<Announced, String>>;
 
-fn discovery() -> Result<(Discovered, tokio::task::JoinHandle<()>), IntegrationError> {
+fn discovery() -> Result<(Discovered, tokio::task::JoinHandle<()>), ProtocolError> {
     let found = esphome_client::discovery::Client::default()
         .discover()
-        .map_err(|e| IntegrationError::new(format!("can't listen for ESPHome devices: {e}")))?;
+        .map_err(|e| ProtocolError::new(format!("can't listen for ESPHome devices: {e}")))?;
     let (tx, rx) = mpsc::channel(EVENT_QUEUE);
     let listener = tokio::spawn(async move {
         let mut found = found;
@@ -573,13 +573,13 @@ fn discovery() -> Result<(Discovered, tokio::task::JoinHandle<()>), IntegrationE
                     };
                     Ok(announced(address, &device))
                 }
-                // Discovery is the only way this integration finds anything, so the run loop
+                // Discovery is the only way this protocol finds anything, so the run loop
                 // needs to hear about this rather than simply going quiet.
                 Err(e) => Err(format!("stopped listening for ESPHome devices: {e}")),
             };
             let fatal = message.is_err();
             if tx.send(message).await.is_err() || fatal {
-                return; // the integration stopped, or there's nothing more to say
+                return; // the protocol stopped, or there's nothing more to say
             }
         }
     });
@@ -743,7 +743,7 @@ mod tests {
     /// announced, and says why — so the page can ask for the right one.
     #[tokio::test]
     async fn a_wrong_key_puts_the_device_back_to_waiting() {
-        let (ctx, _host) = irori_integration::host::connect();
+        let (ctx, _host) = irori_protocol::host::connect();
         let (events, _events) = mpsc::channel(8);
         let mut devices = Devices::default();
         let settings: Settings = serde_json::from_value(serde_json::json!({
@@ -784,26 +784,26 @@ mod tests {
     /// perfectly healthy device unavailable.
     #[tokio::test]
     async fn a_device_that_moves_address_leaves_no_stale_connection_behind() {
-        let (ctx, host) = irori_integration::host::connect();
-        // Stand in for the core: accept whatever the integration describes. The point of this
+        let (ctx, host) = irori_protocol::host::connect();
+        // Stand in for the core: accept whatever the protocol describes. The point of this
         // test is which connection the run loop keeps, not what the registry ends up holding.
         let mut ops = host.ops;
         tokio::spawn(async move {
             while let Some(op) = ops.recv().await {
                 match op {
-                    irori_integration::host::Op::DescribeDevice(_, reply)
-                    | irori_integration::host::Op::DescribeEntity(_, reply)
-                    | irori_integration::host::Op::RemoveDevice(_, reply)
-                    | irori_integration::host::Op::RemoveEntity(_, reply)
-                    | irori_integration::host::Op::SetAvailability(_, _, reply) => {
+                    irori_protocol::host::Op::DescribeDevice(_, reply)
+                    | irori_protocol::host::Op::DescribeEntity(_, reply)
+                    | irori_protocol::host::Op::RemoveDevice(_, reply)
+                    | irori_protocol::host::Op::RemoveEntity(_, reply)
+                    | irori_protocol::host::Op::SetAvailability(_, _, reply) => {
                         let _ = reply.send(Ok(()));
                     }
-                    irori_integration::host::Op::SetHealth(_)
-                    | irori_integration::host::Op::SetWaiting(_) => {}
-                    irori_integration::host::Op::Load(_, reply) => {
+                    irori_protocol::host::Op::SetHealth(_)
+                    | irori_protocol::host::Op::SetWaiting(_) => {}
+                    irori_protocol::host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));
                     }
-                    irori_integration::host::Op::Store(_, _, reply) => {
+                    irori_protocol::host::Op::Store(_, _, reply) => {
                         let _ = reply.send(Ok(()));
                     }
                 }
@@ -840,9 +840,9 @@ mod tests {
             );
         }
 
-        let device = irori_integration::types::DeviceDescription {
+        let device = irori_protocol::types::DeviceDescription {
             unique_id: UniqueId::try_from("AA:BB:CC:DD:EE:FF").expect("valid"),
-            name: irori_integration::types::Name::try_from("Moving device").expect("valid"),
+            name: irori_protocol::types::Name::try_from("Moving device").expect("valid"),
             manufacturer: None,
             model: None,
             sw_version: None,
@@ -908,24 +908,24 @@ mod tests {
     /// or its commands would be sent to a stranger.
     #[tokio::test]
     async fn a_device_that_loses_its_address_to_another_stops_claiming_it() {
-        let (ctx, host) = irori_integration::host::connect();
+        let (ctx, host) = irori_protocol::host::connect();
         let mut ops = host.ops;
         tokio::spawn(async move {
             while let Some(op) = ops.recv().await {
                 match op {
-                    irori_integration::host::Op::DescribeDevice(_, reply)
-                    | irori_integration::host::Op::DescribeEntity(_, reply)
-                    | irori_integration::host::Op::RemoveDevice(_, reply)
-                    | irori_integration::host::Op::RemoveEntity(_, reply)
-                    | irori_integration::host::Op::SetAvailability(_, _, reply) => {
+                    irori_protocol::host::Op::DescribeDevice(_, reply)
+                    | irori_protocol::host::Op::DescribeEntity(_, reply)
+                    | irori_protocol::host::Op::RemoveDevice(_, reply)
+                    | irori_protocol::host::Op::RemoveEntity(_, reply)
+                    | irori_protocol::host::Op::SetAvailability(_, _, reply) => {
                         let _ = reply.send(Ok(()));
                     }
-                    irori_integration::host::Op::SetHealth(_)
-                    | irori_integration::host::Op::SetWaiting(_) => {}
-                    irori_integration::host::Op::Load(_, reply) => {
+                    irori_protocol::host::Op::SetHealth(_)
+                    | irori_protocol::host::Op::SetWaiting(_) => {}
+                    irori_protocol::host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));
                     }
-                    irori_integration::host::Op::Store(_, _, reply) => {
+                    irori_protocol::host::Op::Store(_, _, reply) => {
                         let _ = reply.send(Ok(()));
                     }
                 }
@@ -952,9 +952,9 @@ mod tests {
             let unique_id = UniqueId::try_from(mac).expect("valid");
             node::Event::Arrived {
                 connection,
-                device: Box::new(irori_integration::types::DeviceDescription {
+                device: Box::new(irori_protocol::types::DeviceDescription {
                     unique_id,
-                    name: irori_integration::types::Name::try_from("A device").expect("valid"),
+                    name: irori_protocol::types::Name::try_from("A device").expect("valid"),
                     manufacturer: None,
                     model: None,
                     sw_version: None,
@@ -985,14 +985,14 @@ mod tests {
 
         // And it won't take commands, which would otherwise reach the wrong device.
         let (incoming, answer) =
-            irori_integration::host::incoming_call(irori_integration::types::ServiceCall {
+            irori_protocol::host::incoming_call(irori_protocol::types::ServiceCall {
                 unique_id: UniqueId::try_from("AA:AA:AA:AA:AA:AA-switch-1").expect("valid"),
-                service: irori_integration::types::Service::SwitchTurnOn,
-                context: irori_integration::types::Context {
-                    id: irori_integration::types::ContextId::try_from("01K5B2Q9A1B2C3D4E5F6G7H8J9")
+                service: irori_protocol::types::Service::SwitchTurnOn,
+                context: irori_protocol::types::Context {
+                    id: irori_protocol::types::ContextId::try_from("01K5B2Q9A1B2C3D4E5F6G7H8J9")
                         .expect("valid"),
                     parent_id: None,
-                    origin: irori_integration::types::Origin::System,
+                    origin: irori_protocol::types::Origin::System,
                 },
             });
         // The displaced device still owns the entity, so this is the routing that matters.
@@ -1005,7 +1005,7 @@ mod tests {
         route(incoming, &devices.nodes).await;
         let answered = answer.await.expect("answered rather than dropped");
         assert!(
-            matches!(answered, Err(ref e) if e.code == irori_integration::ServiceErrorCode::Unavailable),
+            matches!(answered, Err(ref e) if e.code == irori_protocol::ServiceErrorCode::Unavailable),
             "got {answered:?}"
         );
     }
@@ -1014,29 +1014,29 @@ mod tests {
     /// the *same* address, and the old one's arrival is still in the queue behind it.
     #[tokio::test]
     async fn an_arrival_from_a_replaced_connection_is_ignored() {
-        let (ctx, host) = irori_integration::host::connect();
+        let (ctx, host) = irori_protocol::host::connect();
         let mut ops = host.ops;
         let described = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = std::sync::Arc::clone(&described);
         tokio::spawn(async move {
             while let Some(op) = ops.recv().await {
                 match op {
-                    irori_integration::host::Op::DescribeDevice(_, reply) => {
+                    irori_protocol::host::Op::DescribeDevice(_, reply) => {
                         counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let _ = reply.send(Ok(()));
                     }
-                    irori_integration::host::Op::DescribeEntity(_, reply)
-                    | irori_integration::host::Op::RemoveDevice(_, reply)
-                    | irori_integration::host::Op::RemoveEntity(_, reply)
-                    | irori_integration::host::Op::SetAvailability(_, _, reply) => {
+                    irori_protocol::host::Op::DescribeEntity(_, reply)
+                    | irori_protocol::host::Op::RemoveDevice(_, reply)
+                    | irori_protocol::host::Op::RemoveEntity(_, reply)
+                    | irori_protocol::host::Op::SetAvailability(_, _, reply) => {
                         let _ = reply.send(Ok(()));
                     }
-                    irori_integration::host::Op::SetHealth(_)
-                    | irori_integration::host::Op::SetWaiting(_) => {}
-                    irori_integration::host::Op::Load(_, reply) => {
+                    irori_protocol::host::Op::SetHealth(_)
+                    | irori_protocol::host::Op::SetWaiting(_) => {}
+                    irori_protocol::host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));
                     }
-                    irori_integration::host::Op::Store(_, _, reply) => {
+                    irori_protocol::host::Op::Store(_, _, reply) => {
                         let _ = reply.send(Ok(()));
                     }
                 }
@@ -1063,9 +1063,9 @@ mod tests {
 
         let arrival = |connection| node::Event::Arrived {
             connection,
-            device: Box::new(irori_integration::types::DeviceDescription {
+            device: Box::new(irori_protocol::types::DeviceDescription {
                 unique_id: UniqueId::try_from("AA:BB:CC:DD:EE:FF").expect("valid"),
-                name: irori_integration::types::Name::try_from("A device").expect("valid"),
+                name: irori_protocol::types::Name::try_from("A device").expect("valid"),
                 manufacturer: None,
                 model: None,
                 sw_version: None,
@@ -1099,7 +1099,7 @@ mod tests {
 
     #[test]
     fn the_manifest_is_valid() {
-        let builtin = irori_integration::builtin::<Esphome>().expect("valid built-in");
+        let builtin = irori_protocol::builtin::<Esphome>().expect("valid built-in");
         assert_eq!(builtin.manifest.extension.id.as_str(), "esphome");
         assert!(builtin.manifest.warnings().is_empty());
         // Finding and talking to devices happens on the local network, and nowhere else.

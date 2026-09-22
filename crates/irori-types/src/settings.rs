@@ -1,4 +1,4 @@
-//! What a person has said about their home, as opposed to what the integrations report.
+//! What a person has said about their home, as opposed to what the protocols report.
 //!
 //! These are the contents of the config directory once it has been read and checked
 //! (`docs/specs/config.md`). They live here, rather than in `irori-config`, so the core can be
@@ -8,8 +8,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    Area, AreaId, Description, DeviceId, ExtensionId, Floor, FloorId, Floorplan, IdError,
-    IntegrationId, Name, UniqueId,
+    Area, AreaId, Description, DeviceId, ExtensionId, Floor, FloorId, Floorplan, IdError, Name,
+    ProtocolId, UniqueId,
 };
 
 /// Everything the config directory says.
@@ -82,14 +82,14 @@ impl Placement {
 /// What a person has said about one device.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeviceSettings {
-    /// What to call it instead of the name its integration reports.
+    /// What to call it instead of the name its protocol reports.
     pub name: Option<Name>,
     /// What it's for.
     pub description: Option<Description>,
     /// Which room it's in, if that's been decided.
     pub area: Placement,
     /// Kept out of the home: not listed, not controllable, nothing it reports is recorded. The
-    /// integration may still talk to it; Irori just doesn't let it in.
+    /// protocol may still talk to it; Irori just doesn't let it in.
     pub ignored: bool,
     /// A person added it. Only matters while Irori asks before adding new devices.
     pub added: bool,
@@ -109,7 +109,7 @@ impl DeviceSettings {
 /// What a person has said about one entity.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EntitySettings {
-    /// What to call it instead of the name its integration reports — or instead of following
+    /// What to call it instead of the name its protocol reports — or instead of following
     /// its device's name, for an entity that was described without one.
     pub name: Option<Name>,
 }
@@ -231,43 +231,43 @@ impl ExtensionSettings {
     }
 }
 
-/// What a setting is attached to: an integration and its own permanent handle for the thing
+/// What a setting is attached to: a protocol and its own permanent handle for the thing
 /// (`docs/specs/config.md` §4).
 ///
-/// Not a `DeviceId` or `EntityId`. Those are also made from the integration and permanent handle
+/// Not a `DeviceId` or `EntityId`. Those are also made from the protocol and permanent handle
 /// (ROADMAP D36), not from names; settings still key on the handle itself so they stay attached
 /// if the user-facing id format ever changes.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SettingsKey {
-    pub integration: IntegrationId,
+    pub protocol: ProtocolId,
     pub unique_id: UniqueId,
 }
 
 impl SettingsKey {
-    pub fn new(integration: IntegrationId, unique_id: UniqueId) -> Self {
+    pub fn new(protocol: ProtocolId, unique_id: UniqueId) -> Self {
         Self {
-            integration,
+            protocol,
             unique_id,
         }
     }
 }
 
-/// `<integration>/<unique_id>`, which is how it is written in the config files.
+/// `<protocol>/<unique_id>`, which is how it is written in the config files.
 impl std::fmt::Display for SettingsKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}", self.integration, self.unique_id)
+        write!(f, "{}/{}", self.protocol, self.unique_id)
     }
 }
 
 impl std::str::FromStr for SettingsKey {
     type Err = IdError;
 
-    /// Splits at the *first* `/`: an integration id is a slug and can't contain one, but a
-    /// unique id is whatever the integration chose and often can.
+    /// Splits at the *first* `/`: a protocol id is a slug and can't contain one, but a
+    /// unique id is whatever the protocol chose and often can.
     fn from_str(value: &str) -> Result<Self, IdError> {
-        let (integration, unique_id) = value.split_once('/').unwrap_or((value, ""));
+        let (protocol, unique_id) = value.split_once('/').unwrap_or((value, ""));
         Ok(Self {
-            integration: integration.parse()?,
+            protocol: protocol.parse()?,
             unique_id: unique_id.parse()?,
         })
     }

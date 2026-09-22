@@ -460,7 +460,7 @@ fn preamble(file: File) -> String {
         }
         File::Entities => {
             "What you've said about individual entities.\n\
-             # Each key is `<integration>/<the integration's own id for the entity>`."
+             # Each key is `<protocol>/<the protocol's own id for the entity>`."
         }
         File::Secrets => unreachable!("secrets have their own preamble"),
         File::Irori => unreachable!("irori.toml is only ever read"),
@@ -607,15 +607,14 @@ mod tests {
         assert!(read_devices("[device.\"demo/lamp\"]\nname = \"Lamp\"\n").is_err());
     }
 
-    /// A device is written under its id, which is a slug; the old `<integration>/<handle>` form
+    /// A device is written under its id, which is a slug; the old `<protocol>/<handle>` form
     /// isn't one, and says so rather than being read as a device nobody has.
     #[test]
     fn a_device_key_that_isnt_a_device_id_names_itself_in_the_error() {
         let error = read_devices("[devices.\"esphome/34:98:7a\"]\nname = \"Lamp\"\n")
             .expect_err("not a device id");
         assert!(error.contains("esphome/34:98:7a"), "{error}");
-        let error =
-            read_entities("[entities.lamp]\nname = \"Lamp\"\n").expect_err("no integration");
+        let error = read_entities("[entities.lamp]\nname = \"Lamp\"\n").expect_err("no protocol");
         assert!(error.contains("lamp"), "{error}");
     }
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "EntityDescription",
-  "description": "An entity as an integration describes it. The core adds it to the registry, or updates the\nentry with the same `unique_id`.",
+  "description": "An entity as a protocol describes it. The core adds it to the registry, or updates the\nentry with the same `unique_id`.",
   "type": "object",
   "properties": {
     "capabilities": {
@@ -42,7 +42,7 @@
       ]
     },
     "unique_id": {
-      "description": "The integration's permanent handle for the entity.",
+      "description": "The protocol's permanent handle for the entity.",
       "$ref": "#/$defs/UniqueId"
     }
   },
@@ -311,7 +311,7 @@
       ]
     },
     "UniqueId": {
-      "description": "Stable id assigned by the integration (e.g. a Zigbee IEEE address). Unique within the integration.",
+      "description": "Stable id assigned by the protocol (e.g. a Zigbee IEEE address). Unique within the protocol.",
       "type": "string",
       "maxLength": 255,
       "minLength": 1,

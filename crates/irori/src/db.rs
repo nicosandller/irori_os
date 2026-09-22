@@ -38,8 +38,8 @@ pub fn open(data_dir: &Path) -> anyhow::Result<Database> {
     Ok(Database { path, journal_mode })
 }
 
-/// Integrations' small private values, kept in `irori.db` so they outlast restarts
-/// (`docs/specs/integrations.md` §5). One connection behind a lock: these are a few writes a
+/// Protocols' small private values, kept in `irori.db` so they outlast restarts
+/// (`docs/specs/protocols.md` §5). One connection behind a lock: these are a few writes a
 /// minute at most — a switch flipped, a key paired — not a stream.
 #[derive(Debug)]
 pub struct SqliteStorage {
@@ -70,7 +70,7 @@ impl SqliteStorage {
     }
 }
 
-impl irori_integration::Storage for SqliteStorage {
+impl irori_protocol::Storage for SqliteStorage {
     fn load(
         &self,
         extension: &irori_types::ExtensionId,
@@ -141,10 +141,10 @@ mod tests {
         Ok(())
     }
 
-    /// What an integration keeps is there after Irori restarts, and only for that integration.
+    /// What a protocol keeps is there after Irori restarts, and only for that protocol.
     #[test]
     fn stored_values_outlast_a_restart_and_stay_private() -> anyhow::Result<()> {
-        use irori_integration::Storage as _;
+        use irori_protocol::Storage as _;
         let dir = tempfile::tempdir()?;
         let helpers = irori_types::ExtensionId::try_from("helpers")?;
         let other = irori_types::ExtensionId::try_from("esphome")?;

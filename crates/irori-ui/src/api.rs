@@ -46,7 +46,7 @@ pub struct Home {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct HeldDevice {
     pub id: DeviceId,
-    pub integration: String,
+    pub protocol: String,
     pub name: Name,
     /// `ignored`, or `new` while Irori asks before adding.
     pub why: String,
@@ -99,7 +99,7 @@ pub struct Extension {
     /// What it says it's for.
     #[serde(default)]
     pub description: Option<String>,
-    /// Which kinds of entity its integration can provide.
+    /// Which kinds of entity its protocol can provide.
     #[serde(default)]
     pub entity_kinds: Vec<String>,
     /// Where its devices live and what they need: `local_push`, `cloud_polling`, and so on.
@@ -240,7 +240,7 @@ struct Refused {
     error: String,
 }
 
-/// Sends a command, and answers with the entity's state once the integration confirms (or `None`
+/// Sends a command, and answers with the entity's state once the protocol confirms (or `None`
 /// if it vanished meanwhile).
 async fn command(
     entity_id: &EntityId,
@@ -309,7 +309,7 @@ impl WhereTo {
 }
 
 /// What a change to a device should do to one of its fields: leave it alone, set it, or clear it
-/// so whatever the integration reports comes back.
+/// so whatever the protocol reports comes back.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct DeviceEdit {
     /// `None` leaves the name alone; `Some(None)` clears it.

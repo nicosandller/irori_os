@@ -1,6 +1,6 @@
 {
   "id": "sensor.hallway_target_distance",
-  "integration": "mqtt",
+  "protocol": "mqtt",
   "unique_id": "0x00158d0001a2b3c4_target_distance",
   "name": "Target distance",
   "device_id": "hallway_mmwave",

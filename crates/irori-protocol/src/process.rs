@@ -1,6 +1,6 @@
 //! JSON-lines protocol between the core and an external extension process.
 //!
-//! The same `Integration` trait runs in-process (tests, and the SDK) or as a child whose
+//! The same `Protocol` trait runs in-process (tests, and the SDK) or as a child whose
 //! stdin/stdout speak these messages (`docs/specs/extensions.md`).
 
 use std::collections::HashMap;
@@ -21,8 +21,8 @@ use tokio::sync::oneshot;
 
 use crate::host::{Op, Reply, Reports};
 use crate::{
-    AvailabilityTarget, Health, IncomingCall, Integration, IntegrationError, Rejected,
-    ServiceError, ServiceErrorCode, host,
+    AvailabilityTarget, Health, IncomingCall, Protocol, ProtocolError, Rejected, ServiceError,
+    ServiceErrorCode, host,
 };
 
 /// A message from the extension process to the host.
@@ -102,7 +102,7 @@ pub enum ToExt {
     Stop,
 }
 
-/// A failed service call on the wire (`docs/specs/integrations.md` §7.3).
+/// A failed service call on the wire (`docs/specs/protocols.md` §7.3).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireServiceError {
     pub code: String,
@@ -130,20 +130,20 @@ impl From<WireServiceError> for ServiceError {
     }
 }
 
-/// Runs this integration as an external process: read `ToExt` from stdin, write `FromExt` to
+/// Runs this protocol as an external process: read `ToExt` from stdin, write `FromExt` to
 /// stdout. The first message must be `hello` with its settings.
-pub async fn serve<I: Integration>() -> Result<(), IntegrationError> {
+pub async fn serve<I: Protocol>() -> Result<(), ProtocolError> {
     let mut stdin = BufReader::new(tokio::io::stdin());
     let stdout = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
 
-    let hello = read_json(&mut stdin).await.map_err(IntegrationError::new)?;
+    let hello = read_json(&mut stdin).await.map_err(ProtocolError::new)?;
     let ToExt::Hello { settings } = hello else {
-        return Err(IntegrationError::new(
+        return Err(ProtocolError::new(
             "first message from the host must be hello",
         ));
     };
     let config: I::Config = serde_json::from_value(settings)
-        .map_err(|e| IntegrationError::new(crate::invalid_settings(e)))?;
+        .map_err(|e| ProtocolError::new(crate::invalid_settings(e)))?;
 
     let (ctx, host_end) = host::connect();
     let pending = Arc::new(Pending::default());
@@ -213,7 +213,7 @@ async fn pump_incoming(
                         Ok(Err(error)) => Some(WireServiceError::from(error)),
                         Err(_) => Some(WireServiceError {
                             code: "failed".into(),
-                            message: "the integration dropped the call".into(),
+                            message: "the protocol dropped the call".into(),
                         }),
                     };
                     let _ = write_json(&stdout, &FromExt::ServiceResult { id, error }).await;

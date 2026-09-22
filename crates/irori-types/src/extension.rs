@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::id::{err, string_newtype};
 use crate::release_version::is_release_version;
-use crate::{Description, EntityKind, ExtensionId, IdError, IntegrationId, InvariantError, Name};
+use crate::{Description, EntityKind, ExtensionId, IdError, InvariantError, Name, ProtocolId};
 
 /// The contents of an extension's `irori-extension.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -59,12 +59,12 @@ impl ExtensionManifest {
         self.permissions.validate()
     }
 
-    /// The id of the integration this extension contributes, if any. It's always the extension
+    /// The id of the protocol this extension contributes, if any. It's always the extension
     /// id (ROADMAP D25).
-    pub fn integration_id(&self) -> Option<IntegrationId> {
-        (!self.contributes.integration.is_empty()).then(|| {
-            IntegrationId::try_from(self.extension.id.as_str())
-                .expect("extension ids and integration ids share the slug format")
+    pub fn protocol_id(&self) -> Option<ProtocolId> {
+        (!self.contributes.protocol.is_empty()).then(|| {
+            ProtocolId::try_from(self.extension.id.as_str())
+                .expect("extension ids and protocol ids share the slug format")
         })
     }
 
@@ -98,7 +98,7 @@ impl ExtensionManifest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionInfo {
-    /// Also the id of the integration it contributes, if any (ROADMAP D25).
+    /// Also the id of the protocol it contributes, if any (ROADMAP D25).
     pub id: ExtensionId,
     pub name: Name,
     pub version: Version,
@@ -113,7 +113,7 @@ pub struct ExtensionInfo {
     /// A square SVG, relative to the package root, shown beside the extension and its devices so
     /// they can be told apart at a glance. Always displayed as an image, never inlined into a
     /// page, so it can't run script. A built-in extension embeds the file as well
-    /// (`Integration::ICON`).
+    /// (`Protocol::ICON`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<PackagePath>,
 }
@@ -125,7 +125,7 @@ pub struct Contributions {
     /// At most one per extension in this version (ROADMAP D25).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 1))]
-    pub integration: Vec<IntegrationContribution>,
+    pub protocol: Vec<ProtocolContribution>,
     /// Reserved for Phase 2c; read but ignored, with a warning.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dashboard: Vec<ReservedContribution>,
@@ -150,7 +150,7 @@ pub type ReservedContribution = serde_json::Map<String, serde_json::Value>;
 
 impl Contributions {
     pub fn is_empty(&self) -> bool {
-        self.integration.is_empty()
+        self.protocol.is_empty()
             && self.dashboard.is_empty()
             && self.card.is_empty()
             && self.app.is_empty()
@@ -159,25 +159,25 @@ impl Contributions {
     }
 
     fn validate(&self) -> Result<(), InvariantError> {
-        if self.integration.len() > 1 {
+        if self.protocol.len() > 1 {
             return Err(InvariantError(format!(
-                "an extension contributes at most one integration (found {})",
-                self.integration.len()
+                "an extension contributes at most one protocol (found {})",
+                self.protocol.len()
             )));
         }
-        for (i, integration) in self.integration.iter().enumerate() {
-            integration
+        for (i, protocol) in self.protocol.iter().enumerate() {
+            protocol
                 .validate()
-                .map_err(|e| InvariantError(format!("contributes.integration[{i}]: {e}")))?;
+                .map_err(|e| InvariantError(format!("contributes.protocol[{i}]: {e}")))?;
         }
         Ok(())
     }
 }
 
-/// A `[[contributes.integration]]` entry: the extension brings in devices and entities.
+/// A `[[contributes.protocol]]` entry: the extension brings in devices and entities.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct IntegrationContribution {
+pub struct ProtocolContribution {
     /// Where its devices live and how it hears about changes. Shown as a badge.
     pub iot_class: IotClass,
     /// The kinds of entity it creates. It must handle the standard services of each kind.
@@ -188,7 +188,7 @@ pub struct IntegrationContribution {
     pub run: Option<RunCommand>,
 }
 
-impl IntegrationContribution {
+impl ProtocolContribution {
     fn validate(&self) -> Result<(), InvariantError> {
         if self.entity_kinds.is_empty() {
             return Err(InvariantError(
@@ -199,7 +199,7 @@ impl IntegrationContribution {
     }
 }
 
-/// Where an integration's devices live and how it learns about changes (ROADMAP D24).
+/// Where a protocol's devices live and how it learns about changes (ROADMAP D24).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum IotClass {
@@ -232,7 +232,7 @@ pub struct RunCommand {
 
 /// The `[permissions]` table (ROADMAP D23). Everything defaults to "no access".
 ///
-/// An integration never needs a permission to manage its own devices and entities or to
+/// A protocol never needs a permission to manage its own devices and entities or to
 /// receive service calls for them; these cover reaching anything beyond that.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -307,7 +307,7 @@ pub enum ApiScope {
     /// Subscribe to events, including state changes of every entity.
     #[serde(rename = "events:read")]
     EventsRead,
-    /// Call services on any entity, e.g. turn on a light another integration provides.
+    /// Call services on any entity, e.g. turn on a light another protocol provides.
     #[serde(rename = "services:call")]
     ServicesCall,
 }

@@ -47,7 +47,7 @@ fn log(event: &Event) {
             );
         }
         Event::DeviceAdded { device } => {
-            tracing::debug!(device = %device.id, name = %device.name, integration = %device.integration, "device added");
+            tracing::debug!(device = %device.id, name = %device.name, protocol = %device.protocol, "device added");
         }
         Event::EntityAdded { entity } => {
             tracing::debug!(entity = %entity.id, name = %entity.name, "entity added");

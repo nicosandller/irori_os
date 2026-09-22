@@ -1,5 +1,5 @@
 //! Shared types for Irori: the entity and registry model (`docs/specs/entities.md`), extension
-//! manifests (`docs/specs/extensions.md`), the integration contract (`docs/specs/integrations.md`),
+//! manifests (`docs/specs/extensions.md`), the protocol contract (`docs/specs/protocols.md`),
 //! and later traces and API messages. Compiles to native and `wasm32`, so the server, CLI, and
 //! browser UI validate data with the same code.
 
@@ -13,9 +13,9 @@ mod id;
 mod context;
 mod extension;
 mod floorplan;
-mod integration;
 mod kind;
 mod num;
+mod protocol;
 mod registry;
 mod release_version;
 mod schema;
@@ -25,22 +25,22 @@ mod time;
 
 pub use context::{Context, Origin};
 pub use extension::{
-    ApiScope, Contributions, CoreRequirement, ExtensionInfo, ExtensionManifest, HostPath,
-    IntegrationContribution, IotClass, NetworkHost, PackagePath, Permissions, ReservedContribution,
-    RunCommand, SerialPath, Version,
+    ApiScope, Contributions, CoreRequirement, ExtensionInfo, ExtensionManifest, HostPath, IotClass,
+    NetworkHost, PackagePath, Permissions, ProtocolContribution, ReservedContribution, RunCommand,
+    SerialPath, Version,
 };
 pub use floorplan::{
     Floorplan, Level, Opening, OpeningKind, PlacedArea, PlacedDevice, PlanError, Point, Wall,
 };
 pub use id::{
     AreaId, AttributeKey, ContextId, Description, DeviceId, EntityId, ExtensionId, FloorId,
-    IdError, IntegrationId, Name, ObjectId, RuleId, SLUG_MAX_LEN, TokenId, UniqueId, UserId,
+    IdError, Name, ObjectId, ProtocolId, RuleId, SLUG_MAX_LEN, TokenId, UniqueId, UserId,
 };
-pub use integration::{
+pub use kind::EntityKind;
+pub use protocol::{
     DeviceDescription, EntityDescription, LightTurnOn, SecretRequest, Service, ServiceCall,
     ServiceName, StateReport, Waiting,
 };
-pub use kind::EntityKind;
 pub use registry::{
     Area, BinarySensorCapabilities, BinarySensorClass, Capabilities, ColorTempRange, Device,
     Entity, Floor, LightCapabilities, SensorCapabilities, SensorClass, SensorValueType, StateClass,
