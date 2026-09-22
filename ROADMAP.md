@@ -55,7 +55,7 @@ areas below so re-prioritizing means editing this, not moving sections around.
 | D13 | **AI features live in a separate crate that depends only on the public API client**, available behind an opt-in cargo feature (off in the barebones build, see D17) or as a separate process | Keeps "not part of core" enforced by the compiler; the core never pays for AI it doesn't use. |
 | D14 | **HA-familiar domain/service vocabulary** (`light.turn_on`, `binary_sensor`, …) with typed state | LLMs already know it; eases a future HA backend adapter and HA importer. |
 | D15 | **Protocols (MQTT, Zigbee, Matter, Z-Wave, …) are extensions behind one interface; the core has no protocol code.** MQTT is the first one, not part of the core | Replaces the original plan's "MQTT bundled in core". Building MQTT against the interface proves the interface is good enough for Zigbee/Matter/Z-Wave later. |
-| D16 | **Two extension tiers, one contract:** *built-in* (Rust crates compiled in via cargo features, run in-process through the `Protocol` trait) and *external* (any language, separate process, same contract over the WS API) | Built-in = fastest, single binary, first-party only. External = crash-isolated, language-agnostic, how nerds and third parties extend Irori. External extensions work in Phase 1 (run from a local path); the install-from-registry flow comes in Phase 3. |
+| D16 | **Two extension tiers, one contract:** *built-in* (Rust crates compiled in via cargo features, run in-process through the `Protocol` trait) and *external* (any language, separate process, same contract over the WS API) | Built-in = fastest, single binary, first-party only. External = crash-isolated, language-agnostic, how nerds and third parties extend Irori. External extensions work in Phase 1 (run from a local path); the install-from-registry flow comes in Phase 3. ⚠️ *Note added 2026-09-22: superseded sooner than expected — official extensions no longer compile in at all (§2.1, §8.1); installing by URL already works too, just not yet a browsable registry.* |
 | D17 | **Barebones default build:** core + CLI + minimal UI (Devices, Extensions, Settings). No extensions are compiled in: official extensions are installable packages, not cargo features. **No automation engine** is compiled in; AI is **not** in the default build | "Robust at its smallest". Automations are installed as an extension, like a protocol. `--no-default-features` remains the test that matters. ⚠️ *Note added 2026-09-21: the shipped default build also has a Start screen and a Floorplan page, neither on this list. Floorplan is planned to move into an extension (D43), which would restore this list's accuracy; Start still wouldn't be covered.* |
 | D18 | **Nerd friendly as a requirement:** plain-text config (`irori.toml`, `extensions/*.toml`) as the source of truth; an installed engine's own files (this engine: JSON rules) live with that engine; CLI can do everything the UI can, with `--json`; structured logs; `/metrics`; shell completions | Makes the system scriptable, diffable, and git-friendly. SQLite holds runtime data, not the config users author. |
 | D19 | **Performance budgets enforced in CI** (§4.3) | Otherwise "lightning fast" drifts. Benchmarks run on every PR; budget regressions fail the build. 🔶 *Note added 2026-09-21: only the UI download-size budget is actually gated in `ci.yml` today; the other seven budgets in §4.3 (binary size, RSS, cold start, latency, throughput) have no benchmark yet.* |
@@ -485,7 +485,7 @@ below (M1.x) don't have to land in this order — see D42 and §0a.)
 - WS and HTTP per spec; owner account; access tokens; `irori-client` crate with typed calls.
 - `/metrics` (Prometheus text): event throughput, rule runs, extension health, recorder queue depth, memory.
 - **External extension protocol** (D16): handshake, scoped tokens, device/state/service messages.
-- **Local extensions:** `irori extensions add <path>` reads the manifest, shows its permissions for approval, and writes `extensions/<id>.toml`; the core spawns and supervises the extension's process. Installing from a registry comes in Phase 3.
+- **Local extensions:** `irori extensions add <path>` reads the manifest, shows its permissions for approval, and writes `extensions/<id>.toml`; the core spawns and supervises the extension's process. Installing from a registry comes in Phase 3. *(The install-and-run mechanism itself already exists via the UI and API — §8.1 — just not this CLI command or the permission-approval step.)*
 - Permission enforcement for what Phase 1 can use: API scopes and entity/service scoping on the extension's token. Network, serial, and host permissions are recorded and shown, but only enforced where the OS makes it practical (documented honestly).
 - **Demo:** the Python example extension's virtual devices appear next to the MQTT devices, indistinguishable in the CLI and API; a rule uses one of each.
 
@@ -660,12 +660,29 @@ The sandbox, bridge, and capability allowlist above are *the* runtime for all da
 
 ---
 
-## 8. Extension ecosystem and users ⏳ (≈4–6 months)
+## 8. Extension ecosystem and users 🔶 (≈4–6 months)
 
 The manifest and the protocol, dashboard, and card contracts already exist and are proven (M0.6, M1.1, M1.5, §6.4). This area makes extensions **easy to install and share**, adds the **app** contribution kind, and ships the first new protocols and vendor connectors. (Formerly "Phase 3".)
 
-### 8.1 Installing and sharing
-- **`irori extensions install <name|url|path>`:** fetch a signed extension from a registry index (a simple git-hosted index is enough to start), verify signature and core compatibility, show contributions and permissions for approval, write `extensions/<id>.toml`, and start what needs starting. Plus `update` (re-approval if permissions grow, D23), `remove`, and a matching browse/install view in the UI's Extensions section.
+### 8.1 Installing and sharing 🔶
+
+> 🔶 *Added 2026-09-22:* the core of this landed already, ahead of the rest of this area, as a direct
+> commit to `main` between PR #10 and PR #12 (`2d126d3`, "Move the extensions into the tree and
+> scrub the local-device example") — it never went through a PR, which is likely why this section
+> never caught up. **Done:** the Extensions page lists every official extension from
+> `extensions/official.toml`, grouped by category, with working Install and Uninstall buttons
+> (`crates/irori-ui/src/extensions.rs`); `POST /api/dev/extensions/{id}/install` downloads (or, in a
+> checkout, builds) the official package and starts it, `DELETE /api/dev/extensions/{id}` uninstalls
+> and deletes it; official extensions are built and released as separate packages
+> (`cargo xtask package`, `crates/irori/src/packages.rs`), never compiled into `irori`. Installing an
+> arbitrary tarball by URL already works too (`POST /api/dev/extensions/install`), ahead of where
+> D16 assumes this area starts (§11 open questions may want revisiting given this). **Not yet:** the
+> CLI (`irori extensions install|update|remove` — `main.rs` still only has `serve`/`version`),
+> signing and signature verification, a browsable registry index for third-party (non-official)
+> extensions, showing permissions for approval before an install, and `update` with re-approval
+> when permissions grow.
+
+- **`irori extensions install <name|url|path>`:** fetch a signed extension from a registry index (a simple git-hosted index is enough to start), verify signature and core compatibility, show contributions and permissions for approval, write `extensions/<id>.toml`, and start what needs starting. Plus `update` (re-approval if permissions grow, D23), `remove`, and a matching browse/install view in the UI's Extensions section — **the browse/install/uninstall view is done; the CLI, signing, and permission approval on install are not.**
 - **Id namespacing:** decide before the registry opens (open question 12).
 - **SDKs and templates, one per kind:** `cargo generate` templates (protocol built-in or external, app), a published Python package for external protocol extensions, a starter bundle for dashboards and cards, and "write your first extension in 30 minutes" docs.
 - **Promotion path:** popular external protocol extensions can become built-in (compiled in, opt-in cargo feature) without changing their behavior, since it's the same contract.
