@@ -48,10 +48,12 @@ and checks it with the same types and JSON Schema (`schemas/extension-manifest.s
 as everything else, so editors and LLM tooling can validate it too.
 
 Install (the Extensions page, or `POST /api/dev/extensions/<id>/install`) copies a package into
-`$DATA/extensions/<id>/` and starts it. Official packages come from, in order: a git checkout
-of this repo (cargo build), packages shipped beside the binary (`IRORI_OFFICIAL_PACKAGES` or
-`/usr/share/irori/extensions`), or a GitHub release of this repo. Uninstall stops the process,
-removes its devices, and deletes the package. A third-party tarball URL uses the same machinery
+`$DATA/extensions/<id>/` and starts it. Official packages come from, in order: packages shipped
+beside the binary (`IRORI_OFFICIAL_PACKAGES` or `/usr/share/irori/extensions`), a git checkout of
+this repo (`cargo build`, only when this isn't the binary the release workflow built, and cargo
+is on its PATH), or a GitHub release of this repo — a distributed release always takes this last
+path, the same as a machine with no checkout at all. Uninstall stops the process, removes its
+devices, and deletes the package. A third-party tarball URL uses the same machinery
 (`POST /api/dev/extensions/install`); how those URLs are discovered is later.
 
 How packages are signed is still Phase 3 (ROADMAP §8.1).

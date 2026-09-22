@@ -1,9 +1,11 @@
 //! Official catalog, and how a click on Install turns a listing into a package on disk.
 //!
 //! Source of the code is this repo. The running binary never links it. Install copies a package
-//! into `$DATA/extensions/<id>/` from, in order: a checkout of this repo (builds the crate),
-//! packages shipped beside the binary (`IRORI_OFFICIAL_PACKAGES` or `/usr/share/irori/extensions`),
-//! or a GitHub release of this repo.
+//! into `$DATA/extensions/<id>/` from, in order: packages shipped beside the binary
+//! (`IRORI_OFFICIAL_PACKAGES` or `/usr/share/irori/extensions`), a checkout of this repo (builds
+//! the crate — only when this isn't the release workflow's own binary, and cargo is on its
+//! PATH, so a distributed release always downloads instead, the same as a machine with no
+//! checkout at all), or a GitHub release of this repo.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -57,10 +59,71 @@ pub fn install_official(item: &Official, dest: &Path) -> Result<(), String> {
     {
         return Ok(());
     }
-    if let Some(root) = workspace_root() {
-        return build_from_checkout(item, &root, dest);
+    // Building from a checkout is a developer convenience, not something the binary this repo
+    // actually ships should ever do: that binary runs on machines that may well have the repo
+    // cloned too (this one, for instance), and a real install should exercise the same GitHub
+    // download every other consumer's install does. `cfg!(debug_assertions)` can't tell those
+    // apart — `cargo xtask install` builds in release mode too — so this checks what actually
+    // does instead; see `is_distributed_release`.
+    if !is_distributed_release() {
+        match workspace_root() {
+            Some(root) if cargo_runnable() => return build_from_checkout(item, &root, dest),
+            // A checkout is there but unusable: pointing at "run from a checkout" as the fix
+            // would send them right back to the path that was just ruled out.
+            Some(_) => {
+                return download_github(
+                    item,
+                    dest,
+                    "this checkout has no cargo on its PATH to build with",
+                );
+            }
+            None => {
+                return download_github(
+                    item,
+                    dest,
+                    "in a git checkout, Install builds from source",
+                );
+            }
+        }
     }
-    download_github(item, dest)
+    download_github(
+        item,
+        dest,
+        "a distributed release always downloads, never builds from a checkout",
+    )
+}
+
+/// Whether this reports a real version rather than the workspace's own `0.0.0`: the release
+/// workflow sets `IRORI_VERSION`, and a build made with `HEAD` sitting on an exact release tag
+/// picks the same version up on its own (see `irori_types`'s `build.rs`) — both cases where
+/// downloading is the right call even for a checkout with a perfectly good cargo in it. A plain
+/// `cargo build`, `cargo build --release`, and `cargo xtask install` all still report `0.0.0`.
+///
+/// A tagged `HEAD` alone isn't enough, though: it says nothing about the working tree, so
+/// building at a tag with local edits still reports that tag's version. `COMMIT` (`build.rs` in
+/// `crates/irori`) carries the `-modified` suffix for that case, so it's checked too — otherwise
+/// a checkout with real local changes would quietly install the stale, unmodified GitHub asset
+/// instead of building what's actually on disk.
+fn is_distributed_release() -> bool {
+    release_build(irori_types::VERSION, crate::build_info::COMMIT)
+}
+
+fn release_build(version: &str, commit: &str) -> bool {
+    version != "0.0.0" && !commit.ends_with("-modified")
+}
+
+fn cargo_runnable() -> bool {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    command_runs(&cargo)
+}
+
+fn command_runs(cmd: &str) -> bool {
+    Command::new(cmd)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// Install from a tarball URL (non-official, or a pinned official asset).
@@ -244,7 +307,10 @@ fn build_from_checkout(item: &Official, root: &Path, dest: &Path) -> Result<(), 
     stage_package(&source, &binary, dest, &item.bin)
 }
 
-fn download_github(item: &Official, dest: &Path) -> Result<(), String> {
+/// `hint` explains, for this call, why a source build wasn't tried (or that one was and isn't
+/// an option here) — so a download failure doesn't point back at a path that was already ruled
+/// out.
+fn download_github(item: &Official, dest: &Path, hint: &str) -> Result<(), String> {
     let target = env!("IRORI_TARGET");
     let url = format!(
         "https://github.com/{GITHUB_REPO}/releases/download/v{}/{bin}-{target}.tar.gz",
@@ -253,7 +319,7 @@ fn download_github(item: &Official, dest: &Path) -> Result<(), String> {
     );
     install_url(&url, dest).map_err(|e| {
         format!(
-            "couldn't download {url}: {e}. In a git checkout, Install builds from source; \
+            "couldn't download {url}: {e}. {hint}; \
              a Pi image should ship packages under /usr/share/irori/extensions."
         )
     })
@@ -353,6 +419,35 @@ mod tests {
             .expect("tar is on PATH");
         assert!(status.success());
         archive
+    }
+
+    #[test]
+    fn a_missing_command_is_not_runnable() {
+        assert!(!command_runs("irori-packages-test-no-such-command"));
+    }
+
+    #[test]
+    fn the_workspaces_own_version_is_not_a_release() {
+        assert!(!release_build("0.0.0", "abc1234"));
+    }
+
+    #[test]
+    fn a_clean_build_at_a_release_tag_is_a_release() {
+        assert!(release_build("0.4.1", "abc1234"));
+    }
+
+    #[test]
+    fn a_release_tag_with_local_edits_is_not_a_release() {
+        // Otherwise a checkout with real changes, built at a tag, would quietly install the
+        // stale unmodified GitHub asset instead of what's actually on disk.
+        assert!(!release_build("0.4.1", "abc1234-modified"));
+    }
+
+    #[test]
+    fn a_real_command_is_runnable() {
+        // `true` ignores `--version` and just exits 0, the same shape a real `cargo --version`
+        // would take — this is standing in for "cargo is on PATH", not testing cargo itself.
+        assert!(command_runs("true"));
     }
 
     #[test]
