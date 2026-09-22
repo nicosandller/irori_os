@@ -375,6 +375,14 @@ pub fn spawn(package_dir: &Path, run: &RunCommand) -> Result<ExtProcess, String>
     if !command.is_file() {
         return Err(format!("package has no program at `{}`", command.display()));
     }
+    // `current_dir` below moves the child to `package_dir` before its own program path is
+    // resolved, so a relative `command` — true whenever `package_dir` itself is relative, which
+    // it is by default (`./data/extensions/<id>`) — gets looked up against the child's *new*
+    // cwd instead of this process's, and `execve` fails with ENOENT even though `is_file` just
+    // found it fine. Canonicalizing first makes the two independent.
+    let command = command
+        .canonicalize()
+        .map_err(|e| format!("couldn't resolve {}: {e}", command.display()))?;
     let mut child = Command::new(&command)
         .current_dir(package_dir)
         .args(&run.args)
@@ -426,6 +434,7 @@ impl ExtProcess {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use irori_types::PackagePath;
 
     #[test]
     fn hello_round_trips() {
@@ -436,5 +445,45 @@ mod tests {
         let back: ToExt = serde_json::from_str(&json).expect("de");
         assert!(matches!(back, ToExt::Hello { .. }));
         assert!(json.contains("\"type\":\"hello\""));
+    }
+
+    /// Restores the process's cwd on drop, so a failed assertion below can't leave every test
+    /// that runs after this one resolving relative paths against the wrong directory.
+    struct RestoreCwd(std::path::PathBuf);
+    impl Drop for RestoreCwd {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_finds_a_relative_package_dirs_program() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("a temp dir");
+        std::fs::create_dir_all(tmp.path().join("pkg/bin")).expect("mkdir");
+        let program = tmp.path().join("pkg/bin/prog");
+        std::fs::write(&program, "#!/bin/sh\nexit 0\n").expect("write the program");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+
+        // The bug this guards against only shows up when `package_dir` is relative: `spawn`
+        // sets the child's cwd to it before resolving its own (still relative) program path,
+        // so this process's cwd has to actually be somewhere else for the run to be faithful.
+        let _restore = RestoreCwd(std::env::current_dir().expect("cwd"));
+        std::env::set_current_dir(tmp.path()).expect("chdir into the temp dir");
+
+        let run = RunCommand {
+            command: PackagePath::try_from("bin/prog").expect("a valid package path"),
+            args: Vec::new(),
+        };
+        let process = spawn(Path::new("pkg"), &run).expect(
+            "spawn should resolve `pkg/bin/prog` against this process's cwd, \
+             not the child's post-chdir one",
+        );
+        assert!(
+            process.child.id().is_some(),
+            "the program should have started"
+        );
     }
 }

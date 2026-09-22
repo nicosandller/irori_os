@@ -312,9 +312,14 @@ fn build_from_checkout(item: &Official, root: &Path, dest: &Path) -> Result<(), 
 /// out.
 fn download_github(item: &Official, dest: &Path, hint: &str) -> Result<(), String> {
     let target = env!("IRORI_TARGET");
+    // The release workflow uploads every official extension's tarball under the *app's* tag
+    // (`irori_types::VERSION`), not the extension's own declared `version` — `official.toml`
+    // rarely bumps an extension's version between app releases, so using it here would ask
+    // GitHub for whatever old release last carried that number, silently installing a stale
+    // (and possibly manifest-incompatible) build instead of the one this binary shipped with.
     let url = format!(
         "https://github.com/{GITHUB_REPO}/releases/download/v{}/{bin}-{target}.tar.gz",
-        item.version,
+        irori_types::VERSION,
         bin = item.bin
     );
     install_url(&url, dest).map_err(|e| {
