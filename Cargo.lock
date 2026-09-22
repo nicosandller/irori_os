@@ -932,9 +932,9 @@ dependencies = [
  "irori-assist",
  "irori-config",
  "irori-core",
+ "irori-helpers",
  "irori-protocol",
  "irori-protocol-demo",
- "irori-protocol-helpers",
  "irori-types",
  "mime_guess",
  "rusqlite",
@@ -1003,6 +1003,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "irori-helpers"
+version = "0.0.0"
+dependencies = [
+ "irori-protocol",
+ "irori-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "irori-protocol"
 version = "0.0.0"
 dependencies = [
@@ -1041,18 +1053,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "irori-protocol-helpers"
-version = "0.0.0"
-dependencies = [
- "irori-protocol",
- "irori-types",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
 ]
 
 [[package]]

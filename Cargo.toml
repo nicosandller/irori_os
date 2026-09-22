@@ -9,9 +9,9 @@ members = [
     "crates/irori-config",
     "crates/irori-api",
     "crates/irori-client",
+    "crates/irori-helpers",
     "crates/irori",
     "extensions/demo",
-    "extensions/helpers",
     "extensions/protocols/esphome",
     "extensions/protocols/mqtt",
     "extras/irori-assist",
@@ -40,10 +40,10 @@ irori-recorder = { path = "crates/irori-recorder" }
 irori-config = { path = "crates/irori-config" }
 irori-api = { path = "crates/irori-api" }
 irori-client = { path = "crates/irori-client" }
+irori-helpers = { path = "crates/irori-helpers" }
 irori-protocol-mqtt = { path = "extensions/protocols/mqtt" }
 irori-protocol-demo = { path = "extensions/demo" }
 irori-protocol-esphome = { path = "extensions/protocols/esphome" }
-irori-protocol-helpers = { path = "extensions/helpers" }
 irori-assist = { path = "extras/irori-assist" }
 
 # External crates

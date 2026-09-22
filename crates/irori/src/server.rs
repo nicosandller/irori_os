@@ -849,6 +849,7 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                     version: item.version,
                     official: true,
                     installed: overview.is_some(),
+                    icon: item.icon,
                     state: overview.map(|o| match &o.status {
                         irori_core::ExtensionStatus::Disabled => "disabled",
                         irori_core::ExtensionStatus::Starting => "starting",
@@ -878,6 +879,7 @@ struct CatalogEntry {
     version: String,
     official: bool,
     installed: bool,
+    icon: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     state: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1566,6 +1568,30 @@ mod tests {
         let (_, _, body) = get_from(core.clone(), "/api/dev/extensions").await?;
         let extensions: serde_json::Value = serde_json::from_slice(&body)?;
         assert_eq!(extensions["demo"]["state"], "running");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// The catalog says which official extensions ship an icon, so the Extensions page never
+    /// points an `<img>` at a file that isn't there.
+    #[tokio::test]
+    async fn the_catalog_says_which_extensions_have_an_icon() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let (status, _, body) = get_from(core.clone(), "/api/dev/catalog").await?;
+        assert_eq!(status, StatusCode::OK);
+        let catalog: serde_json::Value = serde_json::from_slice(&body)?;
+        let entries = catalog.as_array().expect("a list");
+        let demo = entries
+            .iter()
+            .find(|e| e["id"] == "demo")
+            .expect("demo is official");
+        assert_eq!(demo["icon"], true, "{catalog}");
+        let mqtt = entries
+            .iter()
+            .find(|e| e["id"] == "mqtt")
+            .expect("mqtt is official");
+        assert_eq!(mqtt["icon"], false, "{catalog}");
 
         host.shutdown().await;
         Ok(())
@@ -2361,10 +2387,7 @@ mod tests {
     async fn helpers(core: &Core) -> anyhow::Result<irori_core::ExtensionHost> {
         irori_core::ExtensionHost::start(
             core,
-            vec![
-                irori_protocol::builtin::<irori_protocol_helpers::Helpers>()
-                    .map_err(anyhow::Error::msg)?,
-            ],
+            vec![irori_protocol::builtin::<irori_helpers::Helpers>().map_err(anyhow::Error::msg)?],
             irori_core::Timing::default(),
         )
         .map_err(anyhow::Error::msg)

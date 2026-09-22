@@ -6,8 +6,8 @@ irori = ">=0.0.0"
 description = "Values Irori keeps itself rather than a device reporting them, for rules to use."
 icon = "icon.svg"
 
-# Nothing leaves this machine: the values live in Irori's own database.
+# Nothing leaves this machine: the values live in Irori's own database. Built in, not an
+# installable extension — there is no `run`, and it isn't listed in extensions/official.toml.
 [[contributes.protocol]]
 iot_class = "local_push"
 entity_kinds = ["switch"]
-run = { command = "bin/irori-ext-helpers" }

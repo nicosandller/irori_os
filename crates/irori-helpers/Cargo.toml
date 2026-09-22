@@ -1,6 +1,6 @@
 [package]
-name = "irori-protocol-helpers"
-description = "Values Irori keeps itself, for rules to use: toggles, to begin with."
+name = "irori-helpers"
+description = "Values Irori keeps itself, for rules to use: toggles, to begin with. Built in, not an installable extension."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -15,10 +15,6 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-
-[[bin]]
-name = "irori-ext-helpers"
-path = "src/main.rs"
 
 [lints]
 workspace = true

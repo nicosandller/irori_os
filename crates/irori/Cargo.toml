@@ -18,6 +18,7 @@ assist = ["dep:irori-assist"]
 [dependencies]
 irori-config.workspace = true
 irori-core.workspace = true
+irori-helpers.workspace = true
 irori-protocol.workspace = true
 irori-types.workspace = true
 irori-assist = { workspace = true, optional = true }
@@ -43,7 +44,6 @@ rustix.workspace = true
 [dev-dependencies]
 http-body-util.workspace = true
 irori-protocol-demo.workspace = true
-irori-protocol-helpers.workspace = true
 schemars.workspace = true
 tempfile.workspace = true
 tower.workspace = true
