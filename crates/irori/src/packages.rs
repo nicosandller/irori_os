@@ -98,8 +98,18 @@ pub fn install_official(item: &Official, dest: &Path) -> Result<(), String> {
 /// picks the same version up on its own (see `irori_types`'s `build.rs`) — both cases where
 /// downloading is the right call even for a checkout with a perfectly good cargo in it. A plain
 /// `cargo build`, `cargo build --release`, and `cargo xtask install` all still report `0.0.0`.
+///
+/// A tagged `HEAD` alone isn't enough, though: it says nothing about the working tree, so
+/// building at a tag with local edits still reports that tag's version. `COMMIT` (`build.rs` in
+/// `crates/irori`) carries the `-modified` suffix for that case, so it's checked too — otherwise
+/// a checkout with real local changes would quietly install the stale, unmodified GitHub asset
+/// instead of building what's actually on disk.
 fn is_distributed_release() -> bool {
-    irori_types::VERSION != "0.0.0"
+    release_build(irori_types::VERSION, crate::build_info::COMMIT)
+}
+
+fn release_build(version: &str, commit: &str) -> bool {
+    version != "0.0.0" && !commit.ends_with("-modified")
 }
 
 fn cargo_runnable() -> bool {
@@ -417,10 +427,20 @@ mod tests {
     }
 
     #[test]
-    fn this_test_binary_is_not_a_distributed_release() {
-        // The assumption `install_official` leans on: an ordinary `cargo test` build reports
-        // the workspace's own `0.0.0`, the same as `cargo build` or `cargo xtask install` would.
-        assert!(!is_distributed_release());
+    fn the_workspaces_own_version_is_not_a_release() {
+        assert!(!release_build("0.0.0", "abc1234"));
+    }
+
+    #[test]
+    fn a_clean_build_at_a_release_tag_is_a_release() {
+        assert!(release_build("0.4.1", "abc1234"));
+    }
+
+    #[test]
+    fn a_release_tag_with_local_edits_is_not_a_release() {
+        // Otherwise a checkout with real changes, built at a tag, would quietly install the
+        // stale unmodified GitHub asset instead of what's actually on disk.
+        assert!(!release_build("0.4.1", "abc1234-modified"));
     }
 
     #[test]
