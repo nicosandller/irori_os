@@ -846,7 +846,7 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                 // after `installed` turns true, and a manifest missing `run` or a protocol
                 // contribution never gets described at all (host.rs). Either way, this says
                 // whether `extension_icon` actually has bytes right now.
-                let icon = state.0.core.extension_icon(&item.id).is_some();
+                let icon = state.0.core.has_extension_icon(&item.id);
                 CatalogEntry {
                     id: item.id,
                     name: item.name.to_string(),

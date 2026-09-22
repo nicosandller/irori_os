@@ -269,6 +269,15 @@ impl Core {
             .clone()
     }
 
+    /// Whether [`Self::extension_icon`] would return `Some`, without cloning the SVG just to
+    /// throw it away — the catalog checks this for every entry on every request.
+    pub fn has_extension_icon(&self, extension: &ExtensionId) -> bool {
+        read(&self.0.extensions)
+            .get(extension)
+            .and_then(|overview| overview.info.as_ref())
+            .is_some_and(|info| info.icon.is_some())
+    }
+
     /// The rooms of the home, as the config directory has them.
     pub fn areas(&self) -> Vec<Area> {
         read(&self.0.home).areas().to_vec()
