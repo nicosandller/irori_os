@@ -73,6 +73,10 @@ const CORNER: f64 = 18.0;
 /// corner it names rather than over it.
 const ANGLE_OFFSET: f64 = 26.0;
 
+/// How far from a corner the arc of the turn it makes reaches, in the plan's own centimetres.
+/// Far enough to read across the corner without reaching for the wall itself.
+const ANGLE_ARC: f64 = 55.0;
+
 /// The limits of the zoom, in screen pixels per centimetre. At the low end a 30-metre house
 /// fits; at the high end a centimetre is a pixel and a half.
 const MIN_SCALE: f64 = 0.06;
@@ -1127,6 +1131,35 @@ pub fn Floorplan() -> impl IntoView {
                         (!corners.is_empty()).then(|| tracing_shape(&corners, pointer.get(), view.get()))
                     }}
                     {move || {
+                        let (behind, node) =
+                            drawing_junction(tool.get(), running.get(), &tracing.get(), &level.get())?;
+                        let to = pointer.get()?;
+                        // The pointer back on the corner is no angle at all, just a line still
+                        // at its start.
+                        if node.distance_to(to) < 0.5 {
+                            return None;
+                        }
+                        // The corner's own arc, showing how far the next line turns from the one
+                        // already there in the same picture the label says in words.
+                        let points = arc_points(behind, node, to, ANGLE_ARC);
+                        if points.is_empty() {
+                            return None;
+                        }
+                        let joined = points
+                            .iter()
+                            .map(|[x, y]| format!("{x},{y}"))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        Some(view! {
+                            <g class="angle-arc" transform=transform(view.get())>
+                                <polyline
+                                    points=joined
+                                    vector-effect="non-scaling-stroke"
+                                />
+                            </g>
+                        })
+                    }}
+                    {move || {
                         let chosen = editing.get().then(|| picked.get()).flatten();
                         let level = level.get();
                         let corners: Vec<Point> = match chosen? {
@@ -1224,18 +1257,8 @@ pub fn Floorplan() -> impl IntoView {
                     }
                     let to = pointer.get()?;
                     let level = level.get();
-                    let (behind, node) = match tool.get() {
-                        Tool::Wall => {
-                            let from = running.get()?;
-                            (level.walls.iter().rev().find(|wall| wall.to == from)?.from, from)
-                        }
-                        Tool::Area => {
-                            let corners = tracing.get();
-                            let node = *corners.last()?;
-                            (*corners.get(corners.len() - 2)?, node)
-                        }
-                        _ => return None,
-                    };
+                    let (behind, node) =
+                        drawing_junction(tool.get(), running.get(), &tracing.get(), &level)?;
                     // The pointer back on the corner is no angle at all, just a line still at
                     // its start.
                     if node.distance_to(to) < 0.5 {
@@ -2610,6 +2633,63 @@ fn turn_angle(behind: Point, node: Point, onward: Point) -> f64 {
     cos.acos().to_degrees()
 }
 
+/// The line already drawn and the corner it ends at, for the line being drawn to turn on: the
+/// wall whose far end is the run's node, or a room's last corner and the one before it. Walls
+/// and rooms both, while a run or a trace is in progress.
+fn drawing_junction(
+    tool: Tool,
+    running: Option<Point>,
+    tracing: &[Point],
+    level: &Level,
+) -> Option<(Point, Point)> {
+    match tool {
+        Tool::Wall => {
+            let node = running?;
+            Some((
+                level.walls.iter().rev().find(|wall| wall.to == node)?.from,
+                node,
+            ))
+        }
+        Tool::Area => {
+            let node = *tracing.last()?;
+            Some((*tracing.get(tracing.len() - 2)?, node))
+        }
+        _ => None,
+    }
+}
+
+/// Points along the arc a turn makes, in the plan's centimetres, from the line already drawn to
+/// the one reaching for the pointer — ready for a `<polyline>` to trace. The arc spans the turn
+/// itself, so a square corner sweeps a quarter circle and a straight-on wall draws nothing at
+/// all.
+fn arc_points(behind: Point, node: Point, onward: Point, radius: f64) -> Vec<[f64; 2]> {
+    let (ix, iy) = direction(behind, node);
+    let (ox, oy) = direction(node, onward);
+    let start = iy.atan2(ix);
+    let mut sweep = oy.atan2(ox) - start;
+    // The shorter way around, signed: a right turn sweeps one way and a left turn the other,
+    // which is the side the corner is actually on.
+    while sweep > std::f64::consts::PI {
+        sweep -= std::f64::consts::TAU;
+    }
+    while sweep < -std::f64::consts::PI {
+        sweep += std::f64::consts::TAU;
+    }
+    // Straight on — a turn of nothing — has no arc to draw, and neither has a corner of a
+    // couple of degrees, where the arc is a point nobody asked for.
+    if sweep.abs() < 0.03 {
+        return Vec::new();
+    }
+    let steps = 24;
+    let (nx, ny) = (f64::from(node.x), f64::from(node.y));
+    (0..=steps)
+        .map(|i| {
+            let angle = start + sweep * (i as f64 / steps as f64);
+            [nx + radius * angle.cos(), ny + radius * angle.sin()]
+        })
+        .collect()
+}
+
 /// A point a given distance along a wall, with the wall's direction and its left-hand normal.
 fn along(wall: &Wall, at: f64) -> ((f64, f64), (f64, f64), (f64, f64)) {
     point_along(wall.from, wall.to, at)
@@ -3274,6 +3354,56 @@ mod tests {
         assert!(
             (angle((100, 0), (0, 0)) - 180.0).abs() < 1e-9,
             "doubling straight back"
+        );
+    }
+
+    /// The arc of a corner traces the turn itself: a right angle sweeps a quarter circle on the
+    /// side of the turn, a straight-on wall draws nothing at all, and doubling back fills half
+    /// the arc it can.
+    #[test]
+    fn the_arc_of_a_corner_traces_the_turn() {
+        let arc = |node: (i32, i32), onward: (i32, i32)| {
+            arc_points(
+                Point::new(0, 0),
+                Point::new(node.0, node.1),
+                Point::new(onward.0, onward.1),
+                100.0,
+            )
+        };
+
+        let right = arc((100, 0), (100, 100));
+        assert_eq!(right.len(), 25, "one point per step, and both ends");
+        let (first, last) = (
+            *right.first().expect("the arc always has a first point"),
+            *right.last().expect("and a last"),
+        );
+        let begin = |[x, y]: [f64; 2]| (x - 200.0).abs() < 1e-9 && y.abs() < 1e-9;
+        let done = |[x, y]: [f64; 2]| (x - 100.0).abs() < 1e-9 && (y - 100.0).abs() < 1e-9;
+        assert!(begin(first), "starts on the east-west line: {first:?}");
+        assert!(done(last), "ends on the north-south one: {last:?}");
+        let middle = right[12];
+        assert!(
+            middle[0] > 100.0 && middle[1] > 0.0,
+            "sweeps through the corner's side: {middle:?}"
+        );
+
+        let left = arc((100, 0), (100, -100));
+        let left_middle = left[12];
+        assert!(
+            left_middle[0] > 100.0 && left_middle[1] < 0.0,
+            "turns the other way: {left_middle:?}"
+        );
+
+        assert!(
+            arc((100, 0), (200, 0)).is_empty(),
+            "straight on has nothing to draw"
+        );
+        let back = arc((100, 0), (0, 0));
+        assert_eq!(back.len(), 25, "a hairpin still traces");
+        let back_middle = back[12];
+        assert!(
+            (back_middle[0] - 100.0).abs() < 1e-9 && back_middle[1].abs() > 0.0,
+            "and it comes back along the line's own side: {back_middle:?}"
         );
     }
 
