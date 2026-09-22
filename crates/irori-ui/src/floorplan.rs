@@ -272,6 +272,10 @@ pub fn Floorplan() -> impl IntoView {
     let picked = RwSignal::new(None::<Pick>);
     // Where the current run of wall has got to, and where the pointer is, both snapped.
     let running = RwSignal::new(None::<Point>);
+    // The corner the run's last committed segment came from — `None` until the run has laid at
+    // least one wall, so the live angle at `running` isn't guessed from some unrelated wall that
+    // happens to end at the same point.
+    let wall_behind = RwSignal::new(None::<Point>);
     let pointer = RwSignal::new(None::<Point>);
     let arming = RwSignal::new(None::<DeviceId>);
     // The room being traced, and which room it is. A shape only becomes part of the plan when
@@ -340,6 +344,7 @@ pub fn Floorplan() -> impl IntoView {
         floor.track();
         picked.set(None);
         running.set(None);
+        wall_behind.set(None);
         pointer.set(None);
         tracing.set(Vec::new());
         arming.set(None);
@@ -473,6 +478,7 @@ pub fn Floorplan() -> impl IntoView {
         // that was undone.
         picked.set(None);
         running.set(None);
+        wall_behind.set(None);
         pointer.set(None);
         tracing.set(Vec::new());
     };
@@ -485,6 +491,7 @@ pub fn Floorplan() -> impl IntoView {
         });
         picked.set(None);
         running.set(None);
+        wall_behind.set(None);
         pointer.set(None);
         tracing.set(Vec::new());
     };
@@ -498,6 +505,7 @@ pub fn Floorplan() -> impl IntoView {
     // that was ever in it.
     let stop_drawing = move || {
         running.set(None);
+        wall_behind.set(None);
         pointer.set(None);
         tracing.set(Vec::new());
     };
@@ -554,6 +562,7 @@ pub fn Floorplan() -> impl IntoView {
                     arming.set(None);
                     arming_area.set(None);
                     running.set(None);
+                    wall_behind.set(None);
                     pointer.set(None);
                     tracing.set(Vec::new());
                     // The plan the page shows now comes from the home again, so fetch it rather
@@ -890,6 +899,7 @@ pub fn Floorplan() -> impl IntoView {
                             ..Wall::new(from, to)
                         };
                         on_level(draft, floor, |level| level.walls.push(built));
+                        wall_behind.set(Some(from));
                         running.set(Some(to));
                     }
                     // The first click of a run, or a second click in the same spot, which would
@@ -1131,8 +1141,12 @@ pub fn Floorplan() -> impl IntoView {
                         (!corners.is_empty()).then(|| tracing_shape(&corners, pointer.get(), view.get()))
                     }}
                     {move || {
-                        let (behind, node) =
-                            drawing_junction(tool.get(), running.get(), &tracing.get(), &level.get())?;
+                        let (behind, node) = drawing_junction(
+                            tool.get(),
+                            running.get(),
+                            wall_behind.get(),
+                            &tracing.get(),
+                        )?;
                         let to = pointer.get()?;
                         // The pointer back on the corner is no angle at all, just a line still
                         // at its start.
@@ -1257,9 +1271,12 @@ pub fn Floorplan() -> impl IntoView {
                         return None;
                     }
                     let to = pointer.get()?;
-                    let level = level.get();
-                    let (behind, node) =
-                        drawing_junction(tool.get(), running.get(), &tracing.get(), &level)?;
+                    let (behind, node) = drawing_junction(
+                        tool.get(),
+                        running.get(),
+                        wall_behind.get(),
+                        &tracing.get(),
+                    )?;
                     // The pointer back on the corner is no angle at all, just a line still at
                     // its start.
                     if node.distance_to(to) < 0.5 {
@@ -2636,25 +2653,23 @@ fn angle_at(behind: Point, node: Point, onward: Point) -> f64 {
 }
 
 /// The line already drawn and the corner it ends at, for the line being drawn to turn on: the
-/// wall whose far end is the run's node, or a room's last corner and the one before it. Walls
-/// and rooms both, while a run or a trace is in progress.
+/// wall the run has just laid and the run's node, or a room's last corner and the one before it.
+/// Walls and rooms both, while a run or a trace is in progress. Takes the run's own last corner
+/// rather than searching the level's walls for one that happens to end at the node: a run that
+/// hasn't laid a segment yet has no corner to turn on, even if some unrelated wall in the plan
+/// happens to end at the same point.
 fn drawing_junction(
     tool: Tool,
     running: Option<Point>,
+    wall_behind: Option<Point>,
     tracing: &[Point],
-    level: &Level,
 ) -> Option<(Point, Point)> {
     match tool {
-        Tool::Wall => {
-            let node = running?;
-            Some((
-                level.walls.iter().rev().find(|wall| wall.to == node)?.from,
-                node,
-            ))
-        }
+        Tool::Wall => Some((wall_behind?, running?)),
         Tool::Area => {
             let node = *tracing.last()?;
-            Some((*tracing.get(tracing.len() - 2)?, node))
+            let behind = *tracing.get(tracing.len().checked_sub(2)?)?;
+            Some((behind, node))
         }
         _ => None,
     }
@@ -2669,6 +2684,11 @@ fn drawing_junction(
 fn arc_points(behind: Point, node: Point, onward: Point, radius: f64) -> Vec<[f64; 2]> {
     let (bx, by) = direction(node, behind);
     let (ox, oy) = direction(node, onward);
+    // A short snapped run can be closer to the corner than the arc's usual radius; clamped to
+    // both segments, the arc still lands on the two lines rather than floating past one of them.
+    let radius = radius
+        .min(node.distance_to(behind))
+        .min(node.distance_to(onward));
     let start = by.atan2(bx);
     let mut sweep = oy.atan2(ox) - start;
     // The shorter way around, signed: the corner bends one way or the other, and the sign of
