@@ -692,6 +692,7 @@ mod tests {
                     Point::new(400, 300),
                     Point::new(0, 300),
                 ],
+                label: Point::new(0, 0),
             }],
             devices: vec![PlacedDevice {
                 device: "demo_lamp".parse().expect("valid"),

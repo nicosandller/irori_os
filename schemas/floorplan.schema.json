@@ -97,6 +97,10 @@
         "area": {
           "$ref": "#/$defs/AreaId"
         },
+        "label": {
+          "description": "Where the room's name is drawn, as an offset from [`PlacedArea::middle`]. Dragged to move\nthe label, and kept as an offset rather than a place of its own so the label travels with\nthe room: stretch a wall and the name stays where it was put, relative to the room.",
+          "$ref": "#/$defs/Point"
+        },
         "points": {
           "description": "At least [`PlacedArea::FEWEST_POINTS`] of them: fewer is a line, not a room, and\n[`Level::check`] turns it down — so the schema does too.",
           "type": "array",

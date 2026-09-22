@@ -233,6 +233,7 @@ width = 80
 [[floors.ground.areas]]
 area = "kitchen"
 points = [[0, 0], [300, 0], [300, 250], [0, 250]]
+label = [0, -40]        # optional: how far the room's name is drawn from its middle
 
 [[floors.ground.devices]]
 device = "demo_lamp"
@@ -260,6 +261,12 @@ only says where one is, as a closed run of corners — the last joins back to th
 file can't disagree with itself about where the room closes. A room with no shape is simply not
 drawn. The same room may be traced on more than one floor (a stairwell, a double-height hall),
 but only once per floor: a room in two pieces on one floor is a room somebody drew twice.
+
+A room's **name is drawn at the middle of it** unless `label` says otherwise: an offset, in
+centimetres, that the name is drawn from the middle by. It is an offset rather than a place of
+its own so a name somebody dragged travels with the room — stretch a wall and the label stays
+where it was put, relative to the room it belongs to. Omitted, the label sits at the middle, and
+a plan written before the field existed reads the same way.
 
 A device is placed by its id, the same one `devices.toml` uses. An entry for a device that isn't
 in the home right now is **kept and simply not drawn** (§4), as is an entry for a floor or room
