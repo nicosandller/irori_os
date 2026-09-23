@@ -19,7 +19,22 @@ pub struct Publish {
 /// Decodes an incoming `(topic, payload)` against one entity's topics. `None` if `topic` isn't
 /// one this entity listens to at all (the caller tries other entities, or ignores it); `Some(Err)`
 /// if it matches but the payload can't be read — logged and dropped, never fatal to the protocol.
-pub fn decode(topics: &EntityTopics, topic: &str, payload: &[u8]) -> Option<Result<State, String>> {
+///
+/// `previous` is the entity's last-known state, if any. The default light schema splits on/off
+/// and brightness across two topics, so a report on either one alone is incomplete on its own —
+/// without merging in what the *other* topic last said, an on/off report would erase the
+/// remembered brightness, and a brightness report would force the light on even if it's off.
+/// Every other kind of report is already complete by itself, so `previous` only matters here.
+pub fn decode(
+    topics: &EntityTopics,
+    topic: &str,
+    payload: &[u8],
+    previous: Option<&State>,
+) -> Option<Result<State, String>> {
+    let previous_light = match previous {
+        Some(State::Light(light)) => Some(light),
+        _ => None,
+    };
     match topics {
         EntityTopics::LightJson { state_topic, .. } if state_topic == topic => {
             Some(decode_light_json(payload))
@@ -37,9 +52,14 @@ pub fn decode(topics: &EntityTopics, topic: &str, payload: &[u8]) -> Option<Resu
                     payload,
                     payload_on,
                     payload_off,
+                    previous_light,
                 ))
             } else if brightness_state_topic.as_deref() == Some(topic) {
-                Some(decode_light_default_brightness(payload, *brightness_scale))
+                Some(decode_light_default_brightness(
+                    payload,
+                    *brightness_scale,
+                    previous_light,
+                ))
             } else {
                 None
             }
@@ -87,23 +107,28 @@ fn decode_light_default_on_off(
     payload: &[u8],
     payload_on: &str,
     payload_off: &str,
+    previous: Option<&LightState>,
 ) -> Result<State, String> {
     decode_on_off(payload, payload_on, payload_off).map(|on| {
         State::Light(LightState {
             on,
-            brightness: None, // a separate report on the brightness topic supplies this
-            color_mode: None,
-            color_temp_kelvin: None,
-            rgb: None,
+            brightness: previous.and_then(|p| p.brightness),
+            color_mode: previous.and_then(|p| p.color_mode),
+            color_temp_kelvin: previous.and_then(|p| p.color_temp_kelvin),
+            rgb: previous.and_then(|p| p.rgb),
         })
     })
 }
 
-/// Brightness alone doesn't say on/off, so this can't build a full `LightState` — callers keep
-/// the entity's last-known `on` and only replace the brightness (`docs/specs/protocols.md` §6.3:
-/// a report only carries what changed is up to the protocol to assemble; the run loop that calls
-/// this keeps the rest of the last state).
-fn decode_light_default_brightness(payload: &[u8], scale: u32) -> Result<State, String> {
+/// Brightness alone doesn't say on/off, so this merges in the entity's last-known `on` (and any
+/// other last-known fields) rather than assuming a value — `previous` is threaded all the way
+/// from the run loop's own per-entity last state (`docs/specs/protocols.md` §6.3: a report only
+/// carries what changed, so the pieces it doesn't carry come from what's already known).
+fn decode_light_default_brightness(
+    payload: &[u8],
+    scale: u32,
+    previous: Option<&LightState>,
+) -> Result<State, String> {
     let text = String::from_utf8_lossy(payload);
     let raw: f64 = text
         .trim()
@@ -114,11 +139,11 @@ fn decode_light_default_brightness(payload: &[u8], scale: u32) -> Result<State, 
     }
     let scaled = ((raw / f64::from(scale)) * 255.0).round().clamp(1.0, 255.0) as u8;
     Ok(State::Light(LightState {
-        on: true, // brightness > 0 only ever arrives while the light is on
+        on: previous.map(|p| p.on).unwrap_or(true), // no prior report: brightness > 0 implies on
         brightness: Some(scaled),
-        color_mode: None,
-        color_temp_kelvin: None,
-        rgb: None,
+        color_mode: previous.and_then(|p| p.color_mode),
+        color_temp_kelvin: previous.and_then(|p| p.color_temp_kelvin),
+        rgb: previous.and_then(|p| p.rgb),
     }))
 }
 
@@ -335,7 +360,7 @@ mod tests {
             command_topic: "t/set".to_owned(),
         };
         let payload = br#"{"state":"ON","brightness":128,"color":{"r":10,"g":20,"b":30}}"#;
-        let state = decode(&topics, "t/state", payload)
+        let state = decode(&topics, "t/state", payload, None)
             .expect("matches")
             .expect("decodes");
         assert_eq!(
@@ -358,7 +383,7 @@ mod tests {
         };
         // Roughly a warm white; just checking it lands in a sane RGB region, not an exact triple.
         let payload = br#"{"state":"ON","color":{"x":0.44,"y":0.40}}"#;
-        let state = decode(&topics, "t/state", payload)
+        let state = decode(&topics, "t/state", payload, None)
             .expect("matches")
             .expect("decodes");
         let State::Light(light) = state else {
@@ -376,7 +401,7 @@ mod tests {
             payload_on: "ON".to_owned(),
             payload_off: "OFF".to_owned(),
         };
-        assert!(decode(&topics, "unrelated/topic", b"ON").is_none());
+        assert!(decode(&topics, "unrelated/topic", b"ON", None).is_none());
     }
 
     #[test]
@@ -402,6 +427,72 @@ mod tests {
         assert_eq!(messages[1].topic, "t/cmnd/Dimmer");
         // 128/255 * 100, rounded
         assert_eq!(messages[1].payload, b"50");
+    }
+
+    #[test]
+    fn a_default_schema_brightness_report_keeps_the_previous_on_state() {
+        let topics = EntityTopics::LightDefault {
+            state_topic: Some("t/POWER".to_owned()),
+            command_topic: "t/cmnd/POWER".to_owned(),
+            payload_on: "ON".to_owned(),
+            payload_off: "OFF".to_owned(),
+            brightness_state_topic: Some("t/RESULT".to_owned()),
+            brightness_command_topic: Some("t/cmnd/Dimmer".to_owned()),
+            brightness_scale: 100,
+        };
+        let previous = State::Light(LightState {
+            on: true,
+            brightness: Some(10),
+            color_mode: Some(ColorMode::Rgb),
+            color_temp_kelvin: None,
+            rgb: Some([1, 2, 3]),
+        });
+        let state = decode(&topics, "t/RESULT", b"50", Some(&previous))
+            .expect("matches")
+            .expect("decodes");
+        assert_eq!(
+            state,
+            State::Light(LightState {
+                on: true,
+                brightness: Some(128), // 50/100 * 255, rounded
+                color_mode: Some(ColorMode::Rgb),
+                color_temp_kelvin: None,
+                rgb: Some([1, 2, 3]),
+            })
+        );
+    }
+
+    #[test]
+    fn a_default_schema_on_off_report_keeps_the_previous_brightness() {
+        let topics = EntityTopics::LightDefault {
+            state_topic: Some("t/POWER".to_owned()),
+            command_topic: "t/cmnd/POWER".to_owned(),
+            payload_on: "ON".to_owned(),
+            payload_off: "OFF".to_owned(),
+            brightness_state_topic: Some("t/RESULT".to_owned()),
+            brightness_command_topic: Some("t/cmnd/Dimmer".to_owned()),
+            brightness_scale: 100,
+        };
+        let previous = State::Light(LightState {
+            on: false,
+            brightness: Some(77),
+            color_mode: None,
+            color_temp_kelvin: None,
+            rgb: None,
+        });
+        let state = decode(&topics, "t/POWER", b"ON", Some(&previous))
+            .expect("matches")
+            .expect("decodes");
+        assert_eq!(
+            state,
+            State::Light(LightState {
+                on: true,
+                brightness: Some(77),
+                color_mode: None,
+                color_temp_kelvin: None,
+                rgb: None,
+            })
+        );
     }
 
     #[test]

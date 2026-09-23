@@ -14,6 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
 const RUNTIME_DIR: &str = "runtime";
@@ -51,10 +52,26 @@ fn corepack_binary() -> PathBuf {
 
 /// The zigbee2mqtt package's entry point, once `ensure_zigbee2mqtt` has installed it.
 pub fn zigbee2mqtt_entry() -> PathBuf {
-    Path::new(Z2M_DIR)
-        .join("node_modules")
-        .join("zigbee2mqtt")
-        .join("index.js")
+    zigbee2mqtt_package_dir().join("index.js")
+}
+
+fn zigbee2mqtt_package_dir() -> PathBuf {
+    Path::new(Z2M_DIR).join("node_modules").join("zigbee2mqtt")
+}
+
+/// Reads the installed package's own `"version"` field, if it's there at all — used to tell
+/// whether the currently installed copy matches what settings now ask for.
+fn installed_zigbee2mqtt_version() -> Option<String> {
+    version_from_package_json(&zigbee2mqtt_package_dir())
+}
+
+fn version_from_package_json(package_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(package_dir.join("package.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
 }
 
 async fn run(command: &mut Command, what: &str) -> Result<(), String> {
@@ -103,6 +120,11 @@ pub async fn ensure_node() -> Result<(), String> {
     )
     .await?;
 
+    if let Err(why) = verify_checksum(&archive_path, version, &archive).await {
+        let _ = tokio::fs::remove_file(&archive_path).await;
+        return Err(why);
+    }
+
     // The archive's own top-level directory is `node-v{version}-{platform}`; strip it so the
     // result lands directly at `runtime/bin/…` regardless of the version downloaded.
     run(
@@ -126,12 +148,78 @@ pub async fn ensure_node() -> Result<(), String> {
     Ok(())
 }
 
+/// Checks a downloaded archive against the SHA-256 nodejs.org itself publishes for that release,
+/// so a corrupted download or a compromised mirror gets caught before anything from the archive
+/// ever runs. `SHASUMS256.txt` lists every artifact for the release, one `<hash>  <filename>`
+/// line each.
+async fn verify_checksum(
+    archive_path: &Path,
+    version: &str,
+    archive_name: &str,
+) -> Result<(), String> {
+    let url = format!("https://nodejs.org/dist/v{version}/SHASUMS256.txt");
+    let output = Command::new("curl")
+        .args(["--fail", "--location", "--silent", "--show-error"])
+        .arg(&url)
+        .output()
+        .await
+        .map_err(|e| format!("couldn't run curl (fetching Node.js checksums): {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "curl (fetching Node.js checksums) failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let sums = String::from_utf8_lossy(&output.stdout);
+    let expected = find_checksum(&sums, archive_name)
+        .ok_or_else(|| format!("{archive_name} isn't listed in SHASUMS256.txt"))?;
+
+    let bytes = tokio::fs::read(archive_path)
+        .await
+        .map_err(|e| format!("couldn't read {}: {e}", archive_path.display()))?;
+    let actual = Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+
+    if actual != expected {
+        return Err(format!(
+            "{archive_name} failed checksum verification: expected {expected}, got {actual}"
+        ));
+    }
+    Ok(())
+}
+
+/// Parses `SHASUMS256.txt`'s `<hash>  <filename>` lines, picking out the one for `archive_name`.
+fn find_checksum(sums: &str, archive_name: &str) -> Option<String> {
+    sums.lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        let hash = parts.next()?;
+        let name = parts.next()?;
+        (name == archive_name).then(|| hash.to_owned())
+    })
+}
+
 /// Installs Zigbee2MQTT via `corepack pnpm` (Node's own bundled package manager launcher —
-/// nothing extra to download for pnpm itself) if it isn't already there. `version` pins an
-/// exact release; `None` installs whatever's currently latest, the one time this runs.
+/// nothing extra to download for pnpm itself) if it isn't already there, or if a `version` is
+/// given that doesn't match what's already installed — a settings change pinning (or re-pinning)
+/// a version is a deliberate re-install, not left silently unapplied. `None` only installs if
+/// nothing is there yet, leaving whatever's already installed alone from then on.
 pub async fn ensure_zigbee2mqtt(version: Option<&str>) -> Result<(), String> {
     if zigbee2mqtt_entry().is_file() {
-        return Ok(());
+        match version {
+            None => return Ok(()),
+            Some(wanted) if installed_zigbee2mqtt_version().as_deref() == Some(wanted) => {
+                return Ok(());
+            }
+            Some(wanted) => {
+                tracing::info!(
+                    wanted,
+                    "requested Zigbee2MQTT version differs, reinstalling"
+                );
+            }
+        }
     }
     tokio::fs::create_dir_all(Z2M_DIR)
         .await
@@ -140,7 +228,7 @@ pub async fn ensure_zigbee2mqtt(version: Option<&str>) -> Result<(), String> {
         Some(v) => format!("zigbee2mqtt@{v}"),
         None => "zigbee2mqtt@latest".to_owned(),
     };
-    tracing::info!(package = %spec, "installing Zigbee2MQTT (only needed once)");
+    tracing::info!(package = %spec, "installing Zigbee2MQTT");
     run(
         Command::new(corepack_binary())
             .args(["pnpm", "add", &spec])
@@ -201,5 +289,37 @@ mod tests {
             zigbee2mqtt_entry(),
             Path::new("z2m/node_modules/zigbee2mqtt/index.js")
         );
+    }
+
+    #[test]
+    fn reads_the_version_field_out_of_an_installed_packages_package_json() {
+        let dir = tempfile::tempdir().expect("can create a temp dir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            br#"{"name": "zigbee2mqtt", "version": "2.1.0"}"#,
+        )
+        .expect("can write package.json");
+        assert_eq!(
+            version_from_package_json(dir.path()),
+            Some("2.1.0".to_owned())
+        );
+    }
+
+    #[test]
+    fn no_installed_package_json_is_none_not_an_error() {
+        let dir = tempfile::tempdir().expect("can create a temp dir");
+        assert_eq!(version_from_package_json(dir.path()), None);
+    }
+
+    #[test]
+    fn finds_the_matching_line_in_a_shasums_file() {
+        let sums = "\
+            aaaa1111  node-v24.21.0-darwin-arm64.tar.gz\n\
+            bbbb2222  node-v24.21.0-linux-x64.tar.gz\n";
+        assert_eq!(
+            find_checksum(sums, "node-v24.21.0-linux-x64.tar.gz"),
+            Some("bbbb2222".to_owned())
+        );
+        assert_eq!(find_checksum(sums, "node-v24.21.0-win-x64.zip"), None);
     }
 }

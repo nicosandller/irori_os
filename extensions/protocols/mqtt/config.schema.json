@@ -51,11 +51,6 @@
           "type": "null"
         }
       ]
-    },
-    "zigbee2mqtt_base_topic": {
-      "description": "Zigbee2MQTT's own base topic (its `mqtt.base_topic`), for the bridge/permit-join\nintegration — not part of HA Discovery itself. Almost never changed from Z2M's default.",
-      "type": "string",
-      "default": "zigbee2mqtt"
     }
   },
   "additionalProperties": false,

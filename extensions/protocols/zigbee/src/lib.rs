@@ -31,7 +31,7 @@ use irori_protocol::{
     AvailabilityTarget, Health, IncomingAction, IncomingCall, Protocol, ProtocolContext,
     ProtocolError, ServiceError,
 };
-use irori_types::{Availability, StateReport, UniqueId};
+use irori_types::{Availability, State, StateReport, UniqueId};
 
 use crate::broker::{BrokerEvent, Connectivity, Message, Publisher};
 use crate::settings::Settings;
@@ -61,6 +61,10 @@ impl Protocol for Zigbee {
 #[derive(Debug, Clone)]
 struct Entity {
     topics: EntityTopics,
+    /// The last state successfully decoded for this entity, if any — see the matching field in
+    /// `irori-protocol-mqtt`'s own `lib.rs` for why (`irori_ha_discovery::state::decode`'s
+    /// `previous` parameter).
+    last_state: Option<State>,
 }
 
 #[derive(Debug, Default)]
@@ -146,6 +150,7 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                     }
                     Some(BrokerEvent::Connectivity(Connectivity::Disconnected)) => {
                         ctx.set_health(Health::Degraded("disconnected from Zigbee2MQTT".to_owned())).await;
+                        handle_disconnect(&mut registry, &ctx).await;
                     }
                     None => break Err(ProtocolError::new("stopped listening to the embedded broker")),
                 }
@@ -167,6 +172,16 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
 
 fn absolute(path: std::path::PathBuf) -> std::path::PathBuf {
     std::path::absolute(&path).unwrap_or(path)
+}
+
+/// Losing the broker connection means Zigbee2MQTT's own `bridge/info` is stale until it
+/// reconnects and republishes it — `permit_join` shouldn't stay offered as if the bridge were
+/// still confirmed up.
+async fn handle_disconnect(registry: &mut Registry, ctx: &ProtocolContext) {
+    if registry.bridge_seen {
+        registry.bridge_seen = false;
+        ctx.set_available_actions(vec![]).await;
+    }
 }
 
 async fn handle_action(incoming: IncomingAction, client: &impl Publisher) {
@@ -221,11 +236,17 @@ async fn apply(
     }
     if let Some(unique_ids) = registry.state_topics.get(&message.topic).cloned() {
         for unique_id in unique_ids {
-            let Some(entity) = registry.entities.get(&unique_id) else {
+            let Some(entity) = registry.entities.get_mut(&unique_id) else {
                 continue;
             };
-            match state::decode(&entity.topics, &message.topic, &message.payload) {
+            match state::decode(
+                &entity.topics,
+                &message.topic,
+                &message.payload,
+                entity.last_state.as_ref(),
+            ) {
                 Some(Ok(new_state)) => {
+                    entity.last_state = Some(new_state.clone());
                     ctx.report_state(StateReport {
                         unique_id,
                         state: Some(new_state),
@@ -279,6 +300,30 @@ async fn describe(
         return;
     }
 
+    // A redescribe (the same entity's discovery config firing again, e.g. Zigbee2MQTT
+    // republishing on its own restart) must drop this entity's old topic-index entries first —
+    // otherwise a topic it no longer uses keeps reporting for it, and one it still uses ends up
+    // listed twice.
+    let last_state = if let Some(old) = registry.entities.remove(&unique_id) {
+        for (topic, _) in state::topics_of(&unique_id, &old.topics) {
+            if let Some(ids) = registry.state_topics.get_mut(&topic) {
+                ids.retain(|id| id != &unique_id);
+                if ids.is_empty() {
+                    registry.state_topics.remove(&topic);
+                }
+            }
+        }
+        for (_, _, ids) in registry.availability_topics.values_mut() {
+            ids.retain(|id| id != &unique_id);
+        }
+        registry
+            .availability_topics
+            .retain(|_, (_, _, ids)| !ids.is_empty());
+        old.last_state
+    } else {
+        None
+    };
+
     for (topic, _) in state::topics_of(&unique_id, &parsed.topics) {
         registry
             .state_topics
@@ -308,6 +353,7 @@ async fn describe(
         unique_id,
         Entity {
             topics: parsed.topics,
+            last_state,
         },
     );
 }
@@ -435,6 +481,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn redescribing_an_entity_doesnt_leave_duplicate_topic_index_entries() {
+        let (ctx, host) = host::connect();
+        let _drain = drain_ops(host.ops);
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+        let config_topic = "homeassistant/light/0x0017880104e45520_light/config";
+        for _ in 0..2 {
+            describe(
+                topic::parse(config_topic, DISCOVERY_PREFIX).expect("valid"),
+                &message(config_topic, Z2M_LIGHT),
+                &mut registry,
+                &publisher,
+                &ctx,
+            )
+            .await;
+        }
+
+        assert_eq!(
+            registry
+                .state_topics
+                .get("zigbee2mqtt/Living room lamp")
+                .map(Vec::len),
+            Some(1),
+            "the same entity shouldn't be indexed twice under the same topic"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_brightness_only_report_keeps_the_previous_on_state() {
+        let (ctx, host) = host::connect();
+        let _drain = drain_ops(host.ops);
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+        let unique_id = UniqueId::try_from("some_dimmer").expect("valid");
+        registry.entities.insert(
+            unique_id.clone(),
+            Entity {
+                topics: EntityTopics::LightDefault {
+                    state_topic: Some("t/POWER".to_owned()),
+                    command_topic: "t/cmnd/POWER".to_owned(),
+                    payload_on: "ON".to_owned(),
+                    payload_off: "OFF".to_owned(),
+                    brightness_state_topic: Some("t/RESULT".to_owned()),
+                    brightness_command_topic: Some("t/cmnd/Dimmer".to_owned()),
+                    brightness_scale: 100,
+                },
+                last_state: None,
+            },
+        );
+        registry
+            .state_topics
+            .insert("t/POWER".to_owned(), vec![unique_id.clone()]);
+        registry
+            .state_topics
+            .insert("t/RESULT".to_owned(), vec![unique_id.clone()]);
+
+        apply(message("t/POWER", b"ON"), &mut registry, &publisher, &ctx).await;
+        host.reports.ready().await;
+        let _ = host.reports.drain();
+
+        // A brightness-only report shouldn't force the light on/off — it keeps the entity's own
+        // last-known `on` from the earlier report on the separate on/off topic.
+        apply(message("t/RESULT", b"50"), &mut registry, &publisher, &ctx).await;
+
+        host.reports.ready().await;
+        let reports = host.reports.drain();
+        assert_eq!(reports.len(), 1);
+        let State::Light(second) = reports[0].state.clone().expect("a light state") else {
+            panic!("expected a light state");
+        };
+        assert!(second.on);
+        assert_eq!(second.brightness, Some(128)); // 50/100 * 255, rounded
+    }
+
+    #[tokio::test]
+    async fn losing_the_broker_disconnects_the_bridge_and_clears_actions() {
+        let (ctx, host) = host::connect();
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&seen);
+        let mut ops = host.ops;
+        let _drain = tokio::spawn(async move {
+            while let Some(op) = ops.recv().await {
+                if let host::Op::SetAvailableActions(actions) = op
+                    && actions.is_empty()
+                {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        });
+        let mut registry = Registry {
+            bridge_seen: true,
+            ..Registry::default()
+        };
+
+        handle_disconnect(&mut registry, &ctx).await;
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!registry.bridge_seen);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
     async fn seeing_bridge_info_makes_permit_join_available() {
         let (ctx, host) = host::connect();
         let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -504,6 +652,7 @@ mod tests {
                     state_topic: "zigbee2mqtt/Living room lamp".to_owned(),
                     command_topic: "zigbee2mqtt/Living room lamp/set".to_owned(),
                 },
+                last_state: None,
             },
         );
         let publisher = FakePublisher::default();

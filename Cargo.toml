@@ -70,6 +70,8 @@ rumqttc = "0.25.1"
 # websocket support needed for a loopback-only broker, so both are switched off; that also drops
 # most of the crate's own dependency tree (no rustls, no tungstenite).
 rumqttd = { version = "0.20.0", default-features = false }
+# Verifying the downloaded Node.js archive against nodejs.org's own published SHA-256 sums.
+sha2 = "0.11.0"
 jiff = { version = "0.2.37", default-features = false, features = ["std", "serde"] }
 jsonschema = { version = "0.56.0", default-features = false }
 mime_guess = { version = "2.0.5", default-features = false }

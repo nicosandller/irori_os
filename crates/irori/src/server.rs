@@ -828,6 +828,19 @@ async fn set_extension_settings(
         }
     }
 
+    // Checked before either half is written: a bad secret value must not leave the non-secret
+    // half saved while the secret half fails, half-applying the request.
+    let mut secrets_to_set = Vec::new();
+    for (key, value) in secret_fields {
+        let Some(text) = value.as_str() else {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                format!("`{key}` must be given as text"),
+            );
+        };
+        secrets_to_set.push((key, text.to_owned()));
+    }
+
     if !non_secret.is_empty() {
         let saved = state
             .0
@@ -843,19 +856,13 @@ async fn set_extension_settings(
             return edit_failed(e);
         }
     }
-    for (key, value) in secret_fields {
-        let Some(text) = value.as_str() else {
-            return refused(
-                StatusCode::BAD_REQUEST,
-                format!("`{key}` must be given as text"),
-            );
-        };
+    for (key, text) in secrets_to_set {
         let saved = state
             .0
             .config
             .edit_secrets(core, |secrets| {
                 secrets
-                    .set(&id, std::slice::from_ref(&key), text.to_owned())
+                    .set(&id, std::slice::from_ref(&key), text.clone())
                     .map_err(|e| Refused(e.to_string()))
             })
             .await;
@@ -2570,6 +2577,35 @@ mod tests {
                 || !std::fs::read_to_string(server.config_dir().join("extensions/safe.toml"))?
                     .contains("shh"),
             "a secret field must not land in extensions/<id>.toml"
+        );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A bad secret value is caught before the non-secret half of the same request is written —
+    /// otherwise a request with both a valid `code` and an invalid `key` would save `code` and
+    /// then fail on `key`, leaving the request half-applied.
+    #[tokio::test]
+    async fn an_invalid_secret_value_leaves_the_non_secret_half_unwritten() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/settings",
+                serde_json::json!({"code": "1234-5678", "key": 42}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            !server.config_dir().join("extensions/safe.toml").exists(),
+            "the non-secret field must not be written when the secret field is invalid"
+        );
+        assert!(
+            !server.config_dir().join("secrets.toml").exists(),
+            "nothing was written"
         );
 
         host.shutdown().await;

@@ -31,10 +31,6 @@ pub struct Settings {
     pub username: Option<Secret>,
     #[serde(default)]
     pub password: Option<Secret>,
-    /// Zigbee2MQTT's own base topic (its `mqtt.base_topic`), for the bridge/permit-join
-    /// integration — not part of HA Discovery itself. Almost never changed from Z2M's default.
-    #[serde(default = "default_zigbee2mqtt_base_topic")]
-    pub zigbee2mqtt_base_topic: String,
 }
 
 fn default_port() -> u16 {
@@ -43,10 +39,6 @@ fn default_port() -> u16 {
 
 fn default_discovery_prefix() -> String {
     "homeassistant".to_owned()
-}
-
-fn default_zigbee2mqtt_base_topic() -> String {
-    "zigbee2mqtt".to_owned()
 }
 
 /// A credential: never printed, never sent back once given.
@@ -96,7 +88,6 @@ mod tests {
         assert_eq!(settings.port, 1883);
         assert!(!settings.tls);
         assert_eq!(settings.discovery_prefix, "homeassistant");
-        assert_eq!(settings.zigbee2mqtt_base_topic, "zigbee2mqtt");
         assert!(settings.username.is_none());
     }
 

@@ -85,8 +85,10 @@ pub fn connect(
         .unwrap_or_else(|| format!("irori-{}", std::process::id()));
     let mut options = MqttOptions::new(client_id, settings.host.clone(), settings.port);
     options.set_keep_alive(Duration::from_secs(30));
-    if let (Some(username), Some(password)) = (&settings.username, &settings.password) {
-        options.set_credentials(username.expose(), password.expose());
+    if settings.username.is_some() || settings.password.is_some() {
+        let username = settings.username.as_ref().map_or("", |s| s.expose());
+        let password = settings.password.as_ref().map_or("", |s| s.expose());
+        options.set_credentials(username, password);
     }
     if settings.tls {
         options.set_transport(Transport::tls_with_default_config());
