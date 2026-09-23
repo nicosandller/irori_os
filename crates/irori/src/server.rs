@@ -4,7 +4,8 @@
 //! arrive with `irori-api` in M1.5.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, LazyLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Path, State};
@@ -36,32 +37,70 @@ pub struct AppState(Arc<Inner>);
 #[derive(Debug)]
 struct Inner {
     started: Instant,
+    /// A different value on every boot, so a page that spots it changing knows the restart it
+    /// asked for happened. Uptime can't say that: a machine that boots and is opened within a
+    /// minute would make a fresh-ish uptime look like a restart, and a slow restart could pass
+    /// any freshness bound. The generation survives an exec (the process id is the same), so it
+    /// has to be made anew inside this constructor rather than keyed off the pid.
+    boot_id: String,
     db: Database,
     build: BuildInfo,
     core: Core,
     config: Config,
     host: ExtensionHost,
     history: History,
+    /// Waking this asks `serve` (crates/irori/src/main.rs) to shut down and start this binary
+    /// again. The atomic records that the shutdown was a requested restart: `serve` reads it
+    /// once the server has stopped and re-execs itself instead of just stopping.
+    restart: Arc<tokio::sync::Notify>,
+    restarting: Arc<AtomicBool>,
+    /// When a restart was last *accepted* this boot, for `RESTART_COOLDOWN`. Fresh (`None`) in
+    /// every new process, which is the point: the window resets with the boot, so the cap is one
+    /// restart per cooldown per boot rather than a permanent lockout.
+    last_restart: Mutex<Option<Instant>>,
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         db: Database,
         core: Core,
         config: Config,
         host: ExtensionHost,
         history: History,
+        restart: Arc<tokio::sync::Notify>,
+        restarting: Arc<AtomicBool>,
     ) -> Self {
         Self(Arc::new(Inner {
             started: Instant::now(),
+            boot_id: boot_id(),
             db,
             build: BuildInfo::current(),
             core,
             config,
             host,
             history,
+            restart,
+            restarting,
+            last_restart: Mutex::new(None),
         }))
     }
+}
+
+/// A fresh value after every boot: 16 random bytes from the OS, in hex. It must be
+/// genuinely random rather than, say, the wall clock: the same process image re-execs on a
+/// restart, so a clock that froze or stepped back could hand the new boot the old boot's id,
+/// and the page would then never see the change that tells it the restart happened.
+fn boot_id() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes)
+        .expect("the OS must be able to hand over sixteen random bytes for the boot id");
+    use std::fmt::Write as _;
+    let mut hex = String::with_capacity(32);
+    for byte in bytes {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }
 
 pub fn router(state: AppState) -> Router {
@@ -85,6 +124,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/dev/history/{entity_id}", get(entity_history))
         .route("/api/dev/system", get(host_info))
+        .route("/api/dev/restart", post(restart))
         .route(
             "/api/dev/extensions",
             get(|State(s): State<AppState>| async move { Json(s.0.core.extensions()) }),
@@ -156,6 +196,69 @@ async fn home(State(state): State<AppState>) -> Json<HomeView> {
 /// filled or a machine that was swapped out from under it.
 async fn host_info(State(state): State<AppState>) -> Json<crate::host_info::HostView> {
     Json(crate::host_info::read(&state.0.db.path))
+}
+
+/// The Settings page asks for a restart with this header. Nothing in `/api/dev/*` has
+/// authentication yet (that is M1.5), so this is a pre-auth stand-in and it is worth saying
+/// plainly what it is and isn't: it stops the *browser* vectors — a cross-site `<form>` POST
+/// carries no headers, and a fetch with a custom header is stopped by CORS preflight, so no
+/// website the operator happens to have open can silently restart a loopback install — but it
+/// is not authorization. A client that can already reach the server (`--allow-unauthenticated-lan`
+/// puts every network client in that position, for this route and every other `/api/dev/*`
+/// route) can simply send the header. What that client buys with it is capped by
+/// `RESTART_COOLDOWN`, and the real boundary — authentication — arrives with M1.5.
+const UI_HEADER: &str = "x-irori-ui";
+
+/// How long after an accepted restart the endpoint answers 429 instead of accepting another
+/// one. A restart is an outage, so a caller who can reach this route at all (spoofing
+/// `UI_HEADER` is trivial pre-auth) should not be able to hammer it into a permanent one; this
+/// bounds how often a boot can be taken down, and costs nothing for the real page — the button
+/// is disabled while the restart is in flight anyway.
+const RESTART_COOLDOWN: Duration = Duration::from_secs(30);
+
+/// Restarts Irori, at the Settings page's request: wake the shutdown in `serve`
+/// (crates/irori/src/main.rs), which stops the server and extensions cleanly and then starts
+/// this very binary again. The button is on the Settings page because that's where someone who
+/// can change how Irori runs is looking. A bare POST — the page's header missing — is refused
+/// with what a caller would need to know to form a valid one, and so is a second request
+/// inside `RESTART_COOLDOWN`.
+async fn restart(State(state): State<AppState>, request: axum::extract::Request) -> Response {
+    if !request
+        .headers()
+        .get(UI_HEADER)
+        .is_some_and(|value| value == "1")
+    {
+        return refused(
+            StatusCode::FORBIDDEN,
+            format!("restart needs the `{UI_HEADER}: 1` header, which only the page sends"),
+        );
+    }
+    {
+        // A tiny critical section — read a clock, maybe write it — held across no await, so a
+        // plain mutex rather than anything async.
+        let mut last = state
+            .0
+            .last_restart
+            .lock()
+            .expect("a restart clock poisoned by a panic nobody handles");
+        if last.is_some_and(|at| at.elapsed() < RESTART_COOLDOWN) {
+            return refused(
+                StatusCode::TOO_MANY_REQUESTS,
+                "a restart was just asked for; Irori is still getting back up".to_owned(),
+            );
+        }
+        *last = Some(Instant::now());
+    }
+    state.0.restarting.store(true, Ordering::SeqCst);
+    tracing::info!("restart requested; shutting down");
+    // notify_one, not notify_waiters: a non-retaining wake that finds no waiter is lost, and a
+    // restart can be asked for before the graceful shutdown future has registered its waiter (a
+    // request can reach the handler before the accept loop's first poll of it). notify_one keeps
+    // the notification around until the waiter registers, so the shutdown always lands.
+    state.0.restart.notify_one();
+    // Accepted, not No Content: the restart itself happens a moment later, once this request
+    // has drained.
+    StatusCode::ACCEPTED.into_response()
 }
 
 /// The last day of an entity's changes, for the expandable table under its row on the Devices
@@ -1108,6 +1211,10 @@ struct Health<'a> {
     /// answer even between releases, when every development build is `0.0.0`.
     commit: &'static str,
     built_at: &'static str,
+    /// Which boot this is — a different value after every process start. Uptime can't tell an
+    /// instance that started a minute ago from one that restarted a minute ago; this can, which
+    /// is what lets the Settings page know the restart it asked for is done.
+    boot_id: &'a str,
     uptime_ms: u128,
     features: &'a [&'static str],
     sqlite: SqliteHealth<'a>,
@@ -1129,6 +1236,7 @@ async fn health(State(state): State<AppState>) -> Response {
         version: VERSION,
         commit: crate::build_info::COMMIT,
         built_at: crate::build_info::BUILT_AT,
+        boot_id: &inner.boot_id,
         uptime_ms: inner.started.elapsed().as_millis(),
         features: &inner.build.features,
         sqlite: SqliteHealth {
@@ -1226,6 +1334,10 @@ mod tests {
         core: Core,
         config: Config,
         history: History,
+        // The restart handle, held back so a test can check that POST /api/dev/restart woke the
+        // shutdown and told it to restart, not just that it answered 202.
+        restart: Arc<tokio::sync::Notify>,
+        restarting: Arc<AtomicBool>,
     }
 
     impl Server {
@@ -1237,6 +1349,8 @@ mod tests {
                 core,
                 config,
                 history: History::default(),
+                restart: Arc::new(tokio::sync::Notify::new()),
+                restarting: Arc::new(AtomicBool::new(false)),
             })
         }
 
@@ -1253,6 +1367,8 @@ mod tests {
                 self.config.clone(),
                 host,
                 self.history.clone(),
+                self.restart.clone(),
+                self.restarting.clone(),
             )))
         }
 
@@ -1347,6 +1463,106 @@ mod tests {
             json["disk"]["total"].as_u64().unwrap_or(0) > 0,
             "the volume with the data should report its size: {json}"
         );
+        Ok(())
+    }
+
+    /// A restart request is accepted first, because the restart happens after the answer: the
+    /// page's POST has to come back before the server — and with it the connection — goes. It
+    /// also does what it says: the shutdown is woken and told it's a restart, which the runner
+    /// (serve) reads to re-exec the binary instead of exiting.
+    #[tokio::test]
+    async fn restart_is_accepted() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        // The waiter serve()'s own shutdown future would be. It is registered before the
+        // request goes out so the handler's notify_one has a waiter to wake; a retained
+        // notification (no waiter registered) is covered by the handler's semantics instead.
+        let mut shutdown = Box::pin(server.restart.notified());
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        assert!(shutdown.as_mut().poll(&mut cx).is_pending());
+        let (status, _) = server
+            .send(
+                Request::post("/api/dev/restart")
+                    .header("x-irori-ui", "1")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(
+            server.restarting.load(Ordering::SeqCst),
+            "the restart was told it's a restart"
+        );
+        assert!(
+            shutdown.as_mut().poll(&mut cx).is_ready(),
+            "the shutdown was woken"
+        );
+        Ok(())
+    }
+
+    /// A restart without the page's header is refused: restart is a service interruption, so a
+    /// bare POST — a cross-site form, say — must not be able to take the instance down. The
+    /// header is what only same-origin JavaScript can set (a form carries none, and a fetch
+    /// with a custom header is stopped by CORS preflight). The body says what the caller would
+    /// need to know to ask again, per the API error contract.
+    #[tokio::test]
+    async fn restart_without_the_page_header_is_refused() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (status, body) = server
+            .send(Request::post("/api/dev/restart").body(Body::empty())?)
+            .await?;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let body = String::from_utf8(body)?;
+        assert!(
+            body.contains("x-irori-ui: 1"),
+            "the refusal should name the header and value it needs: {body}"
+        );
+        assert!(
+            !server.restarting.load(Ordering::SeqCst),
+            "a refused restart must not mark the boot as restarting"
+        );
+        Ok(())
+    }
+
+    /// A second restart inside the cooldown is refused: anyone who can reach this route at all
+    /// can spoof the page header (there is no auth yet), so the endpoint must not let a caller
+    /// stack outages. The page never hits this — its button is disabled while a restart is in
+    /// flight — so the cooldown only costs an abuser.
+    #[tokio::test]
+    async fn restart_is_refused_again_within_the_cooldown() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        // One app, so the two requests share the cooldown clock (each fresh `send` would build
+        // its own).
+        let app = server.app()?;
+        let ask = || {
+            Request::post("/api/dev/restart")
+                .header("x-irori-ui", "1")
+                .body(Body::empty())
+        };
+        let first = app.clone().oneshot(ask()?).await?;
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+        let second = app.clone().oneshot(ask()?).await?;
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+        Ok(())
+    }
+
+    /// A new boot is a new instance: the health of two servers — two process starts, in the
+    /// restart's case — must not carry the same boot id, or the page couldn't tell the restart
+    /// it asked for from the process that was already there.
+    #[tokio::test]
+    async fn every_boot_gets_its_own_id() -> anyhow::Result<()> {
+        async fn boot_id(server: &Server) -> anyhow::Result<String> {
+            let (_, body) = server
+                .send(Request::get("/api/health").body(Body::empty())?)
+                .await?;
+            let json: serde_json::Value = serde_json::from_slice(&body)?;
+            Ok(json["boot_id"].as_str().unwrap_or_default().to_owned())
+        }
+        let server = Server::new(core())?;
+        let first = boot_id(&server).await?;
+        let server = Server::new(core())?;
+        let second = boot_id(&server).await?;
+        assert!(!first.is_empty(), "a boot should name itself: {first:?}");
+        assert_ne!(first, second, "two boots share an id: {first}");
         Ok(())
     }
 

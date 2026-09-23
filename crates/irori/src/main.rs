@@ -13,10 +13,12 @@ mod server;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use irori_core::{Core, ExtensionHost, SystemClock, Timing};
+use tokio::sync::Notify;
 
 #[derive(Debug, Parser)]
 #[command(name = "irori", version = build_info::VERSION, about = "A fast, modular smart home core")]
@@ -158,6 +160,11 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
     // Read before anything else: the log level and the address come from it.
     let mut store = irori_config::Store::new(&config);
     let problems = store.reload();
+    // Whether the address came from the command line (a `--bind` or an `IRORI_BIND` in the
+    // environment) rather than irori.toml. Only then does a restart carry the address it
+    // actually bound across the exec (restart_process): a config-file bind must not override a
+    // `[server].bind` edit made while Irori ran. Read now — `resolve` consumes `flags`.
+    let carry_bind = flags.bind.is_some();
     let Resolved {
         data,
         bind,
@@ -192,6 +199,12 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
         .build()
         .context("failed to start the async runtime")?
         .block_on(async move {
+            // Waking `restart` asks the server to shut down; `restarting` then tells the copy of
+            // `serve` that picks up after that shutdown to re-exec this binary (`serve`), which
+            // is how the Settings page's Restart button works (crates/irori/src/server.rs).
+            let restart = Arc::new(Notify::new());
+            let restarting = Arc::new(AtomicBool::new(false));
+
             let listener = bind_with_fallback(bind, bind_fallback)
                 .await
                 .with_context(|| format!("failed to listen on {bind}"))?;
@@ -248,13 +261,20 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
                     settings,
                     host.clone(),
                     history,
+                    restart.clone(),
+                    restarting.clone(),
                 )),
             )
-            .with_graceful_shutdown(shutdown_signal())
+            .with_graceful_shutdown(shutdown_signal(restart))
             .await
             .context("server error");
             // Give every extension its chance to stop cleanly, even if the server failed.
             host.shutdown().await;
+            if restarting.load(Ordering::SeqCst) {
+                // Never returns: the current image is replaced by a fresh `irori serve`. Only a
+                // failed exec comes back here.
+                return restart_process(address, carry_bind);
+            }
             served
         })
 }
@@ -333,7 +353,7 @@ fn check_bind(bind: SocketAddr, allow_unauthenticated_lan: bool) -> anyhow::Resu
 }
 
 /// Resolves on Ctrl-C or, on Unix, SIGTERM (what systemd sends).
-async fn shutdown_signal() {
+async fn shutdown_signal(restart: Arc<Notify>) {
     let ctrl_c = async {
         if let Err(err) = tokio::signal::ctrl_c().await {
             tracing::error!(%err, "failed to listen for Ctrl-C");
@@ -357,10 +377,75 @@ async fn shutdown_signal() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        () = ctrl_c => {},
-        () = terminate => {},
+        () = ctrl_c => {
+            tracing::info!("shutting down");
+        }
+        () = terminate => {
+            tracing::info!("shutting down");
+        }
+        // The Settings page's Restart button. The handler's notify_one retains the notification,
+        // so this resolves however the ordering falls out — even a request that lands before
+        // this select! was first polled stores a wake for it.
+        () = restart.notified() => {
+            tracing::info!("shutting down for a restart");
+        }
     }
-    tracing::info!("shutting down");
+}
+
+/// Starts this binary again, in this process. `exec` replaces the current image with the same
+/// executable and the same arguments, so the process — and with it the container when Irori is
+/// its PID 1, the systemd unit, and the terminal it was started from — stays what it was. No
+/// supervisor has to be asked to bring it back. It only returns if the exec itself failed, and
+/// the extensions were already stopped (`host.shutdown`), so nothing is left running twice.
+///
+/// The address Irori actually ended up on is carried in `IRORI_BIND` — which wins over
+/// irori.toml (`resolve`) — but only when the current bind came from the command line (`carry_bind`,
+/// i.e. `--bind` or an `IRORI_BIND` in the environment) and not from `irori.toml`. When it was
+/// explicit, the address must survive the restart: a `--bind 127.0.0.1:0` has the OS pick the
+/// port, and the restarted process must bind the address that worked rather than asking for a
+/// fresh random one, or the page's port would move on every restart. (A bind the fallback stepped
+/// away from a taken address is the same case.) When the address came from the config file, it is
+/// *not* carried: the restarted process resolves `[server].bind` anew, so an edit made while Irori
+/// ran — which `irori.toml` documents as taking effect on restart — applies instead of being
+/// silently overridden by the old address. Any `--bind` argument is dropped from the argv — its
+/// value, when written `--bind <addr>`, follows it — and `--bind-fallback` is left alone.
+#[cfg(unix)]
+fn restart_process(bind: SocketAddr, carry_bind: bool) -> anyhow::Result<()> {
+    use std::os::unix::process::CommandExt;
+    let current = std::env::current_exe().context("can't find what to restart")?;
+    let mut command = std::process::Command::new(current);
+    command.args(restart_args());
+    if carry_bind {
+        command.env("IRORI_BIND", bind.to_string());
+    }
+    let err = command.exec();
+    tracing::error!(%err, "restart failed");
+    anyhow::bail!("restart failed: {err}")
+}
+
+/// The arguments to run `irori serve` with again, minus any `--bind` (and, for `--bind <addr>`,
+/// its value that follows), since the actual bound address goes in `IRORI_BIND` instead.
+/// Everything else — `--bind-fallback` included — keeps its place.
+fn restart_args() -> Vec<std::ffi::OsString> {
+    let mut rest = std::env::args_os().skip(1);
+    let mut args = Vec::new();
+    while let Some(arg) = rest.next() {
+        let shown = arg.to_string_lossy();
+        if shown == "--bind" {
+            let _ = rest.next(); // its value, also dropped
+            continue;
+        }
+        if shown.starts_with("--bind=") {
+            continue;
+        }
+        args.push(arg);
+    }
+    args
+}
+
+#[cfg(not(unix))]
+fn restart_process(_bind: SocketAddr, _carry_bind: bool) -> anyhow::Result<()> {
+    anyhow::bail!("Irori can only restart itself on Unix")
 }
 
 #[cfg(test)]

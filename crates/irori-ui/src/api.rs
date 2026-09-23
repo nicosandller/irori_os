@@ -19,6 +19,7 @@ const COMMAND_URL: &str = "/api/dev/command";
 const AREAS_URL: &str = "/api/dev/areas";
 const HISTORY_URL: &str = "/api/dev/history";
 const SYSTEM_URL: &str = "/api/dev/system";
+const RESTART_URL: &str = "/api/dev/restart";
 
 /// Everything the page shows. Mirrors `HomeView` on the server; the two meet again in
 /// `irori-types` when the real API lands.
@@ -141,6 +142,10 @@ pub struct Health {
     pub commit: String,
     #[serde(default)]
     pub built_at: String,
+    /// Which boot this is. It changes every time the process starts, which is how the page tells
+    /// the restart it asked for from a build that just happens to have started recently.
+    #[serde(default)]
+    pub boot_id: String,
     pub uptime_ms: u128,
     pub features: Vec<String>,
     pub sqlite: Sqlite,
@@ -202,6 +207,46 @@ pub async fn fetch_system() -> Result<System, String> {
         .json::<System>()
         .await
         .map_err(|e| format!("Irori sent something this page can't read: {e}"))
+}
+
+/// Asks Irori to restart itself. It answers before it goes; the page finds out it's back from
+/// its own polling, which shows a fresh boot once the new instance is up. The outcome matters:
+/// a refusal from the living server is a "nothing happened", while going quiet is not — a
+/// restart may well have been accepted and the old server drained as the answer was on its way.
+#[derive(Debug)]
+pub enum RestartSent {
+    /// The server answered 202: the restart is on its way, and the page verifies it by boot.
+    Accepted,
+    /// The server answered that it wouldn't — 403, 429, ... — so nothing is restarting.
+    Refused(String),
+    /// No answer came back at all. The server may already have been shutting down (a restart
+    /// that was accepted) or be down for another reason; it is not a refusal, and the page must
+    /// not treat it as one.
+    Lost,
+}
+
+/// Asks Irori to restart itself.
+pub async fn restart() -> RestartSent {
+    // The server only restarts for the page's own fetch: this header is what says it is one,
+    // and a cross-site website can't set it (a <form> POST has no header, and a fetch with a
+    // custom header is stopped by CORS preflight).
+    let response = match Request::post(RESTART_URL)
+        .header("x-irori-ui", "1")
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            // The browser's own words for a failed request ("TypeError: Failed to fetch") say
+            // nothing a person can act on, so they go to the console.
+            leptos::logging::error!("{error}");
+            return RestartSent::Lost;
+        }
+    };
+    match checked(response).await {
+        Ok(()) => RestartSent::Accepted,
+        Err(why) => RestartSent::Refused(why),
+    }
 }
 
 pub async fn fetch_health() -> Result<Health, String> {
