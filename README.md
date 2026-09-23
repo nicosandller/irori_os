@@ -140,12 +140,14 @@ the files in an editor — Irori picks up changes within a couple of seconds, an
 doesn't parse is ignored with an explanation in the log while the last good version keeps
 running. There is no second copy in the database: the UI writes the same files you would.
 
-If you'd rather decide which devices Irori takes in — a shared network, a neighbour's plugs —
-put this in `irori.toml`, and new devices wait on the Devices page for you to add or ignore them:
+A device Irori finds waits for you: it shows up under **+ Add device**, on the screen for the
+extension that found it, with **Add** and **Ignore** on each. Nothing joins the home on its own,
+so installing an extension never means whatever is on the network is now yours. If you'd rather
+everything found just appear, put this in `irori.toml`:
 
 ```toml
 [devices]
-new = "ask"
+new = "add"
 ```
 
 **Helpers** are switches Irori keeps itself, like "guests are over": make them on the Devices

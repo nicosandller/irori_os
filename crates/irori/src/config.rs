@@ -363,6 +363,9 @@ mod tests {
     async fn asking_before_adding_keeps_the_devices_already_here() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let core = core();
+        // Asking is the default, and this test is about turning it *on*: start by adding on
+        // sight, so there's a home here to protect when it goes on a few lines below.
+        std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"add\"\n")?;
         let config = Config::open_dir(dir.path(), &core);
         let host = irori_core::ExtensionHost::start(
             &core,
@@ -412,6 +415,9 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let before = {
             let core = core();
+            // The first run is the one where asking is off; the second half of the test turns it
+            // on in the same directory. Asking being the default makes that first part explicit.
+            std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"add\"\n")?;
             let _config = Config::open_dir(dir.path(), &core);
             let host = irori_core::ExtensionHost::start(
                 &core,
@@ -512,6 +518,9 @@ mod tests {
     async fn a_failed_write_when_asking_starts_does_not_hold_the_home() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let core = core();
+        // Asking is the default; this test is about what happens as it's turned on, so the home
+        // has to fill up first.
+        std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"add\"\n")?;
         let _config = Config::open_dir(dir.path(), &core);
         let host = irori_core::ExtensionHost::start(
             &core,

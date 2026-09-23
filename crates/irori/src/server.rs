@@ -1432,7 +1432,13 @@ mod tests {
     impl Server {
         fn new(core: Core) -> anyhow::Result<Self> {
             let dir = tempfile::tempdir()?;
-            let config = Config::open_dir(dir.path().join("config"), &core);
+            // Asking before adding is the default (`irori.toml`, `[devices] new`), so without
+            // this every test below would have to add the demo's devices before it could look at
+            // one. The tests that are *about* asking turn it back on for themselves.
+            let config_dir = dir.path().join("config");
+            std::fs::create_dir_all(&config_dir)?;
+            std::fs::write(config_dir.join("irori.toml"), "[devices]\nnew = \"add\"\n")?;
+            let config = Config::open_dir(config_dir, &core);
             Ok(Self {
                 dir,
                 core,

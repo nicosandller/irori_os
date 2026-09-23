@@ -591,14 +591,23 @@ mod tests {
     fn a_directory_that_isnt_there_means_nothing_is_configured() {
         let mut store = Store::new(dir().path().join("never-created"));
         assert!(store.reload().is_empty());
-        assert_eq!(store.settings(), Settings::default());
+        assert_eq!(
+            store.settings(),
+            Settings {
+                // Nothing configured means asking before adding: `[devices] new`'s own default.
+                ask_before_adding: true,
+                ..Settings::default()
+            }
+        );
     }
 
     #[test]
     fn what_is_saved_is_what_is_loaded_again() {
         let home = dir();
         let settings = Settings {
-            ask_before_adding: false,
+            // `[devices] new` lives in `irori.toml`, which `save` never writes — that file is
+            // the person's. So this is what a reload reports, not something being saved here.
+            ask_before_adding: true,
             floors: Vec::new(),
             areas: vec![area("hall", "Hall")],
             floorplan: irori_types::Floorplan::default(),

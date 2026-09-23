@@ -251,10 +251,12 @@ pub struct DevicesSection {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NewDevices {
-    /// It joins the home straight away. The default: nothing to set up.
-    #[default]
+    /// It joins the home straight away.
     Add,
-    /// It waits on the Devices page until a person adds or ignores it.
+    /// It waits until a person adds or ignores it — on the Devices page, or on the extension's
+    /// own screen under "+ Add device". The default: what an extension finds is a proposal, not
+    /// a decision, and installing one shouldn't fill the home with whatever is on the network.
+    #[default]
     Ask,
 }
 
@@ -516,12 +518,12 @@ mod tests {
         assert_eq!(read_irori("").expect("empty"), IroriSettings::default());
         assert!(read_irori("[server]\nlog_level = \"loud\"\n").is_err());
         assert!(read_irori("[server]\nport = 80\n").is_err());
-        let asking = read_irori("[devices]\nnew = \"ask\"\n").expect("valid");
-        assert_eq!(asking.devices.new, NewDevices::Ask);
+        let adding = read_irori("[devices]\nnew = \"add\"\n").expect("valid");
+        assert_eq!(adding.devices.new, NewDevices::Add);
         assert_eq!(
             IroriSettings::default().devices.new,
-            NewDevices::Add,
-            "adding is the default"
+            NewDevices::Ask,
+            "asking is the default"
         );
     }
 
