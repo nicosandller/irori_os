@@ -78,14 +78,17 @@ irori help run
 ```
 
 `run` and `serve` are the same command. Every option is also an environment variable
-(`IRORI_DATA`, `IRORI_CONFIG`, `IRORI_BIND`, `IRORI_LOG_LEVEL`, `IRORI_ALLOW_UNAUTHENTICATED_LAN`), which is what
-the container uses. `irori help run` lists them with their defaults.
+(`IRORI_DATA`, `IRORI_CONFIG`, `IRORI_BIND`, `IRORI_BIND_FALLBACK`, `IRORI_LOG_LEVEL`,
+`IRORI_ALLOW_UNAUTHENTICATED_LAN`), which is what the container uses. `irori help run` lists them
+with their defaults. If 8480 is already taken, Irori doesn't fail: it listens on
+`--bind-fallback` if you set one, otherwise on the next free port just above 8480, and logs where.
 
 Or put them in `irori.toml` in the config directory, where a flag still wins:
 
 ```toml
 [server]
 bind = "127.0.0.1:8480"
+bind_fallback = "127.0.0.1:8481"   # optional; only used when bind is taken
 log_level = "info"
 
 [extensions]
