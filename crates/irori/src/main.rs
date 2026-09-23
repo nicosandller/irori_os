@@ -13,10 +13,12 @@ mod server;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use irori_core::{Core, ExtensionHost, SystemClock, Timing};
+use tokio::sync::Notify;
 
 #[derive(Debug, Parser)]
 #[command(name = "irori", version = build_info::VERSION, about = "A fast, modular smart home core")]
@@ -192,6 +194,12 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
         .build()
         .context("failed to start the async runtime")?
         .block_on(async move {
+            // Waking `restart` asks the server to shut down; `restarting` then tells the copy of
+            // `serve` that picks up after that shutdown to re-exec this binary (`serve`), which
+            // is how the Settings page's Restart button works (crates/irori/src/server.rs).
+            let restart = Arc::new(Notify::new());
+            let restarting = Arc::new(AtomicBool::new(false));
+
             let listener = bind_with_fallback(bind, bind_fallback)
                 .await
                 .with_context(|| format!("failed to listen on {bind}"))?;
@@ -248,13 +256,20 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
                     settings,
                     host.clone(),
                     history,
+                    restart.clone(),
+                    restarting.clone(),
                 )),
             )
-            .with_graceful_shutdown(shutdown_signal())
+            .with_graceful_shutdown(shutdown_signal(restart))
             .await
             .context("server error");
             // Give every extension its chance to stop cleanly, even if the server failed.
             host.shutdown().await;
+            if restarting.load(Ordering::SeqCst) {
+                // Never returns: the current image is replaced by a fresh `irori serve`. Only a
+                // failed exec comes back here.
+                return restart_process();
+            }
             served
         })
 }
@@ -333,7 +348,7 @@ fn check_bind(bind: SocketAddr, allow_unauthenticated_lan: bool) -> anyhow::Resu
 }
 
 /// Resolves on Ctrl-C or, on Unix, SIGTERM (what systemd sends).
-async fn shutdown_signal() {
+async fn shutdown_signal(restart: Arc<Notify>) {
     let ctrl_c = async {
         if let Err(err) = tokio::signal::ctrl_c().await {
             tracing::error!(%err, "failed to listen for Ctrl-C");
@@ -357,10 +372,39 @@ async fn shutdown_signal() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        () = ctrl_c => {},
-        () = terminate => {},
+        () = ctrl_c => {
+            tracing::info!("shutting down");
+        }
+        () = terminate => {
+            tracing::info!("shutting down");
+        }
+        // The Settings page's Restart button. Only ever fires once the server is already
+        // answering, so the waiter is always there to be woken.
+        () = restart.notified() => {
+            tracing::info!("shutting down for a restart");
+        }
     }
-    tracing::info!("shutting down");
+}
+
+/// Starts this binary again, in this process. `exec` replaces the current image with the same
+/// executable and the same arguments, so the process — and with it the container when Irori is
+/// its PID 1, the systemd unit, and the terminal it was started from — stays what it was. No
+/// supervisor has to be asked to bring it back. It only returns if the exec itself failed, and
+/// the extensions were already stopped (`host.shutdown`), so nothing is left running twice.
+#[cfg(unix)]
+fn restart_process() -> anyhow::Result<()> {
+    use std::os::unix::process::CommandExt;
+    let current = std::env::current_exe().context("can't find what to restart")?;
+    let err = std::process::Command::new(current)
+        .args(std::env::args().skip(1))
+        .exec();
+    tracing::error!(%err, "restart failed");
+    anyhow::bail!("restart failed: {err}")
+}
+
+#[cfg(not(unix))]
+fn restart_process() -> anyhow::Result<()> {
+    anyhow::bail!("Irori can only restart itself on Unix")
 }
 
 #[cfg(test)]

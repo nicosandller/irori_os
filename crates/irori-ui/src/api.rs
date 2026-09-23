@@ -19,6 +19,7 @@ const COMMAND_URL: &str = "/api/dev/command";
 const AREAS_URL: &str = "/api/dev/areas";
 const HISTORY_URL: &str = "/api/dev/history";
 const SYSTEM_URL: &str = "/api/dev/system";
+const RESTART_URL: &str = "/api/dev/restart";
 
 /// Everything the page shows. Mirrors `HomeView` on the server; the two meet again in
 /// `irori-types` when the real API lands.
@@ -202,6 +203,16 @@ pub async fn fetch_system() -> Result<System, String> {
         .json::<System>()
         .await
         .map_err(|e| format!("Irori sent something this page can't read: {e}"))
+}
+
+/// Asks Irori to restart itself. It answers before it goes; the page finds out it's back from
+/// its own polling, which shows a fresh uptime once the new instance is up.
+pub async fn restart() -> Result<(), String> {
+    let response = Request::post(RESTART_URL)
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
 }
 
 pub async fn fetch_health() -> Result<Health, String> {

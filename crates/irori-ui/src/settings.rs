@@ -31,6 +31,42 @@ pub fn Settings() -> impl IntoView {
     // Which floors have their areas folded away, so a horde of areas doesn't push the rest of
     // the page down. The chevron on a floor's row flips one on and off; only the areas fold.
     let collapsed = RwSignal::new(Vec::<irori_types::FloorId>::new());
+    // Whether a restart is under way. The button stays "Restarting…" until the core answers
+    // with a fresh uptime — the new instance's, which is how "it's back" is known — then the
+    // effect below lets it go again. Nothing here needs to wait for the POST itself: the server
+    // answers Acceptance before it actually goes.
+    let restarting = RwSignal::new(false);
+    Effect::new(move |_| {
+        if matches!(live.health.get(), Some(health) if health.uptime_ms < 60_000) {
+            restarting.set(false);
+        }
+    });
+    let restart = move || {
+        if restarting.get_untracked() {
+            return;
+        }
+        if !window()
+            .confirm_with_message(
+                "Restart Irori? It stays where it runs while it starts again (same container, \
+                 same service) — the page just goes quiet for a few seconds, and every device \
+                 reconnects.",
+            )
+            .unwrap_or(false)
+        {
+            return;
+        }
+        restarting.set(true);
+        spawn_local(async move {
+            match api::restart().await {
+                // The new instance is coming up; the page notices it on its own.
+                Ok(()) => {}
+                Err(why) => {
+                    restarting.set(false);
+                    trouble.set(Some(why));
+                }
+            }
+        });
+    };
 
     // Only the areas, floors and the devices in them, not what those devices are reporting. A
     // page that redrew every time a sensor spoke would throw away a half-typed name with it.
@@ -94,6 +130,15 @@ pub fn Settings() -> impl IntoView {
     view! {
         <div class="page-head">
             <h1>"Settings"</h1>
+            <div class="page-actions">
+                <button
+                    type="button"
+                    disabled=move || restarting.get()
+                    on:click=move |_| restart()
+                >
+                    {move || if restarting.get() { "Restarting…" } else { "Restart" }}
+                </button>
+            </div>
         </div>
         <p class="lede">
             "The instance itself, what's where in the home, and the machine all of it runs on."

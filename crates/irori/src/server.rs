@@ -4,6 +4,7 @@
 //! arrive with `irori-api` in M1.5.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -42,15 +43,23 @@ struct Inner {
     config: Config,
     host: ExtensionHost,
     history: History,
+    /// Waking this asks `serve` (crates/irori/src/main.rs) to shut down and start this binary
+    /// again. The atomic records that the shutdown was a requested restart: `serve` reads it
+    /// once the server has stopped and re-execs itself instead of just stopping.
+    restart: Arc<tokio::sync::Notify>,
+    restarting: Arc<AtomicBool>,
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         db: Database,
         core: Core,
         config: Config,
         host: ExtensionHost,
         history: History,
+        restart: Arc<tokio::sync::Notify>,
+        restarting: Arc<AtomicBool>,
     ) -> Self {
         Self(Arc::new(Inner {
             started: Instant::now(),
@@ -60,6 +69,8 @@ impl AppState {
             config,
             host,
             history,
+            restart,
+            restarting,
         }))
     }
 }
@@ -85,6 +96,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/dev/history/{entity_id}", get(entity_history))
         .route("/api/dev/system", get(host_info))
+        .route("/api/dev/restart", post(restart))
         .route(
             "/api/dev/extensions",
             get(|State(s): State<AppState>| async move { Json(s.0.core.extensions()) }),
@@ -156,6 +168,20 @@ async fn home(State(state): State<AppState>) -> Json<HomeView> {
 /// filled or a machine that was swapped out from under it.
 async fn host_info(State(state): State<AppState>) -> Json<crate::host_info::HostView> {
     Json(crate::host_info::read(&state.0.db.path))
+}
+
+/// Restarts Irori, at the Settings page's request: wake the shutdown in `serve`
+/// (crates/irori/src/main.rs), which stops the server and extensions cleanly and then starts
+/// this very binary again. The button is on the Settings page because that's where someone who
+/// can change how Irori runs is looking — but like the rest of `/api/dev/*` (and the commands
+/// the Devices page sends), nothing checks who is asking.
+async fn restart(State(state): State<AppState>) -> Response {
+    state.0.restarting.store(true, Ordering::SeqCst);
+    tracing::info!("restart requested; shutting down");
+    state.0.restart.notify_waiters();
+    // Accepted, not No Content: the restart itself happens a moment later, once this request
+    // has drained.
+    StatusCode::ACCEPTED.into_response()
 }
 
 /// The last day of an entity's changes, for the expandable table under its row on the Devices
@@ -1253,6 +1279,8 @@ mod tests {
                 self.config.clone(),
                 host,
                 self.history.clone(),
+                Arc::new(tokio::sync::Notify::new()),
+                Arc::new(AtomicBool::new(false)),
             )))
         }
 
@@ -1347,6 +1375,17 @@ mod tests {
             json["disk"]["total"].as_u64().unwrap_or(0) > 0,
             "the volume with the data should report its size: {json}"
         );
+        Ok(())
+    }
+
+    /// A restart request is accepted first, because the restart happens after the answer: the
+    /// page's POST has to come back before the server — and with it the connection — goes.
+    #[tokio::test]
+    async fn restart_is_accepted() -> anyhow::Result<()> {
+        let (status, _) = Server::new(core())?
+            .send(Request::post("/api/dev/restart").body(Body::empty())?)
+            .await?;
+        assert_eq!(status, StatusCode::ACCEPTED);
         Ok(())
     }
 
