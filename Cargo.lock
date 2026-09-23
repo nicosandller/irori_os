@@ -1004,6 +1004,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "irori-ha-discovery"
+version = "0.0.0"
+dependencies = [
+ "irori-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "irori-helpers"
 version = "0.0.0"
 dependencies = [

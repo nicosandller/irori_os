@@ -37,7 +37,13 @@ const ALLOWED_WORKSPACE_DEPS: &[(&str, &[&str])] = &[
     ("irori-protocol", &["irori-types"]),
     ("irori-rules", &["irori-types"]),
     ("irori-client", &["irori-types"]),
-    ("irori-protocol-*", &["irori-types", "irori-protocol"]),
+    (
+        "irori-protocol-*",
+        &["irori-types", "irori-protocol", "irori-ha-discovery"],
+    ),
+    // Pure HA-discovery logic shared by the mqtt and zigbee protocols. No protocol libraries of
+    // its own, and it never talks to a broker itself (that's each protocol's own broker.rs).
+    ("irori-ha-discovery", &["irori-types"]),
     ("irori-assist", &["irori-types", "irori-client"]),
 ];
 
