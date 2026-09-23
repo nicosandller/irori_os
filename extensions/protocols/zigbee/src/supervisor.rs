@@ -1,13 +1,11 @@
 //! Spawns Zigbee2MQTT and pipes its own log lines into Irori's, so its output is visible from
 //! the same place every other extension's is — not a separate log file nobody thinks to check.
 //!
-//! One thing this can't fix: on POSIX, Node writes to a piped stdout/stderr asynchronously, and
-//! a hard `process.exit()` — how Zigbee2MQTT reacts to a fatal adapter error, e.g. a missing
-//! serial device — can win the race against those writes actually landing in the pipe. When
-//! that happens the only line we ever see is our own supervisor's "exited: exit status: 1";
-//! Zigbee2MQTT's own explanation never left its process. `drain_logs` below closes the *other*
-//! gap (reading whatever did make it into the pipe before our own process exits), but it can't
-//! recover bytes Node itself never wrote.
+//! Note when testing a change here: `install` copies this extension's files into
+//! `/var/lib/irori/extensions/<id>/`, and that copy is what the supervisor actually runs.
+//! Rebuilding the dev container's image alone leaves it stale — reinstall the extension (through
+//! the UI, or `DELETE`/`POST` on its `/api/dev/extensions/{id}` routes) to pick up a new binary
+//! or schema.
 
 use std::path::Path;
 use std::process::Stdio;
