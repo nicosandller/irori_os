@@ -117,7 +117,9 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
     // otherwise, but there's no reason to make them.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let node = absolute(provision::node_binary());
+    // Zigbee2MQTT is spawned with its own `current_dir`, so every path handed to it has to be
+    // absolute — `provision::node_binary` already is (see its own note there).
+    let node = provision::node_binary();
     let entry = absolute(provision::zigbee2mqtt_entry());
     let data_dir = absolute(Path::new(DATA_DIR).to_path_buf());
     let mut child = supervisor::spawn(&node, &entry, &data_dir).map_err(ProtocolError::new)?;

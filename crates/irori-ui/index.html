@@ -837,6 +837,22 @@
     .ext-settings-btn.wants-setup { width: auto; padding: 0 .7rem; font-size: .85rem;
                                     color: var(--ember); border-color: var(--ember); }
 
+    /* Step one of adding a device: the extensions as things to press, not a list that expands. */
+    .protocol-cards { display: grid; gap: .6rem; margin-top: .8rem;
+                      grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); }
+    .protocol-card { display: flex; flex-direction: column; align-items: flex-start; gap: .3rem;
+                     padding: .8rem; font: inherit; text-align: left; color: inherit;
+                     background: var(--card); border: 1px solid var(--line); border-radius: .5rem;
+                     cursor: pointer; }
+    .protocol-card:hover { border-color: var(--ember); }
+    .protocol-card .protocol-icon { width: 1.75rem; height: 1.75rem; margin-bottom: .2rem; }
+    .protocol-card .name { font-weight: 500; }
+    .protocol-back { padding: 0; margin-bottom: .6rem; font-size: .85rem; }
+    /* Step two: what this one extension has found, waiting and already here. */
+    .protocol-found { margin-top: 1rem; }
+    .protocol-found h3 { margin: 0 0 .4rem; font-size: .9rem; }
+    .protocol-found p { margin: 0; }
+
     /* While a pairing window is open: what to do now, and what has arrived so far. */
     .listening { margin-top: .6rem; padding: .6rem .75rem; background: var(--sunk);
                  border-radius: .4rem; }

@@ -38,8 +38,14 @@ fn platform_target() -> Result<&'static str, String> {
     }
 }
 
+/// Absolute, always. `ensure_zigbee2mqtt` runs its command with `current_dir` set to `z2m/`, and
+/// both the program to exec and every entry of a `PATH` given to the child resolve against the
+/// child's own directory — so a relative `runtime/bin` there means `z2m/runtime/bin`, which is
+/// nothing. That failure surfaces as a bare `No such file or directory`, which reads as a Node
+/// that was never installed rather than as a path pointing at the wrong place.
 fn node_bin_dir() -> PathBuf {
-    Path::new(RUNTIME_DIR).join("bin")
+    let relative = Path::new(RUNTIME_DIR).join("bin");
+    std::path::absolute(&relative).unwrap_or(relative)
 }
 
 pub fn node_binary() -> PathBuf {
@@ -283,12 +289,26 @@ mod tests {
     }
 
     #[test]
-    fn entry_paths_are_relative_to_this_processs_own_package_directory() {
-        assert_eq!(node_binary(), Path::new("runtime/bin/node"));
+    fn entry_paths_hang_off_this_processs_own_package_directory() {
+        let here = std::env::current_dir().expect("a working directory");
+        assert_eq!(node_binary(), here.join("runtime/bin/node"));
         assert_eq!(
             zigbee2mqtt_entry(),
             Path::new("z2m/node_modules/zigbee2mqtt/index.js")
         );
+    }
+
+    /// `ensure_zigbee2mqtt` runs `corepack` with `current_dir` set to `z2m/`, which is where both
+    /// the program path and the `PATH` it's given are resolved — `runtime/bin` relative means
+    /// `z2m/runtime/bin`, so `corepack` is never found and Zigbee2MQTT can never install.
+    #[test]
+    fn node_is_named_absolutely_so_a_child_run_from_elsewhere_still_finds_it() {
+        assert!(node_bin_dir().is_absolute(), "{:?}", node_bin_dir());
+        assert!(corepack_binary().is_absolute());
+        let path = path_with_managed_node();
+        let path = path.to_string_lossy().into_owned();
+        let first = path.split(':').next().expect("split yields one part");
+        assert!(Path::new(first).is_absolute(), "{first}");
     }
 
     #[test]

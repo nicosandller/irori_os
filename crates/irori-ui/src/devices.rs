@@ -870,102 +870,222 @@ fn AddDevice() -> impl IntoView {
     });
 
     view! {
-        <section class="add-device">
-            <p class="muted">
-                "Irori doesn't talk to devices itself: each kind of device arrives through an "
-                "extension. Pick the one your device speaks. "
-                <A href="/extensions">"Manage extensions"</A>
-                "."
-            </p>
-            <ul class="protocols">
-                {move || {
-                    extensions
-                        .get()
-                        .into_iter()
-                        .map(|(id, extension, devices)| protocol_row(id, extension, devices, selected))
-                        .collect_view()
-                }}
-            </ul>
-            <p class="muted small">
-                "Most extensions find devices on their own: an extension that can is always "
-                "listening, so flashing a board or plugging one in is all it takes. A device that "
-                "encrypts its connection shows up as waiting until it has its key. To choose "
-                "which found devices to keep, set `[devices] new = \"ask\"` in irori.toml — they "
-                "wait with Add and Ignore instead of joining on their own. Giving one an address "
-                "by hand is still to come."
-            </p>
-        </section>
+        {move || match selected.get() {
+            // Step one: which extension does this device speak? Cards rather than a list that
+            // expands in place — the second step is a screen of its own, and a row that grows
+            // while the rows below it stay put reads as a disclosure, not as going somewhere.
+            None => view! {
+                <section class="add-device">
+                    <p class="muted">
+                        "Irori doesn't talk to devices itself: each kind of device arrives "
+                        "through an extension. Pick the one your device speaks. "
+                        <A href="/extensions">"Manage extensions"</A>
+                        "."
+                    </p>
+                    <div class="protocol-cards">
+                        {extensions
+                            .get()
+                            .into_iter()
+                            .map(|(id, extension, devices)| {
+                                protocol_card(id, extension, devices, selected)
+                            })
+                            .collect_view()}
+                    </div>
+                </section>
+            }
+                .into_any(),
+            // Step two: that one extension, and nothing else — what it can be asked to do, and
+            // what it has found.
+            Some(id) => {
+                let found = extensions.get().into_iter().find(|(known, _, _)| known == &id);
+                let Some((id, extension, _)) = found else {
+                    selected.set(None);
+                    return ().into_any();
+                };
+                view! {
+                    <section class="add-device">
+                        <button
+                            type="button"
+                            class="link protocol-back"
+                            on:click=move |_| selected.set(None)
+                        >
+                            "‹ All extensions"
+                        </button>
+                        <ProtocolActions id=id.clone() extension=extension.clone() />
+                        <crate::waiting::WaitingFor extension=id.clone() />
+                        <ProtocolDevices id=id.clone() />
+                    </section>
+                }
+                    .into_any()
+            }
+        }}
     }
 }
 
-/// One protocol's picker row; expands in place to its own action button (if it has one, and
-/// says it's usable right now) and its own waiting list, once clicked.
-fn protocol_row(
+/// One extension, as something to press: its icon, its name, and how much it already has.
+fn protocol_card(
     id: ExtensionId,
     extension: crate::api::Extension,
     devices: usize,
     selected: RwSignal<Option<ExtensionId>>,
 ) -> impl IntoView {
-    let kinds = extension.entity_kinds.join(", ");
-    let is_open = {
+    let pick = {
         let id = id.clone();
-        Memo::new(move |_| selected.get().as_ref() == Some(&id))
+        move |_| selected.set(Some(id.clone()))
     };
-    let toggle = {
+    let waiting = extension.waiting.len();
+
+    view! {
+        <button type="button" class="protocol-card" on:click=pick>
+            {icon(id.as_str(), extension.has_icon)}
+            <span class="name">{extension.name.clone()}</span>
+            <span class="badge">{how(&extension.iot_class)}</span>
+            <span
+                class="state"
+                class:ok=extension.state == "running"
+                class:wants-setup=extension.state == "needs_setup"
+            >
+                {extension.state.replace('_', " ")}
+            </span>
+            <span class="muted small">
+                {format!("{devices} device{} here", if devices == 1 { "" } else { "s" })}
+                {(waiting > 0).then(|| format!(" · {waiting} waiting for you"))}
+            </span>
+        </button>
+    }
+}
+
+/// What one extension has found: the devices still waiting to be let in, each with its own Add
+/// and Ignore, and then the ones already here — so the screen you opened to pair a device is
+/// also where you watch it arrive.
+#[component]
+fn ProtocolDevices(id: ExtensionId) -> impl IntoView {
+    let live = expect_context::<crate::Live>();
+    let trouble = RwSignal::new(None::<String>);
+
+    let held = {
         let id = id.clone();
-        move |_| {
-            selected.update(|open| {
-                *open = if open.as_ref() == Some(&id) {
-                    None
-                } else {
-                    Some(id.clone())
-                }
-            });
-        }
+        Memo::new(move |_| {
+            live.home
+                .get()
+                .held
+                .into_iter()
+                .filter(|device| device.why == "new" && device.protocol == id.as_str())
+                .collect::<Vec<_>>()
+        })
+    };
+    let here = {
+        let id = id.clone();
+        Memo::new(move |_| {
+            live.home
+                .get()
+                .devices
+                .iter()
+                .filter(|device| device.protocol.as_str() == id.as_str())
+                .map(|device| (device.id.clone(), device.name.to_string()))
+                .collect::<Vec<_>>()
+        })
+    };
+
+    let decide = move |device: irori_types::DeviceId, add: bool| {
+        spawn_local(async move {
+            let edit = crate::api::DeviceEdit {
+                added: add.then_some(true),
+                ignored: (!add).then_some(true),
+                ..Default::default()
+            };
+            match crate::api::edit_device(&device, &edit).await {
+                Ok(()) => trouble.set(None),
+                Err(why) => trouble.set(Some(why)),
+            }
+            crate::refresh(live);
+        });
     };
 
     view! {
-        <li>
-            <button
-                type="button"
-                class="protocol-picker"
-                on:click=toggle
-                aria-expanded=move || is_open.get()
-            >
-                <div class="protocol-head">
-                    <span class="name">{extension.name.clone()}</span>
-                    <span class="badge">{how(&extension.iot_class)}</span>
-                    <span
-                        class="state"
-                        class:ok=extension.state == "running"
-                        class:wants-setup=extension.state == "needs_setup"
-                    >
-                        {extension.state.replace('_', " ")}
-                    </span>
-                </div>
-                <p class="muted">{extension.description.clone().unwrap_or_default()}</p>
-                <p class="muted small">
-                    {format!(
-                        "Provides {kinds}. {devices} device{} here now.",
-                        if devices == 1 { "" } else { "s" },
-                    )}
-                    {(!extension.waiting.is_empty())
-                        .then(|| format!(" {} waiting for you.", extension.waiting.len()))}
-                </p>
-            </button>
-            {move || {
-                is_open
-                    .get()
-                    .then(|| {
+        {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
+        {move || {
+            let held = held.get();
+            (!held.is_empty()).then(|| {
+                let count = held.len();
+                view! {
+                    <div class="protocol-found">
+                        <h3>
+                            {format!(
+                                "{count} device{} found, waiting for you",
+                                if count == 1 { "" } else { "s" },
+                            )}
+                        </h3>
+                        <ul class="room-devices">
+                            {held
+                                .into_iter()
+                                .map(|device| {
+                                    let (add, ignore) = (device.id.clone(), device.id.clone());
+                                    view! {
+                                        <li>
+                                            <span class="name">{device.name.to_string()}</span>
+                                            <span class="room-actions">
+                                                <button
+                                                    type="button"
+                                                    class="add"
+                                                    on:click=move |_| decide(add.clone(), true)
+                                                >
+                                                    "Add"
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    on:click=move |_| decide(ignore.clone(), false)
+                                                >
+                                                    "Ignore"
+                                                </button>
+                                            </span>
+                                        </li>
+                                    }
+                                })
+                                .collect_view()}
+                        </ul>
+                    </div>
+                }
+            })
+        }}
+        {move || {
+            let here = here.get();
+            view! {
+                <div class="protocol-found">
+                    <h3>
+                        {format!(
+                            "{} device{} already here",
+                            here.len(),
+                            if here.len() == 1 { "" } else { "s" },
+                        )}
+                    </h3>
+                    {if here.is_empty() {
                         view! {
-                            <div class="protocol-detail">
-                                <ProtocolActions id=id.clone() extension=extension.clone() />
-                                <crate::waiting::WaitingFor extension=id.clone() />
-                            </div>
+                            <p class="muted small">
+                                "Nothing yet. An extension that can find devices is always "
+                                "listening, so one appears here on its own within a few seconds "
+                                "of joining."
+                            </p>
                         }
-                    })
-            }}
-        </li>
+                            .into_any()
+                    } else {
+                        view! {
+                            <ul class="room-devices">
+                                {here
+                                    .into_iter()
+                                    .map(|(device, name)| view! {
+                                        <li>
+                                            <A href=format!("/devices/{device}")>{name}</A>
+                                        </li>
+                                    })
+                                    .collect_view()}
+                            </ul>
+                        }
+                            .into_any()
+                    }}
+                </div>
+            }
+        }}
     }
 }
 
