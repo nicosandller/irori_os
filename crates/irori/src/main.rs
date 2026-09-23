@@ -44,6 +44,12 @@ enum Command {
         /// default 127.0.0.1:8480.
         #[arg(long, env = "IRORI_BIND")]
         bind: Option<SocketAddr>,
+        /// Address to fall back to when --bind is already taken. Also `[server] bind_fallback`.
+        /// Setting it equal to --bind locks the port: a taken one fails instead of stepping.
+        /// Without one, Irori steps up past the taken address (8480 -> 8481 -> ...) and tells
+        /// you where it ended up instead of failing.
+        #[arg(long, env = "IRORI_BIND_FALLBACK")]
+        bind_fallback: Option<SocketAddr>,
         /// Allow a non-loopback --bind even though this build has no authentication yet.
         /// Temporary: removed when login and access tokens land (ROADMAP D12, M1.5).
         #[arg(long, env = "IRORI_ALLOW_UNAUTHENTICATED_LAN", num_args = 0..=1, default_missing_value = "true")]
@@ -68,12 +74,14 @@ fn main() -> anyhow::Result<()> {
             data,
             config,
             bind,
+            bind_fallback,
             allow_unauthenticated_lan,
             log_level,
         } => {
             let flags = Flags {
                 data,
                 bind,
+                bind_fallback,
                 allow_unauthenticated_lan,
                 log_level,
             };
@@ -96,6 +104,7 @@ fn main() -> anyhow::Result<()> {
 struct Flags {
     data: Option<PathBuf>,
     bind: Option<SocketAddr>,
+    bind_fallback: Option<SocketAddr>,
     allow_unauthenticated_lan: Option<bool>,
     log_level: Option<tracing::Level>,
 }
@@ -105,6 +114,7 @@ struct Flags {
 struct Resolved {
     data: PathBuf,
     bind: SocketAddr,
+    bind_fallback: Option<SocketAddr>,
     allow_unauthenticated_lan: bool,
     log_level: tracing::Level,
 }
@@ -132,6 +142,7 @@ fn resolve(
             .bind
             .or(file.bind)
             .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 8480))),
+        bind_fallback: flags.bind_fallback.or(file.bind_fallback),
         allow_unauthenticated_lan: flags
             .allow_unauthenticated_lan
             .or(file.allow_unauthenticated_lan)
@@ -150,6 +161,7 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
     let Resolved {
         data,
         bind,
+        bind_fallback,
         allow_unauthenticated_lan,
         log_level,
     } = resolve(flags, &store.irori().server, &config);
@@ -163,13 +175,10 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
         .with_max_level(log_level)
         .init();
 
-    check_bind(bind, allow_unauthenticated_lan)?;
-    if !bind.ip().is_loopback() {
-        tracing::warn!(
-            %bind,
-            "listening beyond this machine WITHOUT authentication (--allow-unauthenticated-lan); \
-             anyone on the network can reach this server and switch its devices"
-        );
+    // The unauthenticated-network guard must hold for whichever address we end up on: a
+    // non-loopback fallback needs the same --allow-unauthenticated-lan as a non-loopback bind.
+    for address in std::iter::once(bind).chain(bind_fallback) {
+        check_bind(address, allow_unauthenticated_lan)?;
     }
 
     let db = db::open(&data)?;
@@ -183,13 +192,24 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
         .build()
         .context("failed to start the async runtime")?
         .block_on(async move {
-            let listener = tokio::net::TcpListener::bind(bind)
+            let listener = bind_with_fallback(bind, bind_fallback)
                 .await
                 .with_context(|| format!("failed to listen on {bind}"))?;
-            // After binding, so `--bind ...:0` shows the port the OS actually picked.
-            banner::print(listener.local_addr()?);
+            // After binding, so `--bind ...:0` shows the port the OS actually picked, and the
+            // unauthenticated warning names the address we really ended up on (a fallback may
+            // differ from `bind`, e.g. a loopback bind falling back to a LAN address).
+            let address = listener.local_addr()?;
+            banner::print(address);
+            if !address.ip().is_loopback() {
+                tracing::warn!(
+                    %address,
+                    "listening beyond this machine WITHOUT authentication \
+                     (--allow-unauthenticated-lan); \
+                     anyone on the network can reach this server and switch its devices"
+                );
+            }
             tracing::info!(
-                addr = %listener.local_addr()?,
+                addr = %address,
                 version = build_info::VERSION,
                 "irori is ready"
             );
@@ -239,8 +259,68 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
         })
 }
 
-/// ROADMAP D12: no unauthenticated server on the network. Until auth exists (M1.5), a
-/// non-loopback bind must be asked for explicitly.
+/// How many ports above the requested one Irori steps up before giving up, when no explicit
+/// fallback is configured (default 127.0.0.1:8480 -> 8481 -> ... -> 8489).
+const FALLBACK_STEPS: u16 = 9;
+
+/// The addresses to try, in order. An explicit `bind_fallback` means Irori never steps
+/// automatically, which is what a fixed-port deployment needs: it either gets `bind`, or
+/// `bind_fallback`, or nothing to do. Without one, Irori steps up to `FALLBACK_STEPS` ports
+/// above `bind`. A fallback equal to `bind` is how a fixed port says "fail loudly instead of
+/// wandering": the addresses to try are just `bind`.
+fn fallback_candidates(bind: SocketAddr, bind_fallback: Option<SocketAddr>) -> Vec<SocketAddr> {
+    if bind_fallback == Some(bind) {
+        return vec![bind];
+    }
+    let mut addrs = vec![bind];
+    if let Some(fallback) = bind_fallback {
+        addrs.push(fallback);
+        return addrs;
+    }
+    let mut step = bind;
+    let last = bind.port().saturating_add(FALLBACK_STEPS);
+    while let Some(port) = step.port().checked_add(1) {
+        if port > last {
+            break;
+        }
+        step.set_port(port);
+        addrs.push(step);
+    }
+    addrs
+}
+
+/// Binds the listener, falling back when the address is already taken. With an explicit
+/// `bind_fallback` that address is tried next and Irori never steps automatically; without one,
+/// Irori steps up past the taken port `FALLBACK_STEPS` times (a fallback equal to `bind` makes
+/// it fail loudly instead). Returns the bound listener, whose actual address (`local_addr`)
+/// may differ from `bind`.
+async fn bind_with_fallback(
+    bind: SocketAddr,
+    bind_fallback: Option<SocketAddr>,
+) -> anyhow::Result<tokio::net::TcpListener> {
+    let candidates = fallback_candidates(bind, bind_fallback);
+    for at in &candidates {
+        match tokio::net::TcpListener::bind(*at).await {
+            Ok(listener) => {
+                if *at != bind {
+                    tracing::warn!(
+                        %bind,
+                        actual = %listener.local_addr()?,
+                        "the requested address was in use; listening on a fallback",
+                    );
+                }
+                return Ok(listener);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => continue,
+            Err(err) => return Err(err.into()),
+        }
+    }
+    anyhow::bail!(
+        "failed to listen on {bind}: the requested and fallback ports are all in use \
+         (tried {:?})",
+        candidates
+    )
+}
 fn check_bind(bind: SocketAddr, allow_unauthenticated_lan: bool) -> anyhow::Result<()> {
     anyhow::ensure!(
         bind.ip().is_loopback() || allow_unauthenticated_lan,
@@ -292,6 +372,23 @@ mod tests {
     }
 
     #[test]
+    fn a_non_loopback_fallback_still_needs_the_lan_flag() {
+        // A loopback bind is fine, but its fallback must satisfy the same guard: binding
+        // 0.0.0.0 without --allow-unauthenticated-lan must be refused whether it's the bind
+        // or the fallback that says so.
+        let file = irori_config::ServerSettings {
+            bind: Some(addr("127.0.0.1:8480")),
+            bind_fallback: Some(addr("0.0.0.0:8481")),
+            ..Default::default()
+        };
+        assert!(check_bind(file.bind.expect("the bind"), false).is_ok());
+        if let Some(fallback) = file.bind_fallback {
+            assert!(check_bind(fallback, false).is_err(), "{fallback}");
+        }
+        assert!(check_bind(addr("0.0.0.0:8481"), true).is_ok());
+    }
+
+    #[test]
     fn loopback_binds_need_no_flag() {
         assert!(check_bind(addr("127.0.0.1:8480"), false).is_ok());
         assert!(check_bind(addr("[::1]:8480"), false).is_ok());
@@ -328,6 +425,7 @@ mod tests {
     fn a_flag_beats_the_file_and_the_file_beats_the_default() {
         let file = irori_config::ServerSettings {
             bind: Some(addr("0.0.0.0:9000")),
+            bind_fallback: Some(addr("0.0.0.0:9001")),
             data: Some(PathBuf::from("state")),
             allow_unauthenticated_lan: Some(true),
             log_level: Some(irori_config::LogLevel::Debug),
@@ -336,17 +434,20 @@ mod tests {
 
         let from_file = resolve(Flags::default(), &file, config);
         assert_eq!(from_file.bind, addr("0.0.0.0:9000"));
+        assert_eq!(from_file.bind_fallback, Some(addr("0.0.0.0:9001")));
         assert_eq!(from_file.data, PathBuf::from("/etc/irori/state"));
         assert!(from_file.allow_unauthenticated_lan);
         assert_eq!(from_file.log_level, tracing::Level::DEBUG);
 
         let flags = Flags {
             bind: Some(addr("127.0.0.1:8481")),
+            bind_fallback: Some(addr("127.0.0.1:8482")),
             allow_unauthenticated_lan: Some(false),
             ..Flags::default()
         };
         let flagged = resolve(flags, &file, config);
         assert_eq!(flagged.bind, addr("127.0.0.1:8481"));
+        assert_eq!(flagged.bind_fallback, Some(addr("127.0.0.1:8482")));
         assert!(!flagged.allow_unauthenticated_lan);
 
         let defaults = resolve(
@@ -355,8 +456,99 @@ mod tests {
             config,
         );
         assert_eq!(defaults.bind, addr("127.0.0.1:8480"));
+        assert_eq!(defaults.bind_fallback, None);
         assert_eq!(defaults.data, PathBuf::from("./data"));
         assert!(!defaults.allow_unauthenticated_lan);
         assert_eq!(defaults.log_level, tracing::Level::INFO);
+    }
+
+    #[test]
+    fn an_explicit_fallback_is_tried_after_the_bind() {
+        let bind = addr("127.0.0.1:8480");
+        let candidates = fallback_candidates(bind, Some(addr("127.0.0.1:8481")));
+        assert_eq!(
+            candidates,
+            vec![addr("127.0.0.1:8480"), addr("127.0.0.1:8481")]
+        );
+    }
+
+    #[test]
+    fn without_a_fallback_the_bind_steps_up_nine_ports() {
+        let bind = addr("127.0.0.1:8480");
+        let candidates = fallback_candidates(bind, None);
+        assert_eq!(candidates.len(), 10);
+        assert_eq!(candidates[0], addr("127.0.0.1:8480"));
+        assert_eq!(candidates[9], addr("127.0.0.1:8489"));
+    }
+
+    #[test]
+    fn a_fallback_same_as_the_bind_locks_the_port() {
+        // `bind_fallback` equal to `bind` is how a fixed-port deployment says "don't step":
+        // the only address to try is the bind itself, so a taken port fails loudly.
+        let bind = addr("127.0.0.1:8480");
+        let candidates = fallback_candidates(bind, Some(addr("127.0.0.1:8480")));
+        assert_eq!(candidates, vec![addr("127.0.0.1:8480")]);
+    }
+
+    #[test]
+    fn stepping_up_stops_at_the_port_range_end() {
+        let bind = addr("127.0.0.1:65534");
+        let candidates = fallback_candidates(bind, None);
+        assert_eq!(candidates[0], addr("127.0.0.1:65534"));
+        assert_eq!(
+            *candidates.last().expect("a candidate"),
+            addr("127.0.0.1:65535")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_in_use_bind_falls_back_to_the_next_address() {
+        // Occupy a port (0 -> the OS picks one), then ask to serve that same address with an
+        // explicit fallback on port 0, which the OS always hands out a free port for.
+        let taken = tokio::net::TcpListener::bind(addr("127.0.0.1:0"))
+            .await
+            .expect("a port to occupy");
+        let occupied = taken.local_addr().expect("the occupied address");
+        let any_free = addr("127.0.0.1:0");
+
+        let listener = bind_with_fallback(occupied, Some(any_free))
+            .await
+            .expect("a fallback binds");
+        let actual = listener.local_addr().expect("the actual address");
+        assert_ne!(actual.port(), occupied.port());
+    }
+
+    #[tokio::test]
+    async fn no_explicit_fallback_steps_up_past_the_taken_port() {
+        // Waiting for a port we can't control (the OS hands out ephemeral ports anywhere)
+        // turns a bind into a game of chance: any of the stepped ports may already be busy.
+        // So reserve a run of consecutive ports, hold every one open, and ask to serve the
+        // first: stepping up then has nowhere free to go, deterministically.
+        let mut base: u16 = 33_000;
+        let held: Vec<tokio::net::TcpListener> = loop {
+            let mut held = Vec::new();
+            for offset in 0..=FALLBACK_STEPS {
+                let port = base.checked_add(offset).expect("a port in range");
+                match tokio::net::TcpListener::bind(addr(&format!("127.0.0.1:{port}"))).await {
+                    Ok(listener) => held.push(listener),
+                    Err(_) => break,
+                }
+            }
+            if held.len() == (FALLBACK_STEPS + 1) as usize {
+                break held;
+            }
+            base += FALLBACK_STEPS + 1;
+            assert!(base <= 65_500, "could not reserve a full run of free ports");
+        };
+
+        // Every candidate is taken (we hold them), so binding must report it and stop.
+        let first = held[0].local_addr().expect("the held address");
+        let err = bind_with_fallback(first, None)
+            .await
+            .expect_err("every candidate port is in use");
+        assert!(
+            err.to_string().contains("all in use"),
+            "expected the all-in-use error, got: {err}"
+        );
     }
 }

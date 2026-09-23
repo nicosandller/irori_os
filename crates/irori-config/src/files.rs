@@ -264,6 +264,9 @@ pub enum NewDevices {
 #[serde(deny_unknown_fields)]
 pub struct ServerSettings {
     pub bind: Option<std::net::SocketAddr>,
+    /// Tried only if `bind` is in use: a fallback address to listen on instead of failing.
+    /// Also auto-stepped past (see `crates/irori/src/main.rs`).
+    pub bind_fallback: Option<std::net::SocketAddr>,
     /// Relative to the config directory.
     pub data: Option<std::path::PathBuf>,
     pub allow_unauthenticated_lan: Option<bool>,
@@ -494,14 +497,18 @@ mod tests {
     #[test]
     fn irori_toml_reads_the_shape_the_spec_shows() {
         let settings = read_irori(
-            "[server]\nbind = \"0.0.0.0:8480\"\nlog_level = \"debug\"\n\
-             allow_unauthenticated_lan = true\ndata = \"/var/lib/irori\"\n\n\
+            "[server]\nbind = \"0.0.0.0:8480\"\nbind_fallback = \"0.0.0.0:8481\"\n\
+             log_level = \"debug\"\nallow_unauthenticated_lan = true\ndata = \"/var/lib/irori\"\n\n\
              [extensions]\ndisabled = [\"demo\"]\n",
         )
         .expect("valid");
         assert_eq!(
             settings.server.bind,
             Some("0.0.0.0:8480".parse().expect("valid"))
+        );
+        assert_eq!(
+            settings.server.bind_fallback,
+            Some("0.0.0.0:8481".parse().expect("valid"))
         );
         assert_eq!(settings.server.log_level, Some(LogLevel::Debug));
         assert!(
