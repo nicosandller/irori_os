@@ -31,31 +31,30 @@ pub fn Settings() -> impl IntoView {
     // Which floors have their areas folded away, so a horde of areas doesn't push the rest of
     // the page down. The chevron on a floor's row flips one on and off; only the areas fold.
     let collapsed = RwSignal::new(Vec::<irori_types::FloorId>::new());
-    // Whether a restart is under way. The button stays "Restarting…" until the core answers
-    // with a fresh uptime — the new instance's, which is how "it's back" is known — then the
-    // effect below lets it go again. Nothing here needs to wait for the POST itself: the server
-    // answers Acceptance before it actually goes.
+    // Whether a restart is under way. The button stays "Restarting…" until the core answers with a
+    // different instance — the new boot's — which is how "it's back" is known. Anything about
+    // uptime would be guesswork: a process that happened to start a minute before you pressed
+    // looks exactly like one that restarted a minute later, and a slow restart could pass any
+    // freshness bound. So the core says which boot it is (`/api/health`'s boot_id), and the
+    // effect below lets the button go again the moment the boot changes. Nothing here needs to
+    // wait for the POST itself: the server answers Acceptance before it actually goes.
     let restarting = RwSignal::new(false);
-    // The core's uptime when the button was pressed. "It's back" is the uptime it answers with
-    // having reset after that: the new instance is younger than the one the restart started from,
-    // and the old one only ever gets older. Merely being fresh (< a minute old) is not enough —
-    // Irori may have been started moments before the page was opened, and its uptime would clear
-    // the button while the restart was still in flight.
-    let restart_since = RwSignal::new(None::<u128>);
+    // The boot the restart set off from: the boot_id the health showed when the button was
+    // pressed. None — not armed. An empty boot_id would be "we never saw one to come from", in
+    // which case any boot that appears is new.
+    let restart_from = RwSignal::new(None::<String>);
     Effect::new(move |_| {
+        let Some(from) = restart_from.get() else {
+            return;
+        };
         let Some(health) = live.health.get() else {
             return;
         };
-        let Some(since) = restart_since.get() else {
-            return;
-        };
-        // Younger than the uptime we set off from means a new process: the old one's uptime can
-        // only climb past `since`. The ten-second bound also clears the pathological close one —
-        // a press within moments of a fresh boot, where the new uptime can land on the other side
-        // of `since` — because only a just-started core answers sub-ten-second uptimes.
-        if health.uptime_ms < 60_000 && (health.uptime_ms < since || health.uptime_ms < 10_000) {
+        // The instance we set off from is gone once the core answers with a different one. The
+        // old instance's own answers keep its own boot_id, so they can't clear the button early.
+        if !health.boot_id.is_empty() && health.boot_id != from {
             restarting.set(false);
-            restart_since.set(None);
+            restart_from.set(None);
         }
     });
     let restart = move || {
@@ -73,14 +72,19 @@ pub fn Settings() -> impl IntoView {
             return;
         }
         restarting.set(true);
-        restart_since.set(live.health.get_untracked().map(|health| health.uptime_ms));
+        restart_from.set(Some(
+            live.health
+                .get_untracked()
+                .map(|health| health.boot_id)
+                .unwrap_or_default(),
+        ));
         spawn_local(async move {
             match api::restart().await {
                 // The new instance is coming up; the page notices it on its own.
                 Ok(()) => {}
                 Err(why) => {
                     restarting.set(false);
-                    restart_since.set(None);
+                    restart_from.set(None);
                     trouble.set(Some(why));
                 }
             }

@@ -37,6 +37,12 @@ pub struct AppState(Arc<Inner>);
 #[derive(Debug)]
 struct Inner {
     started: Instant,
+    /// A different value on every boot, so a page that spots it changing knows the restart it
+    /// asked for happened. Uptime can't say that: a machine that boots and is opened within a
+    /// minute would make a fresh-ish uptime look like a restart, and a slow restart could pass
+    /// any freshness bound. The generation survives an exec (the process id is the same), so it
+    /// has to be made anew inside this constructor rather than keyed off the pid.
+    boot_id: String,
     db: Database,
     build: BuildInfo,
     core: Core,
@@ -63,6 +69,15 @@ impl AppState {
     ) -> Self {
         Self(Arc::new(Inner {
             started: Instant::now(),
+            boot_id: format!(
+                // Two boots in the same nanosecond are beyond plausible; the duration is
+                // downcast-proof, unlike a plain SystemTime.
+                "{:x}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_nanos())
+                    .unwrap_or(0),
+            ),
             db,
             build: BuildInfo::current(),
             core,
@@ -1134,6 +1149,10 @@ struct Health<'a> {
     /// answer even between releases, when every development build is `0.0.0`.
     commit: &'static str,
     built_at: &'static str,
+    /// Which boot this is — a different value after every process start. Uptime can't tell an
+    /// instance that started a minute ago from one that restarted a minute ago; this can, which
+    /// is what lets the Settings page know the restart it asked for is done.
+    boot_id: &'a str,
     uptime_ms: u128,
     features: &'a [&'static str],
     sqlite: SqliteHealth<'a>,
@@ -1155,6 +1174,7 @@ async fn health(State(state): State<AppState>) -> Response {
         version: VERSION,
         commit: crate::build_info::COMMIT,
         built_at: crate::build_info::BUILT_AT,
+        boot_id: &inner.boot_id,
         uptime_ms: inner.started.elapsed().as_millis(),
         features: &inner.build.features,
         sqlite: SqliteHealth {
@@ -1410,6 +1430,27 @@ mod tests {
             shutdown.as_mut().poll(&mut cx).is_ready(),
             "the shutdown was woken"
         );
+        Ok(())
+    }
+
+    /// A new boot is a new instance: the health of two servers — two process starts, in the
+    /// restart's case — must not carry the same boot id, or the page couldn't tell the restart
+    /// it asked for from the process that was already there.
+    #[tokio::test]
+    async fn every_boot_gets_its_own_id() -> anyhow::Result<()> {
+        async fn boot_id(server: &Server) -> anyhow::Result<String> {
+            let (_, body) = server
+                .send(Request::get("/api/health").body(Body::empty())?)
+                .await?;
+            let json: serde_json::Value = serde_json::from_slice(&body)?;
+            Ok(json["boot_id"].as_str().unwrap_or_default().to_owned())
+        }
+        let server = Server::new(core())?;
+        let first = boot_id(&server).await?;
+        let server = Server::new(core())?;
+        let second = boot_id(&server).await?;
+        assert!(!first.is_empty(), "a boot should name itself: {first:?}");
+        assert_ne!(first, second, "two boots share an id: {first}");
         Ok(())
     }
 

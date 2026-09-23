@@ -142,6 +142,10 @@ pub struct Health {
     pub commit: String,
     #[serde(default)]
     pub built_at: String,
+    /// Which boot this is. It changes every time the process starts, which is how the page tells
+    /// the restart it asked for from a build that just happens to have started recently.
+    #[serde(default)]
+    pub boot_id: String,
     pub uptime_ms: u128,
     pub features: Vec<String>,
     pub sqlite: Sqlite,
