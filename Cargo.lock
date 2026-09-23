@@ -2964,8 +2964,10 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "irori-protocol-mqtt",
  "irori-rules",
  "irori-types",
+ "schemars",
  "serde",
  "serde_json",
  "toml",

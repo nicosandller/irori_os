@@ -10,7 +10,9 @@ license.workspace = true
 [dependencies]
 irori-types.workspace = true
 irori-rules.workspace = true
+irori-protocol-mqtt.workspace = true
 anyhow.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

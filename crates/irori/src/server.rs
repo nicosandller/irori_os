@@ -101,6 +101,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/dev/devices/{id}", patch(edit_device))
         .route("/api/dev/entities/{id}", patch(edit_entity))
         .route("/api/dev/extensions/{id}/secrets", put(give_secret))
+        .route(
+            "/api/dev/extensions/{id}/settings",
+            post(set_extension_settings),
+        )
         .route("/api/dev/catalog", get(catalog))
         .route("/api/dev/extensions/{id}/install", post(install_official))
         .route("/api/dev/extensions/install", post(install_url))
@@ -763,6 +767,125 @@ async fn extension_icon(State(state): State<AppState>, Path(id): Path<ExtensionI
             .into_response(),
         None => refused(StatusCode::NOT_FOUND, format!("`{id}` has no icon")),
     }
+}
+
+/// An extension's own settings, given as one JSON object matching its `config_schema` — the
+/// generic form behind the gear icon on its card (ROADMAP M1.6). Unlike [`give_secret`], this
+/// isn't limited to a path an extension is currently asking for: it's scoped instead by only
+/// ever accepting keys the extension's own schema actually declares, so it can't become "write
+/// anything into anyone's settings" (`docs/specs/config.md` §3.6) — just this one extension's own
+/// known fields. A `writeOnly` field (`docs/specs/config.md` §3.4: secrets) goes to
+/// `secrets.toml`; everything else goes to `extensions/<id>.toml`.
+async fn set_extension_settings(
+    State(state): State<AppState>,
+    Path(id): Path<ExtensionId>,
+    Json(given): Json<serde_json::Map<String, serde_json::Value>>,
+) -> Response {
+    let core = &state.0.core;
+    let Some(overview) = core.extensions().remove(&id) else {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("there's no extension `{id}`"),
+        );
+    };
+    let Some(schema) = overview
+        .info
+        .as_ref()
+        .and_then(|info| info.config_schema.as_ref())
+    else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            format!("`{id}` has no settings to configure"),
+        );
+    };
+    let Some(properties) = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return refused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("`{id}`'s settings schema has no properties"),
+        );
+    };
+
+    let mut non_secret = serde_json::Map::new();
+    let mut secret_fields = Vec::new();
+    for (key, value) in given {
+        let Some(field_schema) = properties.get(&key) else {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                format!("`{key}` isn't one of `{id}`'s settings"),
+            );
+        };
+        if is_write_only(field_schema, schema) {
+            secret_fields.push((key, value));
+        } else {
+            non_secret.insert(key, value);
+        }
+    }
+
+    if !non_secret.is_empty() {
+        let saved = state
+            .0
+            .config
+            .edit_extension(core, &id, |file| {
+                for (key, value) in non_secret.clone() {
+                    file.insert(key, value);
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(e) = saved {
+            return edit_failed(e);
+        }
+    }
+    for (key, value) in secret_fields {
+        let Some(text) = value.as_str() else {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                format!("`{key}` must be given as text"),
+            );
+        };
+        let saved = state
+            .0
+            .config
+            .edit_secrets(core, |secrets| {
+                secrets
+                    .set(&id, std::slice::from_ref(&key), text.to_owned())
+                    .map_err(|e| Refused(e.to_string()))
+            })
+            .await;
+        if let Err(e) = saved {
+            return edit_failed(e);
+        }
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// Whether a JSON Schema node is (or, through `$ref`/`anyOf`/`oneOf`/`allOf`, resolves to
+/// including) a `writeOnly` field — schemars' shape for `Option<Secret>` is
+/// `{"anyOf": [{"$ref": "#/$defs/Secret"}, {"type": "null"}]}`, so a direct check on `field_schema`
+/// alone isn't enough.
+fn is_write_only(field_schema: &serde_json::Value, root: &serde_json::Value) -> bool {
+    if field_schema
+        .get("writeOnly")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        return true;
+    }
+    if let Some(reference) = field_schema.get("$ref").and_then(serde_json::Value::as_str) {
+        return reference
+            .strip_prefix("#/$defs/")
+            .and_then(|name| root.get("$defs")?.get(name))
+            .is_some_and(|resolved| is_write_only(resolved, root));
+    }
+    ["anyOf", "oneOf", "allOf"].iter().any(|combinator| {
+        field_schema
+            .get(combinator)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|branches| branches.iter().any(|branch| is_write_only(branch, root)))
+    })
 }
 
 /// A secret for an extension, at the place it asked for one: `{"path": [...], "value": "..."}`.
@@ -2144,6 +2267,24 @@ mod tests {
     struct SafeSettings {
         #[serde(default)]
         code: Option<String>,
+        /// Never read by `run` below; only here so a test can exercise the generic settings
+        /// endpoint's schema-driven secret routing without needing a real external extension.
+        #[serde(default)]
+        #[expect(dead_code)]
+        key: Option<TestSecret>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct TestSecret(#[expect(dead_code)] String);
+
+    impl schemars::JsonSchema for TestSecret {
+        fn schema_name() -> std::borrow::Cow<'static, str> {
+            "TestSecret".into()
+        }
+
+        fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+            schemars::json_schema!({ "type": "string", "writeOnly": true })
+        }
     }
 
     impl irori_protocol::Protocol for Safe {
@@ -2297,6 +2438,101 @@ mod tests {
             !server.config_dir().join("secrets.toml").exists(),
             "nothing was written"
         );
+        host.shutdown().await;
+        Ok(())
+    }
+
+    // --- Generic settings (the gear icon) ----------------------------------------------------
+
+    /// A non-secret field goes to `extensions/<id>.toml` and restarts the extension with it —
+    /// same outcome as giving a secret, through the generic form instead of the waiting-item one.
+    #[tokio::test]
+    async fn generic_settings_reach_the_extension_and_restart_it() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/settings",
+                serde_json::json!({"code": "1234-5678"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        waiting_for(&core, 0).await?;
+        let written = std::fs::read_to_string(server.config_dir().join("extensions/safe.toml"))?;
+        assert!(written.contains("code = \"1234-5678\""), "{written}");
+        assert!(
+            !server.config_dir().join("secrets.toml").exists(),
+            "a non-secret field must not land in secrets.toml"
+        );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A `writeOnly` field — schemars' shape for an `Option<Secret>`-like type — is routed to
+    /// `secrets.toml` instead, the same file a waiting-item secret goes to.
+    #[tokio::test]
+    async fn a_write_only_field_is_routed_to_secrets_toml() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/settings",
+                serde_json::json!({"key": "shh"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        let written = std::fs::read_to_string(server.config_dir().join("secrets.toml"))?;
+        assert!(
+            written.contains("[safe]") && written.contains("key = \"shh\""),
+            "{written}"
+        );
+        assert!(
+            !server.config_dir().join("extensions/safe.toml").exists()
+                || !std::fs::read_to_string(server.config_dir().join("extensions/safe.toml"))?
+                    .contains("shh"),
+            "a secret field must not land in extensions/<id>.toml"
+        );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Scoped to exactly the fields the extension's own schema declares — not a way to write
+    /// anything into anyone's settings (`docs/specs/config.md` §3.6).
+    #[tokio::test]
+    async fn unknown_settings_keys_are_refused() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/settings",
+                serde_json::json!({"not_a_real_field": "x"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            !server.config_dir().join("extensions/safe.toml").exists(),
+            "nothing was written"
+        );
+
+        let (status, _) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/nope/settings",
+                serde_json::json!({"code": "x"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
         host.shutdown().await;
         Ok(())
     }

@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Settings",
+  "type": "object",
+  "properties": {
+    "client_id": {
+      "description": "Sent as the MQTT client id. A generated one is used when this is left out.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "discovery_prefix": {
+      "description": "The topic prefix Home Assistant MQTT Discovery configs are published under.",
+      "type": "string",
+      "default": "homeassistant"
+    },
+    "host": {
+      "description": "The broker's hostname or IP address.",
+      "type": "string"
+    },
+    "password": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Secret"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "port": {
+      "type": "integer",
+      "format": "uint16",
+      "default": 1883,
+      "maximum": 65535,
+      "minimum": 0
+    },
+    "tls": {
+      "description": "Connect over TLS.",
+      "type": "boolean",
+      "default": false
+    },
+    "username": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Secret"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "zigbee2mqtt_base_topic": {
+      "description": "Zigbee2MQTT's own base topic (its `mqtt.base_topic`), for the bridge/permit-join\nintegration — not part of HA Discovery itself. Almost never changed from Z2M's default.",
+      "type": "string",
+      "default": "zigbee2mqtt"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "host"
+  ],
+  "$defs": {
+    "Secret": {
+      "type": "string",
+      "writeOnly": true
+    }
+  }
+}

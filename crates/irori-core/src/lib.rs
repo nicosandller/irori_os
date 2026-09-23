@@ -75,6 +75,11 @@ pub struct ExtensionInfo {
     /// from its own address, where it can't run script (`docs/specs/extensions.md`).
     #[serde(rename = "has_icon", serialize_with = "is_present")]
     pub icon: Option<String>,
+    /// Its settings' JSON Schema, for a generic settings form. `None` for an extension with
+    /// nothing to configure. A built-in extension's is generated from its Rust config type; an
+    /// external one's comes from its manifest's `config_schema` (`docs/specs/extensions.md` §5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_schema: Option<serde_json::Value>,
 }
 
 fn is_present<S: serde::Serializer>(

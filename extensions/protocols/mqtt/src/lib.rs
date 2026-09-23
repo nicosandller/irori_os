@@ -7,7 +7,7 @@
 //! `zigbee` protocol, which uses it against its own embedded broker.
 
 mod broker;
-mod settings;
+pub mod settings;
 
 use std::collections::BTreeMap;
 

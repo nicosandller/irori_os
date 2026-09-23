@@ -350,6 +350,7 @@ async fn supervise(
             entity_kinds: kinds.clone(),
             iot_class: Some(contribution.iot_class),
             icon: builtin.icon.map(str::to_owned),
+            config_schema: Some(builtin.config_schema.clone()),
         },
     );
 
@@ -709,6 +710,10 @@ async fn supervise_package(
             .ok()
             .filter(|svg| svg.trim_start().starts_with("<svg"))
     });
+    let config_schema = manifest.extension.config_schema.as_ref().and_then(|path| {
+        let text = std::fs::read_to_string(dir.join(path.as_str())).ok()?;
+        serde_json::from_str(&text).ok()
+    });
     core.describe_extension(
         &extension,
         crate::ExtensionInfo {
@@ -718,6 +723,7 @@ async fn supervise_package(
             entity_kinds: kinds.clone(),
             iot_class: Some(contribution.iot_class),
             icon,
+            config_schema,
         },
     );
 

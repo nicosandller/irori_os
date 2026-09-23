@@ -4,6 +4,7 @@ name = "MQTT"
 version = "0.3.1"
 irori = ">=0.0.0"
 description = "MQTT devices through Home Assistant MQTT Discovery: Zigbee2MQTT, Tasmota, and ESPHome-over-MQTT."
+config_schema = "config.schema.json"
 
 [[contributes.protocol]]
 iot_class = "local_push"
