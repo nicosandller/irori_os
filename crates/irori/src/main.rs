@@ -174,13 +174,10 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
         .with_max_level(log_level)
         .init();
 
-    check_bind(bind, allow_unauthenticated_lan)?;
-    if !bind.ip().is_loopback() {
-        tracing::warn!(
-            %bind,
-            "listening beyond this machine WITHOUT authentication (--allow-unauthenticated-lan); \
-             anyone on the network can reach this server and switch its devices"
-        );
+    // The unauthenticated-network guard must hold for whichever address we end up on: a
+    // non-loopback fallback needs the same --allow-unauthenticated-lan as a non-loopback bind.
+    for address in std::iter::once(bind).chain(bind_fallback) {
+        check_bind(address, allow_unauthenticated_lan)?;
     }
 
     let db = db::open(&data)?;
@@ -197,10 +194,21 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             let listener = bind_with_fallback(bind, bind_fallback)
                 .await
                 .with_context(|| format!("failed to listen on {bind}"))?;
-            // After binding, so `--bind ...:0` shows the port the OS actually picked.
-            banner::print(listener.local_addr()?);
+            // After binding, so `--bind ...:0` shows the port the OS actually picked, and the
+            // unauthenticated warning names the address we really ended up on (a fallback may
+            // differ from `bind`, e.g. a loopback bind falling back to a LAN address).
+            let address = listener.local_addr()?;
+            banner::print(address);
+            if !address.ip().is_loopback() {
+                tracing::warn!(
+                    %address,
+                    "listening beyond this machine WITHOUT authentication \
+                     (--allow-unauthenticated-lan); \
+                     anyone on the network can reach this server and switch its devices"
+                );
+            }
             tracing::info!(
-                addr = %listener.local_addr()?,
+                addr = %address,
                 version = build_info::VERSION,
                 "irori is ready"
             );
@@ -358,6 +366,23 @@ mod tests {
     }
 
     #[test]
+    fn a_non_loopback_fallback_still_needs_the_lan_flag() {
+        // A loopback bind is fine, but its fallback must satisfy the same guard: binding
+        // 0.0.0.0 without --allow-unauthenticated-lan must be refused whether it's the bind
+        // or the fallback that says so.
+        let file = irori_config::ServerSettings {
+            bind: Some(addr("127.0.0.1:8480")),
+            bind_fallback: Some(addr("0.0.0.0:8481")),
+            ..Default::default()
+        };
+        assert!(check_bind(file.bind.expect("the bind"), false).is_ok());
+        if let Some(fallback) = file.bind_fallback {
+            assert!(check_bind(fallback, false).is_err(), "{fallback}");
+        }
+        assert!(check_bind(addr("0.0.0.0:8481"), true).is_ok());
+    }
+
+    #[test]
     fn loopback_binds_need_no_flag() {
         assert!(check_bind(addr("127.0.0.1:8480"), false).is_ok());
         assert!(check_bind(addr("[::1]:8480"), false).is_ok());
@@ -489,17 +514,35 @@ mod tests {
 
     #[tokio::test]
     async fn no_explicit_fallback_steps_up_past_the_taken_port() {
-        let taken = tokio::net::TcpListener::bind(addr("127.0.0.1:0"))
-            .await
-            .expect("a port to occupy");
-        let occupied = taken.local_addr().expect("the occupied address");
+        // Waiting for a port we can't control (the OS hands out ephemeral ports anywhere)
+        // turns a bind into a game of chance: any of the stepped ports may already be busy.
+        // So reserve a run of consecutive ports, hold every one open, and ask to serve the
+        // first: stepping up then has nowhere free to go, deterministically.
+        let mut base: u16 = 33_000;
+        let held: Vec<tokio::net::TcpListener> = loop {
+            let mut held = Vec::new();
+            for offset in 0..=FALLBACK_STEPS {
+                let port = base.checked_add(offset).expect("a port in range");
+                match tokio::net::TcpListener::bind(addr(&format!("127.0.0.1:{port}"))).await {
+                    Ok(listener) => held.push(listener),
+                    Err(_) => break,
+                }
+            }
+            if held.len() == (FALLBACK_STEPS + 1) as usize {
+                break held;
+            }
+            base += FALLBACK_STEPS + 1;
+            assert!(base <= 65_500, "could not reserve a full run of free ports");
+        };
 
-        // Any of the ten stepped addresses is free, so this must succeed somewhere new.
-        let listener = bind_with_fallback(occupied, None)
+        // Every candidate is taken (we hold them), so binding must report it and stop.
+        let first = held[0].local_addr().expect("the held address");
+        let err = bind_with_fallback(first, None)
             .await
-            .expect("stepping up finds a free port");
-        let actual = listener.local_addr().expect("the actual address");
-        assert!(actual.port() >= occupied.port());
-        assert_ne!(actual.port(), occupied.port());
+            .expect_err("every candidate port is in use");
+        assert!(
+            err.to_string().contains("all in use"),
+            "expected the all-in-use error, got: {err}"
+        );
     }
 }
