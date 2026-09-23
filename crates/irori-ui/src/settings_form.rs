@@ -27,11 +27,20 @@ struct Field {
     required: bool,
     /// Whether this belongs under "Advanced" rather than in the form's own body; see `advanced`.
     advanced: bool,
+    /// The schema marks this `"format": "serial-port"` — offered as a live-updated list of
+    /// what's actually plugged into the machine running Irori, alongside the plain text box a
+    /// device path always was (which stays typeable: a `tcp://` adapter address, say, is never
+    /// something this list would find).
+    serial_port: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FieldKind {
     Bool,
+    /// Schema `type: "integer"` — parsed and sent as a whole number, not `Number`'s `f64`: a
+    /// port or channel field's Rust type (`u16`, `u8`, …) refuses a JSON float, even one with a
+    /// trailing `.0`.
+    Integer,
     Number,
     Text,
     Secret,
@@ -65,6 +74,10 @@ fn fields_from_schema(schema: &serde_json::Value) -> Vec<Field> {
                 advanced: kind != FieldKind::Secret && advanced(field_schema),
                 default: default_value(field_schema),
                 required: required.contains(&key.as_str()),
+                serial_port: field_schema
+                    .get("format")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("serial-port"),
                 kind,
                 key: key.clone(),
             }
@@ -165,7 +178,8 @@ fn classify(field_schema: &serde_json::Value, root: &serde_json::Value) -> Field
     };
     match type_name {
         Some("boolean") => FieldKind::Bool,
-        Some("integer" | "number") => FieldKind::Number,
+        Some("integer") => FieldKind::Integer,
+        Some("number") => FieldKind::Number,
         _ => FieldKind::Text,
     }
 }
@@ -178,6 +192,29 @@ fn resolve_ref<'a>(
     reference
         .strip_prefix("#/$defs/")
         .and_then(|name| root.get("$defs")?.get(name))
+}
+
+/// Parses one field's raw text into the JSON value to submit — honoring the schema's
+/// integer/number distinction, since a schema `"type": "integer"` field (a port, a channel) has
+/// a Rust settings type like `u16`/`u8` that refuses a JSON float, even one with a trailing
+/// `.0`: `Integer` parses and emits a whole number, not `Number`'s `f64`.
+fn parse_field(kind: &FieldKind, text: &str) -> Result<serde_json::Value, String> {
+    match kind {
+        FieldKind::Bool => Ok(serde_json::Value::Bool(text == "true")),
+        FieldKind::Integer => text
+            .trim()
+            .parse::<i64>()
+            .map(|n| serde_json::json!(n))
+            .map_err(|_| "needs a whole number".to_owned()),
+        FieldKind::Number => text
+            .trim()
+            .parse::<f64>()
+            .map(|n| serde_json::json!(n))
+            .map_err(|_| "needs a number".to_owned()),
+        FieldKind::Text | FieldKind::Secret | FieldKind::Choice(_) => {
+            Ok(serde_json::Value::String(text.to_owned()))
+        }
+    }
 }
 
 fn default_value(field_schema: &serde_json::Value) -> Option<String> {
@@ -211,6 +248,15 @@ pub fn SettingsForm(
         let rows = rows.clone();
         move |ev: leptos::ev::SubmitEvent| {
             ev.prevent_default();
+            // Checked before anything is sent, and regardless of `touched`: a required field
+            // left blank must refuse the save, not silently omit the key and report success —
+            // the extension would stay unconfigured with no sign anything went wrong.
+            for (field, value, _touched) in &rows {
+                if field.required && value.get_untracked().trim().is_empty() {
+                    trouble.set(Some(format!("\"{}\" is required", field.label)));
+                    return;
+                }
+            }
             let mut body = serde_json::Map::new();
             for (field, value, touched) in &rows {
                 if !touched.get_untracked() {
@@ -220,17 +266,11 @@ pub fn SettingsForm(
                 if text.trim().is_empty() {
                     continue;
                 }
-                let parsed = match &field.kind {
-                    FieldKind::Bool => serde_json::Value::Bool(text == "true"),
-                    FieldKind::Number => match text.trim().parse::<f64>() {
-                        Ok(n) => serde_json::json!(n),
-                        Err(_) => {
-                            trouble.set(Some(format!("\"{}\" needs a number", field.label)));
-                            return;
-                        }
-                    },
-                    FieldKind::Text | FieldKind::Secret | FieldKind::Choice(_) => {
-                        serde_json::Value::String(text.clone())
+                let parsed = match parse_field(&field.kind, &text) {
+                    Ok(value) => value,
+                    Err(why) => {
+                        trouble.set(Some(format!("\"{}\" {why}", field.label)));
+                        return;
                     }
                 };
                 body.insert(field.key.clone(), parsed);
@@ -295,7 +335,7 @@ pub fn SettingsForm(
 
 /// What the schema says this field is for, under its own input — a line of prose rather than a
 /// `title=` tooltip, which a phone has no way to show at all.
-fn help(field: &Field) -> Option<impl IntoView> {
+fn help(field: &Field) -> Option<impl IntoView + use<>> {
     field
         .help
         .clone()
@@ -330,6 +370,22 @@ fn field_row(field: Field, value: RwSignal<String>, touched: RwSignal<bool>) -> 
                     type="password"
                     autocomplete="off"
                     spellcheck="false"
+                    prop:value=value
+                    on:input:target=move |ev| {
+                        value.set(ev.target().value());
+                        touched.set(true);
+                    }
+                />
+                {note}
+            </label>
+        }
+        .into_any(),
+        FieldKind::Integer => view! {
+            <label class="settings-field">
+                <span>{label}{required}</span>
+                <input
+                    type="number"
+                    step="1"
                     prop:value=value
                     on:input:target=move |ev| {
                         value.set(ev.target().value());
@@ -386,6 +442,10 @@ fn field_row(field: Field, value: RwSignal<String>, touched: RwSignal<bool>) -> 
             }
             .into_any()
         }
+        FieldKind::Text if field.serial_port => view! {
+            <SerialPortField label=label required=required value=value touched=touched note=note key=field.key.clone() />
+        }
+        .into_any(),
         FieldKind::Text => view! {
             <label class="settings-field">
                 <span>{label}{required}</span>
@@ -401,6 +461,69 @@ fn field_row(field: Field, value: RwSignal<String>, touched: RwSignal<bool>) -> 
             </label>
         }
         .into_any(),
+    }
+}
+
+/// A text field for a `serial_port`-formatted setting: the plain text box every `Text` field
+/// gets, plus a `<datalist>` of what's actually plugged into the machine running Irori right
+/// now, refreshed every couple of seconds so plugging the dongle in while this form is open
+/// updates the suggestions without reopening it. Still a text box underneath — nothing here
+/// stops typing a path (or a `tcp://` address) the list doesn't happen to show.
+#[component]
+fn SerialPortField(
+    label: String,
+    required: Option<impl IntoView + 'static>,
+    value: RwSignal<String>,
+    touched: RwSignal<bool>,
+    note: Option<impl IntoView + 'static>,
+    key: String,
+) -> impl IntoView {
+    let ports = RwSignal::new(Vec::<String>::new());
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let stop = stop.clone();
+        spawn_local(async move {
+            loop {
+                if let Ok(found) = api::fetch_serial_ports().await {
+                    ports.set(found);
+                }
+                if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                gloo_timers::future::sleep(std::time::Duration::from_secs(2)).await;
+                if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+            }
+        });
+    }
+    on_cleanup(move || stop.store(true, std::sync::atomic::Ordering::Relaxed));
+
+    // Unique per field, in case a schema ever has more than one serial-port field open at once.
+    let list_id = format!("serial-ports-{key}");
+    view! {
+        <label class="settings-field">
+            <span>{label}{required}</span>
+            <input
+                type="text"
+                list=list_id.clone()
+                prop:value=value
+                on:input:target=move |ev| {
+                    value.set(ev.target().value());
+                    touched.set(true);
+                }
+            />
+            <datalist id=list_id>
+                {move || {
+                    ports
+                        .get()
+                        .into_iter()
+                        .map(|port| view! { <option value=port></option> })
+                        .collect_view()
+                }}
+            </datalist>
+            {note}
+        </label>
     }
 }
 
@@ -514,5 +637,50 @@ mod tests {
         let by_key = |key: &str| fields.iter().find(|f| f.key == key).expect("present");
         assert_eq!(by_key("port").default.as_deref(), Some("1883"));
         assert_eq!(by_key("host").default, None);
+    }
+
+    #[test]
+    fn integer_and_number_schema_types_classify_differently() {
+        let schema = serde_json::json!({
+            "properties": {
+                "port": {"type": "integer"},
+                "latitude": {"type": "number"},
+            },
+        });
+        let fields = fields_from_schema(&schema);
+        let by_key = |key: &str| fields.iter().find(|f| f.key == key).expect("present");
+        assert_eq!(by_key("port").kind, FieldKind::Integer);
+        assert_eq!(by_key("latitude").kind, FieldKind::Number);
+    }
+
+    /// The bug this guards: an integer field parsed and re-serialized through `f64` turns
+    /// `17883` into `17883.0`, which a Rust settings field typed `u16` (a port, say) refuses to
+    /// deserialize — so the save looks like it worked and the setting never actually applies.
+    #[test]
+    fn an_integer_field_is_sent_as_a_whole_number_not_a_float() {
+        let value = parse_field(&FieldKind::Integer, "17883").expect("a valid integer");
+        assert_eq!(value, serde_json::json!(17883));
+        assert!(
+            !value.to_string().contains('.'),
+            "must serialize as a JSON integer, not a float: {value}"
+        );
+    }
+
+    #[test]
+    fn a_number_field_still_accepts_a_fractional_value() {
+        let value = parse_field(&FieldKind::Number, "1.5").expect("a valid number");
+        assert_eq!(value, serde_json::json!(1.5));
+    }
+
+    #[test]
+    fn an_integer_field_given_a_fraction_is_a_named_error_not_silent_truncation() {
+        let error = parse_field(&FieldKind::Integer, "17.5").expect_err("not a whole number");
+        assert_eq!(error, "needs a whole number");
+    }
+
+    #[test]
+    fn a_blank_or_non_numeric_field_is_a_named_error() {
+        assert!(parse_field(&FieldKind::Integer, "abc").is_err());
+        assert!(parse_field(&FieldKind::Number, "abc").is_err());
     }
 }

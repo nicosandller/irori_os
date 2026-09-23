@@ -14,9 +14,14 @@ use serde::{Deserialize, Deserializer};
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
-    /// The dongle's serial device, e.g. `/dev/ttyUSB0` (Linux) or `/dev/cu.usbmodem…` (macOS).
-    /// Irori can't list what's plugged in for you yet — check with `ls /dev/tty*` (or
-    /// `/dev/cu.*` on macOS) with the dongle plugged in and out.
+    /// The dongle's serial device, e.g. `/dev/ttyUSB0` (Linux) or `/dev/cu.usbmodem…` (macOS) —
+    /// or `tcp://host:port` for a dongle reached over the network rather than plugged directly
+    /// into this machine (Zigbee2MQTT's own TCP adapter support), which is how to use one on a
+    /// Mac running Irori in `dev/pi`'s container: Docker Desktop can't pass a USB device through
+    /// to it, so bridge the dongle's serial port to TCP on the host first (`dev/README.md`).
+    /// The Settings form offers what's plugged in right now as suggestions (`format` below), but
+    /// always accepts a typed path or `tcp://` address too.
+    #[schemars(extend("format" = "serial-port"))]
     pub serial_port: String,
     /// The dongle's radio chip family. Most Silicon Labs–based dongles (Sonoff, SLZB, most
     /// "zigbee 3.0 usb dongle plus" boards) are `ember`; older ones may be `zstack` (Texas

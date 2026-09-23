@@ -29,6 +29,12 @@ Run cargo inside Linux arm64:
   check              everything CI's check job runs (fmt, clippy, tests, dependency rules, schemas)
   cargo <args>       any cargo command, e.g. dev/pi cargo test -p irori
 
+Reach hardware the container can't see directly:
+  usb-bridge <device> [port] [baud]
+                     bridge a serial device on this Mac (a Zigbee dongle, say — find it with
+                     \`ls /dev/cu.*\` plugged in and out) to a TCP port the container can reach.
+                     Runs in the foreground; Ctrl-C to stop. See dev/README.md.
+
 Review a pull request:
   review <pr>        gh pr checkout <pr>, then check, up, and smoke
 EOF
@@ -69,6 +75,39 @@ smoke() {
   "$tooling_dir/smoke-test.sh" "http://127.0.0.1:$port"
 }
 
+# Docker Desktop on a Mac has no way to pass a USB device through to a container — there's no
+# host to pass it *from*, only a VM. This runs entirely on the Mac, outside Docker: `socat`
+# forwards a serial device's raw bytes over a TCP port on the host, and the container reaches
+# that through `host.docker.internal` (Docker Desktop's own DNS name for it). Zigbee2MQTT's own
+# adapter drivers already support a `tcp://host:port` in place of a device path for exactly this
+# — a network-attached coordinator — so nothing in Irori needs to know the dongle isn't local.
+usb_bridge() {
+  local device="${1:-}"
+  local port="${2:-6638}"
+  local baud="${3:-115200}"
+  if [[ -z "$device" ]]; then
+    echo "usage: dev/pi usb-bridge <device> [port] [baud]" >&2
+    echo "  e.g. dev/pi usb-bridge /dev/cu.usbserial-1420" >&2
+    echo "  find the device: plug the dongle in and out and see which \`/dev/cu.*\` appears" >&2
+    exit 1
+  fi
+  if ! command -v socat >/dev/null 2>&1; then
+    echo "error: socat isn't installed; \`brew install socat\` first" >&2
+    exit 1
+  fi
+  if [[ ! -e "$device" ]]; then
+    echo "error: $device doesn't exist — is the dongle plugged in?" >&2
+    exit 1
+  fi
+  echo "Bridging $device -> this Mac's port $port (baud $baud)"
+  echo
+  echo "In the Zigbee extension's settings, set the serial port to:"
+  echo "  tcp://host.docker.internal:$port"
+  echo
+  echo "Leave this running while you use the dongle; Ctrl-C to stop."
+  exec socat -d -d "TCP-LISTEN:$port,reuseaddr,fork" "FILE:$device,raw,echo=0,b$baud"
+}
+
 require_docker() {
   if ! docker info >/dev/null 2>&1; then
     echo "error: Docker isn't running (start Docker Desktop, OrbStack, or \`colima start\`)" >&2
@@ -84,7 +123,7 @@ require_docker() {
 cmd="${1:-help}"
 shift || true
 case "$cmd" in
-  help | -h | --help) ;;
+  help | -h | --help | usb-bridge) ;;
   *) require_docker ;;
 esac
 case "$cmd" in
@@ -104,6 +143,7 @@ case "$cmd" in
     ;;
   logs) "${compose[@]}" logs --follow pi ;;
   smoke) smoke ;;
+  usb-bridge) usb_bridge "$@" ;;
   shell) "${compose[@]}" exec pi bash ;;
   check) check ;;
   cargo) toolchain cargo "$@" ;;

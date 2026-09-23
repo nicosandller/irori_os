@@ -8,6 +8,7 @@ mod extensions;
 mod history;
 mod host_info;
 mod packages;
+mod serial;
 mod server;
 
 use std::net::SocketAddr;

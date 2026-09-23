@@ -175,7 +175,9 @@ async fn describe(
 ) {
     if message.payload.is_empty() {
         if let Some(unique_id) = registry.config_topics.remove(&message.topic) {
-            registry.entities.remove(&unique_id);
+            if let Some(old) = registry.entities.remove(&unique_id) {
+                deindex(&unique_id, &old.topics, registry);
+            }
             if let Err(e) = ctx.remove_entity(unique_id.clone()).await {
                 tracing::warn!(%unique_id, error = %e, "couldn't remove an entity");
             }
@@ -207,20 +209,7 @@ async fn describe(
     // its own restart) must drop this entity's old topic-index entries first — otherwise a topic
     // it no longer uses keeps reporting for it, and one it still uses ends up listed twice.
     let last_state = if let Some(old) = registry.entities.remove(&unique_id) {
-        for (topic, _) in state::topics_of(&unique_id, &old.topics) {
-            if let Some(ids) = registry.state_topics.get_mut(&topic) {
-                ids.retain(|id| id != &unique_id);
-                if ids.is_empty() {
-                    registry.state_topics.remove(&topic);
-                }
-            }
-        }
-        for (_, _, ids) in registry.availability_topics.values_mut() {
-            ids.retain(|id| id != &unique_id);
-        }
-        registry
-            .availability_topics
-            .retain(|_, (_, _, ids)| !ids.is_empty());
+        deindex(&unique_id, &old.topics, registry);
         old.last_state
     } else {
         None
@@ -258,6 +247,27 @@ async fn describe(
             last_state,
         },
     );
+}
+
+/// Drops `unique_id`'s entries from `state_topics` and `availability_topics` — shared by the
+/// redescribe and removal paths in `describe`, so an entity that's redescribed or cleared always
+/// loses its old topic-index entries. Left in place, a topic it no longer uses would keep
+/// reporting for it, and one it still uses would end up listed (and so double-processed) twice.
+fn deindex(unique_id: &UniqueId, old_topics: &EntityTopics, registry: &mut Registry) {
+    for (topic, _) in state::topics_of(unique_id, old_topics) {
+        if let Some(ids) = registry.state_topics.get_mut(&topic) {
+            ids.retain(|id| id != unique_id);
+            if ids.is_empty() {
+                registry.state_topics.remove(&topic);
+            }
+        }
+    }
+    for (_, _, ids) in registry.availability_topics.values_mut() {
+        ids.retain(|id| id != unique_id);
+    }
+    registry
+        .availability_topics
+        .retain(|_, (_, _, ids)| !ids.is_empty());
 }
 
 /// Sends a service call to the broker for the entity it belongs to.
@@ -438,6 +448,16 @@ mod tests {
         assert!(
             registry.entities.is_empty(),
             "removed once its config goes empty"
+        );
+        assert!(
+            registry.state_topics.is_empty(),
+            "a removed entity's state topics shouldn't linger and double-report if reused: {:?}",
+            registry.state_topics
+        );
+        assert!(
+            registry.availability_topics.is_empty(),
+            "a removed entity's availability topics shouldn't linger either: {:?}",
+            registry.availability_topics
         );
     }
 

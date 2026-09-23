@@ -560,6 +560,22 @@ pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {
     response.json().await.map_err(unreachable)
 }
 
+/// Serial devices plugged into the machine running Irori right now — suggestions for a
+/// `"format": "serial-port"` settings field, alongside the plain text box it always was.
+pub async fn fetch_serial_ports() -> Result<Vec<String>, String> {
+    let response = Request::get("/api/dev/serial-ports")
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        return match checked(response).await {
+            Err(reason) => Err(reason),
+            Ok(()) => Err("the server refused without a reason".into()),
+        };
+    }
+    response.json().await.map_err(unreachable)
+}
+
 pub async fn install_extension(id: &str) -> Result<(), String> {
     let response = Request::post(&format!("/api/dev/extensions/{id}/install"))
         .send()

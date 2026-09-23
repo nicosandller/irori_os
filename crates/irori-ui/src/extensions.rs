@@ -1,5 +1,7 @@
 //! The Extensions page: every official extension, install and uninstall.
 
+use std::time::Duration;
+
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
@@ -255,6 +257,14 @@ fn category_label(category: &str) -> String {
     }
 }
 
+/// How often to re-check the catalog while an install is still settling.
+const SETTLE_POLL: Duration = Duration::from_secs(1);
+/// How long to keep polling before giving up and clearing the busy state regardless — long
+/// enough for a real first-time provisioning step (Zigbee downloads Node.js and installs
+/// Zigbee2MQTT the first time it runs), not so long that a genuinely stuck extension spins the
+/// button forever. Its own state badge keeps showing what's going on either way.
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
 fn act(
     id: String,
     install: bool,
@@ -272,13 +282,40 @@ fn act(
         match result {
             Ok(()) => {
                 trouble.set(None);
-                match api::fetch_catalog().await {
-                    Ok(entries) => catalog.set(entries),
-                    Err(why) => trouble.set(Some(why)),
-                }
+                settle(&id, catalog, trouble).await;
             }
             Err(why) => trouble.set(Some(why)),
         }
         busy.set(None);
     });
+}
+
+/// Keeps refreshing the catalog until this extension's own action has visibly finished, instead
+/// of clearing `busy` — and so the button — the instant the HTTP request returns. "Installed"
+/// (`entry.installed`, which decides Install vs. Uninstall) turns true as soon as the package is
+/// on disk and supervised; for most extensions that's also when they're ready, but Zigbee
+/// downloads Node.js and installs Zigbee2MQTT the first time it runs, entirely after that point
+/// — `state` stays `starting`/`degraded` while that's happening. Showing a plain, clickable
+/// "Uninstall" before that settles reads as the extension being ready when it isn't.
+async fn settle(id: &str, catalog: RwSignal<Vec<CatalogEntry>>, trouble: RwSignal<Option<String>>) {
+    let mut waited = Duration::ZERO;
+    loop {
+        let entries = match api::fetch_catalog().await {
+            Ok(entries) => entries,
+            Err(why) => {
+                trouble.set(Some(why));
+                return;
+            }
+        };
+        let still_settling = entries
+            .iter()
+            .find(|entry| entry.id == id)
+            .is_some_and(|entry| matches!(entry.state.as_deref(), Some("starting" | "degraded")));
+        catalog.set(entries);
+        if !still_settling || waited >= SETTLE_TIMEOUT {
+            return;
+        }
+        gloo_timers::future::sleep(SETTLE_POLL).await;
+        waited += SETTLE_POLL;
+    }
 }

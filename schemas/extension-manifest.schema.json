@@ -314,12 +314,16 @@
       "type": "object",
       "properties": {
         "id": {
-          "description": "Its own id, unique within this protocol, e.g. `permit_join`.",
-          "type": "string"
+          "description": "Its own id, unique within this protocol, e.g. `permit_join`.\n\n`validate` below is the actual authority on emptiness and uniqueness — a manifest is\nalways parsed through it, in this crate, regardless of what any JSON Schema consumer\nindependently accepts. `minLength`/`pattern` here close what JSON Schema *can* express\n(blank or whitespace-only); id uniqueness across `actions` can't be, since JSON Schema\nhas no keyword for \"unique by one field of an array item\" — `validate` remains the only\nplace that catches a repeated id.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
         },
         "label": {
           "description": "The button's label, e.g. \"Permit joining\".",
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
         },
         "seconds": {
           "description": "A default duration in seconds, for a timed action — a hint the UI can show (e.g.\n\"for 60s\"), not enforced by the core.",

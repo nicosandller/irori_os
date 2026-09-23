@@ -700,6 +700,58 @@ async fn a_broken_packages_own_manifest_reports_failed_not_missing() {
     host.shutdown().await;
 }
 
+/// A manifest that's fine on its own but names a `config_schema` that isn't there (or isn't
+/// valid JSON) mustn't start with settings quietly unchecked and its form quietly hidden — it's
+/// rejected the same way a manifest missing `run.command` already is. `run.command` here never
+/// actually has to run: the schema is loaded, and this package rejected, before anything would
+/// spawn it.
+#[tokio::test]
+async fn a_package_naming_a_missing_config_schema_reports_failed_naming_it() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let broken = packages_dir.path().join("brokenschema");
+    std::fs::create_dir_all(&broken).expect("made the package dir");
+    std::fs::write(
+        broken.join("irori-extension.toml"),
+        r#"
+            [extension]
+            id = "brokenschema"
+            name = "Broken Schema"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+            config_schema = "config.schema.json"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["light"]
+            run = { command = "bin/never-actually-run" }
+        "#,
+    )
+    .expect("wrote the manifest");
+    // Deliberately not written: `load_config_schema` should fail before `run.command` matters.
+
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("a broken package on disk must not fail startup");
+
+    eventually(
+        "the missing schema is reported failed, naming the path",
+        || {
+            matches!(
+                status(&core, "brokenschema"),
+                Some(ExtensionStatus::Failed { reason, .. }) if reason.contains("config.schema.json")
+            )
+        },
+    )
+    .await;
+
+    host.shutdown().await;
+}
+
 #[test]
 fn duplicate_extension_ids_are_refused() {
     let runtime = tokio::runtime::Builder::new_current_thread()

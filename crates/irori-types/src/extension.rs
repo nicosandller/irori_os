@@ -227,8 +227,17 @@ impl ProtocolContribution {
 #[serde(deny_unknown_fields)]
 pub struct ProtocolAction {
     /// Its own id, unique within this protocol, e.g. `permit_join`.
+    ///
+    /// `validate` below is the actual authority on emptiness and uniqueness — a manifest is
+    /// always parsed through it, in this crate, regardless of what any JSON Schema consumer
+    /// independently accepts. `minLength`/`pattern` here close what JSON Schema *can* express
+    /// (blank or whitespace-only); id uniqueness across `actions` can't be, since JSON Schema
+    /// has no keyword for "unique by one field of an array item" — `validate` remains the only
+    /// place that catches a repeated id.
+    #[schemars(length(min = 1), pattern(r"\S"))]
     pub id: String,
     /// The button's label, e.g. "Permit joining".
+    #[schemars(length(min = 1), pattern(r"\S"))]
     pub label: String,
     /// A default duration in seconds, for a timed action — a hint the UI can show (e.g.
     /// "for 60s"), not enforced by the core.
@@ -916,6 +925,34 @@ mod tests {
             ("example.com.", false),
             ("https://example.com", false),
         ]);
+    }
+
+    /// `ProtocolContribution::validate` is the actual authority on this — it's what every
+    /// manifest is checked against — but a JSON Schema consumer never runs Rust code, so the
+    /// exported schema should reject the same blank/whitespace-only cases wherever JSON Schema
+    /// can express that (id uniqueness across `actions` can't be; `validate`'s own doc comment
+    /// on the field says why).
+    #[test]
+    fn protocol_action_schema_rejects_blank_or_whitespace_only_ids_and_labels() {
+        let validator = validator::<ProtocolAction>();
+        let action = |id: &str, label: &str| serde_json::json!({"id": id, "label": label});
+        assert!(validator.is_valid(&action("permit_join", "Permit joining")));
+        assert!(
+            !validator.is_valid(&action("", "Permit joining")),
+            "blank id"
+        );
+        assert!(
+            !validator.is_valid(&action("   ", "Permit joining")),
+            "whitespace-only id"
+        );
+        assert!(
+            !validator.is_valid(&action("permit_join", "")),
+            "blank label"
+        );
+        assert!(
+            !validator.is_valid(&action("permit_join", "   ")),
+            "whitespace-only label"
+        );
     }
 
     #[test]

@@ -47,8 +47,9 @@
       "minimum": 0
     },
     "serial_port": {
-      "description": "The dongle's serial device, e.g. `/dev/ttyUSB0` (Linux) or `/dev/cu.usbmodem…` (macOS).\nIrori can't list what's plugged in for you yet — check with `ls /dev/tty*` (or\n`/dev/cu.*` on macOS) with the dongle plugged in and out.",
-      "type": "string"
+      "description": "The dongle's serial device, e.g. `/dev/ttyUSB0` (Linux) or `/dev/cu.usbmodem…` (macOS) —\nor `tcp://host:port` for a dongle reached over the network rather than plugged directly\ninto this machine (Zigbee2MQTT's own TCP adapter support), which is how to use one on a\nMac running Irori in `dev/pi`'s container: Docker Desktop can't pass a USB device through\nto it, so bridge the dongle's serial port to TCP on the host first (`dev/README.md`).\nThe Settings form offers what's plugged in right now as suggestions (`format` below), but\nalways accepts a typed path or `tcp://` address too.",
+      "type": "string",
+      "format": "serial-port"
     },
     "zigbee2mqtt_version": {
       "description": "Pins Zigbee2MQTT to one version. Left out, the first start installs the current release\nand remembers exactly which one — an update after that is a deliberate choice\n(re-installing with a version given here), never something that happens on its own.",

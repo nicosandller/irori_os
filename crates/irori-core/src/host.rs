@@ -13,7 +13,9 @@ use irori_protocol::host::{HostEnd, Op, Reports, connect};
 use irori_protocol::{ExtProcess, FromExt, IncomingAction, IncomingCall, ToExt, spawn};
 use std::collections::BTreeSet;
 
-use irori_types::{EntityKind, ExtensionId, ExtensionManifest, ExtensionSettings, ProtocolId};
+use irori_types::{
+    EntityKind, ExtensionId, ExtensionManifest, ExtensionSettings, PackagePath, ProtocolId,
+};
 use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
@@ -725,6 +727,18 @@ fn read_package_manifest(dir: &Path) -> Result<ExtensionManifest, String> {
     irori_protocol::parse_manifest(&text)
 }
 
+/// Reads and parses the JSON Schema a package's manifest names as its `config_schema`, relative
+/// to `dir`. The error always names `path` — a missing file and a malformed one both come back
+/// as `config schema \`<path>\`: <why>`, not left for the caller to attach the path itself.
+fn load_config_schema(dir: &Path, path: &PackagePath) -> Result<serde_json::Value, String> {
+    let full = dir.join(path.as_str());
+    (|| -> Result<serde_json::Value, String> {
+        let text = std::fs::read_to_string(&full).map_err(|e| e.to_string())?;
+        serde_json::from_str(&text).map_err(|e| e.to_string())
+    })()
+    .map_err(|why| format!("config schema `{path}`: {why}"))
+}
+
 async fn supervise_package(
     core: Core,
     dir: PathBuf,
@@ -761,10 +775,31 @@ async fn supervise_package(
             .ok()
             .filter(|svg| svg.trim_start().starts_with("<svg"))
     });
-    let config_schema = manifest.extension.config_schema.as_ref().and_then(|path| {
-        let text = std::fs::read_to_string(dir.join(path.as_str())).ok()?;
-        serde_json::from_str(&text).ok()
-    });
+    let config_schema = match manifest
+        .extension
+        .config_schema
+        .as_ref()
+        .map(|path| load_config_schema(&dir, path))
+        .transpose()
+    {
+        Ok(schema) => schema,
+        Err(reason) => {
+            // A schema the manifest itself names but that's missing or malformed isn't a package
+            // to run with settings quietly unchecked and its form quietly hidden — that skips the
+            // required-setting check below and only surfaces once the package's own
+            // deserialization fails. Reject it up front instead, the same as `run.command`
+            // missing above.
+            tracing::error!(%extension, "{reason}");
+            core.set_status(
+                &extension,
+                crate::ExtensionStatus::Failed {
+                    reason,
+                    retry_at: None,
+                },
+            );
+            return;
+        }
+    };
     // Kept for the required-settings check each time round the loop below, as well as described.
     let schema = config_schema.clone();
     core.describe_extension(
@@ -1225,4 +1260,48 @@ async fn send_reply(
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_config_schema_is_read_and_parsed() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::write(
+            dir.path().join("config.schema.json"),
+            r#"{"type": "object"}"#,
+        )
+        .expect("writes");
+        let path = PackagePath::try_from("config.schema.json").expect("valid");
+
+        let schema = load_config_schema(dir.path(), &path).expect("reads and parses");
+        assert_eq!(schema, serde_json::json!({"type": "object"}));
+    }
+
+    #[test]
+    fn a_missing_config_schema_names_the_path_it_looked_for() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = PackagePath::try_from("config.schema.json").expect("valid");
+
+        let error = load_config_schema(dir.path(), &path).expect_err("nothing there");
+        assert!(
+            error.contains("config.schema.json"),
+            "should name the path it looked for: {error}"
+        );
+    }
+
+    #[test]
+    fn a_malformed_config_schema_names_the_path_not_just_a_parse_error() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::write(dir.path().join("config.schema.json"), "not json at all").expect("writes");
+        let path = PackagePath::try_from("config.schema.json").expect("valid");
+
+        let error = load_config_schema(dir.path(), &path).expect_err("malformed json");
+        assert!(
+            error.contains("config.schema.json"),
+            "should name the path, not just the parse error: {error}"
+        );
+    }
 }

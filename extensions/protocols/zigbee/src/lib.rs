@@ -107,7 +107,7 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
     tokio::fs::create_dir_all(DATA_DIR)
         .await
         .map_err(|e| ProtocolError::new(format!("couldn't create {DATA_DIR}: {e}")))?;
-    tokio::fs::write(&config_path, yaml)
+    write_atomically(&config_path, &yaml)
         .await
         .map_err(|e| ProtocolError::new(format!("couldn't write configuration.yaml: {e}")))?;
 
@@ -122,7 +122,7 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
     let node = provision::node_binary();
     let entry = absolute(provision::zigbee2mqtt_entry());
     let data_dir = absolute(Path::new(DATA_DIR).to_path_buf());
-    let mut child = supervisor::spawn(&node, &entry, &data_dir).map_err(ProtocolError::new)?;
+    let mut spawned = supervisor::spawn(&node, &entry, &data_dir).map_err(ProtocolError::new)?;
 
     let (client, mut events, broker_task) = broker::connect(settings.broker_port);
     client
@@ -161,7 +161,10 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                         apply(message, &mut registry, &client, &ctx).await;
                     }
                     Some(BrokerEvent::Connectivity(Connectivity::Connected)) => {
-                        ctx.set_health(Health::Running).await;
+                        // Not `Health::Running` yet: this only means our own client reached our
+                        // own embedded broker, not that Zigbee2MQTT itself is up and talking to
+                        // the radio. `apply` sets `Running` once Zigbee2MQTT's own `bridge/info`
+                        // confirms that — the same signal `permit_join` availability waits for.
                     }
                     Some(BrokerEvent::Connectivity(Connectivity::Disconnected)) => {
                         ctx.set_health(Health::Degraded("disconnected from Zigbee2MQTT".to_owned())).await;
@@ -170,7 +173,7 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                     None => break Err(ProtocolError::new("stopped listening to the embedded broker")),
                 }
             }
-            status = child.wait() => {
+            status = spawned.child.wait() => {
                 break Err(ProtocolError::new(match status {
                     Ok(status) => format!("Zigbee2MQTT exited: {status}"),
                     Err(e) => format!("Zigbee2MQTT: {e}"),
@@ -181,8 +184,30 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
 
     drop(events);
     broker_task.abort();
-    let _ = child.start_kill();
+    let _ = spawned.child.start_kill();
+    // After, not before: on the crash path that just broke the loop, Zigbee2MQTT logged its own
+    // reason moments before exiting, and only draining now gives the forwarding tasks a chance
+    // to have read it before this process's own `main` can exit and take them down mid-read.
+    spawned.drain_logs().await;
     outcome
+}
+
+/// Writes `contents` to `path` by writing a sibling temp file and renaming it over `path`, rather
+/// than truncating `path` in place (`tokio::fs::write`'s own approach). Zigbee2MQTT persists the
+/// network's generated identity in this same file (the `existing_advanced` note above) — a crash
+/// or full disk mid-write of an in-place truncate could leave a half-written file with no usable
+/// `advanced` block, and the next start would read nothing back and generate (and persist) a
+/// brand new identity, dropping every paired device. A rename is atomic on the same filesystem,
+/// which the temp file always is: it's written next to `path`, inside the same `DATA_DIR`.
+async fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+    let tmp = path.with_file_name(format!(
+        "{}.tmp",
+        path.file_name()
+            .expect("configuration.yaml always has a file name")
+            .to_string_lossy()
+    ));
+    tokio::fs::write(&tmp, contents).await?;
+    tokio::fs::rename(&tmp, path).await
 }
 
 fn absolute(path: std::path::PathBuf) -> std::path::PathBuf {
@@ -221,6 +246,9 @@ async fn apply(
     if message.topic == bridge::info_topic(BASE_TOPIC) {
         if !registry.bridge_seen && bridge::is_bridge_info(&message.payload) {
             registry.bridge_seen = true;
+            // This, not our own broker connecting, is what "ready to use" means: Zigbee2MQTT
+            // itself confirmed up, not just our embedded broker having a socket open.
+            ctx.set_health(Health::Running).await;
             ctx.set_available_actions(vec![PERMIT_JOIN.to_owned()])
                 .await;
         }
@@ -287,7 +315,9 @@ async fn describe(
 ) {
     if message.payload.is_empty() {
         if let Some(unique_id) = registry.config_topics.remove(&message.topic) {
-            registry.entities.remove(&unique_id);
+            if let Some(old) = registry.entities.remove(&unique_id) {
+                deindex(&unique_id, &old.topics, registry);
+            }
             if let Err(e) = ctx.remove_entity(unique_id.clone()).await {
                 tracing::warn!(%unique_id, error = %e, "couldn't remove an entity");
             }
@@ -320,20 +350,7 @@ async fn describe(
     // otherwise a topic it no longer uses keeps reporting for it, and one it still uses ends up
     // listed twice.
     let last_state = if let Some(old) = registry.entities.remove(&unique_id) {
-        for (topic, _) in state::topics_of(&unique_id, &old.topics) {
-            if let Some(ids) = registry.state_topics.get_mut(&topic) {
-                ids.retain(|id| id != &unique_id);
-                if ids.is_empty() {
-                    registry.state_topics.remove(&topic);
-                }
-            }
-        }
-        for (_, _, ids) in registry.availability_topics.values_mut() {
-            ids.retain(|id| id != &unique_id);
-        }
-        registry
-            .availability_topics
-            .retain(|_, (_, _, ids)| !ids.is_empty());
+        deindex(&unique_id, &old.topics, registry);
         old.last_state
     } else {
         None
@@ -371,6 +388,27 @@ async fn describe(
             last_state,
         },
     );
+}
+
+/// Drops `unique_id`'s entries from `state_topics` and `availability_topics` — shared by the
+/// redescribe and removal paths in `describe`, so an entity that's redescribed or cleared always
+/// loses its old topic-index entries. Left in place, a topic it no longer uses would keep
+/// reporting for it, and one it still uses would end up listed (and so double-processed) twice.
+fn deindex(unique_id: &UniqueId, old_topics: &EntityTopics, registry: &mut Registry) {
+    for (topic, _) in state::topics_of(unique_id, old_topics) {
+        if let Some(ids) = registry.state_topics.get_mut(&topic) {
+            ids.retain(|id| id != unique_id);
+            if ids.is_empty() {
+                registry.state_topics.remove(&topic);
+            }
+        }
+    }
+    for (_, _, ids) in registry.availability_topics.values_mut() {
+        ids.retain(|id| id != unique_id);
+    }
+    registry
+        .availability_topics
+        .retain(|_, (_, _, ids)| !ids.is_empty());
 }
 
 async fn route(incoming: IncomingCall, registry: &Registry, client: &impl Publisher) {
@@ -524,6 +562,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_empty_payload_on_a_known_config_topic_removes_the_entity_and_its_topic_index() {
+        let (ctx, host) = host::connect();
+        let _drain = drain_ops(host.ops);
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+        let config_topic = "homeassistant/light/0x0017880104e45520_light/config";
+        let discovered = topic::parse(config_topic, DISCOVERY_PREFIX).expect("a discovery topic");
+        describe(
+            discovered.clone(),
+            &message(config_topic, Z2M_LIGHT),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        assert_eq!(registry.entities.len(), 1);
+
+        describe(
+            discovered,
+            &message(config_topic, b""),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+
+        assert!(
+            registry.entities.is_empty(),
+            "removed once its config goes empty"
+        );
+        assert!(
+            registry.state_topics.is_empty(),
+            "a removed entity's state topics shouldn't linger and double-report if reused: {:?}",
+            registry.state_topics
+        );
+    }
+
+    #[tokio::test]
     async fn a_brightness_only_report_keeps_the_previous_on_state() {
         let (ctx, host) = host::connect();
         let _drain = drain_ops(host.ops);
@@ -602,13 +678,21 @@ mod tests {
         let (ctx, host) = host::connect();
         let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = Arc::clone(&seen);
+        let became_running = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted_running = Arc::clone(&became_running);
         let mut ops = host.ops;
         let _drain = tokio::spawn(async move {
             while let Some(op) = ops.recv().await {
-                if let host::Op::SetAvailableActions(actions) = op
-                    && actions == vec![PERMIT_JOIN.to_owned()]
-                {
-                    counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                match op {
+                    host::Op::SetAvailableActions(actions)
+                        if actions == vec![PERMIT_JOIN.to_owned()] =>
+                    {
+                        counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    host::Op::SetHealth(Health::Running) => {
+                        counted_running.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    _ => {}
                 }
             }
         });
@@ -627,7 +711,34 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(seen.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            became_running.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the bridge confirming itself up is what should report the extension as running, \
+             not merely our own client reaching our own embedded broker"
+        );
         assert!(registry.bridge_seen);
+    }
+
+    #[tokio::test]
+    async fn write_atomically_replaces_the_files_contents_and_leaves_no_temp_file_behind() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("configuration.yaml");
+        write_atomically(&path, "first\n").await.expect("writes");
+        write_atomically(&path, "second\n").await.expect("writes");
+
+        let contents = tokio::fs::read_to_string(&path).await.expect("readable");
+        assert_eq!(contents, "second\n");
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("readable")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(
+            leftovers,
+            vec![std::ffi::OsString::from("configuration.yaml")],
+            "no .tmp file should be left behind: {leftovers:?}"
+        );
     }
 
     #[tokio::test]

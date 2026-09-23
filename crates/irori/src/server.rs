@@ -85,6 +85,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/dev/history/{entity_id}", get(entity_history))
         .route("/api/dev/system", get(host_info))
+        .route("/api/dev/serial-ports", get(serial_ports))
         .route(
             "/api/dev/extensions",
             get(|State(s): State<AppState>| async move { Json(s.0.core.extensions()) }),
@@ -164,6 +165,15 @@ async fn home(State(state): State<AppState>) -> Json<HomeView> {
 /// filled or a machine that was swapped out from under it.
 async fn host_info(State(state): State<AppState>) -> Json<crate::host_info::HostView> {
     Json(crate::host_info::read(&state.0.db.path))
+}
+
+/// Serial devices plugged into this machine right now, for a settings field the schema marks
+/// `"format": "serial-port"` (a Zigbee dongle, say) to offer as a live-updated list of
+/// candidates, alongside the plain text box a device path always was. Read fresh each time, the
+/// same reasoning as `host_info`: a device plugged in or removed while the form is open should
+/// show up without reopening it.
+async fn serial_ports() -> Json<Vec<String>> {
+    Json(crate::serial::list())
 }
 
 /// The last day of an entity's changes, for the expandable table under its row on the Devices
@@ -1554,6 +1564,17 @@ mod tests {
             json["disk"]["total"].as_u64().unwrap_or(0) > 0,
             "the volume with the data should report its size: {json}"
         );
+        Ok(())
+    }
+
+    /// The endpoint's own shape: what devices are actually found is host-specific and covered in
+    /// `crate::serial`'s own tests.
+    #[tokio::test]
+    async fn serial_ports_answers_with_a_list() -> anyhow::Result<()> {
+        let (status, _, body) = get("/api/dev/serial-ports").await?;
+        assert_eq!(status, StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(&body)?;
+        assert!(json.is_array(), "{json}");
         Ok(())
     }
 

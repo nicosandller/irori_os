@@ -16,9 +16,18 @@ use tokio::sync::mpsc;
 /// normal way a protocol stops — the thread goes with it, the same as any other thread still
 /// running when `main` returns.
 pub fn start_embedded(port: u16) -> Result<(), String> {
-    let listen = format!("127.0.0.1:{port}")
+    let listen: std::net::SocketAddr = format!("127.0.0.1:{port}")
         .parse()
         .map_err(|e| format!("bad broker port {port}: {e}"))?;
+    // `rumqttd::Broker::start` binds its listener on a thread of its own and only logs a bind
+    // failure from inside it — the caller who just spawned that thread has no way to know it
+    // failed, and would carry on connecting to `port` regardless. If something unrelated is
+    // already listening there, this instance's Zigbee2MQTT and our own client would silently
+    // talk to that instead of to each other. Claiming the port here first, synchronously, turns
+    // that into an immediate, reportable error; dropping the listener immediately after hands it
+    // back for `rumqttd` to bind in turn.
+    std::net::TcpListener::bind(listen)
+        .map_err(|e| format!("port {port} is already in use: {e}"))?;
     let mut v4 = HashMap::new();
     v4.insert(
         "zigbee".to_owned(),
@@ -180,4 +189,24 @@ pub fn connect(
         }
     });
     (Client(client), rx, handle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn starting_on_a_port_already_taken_is_a_named_error_not_a_silent_wrong_broker() {
+        // Claims the port ourselves first, standing in for "something unrelated already has it".
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
+        let port = listener.local_addr().expect("has an address").port();
+
+        let error = start_embedded(port).expect_err("the port is taken");
+        assert!(
+            error.contains("already in use"),
+            "should name the problem, not just fail generically: {error}"
+        );
+
+        drop(listener);
+    }
 }
