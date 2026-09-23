@@ -82,12 +82,19 @@ pub fn Settings() -> impl IntoView {
         spawn_local(async move {
             match api::restart().await {
                 // The new instance is coming up; the page notices it on its own.
-                Ok(()) => {}
-                Err(why) => {
+                api::RestartSent::Accepted => {}
+                // The living server answered no — 403, 429... — so nothing is restarting: give
+                // the button back and say why.
+                api::RestartSent::Refused(why) => {
                     restarting.set(false);
                     restart_from.set(None);
                     trouble.set(Some(why));
                 }
+                // No answer at all. It may be the restart under way (the old server drained as
+                // its answer was on its way), so the baseline stays armed and clears only when a
+                // different boot answers — a transport failure must not re-arm the button before
+                // the new boot is verified.
+                api::RestartSent::Lost => {}
             }
         });
     };
