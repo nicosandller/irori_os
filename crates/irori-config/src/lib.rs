@@ -168,7 +168,8 @@ impl Store {
     ) -> std::io::Result<bool> {
         let dir = self.dir.join("extensions");
         let path = dir.join(format!("{extension}.toml"));
-        let text = files::write_extension(extension, settings);
+        let text = files::write_extension(extension, settings)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let changed = !std::fs::read_to_string(&path).is_ok_and(|current| current == text);
         if changed {
             std::fs::create_dir_all(&dir)?;

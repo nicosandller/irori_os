@@ -847,7 +847,13 @@ async fn set_extension_settings(
             .config
             .edit_extension(core, &id, |file| {
                 for (key, value) in non_secret.clone() {
-                    file.insert(key, value);
+                    // TOML has no `null`: a schema-valid `null` for an `Option<T>` field means
+                    // "leave this unset," which in the file is the key's *absence*, not a value.
+                    if value.is_null() {
+                        file.remove(&key);
+                    } else {
+                        file.insert(key, value);
+                    }
                 }
                 Ok(())
             })
@@ -2545,6 +2551,41 @@ mod tests {
         assert!(
             !server.config_dir().join("secrets.toml").exists(),
             "a non-secret field must not land in secrets.toml"
+        );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A schema-valid `null` for an `Option<T>` field means "leave this unset" — it must clear
+    /// the field, not get handed to TOML (which has no `null`) and silently blank the whole file.
+    #[tokio::test]
+    async fn a_null_value_unsets_the_field_instead_of_erasing_the_file() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/settings",
+                serde_json::json!({"code": "1234-5678"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/settings",
+                serde_json::json!({"code": null}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        let written = std::fs::read_to_string(server.config_dir().join("extensions/safe.toml"))?;
+        assert!(
+            !written.contains("1234-5678"),
+            "the field should have been cleared: {written}"
         );
 
         host.shutdown().await;

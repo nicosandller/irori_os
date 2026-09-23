@@ -22,18 +22,46 @@ FROM toolchain AS build
 # Extra cargo flags, e.g. "--no-default-features" for the barebones build.
 ARG FEATURES=""
 COPY . .
+# The default build's `ui` feature only embeds whatever `cargo xtask ui` has already put in
+# `crates/irori/ui/` (`crates/irori/src/server.rs`'s own doc comment on this) — a plain `cargo
+# build` does not build it, so without this the server always falls back to the placeholder
+# page. Skipped for the barebones build, which doesn't compile the `ui` feature in at all.
+#
+# `trunk` is downloaded prebuilt rather than `cargo install`ed: its own release build (LTO,
+# one codegen unit) needs more memory than this environment reliably has to spare, and gets
+# OOM-killed partway through the link step — a prebuilt binary needs no compiling at all.
+#
+# `wasm-bindgen-cli`, by contrast, has no prebuilt musl binary to download: trunk's own
+# auto-fetch grabs a glibc one, which this Alpine (musl) toolchain can't run at all ("No such
+# file or directory" is musl's exec failing to find glibc's dynamic linker, not a missing file).
+# Installing the exact version `crates/irori-ui/Cargo.lock` pins builds it natively for musl
+# instead, and trunk uses that already-on-PATH copy rather than fetching its own. `--profile
+# dev` for the same memory reason `trunk` itself is never compiled here.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/target \
+    if [ "$FEATURES" != "--no-default-features" ]; then \
+      rustup target add wasm32-unknown-unknown \
+      && curl --fail --location --silent --show-error \
+         "https://github.com/trunk-rs/trunk/releases/latest/download/trunk-$(uname -m)-unknown-linux-musl.tar.gz" \
+      | tar xz -C /usr/local/bin trunk \
+      && cargo install wasm-bindgen-cli --version 0.2.128 --locked --profile dev \
+      && cargo xtask ui ; \
+    fi
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/target \
     cargo build --locked --release -p irori $FEATURES \
       -p irori-protocol-demo -p irori-protocol-esphome -p irori-protocol-mqtt \
+      -p irori-protocol-zigbee \
     && cp /target/release/irori /irori \
-    && mkdir -p /official/demo/bin /official/esphome/bin /official/mqtt/bin \
+    && mkdir -p /official/demo/bin /official/esphome/bin /official/mqtt/bin /official/zigbee/bin \
     && cp extensions/demo/irori-extension.toml extensions/demo/icon.svg /official/demo/ \
     && cp /target/release/irori-ext-demo /official/demo/bin/ \
     && cp extensions/protocols/esphome/irori-extension.toml extensions/protocols/esphome/icon.svg /official/esphome/ \
     && cp /target/release/irori-ext-esphome /official/esphome/bin/ \
-    && cp extensions/protocols/mqtt/irori-extension.toml /official/mqtt/ \
-    && cp /target/release/irori-ext-mqtt /official/mqtt/bin/
+    && cp extensions/protocols/mqtt/irori-extension.toml extensions/protocols/mqtt/config.schema.json /official/mqtt/ \
+    && cp /target/release/irori-ext-mqtt /official/mqtt/bin/ \
+    && cp extensions/protocols/zigbee/irori-extension.toml extensions/protocols/zigbee/config.schema.json /official/zigbee/ \
+    && cp /target/release/irori-ext-zigbee /official/zigbee/bin/
 
 FROM debian:${DEBIAN_RELEASE}-slim AS pi
 RUN apt-get update \

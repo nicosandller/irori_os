@@ -89,12 +89,25 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
         .await
         .map_err(ProtocolError::new)?;
 
-    let yaml = config::generate(&settings, settings.broker_port, BASE_TOPIC)
-        .map_err(ProtocolError::new)?;
+    let config_path = Path::new(DATA_DIR).join("configuration.yaml");
+    // Zigbee2MQTT persists its own generated `network_key`/`pan_id` back into this same file
+    // when neither is configured — read whatever's there before overwriting it, so regenerating
+    // below doesn't silently erase that generated identity on every restart.
+    let existing_advanced = tokio::fs::read_to_string(&config_path)
+        .await
+        .ok()
+        .and_then(|text| config::existing_advanced_block(&text));
+    let yaml = config::generate(
+        &settings,
+        settings.broker_port,
+        BASE_TOPIC,
+        existing_advanced.as_deref(),
+    )
+    .map_err(ProtocolError::new)?;
     tokio::fs::create_dir_all(DATA_DIR)
         .await
         .map_err(|e| ProtocolError::new(format!("couldn't create {DATA_DIR}: {e}")))?;
-    tokio::fs::write(Path::new(DATA_DIR).join("configuration.yaml"), yaml)
+    tokio::fs::write(&config_path, yaml)
         .await
         .map_err(|e| ProtocolError::new(format!("couldn't write configuration.yaml: {e}")))?;
 

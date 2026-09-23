@@ -335,19 +335,22 @@ pub fn read_extension(text: &str) -> Result<serde_json::Map<String, serde_json::
     }
 }
 
-/// An `extensions/<id>.toml` file's text, ready to write.
+/// An `extensions/<id>.toml` file's text, ready to write. `Err` if `settings` holds something
+/// TOML can't represent (a JSON `null`, most likely — a schema-valid value for any `Option<T>`
+/// field, but one TOML has no way to write down) — the caller must not fall back to writing an
+/// empty body in that case, which would silently erase every other setting already saved.
 pub fn write_extension(
     extension: &ExtensionId,
     settings: &serde_json::Map<String, serde_json::Value>,
-) -> String {
-    let body = toml::to_string_pretty(settings).unwrap_or_default();
-    format!(
+) -> Result<String, String> {
+    let body = toml::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    Ok(format!(
         "# Settings for the `{extension}` extension that aren't secret. Secrets for it go in\n\
          # secrets.toml, under [{extension}].\n\
          #\n\
          # Written by Irori, and yours to edit: changes are picked up within a couple of seconds, and\n\
          # the extension restarts with them. See docs/specs/config.md.\n\n{body}"
-    )
+    ))
 }
 
 /// `secrets.toml`'s text, ready to write.

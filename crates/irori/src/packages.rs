@@ -352,6 +352,14 @@ fn stage_package(source: &Path, binary: &Path, dest: &Path, bin_name: &str) -> R
     if icon.is_file() {
         fs::copy(&icon, dest.join("icon.svg")).map_err(|e| e.to_string())?;
     }
+    // Same reasoning as the icon: without this, a checkout install has a manifest pointing at a
+    // `config_schema` that never made it into the instance, so `config_schema` reads as `None`
+    // and the settings form silently never appears (`xtask/src/package.rs`'s release path needs
+    // the identical copy, for the identical reason).
+    let schema = source.join("config.schema.json");
+    if schema.is_file() {
+        fs::copy(&schema, dest.join("config.schema.json")).map_err(|e| e.to_string())?;
+    }
     fs::copy(binary, dest.join("bin").join(bin_name)).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -428,6 +436,49 @@ mod tests {
             .expect("tar is on PATH");
         assert!(status.success());
         archive
+    }
+
+    #[test]
+    fn staging_from_a_checkout_carries_the_config_schema_along_when_the_extension_has_one() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let source = root.path().join("source");
+        std::fs::create_dir_all(&source).expect("mkdir");
+        std::fs::write(
+            source.join("irori-extension.toml"),
+            "[extension]\nid = \"x\"\n",
+        )
+        .expect("write manifest");
+        std::fs::write(source.join("config.schema.json"), "{}").expect("write schema");
+        let binary = root.path().join("built-binary");
+        std::fs::write(&binary, "not a real elf, just bytes").expect("write binary");
+        let dest = root.path().join("dest");
+
+        stage_package(&source, &binary, &dest, "irori-ext-x").expect("stages");
+
+        assert!(dest.join("config.schema.json").is_file());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("config.schema.json")).expect("read"),
+            "{}"
+        );
+    }
+
+    #[test]
+    fn staging_from_a_checkout_is_fine_without_a_config_schema() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let source = root.path().join("source");
+        std::fs::create_dir_all(&source).expect("mkdir");
+        std::fs::write(
+            source.join("irori-extension.toml"),
+            "[extension]\nid = \"x\"\n",
+        )
+        .expect("write manifest");
+        let binary = root.path().join("built-binary");
+        std::fs::write(&binary, "not a real elf, just bytes").expect("write binary");
+        let dest = root.path().join("dest");
+
+        stage_package(&source, &binary, &dest, "irori-ext-x").expect("stages");
+
+        assert!(!dest.join("config.schema.json").exists());
     }
 
     #[test]
