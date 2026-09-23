@@ -212,7 +212,11 @@ pub async fn fetch_system() -> Result<System, String> {
 /// Asks Irori to restart itself. It answers before it goes; the page finds out it's back from
 /// its own polling, which shows a fresh uptime once the new instance is up.
 pub async fn restart() -> Result<(), String> {
+    // The server only restarts for the page's own fetch: this header is what says it is one,
+    // and a cross-site website can't set it (a <form> POST has no header, and a fetch with a
+    // custom header is stopped by CORS preflight).
     let response = Request::post(RESTART_URL)
+        .header("x-irori-ui", "1")
         .send()
         .await
         .map_err(unreachable)?;

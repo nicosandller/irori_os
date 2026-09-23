@@ -193,12 +193,31 @@ async fn host_info(State(state): State<AppState>) -> Json<crate::host_info::Host
     Json(crate::host_info::read(&state.0.db.path))
 }
 
+/// The Settings page asks for a restart with this header. Nothing in `/api/dev/*` has
+/// authentication yet (that is M1.5; until then `--allow-unauthenticated-lan` and the page are
+/// as open as this), so it is the pre-auth stand-in for "who is asking": only same-origin
+/// JavaScript can set it, while a cross-site `<form>` POST or a fetch that CORS preflight would
+/// stop cannot — which is exactly the case that would otherwise let any website the operator
+/// visits silently restart a loopback instance, over and over.
+const UI_HEADER: &str = "x-irori-ui";
+
 /// Restarts Irori, at the Settings page's request: wake the shutdown in `serve`
 /// (crates/irori/src/main.rs), which stops the server and extensions cleanly and then starts
 /// this very binary again. The button is on the Settings page because that's where someone who
-/// can change how Irori runs is looking — but like the rest of `/api/dev/*` (and the commands
-/// the Devices page sends), nothing checks who is asking.
-async fn restart(State(state): State<AppState>) -> Response {
+/// can change how Irori runs is looking. A bare POST (the page's header missing) is refused:
+/// restart is a service interruption, so it is not something a random request should be able
+/// to do even where everything else in `/api/dev/*` is open.
+async fn restart(State(state): State<AppState>, request: axum::extract::Request) -> Response {
+    if !request
+        .headers()
+        .get(UI_HEADER)
+        .is_some_and(|value| value == "1")
+    {
+        return refused(
+            StatusCode::FORBIDDEN,
+            "refusing without the page's header".to_owned(),
+        );
+    }
     state.0.restarting.store(true, Ordering::SeqCst);
     tracing::info!("restart requested; shutting down");
     // notify_one, not notify_waiters: a non-retaining wake that finds no waiter is lost, and a
@@ -1431,7 +1450,11 @@ mod tests {
         let mut cx = std::task::Context::from_waker(waker);
         assert!(shutdown.as_mut().poll(&mut cx).is_pending());
         let (status, _) = server
-            .send(Request::post("/api/dev/restart").body(Body::empty())?)
+            .send(
+                Request::post("/api/dev/restart")
+                    .header("x-irori-ui", "1")
+                    .body(Body::empty())?,
+            )
             .await?;
         assert_eq!(status, StatusCode::ACCEPTED);
         assert!(
@@ -1442,6 +1465,20 @@ mod tests {
             shutdown.as_mut().poll(&mut cx).is_ready(),
             "the shutdown was woken"
         );
+        Ok(())
+    }
+
+    /// A restart without the page's header is refused: restart is a service interruption, so a
+    /// bare POST — a cross-site form, say — must not be able to take the instance down. The
+    /// header is what only same-origin JavaScript can set (a form carries none, and a fetch
+    /// with a custom header is stopped by CORS preflight).
+    #[tokio::test]
+    async fn restart_without_the_page_header_is_refused() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (status, _) = server
+            .send(Request::post("/api/dev/restart").body(Body::empty())?)
+            .await?;
+        assert_eq!(status, StatusCode::FORBIDDEN);
         Ok(())
     }
 
