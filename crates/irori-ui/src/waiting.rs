@@ -72,6 +72,39 @@ pub fn Waiting() -> impl IntoView {
     }
 }
 
+/// The same list, scoped to one extension — used once "+ Add device" narrows to a single
+/// protocol. Shows nothing when nothing of its is waiting.
+#[component]
+pub fn WaitingFor(extension: ExtensionId) -> impl IntoView {
+    let live = expect_context::<crate::Live>();
+    let waiting = everything_waiting(live);
+
+    move || {
+        let Some((name, items)) = waiting.get().remove(&extension) else {
+            return ().into_any();
+        };
+        if items.is_empty() {
+            return ().into_any();
+        }
+        let rows = items
+            .into_iter()
+            .map(|item| {
+                let extension = extension.clone();
+                view! { <Item extension through=name.clone() item /> }
+            })
+            .collect_view();
+        view! {
+            <div class="waiting-for">
+                <p class="muted small">
+                    "Found, and waiting for you — on your network, but can't be used yet."
+                </p>
+                <ul class="waiting-list">{rows}</ul>
+            </div>
+        }
+        .into_any()
+    }
+}
+
 #[component]
 fn Item(extension: ExtensionId, through: String, item: Waiting) -> impl IntoView {
     let live = expect_context::<crate::Live>();

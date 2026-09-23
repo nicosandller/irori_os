@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use irori_types::{
     AreaId, Availability, BinarySensorCapabilities, BinarySensorClass, Capabilities, Device,
-    Entity, EntityId, EntityState, LightCapabilities, LightState, LightTurnOn, SensorCapabilities,
-    SensorClass, SensorValue, State,
+    Entity, EntityId, EntityState, ExtensionId, LightCapabilities, LightState, LightTurnOn,
+    SensorCapabilities, SensorClass, SensorValue, State,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -846,8 +846,10 @@ pub fn remember(key: &str, value: &str) {
 #[component]
 fn AddDevice() -> impl IntoView {
     let live = expect_context::<crate::Live>();
-    // The extensions and how many devices each has — not the readings. A redraw on every sensor
-    // report would throw away a key being pasted into the form above (ROADMAP D33).
+    // Which protocol's flow is open, if any — at most one at a time.
+    let selected = RwSignal::new(None::<ExtensionId>);
+    // The extensions and how many devices/waiting items each has — not the readings. A redraw
+    // on every sensor report would throw away a key being pasted into a form below (D33).
     let extensions = Memo::new(move |_| {
         let home = live.home.get();
         home.extensions
@@ -858,18 +860,17 @@ fn AddDevice() -> impl IntoView {
                     .iter()
                     .filter(|device| device.protocol.as_str() == id.as_str())
                     .count();
-                (extension.clone(), devices)
+                (id.clone(), extension.clone(), devices)
             })
             .collect::<Vec<_>>()
     });
 
     view! {
-        <crate::waiting::Waiting />
         <section class="card add-device">
             <h2>"Where devices come from"</h2>
             <p class="muted">
                 "Irori doesn't talk to devices itself: each kind of device arrives through an "
-                "extension. These are the ones installed. "
+                "extension. Pick one below for what it needs, if anything. "
                 <A href="/extensions">"Manage extensions"</A>
                 "."
             </p>
@@ -878,42 +879,153 @@ fn AddDevice() -> impl IntoView {
                     extensions
                         .get()
                         .into_iter()
-                        .map(|(extension, devices)| {
-                            let kinds = extension.entity_kinds.join(", ");
-                            view! {
-                                <li>
-                                    <div class="protocol-head">
-                                        <span class="name">{extension.name.clone()}</span>
-                                        <span class="badge">{how(&extension.iot_class)}</span>
-                                        <span class="state" class:ok=extension.state == "running">
-                                            {extension.state.clone()}
-                                        </span>
-                                    </div>
-                                    <p class="muted">
-                                        {extension.description.clone().unwrap_or_default()}
-                                    </p>
-                                    <p class="muted small">
-                                        {format!(
-                                            "Provides {kinds}. {devices} device{} here now.",
-                                            if devices == 1 { "" } else { "s" },
-                                        )}
-                                    </p>
-                                </li>
-                            }
-                        })
+                        .map(|(id, extension, devices)| protocol_row(id, extension, devices, selected))
                         .collect_view()
                 }}
             </ul>
             <p class="muted small">
-                "Devices appear on their own: an extension that can find them is always "
+                "Most extensions find devices on their own: an extension that can is always "
                 "listening, so flashing a board or plugging one in is all it takes. A device that "
-                "encrypts its connection shows up above until it has its key. To choose which "
-                "found devices to keep, set `[devices] new = \"ask\"` in irori.toml — they wait "
-                "here with Add and Ignore instead of joining on their own. Giving one an address "
+                "encrypts its connection shows up as waiting until it has its key. To choose "
+                "which found devices to keep, set `[devices] new = \"ask\"` in irori.toml — they "
+                "wait with Add and Ignore instead of joining on their own. Giving one an address "
                 "by hand is still to come."
             </p>
         </section>
     }
+}
+
+/// One protocol's picker row; expands in place to its own action button (if it has one, and
+/// says it's usable right now) and its own waiting list, once clicked.
+fn protocol_row(
+    id: ExtensionId,
+    extension: crate::api::Extension,
+    devices: usize,
+    selected: RwSignal<Option<ExtensionId>>,
+) -> impl IntoView {
+    let kinds = extension.entity_kinds.join(", ");
+    let is_open = {
+        let id = id.clone();
+        Memo::new(move |_| selected.get().as_ref() == Some(&id))
+    };
+    let toggle = {
+        let id = id.clone();
+        move |_| {
+            selected.update(|open| {
+                *open = if open.as_ref() == Some(&id) {
+                    None
+                } else {
+                    Some(id.clone())
+                }
+            });
+        }
+    };
+
+    view! {
+        <li>
+            <button
+                type="button"
+                class="protocol-picker"
+                on:click=toggle
+                aria-expanded=move || is_open.get()
+            >
+                <div class="protocol-head">
+                    <span class="name">{extension.name.clone()}</span>
+                    <span class="badge">{how(&extension.iot_class)}</span>
+                    <span class="state" class:ok=extension.state == "running">
+                        {extension.state.clone()}
+                    </span>
+                </div>
+                <p class="muted">{extension.description.clone().unwrap_or_default()}</p>
+                <p class="muted small">
+                    {format!(
+                        "Provides {kinds}. {devices} device{} here now.",
+                        if devices == 1 { "" } else { "s" },
+                    )}
+                    {(!extension.waiting.is_empty())
+                        .then(|| format!(" {} waiting for you.", extension.waiting.len()))}
+                </p>
+            </button>
+            {move || {
+                is_open
+                    .get()
+                    .then(|| {
+                        view! {
+                            <div class="protocol-detail">
+                                <ProtocolActions id=id.clone() extension=extension.clone() />
+                                <crate::waiting::WaitingFor extension=id.clone() />
+                            </div>
+                        }
+                    })
+            }}
+        </li>
+    }
+}
+
+/// The button for a protocol's declared action (Zigbee's permit-join, say) — nothing at all for
+/// a protocol that declares none, and nothing until the protocol itself says it's usable.
+#[component]
+fn ProtocolActions(id: ExtensionId, extension: crate::api::Extension) -> impl IntoView {
+    let sending = RwSignal::new(None::<String>);
+    let trouble = RwSignal::new(None::<String>);
+    let live = expect_context::<crate::Live>();
+
+    let usable: Vec<_> = extension
+        .actions
+        .iter()
+        .filter(|action| extension.available_actions.contains(&action.id))
+        .cloned()
+        .collect();
+
+    if usable.is_empty() {
+        return ().into_any();
+    }
+
+    view! {
+        <div class="protocol-actions">
+            {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
+            {usable
+                .into_iter()
+                .map(|action| {
+                    let id = id.clone();
+                    let action_id = action.id.clone();
+                    let is_busy = Memo::new({
+                        let action_id = action_id.clone();
+                        move |_| sending.get().as_deref() == Some(action_id.as_str())
+                    });
+                    let label = match action.seconds {
+                        Some(seconds) => format!("{} for {seconds}s", action.label),
+                        None => action.label.clone(),
+                    };
+                    view! {
+                        <button
+                            type="button"
+                            class="add"
+                            disabled=move || sending.get().is_some()
+                            on:click=move |_| {
+                                let id = id.clone();
+                                let action_id = action_id.clone();
+                                sending.set(Some(action_id.clone()));
+                                spawn_local(async move {
+                                    match crate::api::trigger_action(&id, &action_id).await {
+                                        Ok(()) => {
+                                            trouble.set(None);
+                                            crate::refresh(live);
+                                        }
+                                        Err(why) => trouble.set(Some(why)),
+                                    }
+                                    sending.set(None);
+                                });
+                            }
+                        >
+                            {move || if is_busy.get() { "Working…".to_owned() } else { label.clone() }}
+                        </button>
+                    }
+                })
+                .collect_view()}
+        </div>
+    }
+        .into_any()
 }
 
 /// Plain words for an `iot_class`: where the device's brain is and what it needs.

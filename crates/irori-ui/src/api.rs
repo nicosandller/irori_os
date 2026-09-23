@@ -122,6 +122,22 @@ pub struct Extension {
     /// Whether it has an icon, at `/api/dev/extensions/<id>/icon.svg`.
     #[serde(default)]
     pub has_icon: bool,
+    /// Actions it declares (static, from its manifest) — the "+ Add device" button for a
+    /// protocol that has a dedicated flow, e.g. Zigbee's permit-join.
+    #[serde(default)]
+    pub actions: Vec<ProtocolActionInfo>,
+    /// Which of `actions` are usable right now, as the protocol itself says.
+    #[serde(default)]
+    pub available_actions: Vec<String>,
+}
+
+/// One action an extension declares (`docs/specs/protocols.md` §5).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ProtocolActionInfo {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub seconds: Option<u32>,
 }
 
 /// The browser's own words for a failed request ("TypeError: Failed to fetch") say nothing a
@@ -587,6 +603,18 @@ pub async fn give_secret(
         .send()
         .await
         .map_err(unreachable)?;
+    checked(response).await
+}
+
+/// Triggers one of an extension's declared, currently-available actions — Zigbee's
+/// `permit_join`, say — from the "+ Add device" flow.
+pub async fn trigger_action(extension: &ExtensionId, action_id: &str) -> Result<(), String> {
+    let response = Request::post(&format!(
+        "/api/dev/extensions/{extension}/actions/{action_id}"
+    ))
+    .send()
+    .await
+    .map_err(unreachable)?;
     checked(response).await
 }
 
