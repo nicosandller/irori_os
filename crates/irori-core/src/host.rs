@@ -319,6 +319,34 @@ async fn settings_changed(
     }
 }
 
+/// The settings an extension's own `config_schema` marks required that `settings` doesn't have,
+/// in the schema's own order.
+///
+/// A required setting is one with no default to fall back on, so starting without it means the
+/// extension's own deserialization fails and its process exits — which reaches a person as
+/// `exited exit status: 1`, the real reason only in the log. Checking here turns that into
+/// [`ExtensionStatus::NeedsSetup`] naming the fields, and skips the restart-with-backoff
+/// entirely: no retry helps until someone fills them in.
+///
+/// A present-but-`null` value counts as missing — that's how settings say "unset" (§3.6).
+fn missing_required(
+    schema: Option<&serde_json::Value>,
+    settings: &serde_json::Value,
+) -> Vec<String> {
+    let Some(required) = schema
+        .and_then(|schema| schema.get("required"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Vec::new();
+    };
+    required
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .filter(|key| !settings.get(key).is_some_and(|value| !value.is_null()))
+        .map(str::to_owned)
+        .collect()
+}
+
 async fn supervise(
     core: Core,
     builtin: Arc<Builtin>,
@@ -397,10 +425,27 @@ async fn supervise(
             core.set_status(&extension, ExtensionStatus::Disabled);
             return;
         }
-        core.set_status(&extension, ExtensionStatus::Starting);
-        let (ctx, host_end) = connect();
         // Whatever the config dir says right now; a later change restarts it (below).
         let started_with = settings.borrow_and_update().of(&extension);
+        let missing = missing_required(Some(&builtin.config_schema), &started_with);
+        if !missing.is_empty() {
+            tracing::info!(%extension, missing = %missing.join(", "), "extension needs setup");
+            core.set_status(&extension, ExtensionStatus::NeedsSetup { missing });
+            tokio::select! {
+                biased;
+                _ = stop.wait_for(|stop| *stop) => {
+                    core.set_status(&extension, ExtensionStatus::Disabled);
+                    return;
+                }
+                () = settings_changed(&mut settings, &extension, &started_with) => {
+                    delay = timing.first_retry;
+                    continue;
+                }
+                Ok(_) = disabled.wait_for(|disabled| disabled.contains(&extension)) => continue,
+            }
+        }
+        core.set_status(&extension, ExtensionStatus::Starting);
+        let (ctx, host_end) = connect();
         // Only time spent actually running counts towards `healthy_after`; startup doesn't, and
         // a start that panics never ran at all.
         let mut running_since: Option<Instant> = None;
@@ -720,6 +765,8 @@ async fn supervise_package(
         let text = std::fs::read_to_string(dir.join(path.as_str())).ok()?;
         serde_json::from_str(&text).ok()
     });
+    // Kept for the required-settings check each time round the loop below, as well as described.
+    let schema = config_schema.clone();
     core.describe_extension(
         &extension,
         crate::ExtensionInfo {
@@ -773,8 +820,25 @@ async fn supervise_package(
             core.set_status(&extension, crate::ExtensionStatus::Disabled);
             return;
         }
-        core.set_status(&extension, crate::ExtensionStatus::Starting);
         let started_with = settings.borrow_and_update().of(&extension);
+        let missing = missing_required(schema.as_ref(), &started_with);
+        if !missing.is_empty() {
+            tracing::info!(%extension, missing = %missing.join(", "), "extension needs setup");
+            core.set_status(&extension, crate::ExtensionStatus::NeedsSetup { missing });
+            tokio::select! {
+                biased;
+                _ = stop.wait_for(|stop| *stop) => {
+                    core.set_status(&extension, crate::ExtensionStatus::Disabled);
+                    return;
+                }
+                () = settings_changed(&mut settings, &extension, &started_with) => {
+                    delay = timing.first_retry;
+                    continue;
+                }
+                Ok(_) = disabled.wait_for(|disabled| disabled.contains(&extension)) => continue,
+            }
+        }
+        core.set_status(&extension, crate::ExtensionStatus::Starting);
         let mut child = match spawn(&dir, &run) {
             Ok(child) => child,
             Err(reason) => {

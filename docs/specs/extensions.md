@@ -180,7 +180,10 @@ What the UI and CLI show for each extension and each of its contributions:
 ```mermaid
 stateDiagram-v2
     [*] --> disabled: added, not enabled
+    disabled --> needs_setup: enabled, a required setting is unset
     disabled --> starting: enabled
+    needs_setup --> starting: the setting is given
+    needs_setup --> disabled: disabled
     starting --> running
     starting --> failed: incompatible, bad config, crashed
     running --> degraded: reports a problem
@@ -196,6 +199,7 @@ stateDiagram-v2
 | State | Meaning | Reason shown |
 |---|---|---|
 | `disabled` | Turned off in `irori.toml` (`[extensions] disabled`) | — |
+| `needs_setup` | Never started: a setting its own `config_schema` marks required is unset. Not a failure, and not retried — only a person can fix it, so the core waits for the setting instead of restarting into the same crash | Which settings are missing |
 | `starting` | Being set up | — |
 | `running` | Working | — |
 | `degraded` | Working, with a problem it reported, e.g. one of four devices unreachable | The extension's own message |

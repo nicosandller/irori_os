@@ -6,6 +6,12 @@ frontend to open. This is D46 in `ROADMAP.md`: the project's first exception to 
 binary with no bundled runtime," because no Rust Zigbee radio stack exists to build a native
 protocol on the way `esphome-client`/`rumqttc` let ESPHome and MQTT work.
 
+**The `mqtt` extension is not a prerequisite, and installing it alongside changes nothing here.**
+This one brings its own broker and its own discovery client; the two share parsing code, not a
+running process. Install `mqtt` when you have a broker of your own — Tasmota, ESPHome-over-MQTT,
+a Zigbee2MQTT you run yourself — and this one when you have a Zigbee dongle and want Irori to
+handle the rest.
+
 ## What it does
 
 - **Installs Node.js and Zigbee2MQTT** into its own package directory the first time it starts —

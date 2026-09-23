@@ -213,7 +213,11 @@ pub fn Devices() -> impl IntoView {
                 </p>
             })
         }}
-        {move || adding.get().then(|| view! { <AddDevice /> })}
+        {move || adding.get().then(|| view! {
+            <crate::modal::Modal title="Add a device".to_owned() on_close=move || adding.set(false)>
+                <AddDevice />
+            </crate::modal::Modal>
+        })}
         <NewDevices />
 
         {move || (showing.get() != Showing::Helpers).then(|| view! {
@@ -866,11 +870,10 @@ fn AddDevice() -> impl IntoView {
     });
 
     view! {
-        <section class="card add-device">
-            <h2>"Where devices come from"</h2>
+        <section class="add-device">
             <p class="muted">
                 "Irori doesn't talk to devices itself: each kind of device arrives through an "
-                "extension. Pick one below for what it needs, if anything. "
+                "extension. Pick the one your device speaks. "
                 <A href="/extensions">"Manage extensions"</A>
                 "."
             </p>
@@ -932,8 +935,12 @@ fn protocol_row(
                 <div class="protocol-head">
                     <span class="name">{extension.name.clone()}</span>
                     <span class="badge">{how(&extension.iot_class)}</span>
-                    <span class="state" class:ok=extension.state == "running">
-                        {extension.state.clone()}
+                    <span
+                        class="state"
+                        class:ok=extension.state == "running"
+                        class:wants-setup=extension.state == "needs_setup"
+                    >
+                        {extension.state.replace('_', " ")}
                     </span>
                 </div>
                 <p class="muted">{extension.description.clone().unwrap_or_default()}</p>
@@ -963,23 +970,56 @@ fn protocol_row(
 }
 
 /// The button for a protocol's declared action (Zigbee's permit-join, say) — nothing at all for
-/// a protocol that declares none, and nothing until the protocol itself says it's usable.
+/// a protocol that declares none.
+///
+/// A protocol that declares one but doesn't say it's usable yet gets a sentence instead of the
+/// button. Rendering nothing there is what made the feature look missing: the extension that has
+/// the button is exactly the one that takes a while to come up, so whoever opens this first sees
+/// an empty panel and concludes there's no such flow.
 #[component]
 fn ProtocolActions(id: ExtensionId, extension: crate::api::Extension) -> impl IntoView {
     let sending = RwSignal::new(None::<String>);
     let trouble = RwSignal::new(None::<String>);
     let live = expect_context::<crate::Live>();
 
-    let usable: Vec<_> = extension
-        .actions
-        .iter()
-        .filter(|action| extension.available_actions.contains(&action.id))
-        .cloned()
-        .collect();
-
-    if usable.is_empty() {
+    if extension.actions.is_empty() {
         return ().into_any();
     }
+    let (usable, waiting_on): (Vec<_>, Vec<_>) = extension
+        .actions
+        .iter()
+        .cloned()
+        .partition(|action| extension.available_actions.contains(&action.id));
+
+    let not_yet = (!waiting_on.is_empty()).then(|| {
+        let names = waiting_on
+            .iter()
+            .map(|action| action.label.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let why = match extension.state.as_str() {
+            "needs_setup" => "It needs a setting filled in first".to_owned(),
+            "running" => format!("{} is still getting ready", extension.name),
+            other => format!("It's {}", other.replace('_', " ")),
+        };
+        view! { <p class="muted small">{format!("{why} — \"{names}\" appears here once it can be used.")}</p> }
+    });
+
+    // What this protocol has found so far, so watching a device join is something the person can
+    // actually see happen rather than having to go and look on another page.
+    let found = {
+        let id = id.clone();
+        Memo::new(move |_| {
+            live.home
+                .get()
+                .devices
+                .iter()
+                .filter(|device| device.protocol.as_str() == id.as_str())
+                .count()
+        })
+    };
+    // Set once an action with a duration has been triggered — what to say while it's open.
+    let listening = RwSignal::new(None::<String>);
 
     view! {
         <div class="protocol-actions">
@@ -989,14 +1029,16 @@ fn ProtocolActions(id: ExtensionId, extension: crate::api::Extension) -> impl In
                 .map(|action| {
                     let id = id.clone();
                     let action_id = action.id.clone();
+                    let seconds = action.seconds;
                     let is_busy = Memo::new({
                         let action_id = action_id.clone();
                         move |_| sending.get().as_deref() == Some(action_id.as_str())
                     });
-                    let label = match action.seconds {
+                    let label = match seconds {
                         Some(seconds) => format!("{} for {seconds}s", action.label),
                         None => action.label.clone(),
                     };
+                    let said = action.label.clone();
                     view! {
                         <button
                             type="button"
@@ -1005,11 +1047,24 @@ fn ProtocolActions(id: ExtensionId, extension: crate::api::Extension) -> impl In
                             on:click=move |_| {
                                 let id = id.clone();
                                 let action_id = action_id.clone();
+                                let said = said.clone();
                                 sending.set(Some(action_id.clone()));
                                 spawn_local(async move {
                                     match crate::api::trigger_action(&id, &action_id).await {
                                         Ok(()) => {
                                             trouble.set(None);
+                                            // No countdown, and no number: this says what to
+                                            // do now, and nothing that goes stale while it's
+                                            // still on screen. The protocol closes its own
+                                            // window; the page has no way to know when.
+                                            listening.set(Some(match seconds {
+                                                Some(_) => format!(
+                                                    "{said} is open — briefly. Put the device \
+                                                     into pairing mode now: most need a button \
+                                                     held down, or a power cycle or three.",
+                                                ),
+                                                None => format!("{said} done."),
+                                            }));
                                             crate::refresh(live);
                                         }
                                         Err(why) => trouble.set(Some(why)),
@@ -1023,6 +1078,23 @@ fn ProtocolActions(id: ExtensionId, extension: crate::api::Extension) -> impl In
                     }
                 })
                 .collect_view()}
+            {not_yet}
+            {move || listening.get().map(|said| view! {
+                <div class="listening">
+                    <p>{said}</p>
+                    <p class="muted small">
+                        {move || {
+                            let found = found.get();
+                            format!(
+                                "{found} device{} here from this extension so far. A new one \
+                                 shows up on this page on its own, within a few seconds of \
+                                 joining.",
+                                if found == 1 { "" } else { "s" },
+                            )
+                        }}
+                    </p>
+                </div>
+            })}
         </div>
     }
         .into_any()

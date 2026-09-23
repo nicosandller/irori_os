@@ -1040,11 +1040,15 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                         irori_core::ExtensionStatus::Running => "running",
                         irori_core::ExtensionStatus::Degraded { .. } => "degraded",
                         irori_core::ExtensionStatus::Failed { .. } => "failed",
+                        irori_core::ExtensionStatus::NeedsSetup { .. } => "needs_setup",
                     }),
                     reason: overview.and_then(|o| match &o.status {
                         irori_core::ExtensionStatus::Degraded { reason }
                         | irori_core::ExtensionStatus::Failed { reason, .. } => {
                             Some(reason.clone())
+                        }
+                        irori_core::ExtensionStatus::NeedsSetup { missing } => {
+                            Some(needs_setup_reason(missing))
                         }
                         _ => None,
                     }),
@@ -1054,6 +1058,20 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                 }
             })
             .collect(),
+    )
+}
+
+/// What a person needs to do about `needs_setup`, in the same `reason` slot every other state
+/// puts its own explanation. The field names come from the extension's own `config_schema`, which
+/// is also what the settings form labels them by — `serial_port` there reads as "Serial port".
+fn needs_setup_reason(missing: &[String]) -> String {
+    let named = missing
+        .iter()
+        .map(|key| format!("`{key}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "waiting on a setting it can't start without: {named}. Open its settings to fill it in."
     )
 }
 

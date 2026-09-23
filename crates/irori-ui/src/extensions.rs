@@ -126,6 +126,30 @@ pub fn Extensions() -> impl IntoView {
                     .into_any()
             }
         }}
+
+        // The open settings form, over the page rather than inside the card that opened it: a
+        // form that grows its own card reflows the whole grid around it. Looked up from the
+        // catalog by id so the card itself doesn't have to hold it.
+        {move || {
+            let id = settings_open.get()?;
+            let entry = catalog.get().into_iter().find(|entry| entry.id == id)?;
+            let schema = entry.config_schema.clone()?;
+            Some(view! {
+                <crate::modal::Modal
+                    title=format!("{} settings", entry.name)
+                    on_close=move || settings_open.set(None)
+                >
+                    <SettingsForm
+                        id=id.clone()
+                        schema=schema
+                        on_close=move || {
+                            settings_open.set(None);
+                            reload();
+                        }
+                    />
+                </crate::modal::Modal>
+            })
+        }}
     }
 }
 
@@ -140,17 +164,15 @@ fn card(
     let id_busy = id.clone();
     let id_click = id.clone();
     let id_gear = id.clone();
-    let id_form = id.clone();
     let installed = entry.installed;
     let running = entry.state.as_deref() == Some("running");
+    // Nothing is wrong with it — it just hasn't been told something it can't start without, and
+    // the way out is the very button next to this.
+    let needs_setup = entry.state.as_deref() == Some("needs_setup");
     let schema = entry.config_schema.clone();
     // A `Memo` rather than a plain closure: it's `Copy`, so the same check can be read from the
     // button's `disabled`, its progress bar, and its label without cloning the id three times.
     let is_busy = Memo::new(move |_| busy.get().as_deref() == Some(id_busy.as_str()));
-    let is_open = {
-        let id = id.clone();
-        move || settings_open.get().as_deref() == Some(id.as_str())
-    };
 
     view! {
         <section class="ext-card">
@@ -165,7 +187,9 @@ fn card(
                 </div>
             </div>
             {entry.state.clone().map(|state| view! {
-                <span class="state" class:ok=running>{state}</span>
+                <span class="state" class:ok=running class:wants-setup=needs_setup>
+                    {state.replace('_', " ")}
+                </span>
             })}
             <p class="muted ext-description">{entry.description.clone()}</p>
             {entry.reason.clone().map(|why| view! { <p class="why">{why}</p> })}
@@ -202,45 +226,22 @@ fn card(
                         .into_any()
                 }}
                 {(installed && schema.is_some()).then(|| {
+                    // An extension that can't start until someone fills a setting in says so
+                    // in words: a gear next to "needs setup" is a puzzle, not an instruction.
                     view! {
                         <button
                             type="button"
                             class="ext-settings-btn"
-                            aria-label="Settings"
-                            title="Settings"
-                            on:click=move |_| {
-                                settings_open
-                                    .update(|open| {
-                                        *open = if open.as_deref() == Some(id_gear.as_str()) {
-                                            None
-                                        } else {
-                                            Some(id_gear.clone())
-                                        };
-                                    })
-                            }
+                            class:wants-setup=needs_setup
+                            aria-label=if needs_setup { "Set it up" } else { "Settings" }
+                            title=if needs_setup { "Set it up" } else { "Settings" }
+                            on:click=move |_| settings_open.set(Some(id_gear.clone()))
                         >
-                            "⚙"
+                            {if needs_setup { "Set it up" } else { "⚙" }}
                         </button>
                     }
                 })}
             </div>
-            {move || {
-                is_open()
-                    .then(|| {
-                        schema
-                            .clone()
-                            .map(|schema| {
-                                let id_form = id_form.clone();
-                                view! {
-                                    <SettingsForm
-                                        id=id_form.clone()
-                                        schema=schema
-                                        on_close=move || settings_open.set(None)
-                                    />
-                                }
-                            })
-                    })
-            }}
         </section>
     }
 }

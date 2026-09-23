@@ -850,6 +850,76 @@ async fn new_settings_restart_only_their_own_extension_and_what_was_waiting_clea
     assert_eq!(waiting(&core), 0);
 }
 
+/// Needs a setting to exist at all: its `Config` has a field with no default, so its own
+/// deserialization would fail if it were ever started without one.
+struct Needy;
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct NeedySettings {
+    #[allow(dead_code)]
+    port: String,
+}
+
+static NEEDY_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+impl Protocol for Needy {
+    type Config = NeedySettings;
+    const MANIFEST: &'static str = NEEDY_MANIFEST;
+    async fn run(_: NeedySettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
+        NEEDY_RUNS.fetch_add(1, Ordering::SeqCst);
+        ctx.stopped().await;
+        Ok(())
+    }
+}
+const NEEDY_MANIFEST: &str = r#"
+    [extension]
+    id = "needy"
+    name = "Needy"
+    version = "0.1.0"
+    irori = ">=0.0.0"
+
+    [[contributes.protocol]]
+    iot_class = "local_push"
+    entity_kinds = ["light"]
+"#;
+
+/// A required setting that isn't set is a person's job, not a crash: the extension is never
+/// started, so it never fails and never retries — it waits, saying which setting it wants, and
+/// starts as soon as that arrives.
+#[tokio::test(start_paused = true)]
+async fn an_extension_missing_a_required_setting_waits_for_it_instead_of_crash_looping() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = start(&core, builtin::<Needy>().expect("valid"));
+
+    eventually("it says which setting it needs", || {
+        status(&core, "needy")
+            == Some(ExtensionStatus::NeedsSetup {
+                missing: vec!["port".to_owned()],
+            })
+    })
+    .await;
+    // Long enough for several rounds of retry backoff, had it been retrying at all.
+    tokio::time::sleep(Duration::from_secs(600)).await;
+    assert_eq!(
+        NEEDY_RUNS.load(Ordering::SeqCst),
+        0,
+        "started without the setting it can't run without"
+    );
+
+    core.apply_extension_settings(keyed_settings(
+        "needy",
+        serde_json::json!({"port": "/dev/ttyUSB0"}),
+    ));
+    eventually("the setting arriving starts it", || {
+        status(&core, "needy") == Some(ExtensionStatus::Running)
+    })
+    .await;
+    assert_eq!(NEEDY_RUNS.load(Ordering::SeqCst), 1);
+
+    host.shutdown().await;
+}
+
 static RETRY_RUNS: AtomicUsize = AtomicUsize::new(0);
 
 /// Crashes until it has a token, so a settings change during the retry wait can be seen.

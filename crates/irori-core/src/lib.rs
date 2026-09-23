@@ -56,6 +56,14 @@ pub enum ExtensionStatus {
         #[serde(skip_serializing_if = "Option::is_none")]
         retry_at: Option<Timestamp>,
     },
+    /// Not started, and not a failure: a setting it can't run without hasn't been given yet.
+    /// Retrying wouldn't help — only a person can fix this — so the core doesn't, and says
+    /// which settings are missing rather than letting the extension crash on its own
+    /// deserialization and reporting that as an exit status.
+    NeedsSetup {
+        /// The `config_schema`-required settings that aren't set, by their own field names.
+        missing: Vec<String>,
+    },
 }
 
 /// What an extension is, from its manifest. Shown wherever a person picks one: its own name
