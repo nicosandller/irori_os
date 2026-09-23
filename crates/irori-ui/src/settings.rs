@@ -40,8 +40,7 @@ pub fn Settings() -> impl IntoView {
     // wait for the POST itself: the server answers Acceptance before it actually goes.
     let restarting = RwSignal::new(false);
     // The boot the restart set off from: the boot_id the health showed when the button was
-    // pressed. None — not armed. An empty boot_id would be "we never saw one to come from", in
-    // which case any boot that appears is new.
+    // pressed. None — not armed.
     let restart_from = RwSignal::new(None::<String>);
     Effect::new(move |_| {
         let Some(from) = restart_from.get() else {
@@ -52,7 +51,7 @@ pub fn Settings() -> impl IntoView {
         };
         // The instance we set off from is gone once the core answers with a different one. The
         // old instance's own answers keep its own boot_id, so they can't clear the button early.
-        if !health.boot_id.is_empty() && health.boot_id != from {
+        if health.boot_id != from {
             restarting.set(false);
             restart_from.set(None);
         }
@@ -61,6 +60,13 @@ pub fn Settings() -> impl IntoView {
         if restarting.get_untracked() {
             return;
         }
+        // Only arm once we know which instance we're leaving. An empty baseline is no baseline:
+        // a health answer still in flight from the old instance would then look like a boot
+        // change from empty and clear the button before the restart had happened. (The button is
+        // also disabled until the first health lands, for the same reason.)
+        let Some(boot_id) = live.health.get_untracked().map(|health| health.boot_id) else {
+            return;
+        };
         if !window()
             .confirm_with_message(
                 "Restart Irori? It stays where it runs while it starts again (same container, \
@@ -72,12 +78,7 @@ pub fn Settings() -> impl IntoView {
             return;
         }
         restarting.set(true);
-        restart_from.set(Some(
-            live.health
-                .get_untracked()
-                .map(|health| health.boot_id)
-                .unwrap_or_default(),
-        ));
+        restart_from.set(Some(boot_id));
         spawn_local(async move {
             match api::restart().await {
                 // The new instance is coming up; the page notices it on its own.
@@ -156,7 +157,10 @@ pub fn Settings() -> impl IntoView {
             <div class="page-actions">
                 <button
                     type="button"
-                    disabled=move || restarting.get()
+                    // Disabled while a restart is under way, and until the first health says which
+                    // instance this is — arming without one would let the old instance's own
+                    // answer clear the button before the restart happened.
+                    disabled=move || restarting.get() || live.health.get().is_none()
                     on:click=move |_| restart()
                 >
                     {move || if restarting.get() { "Restarting…" } else { "Restart" }}
