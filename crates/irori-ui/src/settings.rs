@@ -36,9 +36,26 @@ pub fn Settings() -> impl IntoView {
     // effect below lets it go again. Nothing here needs to wait for the POST itself: the server
     // answers Acceptance before it actually goes.
     let restarting = RwSignal::new(false);
+    // The core's uptime when the button was pressed. "It's back" is the uptime it answers with
+    // having reset after that: the new instance is younger than the one the restart started from,
+    // and the old one only ever gets older. Merely being fresh (< a minute old) is not enough —
+    // Irori may have been started moments before the page was opened, and its uptime would clear
+    // the button while the restart was still in flight.
+    let restart_since = RwSignal::new(None::<u128>);
     Effect::new(move |_| {
-        if matches!(live.health.get(), Some(health) if health.uptime_ms < 60_000) {
+        let Some(health) = live.health.get() else {
+            return;
+        };
+        let Some(since) = restart_since.get() else {
+            return;
+        };
+        // Younger than the uptime we set off from means a new process: the old one's uptime can
+        // only climb past `since`. The ten-second bound also clears the pathological close one —
+        // a press within moments of a fresh boot, where the new uptime can land on the other side
+        // of `since` — because only a just-started core answers sub-ten-second uptimes.
+        if health.uptime_ms < 60_000 && (health.uptime_ms < since || health.uptime_ms < 10_000) {
             restarting.set(false);
+            restart_since.set(None);
         }
     });
     let restart = move || {
@@ -56,12 +73,14 @@ pub fn Settings() -> impl IntoView {
             return;
         }
         restarting.set(true);
+        restart_since.set(live.health.get_untracked().map(|health| health.uptime_ms));
         spawn_local(async move {
             match api::restart().await {
                 // The new instance is coming up; the page notices it on its own.
                 Ok(()) => {}
                 Err(why) => {
                     restarting.set(false);
+                    restart_since.set(None);
                     trouble.set(Some(why));
                 }
             }

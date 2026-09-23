@@ -1252,6 +1252,10 @@ mod tests {
         core: Core,
         config: Config,
         history: History,
+        // The restart handle, held back so a test can check that POST /api/dev/restart woke the
+        // shutdown and told it to restart, not just that it answered 202.
+        restart: Arc<tokio::sync::Notify>,
+        restarting: Arc<AtomicBool>,
     }
 
     impl Server {
@@ -1263,6 +1267,8 @@ mod tests {
                 core,
                 config,
                 history: History::default(),
+                restart: Arc::new(tokio::sync::Notify::new()),
+                restarting: Arc::new(AtomicBool::new(false)),
             })
         }
 
@@ -1279,8 +1285,8 @@ mod tests {
                 self.config.clone(),
                 host,
                 self.history.clone(),
-                Arc::new(tokio::sync::Notify::new()),
-                Arc::new(AtomicBool::new(false)),
+                self.restart.clone(),
+                self.restarting.clone(),
             )))
         }
 
@@ -1379,13 +1385,31 @@ mod tests {
     }
 
     /// A restart request is accepted first, because the restart happens after the answer: the
-    /// page's POST has to come back before the server — and with it the connection — goes.
+    /// page's POST has to come back before the server — and with it the connection — goes. It
+    /// also does what it says: the shutdown is woken and told it's a restart, which the runner
+    /// (serve) reads to re-exec the binary instead of exiting.
     #[tokio::test]
     async fn restart_is_accepted() -> anyhow::Result<()> {
-        let (status, _) = Server::new(core())?
+        let server = Server::new(core())?;
+        // The waiter serve()'s own shutdown future would be. It is registered before the
+        // request goes out — the handler runs within the router's poll, before any concurrently
+        // spawned waiter would have had a chance to register — so notify_waiters reaches it.
+        let mut shutdown = Box::pin(server.restart.notified());
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        assert!(shutdown.as_mut().poll(&mut cx).is_pending());
+        let (status, _) = server
             .send(Request::post("/api/dev/restart").body(Body::empty())?)
             .await?;
         assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(
+            server.restarting.load(Ordering::SeqCst),
+            "the restart was told it's a restart"
+        );
+        assert!(
+            shutdown.as_mut().poll(&mut cx).is_ready(),
+            "the shutdown was woken"
+        );
         Ok(())
     }
 

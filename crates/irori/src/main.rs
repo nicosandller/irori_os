@@ -268,7 +268,7 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             if restarting.load(Ordering::SeqCst) {
                 // Never returns: the current image is replaced by a fresh `irori serve`. Only a
                 // failed exec comes back here.
-                return restart_process();
+                return restart_process(address);
             }
             served
         })
@@ -391,19 +391,47 @@ async fn shutdown_signal(restart: Arc<Notify>) {
 /// its PID 1, the systemd unit, and the terminal it was started from — stays what it was. No
 /// supervisor has to be asked to bring it back. It only returns if the exec itself failed, and
 /// the extensions were already stopped (`host.shutdown`), so nothing is left running twice.
+///
+/// The address Irori actually ended up on is passed on. That matters when the original bind was
+/// port 0 (`--bind 127.0.0.1:0`): the OS picked the port, and the restarted process must bind
+/// the address that worked rather than asking for a fresh random one, or the page's port would
+/// move on every restart. Any `--bind` argument is dropped — its value, when written `--bind
+/// <addr>`, follows it — and the actual address is carried in `IRORI_BIND`, which wins over
+/// irori.toml (`resolve`). The `--bind-fallback` flag is left alone.
 #[cfg(unix)]
-fn restart_process() -> anyhow::Result<()> {
+fn restart_process(bind: SocketAddr) -> anyhow::Result<()> {
     use std::os::unix::process::CommandExt;
     let current = std::env::current_exe().context("can't find what to restart")?;
     let err = std::process::Command::new(current)
-        .args(std::env::args().skip(1))
+        .args(restart_args())
+        .env("IRORI_BIND", bind.to_string())
         .exec();
     tracing::error!(%err, "restart failed");
     anyhow::bail!("restart failed: {err}")
 }
 
+/// The arguments to run `irori serve` with again, minus any `--bind` (and, for `--bind <addr>`,
+/// its value that follows), since the actual bound address goes in `IRORI_BIND` instead.
+/// Everything else — `--bind-fallback` included — keeps its place.
+fn restart_args() -> Vec<std::ffi::OsString> {
+    let mut rest = std::env::args_os().skip(1);
+    let mut args = Vec::new();
+    while let Some(arg) = rest.next() {
+        let shown = arg.to_string_lossy();
+        if shown == "--bind" {
+            let _ = rest.next(); // its value, also dropped
+            continue;
+        }
+        if shown.starts_with("--bind=") {
+            continue;
+        }
+        args.push(arg);
+    }
+    args
+}
+
 #[cfg(not(unix))]
-fn restart_process() -> anyhow::Result<()> {
+fn restart_process(_bind: SocketAddr) -> anyhow::Result<()> {
     anyhow::bail!("Irori can only restart itself on Unix")
 }
 
