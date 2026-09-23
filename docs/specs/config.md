@@ -180,7 +180,9 @@ it starts it again.
 If `bind` is already in use when Irori starts, it listens on `bind_fallback` instead (or, if none
 is set, on the first free port just above `bind`, up to nine ports higher) and logs a warning with
 the address it actually chose. `--bind-fallback` and `IRORI_BIND_FALLBACK` say the same as this
-setting.
+setting. This suits a hand-run install; a container or systemd unit pins a fixed published and
+health-checked port, so set `bind`/`bind_fallback` explicitly there rather than relying on the
+automatic step.
 
 `[devices] new` is what happens when a protocol finds a device nobody has decided about.
 `"add"` puts it in the home straight away. `"ask"` holds it back, as if ignored, until a person
