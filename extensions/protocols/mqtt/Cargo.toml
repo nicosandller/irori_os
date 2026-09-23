@@ -10,10 +10,16 @@ license.workspace = true
 [dependencies]
 irori-types.workspace = true
 irori-protocol.workspace = true
+irori-ha-discovery.workspace = true
 
+rumqttc.workspace = true
 schemars.workspace = true
 serde.workspace = true
 tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [[bin]]
 name = "irori-ext-mqtt"
