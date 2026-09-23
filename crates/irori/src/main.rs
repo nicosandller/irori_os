@@ -45,6 +45,7 @@ enum Command {
         #[arg(long, env = "IRORI_BIND")]
         bind: Option<SocketAddr>,
         /// Address to fall back to when --bind is already taken. Also `[server] bind_fallback`.
+        /// Setting it equal to --bind locks the port: a taken one fails instead of stepping.
         /// Without one, Irori steps up past the taken address (8480 -> 8481 -> ...) and tells
         /// you where it ended up instead of failing.
         #[arg(long, env = "IRORI_BIND_FALLBACK")]
@@ -262,14 +263,18 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
 /// fallback is configured (default 127.0.0.1:8480 -> 8481 -> ... -> 8489).
 const FALLBACK_STEPS: u16 = 9;
 
-/// The addresses to try, in order: the requested `bind`, an explicit `bind_fallback` if given
-/// and different, then up to `FALLBACK_STEPS` ports above `bind`.
+/// The addresses to try, in order. An explicit `bind_fallback` means Irori never steps
+/// automatically, which is what a fixed-port deployment needs: it either gets `bind`, or
+/// `bind_fallback`, or nothing to do. Without one, Irori steps up to `FALLBACK_STEPS` ports
+/// above `bind`. A fallback equal to `bind` is how a fixed port says "fail loudly instead of
+/// wandering": the addresses to try are just `bind`.
 fn fallback_candidates(bind: SocketAddr, bind_fallback: Option<SocketAddr>) -> Vec<SocketAddr> {
-    let mut addrs = vec![bind];
-    if let Some(fallback) = bind_fallback.filter(|f| *f != bind) {
-        addrs.push(fallback);
+    if bind_fallback == Some(bind) {
+        return vec![bind];
     }
-    if addrs.len() == 2 {
+    let mut addrs = vec![bind];
+    if let Some(fallback) = bind_fallback {
+        addrs.push(fallback);
         return addrs;
     }
     let mut step = bind;
@@ -285,8 +290,9 @@ fn fallback_candidates(bind: SocketAddr, bind_fallback: Option<SocketAddr>) -> V
 }
 
 /// Binds the listener, falling back when the address is already taken. With an explicit
-/// `bind_fallback` that address is tried next; otherwise Irori steps up past the taken port
-/// `FALLBACK_STEPS` times. Returns the bound listener, whose actual address (`local_addr`)
+/// `bind_fallback` that address is tried next and Irori never steps automatically; without one,
+/// Irori steps up past the taken port `FALLBACK_STEPS` times (a fallback equal to `bind` makes
+/// it fail loudly instead). Returns the bound listener, whose actual address (`local_addr`)
 /// may differ from `bind`.
 async fn bind_with_fallback(
     bind: SocketAddr,
@@ -476,12 +482,12 @@ mod tests {
     }
 
     #[test]
-    fn a_fallback_same_as_the_bind_steps_up() {
+    fn a_fallback_same_as_the_bind_locks_the_port() {
+        // `bind_fallback` equal to `bind` is how a fixed-port deployment says "don't step":
+        // the only address to try is the bind itself, so a taken port fails loudly.
         let bind = addr("127.0.0.1:8480");
         let candidates = fallback_candidates(bind, Some(addr("127.0.0.1:8480")));
-        assert_eq!(candidates.len(), 10);
-        assert_eq!(candidates[0], addr("127.0.0.1:8480"));
-        assert_eq!(candidates[9], addr("127.0.0.1:8489"));
+        assert_eq!(candidates, vec![addr("127.0.0.1:8480")]);
     }
 
     #[test]
