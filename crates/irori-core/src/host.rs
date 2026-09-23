@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use irori_protocol::Builtin;
 use irori_protocol::host::{HostEnd, Op, Reports, connect};
-use irori_protocol::{ExtProcess, FromExt, IncomingCall, ToExt, spawn};
+use irori_protocol::{ExtProcess, FromExt, IncomingAction, IncomingCall, ToExt, spawn};
 use std::collections::BTreeSet;
 
 use irori_types::{EntityKind, ExtensionId, ExtensionManifest, ExtensionSettings, ProtocolId};
@@ -410,6 +410,7 @@ async fn supervise(
         })) {
             Ok(Ok(run)) => {
                 core.link(&protocol, host_end.calls.clone());
+                core.link_action(&extension, host_end.actions.clone());
                 let task = tokio::spawn(run);
                 running_since = Some(Instant::now());
                 core.set_status(&extension, ExtensionStatus::Running);
@@ -432,8 +433,10 @@ async fn supervise(
                 )
                 .await;
                 core.unlink(&protocol);
+                core.unlink_action(&extension);
                 core.mark_unavailable(&protocol);
                 core.set_waiting(&extension, Vec::new());
+                core.set_available_actions(&extension, Vec::new());
                 match outcome {
                     Outcome::Stopped => {
                         tracing::info!(%extension, "extension stopped");
@@ -548,10 +551,12 @@ async fn pump(
         mut ops,
         reports,
         calls,
+        actions,
         stop: stop_protocol,
     } = host_end;
-    // The core's link holds its own sender; this one isn't needed.
+    // The core's links hold their own senders; these aren't needed.
     drop(calls);
+    drop(actions);
 
     let why = loop {
         tokio::select! {
@@ -812,7 +817,9 @@ async fn supervise_package(
         }
 
         let (calls_tx, calls_rx) = mpsc::channel(64);
+        let (actions_tx, actions_rx) = mpsc::channel(64);
         core.link(&protocol, calls_tx);
+        core.link_action(&extension, actions_tx);
         core.set_status(&extension, crate::ExtensionStatus::Running);
         tracing::info!(%extension, "extension started");
         let outcome = pump_process(
@@ -822,6 +829,7 @@ async fn supervise_package(
             &kinds,
             &mut child,
             calls_rx,
+            actions_rx,
             Watching {
                 stop: &mut stop,
                 settings: &mut settings,
@@ -832,8 +840,10 @@ async fn supervise_package(
         )
         .await;
         core.unlink(&protocol);
+        core.unlink_action(&extension);
         core.mark_unavailable(&protocol);
         core.set_waiting(&extension, Vec::new());
+        core.set_available_actions(&extension, Vec::new());
         let _ = child.send(&ToExt::Stop).await;
         let _ = child.child.start_kill();
         match outcome {
@@ -890,6 +900,7 @@ async fn pump_process(
     kinds: &[EntityKind],
     proc: &mut ExtProcess,
     mut calls: mpsc::Receiver<IncomingCall>,
+    mut actions: mpsc::Receiver<IncomingAction>,
     watching: Watching<'_>,
     timing: Timing,
 ) -> Outcome {
@@ -902,7 +913,9 @@ async fn pump_process(
         started_with,
     } = watching;
     let mut pending_calls: HashMap<u64, IncomingCall> = HashMap::new();
+    let mut pending_actions: HashMap<u64, IncomingAction> = HashMap::new();
     let mut next_call: u64 = 0;
+    let mut next_action: u64 = 0;
     let ExtProcess {
         child,
         stdin,
@@ -937,11 +950,21 @@ async fn pump_process(
                     return Outcome::Ended(reason);
                 }
             }
+            Some(incoming) = actions.recv() => {
+                let id = next_action;
+                next_action += 1;
+                let action_id = incoming.action_id.clone();
+                pending_actions.insert(id, incoming);
+                if let Err(reason) = ExtProcess::send_on(stdin, &ToExt::ActionCall { id, action_id }).await {
+                    return Outcome::Ended(reason);
+                }
+            }
             msg = ExtProcess::recv_on(stdout) => {
                 match msg {
                     Ok(from) => {
                         if let Err(reason) = apply_from_ext(
                             core, extension, protocol, kinds, stdin, from, &mut pending_calls,
+                            &mut pending_actions,
                         ).await {
                             return Outcome::Ended(reason);
                         }
@@ -971,6 +994,7 @@ async fn pump_process(
                 if let Ok(from) = msg {
                     let _ = apply_from_ext(
                         core, extension, protocol, kinds, stdin, from, &mut pending_calls,
+                        &mut pending_actions,
                     ).await;
                 }
             }
@@ -978,6 +1002,7 @@ async fn pump_process(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn apply_from_ext(
     core: &Core,
     extension: &ExtensionId,
@@ -986,6 +1011,7 @@ async fn apply_from_ext(
     stdin: &mut tokio::process::ChildStdin,
     from: FromExt,
     pending_calls: &mut std::collections::HashMap<u64, IncomingCall>,
+    pending_actions: &mut std::collections::HashMap<u64, IncomingAction>,
 ) -> Result<(), String> {
     use tokio::sync::oneshot;
     let reply_id = match &from {
@@ -1061,6 +1087,10 @@ async fn apply_from_ext(
             core.apply_op(extension, protocol, kinds, Op::SetWaiting(waiting));
             Ok(())
         }
+        FromExt::SetAvailableActions { actions } => {
+            core.apply_op(extension, protocol, kinds, Op::SetAvailableActions(actions));
+            Ok(())
+        }
         FromExt::Load { key, .. } => {
             let (reply, rx) = oneshot::channel();
             core.apply_op(extension, protocol, kinds, Op::Load(key, reply));
@@ -1095,6 +1125,15 @@ async fn apply_from_ext(
                 incoming.reply(match error {
                     None => Ok(()),
                     Some(error) => Err(error.into()),
+                });
+            }
+            Ok(())
+        }
+        FromExt::ActionResult { id, error } => {
+            if let Some(incoming) = pending_actions.remove(&id) {
+                incoming.reply(match error {
+                    None => Ok(()),
+                    Some(error) => Err(error),
                 });
             }
             Ok(())

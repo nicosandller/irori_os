@@ -9,11 +9,12 @@ mod host;
 mod services;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
 use irori_protocol::host::{Op, incoming_call};
-use irori_protocol::{IncomingCall, Rejected, ServiceErrorCode};
+use irori_protocol::{IncomingAction, IncomingCall, Rejected, ServiceErrorCode};
 use irori_types::{
     Area, Context, ContextId, Description, Device, Entity, EntityId, EntityKind, EntityState,
     ExtensionId, ExtensionSettings, IotClass, Name, Origin, ProtocolId, ServiceCall, Settings,
@@ -107,6 +108,11 @@ pub struct ExtensionOverview {
     /// §6.6). Empty while it isn't running: a list from a stopped protocol is out of date.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub waiting: Vec<Waiting>,
+    /// Which of its manifest-declared actions are usable right now, as the protocol itself
+    /// says (`set_available_actions`). Empty by default, and cleared when it stops — same
+    /// reasoning as `waiting`: a list from a stopped protocol is out of date.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub available_actions: Vec<String>,
 }
 
 /// A stored value's key: 1–128 characters, no control characters.
@@ -176,6 +182,10 @@ struct Shared {
     home: RwLock<Home>,
     events: broadcast::Sender<Event>,
     links: RwLock<HashMap<ProtocolId, mpsc::Sender<IncomingCall>>>,
+    /// Keyed by extension id rather than protocol id: an action is triggered on the extension
+    /// itself, not resolved through an entity the way a service call is (D25 makes the two ids
+    /// equal in practice, but this table's key says what it's actually keyed by).
+    action_links: RwLock<HashMap<ExtensionId, mpsc::Sender<IncomingAction>>>,
     /// One lock per entity, so calls on the same entity happen one after another.
     busy: Mutex<HashMap<EntityId, Arc<tokio::sync::Mutex<()>>>>,
     extensions: RwLock<BTreeMap<ExtensionId, ExtensionOverview>>,
@@ -188,6 +198,30 @@ struct Shared {
     /// Each protocol's small private values (`docs/specs/protocols.md` §5).
     storage: RwLock<Arc<dyn irori_protocol::Storage>>,
 }
+
+/// Why an action call didn't happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallActionError {
+    /// No such extension, or it's not running (or declares no such action — the API layer
+    /// checks the action id is one the extension actually declared before calling this deep).
+    NotRunning(ExtensionId),
+    /// The extension says the action failed.
+    Failed(String),
+    /// Didn't answer within [`SERVICE_CALL_TIMEOUT`].
+    Timeout,
+}
+
+impl fmt::Display for CallActionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotRunning(extension) => write!(f, "`{extension}` isn't running"),
+            Self::Failed(why) => f.write_str(why),
+            Self::Timeout => f.write_str("the action didn't finish within 10 seconds"),
+        }
+    }
+}
+
+impl std::error::Error for CallActionError {}
 
 fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
     lock.read().unwrap_or_else(PoisonError::into_inner)
@@ -212,6 +246,7 @@ impl Core {
             home: RwLock::default(),
             events: broadcast::channel(EVENT_BUFFER).0,
             links: RwLock::default(),
+            action_links: RwLock::default(),
             busy: Mutex::default(),
             extensions: RwLock::default(),
             extension_settings: watch::Sender::new(ExtensionSettings::default()),
@@ -498,6 +533,38 @@ impl Core {
         outcome
     }
 
+    /// Triggers one of an extension's declared actions — the Zigbee `zigbee` protocol's
+    /// `permit_join`, say — and waits for its answer (at most [`SERVICE_CALL_TIMEOUT`]).
+    /// Unlike a service call, there's no entity to resolve through: the extension id is all
+    /// that's needed.
+    pub async fn call_action(
+        &self,
+        extension: &ExtensionId,
+        action_id: &str,
+    ) -> Result<(), CallActionError> {
+        let sender = read(&self.0.action_links)
+            .get(extension)
+            .cloned()
+            .ok_or_else(|| CallActionError::NotRunning(extension.clone()))?;
+        let (incoming, result) = irori_protocol::host::incoming_action(action_id.to_owned());
+        let deadline = tokio::time::Instant::now() + SERVICE_CALL_TIMEOUT;
+        let sent = tokio::time::timeout_at(deadline, sender.send(incoming)).await;
+        if !matches!(sent, Ok(Ok(()))) {
+            return Err(match sent {
+                Err(_) => CallActionError::Timeout,
+                _ => CallActionError::NotRunning(extension.clone()),
+            });
+        }
+        match tokio::time::timeout_at(deadline, result).await {
+            Err(_) => Err(CallActionError::Timeout),
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(why))) => Err(CallActionError::Failed(why)),
+            Ok(Err(_)) => Err(CallActionError::Failed(
+                "the extension dropped the call without answering".into(),
+            )),
+        }
+    }
+
     fn forget_call(&self, protocol: &ProtocolId, context_id: &ContextId, entity_id: &EntityId) {
         let mut home = write(&self.0.home);
         home.forget_call(protocol, context_id);
@@ -567,6 +634,10 @@ impl Core {
             Op::Store(key, value, reply) => (self.store(extension, &key, value.as_ref()), reply),
             Op::SetWaiting(waiting) => {
                 self.set_waiting(extension, waiting);
+                return;
+            }
+            Op::SetAvailableActions(actions) => {
+                self.set_available_actions(extension, actions);
                 return;
             }
             Op::SetHealth(health) => {
@@ -649,6 +720,14 @@ impl Core {
         write(&self.0.links).remove(protocol);
     }
 
+    fn link_action(&self, extension: &ExtensionId, actions: mpsc::Sender<IncomingAction>) {
+        write(&self.0.action_links).insert(extension.clone(), actions);
+    }
+
+    fn unlink_action(&self, extension: &ExtensionId) {
+        write(&self.0.action_links).remove(extension);
+    }
+
     /// Records what an extension is, before it starts. Called once per extension by the host.
     pub(crate) fn describe_extension(&self, extension: &ExtensionId, info: ExtensionInfo) {
         let mut extensions = write(&self.0.extensions);
@@ -663,6 +742,7 @@ impl Core {
                         rejected_reports: 0,
                         dropped_reports: 0,
                         waiting: Vec::new(),
+                        available_actions: Vec::new(),
                     },
                 );
             }
@@ -693,6 +773,25 @@ impl Core {
         }]);
     }
 
+    /// Replaces which of an extension's declared actions are usable right now.
+    pub(crate) fn set_available_actions(&self, extension: &ExtensionId, actions: Vec<String>) {
+        let status = {
+            let mut extensions = write(&self.0.extensions);
+            let Some(overview) = extensions.get_mut(extension) else {
+                return;
+            };
+            if overview.available_actions == actions {
+                return;
+            }
+            overview.available_actions = actions;
+            overview.status.clone()
+        };
+        self.publish(vec![Event::ExtensionStatusChanged {
+            extension_id: extension.clone(),
+            status,
+        }]);
+    }
+
     fn set_status(&self, extension: &ExtensionId, status: ExtensionStatus) {
         let changed = {
             let mut extensions = write(&self.0.extensions);
@@ -711,6 +810,7 @@ impl Core {
                             rejected_reports: 0,
                             dropped_reports: 0,
                             waiting: Vec::new(),
+                            available_actions: Vec::new(),
                         },
                     );
                     true

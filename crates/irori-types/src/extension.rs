@@ -186,6 +186,12 @@ pub struct ProtocolContribution {
     /// How to start it, for external extensions. Built-in extensions leave this out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<RunCommand>,
+    /// Actions the UI can trigger beyond passively finding devices (`docs/specs/protocols.md`
+    /// §5) — Zigbee's "permit joining," say. Empty for a protocol with nothing to trigger; this
+    /// only declares that an action exists, not that it's usable right now (the protocol says
+    /// that at runtime, `set_available_actions`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<ProtocolAction>,
 }
 
 impl ProtocolContribution {
@@ -195,8 +201,39 @@ impl ProtocolContribution {
                 "entity_kinds must list at least one entity kind".into(),
             ));
         }
-        no_duplicates("entity_kinds", &self.entity_kinds)
+        no_duplicates("entity_kinds", &self.entity_kinds)?;
+        let action_ids: Vec<&str> = self.actions.iter().map(|a| a.id.as_str()).collect();
+        no_duplicates("contributes.protocol.actions ids", &action_ids)?;
+        for action in &self.actions {
+            if action.id.trim().is_empty() {
+                return Err(InvariantError(
+                    "contributes.protocol.actions: an action needs a non-empty id".into(),
+                ));
+            }
+            if action.label.trim().is_empty() {
+                return Err(InvariantError(format!(
+                    "contributes.protocol.actions: action `{}` needs a non-empty label",
+                    action.id
+                )));
+            }
+        }
+        Ok(())
     }
+}
+
+/// A UI-triggerable action a protocol declares — the other half of "dedicated add-device path
+/// per protocol," alongside the passive `Waiting` list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProtocolAction {
+    /// Its own id, unique within this protocol, e.g. `permit_join`.
+    pub id: String,
+    /// The button's label, e.g. "Permit joining".
+    pub label: String,
+    /// A default duration in seconds, for a timed action — a hint the UI can show (e.g.
+    /// "for 60s"), not enforced by the core.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<u32>,
 }
 
 /// Where a protocol's devices live and how it learns about changes (ROADMAP D24).

@@ -315,7 +315,9 @@ mod tests {
                     | host::Op::SetAvailability(_, _, reply) => {
                         let _ = reply.send(Ok(()));
                     }
-                    host::Op::SetHealth(_) | host::Op::SetWaiting(_) => {}
+                    host::Op::SetHealth(_)
+                    | host::Op::SetWaiting(_)
+                    | host::Op::SetAvailableActions(_) => {}
                     host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));
                     }
@@ -460,7 +462,9 @@ mod tests {
                     | host::Op::RemoveEntity(_, reply) => {
                         let _ = reply.send(Ok(()));
                     }
-                    host::Op::SetHealth(_) | host::Op::SetWaiting(_) => {}
+                    host::Op::SetHealth(_)
+                    | host::Op::SetWaiting(_)
+                    | host::Op::SetAvailableActions(_) => {}
                     host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));
                     }

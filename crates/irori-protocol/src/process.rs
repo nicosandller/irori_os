@@ -21,8 +21,8 @@ use tokio::sync::oneshot;
 
 use crate::host::{Op, Reply, Reports};
 use crate::{
-    AvailabilityTarget, Health, IncomingCall, Protocol, ProtocolError, Rejected, ServiceError,
-    ServiceErrorCode, host,
+    AvailabilityTarget, Health, IncomingAction, IncomingCall, Protocol, ProtocolError, Rejected,
+    ServiceError, ServiceErrorCode, host,
 };
 
 /// A message from the extension process to the host.
@@ -56,6 +56,9 @@ pub enum FromExt {
     SetWaiting {
         waiting: Vec<Waiting>,
     },
+    SetAvailableActions {
+        actions: Vec<String>,
+    },
     Load {
         id: u64,
         key: String,
@@ -73,6 +76,11 @@ pub enum FromExt {
         id: u64,
         #[serde(default)]
         error: Option<WireServiceError>,
+    },
+    ActionResult {
+        id: u64,
+        #[serde(default)]
+        error: Option<String>,
     },
 }
 
@@ -98,6 +106,10 @@ pub enum ToExt {
     ServiceCall {
         id: u64,
         call: ServiceCall,
+    },
+    ActionCall {
+        id: u64,
+        action_id: String,
     },
     Stop,
 }
@@ -159,6 +171,7 @@ pub async fn serve<I: Protocol>() -> Result<(), ProtocolError> {
         stdout,
         host_end.stop,
         host_end.calls,
+        host_end.actions,
         Arc::clone(&pending),
     ));
 
@@ -195,6 +208,7 @@ async fn pump_incoming(
     stdout: Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
     stop: tokio::sync::watch::Sender<bool>,
     calls: tokio::sync::mpsc::Sender<IncomingCall>,
+    actions: tokio::sync::mpsc::Sender<IncomingAction>,
     pending: Arc<Pending>,
 ) {
     loop {
@@ -217,6 +231,21 @@ async fn pump_incoming(
                         }),
                     };
                     let _ = write_json(&stdout, &FromExt::ServiceResult { id, error }).await;
+                });
+            }
+            Ok(ToExt::ActionCall { id, action_id }) => {
+                let (incoming, result) = host::incoming_action(action_id);
+                if actions.send(incoming).await.is_err() {
+                    return;
+                }
+                let stdout = Arc::clone(&stdout);
+                tokio::spawn(async move {
+                    let error = match result.await {
+                        Ok(Ok(())) => None,
+                        Ok(Err(error)) => Some(error),
+                        Err(_) => Some("the protocol dropped the action call".to_owned()),
+                    };
+                    let _ = write_json(&stdout, &FromExt::ActionResult { id, error }).await;
                 });
             }
             Ok(ToExt::Stop) => {
@@ -286,6 +315,7 @@ impl Pending {
             }
             Op::SetHealth(health) => Some(FromExt::SetHealth { health }),
             Op::SetWaiting(waiting) => Some(FromExt::SetWaiting { waiting }),
+            Op::SetAvailableActions(actions) => Some(FromExt::SetAvailableActions { actions }),
             Op::Load(key, reply) => {
                 self.loads
                     .lock()
