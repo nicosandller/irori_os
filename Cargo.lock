@@ -928,6 +928,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "getrandom 0.4.3",
  "http-body-util",
  "irori-assist",
  "irori-config",

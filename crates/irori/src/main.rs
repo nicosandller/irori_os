@@ -378,8 +378,9 @@ async fn shutdown_signal(restart: Arc<Notify>) {
         () = terminate => {
             tracing::info!("shutting down");
         }
-        // The Settings page's Restart button. Only ever fires once the server is already
-        // answering, so the waiter is always there to be woken.
+        // The Settings page's Restart button. The handler's notify_one retains the notification,
+        // so this resolves however the ordering falls out — even a request that lands before
+        // this select! was first polled stores a wake for it.
         () = restart.notified() => {
             tracing::info!("shutting down for a restart");
         }

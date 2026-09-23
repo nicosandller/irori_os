@@ -69,15 +69,7 @@ impl AppState {
     ) -> Self {
         Self(Arc::new(Inner {
             started: Instant::now(),
-            boot_id: format!(
-                // Two boots in the same nanosecond are beyond plausible; the duration is
-                // downcast-proof, unlike a plain SystemTime.
-                "{:x}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|elapsed| elapsed.as_nanos())
-                    .unwrap_or(0),
-            ),
+            boot_id: boot_id(),
             db,
             build: BuildInfo::current(),
             core,
@@ -88,6 +80,22 @@ impl AppState {
             restarting,
         }))
     }
+}
+
+/// A fresh value after every boot: 16 random bytes from the OS, in hex. It must be
+/// genuinely random rather than, say, the wall clock: the same process image re-execs on a
+/// restart, so a clock that froze or stepped back could hand the new boot the old boot's id,
+/// and the page would then never see the change that tells it the restart happened.
+fn boot_id() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes)
+        .expect("the OS must be able to hand over sixteen random bytes for the boot id");
+    use std::fmt::Write as _;
+    let mut hex = String::with_capacity(32);
+    for byte in bytes {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }
 
 pub fn router(state: AppState) -> Router {
@@ -193,7 +201,11 @@ async fn host_info(State(state): State<AppState>) -> Json<crate::host_info::Host
 async fn restart(State(state): State<AppState>) -> Response {
     state.0.restarting.store(true, Ordering::SeqCst);
     tracing::info!("restart requested; shutting down");
-    state.0.restart.notify_waiters();
+    // notify_one, not notify_waiters: a non-retaining wake that finds no waiter is lost, and a
+    // restart can be asked for before the graceful shutdown future has registered its waiter (a
+    // request can reach the handler before the accept loop's first poll of it). notify_one keeps
+    // the notification around until the waiter registers, so the shutdown always lands.
+    state.0.restart.notify_one();
     // Accepted, not No Content: the restart itself happens a moment later, once this request
     // has drained.
     StatusCode::ACCEPTED.into_response()
@@ -1412,8 +1424,8 @@ mod tests {
     async fn restart_is_accepted() -> anyhow::Result<()> {
         let server = Server::new(core())?;
         // The waiter serve()'s own shutdown future would be. It is registered before the
-        // request goes out — the handler runs within the router's poll, before any concurrently
-        // spawned waiter would have had a chance to register — so notify_waiters reaches it.
+        // request goes out so the handler's notify_one has a waiter to wake; a retained
+        // notification (no waiter registered) is covered by the handler's semantics instead.
         let mut shutdown = Box::pin(server.restart.notified());
         let waker = std::task::Waker::noop();
         let mut cx = std::task::Context::from_waker(waker);
