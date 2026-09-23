@@ -19,6 +19,9 @@ gloo-timers = { version = "0.3.0", features = ["futures"] }
 leptos = { version = "0.8.20", features = ["csr"] }
 leptos_router = { version = "0.8.15", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
+# Already in the bundle transitively (irori-types uses it); this is only so this crate's own
+# code can `use` it directly — no size cost of its own.
+serde_json = "1.0.151"
 # Remembering which way the device list was last shown, dragging devices into areas, and —
 # for the Floorplan — measuring the canvas, which is what turns a pointer into a place on the
 # plan.

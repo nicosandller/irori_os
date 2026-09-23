@@ -5,6 +5,7 @@ use leptos::task::spawn_local;
 
 use crate::api::{self, CatalogEntry};
 use crate::devices::icon;
+use crate::settings_form::SettingsForm;
 
 #[component]
 pub fn Extensions() -> impl IntoView {
@@ -13,6 +14,8 @@ pub fn Extensions() -> impl IntoView {
     let busy = RwSignal::new(None::<String>);
     let search = RwSignal::new(String::new());
     let filter = RwSignal::new("all".to_owned());
+    // Which extension's settings form is open, if any — at most one at a time.
+    let settings_open = RwSignal::new(None::<String>);
 
     let reload = move || {
         spawn_local(async move {
@@ -112,7 +115,12 @@ pub fn Extensions() -> impl IntoView {
             } else {
                 view! {
                     <div class="ext-grid">
-                        {entries.into_iter().map(|entry| card(entry, busy, catalog, trouble)).collect_view()}
+                        {
+                            entries
+                                .into_iter()
+                                .map(|entry| card(entry, busy, catalog, trouble, settings_open))
+                                .collect_view()
+                        }
                     </div>
                 }
                     .into_any()
@@ -126,15 +134,23 @@ fn card(
     busy: RwSignal<Option<String>>,
     catalog: RwSignal<Vec<CatalogEntry>>,
     trouble: RwSignal<Option<String>>,
+    settings_open: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let id = entry.id.clone();
     let id_busy = id.clone();
     let id_click = id.clone();
+    let id_gear = id.clone();
+    let id_form = id.clone();
     let installed = entry.installed;
     let running = entry.state.as_deref() == Some("running");
+    let schema = entry.config_schema.clone();
     // A `Memo` rather than a plain closure: it's `Copy`, so the same check can be read from the
     // button's `disabled`, its progress bar, and its label without cloning the id three times.
     let is_busy = Memo::new(move |_| busy.get().as_deref() == Some(id_busy.as_str()));
+    let is_open = {
+        let id = id.clone();
+        move || settings_open.get().as_deref() == Some(id.as_str())
+    };
 
     view! {
         <section class="ext-card">
@@ -185,7 +201,46 @@ fn card(
                     }
                         .into_any()
                 }}
+                {(installed && schema.is_some()).then(|| {
+                    view! {
+                        <button
+                            type="button"
+                            class="ext-settings-btn"
+                            aria-label="Settings"
+                            title="Settings"
+                            on:click=move |_| {
+                                settings_open
+                                    .update(|open| {
+                                        *open = if open.as_deref() == Some(id_gear.as_str()) {
+                                            None
+                                        } else {
+                                            Some(id_gear.clone())
+                                        };
+                                    })
+                            }
+                        >
+                            "⚙"
+                        </button>
+                    }
+                })}
             </div>
+            {move || {
+                is_open()
+                    .then(|| {
+                        schema
+                            .clone()
+                            .map(|schema| {
+                                let id_form = id_form.clone();
+                                view! {
+                                    <SettingsForm
+                                        id=id_form.clone()
+                                        schema=schema
+                                        on_close=move || settings_open.set(None)
+                                    />
+                                }
+                            })
+                    })
+            }}
         </section>
     }
 }

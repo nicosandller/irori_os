@@ -12,6 +12,7 @@ mod devices;
 mod extensions;
 mod floorplan;
 mod settings;
+mod settings_form;
 mod start;
 mod waiting;
 

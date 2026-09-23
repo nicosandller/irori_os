@@ -993,6 +993,9 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                         }
                         _ => None,
                     }),
+                    config_schema: overview
+                        .and_then(|o| o.info.as_ref())
+                        .and_then(|info| info.config_schema.clone()),
                 }
             })
             .collect(),
@@ -1013,6 +1016,8 @@ struct CatalogEntry {
     state: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_schema: Option<serde_json::Value>,
 }
 
 async fn install_official(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {

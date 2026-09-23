@@ -526,6 +526,8 @@ pub struct CatalogEntry {
     pub state: Option<String>,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default)]
+    pub config_schema: Option<serde_json::Value>,
 }
 
 pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {
@@ -552,6 +554,22 @@ pub async fn install_extension(id: &str) -> Result<(), String> {
 
 pub async fn uninstall_extension(id: &str) -> Result<(), String> {
     let response = Request::delete(&format!("/api/dev/extensions/{id}"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+/// One extension's settings, as a JSON object matching its own `config_schema` — the generic
+/// form behind the gear icon. A `writeOnly` field lands in `secrets.toml`; everything else in
+/// `extensions/<id>.toml`.
+pub async fn set_extension_settings(
+    id: &str,
+    settings: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let response = Request::post(&format!("/api/dev/extensions/{id}/settings"))
+        .json(settings)
+        .map_err(|e| e.to_string())?
         .send()
         .await
         .map_err(unreachable)?;
