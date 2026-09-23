@@ -256,6 +256,14 @@ impl IncomingAction {
     }
 }
 
+/// Something delivered through [`ProtocolContext::next`]: either kind of call a protocol can
+/// receive.
+#[derive(Debug)]
+pub enum Incoming {
+    Call(IncomingCall),
+    Action(IncomingAction),
+}
+
 /// The protocol's handle to the core. Offers exactly the operations of the contract.
 #[derive(Debug)]
 pub struct ProtocolContext {
@@ -385,6 +393,22 @@ impl ProtocolContext {
             biased;
             _ = self.stop.wait_for(|stop| *stop) => None,
             action = self.actions.recv() => action,
+        }
+    }
+
+    /// The next service call *or* action call, whichever comes first, or `None` once the
+    /// protocol should stop. For a protocol that handles both: `next_call`/`next_action` each
+    /// need their own `&mut self`, which can't both be borrowed in the same `tokio::select!` —
+    /// this does the equivalent three-way select with exactly one borrow.
+    pub async fn next(&mut self) -> Option<Incoming> {
+        if *self.stop.borrow() {
+            return None;
+        }
+        tokio::select! {
+            biased;
+            _ = self.stop.wait_for(|stop| *stop) => None,
+            call = self.calls.recv() => call.map(Incoming::Call),
+            action = self.actions.recv() => action.map(Incoming::Action),
         }
     }
 

@@ -11,6 +11,7 @@ license.workspace = true
 irori-types.workspace = true
 irori-rules.workspace = true
 irori-protocol-mqtt.workspace = true
+irori-protocol-zigbee.workspace = true
 anyhow.workspace = true
 schemars.workspace = true
 serde.workspace = true

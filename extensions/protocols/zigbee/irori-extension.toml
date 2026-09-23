@@ -1,0 +1,26 @@
+[extension]
+id = "zigbee"
+name = "Zigbee"
+version = "0.1.0"
+irori = ">=0.0.0"
+description = "Zigbee devices, through a Zigbee2MQTT instance Irori installs and manages for you."
+config_schema = "config.schema.json"
+
+[[contributes.protocol]]
+iot_class = "local_push"
+entity_kinds = ["light", "switch", "sensor", "binary_sensor"]
+run = { command = "bin/irori-ext-zigbee" }
+
+[[contributes.protocol.actions]]
+id = "permit_join"
+label = "Permit joining"
+seconds = 60
+
+# This extension downloads a Node.js runtime and installs Zigbee2MQTT (an npm package) the
+# first time it starts, then runs it as a supervised subprocess — full access to this machine,
+# the same as a terminal would have. It's the only way to get Zigbee devices into Irori without
+# a native Rust Zigbee stack, which doesn't exist yet (ROADMAP D46). There's no separate `serial`
+# declaration for the dongle: which port to use is chosen in settings, not known when this
+# manifest is written — the same reasoning `esphome`'s `lan = true` documents for addresses.
+[permissions]
+host_shell = true

@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Settings",
+  "type": "object",
+  "properties": {
+    "adapter": {
+      "description": "The dongle's radio chip family. Most Silicon Labs–based dongles (Sonoff, SLZB, most\n\"zigbee 3.0 usb dongle plus\" boards) are `ember`; older ones may be `zstack` (Texas\nInstruments) or `deconz` (ConBee/RaspBee).",
+      "$ref": "#/$defs/Adapter"
+    },
+    "broker_port": {
+      "description": "The port of the embedded broker this extension runs for its own Zigbee2MQTT to publish\ninto. Not Irori's own network-facing port; loopback only. Change it only if something\nelse on this machine already uses the default.",
+      "type": "integer",
+      "format": "uint16",
+      "default": 17883,
+      "maximum": 65535,
+      "minimum": 0
+    },
+    "channel": {
+      "description": "The Zigbee channel, 11-26. Left to Zigbee2MQTT's own default (25) if omitted.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint8",
+      "maximum": 255,
+      "minimum": 0
+    },
+    "network_key": {
+      "description": "The network's encryption key. Left out, Zigbee2MQTT generates and keeps its own on first\nrun — the simpler default for a new network. Only needed to join an existing one.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Secret"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "pan_id": {
+      "description": "The Zigbee network's PAN id. Left to Zigbee2MQTT's own default if omitted.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0
+    },
+    "serial_port": {
+      "description": "The dongle's serial device, e.g. `/dev/ttyUSB0` (Linux) or `/dev/cu.usbmodem…` (macOS).\nIrori can't list what's plugged in for you yet — check with `ls /dev/tty*` (or\n`/dev/cu.*` on macOS) with the dongle plugged in and out.",
+      "type": "string"
+    },
+    "zigbee2mqtt_version": {
+      "description": "Pins Zigbee2MQTT to one version. Left out, the first start installs the current release\nand remembers exactly which one — an update after that is a deliberate choice\n(re-installing with a version given here), never something that happens on its own.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "serial_port"
+  ],
+  "$defs": {
+    "Adapter": {
+      "type": "string",
+      "enum": [
+        "ember",
+        "zstack",
+        "deconz",
+        "zboss"
+      ]
+    },
+    "Secret": {
+      "type": "string",
+      "writeOnly": true
+    }
+  }
+}

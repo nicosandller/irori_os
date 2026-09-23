@@ -32,5 +32,15 @@ source = "extensions/protocols/mqtt"
 crate = "irori-protocol-mqtt"
 bin = "irori-ext-mqtt"
 
+[[extension]]
+id = "zigbee"
+name = "Zigbee"
+category = "protocol"
+description = "Zigbee devices, through a Zigbee2MQTT instance Irori installs and manages for you."
+version = "0.1.0"
+source = "extensions/protocols/zigbee"
+crate = "irori-protocol-zigbee"
+bin = "irori-ext-zigbee"
+
 # Helpers aren't listed here: they're core to Irori (crates/irori-helpers), built in and always
 # running, not an installable package.

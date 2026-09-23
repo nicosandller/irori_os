@@ -15,6 +15,7 @@ members = [
     "extensions/demo",
     "extensions/protocols/esphome",
     "extensions/protocols/mqtt",
+    "extensions/protocols/zigbee",
     "extras/irori-assist",
     "xtask",
 ]
@@ -46,6 +47,7 @@ irori-ha-discovery = { path = "crates/irori-ha-discovery" }
 irori-protocol-mqtt = { path = "extensions/protocols/mqtt" }
 irori-protocol-demo = { path = "extensions/demo" }
 irori-protocol-esphome = { path = "extensions/protocols/esphome" }
+irori-protocol-zigbee = { path = "extensions/protocols/zigbee" }
 irori-assist = { path = "extras/irori-assist" }
 
 # External crates
@@ -64,6 +66,10 @@ getrandom = "0.4.3"
 # embedded broker's client side) both depend on it directly; xtask/src/deps.rs keeps it out of
 # every crate that isn't a protocol.
 rumqttc = "0.25.1"
+# The embedded broker `zigbee` runs for its own Zigbee2MQTT to publish into — no TLS or
+# websocket support needed for a loopback-only broker, so both are switched off; that also drops
+# most of the crate's own dependency tree (no rustls, no tungstenite).
+rumqttd = { version = "0.20.0", default-features = false }
 jiff = { version = "0.2.37", default-features = false, features = ["std", "serde"] }
 jsonschema = { version = "0.56.0", default-features = false }
 mime_guess = { version = "2.0.5", default-features = false }

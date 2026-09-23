@@ -60,10 +60,16 @@ pub fn run(check: bool) -> anyhow::Result<()> {
 /// manifest points `config_schema` at — written once here rather than by hand, so the file can
 /// never drift from the type that actually deserializes it.
 fn extension_config_schemas() -> Vec<(&'static str, schemars::Schema)> {
-    vec![(
-        "extensions/protocols/mqtt",
-        schemars::schema_for!(irori_protocol_mqtt::settings::Settings),
-    )]
+    vec![
+        (
+            "extensions/protocols/mqtt",
+            schemars::schema_for!(irori_protocol_mqtt::settings::Settings),
+        ),
+        (
+            "extensions/protocols/zigbee",
+            schemars::schema_for!(irori_protocol_zigbee::settings::Settings),
+        ),
+    ]
 }
 
 fn write_or_check(
