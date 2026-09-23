@@ -161,6 +161,7 @@ pub fn Devices() -> impl IntoView {
     let controls = expect_context::<Controls>();
     let filter = RwSignal::new(String::new());
     let adding = RwSignal::new(false);
+    let adding_helper = RwSignal::new(false);
     let showing = RwSignal::new(remembered_view());
     let folded = RwSignal::new(remembered_folded());
     provide_context(HelperTrouble(RwSignal::new(None)));
@@ -192,9 +193,28 @@ pub fn Devices() -> impl IntoView {
                     })
                     .collect_view()}
             </div>
-            <button type="button" class="add" on:click=move |_| adding.update(|a| *a = !*a)>
-                {move || if adding.get() { "Close" } else { "+ Add device" }}
-            </button>
+            // Helpers aren't devices and don't arrive through an extension — making one is a
+            // name and nothing else — so the Helpers tab gets its own button, not a card in the
+            // add-a-device flow pretending a helper is something an extension found.
+            {move || if showing.get() == Showing::Helpers {
+                view! {
+                    <button
+                        type="button"
+                        class="add"
+                        on:click=move |_| adding_helper.set(true)
+                    >
+                        "+ Add helper"
+                    </button>
+                }
+                    .into_any()
+            } else {
+                view! {
+                    <button type="button" class="add" on:click=move |_| adding.set(true)>
+                        "+ Add device"
+                    </button>
+                }
+                    .into_any()
+            }}
         </div>
 
         // Something found and waiting is worth saying even with the panel closed: it's the one
@@ -243,7 +263,14 @@ pub fn Devices() -> impl IntoView {
         // Outside the block above, which redraws on every reading: an opened list mustn't snap
         // shut two seconds later (ROADMAP D33).
         {move || (showing.get() == Showing::Devices).then(|| view! { <Ignored /> })}
-        {move || (showing.get() == Showing::Helpers).then(|| view! { <AddToggle /> })}
+        {move || adding_helper.get().then(|| view! {
+            <crate::modal::Modal
+                title="Add a helper".to_owned()
+                on_close=move || adding_helper.set(false)
+            >
+                <AddToggle on_added=move || adding_helper.set(false) />
+            </crate::modal::Modal>
+        })}
     }
 }
 
@@ -629,7 +656,8 @@ fn helpers(home: &Home, controls: Controls) -> AnyView {
                 <p class="muted">
                     "A helper is a value Irori keeps itself rather than a device reporting it: a "
                     "switch for \"guests are over\" or \"holiday mode\", say. It stays as it was "
-                    "left through restarts, and rules (M1.4) will be able to read and flip it."
+                    "left through restarts, and rules (M1.4) will be able to read and flip it. "
+                    "Make one with \"+ Add helper\" above."
                 </p>
             </section>
         }
@@ -733,7 +761,7 @@ struct HelperTrouble(RwSignal<Option<String>>);
 /// Making a toggle. Outside the list, which redraws with every reading, so what's being typed
 /// survives it (ROADMAP D33).
 #[component]
-fn AddToggle() -> impl IntoView {
+fn AddToggle(#[prop(into)] on_added: Callback<()>) -> impl IntoView {
     let live = expect_context::<crate::Live>();
     let trouble = expect_context::<HelperTrouble>().0;
     let name = RwSignal::new(String::new());
@@ -747,12 +775,18 @@ fn AddToggle() -> impl IntoView {
                 Ok(()) => {
                     trouble.set(None);
                     crate::refresh(live);
+                    on_added.run(());
                 }
                 Err(why) => trouble.set(Some(why)),
             }
         });
     };
     view! {
+        <p class="muted">
+            "A helper is a value Irori keeps itself rather than a device reporting it: a switch "
+            "for \"guests are over\" or \"holiday mode\", say. It stays as it was left through "
+            "restarts, and rules (M1.4) will be able to read and flip it."
+        </p>
         {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
         <form
             class="inline-form"
@@ -769,7 +803,7 @@ fn AddToggle() -> impl IntoView {
                 on:input:target=move |ev| name.set(ev.target().value())
             />
             <button type="submit" class="add" disabled=move || name.get().trim().is_empty()>
-                "Add toggle"
+                "Add helper"
             </button>
         </form>
     }
@@ -858,6 +892,9 @@ fn AddDevice() -> impl IntoView {
         let home = live.home.get();
         home.extensions
             .iter()
+            // Helpers are an extension for the core's own reasons (D40), but nothing here finds
+            // a helper: you make one, by naming it. That has its own button on the Helpers tab.
+            .filter(|(id, _)| id.as_str() != HELPERS)
             .map(|(id, extension)| {
                 let devices = home
                     .devices

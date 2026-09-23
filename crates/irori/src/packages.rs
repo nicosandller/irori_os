@@ -348,20 +348,41 @@ fn stage_package(source: &Path, binary: &Path, dest: &Path, bin_name: &str) -> R
         dest.join("irori-extension.toml"),
     )
     .map_err(|e| e.to_string())?;
-    let icon = source.join("icon.svg");
-    if icon.is_file() {
-        fs::copy(&icon, dest.join("icon.svg")).map_err(|e| e.to_string())?;
-    }
-    // Same reasoning as the icon: without this, a checkout install has a manifest pointing at a
-    // `config_schema` that never made it into the instance, so `config_schema` reads as `None`
-    // and the settings form silently never appears (`xtask/src/package.rs`'s release path needs
-    // the identical copy, for the identical reason).
-    let schema = source.join("config.schema.json");
-    if schema.is_file() {
-        fs::copy(&schema, dest.join("config.schema.json")).map_err(|e| e.to_string())?;
+    // The files the manifest itself names — its icon and its `config_schema`. Both are
+    // `PackagePath`s the author chose, not fixed names: `config.schema.json` beside the manifest
+    // is only a convention, and `schemas/settings.json` is just as valid. Copying fixed names
+    // instead installs a package whose manifest points at a file that isn't in it, and
+    // `config_schema` then reads as `None` — to the UI, the same as an extension with no
+    // settings at all. `xtask/src/package.rs` does this for release tarballs, identically.
+    for path in declared_files(source)? {
+        let from = source.join(path.as_str());
+        if !from.is_file() {
+            return Err(format!(
+                "the manifest declares `{path}`, which isn't in {}",
+                source.display()
+            ));
+        }
+        let to = dest.join(path.as_str());
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::copy(&from, &to).map_err(|e| e.to_string())?;
     }
     fs::copy(binary, dest.join("bin").join(bin_name)).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// The `icon` and `config_schema` paths an extension's manifest declares, if any. `PackagePath`
+/// is what has already rejected an absolute path or one climbing out of the package, so nothing
+/// this returns can name a file outside the extension's own directory.
+fn declared_files(source: &Path) -> Result<Vec<irori_types::PackagePath>, String> {
+    let text = fs::read_to_string(source.join("irori-extension.toml"))
+        .map_err(|e| format!("can't read the manifest in {}: {e}", source.display()))?;
+    let manifest = irori_protocol::parse_manifest(&text)?;
+    Ok([manifest.extension.icon, manifest.extension.config_schema]
+        .into_iter()
+        .flatten()
+        .collect())
 }
 
 fn copy_dir(from: &Path, dest: &Path) -> Result<(), String> {
@@ -438,40 +459,97 @@ mod tests {
         archive
     }
 
-    #[test]
-    fn staging_from_a_checkout_carries_the_config_schema_along_when_the_extension_has_one() {
-        let root = tempfile::tempdir().expect("temp dir");
-        let source = root.path().join("source");
+    /// A source checkout with a manifest saying `declares`, and each of `files` written into it.
+    fn checkout(root: &Path, declares: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+        let source = root.join("source");
         std::fs::create_dir_all(&source).expect("mkdir");
         std::fs::write(
             source.join("irori-extension.toml"),
-            "[extension]\nid = \"x\"\n",
+            format!(
+                "[extension]\nid = \"x\"\nname = \"X\"\nversion = \"0.1.0\"\n\
+                 irori = \">=0.0.0\"\n{declares}"
+            ),
         )
         .expect("write manifest");
-        std::fs::write(source.join("config.schema.json"), "{}").expect("write schema");
+        for (path, contents) in files {
+            let at = source.join(path);
+            if let Some(parent) = at.parent() {
+                std::fs::create_dir_all(parent).expect("mkdir");
+            }
+            std::fs::write(at, contents).expect("write");
+        }
+        source
+    }
+
+    #[test]
+    fn staging_from_a_checkout_carries_the_config_schema_along_when_the_extension_has_one() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let source = checkout(
+            root.path(),
+            "config_schema = \"config.schema.json\"\n",
+            &[("config.schema.json", "{}")],
+        );
         let binary = root.path().join("built-binary");
         std::fs::write(&binary, "not a real elf, just bytes").expect("write binary");
         let dest = root.path().join("dest");
 
         stage_package(&source, &binary, &dest, "irori-ext-x").expect("stages");
 
-        assert!(dest.join("config.schema.json").is_file());
         assert_eq!(
             std::fs::read_to_string(dest.join("config.schema.json")).expect("read"),
             "{}"
         );
     }
 
+    /// `config_schema` is a path the extension's author chose, not a fixed name — a manifest
+    /// saying `schemas/settings.json` must get that file, at that path, or the installed package
+    /// points at a schema that was never copied and its settings form never appears.
+    #[test]
+    fn staging_follows_wherever_the_manifest_says_the_schema_is() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let source = checkout(
+            root.path(),
+            "config_schema = \"schemas/settings.json\"\nicon = \"art/logo.svg\"\n",
+            &[
+                ("schemas/settings.json", "{\"title\": \"deep\"}"),
+                ("art/logo.svg", "<svg/>"),
+            ],
+        );
+        let binary = root.path().join("built-binary");
+        std::fs::write(&binary, "not a real elf, just bytes").expect("write binary");
+        let dest = root.path().join("dest");
+
+        stage_package(&source, &binary, &dest, "irori-ext-x").expect("stages");
+
+        assert_eq!(
+            std::fs::read_to_string(dest.join("schemas/settings.json")).expect("read"),
+            "{\"title\": \"deep\"}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("art/logo.svg")).expect("read"),
+            "<svg/>"
+        );
+        assert!(!dest.join("config.schema.json").exists());
+    }
+
+    /// A manifest naming a file the checkout doesn't have is a broken extension, not something
+    /// to install half of and let fail later as "this one just has no settings".
+    #[test]
+    fn staging_refuses_a_manifest_naming_a_file_that_isnt_there() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let source = checkout(root.path(), "config_schema = \"config.schema.json\"\n", &[]);
+        let binary = root.path().join("built-binary");
+        std::fs::write(&binary, "not a real elf, just bytes").expect("write binary");
+
+        let refused = stage_package(&source, &binary, &root.path().join("dest"), "irori-ext-x")
+            .expect_err("no such file");
+        assert!(refused.contains("config.schema.json"), "{refused}");
+    }
+
     #[test]
     fn staging_from_a_checkout_is_fine_without_a_config_schema() {
         let root = tempfile::tempdir().expect("temp dir");
-        let source = root.path().join("source");
-        std::fs::create_dir_all(&source).expect("mkdir");
-        std::fs::write(
-            source.join("irori-extension.toml"),
-            "[extension]\nid = \"x\"\n",
-        )
-        .expect("write manifest");
+        let source = checkout(root.path(), "", &[]);
         let binary = root.path().join("built-binary");
         std::fs::write(&binary, "not a real elf, just bytes").expect("write binary");
         let dest = root.path().join("dest");

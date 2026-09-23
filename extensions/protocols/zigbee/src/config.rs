@@ -14,8 +14,9 @@ use crate::settings::Settings;
 /// own `network_key`/`pan_id` back into this file when neither is configured, and every restart
 /// calls this function fresh, so without carrying that block forward, every restart would
 /// silently erase Zigbee2MQTT's own generated network identity and it would generate (and
-/// persist) a brand new one, dropping every paired device. Only used when `settings` itself
-/// doesn't say anything for the `advanced` section — an explicit setting always wins.
+/// persist) a brand new one, dropping every paired device. Every key in that block is kept, not
+/// just the ones this extension has settings for (`carried_forward` says why); a setting given
+/// here always wins over what's in the file.
 pub fn generate(
     settings: &Settings,
     broker_port: u16,
@@ -39,15 +40,16 @@ pub fn generate(
     yaml.push_str("permit_join: false\n");
 
     let mut advanced = String::new();
+    // Which keys this extension's own settings have an opinion about. Everything else in an
+    // existing `advanced:` block is carried over untouched, below.
+    let mut decided: Vec<&str> = Vec::new();
     if let Some(channel) = settings.channel {
         advanced.push_str(&format!("  channel: {channel}\n"));
-    } else if let Some(line) = existing_line(existing_advanced, "channel") {
-        advanced.push_str(line);
+        decided.push("channel");
     }
     if let Some(pan_id) = settings.pan_id {
         advanced.push_str(&format!("  pan_id: {pan_id}\n"));
-    } else if let Some(line) = existing_line(existing_advanced, "pan_id") {
-        advanced.push_str(line);
+        decided.push("pan_id");
     }
     if let Some(key) = &settings.network_key {
         let bytes = parse_network_key(key.expose())?;
@@ -57,9 +59,9 @@ pub fn generate(
             .collect::<Vec<_>>()
             .join(", ");
         advanced.push_str(&format!("  network_key: [{listed}]\n"));
-    } else if let Some(line) = existing_line(existing_advanced, "network_key") {
-        advanced.push_str(line);
+        decided.push("network_key");
     }
+    advanced.push_str(&carried_forward(existing_advanced, &decided));
     if !advanced.is_empty() {
         yaml.push_str("advanced:\n");
         yaml.push_str(&advanced);
@@ -67,15 +69,47 @@ pub fn generate(
     Ok(yaml)
 }
 
-/// Extracts one `  <key>: ...` line, verbatim with its trailing newline, out of `existing`'s
-/// `advanced:` body — `existing_advanced_block`'s own indentation convention, matching what this
-/// module itself writes. `None` if there's no existing block, or `key` isn't in it.
-fn existing_line<'a>(existing: Option<&'a str>, key: &str) -> Option<&'a str> {
-    let existing = existing?;
-    let prefix = format!("  {key}:");
-    existing
-        .split_inclusive('\n')
-        .find(|line| line.starts_with(&prefix))
+/// Everything in a previous `advanced:` block that `decided` doesn't replace, verbatim.
+///
+/// Every key it finds, rather than a list of the ones this module knows about: `pan_id` and
+/// `network_key` are only part of what Zigbee2MQTT generates and writes back as the network's
+/// identity — `ext_pan_id` is another, and a later Zigbee2MQTT may persist more. Losing any of
+/// them on a restart hands the radio a different network, and every paired device is gone. So the
+/// rule is to keep whatever is there unless this extension's own settings say otherwise.
+fn carried_forward(existing: Option<&str>, decided: &[&str]) -> String {
+    let Some(existing) = existing else {
+        return String::new();
+    };
+    let mut kept = String::new();
+    // Whether the key currently being read is one the settings replaced — and so whether the
+    // lines nested under it are being dropped along with it.
+    let mut replacing = false;
+    for line in existing.split_inclusive('\n') {
+        match key_of(line) {
+            Some(key) => {
+                replacing = decided.contains(&key);
+                if !replacing {
+                    kept.push_str(line);
+                }
+            }
+            // Not a key line of its own: a nested mapping's contents, a list item, or a blank
+            // line — all belonging to whichever key came before it.
+            None => {
+                if !replacing && !line.trim().is_empty() {
+                    kept.push_str(line);
+                }
+            }
+        }
+    }
+    kept
+}
+
+/// The key of one `  key: value` line at an `advanced:` body's own indentation — the convention
+/// this module writes and `existing_advanced_block` reads back. `None` for anything indented
+/// deeper (a nested mapping's own lines) or not a key at all.
+fn key_of(line: &str) -> Option<&str> {
+    let (key, _) = line.strip_prefix("  ")?.split_once(':')?;
+    (!key.is_empty() && !key.starts_with(char::is_whitespace)).then_some(key)
 }
 
 /// Extracts an existing `configuration.yaml`'s `advanced:` block body — its `  key: value` lines,
@@ -224,6 +258,38 @@ mod tests {
             yaml.contains("network_key: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]"),
             "{yaml}"
         );
+    }
+
+    /// Zigbee2MQTT's generated network identity is more than the two keys this extension has
+    /// settings for: `ext_pan_id` is part of the same thing, and dropping it on a restart loses
+    /// every paired device just as surely as dropping the network key would.
+    #[test]
+    fn everything_zigbee2mqtt_wrote_for_itself_carries_forward_not_just_the_known_keys() {
+        let previous = "  ext_pan_id: [221, 221, 221, 221, 221, 221, 221, 221]\n  \
+                        network_key: [11, 22, 33]\n  transmit_power: 20\n  \
+                        something_a_later_z2m_added: true\n";
+        let yaml = generate(&settings(), 17_883, "zigbee2mqtt", Some(previous)).expect("generates");
+        for kept in [
+            "ext_pan_id: [221, 221, 221, 221, 221, 221, 221, 221]",
+            "network_key: [11, 22, 33]",
+            "transmit_power: 20",
+            "something_a_later_z2m_added: true",
+        ] {
+            assert!(yaml.contains(kept), "lost `{kept}`: {yaml}");
+        }
+    }
+
+    /// A setting replaces its key and anything nested under it, and nothing else.
+    #[test]
+    fn a_replaced_key_takes_its_own_nested_lines_with_it() {
+        let previous = "  channel: 11\n    stale_detail: 1\n  ext_pan_id: [1, 2]\n";
+        let mut settings = settings();
+        settings.channel = Some(25);
+        let yaml = generate(&settings, 17_883, "zigbee2mqtt", Some(previous)).expect("generates");
+        assert!(yaml.contains("channel: 25"), "{yaml}");
+        assert!(!yaml.contains("channel: 11"), "{yaml}");
+        assert!(!yaml.contains("stale_detail"), "{yaml}");
+        assert!(yaml.contains("ext_pan_id: [1, 2]"), "{yaml}");
     }
 
     #[test]
