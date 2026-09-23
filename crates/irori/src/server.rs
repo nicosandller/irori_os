@@ -105,6 +105,10 @@ pub fn router(state: AppState) -> Router {
             "/api/dev/extensions/{id}/settings",
             post(set_extension_settings),
         )
+        .route(
+            "/api/dev/extensions/{id}/actions/{action_id}",
+            post(trigger_extension_action),
+        )
         .route("/api/dev/catalog", get(catalog))
         .route("/api/dev/extensions/{id}/install", post(install_official))
         .route("/api/dev/extensions/install", post(install_url))
@@ -860,6 +864,44 @@ async fn set_extension_settings(
         }
     }
     StatusCode::NO_CONTENT.into_response()
+}
+
+/// Triggers one of an extension's declared actions — the button behind "+ Add device" for a
+/// protocol that has one, e.g. Zigbee's `permit_join`. Checked against both what the extension
+/// *declares* (its manifest) and what it says is *usable right now* (`available_actions`), the
+/// same static/dynamic split the rest of the extension model uses.
+async fn trigger_extension_action(
+    State(state): State<AppState>,
+    Path((id, action_id)): Path<(ExtensionId, String)>,
+) -> Response {
+    let core = &state.0.core;
+    let Some(overview) = core.extensions().remove(&id) else {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("there's no extension `{id}`"),
+        );
+    };
+    let declared = overview
+        .info
+        .as_ref()
+        .map(|info| info.actions.as_slice())
+        .unwrap_or(&[]);
+    if !declared.iter().any(|action| action.id == action_id) {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("`{id}` has no `{action_id}` action"),
+        );
+    }
+    if !overview.available_actions.contains(&action_id) {
+        return refused(
+            StatusCode::CONFLICT,
+            format!("`{action_id}` isn't available on `{id}` right now"),
+        );
+    }
+    match core.call_action(&id, &action_id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(why) => refused(StatusCode::BAD_REQUEST, why.to_string()),
+    }
 }
 
 /// Whether a JSON Schema node is (or, through `$ref`/`anyOf`/`oneOf`/`allOf`, resolves to
@@ -2304,6 +2346,10 @@ mod tests {
             [[contributes.protocol]]
             iot_class = "local_push"
             entity_kinds = ["switch"]
+
+            [[contributes.protocol.actions]]
+            id = "open"
+            label = "Open the safe"
         "#;
         async fn run(
             settings: SafeSettings,
@@ -2322,7 +2368,14 @@ mod tests {
                 }])
                 .await;
             }
-            ctx.stopped().await;
+            // Only offered once it has a code — same idea as `zigbee`'s permit_join only
+            // showing up once it's actually found a Z2M bridge.
+            if settings.code.is_some() {
+                ctx.set_available_actions(vec!["open".to_owned()]).await;
+            }
+            while let Some(incoming) = ctx.next_action().await {
+                incoming.reply(Ok(()));
+            }
             Ok(())
         }
     }
@@ -2351,6 +2404,20 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         anyhow::bail!("the safe never had {count} waiting")
+    }
+
+    async fn available_actions_for(core: &Core, count: usize) -> anyhow::Result<()> {
+        for _ in 0..500 {
+            let available = core
+                .extensions()
+                .get(&ExtensionId::try_from("safe")?)
+                .map_or(0, |overview| overview.available_actions.len());
+            if available == count {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        anyhow::bail!("the safe never had {count} available actions")
     }
 
     /// The whole path of a secret: the page shows what's waiting, sends the secret to the place
@@ -2534,6 +2601,77 @@ mod tests {
                 "POST",
                 "/api/dev/extensions/nope/settings",
                 serde_json::json!({"code": "x"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    // --- Protocol actions (the "+ Add device" button, e.g. Zigbee's permit_join) ------------
+
+    /// An action declared in the manifest, and said to be available right now, actually runs.
+    #[tokio::test]
+    async fn a_declared_and_available_action_can_be_triggered() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        // Give it its code, which is what makes `open` available (see `Safe::run`).
+        server
+            .json(
+                "PUT",
+                "/api/dev/extensions/safe/secrets",
+                serde_json::json!({"path": ["code"], "value": "1234-5678"}),
+            )
+            .await?;
+        waiting_for(&core, 0).await?;
+        available_actions_for(&core, 1).await?;
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/actions/open",
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// An action nobody declared, one that isn't available yet, and an unknown extension are
+    /// all refused rather than reaching the extension.
+    #[tokio::test]
+    async fn an_undeclared_or_unavailable_action_is_refused() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, _) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/actions/not_a_real_action",
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Declared in the manifest, but not yet available: no code has been given.
+        let (status, _) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/actions/open",
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        let (status, _) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/nope/actions/open",
+                serde_json::json!(null),
             )
             .await?;
         assert_eq!(status, StatusCode::NOT_FOUND);

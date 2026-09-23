@@ -351,6 +351,7 @@ async fn supervise(
             iot_class: Some(contribution.iot_class),
             icon: builtin.icon.map(str::to_owned),
             config_schema: Some(builtin.config_schema.clone()),
+            actions: contribution.actions.clone(),
         },
     );
 
@@ -729,6 +730,7 @@ async fn supervise_package(
             iot_class: Some(contribution.iot_class),
             icon,
             config_schema,
+            actions: contribution.actions.clone(),
         },
     );
 

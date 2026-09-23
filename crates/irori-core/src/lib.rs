@@ -81,6 +81,10 @@ pub struct ExtensionInfo {
     /// external one's comes from its manifest's `config_schema` (`docs/specs/extensions.md` §5).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_schema: Option<serde_json::Value>,
+    /// Actions it declares in its manifest (static — whether each is *currently* usable is
+    /// `ExtensionOverview::available_actions`). Empty for an extension with none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<irori_types::ProtocolAction>,
 }
 
 fn is_present<S: serde::Serializer>(
