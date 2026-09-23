@@ -160,6 +160,11 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
     // Read before anything else: the log level and the address come from it.
     let mut store = irori_config::Store::new(&config);
     let problems = store.reload();
+    // Whether the address came from the command line (a `--bind` or an `IRORI_BIND` in the
+    // environment) rather than irori.toml. Only then does a restart carry the address it
+    // actually bound across the exec (restart_process): a config-file bind must not override a
+    // `[server].bind` edit made while Irori ran. Read now — `resolve` consumes `flags`.
+    let carry_bind = flags.bind.is_some();
     let Resolved {
         data,
         bind,
@@ -268,7 +273,7 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             if restarting.load(Ordering::SeqCst) {
                 // Never returns: the current image is replaced by a fresh `irori serve`. Only a
                 // failed exec comes back here.
-                return restart_process(address);
+                return restart_process(address, carry_bind);
             }
             served
         })
@@ -393,20 +398,27 @@ async fn shutdown_signal(restart: Arc<Notify>) {
 /// supervisor has to be asked to bring it back. It only returns if the exec itself failed, and
 /// the extensions were already stopped (`host.shutdown`), so nothing is left running twice.
 ///
-/// The address Irori actually ended up on is passed on. That matters when the original bind was
-/// port 0 (`--bind 127.0.0.1:0`): the OS picked the port, and the restarted process must bind
-/// the address that worked rather than asking for a fresh random one, or the page's port would
-/// move on every restart. Any `--bind` argument is dropped — its value, when written `--bind
-/// <addr>`, follows it — and the actual address is carried in `IRORI_BIND`, which wins over
-/// irori.toml (`resolve`). The `--bind-fallback` flag is left alone.
+/// The address Irori actually ended up on is carried in `IRORI_BIND` — which wins over
+/// irori.toml (`resolve`) — but only when the current bind came from the command line (`carry_bind`,
+/// i.e. `--bind` or an `IRORI_BIND` in the environment) and not from `irori.toml`. When it was
+/// explicit, the address must survive the restart: a `--bind 127.0.0.1:0` has the OS pick the
+/// port, and the restarted process must bind the address that worked rather than asking for a
+/// fresh random one, or the page's port would move on every restart. (A bind the fallback stepped
+/// away from a taken address is the same case.) When the address came from the config file, it is
+/// *not* carried: the restarted process resolves `[server].bind` anew, so an edit made while Irori
+/// ran — which `irori.toml` documents as taking effect on restart — applies instead of being
+/// silently overridden by the old address. Any `--bind` argument is dropped from the argv — its
+/// value, when written `--bind <addr>`, follows it — and `--bind-fallback` is left alone.
 #[cfg(unix)]
-fn restart_process(bind: SocketAddr) -> anyhow::Result<()> {
+fn restart_process(bind: SocketAddr, carry_bind: bool) -> anyhow::Result<()> {
     use std::os::unix::process::CommandExt;
     let current = std::env::current_exe().context("can't find what to restart")?;
-    let err = std::process::Command::new(current)
-        .args(restart_args())
-        .env("IRORI_BIND", bind.to_string())
-        .exec();
+    let mut command = std::process::Command::new(current);
+    command.args(restart_args());
+    if carry_bind {
+        command.env("IRORI_BIND", bind.to_string());
+    }
+    let err = command.exec();
     tracing::error!(%err, "restart failed");
     anyhow::bail!("restart failed: {err}")
 }
@@ -432,7 +444,7 @@ fn restart_args() -> Vec<std::ffi::OsString> {
 }
 
 #[cfg(not(unix))]
-fn restart_process(_bind: SocketAddr) -> anyhow::Result<()> {
+fn restart_process(_bind: SocketAddr, _carry_bind: bool) -> anyhow::Result<()> {
     anyhow::bail!("Irori can only restart itself on Unix")
 }
 

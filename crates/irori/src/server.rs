@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Path, State};
@@ -54,6 +54,10 @@ struct Inner {
     /// once the server has stopped and re-execs itself instead of just stopping.
     restart: Arc<tokio::sync::Notify>,
     restarting: Arc<AtomicBool>,
+    /// When a restart was last *accepted* this boot, for `RESTART_COOLDOWN`. Fresh (`None`) in
+    /// every new process, which is the point: the window resets with the boot, so the cap is one
+    /// restart per cooldown per boot rather than a permanent lockout.
+    last_restart: Mutex<Option<Instant>>,
 }
 
 impl AppState {
@@ -78,6 +82,7 @@ impl AppState {
             history,
             restart,
             restarting,
+            last_restart: Mutex::new(None),
         }))
     }
 }
@@ -194,19 +199,29 @@ async fn host_info(State(state): State<AppState>) -> Json<crate::host_info::Host
 }
 
 /// The Settings page asks for a restart with this header. Nothing in `/api/dev/*` has
-/// authentication yet (that is M1.5; until then `--allow-unauthenticated-lan` and the page are
-/// as open as this), so it is the pre-auth stand-in for "who is asking": only same-origin
-/// JavaScript can set it, while a cross-site `<form>` POST or a fetch that CORS preflight would
-/// stop cannot — which is exactly the case that would otherwise let any website the operator
-/// visits silently restart a loopback instance, over and over.
+/// authentication yet (that is M1.5), so this is a pre-auth stand-in and it is worth saying
+/// plainly what it is and isn't: it stops the *browser* vectors — a cross-site `<form>` POST
+/// carries no headers, and a fetch with a custom header is stopped by CORS preflight, so no
+/// website the operator happens to have open can silently restart a loopback install — but it
+/// is not authorization. A client that can already reach the server (`--allow-unauthenticated-lan`
+/// puts every network client in that position, for this route and every other `/api/dev/*`
+/// route) can simply send the header. What that client buys with it is capped by
+/// `RESTART_COOLDOWN`, and the real boundary — authentication — arrives with M1.5.
 const UI_HEADER: &str = "x-irori-ui";
+
+/// How long after an accepted restart the endpoint answers 429 instead of accepting another
+/// one. A restart is an outage, so a caller who can reach this route at all (spoofing
+/// `UI_HEADER` is trivial pre-auth) should not be able to hammer it into a permanent one; this
+/// bounds how often a boot can be taken down, and costs nothing for the real page — the button
+/// is disabled while the restart is in flight anyway.
+const RESTART_COOLDOWN: Duration = Duration::from_secs(30);
 
 /// Restarts Irori, at the Settings page's request: wake the shutdown in `serve`
 /// (crates/irori/src/main.rs), which stops the server and extensions cleanly and then starts
 /// this very binary again. The button is on the Settings page because that's where someone who
-/// can change how Irori runs is looking. A bare POST (the page's header missing) is refused:
-/// restart is a service interruption, so it is not something a random request should be able
-/// to do even where everything else in `/api/dev/*` is open.
+/// can change how Irori runs is looking. A bare POST — the page's header missing — is refused
+/// with what a caller would need to know to form a valid one, and so is a second request
+/// inside `RESTART_COOLDOWN`.
 async fn restart(State(state): State<AppState>, request: axum::extract::Request) -> Response {
     if !request
         .headers()
@@ -215,8 +230,24 @@ async fn restart(State(state): State<AppState>, request: axum::extract::Request)
     {
         return refused(
             StatusCode::FORBIDDEN,
-            "refusing without the page's header".to_owned(),
+            format!("restart needs the `{UI_HEADER}: 1` header, which only the page sends"),
         );
+    }
+    {
+        // A tiny critical section — read a clock, maybe write it — held across no await, so a
+        // plain mutex rather than anything async.
+        let mut last = state
+            .0
+            .last_restart
+            .lock()
+            .expect("a restart clock poisoned by a panic nobody handles");
+        if last.is_some_and(|at| at.elapsed() < RESTART_COOLDOWN) {
+            return refused(
+                StatusCode::TOO_MANY_REQUESTS,
+                "a restart was just asked for; Irori is still getting back up".to_owned(),
+            );
+        }
+        *last = Some(Instant::now());
     }
     state.0.restarting.store(true, Ordering::SeqCst);
     tracing::info!("restart requested; shutting down");
@@ -1471,14 +1502,46 @@ mod tests {
     /// A restart without the page's header is refused: restart is a service interruption, so a
     /// bare POST — a cross-site form, say — must not be able to take the instance down. The
     /// header is what only same-origin JavaScript can set (a form carries none, and a fetch
-    /// with a custom header is stopped by CORS preflight).
+    /// with a custom header is stopped by CORS preflight). The body says what the caller would
+    /// need to know to ask again, per the API error contract.
     #[tokio::test]
     async fn restart_without_the_page_header_is_refused() -> anyhow::Result<()> {
         let server = Server::new(core())?;
-        let (status, _) = server
+        let (status, body) = server
             .send(Request::post("/api/dev/restart").body(Body::empty())?)
             .await?;
         assert_eq!(status, StatusCode::FORBIDDEN);
+        let body = String::from_utf8(body)?;
+        assert!(
+            body.contains("x-irori-ui: 1"),
+            "the refusal should name the header and value it needs: {body}"
+        );
+        assert!(
+            !server.restarting.load(Ordering::SeqCst),
+            "a refused restart must not mark the boot as restarting"
+        );
+        Ok(())
+    }
+
+    /// A second restart inside the cooldown is refused: anyone who can reach this route at all
+    /// can spoof the page header (there is no auth yet), so the endpoint must not let a caller
+    /// stack outages. The page never hits this — its button is disabled while a restart is in
+    /// flight — so the cooldown only costs an abuser.
+    #[tokio::test]
+    async fn restart_is_refused_again_within_the_cooldown() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        // One app, so the two requests share the cooldown clock (each fresh `send` would build
+        // its own).
+        let app = server.app()?;
+        let ask = || {
+            Request::post("/api/dev/restart")
+                .header("x-irori-ui", "1")
+                .body(Body::empty())
+        };
+        let first = app.clone().oneshot(ask()?).await?;
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+        let second = app.clone().oneshot(ask()?).await?;
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
         Ok(())
     }
 
