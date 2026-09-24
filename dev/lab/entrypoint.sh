@@ -20,5 +20,11 @@ if [ "${IRORI_LAB:-}" = "1" ]; then
   /usr/share/irori/lab/matter/run.sh &
 fi
 
+# Docker starts this script as root, so HOME is /root. setpriv changes the uid and
+# leaves the environment. Zigbee's installer then runs Corepack, which writes its
+# cache under $HOME/.cache — /root/.cache, which the irori user cannot open.
+export HOME=/var/lib/irori
+export USER=irori
+export LOGNAME=irori
 exec setpriv --reuid=irori --regid=irori --init-groups --inh-caps=-all \
   /usr/local/bin/irori "$@"
