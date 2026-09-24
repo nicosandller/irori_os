@@ -82,6 +82,9 @@ USER irori
 ENV IRORI_DATA=/var/lib/irori \
     IRORI_CONFIG=/var/lib/irori/config \
     IRORI_BIND=0.0.0.0:8480 \
+    # The published port and health-check are pinned to 8480, so this must never auto-step to
+    # a neighbour that compose isn't publishing. A fallback equal to the bind says "fail loudly".
+    IRORI_BIND_FALLBACK=0.0.0.0:8480 \
     IRORI_ALLOW_UNAUTHENTICATED_LAN=true \
     IRORI_OFFICIAL_PACKAGES=/usr/share/irori/extensions
 EXPOSE 8480

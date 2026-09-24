@@ -161,6 +161,7 @@ matters while there's no sign-in, because `allow_unauthenticated_lan` is here.
 ```toml
 [server]
 bind = "0.0.0.0:8480"
+bind_fallback = "127.0.0.1:8481"  # optional: where to listen if bind is already taken
 allow_unauthenticated_lan = true
 log_level = "info"            # error, warn, info, debug, trace
 data = "/var/lib/irori"       # relative paths are relative to this directory
@@ -176,6 +177,13 @@ A command-line flag, or its environment variable, wins over the file, and the fi
 default. `[server]` is read at startup; changing it while Irori runs logs that a restart is
 needed. `[extensions] disabled` applies while Irori runs: naming an extension stops it, removing
 it starts it again.
+
+If `bind` is already in use when Irori starts, it listens on `bind_fallback` instead (or, if none
+is set, on the first free port just above `bind`, up to nine ports higher) and logs a warning with
+the address it actually chose. `--bind-fallback` and `IRORI_BIND_FALLBACK` say the same as this
+setting. Setting `bind_fallback` equal to `bind` locks the port: Irori tries only `bind` and fails
+loudly if it's taken, never stepping — the way to keep a fixed published and health-checked port
+(e.g. the dev container) on the address everything expects.
 
 `[devices] new` is what happens when a protocol finds a device nobody has decided about.
 `"ask"`, the default, holds it back, as if ignored, until a person adds it (`added = true`) or

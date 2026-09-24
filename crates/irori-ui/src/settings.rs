@@ -31,6 +31,73 @@ pub fn Settings() -> impl IntoView {
     // Which floors have their areas folded away, so a horde of areas doesn't push the rest of
     // the page down. The chevron on a floor's row flips one on and off; only the areas fold.
     let collapsed = RwSignal::new(Vec::<irori_types::FloorId>::new());
+    // Whether a restart is under way. The button stays "Restarting…" until the core answers with a
+    // different instance — the new boot's — which is how "it's back" is known. Anything about
+    // uptime would be guesswork: a process that happened to start a minute before you pressed
+    // looks exactly like one that restarted a minute later, and a slow restart could pass any
+    // freshness bound. So the core says which boot it is (`/api/health`'s boot_id), and the
+    // effect below lets the button go again the moment the boot changes. Nothing here needs to
+    // wait for the POST itself: the server answers Acceptance before it actually goes.
+    let restarting = RwSignal::new(false);
+    // The boot the restart set off from: the boot_id the health showed when the button was
+    // pressed. None — not armed.
+    let restart_from = RwSignal::new(None::<String>);
+    Effect::new(move |_| {
+        let Some(from) = restart_from.get() else {
+            return;
+        };
+        let Some(health) = live.health.get() else {
+            return;
+        };
+        // The instance we set off from is gone once the core answers with a different one. The
+        // old instance's own answers keep its own boot_id, so they can't clear the button early.
+        if health.boot_id != from {
+            restarting.set(false);
+            restart_from.set(None);
+        }
+    });
+    let restart = move || {
+        if restarting.get_untracked() {
+            return;
+        }
+        // Only arm once we know which instance we're leaving. An empty baseline is no baseline:
+        // a health answer still in flight from the old instance would then look like a boot
+        // change from empty and clear the button before the restart had happened. (The button is
+        // also disabled until the first health lands, for the same reason.)
+        let Some(boot_id) = live.health.get_untracked().map(|health| health.boot_id) else {
+            return;
+        };
+        if !window()
+            .confirm_with_message(
+                "Restart Irori? It stays where it runs while it starts again (same container, \
+                 same service) — the page just goes quiet for a few seconds, and every device \
+                 reconnects.",
+            )
+            .unwrap_or(false)
+        {
+            return;
+        }
+        restarting.set(true);
+        restart_from.set(Some(boot_id));
+        spawn_local(async move {
+            match api::restart().await {
+                // The new instance is coming up; the page notices it on its own.
+                api::RestartSent::Accepted => {}
+                // The living server answered no — 403, 429... — so nothing is restarting: give
+                // the button back and say why.
+                api::RestartSent::Refused(why) => {
+                    restarting.set(false);
+                    restart_from.set(None);
+                    trouble.set(Some(why));
+                }
+                // No answer at all. It may be the restart under way (the old server drained as
+                // its answer was on its way), so the baseline stays armed and clears only when a
+                // different boot answers — a transport failure must not re-arm the button before
+                // the new boot is verified.
+                api::RestartSent::Lost => {}
+            }
+        });
+    };
 
     // Only the areas, floors and the devices in them, not what those devices are reporting. A
     // page that redrew every time a sensor spoke would throw away a half-typed name with it.
@@ -94,6 +161,18 @@ pub fn Settings() -> impl IntoView {
     view! {
         <div class="page-head">
             <h1>"Settings"</h1>
+            <div class="page-actions">
+                <button
+                    type="button"
+                    // Disabled while a restart is under way, and until the first health says which
+                    // instance this is — arming without one would let the old instance's own
+                    // answer clear the button before the restart happened.
+                    disabled=move || restarting.get() || live.health.get().is_none()
+                    on:click=move |_| restart()
+                >
+                    {move || if restarting.get() { "Restarting…" } else { "Restart" }}
+                </button>
+            </div>
         </div>
         <p class="lede">
             "The instance itself, what's where in the home, and the machine all of it runs on."
