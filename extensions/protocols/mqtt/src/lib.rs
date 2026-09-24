@@ -351,7 +351,7 @@ mod tests {
     }
 
     fn settings() -> Settings {
-        serde_json::from_value(serde_json::json!({ "host": "test-broker" })).expect("valid")
+        serde_json::from_value(serde_json::json!({ "host": "test-broker.local" })).expect("valid")
     }
 
     fn message(topic: &str, payload: &[u8]) -> Message {

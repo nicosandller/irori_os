@@ -1300,6 +1300,13 @@ async fn install_official(
         let _ = std::fs::remove_dir_all(&stage);
         return refused(StatusCode::BAD_GATEWAY, why);
     }
+    // The catalog said what this extension is supposed to be. The files just staged are what
+    // would actually run, and a release asset or a package beside the binary can disagree with
+    // the catalog. The manifest's own id and its permissions decide.
+    if let Err((status, why)) = unapproved_full_access(&stage, Some(&id), approved) {
+        let _ = std::fs::remove_dir_all(&stage);
+        return refused(status, why);
+    }
     match state.0.host.install_package(stage.clone()) {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(why) => {
@@ -1337,6 +1344,7 @@ fn full_access_refusal(id: &ExtensionId) -> String {
 /// says, and a manifest we couldn't check might be the one that needed the approval.
 fn unapproved_full_access(
     dir: &std::path::Path,
+    expected: Option<&ExtensionId>,
     approved: bool,
 ) -> Result<(), (StatusCode, String)> {
     let path = dir.join("irori-extension.toml");
@@ -1344,6 +1352,17 @@ fn unapproved_full_access(
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("{}: {e}", path.display())))?;
     let manifest =
         irori_protocol::parse_manifest(&text).map_err(|why| (StatusCode::BAD_REQUEST, why))?;
+    if let Some(expected) = expected
+        && &manifest.extension.id != expected
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "the package's manifest says `{}`, not `{expected}`",
+                manifest.extension.id
+            ),
+        ));
+    }
     if manifest.permissions.full_access() && !approved {
         Err((
             StatusCode::CONFLICT,
@@ -1379,7 +1398,7 @@ async fn install_url(State(state): State<AppState>, Json(body): Json<InstallUrl>
         let _ = std::fs::remove_dir_all(&dest);
         return refused(StatusCode::BAD_GATEWAY, why);
     }
-    if let Err((status, why)) = unapproved_full_access(&dest, body.approve_full_access) {
+    if let Err((status, why)) = unapproved_full_access(&dest, None, body.approve_full_access) {
         let _ = std::fs::remove_dir_all(&dest);
         return refused(status, why);
     }
@@ -2213,14 +2232,19 @@ mod tests {
         )
         .expect("manifest");
 
-        let refused = unapproved_full_access(dir.path(), false).expect_err("needs approval");
+        let refused = unapproved_full_access(dir.path(), None, false).expect_err("needs approval");
         assert_eq!(refused.0, StatusCode::CONFLICT);
         assert!(
             refused.1.contains("full access to this machine"),
             "{}",
             refused.1
         );
-        assert!(unapproved_full_access(dir.path(), true).is_ok());
+        assert!(unapproved_full_access(dir.path(), None, true).is_ok());
+        let expected = ExtensionId::try_from("zigbee").expect("valid");
+        let wrong = unapproved_full_access(dir.path(), Some(&expected), true)
+            .expect_err("the manifest is toolbox, not zigbee");
+        assert_eq!(wrong.0, StatusCode::CONFLICT);
+        assert!(wrong.1.contains("not `zigbee`"), "{}", wrong.1);
 
         std::fs::write(
             dir.path().join("irori-extension.toml"),
@@ -2241,7 +2265,7 @@ mod tests {
         )
         .expect("rewrite the manifest");
         assert!(
-            unapproved_full_access(dir.path(), false).is_ok(),
+            unapproved_full_access(dir.path(), None, false).is_ok(),
             "lan alone is not full access"
         );
     }

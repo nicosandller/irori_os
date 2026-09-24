@@ -16,6 +16,24 @@ more than volume: one verified finding beats five guesses.
 
 ## Decisions already made (don't flag these)
 
+- **Zigbee's full access is shown, and install refuses to proceed without an acknowledgement.**
+  `host_shell = true` in `extensions/protocols/zigbee/irori-extension.toml` is the declaration.
+  The catalog carries `full_access` (`extensions/official.toml`, checked against the manifest by
+  `the_catalog_says_full_access_exactly_when_the_manifest_does`). The Extensions card says
+  "Full access to this machine" and Install asks first. Both install routes
+  (`POST /api/dev/extensions/{id}/install` and `POST /api/dev/extensions/install`) read the
+  staged package's own manifest and refuse when it has full access unless the request sends
+  `approve_full_access`. The official route also refuses a staged manifest whose id isn't the
+  one that was requested. There are no accounts yet, so this acknowledgement is not an owner
+  check. Don't report that the catalog or the card omits the permission, or that install
+  proceeds without it.
+- **An MQTT broker host is judged by what was typed, not by a DNS lookup.** `ensure_lan_host`
+  accepts a private, loopback, or link-local address, `localhost`, or a name under `.local`,
+  `.home.arpa`, `.internal`, `.lan`, or `.home`. A bare name such as `broker` is refused: a
+  search domain or `/etc/hosts` can send it off the network, and settings are read before any
+  connection exists. Don't ask for a lookup at that point. `rumqttc` resolves the name again
+  when it connects, so a lookup here would not be the address the connection uses.
+
 - `irori-core` depends on `irori-protocol`. That crate is the protocol SDK (the
   `Protocol` trait), not a protocol extension; the core's extension host needs it. What
   ROADMAP §2.1 forbids is `irori-protocol-*` crates and protocol libraries, which

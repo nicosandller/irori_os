@@ -17,11 +17,12 @@ use serde::{Deserialize, Deserializer};
 pub struct Settings {
     /// The broker's hostname or IP address, on the local network.
     ///
-    /// This extension declares `lan` and nothing else, so the address is checked here: a private,
-    /// loopback, or link-local IP, or a name that only exists on the local network (a single
-    /// label, or one ending in `.local`, `.home.arpa`, `.internal`, `.lan`, `.home`, or
-    /// `localhost`). A public address or an internet hostname is refused. JSON Schema can't
-    /// express that, so this check is what actually enforces it.
+    /// This extension declares `lan` and nothing else, so the address is checked here, by what
+    /// is written, not by looking it up. A private, loopback, or link-local IP is accepted, as
+    /// is `localhost` or a name under `.local`, `.home.arpa`, `.internal`, `.lan`, or `.home`.
+    /// A bare name such as `broker` is refused: a search domain or `/etc/hosts` can point it at
+    /// a public address, and this check does not resolve names. A public address or an internet
+    /// hostname is refused. JSON Schema can't express that, so this check is what enforces it.
     #[serde(deserialize_with = "local_host")]
     pub host: String,
     #[serde(default = "default_port")]
@@ -118,9 +119,9 @@ fn is_lan_name(name: &str) -> bool {
     if !name.split('.').all(label_ok) {
         return false;
     }
-    if !name.contains('.') {
-        return true;
-    }
+    // A bare label is not a local name. `broker` can be completed by a DNS search domain, or
+    // mapped in `/etc/hosts`, to a public address. Only the names defined to be local are
+    // accepted without a lookup, and this check does not resolve.
     LOCAL_DOMAINS
         .iter()
         .any(|domain| name == *domain || name.ends_with(&format!(".{domain}")))
@@ -186,7 +187,6 @@ mod tests {
             "::1",
             "fd12::1",
             "localhost",
-            "test-broker",
             "nas.local",
             "mqtt.home.arpa",
         ] {
@@ -198,6 +198,8 @@ mod tests {
             "1.1.1.1",
             "2001:db8::1",
             "broker.example.com",
+            "broker",
+            "test-broker",
             "",
         ] {
             let error = serde_json::from_value::<Settings>(serde_json::json!({ "host": host }))

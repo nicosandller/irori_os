@@ -17,7 +17,7 @@
       "default": "homeassistant"
     },
     "host": {
-      "description": "The broker's hostname or IP address, on the local network.\n\nThis extension declares `lan` and nothing else, so the address is checked here: a private,\nloopback, or link-local IP, or a name that only exists on the local network (a single\nlabel, or one ending in `.local`, `.home.arpa`, `.internal`, `.lan`, `.home`, or\n`localhost`). A public address or an internet hostname is refused. JSON Schema can't\nexpress that, so this check is what actually enforces it.",
+      "description": "The broker's hostname or IP address, on the local network.\n\nThis extension declares `lan` and nothing else, so the address is checked here, by what\nis written, not by looking it up. A private, loopback, or link-local IP is accepted, as\nis `localhost` or a name under `.local`, `.home.arpa`, `.internal`, `.lan`, or `.home`.\nA bare name such as `broker` is refused: a search domain or `/etc/hosts` can point it at\na public address, and this check does not resolve names. A public address or an internet\nhostname is refused. JSON Schema can't express that, so this check is what enforces it.",
       "type": "string"
     },
     "password": {
