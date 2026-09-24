@@ -62,11 +62,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp /target/release/irori-ext-mqtt /official/mqtt/bin/ \
     && cp extensions/protocols/zigbee/irori-extension.toml extensions/protocols/zigbee/config.schema.json /official/zigbee/ \
     && cp /target/release/irori-ext-zigbee /official/zigbee/bin/
-# Lab emulators are not part of the Irori workspace. Static musl, so this Debian
-# stage can run the binary without a musl libc package.
+# Lab emulators are not part of the Irori workspace. The musl target already
+# links the finished binary statically, same as irori above. Forcing that
+# through RUSTFLAGS also forces it onto proc-macro crates (prost-derive),
+# which musl cannot build.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/target-lab \
-    CARGO_TARGET_DIR=/target-lab RUSTFLAGS="-C target-feature=+crt-static" \
+    CARGO_TARGET_DIR=/target-lab \
     cargo build --locked --release --manifest-path dev/lab/esphome/Cargo.toml \
     && cp /target-lab/release/irori-lab-esphome /irori-lab-esphome
 
