@@ -1,4 +1,8 @@
 /target
+# The lab ESPHome crate is its own workspace, so its build output is not under /target.
+/dev/lab/esphome/target
+# Python bytecode from running the lab Zigbee tests.
+**/__pycache__/
 # Default runtime data dir of `irori serve` (SQLite database)
 /data
 # Default config dir of `irori serve`. Yours to keep in git if you want to — just not in this

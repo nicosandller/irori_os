@@ -1,0 +1,72 @@
+# Names and rooms for the lab house. Device ids are `device_id_for` of the
+# protocol and the IEEE or MAC in catalog.toml. Copied only into an empty volume.
+
+[devices.zigbee_0x0211000000000001]
+name = "Main living room switch"
+area = "living_room"
+
+[devices.zigbee_0x0211000000000002]
+name = "Presence sensor"
+area = "living_room"
+
+[devices.zigbee_0x0211000000000003]
+name = "Office window contact"
+area = "office_room"
+
+[devices.zigbee_0x0211000000000004]
+name = "Second bedroom window"
+area = "second_bedroom"
+
+[devices.zigbee_0x0211000000000005]
+name = "Second bedroom window 2"
+area = "second_bedroom"
+
+[devices.zigbee_0x0211000000000006]
+name = "temperature sensor -1"
+area = "office_room"
+
+[devices.zigbee_0x0211000000000007]
+name = "Temperature sensor - 2"
+area = "shoe_closet"
+
+[devices.zigbee_0x0211000000000008]
+name = "Temperature sensor - Outdoor 1"
+
+[devices.zigbee_0x0211000000000009]
+name = "Vibration sensor - 1"
+area = "living_room"
+
+[devices.zigbee_0x021100000000000a]
+name = "Vibration sensor - 2"
+area = "approach"
+
+[devices.zigbee_0x021100000000000b]
+name = "Kitchen smoke alarm"
+area = "kitchen"
+
+[devices.zigbee_0x021100000000000c]
+name = "Water sensor - 1"
+area = "nook_room"
+
+[devices.zigbee_0x021100000000000d]
+name = "Water sensor - 2"
+area = "shoe_closet"
+
+[devices.zigbee_0x021100000000000e]
+name = "Repeater 1"
+
+[devices.esphome_02_11_00_00_d8_21]
+name = "Bluetooth Proxy d82104"
+area = "living_room"
+
+[devices.esphome_02_11_00_00_2b_09]
+name = "Bluetooth Proxy 2b0900"
+area = "living_room"
+
+[devices.esphome_02_11_00_00_00_03]
+name = "Living room board"
+area = "living_room"
+
+[devices.esphome_02_11_00_00_00_04]
+name = "kitchen bt proxy"
+area = "kitchen"
