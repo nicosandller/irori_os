@@ -765,6 +765,78 @@ async fn a_failures_reason_is_what_the_extension_itself_said() {
     host.shutdown().await;
 }
 
+/// A dying process usually goes on logging routine things after the thing that actually went
+/// wrong — and an extension logging in colour writes escape sequences the page would show as
+/// text. Neither belongs in the one line a card has room for.
+#[tokio::test]
+async fn a_reason_skips_routine_chatter_and_carries_no_terminal_codes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let package = packages_dir.path().join("chatty");
+    std::fs::create_dir_all(package.join("bin")).expect("made the package dir");
+    std::fs::write(
+        package.join("irori-extension.toml"),
+        r#"
+            [extension]
+            id = "chatty"
+            name = "Chatty"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["light"]
+            run = { command = "bin/prog" }
+        "#,
+    )
+    .expect("wrote the manifest");
+    let program = package.join("bin/prog");
+    // The real complaint, in colour, then two lines of unwinding noise after it.
+    std::fs::write(
+        &program,
+        "#!/bin/sh
+         printf '\\033[31mno dongle at /dev/ttyUSB0\\033[0m\\n' >&2
+         echo 'INFO  disconnected: connection closed by peer' >&2
+         echo 'INFO  shutting down' >&2
+         exit 1
+",
+    )
+    .expect("wrote the program");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("made it executable");
+
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("starts");
+
+    eventually(
+        "the reason is the complaint, not the noise after it",
+        || {
+            matches!(
+                status(&core, "chatty"),
+                Some(ExtensionStatus::Failed { reason, .. }) if reason.contains("no dongle")
+            )
+        },
+    )
+    .await;
+    let Some(ExtensionStatus::Failed { reason, .. }) = status(&core, "chatty") else {
+        panic!("failed");
+    };
+    assert!(!reason.contains("disconnected"), "{reason}");
+    assert!(
+        !reason.contains('\u{1b}'),
+        "terminal codes reached the page: {reason:?}"
+    );
+
+    host.shutdown().await;
+}
+
 /// A manifest that's fine on its own but names a `config_schema` that isn't there (or isn't
 /// valid JSON) mustn't start with settings quietly unchecked and its form quietly hidden — it's
 /// rejected the same way a manifest missing `run.command` already is. `run.command` here never

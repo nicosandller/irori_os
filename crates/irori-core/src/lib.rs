@@ -138,6 +138,39 @@ fn check_key(key: &str) -> Result<(), Rejected> {
     Ok(())
 }
 
+/// Whether a log line is an extension's ordinary chatter rather than something it was trying to
+/// tell anyone. Matched loosely on purpose: extensions log in whatever format they please, and
+/// the cost of being wrong is one line of a reason, not a wrong decision.
+fn is_routine(line: &str) -> bool {
+    ["INFO", "DEBUG", "TRACE"]
+        .iter()
+        .any(|level| line.contains(level))
+}
+
+/// A line without its terminal colour codes. An extension logging in colour — anything built on
+/// `tracing` writing to a pipe it believes is a terminal — otherwise puts raw escape sequences
+/// into a reason the page shows as text.
+fn without_colour(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        // `ESC [ … <final>`: parameters and separators, ended by any letter or `@`-range byte.
+        if chars.next() != Some('[') {
+            continue;
+        }
+        for c in chars.by_ref() {
+            if !matches!(c, '0'..='9' | ';' | ':' | '?') {
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// Drops an entity's call lock from the map once nobody else is waiting for it, so the map
 /// doesn't grow with every entity ever called.
 struct ReleaseWhenIdle<'a> {
@@ -854,11 +887,11 @@ impl Core {
     /// Keeps one line an extension wrote to its own stderr, dropping the oldest once
     /// [`LOG_LINES_KEPT`] are held.
     pub fn log_line(&self, extension: &ExtensionId, line: &str) {
-        let line = line.trim_end();
+        let line = without_colour(line.trim_end());
         if line.is_empty() {
             return;
         }
-        let mut line = line.to_owned();
+        let mut line = line;
         if line.len() > LOG_LINE_MAX {
             line.truncate(
                 (0..=LOG_LINE_MAX)
@@ -885,12 +918,23 @@ impl Core {
             .unwrap_or_default()
     }
 
-    /// The last thing an extension said, for a failure that would otherwise read only as an exit
-    /// status. `None` when it said nothing at all, which is its own kind of answer.
+    /// The last thing an extension said that was worth saying, for a failure that would
+    /// otherwise read only as an exit status. `None` when it said nothing at all.
+    ///
+    /// Not simply the final line: a dying process often prints its actual complaint and then goes
+    /// on logging routine things while it unwinds — a broker noticing the connection drop, say.
+    /// Lines an extension itself marked `INFO`, `DEBUG` or `TRACE` are skipped in favour of the
+    /// last one it didn't, which is either an error it logged or something it wrote straight to
+    /// stderr on its way out. If everything it said was routine, the last line stands: an
+    /// unhelpful reason still beats none.
     pub fn last_words(&self, extension: &ExtensionId) -> Option<String> {
-        read(&self.0.logs)
-            .get(extension)
-            .and_then(|kept| kept.back().cloned())
+        let logs = read(&self.0.logs);
+        let kept = logs.get(extension)?;
+        kept.iter()
+            .rev()
+            .find(|line| !is_routine(line))
+            .or_else(|| kept.back())
+            .cloned()
     }
 
     /// Forgets what an extension said — on uninstall, so a reinstall doesn't inherit the last
