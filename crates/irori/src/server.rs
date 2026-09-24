@@ -969,42 +969,70 @@ async fn set_extension_settings(
         secrets_to_set.push((key, text.to_owned()));
     }
 
-    if !non_secret.is_empty() {
-        let saved = state
+    // One restart for the whole form. Writing the settings file and then the secrets restarts
+    // the extension in between, and Zigbee2MQTT would generate a network key in that gap,
+    // before the key from the form arrived. A form with only one of the two is already a
+    // single write.
+    let saved = if !non_secret.is_empty() && !secrets_to_set.is_empty() {
+        state
+            .0
+            .config
+            .edit_extension_with_secrets(
+                core,
+                &id,
+                |file| {
+                    write_non_secrets(file, &non_secret);
+                    Ok(())
+                },
+                &secrets_to_set,
+            )
+            .await
+    } else if !non_secret.is_empty() {
+        state
             .0
             .config
             .edit_extension(core, &id, |file| {
-                for (key, value) in non_secret.clone() {
-                    // TOML has no `null`: a schema-valid `null` for an `Option<T>` field means
-                    // "leave this unset," which in the file is the key's *absence*, not a value.
-                    if value.is_null() {
-                        file.remove(&key);
-                    } else {
-                        file.insert(key, value);
-                    }
-                }
+                write_non_secrets(file, &non_secret);
                 Ok(())
             })
-            .await;
-        if let Err(e) = saved {
-            return edit_failed(e);
-        }
-    }
-    for (key, text) in secrets_to_set {
-        let saved = state
+            .await
+    } else if !secrets_to_set.is_empty() {
+        state
             .0
             .config
             .edit_secrets(core, |secrets| {
-                secrets
-                    .set(&id, std::slice::from_ref(&key), text.clone())
-                    .map_err(|e| Refused(e.to_string()))
+                for (key, text) in &secrets_to_set {
+                    secrets
+                        .set(&id, std::slice::from_ref(key), text.clone())
+                        .map_err(|e| Refused(e.to_string()))?;
+                }
+                Ok(())
             })
-            .await;
-        if let Err(e) = saved {
-            return edit_failed(e);
-        }
+            .await
+    } else {
+        Ok(())
+    };
+    if let Err(e) = saved {
+        return edit_failed(e);
     }
     StatusCode::NO_CONTENT.into_response()
+}
+
+/// Puts the non-secret half of a settings form into the extension's file.
+///
+/// TOML has no `null`: a schema-valid `null` for an `Option<T>` field means "leave this unset",
+/// which in the file is the key's absence, not a value.
+fn write_non_secrets(
+    file: &mut serde_json::Map<String, serde_json::Value>,
+    non_secret: &serde_json::Map<String, serde_json::Value>,
+) {
+    for (key, value) in non_secret {
+        if value.is_null() {
+            file.remove(key);
+        } else {
+            file.insert(key.clone(), value.clone());
+        }
+    }
 }
 
 /// Triggers one of an extension's declared actions — the button behind "+ Add device" for a

@@ -160,6 +160,44 @@ impl Config {
         Ok(made)
     }
 
+    /// Writes one extension's settings file and its secrets, then tells the core once.
+    ///
+    /// [`Self::edit_extension`] and [`Self::edit_secrets`] each tell the core, and the core
+    /// restarts an extension whose settings changed. A form that sets both — Zigbee's serial
+    /// port and its network key — must not restart between the two writes. The first start
+    /// would see the port and no key, and Zigbee2MQTT would generate a network identity of its
+    /// own before the key arrived.
+    pub async fn edit_extension_with_secrets<T>(
+        &self,
+        core: &Core,
+        extension: &irori_types::ExtensionId,
+        change_file: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<T, Refused>,
+        secrets_to_set: &[(String, String)],
+    ) -> Result<T, EditError> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+
+        let mut file = store.extension_file(extension);
+        let made = change_file(&mut file).map_err(EditError::Refused)?;
+        let mut secrets = store.secrets();
+        for (key, text) in secrets_to_set {
+            secrets
+                .set(extension, std::slice::from_ref(key), text.clone())
+                .map_err(|e| EditError::Refused(Refused(e.to_string())))?;
+        }
+        if store
+            .save_extension(extension, &file)
+            .map_err(EditError::Io)?
+        {
+            tracing::info!(file = %format!("extensions/{extension}.toml"), "config written");
+        }
+        if store.save_secrets(&secrets).map_err(EditError::Io)? {
+            tracing::info!(file = "secrets.toml", "config written");
+        }
+        core.apply_extension_settings(store.extension_settings());
+        Ok(made)
+    }
+
     /// Picks up edits made outside Irori. Runs until the process ends.
     pub async fn watch(self, core: Core) {
         let started = Started(self.0.lock().await.irori().server);
@@ -524,6 +562,47 @@ mod tests {
         );
         let extension = std::fs::read_to_string(dir.path().join("extensions/helpers.toml"))?;
         assert!(extension.contains("toggles"), "{extension}");
+        Ok(())
+    }
+
+    /// A form that sets a plain field and a secret is one update. Two edits would restart the
+    /// extension after the plain field and before the secret, which is how Zigbee2MQTT would
+    /// invent a network key of its own.
+    #[tokio::test]
+    async fn a_setting_and_a_secret_are_written_together() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let core = core();
+        let config = Config::open_dir(dir.path(), &core);
+        let helpers: irori_types::ExtensionId = "helpers".parse().expect("valid");
+
+        config
+            .edit_extension_with_secrets(
+                &core,
+                &helpers,
+                |file| {
+                    file.insert("serial_port".into(), serde_json::json!("/dev/ttyUSB0"));
+                    Ok(())
+                },
+                &[(
+                    "network_key".into(),
+                    "00112233445566778899aabbccddeeff".into(),
+                )],
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+        let extension = std::fs::read_to_string(dir.path().join("extensions/helpers.toml"))?;
+        assert!(extension.contains("serial_port"), "{extension}");
+        assert!(
+            !extension.contains("network_key"),
+            "the secret must stay out of the settings file:\n{extension}"
+        );
+        let secrets = std::fs::read_to_string(dir.path().join("secrets.toml"))?;
+        assert!(secrets.contains("network_key"), "{secrets}");
+        assert!(
+            !secrets.contains("serial_port"),
+            "the plain setting must stay out of secrets.toml:\n{secrets}"
+        );
         Ok(())
     }
 
