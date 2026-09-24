@@ -160,6 +160,7 @@ pub fn router(state: AppState) -> Router {
             axum::routing::delete(remove_toggle),
         )
         .route("/api/dev/extensions/{id}/icon.svg", get(extension_icon))
+        .route("/api/dev/extensions/{id}/log", get(extension_log))
         .fallback(get(ui::serve))
         .with_state(state)
 }
@@ -884,6 +885,20 @@ async fn extension_icon(State(state): State<AppState>, Path(id): Path<ExtensionI
             .into_response(),
         None => refused(StatusCode::NOT_FOUND, format!("`{id}` has no icon")),
     }
+}
+
+/// What an extension has lately said for itself: the tail of its own stderr, oldest line first.
+///
+/// Every failure a person can see should be one they can act on, and an extension's own output
+/// is usually the only place the real reason is written down (`docs/specs/extensions.md` §8).
+/// The card's reason line carries the last of these; this is the rest of them, for when one line
+/// isn't enough.
+///
+/// Always a 200, even for an extension that has said nothing or isn't installed: "nothing to
+/// show" is an answer, and a 404 here would make the page decide whether an empty log is an
+/// error. A built-in has no process of its own and so never has anything here.
+async fn extension_log(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {
+    axum::Json(serde_json::json!({ "lines": state.0.core.log(&id) })).into_response()
 }
 
 /// An extension's own settings, given as one JSON object matching its `config_schema` — the

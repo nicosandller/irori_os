@@ -232,6 +232,7 @@ impl ExtensionHost {
         let protocol = ProtocolId::try_from(id.as_str()).map_err(|e| e.to_string())?;
         self.inner.core.remove_protocol(&protocol);
         self.inner.core.clear_extension_storage(id);
+        self.inner.core.forget_log(id);
         self.inner.core.forget_extension(id);
         let dir = self.inner.packages_dir.join(id.as_str());
         if dir.is_dir() {
@@ -318,6 +319,51 @@ async fn settings_changed(
     {
         // The core is gone, and with it any chance of new settings.
         std::future::pending::<()>().await;
+    }
+}
+
+/// Reads an extension's stderr for as long as it runs, keeping the tail in the core and echoing
+/// each line to Irori's own log.
+///
+/// This task existing is not optional. The pipe is what `spawn` gives the host in place of
+/// inheriting stderr, and a pipe nobody reads fills up: the extension then blocks on its own next
+/// line of output, and for anything as chatty as Zigbee2MQTT that is a hang within seconds.
+///
+/// A line is kept whatever the extension's own exit status turns out to be. Most of the time
+/// nothing reads it; the point is the times something has gone wrong, when this is the only
+/// account of what.
+async fn keep_what_it_says(
+    core: Core,
+    extension: ExtensionId,
+    stderr: tokio::process::ChildStderr,
+) {
+    use tokio::io::AsyncBufReadExt as _;
+
+    let mut lines = tokio::io::BufReader::new(stderr).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => {
+                core.log_line(&extension, &line);
+                // At info, not error: most of what comes through here is an extension's ordinary
+                // chatter, and a subprocess's own log level isn't Irori's to judge.
+                tracing::info!(%extension, "{line}");
+            }
+            // The child closed its stderr, or wrote something that isn't UTF-8 — either way
+            // there's nothing further to read from this process.
+            Ok(None) | Err(_) => return,
+        }
+    }
+}
+
+/// `reason`, with what the extension last said for itself appended when it said anything.
+///
+/// `exited exit status: 1` describes what the operating system observed and nothing a person can
+/// act on. The extension itself almost always printed the real reason — a missing serial port, a
+/// setting it couldn't parse — a moment before dying, and that is what belongs on its card.
+fn with_last_words(core: &Core, extension: &ExtensionId, reason: String) -> String {
+    match core.last_words(extension) {
+        Some(said) if !reason.contains(&said) => format!("{reason} — {said}"),
+        _ => reason,
     }
 }
 
@@ -874,8 +920,8 @@ async fn supervise_package(
             }
         }
         core.set_status(&extension, crate::ExtensionStatus::Starting);
-        let mut child = match spawn(&dir, &run) {
-            Ok(child) => child,
+        let (mut child, stderr) = match spawn(&dir, &run) {
+            Ok(started) => started,
             Err(reason) => {
                 tracing::error!(%extension, %reason, "can't start extension");
                 core.set_status(
@@ -893,6 +939,10 @@ async fn supervise_package(
                 }
             }
         };
+        // Started before the first word is sent, and kept for exactly as long as this child
+        // lives: the pipe has to be read continuously or it fills and the extension blocks on
+        // its own next line of output.
+        let reading = tokio::spawn(keep_what_it_says(core.clone(), extension.clone(), stderr));
         if let Err(reason) = child
             .send(&ToExt::Hello {
                 settings: started_with.clone(),
@@ -901,10 +951,11 @@ async fn supervise_package(
         {
             tracing::error!(%extension, %reason, "can't talk to extension");
             let _ = child.child.start_kill();
+            reading.abort();
             core.set_status(
                 &extension,
                 crate::ExtensionStatus::Failed {
-                    reason,
+                    reason: with_last_words(&core, &extension, reason),
                     retry_at: None,
                 },
             );
@@ -947,6 +998,8 @@ async fn supervise_package(
         core.set_available_actions(&extension, Vec::new());
         let _ = child.send(&ToExt::Stop).await;
         let _ = child.child.start_kill();
+        // After the process is on its way out, so anything it said on the way is already kept.
+        reading.abort();
         match outcome {
             Outcome::Stopped => {
                 tracing::info!(%extension, "extension stopped");
@@ -963,6 +1016,9 @@ async fn supervise_package(
                 continue;
             }
             Outcome::Ended(reason) => {
+                // What the operating system saw, plus what the extension itself said about it:
+                // `exited exit status: 1` alone is not something anyone can act on.
+                let reason = with_last_words(&core, &extension, reason);
                 tracing::error!(%extension, %reason, "extension failed; restarting it");
                 let retry_at = core
                     .now()

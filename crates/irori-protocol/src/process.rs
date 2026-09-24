@@ -16,7 +16,7 @@ use irori_types::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::oneshot;
 
 use crate::host::{Op, Reply, Reports};
@@ -399,8 +399,14 @@ pub struct ExtProcess {
     pub stdout: BufReader<ChildStdout>,
 }
 
-/// Starts the package's `run.command` with stdin/stdout piped for the protocol.
-pub fn spawn(package_dir: &Path, run: &RunCommand) -> Result<ExtProcess, String> {
+/// Starts the package's `run.command` with stdin/stdout piped for the protocol, and its stderr
+/// piped for the host to read.
+///
+/// The stderr handle comes back separately rather than inside [`ExtProcess`] because it isn't
+/// part of talking to the extension: the host hands it straight to a reader task and never looks
+/// at it again. **Whoever takes it must read it continuously** — an undrained pipe fills, and the
+/// child blocks forever on its next line of output, which for a chatty extension is seconds.
+pub fn spawn(package_dir: &Path, run: &RunCommand) -> Result<(ExtProcess, ChildStderr), String> {
     let command = package_dir.join(run.command.as_str());
     if !command.is_file() {
         return Err(format!("package has no program at `{}`", command.display()));
@@ -418,7 +424,10 @@ pub fn spawn(package_dir: &Path, run: &RunCommand) -> Result<ExtProcess, String>
         .args(&run.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        // Piped, not inherited: an extension's own diagnostics are the only account of why it
+        // failed, and inheriting them sends them to Irori's stderr where nothing can show them
+        // to the person looking at the extension's card.
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("couldn't start {}: {e}", command.display()))?;
@@ -430,11 +439,18 @@ pub fn spawn(package_dir: &Path, run: &RunCommand) -> Result<ExtProcess, String>
         .stdout
         .take()
         .ok_or_else(|| "child stdout missing".to_owned())?;
-    Ok(ExtProcess {
-        child,
-        stdin,
-        stdout: BufReader::new(stdout),
-    })
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "child stderr missing".to_owned())?;
+    Ok((
+        ExtProcess {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+        },
+        stderr,
+    ))
 }
 
 impl ExtProcess {
@@ -507,13 +523,42 @@ mod tests {
             command: PackagePath::try_from("bin/prog").expect("a valid package path"),
             args: Vec::new(),
         };
-        let process = spawn(Path::new("pkg"), &run).expect(
+        let (process, _stderr) = spawn(Path::new("pkg"), &run).expect(
             "spawn should resolve `pkg/bin/prog` against this process's cwd, \
              not the child's post-chdir one",
         );
         assert!(
             process.child.id().is_some(),
             "the program should have started"
+        );
+    }
+
+    /// The host has to be able to read what an extension says for itself: inherited stderr goes
+    /// to Irori's own output, where nothing can put it on the extension's card.
+    #[tokio::test]
+    async fn spawn_hands_back_the_childs_own_stderr_to_read() {
+        use std::os::unix::fs::PermissionsExt;
+
+        use tokio::io::AsyncBufReadExt as _;
+
+        let tmp = tempfile::tempdir().expect("a temp dir");
+        std::fs::create_dir_all(tmp.path().join("bin")).expect("mkdir");
+        let program = tmp.path().join("bin/prog");
+        std::fs::write(&program, "#!/bin/sh\necho 'no such port' >&2\nexit 1\n")
+            .expect("write the program");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+
+        let run = RunCommand {
+            command: PackagePath::try_from("bin/prog").expect("a valid package path"),
+            args: Vec::new(),
+        };
+        let (_process, stderr) = spawn(tmp.path(), &run).expect("starts");
+
+        let mut lines = tokio::io::BufReader::new(stderr).lines();
+        assert_eq!(
+            lines.next_line().await.expect("readable"),
+            Some("no such port".to_owned())
         );
     }
 }

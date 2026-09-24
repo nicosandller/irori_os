@@ -8,7 +8,7 @@ mod home;
 mod host;
 mod services;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
@@ -209,7 +209,20 @@ struct Shared {
     disabled: watch::Sender<BTreeSet<ExtensionId>>,
     /// Each protocol's small private values (`docs/specs/protocols.md` §5).
     storage: RwLock<Arc<dyn irori_protocol::Storage>>,
+    /// The last lines each extension wrote to its own stderr, newest last. An extension that
+    /// fails says why in its own words and nowhere else; keeping the tail is what lets the card
+    /// show a real reason instead of an exit status, and what the log window reads.
+    logs: RwLock<BTreeMap<ExtensionId, VecDeque<String>>>,
 }
+
+/// How many lines of an extension's own output are kept. Enough for a stack trace or a
+/// configuration dump to be readable in full, few enough that a chatty extension — Zigbee2MQTT
+/// forwards everything it prints — can't grow this without bound.
+pub const LOG_LINES_KEPT: usize = 400;
+
+/// The longest line kept, in bytes. A runaway line is truncated rather than dropped: its start
+/// is usually the part that says what happened.
+const LOG_LINE_MAX: usize = 4096;
 
 /// Why an action call didn't happen.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -264,6 +277,7 @@ impl Core {
             extension_settings: watch::Sender::new(ExtensionSettings::default()),
             disabled: watch::Sender::new(BTreeSet::new()),
             storage: RwLock::new(Arc::new(irori_protocol::MemoryStorage::default())),
+            logs: RwLock::new(BTreeMap::new()),
         }))
     }
 
@@ -835,6 +849,54 @@ impl Core {
                 status,
             }]);
         }
+    }
+
+    /// Keeps one line an extension wrote to its own stderr, dropping the oldest once
+    /// [`LOG_LINES_KEPT`] are held.
+    pub fn log_line(&self, extension: &ExtensionId, line: &str) {
+        let line = line.trim_end();
+        if line.is_empty() {
+            return;
+        }
+        let mut line = line.to_owned();
+        if line.len() > LOG_LINE_MAX {
+            line.truncate(
+                (0..=LOG_LINE_MAX)
+                    .rev()
+                    .find(|at| line.is_char_boundary(*at))
+                    .unwrap_or(0),
+            );
+            line.push('…');
+        }
+        let mut logs = write(&self.0.logs);
+        let kept = logs.entry(extension.clone()).or_default();
+        if kept.len() >= LOG_LINES_KEPT {
+            kept.pop_front();
+        }
+        kept.push_back(line);
+    }
+
+    /// What an extension has said for itself lately, oldest first. Empty for one that has said
+    /// nothing, and for a built-in, which has no process of its own to write anywhere.
+    pub fn log(&self, extension: &ExtensionId) -> Vec<String> {
+        read(&self.0.logs)
+            .get(extension)
+            .map(|kept| kept.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// The last thing an extension said, for a failure that would otherwise read only as an exit
+    /// status. `None` when it said nothing at all, which is its own kind of answer.
+    pub fn last_words(&self, extension: &ExtensionId) -> Option<String> {
+        read(&self.0.logs)
+            .get(extension)
+            .and_then(|kept| kept.back().cloned())
+    }
+
+    /// Forgets what an extension said — on uninstall, so a reinstall doesn't inherit the last
+    /// install's complaints.
+    pub fn forget_log(&self, extension: &ExtensionId) {
+        write(&self.0.logs).remove(extension);
     }
 }
 

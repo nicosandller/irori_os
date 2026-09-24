@@ -18,6 +18,8 @@ pub fn Extensions() -> impl IntoView {
     let filter = RwSignal::new("all".to_owned());
     // Which extension's settings form is open, if any — at most one at a time.
     let settings_open = RwSignal::new(None::<String>);
+    // And which one's log window, same rule.
+    let log_open = RwSignal::new(None::<String>);
 
     let reload = move || {
         spawn_local(async move {
@@ -120,7 +122,7 @@ pub fn Extensions() -> impl IntoView {
                         {
                             entries
                                 .into_iter()
-                                .map(|entry| card(entry, busy, catalog, trouble, settings_open))
+                                .map(|entry| card(entry, busy, catalog, trouble, settings_open, log_open))
                                 .collect_view()
                         }
                     </div>
@@ -152,6 +154,10 @@ pub fn Extensions() -> impl IntoView {
                 </crate::modal::Modal>
             })
         }}
+
+        {move || log_open.get().map(|id| view! {
+            <crate::log_window::LogWindow id=id on_close=move || log_open.set(None) />
+        })}
     }
 }
 
@@ -161,11 +167,14 @@ fn card(
     catalog: RwSignal<Vec<CatalogEntry>>,
     trouble: RwSignal<Option<String>>,
     settings_open: RwSignal<Option<String>>,
+    log_open: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let id = entry.id.clone();
     let id_busy = id.clone();
     let id_click = id.clone();
     let id_gear = id.clone();
+    let id_log = id.clone();
+    let id_log_btn = id.clone();
     let installed = entry.installed;
     let running = entry.state.as_deref() == Some("running");
     // Nothing is wrong with it — it just hasn't been told something it can't start without, and
@@ -194,7 +203,26 @@ fn card(
                 </span>
             })}
             <p class="muted ext-description">{entry.description.clone()}</p>
-            {entry.reason.clone().map(|why| view! { <p class="why">{why}</p> })}
+            // The reason, and a way to the whole of what the extension said — one line rarely
+            // covers a crash, and the alternative is a terminal the person may not have open.
+            {entry.reason.clone().map(|why| {
+                let id_log = id_log.clone();
+                view! {
+                    <p class="why">
+                        {why}
+                        {installed.then(|| view! {
+                            " "
+                            <button
+                                type="button"
+                                class="link"
+                                on:click=move |_| log_open.set(Some(id_log.clone()))
+                            >
+                                "View log"
+                            </button>
+                        })}
+                    </p>
+                }
+            })}
             <div class="ext-actions">
                 {if installed {
                     view! {
@@ -240,6 +268,21 @@ fn card(
                             on:click=move |_| settings_open.set(Some(id_gear.clone()))
                         >
                             {if needs_setup { "Set it up" } else { "⚙" }}
+                        </button>
+                    }
+                })}
+                // Only when nothing is wrong: a failing card already links to the log from its
+                // reason line, which is where the eye already is.
+                {(installed && entry.reason.is_none()).then(|| {
+                    view! {
+                        <button
+                            type="button"
+                            class="ext-settings-btn"
+                            aria-label="Log"
+                            title="What this extension has said for itself"
+                            on:click=move |_| log_open.set(Some(id_log_btn.clone()))
+                        >
+                            "☰"
                         </button>
                     }
                 })}

@@ -700,6 +700,71 @@ async fn a_broken_packages_own_manifest_reports_failed_not_missing() {
     host.shutdown().await;
 }
 
+/// An extension that dies saying why must have that reason on its card, not `exited exit status:
+/// 1` (ROADMAP D47). The extension's own last line is the only account of what went wrong, and
+/// before its stderr was piped it went to Irori's output where nothing could show it.
+#[tokio::test]
+async fn a_failures_reason_is_what_the_extension_itself_said() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let package = packages_dir.path().join("loud");
+    std::fs::create_dir_all(package.join("bin")).expect("made the package dir");
+    std::fs::write(
+        package.join("irori-extension.toml"),
+        r#"
+            [extension]
+            id = "loud"
+            name = "Loud"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["light"]
+            run = { command = "bin/prog" }
+        "#,
+    )
+    .expect("wrote the manifest");
+    let program = package.join("bin/prog");
+    std::fs::write(
+        &program,
+        "#!/bin/sh\necho \"couldn't open /dev/ttyUSB0: No such file or directory\" >&2\nexit 1\n",
+    )
+    .expect("wrote the program");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("made it executable");
+
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("starts");
+
+    let id = ExtensionId::try_from("loud").expect("valid");
+    eventually("the extension's own words reach its status", || {
+        matches!(
+            status(&core, "loud"),
+            Some(ExtensionStatus::Failed { reason, .. })
+                if reason.contains("No such file or directory")
+        )
+    })
+    .await;
+    // And the whole of what it said is readable, for when one line isn't enough.
+    assert!(
+        core.log(&id)
+            .iter()
+            .any(|line| line.contains("couldn't open /dev/ttyUSB0")),
+        "{:?}",
+        core.log(&id)
+    );
+
+    host.shutdown().await;
+}
+
 /// A manifest that's fine on its own but names a `config_schema` that isn't there (or isn't
 /// valid JSON) mustn't start with settings quietly unchecked and its form quietly hidden — it's
 /// rejected the same way a manifest missing `run.command` already is. `run.command` here never

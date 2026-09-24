@@ -605,6 +605,28 @@ pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {
     response.json().await.map_err(unreachable)
 }
 
+/// The tail of an extension's own output, oldest line first — what the log window shows, and
+/// where a failure's real reason is written out in full rather than summarised onto the card.
+pub async fn fetch_extension_log(id: &str) -> Result<Vec<String>, String> {
+    #[derive(Deserialize)]
+    struct Log {
+        #[serde(default)]
+        lines: Vec<String>,
+    }
+    let response = Request::get(&format!("/api/dev/extensions/{id}/log"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        return match checked(response).await {
+            Err(reason) => Err(reason),
+            Ok(()) => Err("the server refused without a reason".into()),
+        };
+    }
+    let log: Log = response.json().await.map_err(unreachable)?;
+    Ok(log.lines)
+}
+
 /// Serial devices plugged into the machine running Irori right now — suggestions for a
 /// `"format": "serial-port"` settings field, alongside the plain text box it always was.
 pub async fn fetch_serial_ports() -> Result<Vec<String>, String> {

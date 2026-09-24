@@ -853,6 +853,12 @@
     .protocol-found h3 { margin: 0 0 .4rem; font-size: .9rem; }
     .protocol-found p { margin: 0; }
 
+    /* An extension's own output. Scrolls in both directions rather than wrapping: a stack trace
+       or a config dump is easier to read with its lines intact. */
+    .ext-log { max-height: 26rem; margin: .6rem 0 0; padding: .6rem .75rem; overflow: auto;
+               font: .78rem/1.5 var(--mono); white-space: pre; background: var(--sunk);
+               border-radius: .4rem; }
+
     /* While a pairing window is open: what to do now, and what has arrived so far. */
     .listening { margin-top: .6rem; padding: .6rem .75rem; background: var(--sunk);
                  border-radius: .4rem; }
