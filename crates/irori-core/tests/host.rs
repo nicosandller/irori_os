@@ -700,6 +700,195 @@ async fn a_broken_packages_own_manifest_reports_failed_not_missing() {
     host.shutdown().await;
 }
 
+/// An extension that dies saying why must have that reason on its card, not `exited exit status:
+/// 1` (ROADMAP D47). The extension's own last line is the only account of what went wrong, and
+/// before its stderr was piped it went to Irori's output where nothing could show it.
+#[tokio::test]
+async fn a_failures_reason_is_what_the_extension_itself_said() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let package = packages_dir.path().join("loud");
+    std::fs::create_dir_all(package.join("bin")).expect("made the package dir");
+    std::fs::write(
+        package.join("irori-extension.toml"),
+        r#"
+            [extension]
+            id = "loud"
+            name = "Loud"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["light"]
+            run = { command = "bin/prog" }
+        "#,
+    )
+    .expect("wrote the manifest");
+    let program = package.join("bin/prog");
+    std::fs::write(
+        &program,
+        "#!/bin/sh\necho \"couldn't open /dev/ttyUSB0: No such file or directory\" >&2\nexit 1\n",
+    )
+    .expect("wrote the program");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("made it executable");
+
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("starts");
+
+    let id = ExtensionId::try_from("loud").expect("valid");
+    eventually("the extension's own words reach its status", || {
+        matches!(
+            status(&core, "loud"),
+            Some(ExtensionStatus::Failed { reason, .. })
+                if reason.contains("No such file or directory")
+        )
+    })
+    .await;
+    // And the whole of what it said is readable, for when one line isn't enough.
+    assert!(
+        core.log(&id)
+            .iter()
+            .any(|line| line.contains("couldn't open /dev/ttyUSB0")),
+        "{:?}",
+        core.log(&id)
+    );
+
+    host.shutdown().await;
+}
+
+/// A dying process usually goes on logging routine things after the thing that actually went
+/// wrong — and an extension logging in colour writes escape sequences the page would show as
+/// text. Neither belongs in the one line a card has room for.
+#[tokio::test]
+async fn a_reason_skips_routine_chatter_and_carries_no_terminal_codes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let package = packages_dir.path().join("chatty");
+    std::fs::create_dir_all(package.join("bin")).expect("made the package dir");
+    std::fs::write(
+        package.join("irori-extension.toml"),
+        r#"
+            [extension]
+            id = "chatty"
+            name = "Chatty"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["light"]
+            run = { command = "bin/prog" }
+        "#,
+    )
+    .expect("wrote the manifest");
+    let program = package.join("bin/prog");
+    // The real complaint, in colour, then two lines of unwinding noise after it.
+    std::fs::write(
+        &program,
+        "#!/bin/sh
+         printf '\\033[31mno dongle at /dev/ttyUSB0\\033[0m\\n' >&2
+         echo 'INFO  disconnected: connection closed by peer' >&2
+         echo 'INFO  shutting down' >&2
+         exit 1
+",
+    )
+    .expect("wrote the program");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("made it executable");
+
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("starts");
+
+    eventually(
+        "the reason is the complaint, not the noise after it",
+        || {
+            matches!(
+                status(&core, "chatty"),
+                Some(ExtensionStatus::Failed { reason, .. }) if reason.contains("no dongle")
+            )
+        },
+    )
+    .await;
+    let Some(ExtensionStatus::Failed { reason, .. }) = status(&core, "chatty") else {
+        panic!("failed");
+    };
+    assert!(!reason.contains("disconnected"), "{reason}");
+    assert!(
+        !reason.contains('\u{1b}'),
+        "terminal codes reached the page: {reason:?}"
+    );
+
+    host.shutdown().await;
+}
+
+/// A manifest that's fine on its own but names a `config_schema` that isn't there (or isn't
+/// valid JSON) mustn't start with settings quietly unchecked and its form quietly hidden — it's
+/// rejected the same way a manifest missing `run.command` already is. `run.command` here never
+/// actually has to run: the schema is loaded, and this package rejected, before anything would
+/// spawn it.
+#[tokio::test]
+async fn a_package_naming_a_missing_config_schema_reports_failed_naming_it() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let broken = packages_dir.path().join("brokenschema");
+    std::fs::create_dir_all(&broken).expect("made the package dir");
+    std::fs::write(
+        broken.join("irori-extension.toml"),
+        r#"
+            [extension]
+            id = "brokenschema"
+            name = "Broken Schema"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+            config_schema = "config.schema.json"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["light"]
+            run = { command = "bin/never-actually-run" }
+        "#,
+    )
+    .expect("wrote the manifest");
+    // Deliberately not written: `load_config_schema` should fail before `run.command` matters.
+
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("a broken package on disk must not fail startup");
+
+    eventually(
+        "the missing schema is reported failed, naming the path",
+        || {
+            matches!(
+                status(&core, "brokenschema"),
+                Some(ExtensionStatus::Failed { reason, .. }) if reason.contains("config.schema.json")
+            )
+        },
+    )
+    .await;
+
+    host.shutdown().await;
+}
+
 #[test]
 fn duplicate_extension_ids_are_refused() {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -848,6 +1037,76 @@ async fn new_settings_restart_only_their_own_extension_and_what_was_waiting_clea
 
     host.shutdown().await;
     assert_eq!(waiting(&core), 0);
+}
+
+/// Needs a setting to exist at all: its `Config` has a field with no default, so its own
+/// deserialization would fail if it were ever started without one.
+struct Needy;
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct NeedySettings {
+    #[allow(dead_code)]
+    port: String,
+}
+
+static NEEDY_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+impl Protocol for Needy {
+    type Config = NeedySettings;
+    const MANIFEST: &'static str = NEEDY_MANIFEST;
+    async fn run(_: NeedySettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
+        NEEDY_RUNS.fetch_add(1, Ordering::SeqCst);
+        ctx.stopped().await;
+        Ok(())
+    }
+}
+const NEEDY_MANIFEST: &str = r#"
+    [extension]
+    id = "needy"
+    name = "Needy"
+    version = "0.1.0"
+    irori = ">=0.0.0"
+
+    [[contributes.protocol]]
+    iot_class = "local_push"
+    entity_kinds = ["light"]
+"#;
+
+/// A required setting that isn't set is a person's job, not a crash: the extension is never
+/// started, so it never fails and never retries — it waits, saying which setting it wants, and
+/// starts as soon as that arrives.
+#[tokio::test(start_paused = true)]
+async fn an_extension_missing_a_required_setting_waits_for_it_instead_of_crash_looping() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = start(&core, builtin::<Needy>().expect("valid"));
+
+    eventually("it says which setting it needs", || {
+        status(&core, "needy")
+            == Some(ExtensionStatus::NeedsSetup {
+                missing: vec!["port".to_owned()],
+            })
+    })
+    .await;
+    // Long enough for several rounds of retry backoff, had it been retrying at all.
+    tokio::time::sleep(Duration::from_secs(600)).await;
+    assert_eq!(
+        NEEDY_RUNS.load(Ordering::SeqCst),
+        0,
+        "started without the setting it can't run without"
+    );
+
+    core.apply_extension_settings(keyed_settings(
+        "needy",
+        serde_json::json!({"port": "/dev/ttyUSB0"}),
+    ));
+    eventually("the setting arriving starts it", || {
+        status(&core, "needy") == Some(ExtensionStatus::Running)
+    })
+    .await;
+    assert_eq!(NEEDY_RUNS.load(Ordering::SeqCst), 1);
+
+    host.shutdown().await;
 }
 
 static RETRY_RUNS: AtomicUsize = AtomicUsize::new(0);

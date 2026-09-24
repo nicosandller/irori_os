@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Settings",
+  "type": "object",
+  "properties": {
+    "client_id": {
+      "description": "Sent as the MQTT client id. A generated one is used when this is left out.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "discovery_prefix": {
+      "description": "The topic prefix Home Assistant MQTT Discovery configs are published under.",
+      "type": "string",
+      "default": "homeassistant"
+    },
+    "host": {
+      "description": "The broker's hostname or IP address, on the local network.\n\nThis extension declares `lan` and nothing else, so the address is checked here, by what\nis written, not by looking it up. A private, loopback, or link-local IP is accepted, as\nis `localhost` or a name under `.local`, `.home.arpa`, `.internal`, `.lan`, or `.home`.\nA bare name such as `broker` is refused: a search domain or `/etc/hosts` can point it at\na public address, and this check does not resolve names. A public address or an internet\nhostname is refused. JSON Schema can't express that, so this check is what enforces it.",
+      "type": "string"
+    },
+    "password": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Secret"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "port": {
+      "type": "integer",
+      "format": "uint16",
+      "default": 1883,
+      "maximum": 65535,
+      "minimum": 0
+    },
+    "tls": {
+      "description": "Connect over TLS.",
+      "type": "boolean",
+      "default": false
+    },
+    "username": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Secret"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "host"
+  ],
+  "$defs": {
+    "Secret": {
+      "type": "string",
+      "writeOnly": true
+    }
+  }
+}

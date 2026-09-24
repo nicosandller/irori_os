@@ -42,7 +42,7 @@ pub const SLUG_MAX_LEN: usize = 64;
 const SLUG_PATTERN: &str = "^[a-z0-9]+(_[a-z0-9]+)*$";
 
 /// Lowercase ASCII letters and digits in `_`-separated words: no leading, trailing, or doubled `_`.
-fn check_slug(what: &'static str, value: &str) -> Result<(), IdError> {
+pub(crate) fn check_slug(what: &'static str, value: &str) -> Result<(), IdError> {
     if value.is_empty() {
         return Err(err(what, value, "must not be empty"));
     }

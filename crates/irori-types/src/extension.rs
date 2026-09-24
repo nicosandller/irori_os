@@ -186,6 +186,12 @@ pub struct ProtocolContribution {
     /// How to start it, for external extensions. Built-in extensions leave this out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<RunCommand>,
+    /// Actions the UI can trigger beyond passively finding devices (`docs/specs/protocols.md`
+    /// §5) — Zigbee's "permit joining," say. Empty for a protocol with nothing to trigger; this
+    /// only declares that an action exists, not that it's usable right now (the protocol says
+    /// that at runtime, `set_available_actions`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<ProtocolAction>,
 }
 
 impl ProtocolContribution {
@@ -195,8 +201,54 @@ impl ProtocolContribution {
                 "entity_kinds must list at least one entity kind".into(),
             ));
         }
-        no_duplicates("entity_kinds", &self.entity_kinds)
+        no_duplicates("entity_kinds", &self.entity_kinds)?;
+        let action_ids: Vec<&str> = self.actions.iter().map(|a| a.id.as_str()).collect();
+        no_duplicates("contributes.protocol.actions ids", &action_ids)?;
+        for action in &self.actions {
+            // A slug, so the id is one URL path segment. The UI posts to
+            // `/api/dev/extensions/{id}/actions/{action_id}` without encoding; a `/`, `?`,
+            // or `#` would not round-trip.
+            if let Err(error) = crate::id::check_slug("action id", &action.id) {
+                return Err(InvariantError(format!(
+                    "contributes.protocol.actions: {error}"
+                )));
+            }
+            if action.label.trim().is_empty() {
+                return Err(InvariantError(format!(
+                    "contributes.protocol.actions: action `{}` needs a non-empty label",
+                    action.id
+                )));
+            }
+        }
+        Ok(())
     }
+}
+
+/// A UI-triggerable action a protocol declares — the other half of "dedicated add-device path
+/// per protocol," alongside the passive `Waiting` list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProtocolAction {
+    /// Its own id, unique within this protocol, e.g. `permit_join`.
+    ///
+    /// A slug — the same shape as an extension id — because the UI and the API place it in a
+    /// URL as one path segment (`/api/dev/extensions/{id}/actions/{action_id}`) without
+    /// encoding. Anything with a `/`, `?`, or `#` would not round-trip through that route.
+    ///
+    /// `validate` is the authority: a manifest is always parsed through it, whatever a JSON
+    /// Schema consumer independently accepts. The pattern here is the same slug, so the schema
+    /// rejects the same ids. Uniqueness across `actions` can't be expressed in JSON Schema —
+    /// there is no keyword for "unique by one field of an array item" — so `validate` remains
+    /// the only place that catches a repeated id.
+    #[schemars(length(min = 1, max = 64), pattern(r"^[a-z0-9]+(_[a-z0-9]+)*$"))]
+    pub id: String,
+    /// The button's label, e.g. "Permit joining".
+    #[schemars(length(min = 1), pattern(r"\S"))]
+    pub label: String,
+    /// A default duration in seconds, for a timed action — a hint the UI can show (e.g.
+    /// "for 60s"), not enforced by the core.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<u32>,
 }
 
 /// Where a protocol's devices live and how it learns about changes (ROADMAP D24).
@@ -523,6 +575,17 @@ pub struct PackagePath(String);
 
 string_newtype!(PackagePath, check_package_path);
 
+impl PackagePath {
+    /// Whether copying this declared file would replace one the packager writes itself.
+    ///
+    /// The manifest is copied first, then each declared icon and schema. A path of
+    /// `irori-extension.toml`, or `bin/<bin_name>` where the built binary is about to be
+    /// written, would replace that file and leave a package the host can't run.
+    pub fn overwrites_packaged_file(&self, bin_name: &str) -> bool {
+        self.as_str() == "irori-extension.toml" || self.as_str() == format!("bin/{bin_name}")
+    }
+}
+
 fn check_package_path(value: &str) -> Result<(), IdError> {
     const WHAT: &str = "package path";
     check_length(WHAT, value)?;
@@ -819,6 +882,13 @@ mod tests {
             ("bin/.hidden", false),
             ("bin\\esphome", false),
         ]);
+        let manifest = PackagePath::try_from("irori-extension.toml").expect("a valid path");
+        let binary = PackagePath::try_from("bin/irori-ext-x").expect("a valid path");
+        let schema = PackagePath::try_from("config.schema.json").expect("a valid path");
+        assert!(manifest.overwrites_packaged_file("irori-ext-x"));
+        assert!(binary.overwrites_packaged_file("irori-ext-x"));
+        assert!(!binary.overwrites_packaged_file("irori-ext-other"));
+        assert!(!schema.overwrites_packaged_file("irori-ext-x"));
         agree::<SerialPath>(&[
             ("/dev/ttyUSB0", true),
             (
@@ -879,6 +949,51 @@ mod tests {
             ("example.com.", false),
             ("https://example.com", false),
         ]);
+    }
+
+    /// `ProtocolContribution::validate` is the actual authority on this — it's what every
+    /// manifest is checked against — but a JSON Schema consumer never runs Rust code, so the
+    /// exported schema should reject the same ids. Uniqueness across `actions` can't be
+    /// expressed in JSON Schema; `validate`'s own doc comment on the field says why.
+    #[test]
+    fn protocol_action_ids_are_slugs_the_schema_and_the_parser_agree_on() {
+        let validator = validator::<ProtocolAction>();
+        let action = |id: &str, label: &str| serde_json::json!({"id": id, "label": label});
+        assert!(validator.is_valid(&action("permit_join", "Permit joining")));
+        for id in [
+            "", "   ", "Permit", "foo/bar", "foo?x", "foo#x", "foo bar", "a__b", "_a",
+        ] {
+            assert!(!validator.is_valid(&action(id, "Permit joining")), "{id}");
+        }
+        assert!(
+            !validator.is_valid(&action("permit_join", "")),
+            "blank label"
+        );
+        assert!(
+            !validator.is_valid(&action("permit_join", "   ")),
+            "whitespace-only label"
+        );
+
+        let manifest = |id: &str| {
+            serde_json::from_value::<ExtensionManifest>(serde_json::json!({
+                "extension": {
+                    "id": "zigbee",
+                    "name": "Zigbee",
+                    "version": "0.1.0",
+                    "irori": ">=0.0.0"
+                },
+                "contributes": {
+                    "protocol": [{
+                        "iot_class": "local_push",
+                        "entity_kinds": ["light"],
+                        "actions": [{"id": id, "label": "Permit joining"}]
+                    }]
+                }
+            }))
+        };
+        assert!(manifest("permit_join").is_ok());
+        let rejected = manifest("foo/bar").expect_err("a slash is not one path segment");
+        assert!(rejected.to_string().contains("action id"), "{rejected}");
     }
 
     #[test]

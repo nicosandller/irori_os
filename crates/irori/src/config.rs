@@ -102,6 +102,21 @@ impl Config {
         Ok(made)
     }
 
+    /// One extension's `extensions/<id>.toml` as it currently stands.
+    ///
+    /// Only that file: secrets live in `secrets.toml` and are never read back out (§3.4). This is
+    /// what lets the settings form open showing what is already configured, so changing one field
+    /// doesn't mean retyping the rest — and so a required field it can't show isn't mistaken for
+    /// one nobody has filled in.
+    pub async fn extension_settings(
+        &self,
+        extension: &irori_types::ExtensionId,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+        store.extension_file(extension)
+    }
+
     /// Changes one extension's `extensions/<id>.toml`, writes it, and tells the core — which
     /// restarts that extension with it.
     pub async fn edit_extension<T>(
@@ -141,6 +156,42 @@ impl Config {
             // Which file, never what's in it.
             tracing::info!(file = "secrets.toml", "config written");
         }
+        core.apply_extension_settings(store.extension_settings());
+        Ok(made)
+    }
+
+    /// Writes one extension's settings file and its secrets, then tells the core once.
+    ///
+    /// [`Self::edit_extension`] and [`Self::edit_secrets`] each tell the core, and the core
+    /// restarts an extension whose settings changed. A form that sets both — Zigbee's serial
+    /// port and its network key — must not restart between the two writes. The first start
+    /// would see the port and no key, and Zigbee2MQTT would generate a network identity of its
+    /// own before the key arrived.
+    pub async fn edit_extension_with_secrets<T>(
+        &self,
+        core: &Core,
+        extension: &irori_types::ExtensionId,
+        change_file: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<T, Refused>,
+        secrets_to_set: &[(String, String)],
+    ) -> Result<T, EditError> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+
+        let mut file = store.extension_file(extension);
+        let made = change_file(&mut file).map_err(EditError::Refused)?;
+        let mut secrets = store.secrets();
+        for (key, text) in secrets_to_set {
+            secrets
+                .set(extension, std::slice::from_ref(key), text.clone())
+                .map_err(|e| EditError::Refused(Refused(e.to_string())))?;
+        }
+        store
+            .save_extension_and_secrets(extension, &file, &secrets)
+            .map_err(EditError::Io)?;
+        tracing::info!(
+            files = %format!("extensions/{extension}.toml, secrets.toml"),
+            "config written"
+        );
         core.apply_extension_settings(store.extension_settings());
         Ok(made)
     }
@@ -363,6 +414,9 @@ mod tests {
     async fn asking_before_adding_keeps_the_devices_already_here() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let core = core();
+        // Asking is the default, and this test is about turning it *on*: start by adding on
+        // sight, so there's a home here to protect when it goes on a few lines below.
+        std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"add\"\n")?;
         let config = Config::open_dir(dir.path(), &core);
         let host = irori_core::ExtensionHost::start(
             &core,
@@ -412,6 +466,9 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let before = {
             let core = core();
+            // The first run is the one where asking is off; the second half of the test turns it
+            // on in the same directory. Asking being the default makes that first part explicit.
+            std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"add\"\n")?;
             let _config = Config::open_dir(dir.path(), &core);
             let host = irori_core::ExtensionHost::start(
                 &core,
@@ -506,12 +563,104 @@ mod tests {
         Ok(())
     }
 
+    /// A form that sets a plain field and a secret is one update. Two edits would restart the
+    /// extension after the plain field and before the secret, which is how Zigbee2MQTT would
+    /// invent a network key of its own.
+    #[tokio::test]
+    async fn a_setting_and_a_secret_are_written_together() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let core = core();
+        let config = Config::open_dir(dir.path(), &core);
+        let helpers: irori_types::ExtensionId = "helpers".parse().expect("valid");
+
+        config
+            .edit_extension_with_secrets(
+                &core,
+                &helpers,
+                |file| {
+                    file.insert("serial_port".into(), serde_json::json!("/dev/ttyUSB0"));
+                    Ok(())
+                },
+                &[(
+                    "network_key".into(),
+                    "00112233445566778899aabbccddeeff".into(),
+                )],
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+        let extension = std::fs::read_to_string(dir.path().join("extensions/helpers.toml"))?;
+        assert!(extension.contains("serial_port"), "{extension}");
+        assert!(
+            !extension.contains("network_key"),
+            "the secret must stay out of the settings file:\n{extension}"
+        );
+        let secrets = std::fs::read_to_string(dir.path().join("secrets.toml"))?;
+        assert!(secrets.contains("network_key"), "{secrets}");
+        assert!(
+            !secrets.contains("serial_port"),
+            "the plain setting must stay out of secrets.toml:\n{secrets}"
+        );
+        Ok(())
+    }
+
+    /// The secrets write can fail after the settings file is already in place (a rename onto a
+    /// `secrets.toml` that is somehow not a file). The settings file has to be the old one
+    /// again, or the next reload restarts Zigbee with the new port and no key.
+    #[tokio::test]
+    async fn a_failed_secret_write_puts_the_settings_file_back() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let core = core();
+        let config = Config::open_dir(dir.path(), &core);
+        let helpers: irori_types::ExtensionId = "helpers".parse().expect("valid");
+
+        config
+            .edit_extension(&core, &helpers, |file| {
+                file.insert("serial_port".into(), serde_json::json!("/dev/ttyUSB0"));
+                Ok(())
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        // A directory where the file should be: the rename of the new secrets file fails.
+        std::fs::create_dir(dir.path().join("secrets.toml"))?;
+
+        let failed = config
+            .edit_extension_with_secrets(
+                &core,
+                &helpers,
+                |file| {
+                    file.insert("serial_port".into(), serde_json::json!("/dev/ttyACM0"));
+                    Ok(())
+                },
+                &[(
+                    "network_key".into(),
+                    "00112233445566778899aabbccddeeff".into(),
+                )],
+            )
+            .await;
+        assert!(failed.is_err(), "the secrets write has to fail");
+
+        let extension = std::fs::read_to_string(dir.path().join("extensions/helpers.toml"))?;
+        assert!(
+            extension.contains("/dev/ttyUSB0"),
+            "the previous settings must still be the file:\n{extension}"
+        );
+        assert!(
+            !extension.contains("/dev/ttyACM0"),
+            "the new settings must not be left behind without the secret:\n{extension}"
+        );
+        Ok(())
+    }
+
     /// If recording `added` fails when asking is turned on, asking must not take effect: the
     /// devices already in the home would otherwise move to the held list.
     #[tokio::test]
     async fn a_failed_write_when_asking_starts_does_not_hold_the_home() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let core = core();
+        // Asking is the default; this test is about what happens as it's turned on, so the home
+        // has to fill up first.
+        std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"add\"\n")?;
         let _config = Config::open_dir(dir.path(), &core);
         let host = irori_core::ExtensionHost::start(
             &core,

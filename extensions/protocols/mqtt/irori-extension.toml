@@ -2,10 +2,17 @@
 id = "mqtt"
 name = "MQTT"
 version = "0.3.1"
-irori = ">=0.0.0, <0.1.0"
-description = "MQTT devices through Home Assistant MQTT Discovery. Not implemented yet."
+irori = ">=0.0.0"
+description = "Devices from an MQTT broker you already run, through Home Assistant MQTT Discovery: Tasmota, Zigbee2MQTT, ESPHome."
+config_schema = "config.schema.json"
 
 [[contributes.protocol]]
 iot_class = "local_push"
 entity_kinds = ["light", "switch", "sensor", "binary_sensor"]
 run = { command = "bin/irori-ext-mqtt" }
+
+# The broker address is typed in later, so it can't be listed under `network` the way a known
+# internet host is. It is checked when the settings are read instead: only a local-network
+# address is accepted, which is what `lan` means. A broker on the internet is refused.
+[permissions]
+lan = true

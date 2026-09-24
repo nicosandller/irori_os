@@ -131,9 +131,35 @@ performance number (ROADMAP §4.3), measure it on real hardware:
 - **Per-core speed and latency.** Apple Silicon cores are several times faster than a Pi's
   Cortex-A72/A76. The CPU limit throttles total throughput, not single-core latency.
 - **Storage.** SD card write speed and wear aren't simulated; the Docker volume is fast.
-- **Hardware.** No GPIO, serial ports, USB Zigbee sticks, or Bluetooth.
+- **GPIO and Bluetooth.** Nothing bridges these into the container.
+- **USB, directly.** Docker Desktop has no host to pass a USB device through *from* — it's a VM,
+  not this Mac. A Zigbee dongle still reaches the container, over TCP rather than a device node:
+  see "Reach a Zigbee dongle" below.
+- **mDNS discovery.** ESPHome devices announce themselves over multicast, which doesn't cross
+  the container's network boundary either way — nothing here relays it. A device already known
+  by IP is unaffected: `dev/pi`'s default network forwards ordinary outbound TCP to your LAN
+  fine, only the multicast announcement itself doesn't arrive.
 - **armv7 / 32-bit Pi OS.** Only 64-bit is covered.
 - **Intel Macs.** `linux/arm64` still works, but through QEMU emulation, so builds are slow.
+
+## Reach a Zigbee dongle
+
+The container can't see a USB device plugged into this Mac directly (see above). `dev/pi
+usb-bridge` bridges it over TCP instead, using `socat` on this Mac (`brew install socat`) and
+`host.docker.internal` — Docker Desktop's own DNS name for the host — to reach it from inside
+the container:
+
+```sh
+ls /dev/cu.*                        # find the dongle: plug it in and out, see what appears
+dev/pi usb-bridge /dev/cu.usbserial-1420   # leave this running
+```
+
+Then, in the Zigbee extension's settings (the gear icon on its Extensions card), set the serial
+port to `tcp://host.docker.internal:6638` (or whatever port `usb-bridge` printed) rather than a
+`/dev/...` path — Zigbee2MQTT's own adapter drivers already accept a `tcp://host:port` in place
+of a device path, for exactly this: a network-attached coordinator. `dev/pi usb-bridge <device>
+[port] [baud]` takes the port and baud rate as optional arguments, if the defaults (`6638`,
+`115200`) aren't right for your dongle.
 
 ## Files
 

@@ -16,13 +16,13 @@ use irori_types::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::oneshot;
 
 use crate::host::{Op, Reply, Reports};
 use crate::{
-    AvailabilityTarget, Health, IncomingCall, Protocol, ProtocolError, Rejected, ServiceError,
-    ServiceErrorCode, host,
+    AvailabilityTarget, Health, IncomingAction, IncomingCall, Protocol, ProtocolError, Rejected,
+    ServiceError, ServiceErrorCode, host,
 };
 
 /// A message from the extension process to the host.
@@ -56,6 +56,9 @@ pub enum FromExt {
     SetWaiting {
         waiting: Vec<Waiting>,
     },
+    SetAvailableActions {
+        actions: Vec<String>,
+    },
     Load {
         id: u64,
         key: String,
@@ -73,6 +76,11 @@ pub enum FromExt {
         id: u64,
         #[serde(default)]
         error: Option<WireServiceError>,
+    },
+    ActionResult {
+        id: u64,
+        #[serde(default)]
+        error: Option<String>,
     },
 }
 
@@ -98,6 +106,10 @@ pub enum ToExt {
     ServiceCall {
         id: u64,
         call: ServiceCall,
+    },
+    ActionCall {
+        id: u64,
+        action_id: String,
     },
     Stop,
 }
@@ -159,6 +171,7 @@ pub async fn serve<I: Protocol>() -> Result<(), ProtocolError> {
         stdout,
         host_end.stop,
         host_end.calls,
+        host_end.actions,
         Arc::clone(&pending),
     ));
 
@@ -195,6 +208,7 @@ async fn pump_incoming(
     stdout: Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
     stop: tokio::sync::watch::Sender<bool>,
     calls: tokio::sync::mpsc::Sender<IncomingCall>,
+    actions: tokio::sync::mpsc::Sender<IncomingAction>,
     pending: Arc<Pending>,
 ) {
     loop {
@@ -217,6 +231,21 @@ async fn pump_incoming(
                         }),
                     };
                     let _ = write_json(&stdout, &FromExt::ServiceResult { id, error }).await;
+                });
+            }
+            Ok(ToExt::ActionCall { id, action_id }) => {
+                let (incoming, result) = host::incoming_action(action_id);
+                if actions.send(incoming).await.is_err() {
+                    return;
+                }
+                let stdout = Arc::clone(&stdout);
+                tokio::spawn(async move {
+                    let error = match result.await {
+                        Ok(Ok(())) => None,
+                        Ok(Err(error)) => Some(error),
+                        Err(_) => Some("the protocol dropped the action call".to_owned()),
+                    };
+                    let _ = write_json(&stdout, &FromExt::ActionResult { id, error }).await;
                 });
             }
             Ok(ToExt::Stop) => {
@@ -286,6 +315,7 @@ impl Pending {
             }
             Op::SetHealth(health) => Some(FromExt::SetHealth { health }),
             Op::SetWaiting(waiting) => Some(FromExt::SetWaiting { waiting }),
+            Op::SetAvailableActions(actions) => Some(FromExt::SetAvailableActions { actions }),
             Op::Load(key, reply) => {
                 self.loads
                     .lock()
@@ -361,6 +391,29 @@ async fn write_json<T: Serialize>(
     out.flush().await.map_err(|e| e.to_string())
 }
 
+/// Creates `dir` if it isn't there and, on Unix, restricts it to its owner.
+///
+/// A directory created with the process umask is, on a typical system, traversable by every
+/// local user. `IRORI_EXTENSION_DATA` holds things like Zigbee2MQTT's `configuration.yaml` —
+/// the network key and the pairing table. Mode `0700` matches the owner-only handling of
+/// `secrets.toml`. It is set again after create: a directory that already existed keeps
+/// whatever mode it was given, and the mode on `DirBuilder` does not apply to that case.
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    builder.recursive(true).create(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 /// A running extension process, as the host talks to it.
 #[derive(Debug)]
 pub struct ExtProcess {
@@ -369,8 +422,21 @@ pub struct ExtProcess {
     pub stdout: BufReader<ChildStdout>,
 }
 
-/// Starts the package's `run.command` with stdin/stdout piped for the protocol.
-pub fn spawn(package_dir: &Path, run: &RunCommand) -> Result<ExtProcess, String> {
+/// Starts the package's `run.command` with stdin/stdout piped for the protocol, and its stderr
+/// piped for the host to read.
+///
+/// The stderr handle comes back separately rather than inside [`ExtProcess`] because it isn't
+/// part of talking to the extension: the host hands it straight to a reader task and never looks
+/// at it again. **Whoever takes it must read it continuously** — an undrained pipe fills, and the
+/// child blocks forever on its next line of output, which for a chatty extension is seconds.
+/// `state_dir` is handed to the child as `IRORI_EXTENSION_DATA`: the one directory it may keep
+/// things in that outlive the package itself. It is created here if it isn't there, and on
+/// Unix only its owner may read it.
+pub fn spawn(
+    package_dir: &Path,
+    state_dir: &Path,
+    run: &RunCommand,
+) -> Result<(ExtProcess, ChildStderr), String> {
     let command = package_dir.join(run.command.as_str());
     if !command.is_file() {
         return Err(format!("package has no program at `{}`", command.display()));
@@ -383,12 +449,21 @@ pub fn spawn(package_dir: &Path, run: &RunCommand) -> Result<ExtProcess, String>
     let command = command
         .canonicalize()
         .map_err(|e| format!("couldn't resolve {}: {e}", command.display()))?;
+    // Absolute, because the child's own working directory is `package_dir`: a relative path here
+    // would mean somewhere inside the very directory this exists to stay out of.
+    let state_dir = std::path::absolute(state_dir).unwrap_or_else(|_| state_dir.to_path_buf());
+    create_private_dir(&state_dir)
+        .map_err(|e| format!("couldn't create {}: {e}", state_dir.display()))?;
     let mut child = Command::new(&command)
         .current_dir(package_dir)
+        .env("IRORI_EXTENSION_DATA", &state_dir)
         .args(&run.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        // Piped, not inherited: an extension's own diagnostics are the only account of why it
+        // failed, and inheriting them sends them to Irori's stderr where nothing can show them
+        // to the person looking at the extension's card.
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("couldn't start {}: {e}", command.display()))?;
@@ -400,11 +475,18 @@ pub fn spawn(package_dir: &Path, run: &RunCommand) -> Result<ExtProcess, String>
         .stdout
         .take()
         .ok_or_else(|| "child stdout missing".to_owned())?;
-    Ok(ExtProcess {
-        child,
-        stdin,
-        stdout: BufReader::new(stdout),
-    })
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "child stderr missing".to_owned())?;
+    Ok((
+        ExtProcess {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+        },
+        stderr,
+    ))
 }
 
 impl ExtProcess {
@@ -477,13 +559,90 @@ mod tests {
             command: PackagePath::try_from("bin/prog").expect("a valid package path"),
             args: Vec::new(),
         };
-        let process = spawn(Path::new("pkg"), &run).expect(
+        let state = tmp.path().join("state");
+        let (process, _stderr) = spawn(Path::new("pkg"), &state, &run).expect(
             "spawn should resolve `pkg/bin/prog` against this process's cwd, \
              not the child's post-chdir one",
         );
         assert!(
             process.child.id().is_some(),
             "the program should have started"
+        );
+    }
+
+    /// The host has to be able to read what an extension says for itself: inherited stderr goes
+    /// to Irori's own output, where nothing can put it on the extension's card.
+    #[tokio::test]
+    async fn spawn_hands_back_the_childs_own_stderr_to_read() {
+        use std::os::unix::fs::PermissionsExt;
+
+        use tokio::io::AsyncBufReadExt as _;
+
+        let tmp = tempfile::tempdir().expect("a temp dir");
+        std::fs::create_dir_all(tmp.path().join("bin")).expect("mkdir");
+        let program = tmp.path().join("bin/prog");
+        std::fs::write(&program, "#!/bin/sh\necho 'no such port' >&2\nexit 1\n")
+            .expect("write the program");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+
+        let run = RunCommand {
+            command: PackagePath::try_from("bin/prog").expect("a valid package path"),
+            args: Vec::new(),
+        };
+        let state = tmp.path().join("state");
+        let (_process, stderr) = spawn(tmp.path(), &state, &run).expect("starts");
+
+        let mut lines = tokio::io::BufReader::new(stderr).lines();
+        assert_eq!(
+            lines.next_line().await.expect("readable"),
+            Some("no such port".to_owned())
+        );
+    }
+
+    /// Extension data holds Zigbee2MQTT's network key. Left at the umask, that directory is
+    /// traversable by every local user on a typical system, and the key with it.
+    #[tokio::test]
+    async fn spawn_restricts_the_extension_data_dir_to_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("a temp dir");
+        std::fs::create_dir_all(tmp.path().join("bin")).expect("mkdir");
+        let program = tmp.path().join("bin/prog");
+        std::fs::write(&program, "#!/bin/sh\nexit 0\n").expect("write the program");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+        let run = RunCommand {
+            command: PackagePath::try_from("bin/prog").expect("a valid package path"),
+            args: Vec::new(),
+        };
+
+        let mode_of = |path: &Path| {
+            std::fs::metadata(path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+
+        // Already there, and wider than it should be: create must tighten it, not leave it.
+        let widened = tmp.path().join("already");
+        std::fs::create_dir(&widened).expect("mkdir");
+        std::fs::set_permissions(&widened, std::fs::Permissions::from_mode(0o755))
+            .expect("widen it");
+        let _existing = spawn(tmp.path(), &widened, &run).expect("starts");
+        assert_eq!(
+            mode_of(&widened),
+            0o700,
+            "an existing directory is tightened, not left as it was"
+        );
+
+        let fresh = tmp.path().join("fresh");
+        let _created = spawn(tmp.path(), &fresh, &run).expect("starts");
+        assert_eq!(
+            mode_of(&fresh),
+            0o700,
+            "a directory this creates is owner-only from the start"
         );
     }
 }

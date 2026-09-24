@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use irori_types::{
     AreaId, Availability, BinarySensorCapabilities, BinarySensorClass, Capabilities, Device,
-    Entity, EntityId, EntityState, LightCapabilities, LightState, LightTurnOn, SensorCapabilities,
-    SensorClass, SensorValue, State,
+    Entity, EntityId, EntityState, ExtensionId, LightCapabilities, LightState, LightTurnOn,
+    SensorCapabilities, SensorClass, SensorValue, State,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -161,6 +161,7 @@ pub fn Devices() -> impl IntoView {
     let controls = expect_context::<Controls>();
     let filter = RwSignal::new(String::new());
     let adding = RwSignal::new(false);
+    let adding_helper = RwSignal::new(false);
     let showing = RwSignal::new(remembered_view());
     let folded = RwSignal::new(remembered_folded());
     provide_context(HelperTrouble(RwSignal::new(None)));
@@ -192,9 +193,28 @@ pub fn Devices() -> impl IntoView {
                     })
                     .collect_view()}
             </div>
-            <button type="button" class="add" on:click=move |_| adding.update(|a| *a = !*a)>
-                {move || if adding.get() { "Close" } else { "+ Add device" }}
-            </button>
+            // Helpers aren't devices and don't arrive through an extension — making one is a
+            // name and nothing else — so the Helpers tab gets its own button, not a card in the
+            // add-a-device flow pretending a helper is something an extension found.
+            {move || if showing.get() == Showing::Helpers {
+                view! {
+                    <button
+                        type="button"
+                        class="add"
+                        on:click=move |_| adding_helper.set(true)
+                    >
+                        "+ Add helper"
+                    </button>
+                }
+                    .into_any()
+            } else {
+                view! {
+                    <button type="button" class="add" on:click=move |_| adding.set(true)>
+                        "+ Add device"
+                    </button>
+                }
+                    .into_any()
+            }}
         </div>
 
         // Something found and waiting is worth saying even with the panel closed: it's the one
@@ -213,7 +233,11 @@ pub fn Devices() -> impl IntoView {
                 </p>
             })
         }}
-        {move || adding.get().then(|| view! { <AddDevice /> })}
+        {move || adding.get().then(|| view! {
+            <crate::modal::Modal title="Add a device".to_owned() on_close=move || adding.set(false)>
+                <AddDevice />
+            </crate::modal::Modal>
+        })}
         <NewDevices />
 
         {move || (showing.get() != Showing::Helpers).then(|| view! {
@@ -239,7 +263,14 @@ pub fn Devices() -> impl IntoView {
         // Outside the block above, which redraws on every reading: an opened list mustn't snap
         // shut two seconds later (ROADMAP D33).
         {move || (showing.get() == Showing::Devices).then(|| view! { <Ignored /> })}
-        {move || (showing.get() == Showing::Helpers).then(|| view! { <AddToggle /> })}
+        {move || adding_helper.get().then(|| view! {
+            <crate::modal::Modal
+                title="Add a helper".to_owned()
+                on_close=move || adding_helper.set(false)
+            >
+                <AddToggle on_added=move || adding_helper.set(false) />
+            </crate::modal::Modal>
+        })}
     }
 }
 
@@ -625,7 +656,8 @@ fn helpers(home: &Home, controls: Controls) -> AnyView {
                 <p class="muted">
                     "A helper is a value Irori keeps itself rather than a device reporting it: a "
                     "switch for \"guests are over\" or \"holiday mode\", say. It stays as it was "
-                    "left through restarts, and rules (M1.4) will be able to read and flip it."
+                    "left through restarts, and rules (M1.4) will be able to read and flip it. "
+                    "Make one with \"+ Add helper\" above."
                 </p>
             </section>
         }
@@ -729,7 +761,7 @@ struct HelperTrouble(RwSignal<Option<String>>);
 /// Making a toggle. Outside the list, which redraws with every reading, so what's being typed
 /// survives it (ROADMAP D33).
 #[component]
-fn AddToggle() -> impl IntoView {
+fn AddToggle(#[prop(into)] on_added: Callback<()>) -> impl IntoView {
     let live = expect_context::<crate::Live>();
     let trouble = expect_context::<HelperTrouble>().0;
     let name = RwSignal::new(String::new());
@@ -743,12 +775,18 @@ fn AddToggle() -> impl IntoView {
                 Ok(()) => {
                     trouble.set(None);
                     crate::refresh(live);
+                    on_added.run(());
                 }
                 Err(why) => trouble.set(Some(why)),
             }
         });
     };
     view! {
+        <p class="muted">
+            "A helper is a value Irori keeps itself rather than a device reporting it: a switch "
+            "for \"guests are over\" or \"holiday mode\", say. It stays as it was left through "
+            "restarts, and rules (M1.4) will be able to read and flip it."
+        </p>
         {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
         <form
             class="inline-form"
@@ -765,7 +803,7 @@ fn AddToggle() -> impl IntoView {
                 on:input:target=move |ev| name.set(ev.target().value())
             />
             <button type="submit" class="add" disabled=move || name.get().trim().is_empty()>
-                "Add toggle"
+                "Add helper"
             </button>
         </form>
     }
@@ -846,74 +884,377 @@ pub fn remember(key: &str, value: &str) {
 #[component]
 fn AddDevice() -> impl IntoView {
     let live = expect_context::<crate::Live>();
-    // The extensions and how many devices each has — not the readings. A redraw on every sensor
-    // report would throw away a key being pasted into the form above (ROADMAP D33).
+    // Which protocol's flow is open, if any — at most one at a time.
+    let selected = RwSignal::new(None::<ExtensionId>);
+    // The extensions and how many devices/waiting items each has — not the readings. A redraw
+    // on every sensor report would throw away a key being pasted into a form below (D33).
     let extensions = Memo::new(move |_| {
         let home = live.home.get();
         home.extensions
             .iter()
+            // Helpers are an extension for the core's own reasons (D40), but nothing here finds
+            // a helper: you make one, by naming it. That has its own button on the Helpers tab.
+            .filter(|(id, _)| id.as_str() != HELPERS)
             .map(|(id, extension)| {
                 let devices = home
                     .devices
                     .iter()
                     .filter(|device| device.protocol.as_str() == id.as_str())
                     .count();
-                (extension.clone(), devices)
+                (id.clone(), extension.clone(), devices)
             })
             .collect::<Vec<_>>()
     });
 
     view! {
-        <crate::waiting::Waiting />
-        <section class="card add-device">
-            <h2>"Where devices come from"</h2>
-            <p class="muted">
-                "Irori doesn't talk to devices itself: each kind of device arrives through an "
-                "extension. These are the ones installed. "
-                <A href="/extensions">"Manage extensions"</A>
-                "."
-            </p>
-            <ul class="protocols">
-                {move || {
-                    extensions
-                        .get()
-                        .into_iter()
-                        .map(|(extension, devices)| {
-                            let kinds = extension.entity_kinds.join(", ");
-                            view! {
-                                <li>
-                                    <div class="protocol-head">
-                                        <span class="name">{extension.name.clone()}</span>
-                                        <span class="badge">{how(&extension.iot_class)}</span>
-                                        <span class="state" class:ok=extension.state == "running">
-                                            {extension.state.clone()}
-                                        </span>
-                                    </div>
-                                    <p class="muted">
-                                        {extension.description.clone().unwrap_or_default()}
-                                    </p>
-                                    <p class="muted small">
-                                        {format!(
-                                            "Provides {kinds}. {devices} device{} here now.",
-                                            if devices == 1 { "" } else { "s" },
-                                        )}
-                                    </p>
-                                </li>
-                            }
-                        })
-                        .collect_view()
-                }}
-            </ul>
-            <p class="muted small">
-                "Devices appear on their own: an extension that can find them is always "
-                "listening, so flashing a board or plugging one in is all it takes. A device that "
-                "encrypts its connection shows up above until it has its key. To choose which "
-                "found devices to keep, set `[devices] new = \"ask\"` in irori.toml — they wait "
-                "here with Add and Ignore instead of joining on their own. Giving one an address "
-                "by hand is still to come."
-            </p>
-        </section>
+        {move || match selected.get() {
+            // Step one: which extension does this device speak? Cards rather than a list that
+            // expands in place — the second step is a screen of its own, and a row that grows
+            // while the rows below it stay put reads as a disclosure, not as going somewhere.
+            None => view! {
+                <section class="add-device">
+                    <p class="muted">
+                        "Irori doesn't talk to devices itself: each kind of device arrives "
+                        "through an extension. Pick the one your device speaks. "
+                        <A href="/extensions">"Manage extensions"</A>
+                        "."
+                    </p>
+                    <div class="protocol-cards">
+                        {extensions
+                            .get()
+                            .into_iter()
+                            .map(|(id, extension, devices)| {
+                                protocol_card(id, extension, devices, selected)
+                            })
+                            .collect_view()}
+                    </div>
+                </section>
+            }
+                .into_any(),
+            // Step two: that one extension, and nothing else — what it can be asked to do, and
+            // what it has found.
+            Some(id) => {
+                let found = extensions.get().into_iter().find(|(known, _, _)| known == &id);
+                let Some((id, extension, _)) = found else {
+                    selected.set(None);
+                    return ().into_any();
+                };
+                view! {
+                    <section class="add-device">
+                        <button
+                            type="button"
+                            class="link protocol-back"
+                            on:click=move |_| selected.set(None)
+                        >
+                            "‹ All extensions"
+                        </button>
+                        <ProtocolActions id=id.clone() extension=extension.clone() />
+                        <crate::waiting::WaitingFor extension=id.clone() />
+                        <ProtocolDevices id=id.clone() />
+                    </section>
+                }
+                    .into_any()
+            }
+        }}
     }
+}
+
+/// One extension, as something to press: its icon, its name, and how much it already has.
+fn protocol_card(
+    id: ExtensionId,
+    extension: crate::api::Extension,
+    devices: usize,
+    selected: RwSignal<Option<ExtensionId>>,
+) -> impl IntoView {
+    let pick = {
+        let id = id.clone();
+        move |_| selected.set(Some(id.clone()))
+    };
+    let waiting = extension.waiting.len();
+
+    view! {
+        <button type="button" class="protocol-card" on:click=pick>
+            {icon(id.as_str(), extension.has_icon)}
+            <span class="name">{extension.name.clone()}</span>
+            <span class="badge">{how(&extension.iot_class)}</span>
+            <span
+                class="state"
+                class:ok=extension.state == "running"
+                class:wants-setup=extension.state == "needs_setup"
+            >
+                {extension.state.replace('_', " ")}
+            </span>
+            <span class="muted small">
+                {format!("{devices} device{} here", if devices == 1 { "" } else { "s" })}
+                {(waiting > 0).then(|| format!(" · {waiting} waiting for you"))}
+            </span>
+        </button>
+    }
+}
+
+/// What one extension has found: the devices still waiting to be let in, each with its own Add
+/// and Ignore, and then the ones already here — so the screen you opened to pair a device is
+/// also where you watch it arrive.
+#[component]
+fn ProtocolDevices(id: ExtensionId) -> impl IntoView {
+    let live = expect_context::<crate::Live>();
+    let trouble = RwSignal::new(None::<String>);
+
+    let held = {
+        let id = id.clone();
+        Memo::new(move |_| {
+            live.home
+                .get()
+                .held
+                .into_iter()
+                .filter(|device| device.why == "new" && device.protocol == id.as_str())
+                .collect::<Vec<_>>()
+        })
+    };
+    let here = {
+        let id = id.clone();
+        Memo::new(move |_| {
+            live.home
+                .get()
+                .devices
+                .iter()
+                .filter(|device| device.protocol.as_str() == id.as_str())
+                .map(|device| (device.id.clone(), device.name.to_string()))
+                .collect::<Vec<_>>()
+        })
+    };
+
+    let decide = move |device: irori_types::DeviceId, add: bool| {
+        spawn_local(async move {
+            let edit = crate::api::DeviceEdit {
+                added: add.then_some(true),
+                ignored: (!add).then_some(true),
+                ..Default::default()
+            };
+            match crate::api::edit_device(&device, &edit).await {
+                Ok(()) => trouble.set(None),
+                Err(why) => trouble.set(Some(why)),
+            }
+            crate::refresh(live);
+        });
+    };
+
+    view! {
+        {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
+        {move || {
+            let held = held.get();
+            (!held.is_empty()).then(|| {
+                let count = held.len();
+                view! {
+                    <div class="protocol-found">
+                        <h3>
+                            {format!(
+                                "{count} device{} found, waiting for you",
+                                if count == 1 { "" } else { "s" },
+                            )}
+                        </h3>
+                        <ul class="room-devices">
+                            {held
+                                .into_iter()
+                                .map(|device| {
+                                    let (add, ignore) = (device.id.clone(), device.id.clone());
+                                    view! {
+                                        <li>
+                                            <span class="name">{device.name.to_string()}</span>
+                                            <span class="room-actions">
+                                                <button
+                                                    type="button"
+                                                    class="add"
+                                                    on:click=move |_| decide(add.clone(), true)
+                                                >
+                                                    "Add"
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    on:click=move |_| decide(ignore.clone(), false)
+                                                >
+                                                    "Ignore"
+                                                </button>
+                                            </span>
+                                        </li>
+                                    }
+                                })
+                                .collect_view()}
+                        </ul>
+                    </div>
+                }
+            })
+        }}
+        {move || {
+            let here = here.get();
+            view! {
+                <div class="protocol-found">
+                    <h3>
+                        {format!(
+                            "{} device{} already here",
+                            here.len(),
+                            if here.len() == 1 { "" } else { "s" },
+                        )}
+                    </h3>
+                    {if here.is_empty() {
+                        view! {
+                            <p class="muted small">
+                                "Nothing yet. An extension that can find devices is always "
+                                "listening, so one appears here on its own within a few seconds "
+                                "of joining."
+                            </p>
+                        }
+                            .into_any()
+                    } else {
+                        view! {
+                            <ul class="room-devices">
+                                {here
+                                    .into_iter()
+                                    .map(|(device, name)| view! {
+                                        <li>
+                                            <A href=format!("/devices/{device}")>{name}</A>
+                                        </li>
+                                    })
+                                    .collect_view()}
+                            </ul>
+                        }
+                            .into_any()
+                    }}
+                </div>
+            }
+        }}
+    }
+}
+
+/// The button for a protocol's declared action (Zigbee's permit-join, say) — nothing at all for
+/// a protocol that declares none.
+///
+/// A protocol that declares one but doesn't say it's usable yet gets a sentence instead of the
+/// button. Rendering nothing there is what made the feature look missing: the extension that has
+/// the button is exactly the one that takes a while to come up, so whoever opens this first sees
+/// an empty panel and concludes there's no such flow.
+#[component]
+fn ProtocolActions(id: ExtensionId, extension: crate::api::Extension) -> impl IntoView {
+    let sending = RwSignal::new(None::<String>);
+    let trouble = RwSignal::new(None::<String>);
+    let live = expect_context::<crate::Live>();
+
+    if extension.actions.is_empty() {
+        return ().into_any();
+    }
+    let (usable, waiting_on): (Vec<_>, Vec<_>) = extension
+        .actions
+        .iter()
+        .cloned()
+        .partition(|action| extension.available_actions.contains(&action.id));
+
+    let not_yet = (!waiting_on.is_empty()).then(|| {
+        let names = waiting_on
+            .iter()
+            .map(|action| action.label.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let why = match extension.state.as_str() {
+            "needs_setup" => "It needs a setting filled in first".to_owned(),
+            "running" => format!("{} is still getting ready", extension.name),
+            other => format!("It's {}", other.replace('_', " ")),
+        };
+        view! { <p class="muted small">{format!("{why} — \"{names}\" appears here once it can be used.")}</p> }
+    });
+
+    // What this protocol has found so far, so watching a device join is something the person can
+    // actually see happen rather than having to go and look on another page.
+    let found = {
+        let id = id.clone();
+        Memo::new(move |_| {
+            live.home
+                .get()
+                .devices
+                .iter()
+                .filter(|device| device.protocol.as_str() == id.as_str())
+                .count()
+        })
+    };
+    // Set once an action with a duration has been triggered — what to say while it's open.
+    let listening = RwSignal::new(None::<String>);
+
+    view! {
+        <div class="protocol-actions">
+            {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
+            {usable
+                .into_iter()
+                .map(|action| {
+                    let id = id.clone();
+                    let action_id = action.id.clone();
+                    let seconds = action.seconds;
+                    let is_busy = Memo::new({
+                        let action_id = action_id.clone();
+                        move |_| sending.get().as_deref() == Some(action_id.as_str())
+                    });
+                    let label = match seconds {
+                        Some(seconds) => format!("{} for {seconds}s", action.label),
+                        None => action.label.clone(),
+                    };
+                    let said = action.label.clone();
+                    view! {
+                        <button
+                            type="button"
+                            class="add"
+                            disabled=move || sending.get().is_some()
+                            on:click=move |_| {
+                                let id = id.clone();
+                                let action_id = action_id.clone();
+                                let said = said.clone();
+                                sending.set(Some(action_id.clone()));
+                                spawn_local(async move {
+                                    match crate::api::trigger_action(&id, &action_id).await {
+                                        Ok(()) => {
+                                            trouble.set(None);
+                                            // No countdown, and no number: this says what to
+                                            // do now, and nothing that goes stale while it's
+                                            // still on screen. The protocol closes its own
+                                            // window; the page has no way to know when.
+                                            listening.set(Some(match seconds {
+                                                Some(_) => format!(
+                                                    "{said} is open — briefly. Put the device \
+                                                     into pairing mode now: most need a button \
+                                                     held down, or a power cycle or three.",
+                                                ),
+                                                None => format!("{said} done."),
+                                            }));
+                                            crate::refresh(live);
+                                        }
+                                        Err(why) => trouble.set(Some(why)),
+                                    }
+                                    sending.set(None);
+                                });
+                            }
+                        >
+                            {move || if is_busy.get() { "Working…".to_owned() } else { label.clone() }}
+                        </button>
+                    }
+                })
+                .collect_view()}
+            {not_yet}
+            {move || listening.get().map(|said| view! {
+                <div class="listening">
+                    <p>{said}</p>
+                    <p class="muted small">
+                        {move || {
+                            let found = found.get();
+                            format!(
+                                "{found} device{} here from this extension so far. A new one \
+                                 shows up on this page on its own, within a few seconds of \
+                                 joining.",
+                                if found == 1 { "" } else { "s" },
+                            )
+                        }}
+                    </p>
+                </div>
+            })}
+        </div>
+    }
+        .into_any()
 }
 
 /// Plain words for an `iot_class`: where the device's brain is and what it needs.

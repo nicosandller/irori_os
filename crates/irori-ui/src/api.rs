@@ -123,6 +123,22 @@ pub struct Extension {
     /// Whether it has an icon, at `/api/dev/extensions/<id>/icon.svg`.
     #[serde(default)]
     pub has_icon: bool,
+    /// Actions it declares (static, from its manifest) — the "+ Add device" button for a
+    /// protocol that has a dedicated flow, e.g. Zigbee's permit-join.
+    #[serde(default)]
+    pub actions: Vec<ProtocolActionInfo>,
+    /// Which of `actions` are usable right now, as the protocol itself says.
+    #[serde(default)]
+    pub available_actions: Vec<String>,
+}
+
+/// One action an extension declares (`docs/specs/protocols.md` §5).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ProtocolActionInfo {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub seconds: Option<u32>,
 }
 
 /// The browser's own words for a failed request ("TypeError: Failed to fetch") say nothing a
@@ -565,12 +581,22 @@ pub struct CatalogEntry {
     pub description: String,
     pub version: String,
     pub official: bool,
+    /// The extension can do anything on the machine. The card says so, and Install asks
+    /// before it proceeds.
+    #[serde(default)]
+    pub full_access: bool,
     pub installed: bool,
     pub icon: bool,
     #[serde(default)]
     pub state: Option<String>,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default)]
+    pub config_schema: Option<serde_json::Value>,
+    /// What it's configured with now, secrets excluded — the settings form opens showing this,
+    /// so changing one field doesn't mean retyping the others.
+    #[serde(default)]
+    pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
 pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {
@@ -587,8 +613,48 @@ pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {
     response.json().await.map_err(unreachable)
 }
 
-pub async fn install_extension(id: &str) -> Result<(), String> {
+/// The tail of an extension's own output, oldest line first — what the log window shows, and
+/// where a failure's real reason is written out in full rather than summarised onto the card.
+pub async fn fetch_extension_log(id: &str) -> Result<Vec<String>, String> {
+    #[derive(Deserialize)]
+    struct Log {
+        #[serde(default)]
+        lines: Vec<String>,
+    }
+    let response = Request::get(&format!("/api/dev/extensions/{id}/log"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        return match checked(response).await {
+            Err(reason) => Err(reason),
+            Ok(()) => Err("the server refused without a reason".into()),
+        };
+    }
+    let log: Log = response.json().await.map_err(unreachable)?;
+    Ok(log.lines)
+}
+
+/// Serial devices plugged into the machine running Irori right now — suggestions for a
+/// `"format": "serial-port"` settings field, alongside the plain text box it always was.
+pub async fn fetch_serial_ports() -> Result<Vec<String>, String> {
+    let response = Request::get("/api/dev/serial-ports")
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        return match checked(response).await {
+            Err(reason) => Err(reason),
+            Ok(()) => Err("the server refused without a reason".into()),
+        };
+    }
+    response.json().await.map_err(unreachable)
+}
+
+pub async fn install_extension(id: &str, approve_full_access: bool) -> Result<(), String> {
     let response = Request::post(&format!("/api/dev/extensions/{id}/install"))
+        .json(&serde_json::json!({ "approve_full_access": approve_full_access }))
+        .map_err(|e| e.to_string())?
         .send()
         .await
         .map_err(unreachable)?;
@@ -597,6 +663,22 @@ pub async fn install_extension(id: &str) -> Result<(), String> {
 
 pub async fn uninstall_extension(id: &str) -> Result<(), String> {
     let response = Request::delete(&format!("/api/dev/extensions/{id}"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+/// One extension's settings, as a JSON object matching its own `config_schema` — the generic
+/// form behind the gear icon. A `writeOnly` field lands in `secrets.toml`; everything else in
+/// `extensions/<id>.toml`.
+pub async fn set_extension_settings(
+    id: &str,
+    settings: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let response = Request::post(&format!("/api/dev/extensions/{id}/settings"))
+        .json(settings)
+        .map_err(|e| e.to_string())?
         .send()
         .await
         .map_err(unreachable)?;
@@ -614,6 +696,18 @@ pub async fn give_secret(
         .send()
         .await
         .map_err(unreachable)?;
+    checked(response).await
+}
+
+/// Triggers one of an extension's declared, currently-available actions — Zigbee's
+/// `permit_join`, say — from the "+ Add device" flow.
+pub async fn trigger_action(extension: &ExtensionId, action_id: &str) -> Result<(), String> {
+    let response = Request::post(&format!(
+        "/api/dev/extensions/{extension}/actions/{action_id}"
+    ))
+    .send()
+    .await
+    .map_err(unreachable)?;
     checked(response).await
 }
 

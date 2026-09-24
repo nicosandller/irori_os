@@ -309,10 +309,50 @@
       },
       "additionalProperties": false
     },
+    "ProtocolAction": {
+      "description": "A UI-triggerable action a protocol declares — the other half of \"dedicated add-device path\nper protocol,\" alongside the passive `Waiting` list.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Its own id, unique within this protocol, e.g. `permit_join`.\n\nA slug — the same shape as an extension id — because the UI and the API place it in a\nURL as one path segment (`/api/dev/extensions/{id}/actions/{action_id}`) without\nencoding. Anything with a `/`, `?`, or `#` would not round-trip through that route.\n\n`validate` is the authority: a manifest is always parsed through it, whatever a JSON\nSchema consumer independently accepts. The pattern here is the same slug, so the schema\nrejects the same ids. Uniqueness across `actions` can't be expressed in JSON Schema —\nthere is no keyword for \"unique by one field of an array item\" — so `validate` remains\nthe only place that catches a repeated id.",
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        "label": {
+          "description": "The button's label, e.g. \"Permit joining\".",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "seconds": {
+          "description": "A default duration in seconds, for a timed action — a hint the UI can show (e.g.\n\"for 60s\"), not enforced by the core.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label"
+      ]
+    },
     "ProtocolContribution": {
       "description": "A `[[contributes.protocol]]` entry: the extension brings in devices and entities.",
       "type": "object",
       "properties": {
+        "actions": {
+          "description": "Actions the UI can trigger beyond passively finding devices (`docs/specs/protocols.md`\n§5) — Zigbee's \"permit joining,\" say. Empty for a protocol with nothing to trigger; this\nonly declares that an action exists, not that it's usable right now (the protocol says\nthat at runtime, `set_available_actions`).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProtocolAction"
+          }
+        },
         "entity_kinds": {
           "description": "The kinds of entity it creates. It must handle the standard services of each kind.",
           "type": "array",

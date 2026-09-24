@@ -168,6 +168,12 @@
     .protocols li:last-child { border-bottom: none; }
     .protocol-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem; }
     .protocols p { margin: .25rem 0 0; }
+    /* Each protocol row is a button (so it's clickable/keyboard-focusable), reset to look like
+       the plain row it used to be. */
+    .protocol-picker { display: block; width: 100%; padding: 0; font: inherit; color: inherit;
+                        text-align: left; background: none; border: none; cursor: pointer; }
+    .protocol-detail { margin-top: .6rem; padding-top: .6rem; border-top: 1px dashed var(--line); }
+    .protocol-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .5rem; }
     .name { font-weight: 500; }
     .state { color: var(--muted); font: .7rem var(--mono); letter-spacing: .08em;
              text-transform: uppercase; }
@@ -202,8 +208,9 @@
     .ext-card-head { display: flex; align-items: center; gap: .6rem; padding-right: 4.5rem; }
     .ext-card-title { display: flex; flex-direction: column; gap: .1rem; min-width: 0; }
     .ext-description { margin: 0; font-size: .85rem; }
-    .ext-actions { margin-top: auto; padding-top: .3rem; }
-    .ext-actions .add, .ext-actions .danger { width: 100%; margin-left: 0; }
+    .ext-access { margin: 0; color: var(--ember); font-size: .8rem; }
+    .ext-actions { display: flex; gap: .5rem; margin-top: auto; padding-top: .3rem; }
+    .ext-actions .add, .ext-actions .danger { flex: 1 1 auto; width: auto; margin-left: 0; }
 
     /* An indeterminate sweep while an install or uninstall is in flight: there's no real byte
        progress to show (a `cargo build` or a GitHub download report nothing in between), so this
@@ -224,6 +231,32 @@
     }
     .dot { width: .5rem; height: .5rem; border-radius: 2px; background: var(--muted); }
     .dot.ok { background: var(--ember); box-shadow: 0 0 .4rem var(--ember); }
+
+    /* The gear icon (settings) and the form it opens, generated from an extension's own schema.
+       Sits beside the install/uninstall button rather than in the top-right corner, which the
+       category badge already occupies. */
+    .ext-settings-btn { flex: 0 0 auto; width: 2.1rem; padding: 0; font-size: 1rem; line-height: 1;
+                         color: var(--muted); background: var(--card); border: 1px solid var(--line);
+                         border-radius: .4rem; cursor: pointer; }
+    .ext-settings-btn:hover { color: var(--ember); border-color: var(--ember); }
+    .settings-form { display: flex; flex-direction: column; gap: .6rem; margin-top: .6rem;
+                     padding-top: .6rem; border-top: 1px dashed var(--line); }
+    .settings-field { display: flex; flex-direction: column; gap: .25rem; font-size: .85rem; }
+    .settings-field input { padding: .4rem .6rem; font: inherit; font-size: .95rem;
+                            color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+                            border-radius: .4rem; }
+    .settings-field input:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
+    .settings-field-checkbox { flex-direction: row; align-items: center; gap: .5rem; }
+    .settings-field-checkbox input { width: auto; }
+    .settings-form-actions { display: flex; gap: .5rem; justify-content: flex-end; }
+    .settings-form-actions button { padding: .35rem .7rem; font: inherit; font-size: .85rem;
+                                    color: var(--fg); background: var(--card);
+                                    border: 1px solid var(--line); border-radius: .4rem;
+                                    cursor: pointer; }
+    .settings-form-actions button:hover { border-color: var(--ember); color: var(--ember); }
+    .settings-form-actions .add { background: var(--ember); border-color: var(--ember);
+                                  color: var(--card); }
+    .settings-form-actions .add:hover { background: #ab4717; border-color: #ab4717; }
 
     .filter { width: 100%; margin-bottom: 1.5rem; padding: .5rem .7rem; font: inherit;
               color: var(--fg); background: var(--card); border: 1px solid var(--line);
@@ -763,6 +796,79 @@
       .floorplan .plan-side { top: 4rem; right: 1rem; max-height: 45%; }
       .floorplan .floor-picker { min-width: 0; }
       .floorplan .plan-foot { align-items: flex-start; }
+    }
+
+    /* A window over the page, for a job with its own Save and Cancel: an extension's settings,
+       or adding a device. Both used to open in place and push the page around them down. */
+    .modal-backdrop { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center;
+                      justify-content: center; padding: 1.5rem 1rem;
+                      background: rgba(28, 23, 20, .45); }
+    .modal { width: 100%; max-width: 34rem; max-height: 100%; display: flex;
+             flex-direction: column; background: var(--card); border: 1px solid var(--line);
+             border-radius: .6rem; box-shadow: 0 1.5rem 3rem rgba(28, 23, 20, .25); }
+    .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+                  padding: .9rem 1.25rem; border-bottom: 1px solid var(--line); }
+    .modal-head h2 { margin: 0; font-size: 1.05rem; }
+    .modal-close { width: 2rem; height: 2rem; padding: 0; font: inherit; font-size: 1.3rem;
+                   line-height: 1; color: var(--muted); background: transparent;
+                   border: 1px solid transparent; border-radius: .4rem; cursor: pointer; }
+    .modal-close:hover { color: var(--ember); border-color: var(--line); }
+    .modal-body { padding: 1rem 1.25rem 1.25rem; overflow-y: auto; }
+    /* In a window of its own, the form needs no rule dividing it off from a card above it. */
+    .modal .settings-form { margin-top: 0; padding-top: 0; border-top: none; }
+    .modal .add-device { margin: 0; }
+
+    /* What a setting is for, in the words its own extension used to describe it. A line under
+       the field rather than a `title=` tooltip, which a phone can't show at all. */
+    .settings-help { color: var(--muted); font-size: .78rem; line-height: 1.4; }
+    .settings-required { margin-left: .4rem; color: var(--ember); font: .65rem var(--mono);
+                         letter-spacing: .08em; text-transform: uppercase; }
+    .settings-field select { padding: .4rem .6rem; font: inherit; font-size: .95rem;
+                             color: var(--fg); background: var(--bg);
+                             border: 1px solid var(--line); border-radius: .4rem; }
+    .settings-field select:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
+    .settings-advanced { border: 1px solid var(--line); border-radius: .4rem;
+                         padding: .5rem .75rem; }
+    .settings-advanced summary { cursor: pointer; font-size: .85rem; color: var(--muted); }
+    .settings-advanced[open] summary { margin-bottom: .5rem; color: var(--fg); }
+    .settings-advanced .settings-field { margin-top: .6rem; }
+
+    /* Not a failure: it's waiting on a person, and the way out is the button beside it. */
+    .state.wants-setup { color: var(--ember); }
+    .ext-settings-btn.wants-setup { width: auto; padding: 0 .7rem; font-size: .85rem;
+                                    color: var(--ember); border-color: var(--ember); }
+
+    /* Step one of adding a device: the extensions as things to press, not a list that expands. */
+    .protocol-cards { display: grid; gap: .6rem; margin-top: .8rem;
+                      grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); }
+    .protocol-card { display: flex; flex-direction: column; align-items: flex-start; gap: .3rem;
+                     padding: .8rem; font: inherit; text-align: left; color: inherit;
+                     background: var(--card); border: 1px solid var(--line); border-radius: .5rem;
+                     cursor: pointer; }
+    .protocol-card:hover { border-color: var(--ember); }
+    .protocol-card .protocol-icon { width: 1.75rem; height: 1.75rem; margin-bottom: .2rem; }
+    .protocol-card .name { font-weight: 500; }
+    .protocol-back { padding: 0; margin-bottom: .6rem; font-size: .85rem; }
+    /* Step two: what this one extension has found, waiting and already here. */
+    .protocol-found { margin-top: 1rem; }
+    .protocol-found h3 { margin: 0 0 .4rem; font-size: .9rem; }
+    .protocol-found p { margin: 0; }
+
+    /* An extension's own output. Scrolls in both directions rather than wrapping: a stack trace
+       or a config dump is easier to read with its lines intact. */
+    .ext-log { max-height: 26rem; margin: .6rem 0 0; padding: .6rem .75rem; overflow: auto;
+               font: .78rem/1.5 var(--mono); white-space: pre; background: var(--sunk);
+               border-radius: .4rem; }
+
+    /* While a pairing window is open: what to do now, and what has arrived so far. */
+    .listening { margin-top: .6rem; padding: .6rem .75rem; background: var(--sunk);
+                 border-radius: .4rem; }
+    .listening p { margin: 0; font-size: .85rem; }
+    .listening p + p { margin-top: .35rem; }
+
+    @media (max-width: 40rem) {
+      .modal-backdrop { padding: 0; align-items: flex-end; }
+      .modal { max-width: none; height: 100%; border-radius: 0; border: none; }
     }
   </style>
 </head>

@@ -168,7 +168,8 @@ impl Store {
     ) -> std::io::Result<bool> {
         let dir = self.dir.join("extensions");
         let path = dir.join(format!("{extension}.toml"));
-        let text = files::write_extension(extension, settings);
+        let text = files::write_extension(extension, settings)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let changed = !std::fs::read_to_string(&path).is_ok_and(|current| current == text);
         if changed {
             std::fs::create_dir_all(&dir)?;
@@ -186,6 +187,43 @@ impl Store {
             },
         );
         Ok(changed)
+    }
+
+    /// Writes `extensions/<id>.toml` and `secrets.toml` as one change.
+    ///
+    /// Each file is still renamed into place on its own — a rename can't cover two files. If the
+    /// secrets write fails after the extension file was replaced, that file is put back first.
+    /// Otherwise a later reload would see the new settings without the secret that was supposed
+    /// to arrive with them, and Zigbee2MQTT would generate a network identity of its own.
+    pub fn save_extension_and_secrets(
+        &mut self,
+        extension: &ExtensionId,
+        file: &serde_json::Map<String, serde_json::Value>,
+        secrets: &ExtensionSettings,
+    ) -> std::io::Result<()> {
+        let had_file = self.extensions.contains_key(extension);
+        let previous = self.extension_file(extension);
+        self.save_extension(extension, file)?;
+        if let Err(error) = self.save_secrets(secrets) {
+            let restored = if had_file {
+                self.save_extension(extension, &previous).is_ok()
+            } else {
+                let path = self
+                    .dir
+                    .join("extensions")
+                    .join(format!("{extension}.toml"));
+                let removed = std::fs::remove_file(&path).is_ok() || !path.exists();
+                self.extensions.remove(extension);
+                removed
+            };
+            if !restored {
+                return Err(std::io::Error::other(format!(
+                    "{error}; also couldn't restore extensions/{extension}.toml"
+                )));
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Re-reads whatever has changed on disk since the last call, and says what went wrong.
@@ -590,14 +628,23 @@ mod tests {
     fn a_directory_that_isnt_there_means_nothing_is_configured() {
         let mut store = Store::new(dir().path().join("never-created"));
         assert!(store.reload().is_empty());
-        assert_eq!(store.settings(), Settings::default());
+        assert_eq!(
+            store.settings(),
+            Settings {
+                // Nothing configured means asking before adding: `[devices] new`'s own default.
+                ask_before_adding: true,
+                ..Settings::default()
+            }
+        );
     }
 
     #[test]
     fn what_is_saved_is_what_is_loaded_again() {
         let home = dir();
         let settings = Settings {
-            ask_before_adding: false,
+            // `[devices] new` lives in `irori.toml`, which `save` never writes — that file is
+            // the person's. So this is what a reload reports, not something being saved here.
+            ask_before_adding: true,
             floors: Vec::new(),
             areas: vec![area("hall", "Hall")],
             floorplan: irori_types::Floorplan::default(),

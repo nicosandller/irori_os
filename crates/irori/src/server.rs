@@ -124,6 +124,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/dev/history/{entity_id}", get(entity_history))
         .route("/api/dev/system", get(host_info))
+        .route("/api/dev/serial-ports", get(serial_ports))
         .route("/api/dev/restart", post(restart))
         .route(
             "/api/dev/extensions",
@@ -141,6 +142,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/dev/devices/{id}", patch(edit_device))
         .route("/api/dev/entities/{id}", patch(edit_entity))
         .route("/api/dev/extensions/{id}/secrets", put(give_secret))
+        .route(
+            "/api/dev/extensions/{id}/settings",
+            post(set_extension_settings),
+        )
+        .route(
+            "/api/dev/extensions/{id}/actions/{action_id}",
+            post(trigger_extension_action),
+        )
         .route("/api/dev/catalog", get(catalog))
         .route("/api/dev/extensions/{id}/install", post(install_official))
         .route("/api/dev/extensions/install", post(install_url))
@@ -151,6 +160,7 @@ pub fn router(state: AppState) -> Router {
             axum::routing::delete(remove_toggle),
         )
         .route("/api/dev/extensions/{id}/icon.svg", get(extension_icon))
+        .route("/api/dev/extensions/{id}/log", get(extension_log))
         .fallback(get(ui::serve))
         .with_state(state)
 }
@@ -196,6 +206,15 @@ async fn home(State(state): State<AppState>) -> Json<HomeView> {
 /// filled or a machine that was swapped out from under it.
 async fn host_info(State(state): State<AppState>) -> Json<crate::host_info::HostView> {
     Json(crate::host_info::read(&state.0.db.path))
+}
+
+/// Serial devices plugged into this machine right now, for a settings field the schema marks
+/// `"format": "serial-port"` (a Zigbee dongle, say) to offer as a live-updated list of
+/// candidates, alongside the plain text box a device path always was. Read fresh each time, the
+/// same reasoning as `host_info`: a device plugged in or removed while the form is open should
+/// show up without reopening it.
+async fn serial_ports() -> Json<Vec<String>> {
+    Json(crate::serial::list())
 }
 
 /// The Settings page asks for a restart with this header. Nothing in `/api/dev/*` has
@@ -868,6 +887,218 @@ async fn extension_icon(State(state): State<AppState>, Path(id): Path<ExtensionI
     }
 }
 
+/// What an extension has lately said for itself: the tail of its own stderr, oldest line first.
+///
+/// Every failure a person can see should be one they can act on, and an extension's own output
+/// is usually the only place the real reason is written down (`docs/specs/extensions.md` §8).
+/// The card's reason line carries the last of these; this is the rest of them, for when one line
+/// isn't enough.
+///
+/// Always a 200, even for an extension that has said nothing or isn't installed: "nothing to
+/// show" is an answer, and a 404 here would make the page decide whether an empty log is an
+/// error. A built-in has no process of its own and so never has anything here.
+async fn extension_log(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {
+    axum::Json(serde_json::json!({ "lines": state.0.core.log(&id) })).into_response()
+}
+
+/// An extension's own settings, given as one JSON object matching its `config_schema` — the
+/// generic form behind the gear icon on its card (ROADMAP M1.6). Unlike [`give_secret`], this
+/// isn't limited to a path an extension is currently asking for: it's scoped instead by only
+/// ever accepting keys the extension's own schema actually declares, so it can't become "write
+/// anything into anyone's settings" (`docs/specs/config.md` §3.6) — just this one extension's own
+/// known fields. A `writeOnly` field (`docs/specs/config.md` §3.4: secrets) goes to
+/// `secrets.toml`; everything else goes to `extensions/<id>.toml`.
+async fn set_extension_settings(
+    State(state): State<AppState>,
+    Path(id): Path<ExtensionId>,
+    Json(given): Json<serde_json::Map<String, serde_json::Value>>,
+) -> Response {
+    let core = &state.0.core;
+    let Some(overview) = core.extensions().remove(&id) else {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("there's no extension `{id}`"),
+        );
+    };
+    let Some(schema) = overview
+        .info
+        .as_ref()
+        .and_then(|info| info.config_schema.as_ref())
+    else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            format!("`{id}` has no settings to configure"),
+        );
+    };
+    let Some(properties) = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return refused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("`{id}`'s settings schema has no properties"),
+        );
+    };
+
+    let mut non_secret = serde_json::Map::new();
+    let mut secret_fields = Vec::new();
+    for (key, value) in given {
+        let Some(field_schema) = properties.get(&key) else {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                format!("`{key}` isn't one of `{id}`'s settings"),
+            );
+        };
+        if is_write_only(field_schema, schema) {
+            secret_fields.push((key, value));
+        } else {
+            non_secret.insert(key, value);
+        }
+    }
+
+    // Checked before either half is written: a bad secret value must not leave the non-secret
+    // half saved while the secret half fails, half-applying the request.
+    let mut secrets_to_set = Vec::new();
+    for (key, value) in secret_fields {
+        let Some(text) = value.as_str() else {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                format!("`{key}` must be given as text"),
+            );
+        };
+        secrets_to_set.push((key, text.to_owned()));
+    }
+
+    // One restart for the whole form. Writing the settings file and then the secrets restarts
+    // the extension in between, and Zigbee2MQTT would generate a network key in that gap,
+    // before the key from the form arrived. A form with only one of the two is already a
+    // single write.
+    let saved = if !non_secret.is_empty() && !secrets_to_set.is_empty() {
+        state
+            .0
+            .config
+            .edit_extension_with_secrets(
+                core,
+                &id,
+                |file| {
+                    write_non_secrets(file, &non_secret);
+                    Ok(())
+                },
+                &secrets_to_set,
+            )
+            .await
+    } else if !non_secret.is_empty() {
+        state
+            .0
+            .config
+            .edit_extension(core, &id, |file| {
+                write_non_secrets(file, &non_secret);
+                Ok(())
+            })
+            .await
+    } else if !secrets_to_set.is_empty() {
+        state
+            .0
+            .config
+            .edit_secrets(core, |secrets| {
+                for (key, text) in &secrets_to_set {
+                    secrets
+                        .set(&id, std::slice::from_ref(key), text.clone())
+                        .map_err(|e| Refused(e.to_string()))?;
+                }
+                Ok(())
+            })
+            .await
+    } else {
+        Ok(())
+    };
+    if let Err(e) = saved {
+        return edit_failed(e);
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// Puts the non-secret half of a settings form into the extension's file.
+///
+/// TOML has no `null`: a schema-valid `null` for an `Option<T>` field means "leave this unset",
+/// which in the file is the key's absence, not a value.
+fn write_non_secrets(
+    file: &mut serde_json::Map<String, serde_json::Value>,
+    non_secret: &serde_json::Map<String, serde_json::Value>,
+) {
+    for (key, value) in non_secret {
+        if value.is_null() {
+            file.remove(key);
+        } else {
+            file.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+/// Triggers one of an extension's declared actions — the button behind "+ Add device" for a
+/// protocol that has one, e.g. Zigbee's `permit_join`. Checked against both what the extension
+/// *declares* (its manifest) and what it says is *usable right now* (`available_actions`), the
+/// same static/dynamic split the rest of the extension model uses.
+async fn trigger_extension_action(
+    State(state): State<AppState>,
+    Path((id, action_id)): Path<(ExtensionId, String)>,
+) -> Response {
+    let core = &state.0.core;
+    let Some(overview) = core.extensions().remove(&id) else {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("there's no extension `{id}`"),
+        );
+    };
+    let declared = overview
+        .info
+        .as_ref()
+        .map(|info| info.actions.as_slice())
+        .unwrap_or(&[]);
+    if !declared.iter().any(|action| action.id == action_id) {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("`{id}` has no `{action_id}` action"),
+        );
+    }
+    if !overview.available_actions.contains(&action_id) {
+        return refused(
+            StatusCode::CONFLICT,
+            format!("`{action_id}` isn't available on `{id}` right now"),
+        );
+    }
+    match core.call_action(&id, &action_id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(why) => refused(StatusCode::BAD_REQUEST, why.to_string()),
+    }
+}
+
+/// Whether a JSON Schema node is (or, through `$ref`/`anyOf`/`oneOf`/`allOf`, resolves to
+/// including) a `writeOnly` field — schemars' shape for `Option<Secret>` is
+/// `{"anyOf": [{"$ref": "#/$defs/Secret"}, {"type": "null"}]}`, so a direct check on `field_schema`
+/// alone isn't enough.
+fn is_write_only(field_schema: &serde_json::Value, root: &serde_json::Value) -> bool {
+    if field_schema
+        .get("writeOnly")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        return true;
+    }
+    if let Some(reference) = field_schema.get("$ref").and_then(serde_json::Value::as_str) {
+        return reference
+            .strip_prefix("#/$defs/")
+            .and_then(|name| root.get("$defs")?.get(name))
+            .is_some_and(|resolved| is_write_only(resolved, root));
+    }
+    ["anyOf", "oneOf", "allOf"].iter().any(|combinator| {
+        field_schema
+            .get(combinator)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|branches| branches.iter().any(|branch| is_write_only(branch, root)))
+    })
+}
+
 /// A secret for an extension, at the place it asked for one: `{"path": [...], "value": "..."}`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -939,6 +1170,16 @@ async fn give_secret(
 /// Official catalog plus whether each one is installed in this instance.
 async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
     let running = state.0.core.extensions();
+    // What each installed extension is configured with right now, so its settings form opens
+    // showing it. Read before the loop because reading takes the config lock, and the loop is a
+    // plain `map`; only for installed extensions, since nothing else has a file.
+    let mut configured: std::collections::BTreeMap<
+        ExtensionId,
+        serde_json::Map<String, serde_json::Value>,
+    > = std::collections::BTreeMap::new();
+    for id in running.keys() {
+        configured.insert(id.clone(), state.0.config.extension_settings(id).await);
+    }
     Json(
         crate::packages::official()
             .into_iter()
@@ -950,6 +1191,26 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                 // contribution never gets described at all (host.rs). Either way, this says
                 // whether `extension_icon` actually has bytes right now.
                 let icon = state.0.core.has_extension_icon(&item.id);
+                // Secrets never come back out (§3.4). They live in `secrets.toml` and so aren't
+                // in this file at all, but a hand-written one could still name a `writeOnly`
+                // field, and it would be this response that leaked it.
+                let settings = configured.get(&item.id).map(|file| {
+                    let schema = overview
+                        .and_then(|o| o.info.as_ref())
+                        .and_then(|info| info.config_schema.as_ref());
+                    file.iter()
+                        .filter(|(key, _)| match schema {
+                            // A key the schema doesn't mention is not one this can vouch for, so
+                            // it stays here rather than going out.
+                            Some(schema) => schema
+                                .get("properties")
+                                .and_then(|properties| properties.get(key.as_str()))
+                                .is_some_and(|field| !is_write_only(field, schema)),
+                            None => false,
+                        })
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect()
+                });
                 CatalogEntry {
                     id: item.id,
                     name: item.name.to_string(),
@@ -957,6 +1218,7 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                     description: item.description,
                     version: item.version,
                     official: true,
+                    full_access: item.full_access,
                     installed: overview.is_some(),
                     icon,
                     state: overview.map(|o| match &o.status {
@@ -965,17 +1227,39 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                         irori_core::ExtensionStatus::Running => "running",
                         irori_core::ExtensionStatus::Degraded { .. } => "degraded",
                         irori_core::ExtensionStatus::Failed { .. } => "failed",
+                        irori_core::ExtensionStatus::NeedsSetup { .. } => "needs_setup",
                     }),
                     reason: overview.and_then(|o| match &o.status {
                         irori_core::ExtensionStatus::Degraded { reason }
                         | irori_core::ExtensionStatus::Failed { reason, .. } => {
                             Some(reason.clone())
                         }
+                        irori_core::ExtensionStatus::NeedsSetup { missing } => {
+                            Some(needs_setup_reason(missing))
+                        }
                         _ => None,
                     }),
+                    config_schema: overview
+                        .and_then(|o| o.info.as_ref())
+                        .and_then(|info| info.config_schema.clone()),
+                    settings,
                 }
             })
             .collect(),
+    )
+}
+
+/// What a person needs to do about `needs_setup`, in the same `reason` slot every other state
+/// puts its own explanation. The field names come from the extension's own `config_schema`, which
+/// is also what the settings form labels them by — `serial_port` there reads as "Serial port".
+fn needs_setup_reason(missing: &[String]) -> String {
+    let named = missing
+        .iter()
+        .map(|key| format!("`{key}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "waiting on a setting it can't start without: {named}. Open its settings to fill it in."
     )
 }
 
@@ -987,21 +1271,48 @@ struct CatalogEntry {
     description: String,
     version: String,
     official: bool,
+    /// `host_shell`, or a `host_fs` path outside Irori's own folders. The page says "full
+    /// access to this machine" and install is refused until that is approved.
+    full_access: bool,
     installed: bool,
     icon: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     state: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_schema: Option<serde_json::Value>,
+    /// What it's configured with now, secrets excluded — so its form can open showing it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    settings: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
-async fn install_official(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {
+/// What the Extensions page sends when the person has read the full-access warning and chosen
+/// Install anyway. Absent means they have not: a plain POST must not skip the warning.
+#[derive(Debug, Deserialize)]
+struct InstallApproval {
+    #[serde(default)]
+    approve_full_access: bool,
+}
+
+async fn install_official(
+    State(state): State<AppState>,
+    Path(id): Path<ExtensionId>,
+    approval: Option<Json<InstallApproval>>,
+) -> Response {
     let Some(item) = crate::packages::official_by_id(&id) else {
         return refused(
             StatusCode::NOT_FOUND,
             format!("`{id}` isn't an official extension"),
         );
     };
+    // There are no accounts yet (the server's own note at the top of this file), so this cannot
+    // check that the approver is the owner. It can refuse a request that never acknowledged the
+    // warning. The page collects that acknowledgement; this is what stops anything else.
+    let approved = approval.is_some_and(|Json(approval)| approval.approve_full_access);
+    if item.full_access && !approved {
+        return refused(StatusCode::CONFLICT, full_access_refusal(&id));
+    }
     // Stage out of any live package's way and let `install_package` decide where it lands, so a
     // double-click or a race can't overwrite files while a copy is running. A leftover staging
     // dir is never read as a package again (its name isn't a slug, and `installed_packages`
@@ -1016,6 +1327,13 @@ async fn install_official(State(state): State<AppState>, Path(id): Path<Extensio
     {
         let _ = std::fs::remove_dir_all(&stage);
         return refused(StatusCode::BAD_GATEWAY, why);
+    }
+    // The catalog said what this extension is supposed to be. The files just staged are what
+    // would actually run, and a release asset or a package beside the binary can disagree with
+    // the catalog. The manifest's own id and its permissions decide.
+    if let Err((status, why)) = unapproved_full_access(&stage, Some(&id), approved) {
+        let _ = std::fs::remove_dir_all(&stage);
+        return refused(status, why);
     }
     match state.0.host.install_package(stage.clone()) {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
@@ -1038,6 +1356,49 @@ fn staging_dir() -> String {
 #[derive(Debug, Deserialize)]
 struct InstallUrl {
     url: String,
+    /// Same acknowledgement as an official install. A tarball's manifest isn't known until it
+    /// has been downloaded, so this is checked after that, against the manifest itself.
+    #[serde(default)]
+    approve_full_access: bool,
+}
+
+fn full_access_refusal(id: &ExtensionId) -> String {
+    format!("`{id}` has full access to this machine. Install it only by approving that.")
+}
+
+/// Reads the staged package's manifest and refuses full access unless `approved`.
+///
+/// A package that can't be read is refused too: installing it would start whatever the manifest
+/// says, and a manifest we couldn't check might be the one that needed the approval.
+fn unapproved_full_access(
+    dir: &std::path::Path,
+    expected: Option<&ExtensionId>,
+    approved: bool,
+) -> Result<(), (StatusCode, String)> {
+    let path = dir.join("irori-extension.toml");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{}: {e}", path.display())))?;
+    let manifest =
+        irori_protocol::parse_manifest(&text).map_err(|why| (StatusCode::BAD_REQUEST, why))?;
+    if let Some(expected) = expected
+        && &manifest.extension.id != expected
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "the package's manifest says `{}`, not `{expected}`",
+                manifest.extension.id
+            ),
+        ));
+    }
+    if manifest.permissions.full_access() && !approved {
+        Err((
+            StatusCode::CONFLICT,
+            full_access_refusal(&manifest.extension.id),
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 async fn install_url(State(state): State<AppState>, Json(body): Json<InstallUrl>) -> Response {
@@ -1064,6 +1425,10 @@ async fn install_url(State(state): State<AppState>, Json(body): Json<InstallUrl>
     {
         let _ = std::fs::remove_dir_all(&dest);
         return refused(StatusCode::BAD_GATEWAY, why);
+    }
+    if let Err((status, why)) = unapproved_full_access(&dest, None, body.approve_full_access) {
+        let _ = std::fs::remove_dir_all(&dest);
+        return refused(status, why);
     }
     match state.0.host.install_package(dest.clone()) {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
@@ -1343,7 +1708,13 @@ mod tests {
     impl Server {
         fn new(core: Core) -> anyhow::Result<Self> {
             let dir = tempfile::tempdir()?;
-            let config = Config::open_dir(dir.path().join("config"), &core);
+            // Asking before adding is the default (`irori.toml`, `[devices] new`), so without
+            // this every test below would have to add the demo's devices before it could look at
+            // one. The tests that are *about* asking turn it back on for themselves.
+            let config_dir = dir.path().join("config");
+            std::fs::create_dir_all(&config_dir)?;
+            std::fs::write(config_dir.join("irori.toml"), "[devices]\nnew = \"add\"\n")?;
+            let config = Config::open_dir(config_dir, &core);
             Ok(Self {
                 dir,
                 core,
@@ -1463,6 +1834,17 @@ mod tests {
             json["disk"]["total"].as_u64().unwrap_or(0) > 0,
             "the volume with the data should report its size: {json}"
         );
+        Ok(())
+    }
+
+    /// The endpoint's own shape: what devices are actually found is host-specific and covered in
+    /// `crate::serial`'s own tests.
+    #[tokio::test]
+    async fn serial_ports_answers_with_a_list() -> anyhow::Result<()> {
+        let (status, _, body) = get("/api/dev/serial-ports").await?;
+        assert_eq!(status, StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(&body)?;
+        assert!(json.is_array(), "{json}");
         Ok(())
     }
 
@@ -1815,9 +2197,105 @@ mod tests {
             .find(|e| e["id"] == "mqtt")
             .expect("mqtt is official");
         assert_eq!(mqtt["icon"], false, "{catalog}");
+        assert_eq!(mqtt["full_access"], false, "{catalog}");
+        let zigbee = entries
+            .iter()
+            .find(|e| e["id"] == "zigbee")
+            .expect("zigbee is official");
+        assert_eq!(
+            zigbee["full_access"], true,
+            "zigbee downloads and runs other programs; the page has to be able to say so: {catalog}"
+        );
 
         host.shutdown().await;
         Ok(())
+    }
+
+    /// A bare install must not skip the warning. There are no accounts yet, so this is the
+    /// acknowledgement itself, not a check of who sent it.
+    #[tokio::test]
+    async fn installing_zigbee_is_refused_until_full_access_is_approved() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core)?;
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/zigbee/install",
+                serde_json::json!({}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("full access to this machine")),
+            "{body}"
+        );
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// The URL install route sees the manifest only after the tarball is on disk. The same
+    /// approval the official route requires has to apply to that manifest, or a third-party
+    /// package skips the warning by using the other endpoint.
+    #[test]
+    fn a_downloaded_package_with_full_access_needs_the_same_approval() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::write(
+            dir.path().join("irori-extension.toml"),
+            r#"
+                [extension]
+                id = "toolbox"
+                name = "Toolbox"
+                version = "0.1.0"
+                irori = ">=0.0.0"
+
+                [[contributes.protocol]]
+                iot_class = "local_push"
+                entity_kinds = ["switch"]
+
+                [permissions]
+                host_shell = true
+            "#,
+        )
+        .expect("manifest");
+
+        let refused = unapproved_full_access(dir.path(), None, false).expect_err("needs approval");
+        assert_eq!(refused.0, StatusCode::CONFLICT);
+        assert!(
+            refused.1.contains("full access to this machine"),
+            "{}",
+            refused.1
+        );
+        assert!(unapproved_full_access(dir.path(), None, true).is_ok());
+        let expected = ExtensionId::try_from("zigbee").expect("valid");
+        let wrong = unapproved_full_access(dir.path(), Some(&expected), true)
+            .expect_err("the manifest is toolbox, not zigbee");
+        assert_eq!(wrong.0, StatusCode::CONFLICT);
+        assert!(wrong.1.contains("not `zigbee`"), "{}", wrong.1);
+
+        std::fs::write(
+            dir.path().join("irori-extension.toml"),
+            r#"
+                [extension]
+                id = "toolbox"
+                name = "Toolbox"
+                version = "0.1.0"
+                irori = ">=0.0.0"
+
+                [[contributes.protocol]]
+                iot_class = "local_push"
+                entity_kinds = ["switch"]
+
+                [permissions]
+                lan = true
+            "#,
+        )
+        .expect("rewrite the manifest");
+        assert!(
+            unapproved_full_access(dir.path(), None, false).is_ok(),
+            "lan alone is not full access"
+        );
     }
 
     // --- Rooms and names ------------------------------------------------------------------
@@ -2360,6 +2838,24 @@ mod tests {
     struct SafeSettings {
         #[serde(default)]
         code: Option<String>,
+        /// Never read by `run` below; only here so a test can exercise the generic settings
+        /// endpoint's schema-driven secret routing without needing a real external extension.
+        #[serde(default)]
+        #[expect(dead_code)]
+        key: Option<TestSecret>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct TestSecret(#[expect(dead_code)] String);
+
+    impl schemars::JsonSchema for TestSecret {
+        fn schema_name() -> std::borrow::Cow<'static, str> {
+            "TestSecret".into()
+        }
+
+        fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+            schemars::json_schema!({ "type": "string", "writeOnly": true })
+        }
     }
 
     impl irori_protocol::Protocol for Safe {
@@ -2374,6 +2870,10 @@ mod tests {
             [[contributes.protocol]]
             iot_class = "local_push"
             entity_kinds = ["switch"]
+
+            [[contributes.protocol.actions]]
+            id = "open"
+            label = "Open the safe"
         "#;
         async fn run(
             settings: SafeSettings,
@@ -2392,7 +2892,14 @@ mod tests {
                 }])
                 .await;
             }
-            ctx.stopped().await;
+            // Only offered once it has a code — same idea as `zigbee`'s permit_join only
+            // showing up once it's actually found a Z2M bridge.
+            if settings.code.is_some() {
+                ctx.set_available_actions(vec!["open".to_owned()]).await;
+            }
+            while let Some(incoming) = ctx.next_action().await {
+                incoming.reply(Ok(()));
+            }
             Ok(())
         }
     }
@@ -2421,6 +2928,20 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         anyhow::bail!("the safe never had {count} waiting")
+    }
+
+    async fn available_actions_for(core: &Core, count: usize) -> anyhow::Result<()> {
+        for _ in 0..500 {
+            let available = core
+                .extensions()
+                .get(&ExtensionId::try_from("safe")?)
+                .map_or(0, |overview| overview.available_actions.len());
+            if available == count {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        anyhow::bail!("the safe never had {count} available actions")
     }
 
     /// The whole path of a secret: the page shows what's waiting, sends the secret to the place
@@ -2513,6 +3034,236 @@ mod tests {
             !server.config_dir().join("secrets.toml").exists(),
             "nothing was written"
         );
+        host.shutdown().await;
+        Ok(())
+    }
+
+    // --- Generic settings (the gear icon) ----------------------------------------------------
+
+    /// A non-secret field goes to `extensions/<id>.toml` and restarts the extension with it —
+    /// same outcome as giving a secret, through the generic form instead of the waiting-item one.
+    #[tokio::test]
+    async fn generic_settings_reach_the_extension_and_restart_it() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/settings",
+                serde_json::json!({"code": "1234-5678"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        waiting_for(&core, 0).await?;
+        let written = std::fs::read_to_string(server.config_dir().join("extensions/safe.toml"))?;
+        assert!(written.contains("code = \"1234-5678\""), "{written}");
+        assert!(
+            !server.config_dir().join("secrets.toml").exists(),
+            "a non-secret field must not land in secrets.toml"
+        );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A schema-valid `null` for an `Option<T>` field means "leave this unset" — it must clear
+    /// the field, not get handed to TOML (which has no `null`) and silently blank the whole file.
+    #[tokio::test]
+    async fn a_null_value_unsets_the_field_instead_of_erasing_the_file() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/settings",
+                serde_json::json!({"code": "1234-5678"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/settings",
+                serde_json::json!({"code": null}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        let written = std::fs::read_to_string(server.config_dir().join("extensions/safe.toml"))?;
+        assert!(
+            !written.contains("1234-5678"),
+            "the field should have been cleared: {written}"
+        );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A `writeOnly` field — schemars' shape for an `Option<Secret>`-like type — is routed to
+    /// `secrets.toml` instead, the same file a waiting-item secret goes to.
+    #[tokio::test]
+    async fn a_write_only_field_is_routed_to_secrets_toml() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/settings",
+                serde_json::json!({"key": "shh"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        let written = std::fs::read_to_string(server.config_dir().join("secrets.toml"))?;
+        assert!(
+            written.contains("[safe]") && written.contains("key = \"shh\""),
+            "{written}"
+        );
+        assert!(
+            !server.config_dir().join("extensions/safe.toml").exists()
+                || !std::fs::read_to_string(server.config_dir().join("extensions/safe.toml"))?
+                    .contains("shh"),
+            "a secret field must not land in extensions/<id>.toml"
+        );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A bad secret value is caught before the non-secret half of the same request is written —
+    /// otherwise a request with both a valid `code` and an invalid `key` would save `code` and
+    /// then fail on `key`, leaving the request half-applied.
+    #[tokio::test]
+    async fn an_invalid_secret_value_leaves_the_non_secret_half_unwritten() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/settings",
+                serde_json::json!({"code": "1234-5678", "key": 42}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            !server.config_dir().join("extensions/safe.toml").exists(),
+            "the non-secret field must not be written when the secret field is invalid"
+        );
+        assert!(
+            !server.config_dir().join("secrets.toml").exists(),
+            "nothing was written"
+        );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Scoped to exactly the fields the extension's own schema declares — not a way to write
+    /// anything into anyone's settings (`docs/specs/config.md` §3.6).
+    #[tokio::test]
+    async fn unknown_settings_keys_are_refused() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/settings",
+                serde_json::json!({"not_a_real_field": "x"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            !server.config_dir().join("extensions/safe.toml").exists(),
+            "nothing was written"
+        );
+
+        let (status, _) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/nope/settings",
+                serde_json::json!({"code": "x"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    // --- Protocol actions (the "+ Add device" button, e.g. Zigbee's permit_join) ------------
+
+    /// An action declared in the manifest, and said to be available right now, actually runs.
+    #[tokio::test]
+    async fn a_declared_and_available_action_can_be_triggered() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        // Give it its code, which is what makes `open` available (see `Safe::run`).
+        server
+            .json(
+                "PUT",
+                "/api/dev/extensions/safe/secrets",
+                serde_json::json!({"path": ["code"], "value": "1234-5678"}),
+            )
+            .await?;
+        waiting_for(&core, 0).await?;
+        available_actions_for(&core, 1).await?;
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/actions/open",
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// An action nobody declared, one that isn't available yet, and an unknown extension are
+    /// all refused rather than reaching the extension.
+    #[tokio::test]
+    async fn an_undeclared_or_unavailable_action_is_refused() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        let (status, _) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/actions/not_a_real_action",
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Declared in the manifest, but not yet available: no code has been given.
+        let (status, _) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/safe/actions/open",
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        let (status, _) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/nope/actions/open",
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
         host.shutdown().await;
         Ok(())
     }

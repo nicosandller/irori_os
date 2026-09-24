@@ -241,12 +241,36 @@ impl IncomingCall {
     }
 }
 
+/// A UI-triggered action waiting for its result (`docs/specs/protocols.md` §5, the manifest's
+/// `contributes.protocol.actions`). Reply exactly once; dropping it without replying reports a
+/// failure.
+#[derive(Debug)]
+pub struct IncomingAction {
+    pub action_id: String,
+    reply: oneshot::Sender<Result<(), String>>,
+}
+
+impl IncomingAction {
+    pub fn reply(self, result: Result<(), String>) {
+        let _ = self.reply.send(result);
+    }
+}
+
+/// Something delivered through [`ProtocolContext::next`]: either kind of call a protocol can
+/// receive.
+#[derive(Debug)]
+pub enum Incoming {
+    Call(IncomingCall),
+    Action(IncomingAction),
+}
+
 /// The protocol's handle to the core. Offers exactly the operations of the contract.
 #[derive(Debug)]
 pub struct ProtocolContext {
     ops: mpsc::Sender<host::Op>,
     reports: Arc<ReportQueue>,
     calls: mpsc::Receiver<IncomingCall>,
+    actions: mpsc::Receiver<IncomingAction>,
     stop: watch::Receiver<bool>,
 }
 
@@ -331,6 +355,13 @@ impl ProtocolContext {
         let _ = self.ops.send(host::Op::SetWaiting(waiting)).await;
     }
 
+    /// Says which of its manifest-declared actions are usable right now, replacing the last
+    /// list — an empty list when none are (the default, until a protocol calls this). E.g. the
+    /// `zigbee` protocol only offers `permit_join` once it's actually found a Z2M bridge.
+    pub async fn set_available_actions(&self, actions: Vec<String>) {
+        let _ = self.ops.send(host::Op::SetAvailableActions(actions)).await;
+    }
+
     /// Reports a new value for one of its entities. Never waits: if the core is behind, an
     /// older report for the same entity that it hasn't read yet is replaced by this one. At most
     /// [`MAX_PENDING_ENTITIES`] entities' reports wait at once; reports for further entities are
@@ -349,6 +380,35 @@ impl ProtocolContext {
             biased;
             _ = self.stop.wait_for(|stop| *stop) => None,
             call = self.calls.recv() => call,
+        }
+    }
+
+    /// The next action call (one this protocol declared and said is currently available), or
+    /// `None` once the protocol should stop.
+    pub async fn next_action(&mut self) -> Option<IncomingAction> {
+        if *self.stop.borrow() {
+            return None;
+        }
+        tokio::select! {
+            biased;
+            _ = self.stop.wait_for(|stop| *stop) => None,
+            action = self.actions.recv() => action,
+        }
+    }
+
+    /// The next service call *or* action call, whichever comes first, or `None` once the
+    /// protocol should stop. For a protocol that handles both: `next_call`/`next_action` each
+    /// need their own `&mut self`, which can't both be borrowed in the same `tokio::select!` —
+    /// this does the equivalent three-way select with exactly one borrow.
+    pub async fn next(&mut self) -> Option<Incoming> {
+        if *self.stop.borrow() {
+            return None;
+        }
+        tokio::select! {
+            biased;
+            _ = self.stop.wait_for(|stop| *stop) => None,
+            call = self.calls.recv() => call.map(Incoming::Call),
+            action = self.actions.recv() => action.map(Incoming::Action),
         }
     }
 
@@ -597,6 +657,7 @@ pub mod host {
         SetAvailability(AvailabilityTarget, Availability, Reply),
         SetHealth(Health),
         SetWaiting(Vec<Waiting>),
+        SetAvailableActions(Vec<String>),
         Load(
             String,
             oneshot::Sender<Result<Option<serde_json::Value>, Rejected>>,
@@ -614,6 +675,7 @@ pub mod host {
         pub ops: mpsc::Receiver<Op>,
         pub reports: Reports,
         pub calls: mpsc::Sender<IncomingCall>,
+        pub actions: mpsc::Sender<IncomingAction>,
         pub stop: watch::Sender<bool>,
     }
 
@@ -650,18 +712,21 @@ pub mod host {
     pub fn connect() -> (ProtocolContext, HostEnd) {
         let (ops_tx, ops_rx) = mpsc::channel(OPS_CAPACITY);
         let (calls_tx, calls_rx) = mpsc::channel(CALLS_CAPACITY);
+        let (actions_tx, actions_rx) = mpsc::channel(CALLS_CAPACITY);
         let (stop_tx, stop_rx) = watch::channel(false);
         let reports = Arc::new(ReportQueue::default());
         let ctx = ProtocolContext {
             ops: ops_tx,
             reports: Arc::clone(&reports),
             calls: calls_rx,
+            actions: actions_rx,
             stop: stop_rx,
         };
         let host = HostEnd {
             ops: ops_rx,
             reports: Reports(reports),
             calls: calls_tx,
+            actions: actions_tx,
             stop: stop_tx,
         };
         (ctx, host)
@@ -673,6 +738,14 @@ pub mod host {
     ) -> (IncomingCall, oneshot::Receiver<Result<(), ServiceError>>) {
         let (reply, result) = oneshot::channel();
         (IncomingCall { call, reply }, result)
+    }
+
+    /// Builds an action call for the protocol, with the channel its reply comes back on.
+    pub fn incoming_action(
+        action_id: String,
+    ) -> (IncomingAction, oneshot::Receiver<Result<(), String>>) {
+        let (reply, result) = oneshot::channel();
+        (IncomingAction { action_id, reply }, result)
     }
 }
 

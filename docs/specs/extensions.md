@@ -180,7 +180,10 @@ What the UI and CLI show for each extension and each of its contributions:
 ```mermaid
 stateDiagram-v2
     [*] --> disabled: added, not enabled
+    disabled --> needs_setup: enabled, a required setting is unset
     disabled --> starting: enabled
+    needs_setup --> starting: the setting is given
+    needs_setup --> disabled: disabled
     starting --> running
     starting --> failed: incompatible, bad config, crashed
     running --> degraded: reports a problem
@@ -196,6 +199,7 @@ stateDiagram-v2
 | State | Meaning | Reason shown |
 |---|---|---|
 | `disabled` | Turned off in `irori.toml` (`[extensions] disabled`) | — |
+| `needs_setup` | Never started: a setting its own `config_schema` marks required is unset. Not a failure, and not retried — only a person can fix it, so the core waits for the setting instead of restarting into the same crash | Which settings are missing |
 | `starting` | Being set up | — |
 | `running` | Working | — |
 | `degraded` | Working, with a problem it reported, e.g. one of four devices unreachable | The extension's own message |
@@ -203,6 +207,30 @@ stateDiagram-v2
 
 An extension's state is the worst of its contributions'. Supervision and retries are in
 [protocols.md](protocols.md) §3.
+
+### 8.1 A reason is something a person can act on
+
+**A state a person can see must come with a reason they can do something about.** `exited exit
+status: 1` is not one: it says what the operating system observed and nothing about what went
+wrong. Neither is a reason that only exists in a terminal log the owner of a Pi in a cupboard
+will never read.
+
+So, for every extension run as its own process:
+
+- Its **stderr is piped, never inherited**, and the host reads it continuously — an unread pipe
+  fills and the extension blocks on its own next line of output — keeping the most recent lines
+  and echoing each to Irori's log.
+- A **failure's reason is the host's own description plus the extension's last words**:
+  `exited exit status: 1 — couldn't open /dev/ttyUSB0: No such file or directory`. The extension
+  itself nearly always printed the real reason a moment before dying.
+- The rest of what it said is at **`GET /api/dev/extensions/<id>/log`**, and behind a link on its
+  card, so one line on the card never has to be the whole story.
+- A state that only a person can clear says so as itself rather than as a crash — that is what
+  `needs_setup` is, rather than letting the extension fail its own deserialization and reporting
+  the exit status.
+
+A built-in extension has no process and so no output of its own; its failures arrive as a
+`ProtocolError` whose message is the reason directly.
 
 ## 9. Validation
 

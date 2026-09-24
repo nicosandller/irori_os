@@ -110,6 +110,15 @@ core's process.
 | Store small data | key (1–128 characters) → JSON value, up to 64 KB each; load, store, forget | Private to the protocol, kept across restarts of it and of Irori, in the data directory's database. E.g. pairing keys, a cloud token refresh, the value a helper was left at. Not for settings (a person's decisions go in the config directory) and not for history |
 | Log | leveled, structured log lines | Tagged with the protocol id |
 
+**Where an external protocol may keep files.** Its working directory is its own package
+directory, which uninstalling deletes whole — right for a manifest and a binary, wrong for
+anything underneath them. So the host also gives it `IRORI_EXTENSION_DATA`: an absolute path to
+`$DATA/extension-data/<id>`, created before the process starts, for what has to outlive the
+package. Zigbee is the case that makes this matter — Zigbee2MQTT's network key and pairing table
+live in a directory of its own, and losing them strands every paired device — and an upgrade
+today *is* an uninstall and a reinstall. Small values belong in the storage above instead; this
+is for a subprocess's own files, which Irori can't hold for it.
+
 **What it can't do:** see or change other protocols' devices and entities (without the `api`
 permissions, [extensions.md](extensions.md) §7), touch rules, write history, or set timestamps and
 contexts itself.

@@ -97,7 +97,8 @@ it in. What the protocol says meanwhile is remembered, so taking `ignored` away 
 back as it is now, without a restart.
 
 `added = true` records that the device is in the home: a person added it while Irori was asking
-(`[devices] new = "ask"` in `irori.toml`, §3.5), or it joined while asking was off and Irori
+(`[devices] new = "ask"` in `irori.toml`, §3.5 — the default), or it joined while asking was
+off and Irori
 wrote this so a later restart with asking already on doesn't hold it as new. Any other entry
 for the device (a name, a room) is the same decision — that device is not new. Turning asking
 on marks every device already in the home as added, so switching the setting on never empties
@@ -169,7 +170,7 @@ data = "/var/lib/irori"       # relative paths are relative to this directory
 disabled = ["demo"]
 
 [devices]
-new = "ask"                   # "add" (the default) or "ask"
+new = "add"                   # "ask" (the default) or "add"
 ```
 
 A command-line flag, or its environment variable, wins over the file, and the file wins over the
@@ -185,8 +186,9 @@ loudly if it's taken, never stepping — the way to keep a fixed published and h
 (e.g. the dev container) on the address everything expects.
 
 `[devices] new` is what happens when a protocol finds a device nobody has decided about.
-`"add"` puts it in the home straight away. `"ask"` holds it back, as if ignored, until a person
-adds it (`added = true`) or ignores it (`ignored = true`) from the Devices page — the way to stop
+`"ask"`, the default, holds it back, as if ignored, until a person adds it (`added = true`) or
+ignores it (`ignored = true`) — from the Devices page, or from that extension's own screen under
+"+ Add device". `"add"` puts it in the home straight away — the way to stop
 a busy network filling the home with a neighbour's plugs. A device that already has a
 `devices.toml` entry is not new: it stays in the home. Irori writes `added = true` for devices
 that join while asking is off, so restarting with asking already on doesn't empty the home.

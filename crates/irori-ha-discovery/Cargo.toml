@@ -1,0 +1,17 @@
+[package]
+name = "irori-ha-discovery"
+description = "Home Assistant MQTT Discovery: parsing, device/entity mapping, and state translation, shared by the mqtt and zigbee protocols."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+irori-types.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

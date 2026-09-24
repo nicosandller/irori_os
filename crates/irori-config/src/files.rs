@@ -251,10 +251,12 @@ pub struct DevicesSection {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NewDevices {
-    /// It joins the home straight away. The default: nothing to set up.
-    #[default]
+    /// It joins the home straight away.
     Add,
-    /// It waits on the Devices page until a person adds or ignores it.
+    /// It waits until a person adds or ignores it — on the Devices page, or on the extension's
+    /// own screen under "+ Add device". The default: what an extension finds is a proposal, not
+    /// a decision, and installing one shouldn't fill the home with whatever is on the network.
+    #[default]
     Ask,
 }
 
@@ -338,19 +340,22 @@ pub fn read_extension(text: &str) -> Result<serde_json::Map<String, serde_json::
     }
 }
 
-/// An `extensions/<id>.toml` file's text, ready to write.
+/// An `extensions/<id>.toml` file's text, ready to write. `Err` if `settings` holds something
+/// TOML can't represent (a JSON `null`, most likely — a schema-valid value for any `Option<T>`
+/// field, but one TOML has no way to write down) — the caller must not fall back to writing an
+/// empty body in that case, which would silently erase every other setting already saved.
 pub fn write_extension(
     extension: &ExtensionId,
     settings: &serde_json::Map<String, serde_json::Value>,
-) -> String {
-    let body = toml::to_string_pretty(settings).unwrap_or_default();
-    format!(
+) -> Result<String, String> {
+    let body = toml::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    Ok(format!(
         "# Settings for the `{extension}` extension that aren't secret. Secrets for it go in\n\
          # secrets.toml, under [{extension}].\n\
          #\n\
          # Written by Irori, and yours to edit: changes are picked up within a couple of seconds, and\n\
          # the extension restarts with them. See docs/specs/config.md.\n\n{body}"
-    )
+    ))
 }
 
 /// `secrets.toml`'s text, ready to write.
@@ -520,12 +525,12 @@ mod tests {
         assert_eq!(read_irori("").expect("empty"), IroriSettings::default());
         assert!(read_irori("[server]\nlog_level = \"loud\"\n").is_err());
         assert!(read_irori("[server]\nport = 80\n").is_err());
-        let asking = read_irori("[devices]\nnew = \"ask\"\n").expect("valid");
-        assert_eq!(asking.devices.new, NewDevices::Ask);
+        let adding = read_irori("[devices]\nnew = \"add\"\n").expect("valid");
+        assert_eq!(adding.devices.new, NewDevices::Add);
         assert_eq!(
             IroriSettings::default().devices.new,
-            NewDevices::Add,
-            "adding is the default"
+            NewDevices::Ask,
+            "asking is the default"
         );
     }
 

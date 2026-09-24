@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context as _, bail};
+use irori_types::PackagePath;
 use serde::Deserialize;
 
 /// One `[[extension]]` in `extensions/official.toml`, enough to build and stage the package.
@@ -103,9 +104,27 @@ fn package(
     fs::create_dir_all(stage.join("bin"))
         .with_context(|| format!("can't create {}", stage.display()))?;
     fs::copy(&manifest, stage.join("irori-extension.toml"))?;
-    let icon = source.join("icon.svg");
-    if icon.is_file() {
-        fs::copy(&icon, stage.join("icon.svg"))?;
+    let declared = declared_files(&manifest)?;
+    for path in &declared {
+        if path.overwrites_packaged_file(&item.bin) {
+            bail!(
+                "{}'s manifest `{path}` would replace a file the package writes itself",
+                item.bin
+            );
+        }
+        let from = source.join(path.as_str());
+        if !from.is_file() {
+            bail!(
+                "{}'s manifest declares `{path}`, which isn't in {}",
+                item.bin,
+                source.display()
+            );
+        }
+        let to = stage.join(path.as_str());
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(&from, &to)?;
     }
     let exe = stage.join("bin").join(&item.bin);
     fs::copy(&binary, &exe)?;
@@ -127,13 +146,56 @@ fn package(
     let size = fs::metadata(&archive)
         .map(|meta| meta.len())
         .expect("the archive was just written");
-    let icon = if icon.is_file() {
-        "with icon"
+    let also = if declared.is_empty() {
+        "manifest and binary only".to_owned()
     } else {
-        "no icon"
+        format!(
+            "with {}",
+            declared
+                .iter()
+                .map(PackagePath::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     };
-    println!("  {}: {size} bytes, {icon}", archive.display());
+    println!("  {}: {size} bytes, {also}", archive.display());
     Ok(())
+}
+
+/// The files an extension's own manifest names, so they travel with the package.
+///
+/// `icon` and `config_schema` are `PackagePath`s the author chose — `config.schema.json` next to
+/// the manifest by convention, but `schemas/settings.json` is just as valid. Copying fixed names
+/// instead would ship a package whose manifest points at a file that was never in it: the icon
+/// silently doesn't appear, and `config_schema` reads as `None`, which is the same to the UI as
+/// an extension with no settings at all. `crates/irori`'s `stage_package` does the same for the
+/// dev-checkout install path, for the same reason.
+fn declared_files(manifest: &Path) -> anyhow::Result<Vec<PackagePath>> {
+    /// Just the two path fields; everything else in the manifest is somebody else's business
+    /// here, and `irori-types`' own manifest type is serialize-only.
+    #[derive(Debug, Deserialize)]
+    struct Declared {
+        extension: DeclaredExtension,
+    }
+    #[derive(Debug, Deserialize)]
+    struct DeclaredExtension {
+        #[serde(default)]
+        icon: Option<String>,
+        #[serde(default)]
+        config_schema: Option<String>,
+    }
+
+    let text = fs::read_to_string(manifest)
+        .with_context(|| format!("can't read {}", manifest.display()))?;
+    let declared: Declared = toml::from_str(&text)
+        .with_context(|| format!("{} isn't a valid manifest", manifest.display()))?;
+    [declared.extension.icon, declared.extension.config_schema]
+        .into_iter()
+        .flatten()
+        // `PackagePath` is what rejects an absolute path or one climbing out of the package,
+        // so nothing here can name a file outside the extension's own directory.
+        .map(|path| PackagePath::try_from(path).map_err(anyhow::Error::from))
+        .collect()
 }
 
 /// Builds `<crate>` for `target` the way the release workflow builds the binary itself:

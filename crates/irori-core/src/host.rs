@@ -10,10 +10,12 @@ use std::time::Duration;
 
 use irori_protocol::Builtin;
 use irori_protocol::host::{HostEnd, Op, Reports, connect};
-use irori_protocol::{ExtProcess, FromExt, IncomingCall, ToExt, spawn};
+use irori_protocol::{ExtProcess, FromExt, IncomingAction, IncomingCall, ToExt, spawn};
 use std::collections::BTreeSet;
 
-use irori_types::{EntityKind, ExtensionId, ExtensionManifest, ExtensionSettings, ProtocolId};
+use irori_types::{
+    EntityKind, ExtensionId, ExtensionManifest, ExtensionSettings, PackagePath, ProtocolId,
+};
 use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
@@ -230,6 +232,7 @@ impl ExtensionHost {
         let protocol = ProtocolId::try_from(id.as_str()).map_err(|e| e.to_string())?;
         self.inner.core.remove_protocol(&protocol);
         self.inner.core.clear_extension_storage(id);
+        self.inner.core.forget_log(id);
         self.inner.core.forget_extension(id);
         let dir = self.inner.packages_dir.join(id.as_str());
         if dir.is_dir() {
@@ -319,6 +322,160 @@ async fn settings_changed(
     }
 }
 
+/// Where an extension may keep what has to outlive the package: `$DATA/extension-data/<id>`,
+/// alongside `$DATA/extensions/<id>` rather than inside it.
+///
+/// Uninstalling deletes the package directory whole, so anything an extension wrote there is
+/// gone — which for a package that only holds a manifest and a binary is right, and for the state
+/// underneath one is not. Zigbee is the case that makes it obvious: Zigbee2MQTT's network key and
+/// pairing table live in a directory of its own, and losing them means every paired device is
+/// stranded and has to be re-paired by hand. An upgrade, which today is an uninstall and a
+/// reinstall, would cost the whole network.
+///
+/// The extension learns of it as `IRORI_EXTENSION_DATA` (`docs/specs/protocols.md` §5).
+fn state_dir(package_dir: &Path) -> PathBuf {
+    match package_dir.parent().and_then(Path::parent) {
+        // `$DATA/extensions/<id>` → `$DATA/extension-data/<id>`.
+        Some(data) => data.join("extension-data").join(
+            package_dir
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("unknown")),
+        ),
+        // No layout to hang it off — a package somewhere unusual, which is only the case in
+        // tests. Beside the package rather than nowhere.
+        None => package_dir.with_extension("data"),
+    }
+}
+
+/// How much of one stderr line to hold before handing it off and reading on.
+///
+/// Longer than a line the core keeps. Past this, a child that never writes a newline would
+/// grow the buffer without bound and eventually stop being read — the same hang a full pipe
+/// causes. The extra bytes are still drained; they just become more than one stored line.
+const STDERR_LINE_CAP: usize = 8192;
+
+/// Reads an extension's stderr for as long as it runs, keeping the tail in the core and echoing
+/// each line to Irori's own log.
+///
+/// This task existing is not optional. The pipe is what `spawn` gives the host in place of
+/// inheriting stderr, and a pipe nobody reads fills up: the extension then blocks on its own next
+/// line of output, and for anything as chatty as Zigbee2MQTT that is a hang within seconds.
+///
+/// Bytes, not `BufRead::lines`: that stops at the first sequence that isn't UTF-8 and treats it
+/// as the end of the stream. An extension can emit arbitrary bytes (a coloured log, a binary
+/// complaint). One bad line must not end the read, or everything after it sits in the pipe until
+/// the pipe fills and the child blocks.
+///
+/// A line is kept whatever the extension's own exit status turns out to be. Most of the time
+/// nothing reads it; the point is the times something has gone wrong, when this is the only
+/// account of what.
+async fn keep_what_it_says(
+    core: Core,
+    extension: ExtensionId,
+    stderr: impl tokio::io::AsyncRead + Unpin,
+) {
+    use tokio::io::AsyncReadExt as _;
+
+    let mut stderr = tokio::io::BufReader::new(stderr);
+    let mut pending = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match stderr.read(&mut chunk).await {
+            Ok(0) => {
+                remember_stderr(&core, &extension, &pending);
+                return;
+            }
+            Ok(n) => {
+                pending.extend_from_slice(&chunk[..n]);
+                while let Some(at) = pending.iter().position(|byte| *byte == b'\n') {
+                    let line: Vec<u8> = pending.drain(..=at).collect();
+                    remember_stderr(&core, &extension, &line);
+                }
+                if pending.len() > STDERR_LINE_CAP {
+                    remember_stderr(&core, &extension, &pending);
+                    pending.clear();
+                }
+            }
+            // The pipe broke. Keep whatever arrived and stop; reading again would spin.
+            Err(_) => {
+                remember_stderr(&core, &extension, &pending);
+                return;
+            }
+        }
+    }
+}
+
+/// One chunk of stderr, lossy where the bytes aren't UTF-8, stored and echoed.
+fn remember_stderr(core: &Core, extension: &ExtensionId, bytes: &[u8]) {
+    let mut end = bytes.len();
+    if bytes.last() == Some(&b'\n') {
+        end -= 1;
+    }
+    if end > 0 && bytes[end - 1] == b'\r' {
+        end -= 1;
+    }
+    if end == 0 {
+        return;
+    }
+    let line = String::from_utf8_lossy(&bytes[..end]);
+    core.log_line(extension, &line);
+    // At info, not error: most of what comes through here is an extension's ordinary
+    // chatter, and a subprocess's own log level isn't Irori's to judge.
+    tracing::info!(%extension, "{line}");
+}
+
+/// Waits until the stderr reader finishes, which is when the child closes the pipe.
+///
+/// Aborting the reader while the child can still write stops the drain: the pipe fills and the
+/// child blocks on its next line. A child stuck where even `start_kill` waits (uninterruptible
+/// I/O) must not stall supervision, so the wait is bounded and the reader is then aborted.
+async fn finish_reading(mut reading: JoinHandle<()>) {
+    tokio::select! {
+        _ = &mut reading => {}
+        _ = tokio::time::sleep(Duration::from_secs(2)) => reading.abort(),
+    }
+}
+
+/// `reason`, with what the extension last said for itself appended when it said anything.
+///
+/// `exited exit status: 1` describes what the operating system observed and nothing a person can
+/// act on. The extension itself almost always printed the real reason — a missing serial port, a
+/// setting it couldn't parse — a moment before dying, and that is what belongs on its card.
+fn with_last_words(core: &Core, extension: &ExtensionId, reason: String) -> String {
+    match core.last_words(extension) {
+        Some(said) if !reason.contains(&said) => format!("{reason} — {said}"),
+        _ => reason,
+    }
+}
+
+/// The settings an extension's own `config_schema` marks required that `settings` doesn't have,
+/// in the schema's own order.
+///
+/// A required setting is one with no default to fall back on, so starting without it means the
+/// extension's own deserialization fails and its process exits — which reaches a person as
+/// `exited exit status: 1`, the real reason only in the log. Checking here turns that into
+/// [`ExtensionStatus::NeedsSetup`] naming the fields, and skips the restart-with-backoff
+/// entirely: no retry helps until someone fills them in.
+///
+/// A present-but-`null` value counts as missing — that's how settings say "unset" (§3.6).
+fn missing_required(
+    schema: Option<&serde_json::Value>,
+    settings: &serde_json::Value,
+) -> Vec<String> {
+    let Some(required) = schema
+        .and_then(|schema| schema.get("required"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Vec::new();
+    };
+    required
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .filter(|key| !settings.get(key).is_some_and(|value| !value.is_null()))
+        .map(str::to_owned)
+        .collect()
+}
+
 async fn supervise(
     core: Core,
     builtin: Arc<Builtin>,
@@ -350,6 +507,8 @@ async fn supervise(
             entity_kinds: kinds.clone(),
             iot_class: Some(contribution.iot_class),
             icon: builtin.icon.map(str::to_owned),
+            config_schema: Some(builtin.config_schema.clone()),
+            actions: contribution.actions.clone(),
         },
     );
 
@@ -395,10 +554,27 @@ async fn supervise(
             core.set_status(&extension, ExtensionStatus::Disabled);
             return;
         }
-        core.set_status(&extension, ExtensionStatus::Starting);
-        let (ctx, host_end) = connect();
         // Whatever the config dir says right now; a later change restarts it (below).
         let started_with = settings.borrow_and_update().of(&extension);
+        let missing = missing_required(Some(&builtin.config_schema), &started_with);
+        if !missing.is_empty() {
+            tracing::info!(%extension, missing = %missing.join(", "), "extension needs setup");
+            core.set_status(&extension, ExtensionStatus::NeedsSetup { missing });
+            tokio::select! {
+                biased;
+                _ = stop.wait_for(|stop| *stop) => {
+                    core.set_status(&extension, ExtensionStatus::Disabled);
+                    return;
+                }
+                () = settings_changed(&mut settings, &extension, &started_with) => {
+                    delay = timing.first_retry;
+                    continue;
+                }
+                Ok(_) = disabled.wait_for(|disabled| disabled.contains(&extension)) => continue,
+            }
+        }
+        core.set_status(&extension, ExtensionStatus::Starting);
+        let (ctx, host_end) = connect();
         // Only time spent actually running counts towards `healthy_after`; startup doesn't, and
         // a start that panics never ran at all.
         let mut running_since: Option<Instant> = None;
@@ -409,6 +585,7 @@ async fn supervise(
         })) {
             Ok(Ok(run)) => {
                 core.link(&protocol, host_end.calls.clone());
+                core.link_action(&extension, host_end.actions.clone());
                 let task = tokio::spawn(run);
                 running_since = Some(Instant::now());
                 core.set_status(&extension, ExtensionStatus::Running);
@@ -431,8 +608,10 @@ async fn supervise(
                 )
                 .await;
                 core.unlink(&protocol);
+                core.unlink_action(&extension);
                 core.mark_unavailable(&protocol);
                 core.set_waiting(&extension, Vec::new());
+                core.set_available_actions(&extension, Vec::new());
                 match outcome {
                     Outcome::Stopped => {
                         tracing::info!(%extension, "extension stopped");
@@ -547,10 +726,12 @@ async fn pump(
         mut ops,
         reports,
         calls,
+        actions,
         stop: stop_protocol,
     } = host_end;
-    // The core's link holds its own sender; this one isn't needed.
+    // The core's links hold their own senders; these aren't needed.
     drop(calls);
+    drop(actions);
 
     let why = loop {
         tokio::select! {
@@ -673,6 +854,18 @@ fn read_package_manifest(dir: &Path) -> Result<ExtensionManifest, String> {
     irori_protocol::parse_manifest(&text)
 }
 
+/// Reads and parses the JSON Schema a package's manifest names as its `config_schema`, relative
+/// to `dir`. The error always names `path` — a missing file and a malformed one both come back
+/// as `config schema \`<path>\`: <why>`, not left for the caller to attach the path itself.
+fn load_config_schema(dir: &Path, path: &PackagePath) -> Result<serde_json::Value, String> {
+    let full = dir.join(path.as_str());
+    (|| -> Result<serde_json::Value, String> {
+        let text = std::fs::read_to_string(&full).map_err(|e| e.to_string())?;
+        serde_json::from_str(&text).map_err(|e| e.to_string())
+    })()
+    .map_err(|why| format!("config schema `{path}`: {why}"))
+}
+
 async fn supervise_package(
     core: Core,
     dir: PathBuf,
@@ -709,6 +902,33 @@ async fn supervise_package(
             .ok()
             .filter(|svg| svg.trim_start().starts_with("<svg"))
     });
+    let config_schema = match manifest
+        .extension
+        .config_schema
+        .as_ref()
+        .map(|path| load_config_schema(&dir, path))
+        .transpose()
+    {
+        Ok(schema) => schema,
+        Err(reason) => {
+            // A schema the manifest itself names but that's missing or malformed isn't a package
+            // to run with settings quietly unchecked and its form quietly hidden — that skips the
+            // required-setting check below and only surfaces once the package's own
+            // deserialization fails. Reject it up front instead, the same as `run.command`
+            // missing above.
+            tracing::error!(%extension, "{reason}");
+            core.set_status(
+                &extension,
+                crate::ExtensionStatus::Failed {
+                    reason,
+                    retry_at: None,
+                },
+            );
+            return;
+        }
+    };
+    // Kept for the required-settings check each time round the loop below, as well as described.
+    let schema = config_schema.clone();
     core.describe_extension(
         &extension,
         crate::ExtensionInfo {
@@ -718,6 +938,8 @@ async fn supervise_package(
             entity_kinds: kinds.clone(),
             iot_class: Some(contribution.iot_class),
             icon,
+            config_schema,
+            actions: contribution.actions.clone(),
         },
     );
 
@@ -760,10 +982,27 @@ async fn supervise_package(
             core.set_status(&extension, crate::ExtensionStatus::Disabled);
             return;
         }
-        core.set_status(&extension, crate::ExtensionStatus::Starting);
         let started_with = settings.borrow_and_update().of(&extension);
-        let mut child = match spawn(&dir, &run) {
-            Ok(child) => child,
+        let missing = missing_required(schema.as_ref(), &started_with);
+        if !missing.is_empty() {
+            tracing::info!(%extension, missing = %missing.join(", "), "extension needs setup");
+            core.set_status(&extension, crate::ExtensionStatus::NeedsSetup { missing });
+            tokio::select! {
+                biased;
+                _ = stop.wait_for(|stop| *stop) => {
+                    core.set_status(&extension, crate::ExtensionStatus::Disabled);
+                    return;
+                }
+                () = settings_changed(&mut settings, &extension, &started_with) => {
+                    delay = timing.first_retry;
+                    continue;
+                }
+                Ok(_) = disabled.wait_for(|disabled| disabled.contains(&extension)) => continue,
+            }
+        }
+        core.set_status(&extension, crate::ExtensionStatus::Starting);
+        let (mut child, stderr) = match spawn(&dir, &state_dir(&dir), &run) {
+            Ok(started) => started,
             Err(reason) => {
                 tracing::error!(%extension, %reason, "can't start extension");
                 core.set_status(
@@ -781,6 +1020,10 @@ async fn supervise_package(
                 }
             }
         };
+        // Started before the first word is sent, and kept for exactly as long as this child
+        // lives: the pipe has to be read continuously or it fills and the extension blocks on
+        // its own next line of output.
+        let reading = tokio::spawn(keep_what_it_says(core.clone(), extension.clone(), stderr));
         if let Err(reason) = child
             .send(&ToExt::Hello {
                 settings: started_with.clone(),
@@ -789,10 +1032,11 @@ async fn supervise_package(
         {
             tracing::error!(%extension, %reason, "can't talk to extension");
             let _ = child.child.start_kill();
+            finish_reading(reading).await;
             core.set_status(
                 &extension,
                 crate::ExtensionStatus::Failed {
-                    reason,
+                    reason: with_last_words(&core, &extension, reason),
                     retry_at: None,
                 },
             );
@@ -806,7 +1050,9 @@ async fn supervise_package(
         }
 
         let (calls_tx, calls_rx) = mpsc::channel(64);
+        let (actions_tx, actions_rx) = mpsc::channel(64);
         core.link(&protocol, calls_tx);
+        core.link_action(&extension, actions_tx);
         core.set_status(&extension, crate::ExtensionStatus::Running);
         tracing::info!(%extension, "extension started");
         let outcome = pump_process(
@@ -816,6 +1062,7 @@ async fn supervise_package(
             &kinds,
             &mut child,
             calls_rx,
+            actions_rx,
             Watching {
                 stop: &mut stop,
                 settings: &mut settings,
@@ -826,10 +1073,16 @@ async fn supervise_package(
         )
         .await;
         core.unlink(&protocol);
+        core.unlink_action(&extension);
         core.mark_unavailable(&protocol);
         core.set_waiting(&extension, Vec::new());
+        core.set_available_actions(&extension, Vec::new());
         let _ = child.send(&ToExt::Stop).await;
         let _ = child.child.start_kill();
+        // Until the pipe closes, not merely until we asked the process to die: the last lines
+        // are often still in the pipe, and aborting the reader here would discard them and
+        // stop the drain while the child can still be writing.
+        finish_reading(reading).await;
         match outcome {
             Outcome::Stopped => {
                 tracing::info!(%extension, "extension stopped");
@@ -846,6 +1099,9 @@ async fn supervise_package(
                 continue;
             }
             Outcome::Ended(reason) => {
+                // What the operating system saw, plus what the extension itself said about it:
+                // `exited exit status: 1` alone is not something anyone can act on.
+                let reason = with_last_words(&core, &extension, reason);
                 tracing::error!(%extension, %reason, "extension failed; restarting it");
                 let retry_at = core
                     .now()
@@ -884,6 +1140,7 @@ async fn pump_process(
     kinds: &[EntityKind],
     proc: &mut ExtProcess,
     mut calls: mpsc::Receiver<IncomingCall>,
+    mut actions: mpsc::Receiver<IncomingAction>,
     watching: Watching<'_>,
     timing: Timing,
 ) -> Outcome {
@@ -896,7 +1153,9 @@ async fn pump_process(
         started_with,
     } = watching;
     let mut pending_calls: HashMap<u64, IncomingCall> = HashMap::new();
+    let mut pending_actions: HashMap<u64, IncomingAction> = HashMap::new();
     let mut next_call: u64 = 0;
+    let mut next_action: u64 = 0;
     let ExtProcess {
         child,
         stdin,
@@ -931,11 +1190,21 @@ async fn pump_process(
                     return Outcome::Ended(reason);
                 }
             }
+            Some(incoming) = actions.recv() => {
+                let id = next_action;
+                next_action += 1;
+                let action_id = incoming.action_id.clone();
+                pending_actions.insert(id, incoming);
+                if let Err(reason) = ExtProcess::send_on(stdin, &ToExt::ActionCall { id, action_id }).await {
+                    return Outcome::Ended(reason);
+                }
+            }
             msg = ExtProcess::recv_on(stdout) => {
                 match msg {
                     Ok(from) => {
                         if let Err(reason) = apply_from_ext(
                             core, extension, protocol, kinds, stdin, from, &mut pending_calls,
+                            &mut pending_actions,
                         ).await {
                             return Outcome::Ended(reason);
                         }
@@ -965,6 +1234,7 @@ async fn pump_process(
                 if let Ok(from) = msg {
                     let _ = apply_from_ext(
                         core, extension, protocol, kinds, stdin, from, &mut pending_calls,
+                        &mut pending_actions,
                     ).await;
                 }
             }
@@ -972,6 +1242,7 @@ async fn pump_process(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn apply_from_ext(
     core: &Core,
     extension: &ExtensionId,
@@ -980,6 +1251,7 @@ async fn apply_from_ext(
     stdin: &mut tokio::process::ChildStdin,
     from: FromExt,
     pending_calls: &mut std::collections::HashMap<u64, IncomingCall>,
+    pending_actions: &mut std::collections::HashMap<u64, IncomingAction>,
 ) -> Result<(), String> {
     use tokio::sync::oneshot;
     let reply_id = match &from {
@@ -1055,6 +1327,10 @@ async fn apply_from_ext(
             core.apply_op(extension, protocol, kinds, Op::SetWaiting(waiting));
             Ok(())
         }
+        FromExt::SetAvailableActions { actions } => {
+            core.apply_op(extension, protocol, kinds, Op::SetAvailableActions(actions));
+            Ok(())
+        }
         FromExt::Load { key, .. } => {
             let (reply, rx) = oneshot::channel();
             core.apply_op(extension, protocol, kinds, Op::Load(key, reply));
@@ -1093,6 +1369,15 @@ async fn apply_from_ext(
             }
             Ok(())
         }
+        FromExt::ActionResult { id, error } => {
+            if let Some(incoming) = pending_actions.remove(&id) {
+                incoming.reply(match error {
+                    None => Ok(()),
+                    Some(error) => Err(error),
+                });
+            }
+            Ok(())
+        }
     }
 }
 
@@ -1114,4 +1399,82 @@ async fn send_reply(
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `BufRead::lines` stops at the first byte sequence that isn't UTF-8. An extension's
+    /// stderr is arbitrary bytes; one bad line must not end the read, or the lines after it
+    /// — often the actual reason it died — are never kept, and a chatty child can block once
+    /// the pipe fills.
+    #[tokio::test]
+    async fn stderr_is_still_read_after_a_line_that_isnt_utf8() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let core = Core::new(Arc::new(crate::SystemClock));
+        let extension = ExtensionId::try_from("loud").expect("valid");
+        let (mut writer, reader) = tokio::io::duplex(64);
+        let reading = tokio::spawn(keep_what_it_says(core.clone(), extension.clone(), reader));
+
+        writer
+            .write_all(b"bad \xff byte\nstill here after the bad line\n")
+            .await
+            .expect("the pipe takes both lines");
+        drop(writer);
+        reading
+            .await
+            .expect("the reader finishes at EOF, not at the bad byte");
+
+        let log = core.log(&extension);
+        assert!(
+            log.iter()
+                .any(|line| line.contains("still here after the bad line")),
+            "{log:?}"
+        );
+        assert!(
+            log.iter().any(|line| line.contains('\u{FFFD}')),
+            "the bad byte is kept, lossy, rather than ending the read: {log:?}"
+        );
+    }
+
+    #[test]
+    fn a_config_schema_is_read_and_parsed() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::write(
+            dir.path().join("config.schema.json"),
+            r#"{"type": "object"}"#,
+        )
+        .expect("writes");
+        let path = PackagePath::try_from("config.schema.json").expect("valid");
+
+        let schema = load_config_schema(dir.path(), &path).expect("reads and parses");
+        assert_eq!(schema, serde_json::json!({"type": "object"}));
+    }
+
+    #[test]
+    fn a_missing_config_schema_names_the_path_it_looked_for() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = PackagePath::try_from("config.schema.json").expect("valid");
+
+        let error = load_config_schema(dir.path(), &path).expect_err("nothing there");
+        assert!(
+            error.contains("config.schema.json"),
+            "should name the path it looked for: {error}"
+        );
+    }
+
+    #[test]
+    fn a_malformed_config_schema_names_the_path_not_just_a_parse_error() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::write(dir.path().join("config.schema.json"), "not json at all").expect("writes");
+        let path = PackagePath::try_from("config.schema.json").expect("valid");
+
+        let error = load_config_schema(dir.path(), &path).expect_err("malformed json");
+        assert!(
+            error.contains("config.schema.json"),
+            "should name the path, not just the parse error: {error}"
+        );
+    }
 }

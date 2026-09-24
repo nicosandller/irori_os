@@ -8,12 +8,13 @@ mod home;
 mod host;
 mod services;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
 use irori_protocol::host::{Op, incoming_call};
-use irori_protocol::{IncomingCall, Rejected, ServiceErrorCode};
+use irori_protocol::{IncomingAction, IncomingCall, Rejected, ServiceErrorCode};
 use irori_types::{
     Area, Context, ContextId, Description, Device, Entity, EntityId, EntityKind, EntityState,
     ExtensionId, ExtensionSettings, IotClass, Name, Origin, ProtocolId, ServiceCall, Settings,
@@ -55,6 +56,14 @@ pub enum ExtensionStatus {
         #[serde(skip_serializing_if = "Option::is_none")]
         retry_at: Option<Timestamp>,
     },
+    /// Not started, and not a failure: a setting it can't run without hasn't been given yet.
+    /// Retrying wouldn't help — only a person can fix this — so the core doesn't, and says
+    /// which settings are missing rather than letting the extension crash on its own
+    /// deserialization and reporting that as an exit status.
+    NeedsSetup {
+        /// The `config_schema`-required settings that aren't set, by their own field names.
+        missing: Vec<String>,
+    },
 }
 
 /// What an extension is, from its manifest. Shown wherever a person picks one: its own name
@@ -75,6 +84,15 @@ pub struct ExtensionInfo {
     /// from its own address, where it can't run script (`docs/specs/extensions.md`).
     #[serde(rename = "has_icon", serialize_with = "is_present")]
     pub icon: Option<String>,
+    /// Its settings' JSON Schema, for a generic settings form. `None` for an extension with
+    /// nothing to configure. A built-in extension's is generated from its Rust config type; an
+    /// external one's comes from its manifest's `config_schema` (`docs/specs/extensions.md` §5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_schema: Option<serde_json::Value>,
+    /// Actions it declares in its manifest (static — whether each is *currently* usable is
+    /// `ExtensionOverview::available_actions`). Empty for an extension with none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<irori_types::ProtocolAction>,
 }
 
 fn is_present<S: serde::Serializer>(
@@ -102,6 +120,11 @@ pub struct ExtensionOverview {
     /// §6.6). Empty while it isn't running: a list from a stopped protocol is out of date.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub waiting: Vec<Waiting>,
+    /// Which of its manifest-declared actions are usable right now, as the protocol itself
+    /// says (`set_available_actions`). Empty by default, and cleared when it stops — same
+    /// reasoning as `waiting`: a list from a stopped protocol is out of date.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub available_actions: Vec<String>,
 }
 
 /// A stored value's key: 1–128 characters, no control characters.
@@ -113,6 +136,39 @@ fn check_key(key: &str) -> Result<(), Rejected> {
         )));
     }
     Ok(())
+}
+
+/// Whether a log line is an extension's ordinary chatter rather than something it was trying to
+/// tell anyone. Matched loosely on purpose: extensions log in whatever format they please, and
+/// the cost of being wrong is one line of a reason, not a wrong decision.
+fn is_routine(line: &str) -> bool {
+    ["INFO", "DEBUG", "TRACE"]
+        .iter()
+        .any(|level| line.contains(level))
+}
+
+/// A line without its terminal colour codes. An extension logging in colour — anything built on
+/// `tracing` writing to a pipe it believes is a terminal — otherwise puts raw escape sequences
+/// into a reason the page shows as text.
+fn without_colour(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        // `ESC [ … <final>`: parameters and separators, ended by any letter or `@`-range byte.
+        if chars.next() != Some('[') {
+            continue;
+        }
+        for c in chars.by_ref() {
+            if !matches!(c, '0'..='9' | ';' | ':' | '?') {
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// Drops an entity's call lock from the map once nobody else is waiting for it, so the map
@@ -171,6 +227,10 @@ struct Shared {
     home: RwLock<Home>,
     events: broadcast::Sender<Event>,
     links: RwLock<HashMap<ProtocolId, mpsc::Sender<IncomingCall>>>,
+    /// Keyed by extension id rather than protocol id: an action is triggered on the extension
+    /// itself, not resolved through an entity the way a service call is (D25 makes the two ids
+    /// equal in practice, but this table's key says what it's actually keyed by).
+    action_links: RwLock<HashMap<ExtensionId, mpsc::Sender<IncomingAction>>>,
     /// One lock per entity, so calls on the same entity happen one after another.
     busy: Mutex<HashMap<EntityId, Arc<tokio::sync::Mutex<()>>>>,
     extensions: RwLock<BTreeMap<ExtensionId, ExtensionOverview>>,
@@ -182,7 +242,44 @@ struct Shared {
     disabled: watch::Sender<BTreeSet<ExtensionId>>,
     /// Each protocol's small private values (`docs/specs/protocols.md` §5).
     storage: RwLock<Arc<dyn irori_protocol::Storage>>,
+    /// The last lines each extension wrote to its own stderr, newest last. An extension that
+    /// fails says why in its own words and nowhere else; keeping the tail is what lets the card
+    /// show a real reason instead of an exit status, and what the log window reads.
+    logs: RwLock<BTreeMap<ExtensionId, VecDeque<String>>>,
 }
+
+/// How many lines of an extension's own output are kept. Enough for a stack trace or a
+/// configuration dump to be readable in full, few enough that a chatty extension — Zigbee2MQTT
+/// forwards everything it prints — can't grow this without bound.
+pub const LOG_LINES_KEPT: usize = 400;
+
+/// The longest line kept, in bytes. A runaway line is truncated rather than dropped: its start
+/// is usually the part that says what happened.
+const LOG_LINE_MAX: usize = 4096;
+
+/// Why an action call didn't happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallActionError {
+    /// No such extension, or it's not running (or declares no such action — the API layer
+    /// checks the action id is one the extension actually declared before calling this deep).
+    NotRunning(ExtensionId),
+    /// The extension says the action failed.
+    Failed(String),
+    /// Didn't answer within [`SERVICE_CALL_TIMEOUT`].
+    Timeout,
+}
+
+impl fmt::Display for CallActionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotRunning(extension) => write!(f, "`{extension}` isn't running"),
+            Self::Failed(why) => f.write_str(why),
+            Self::Timeout => f.write_str("the action didn't finish within 10 seconds"),
+        }
+    }
+}
+
+impl std::error::Error for CallActionError {}
 
 fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
     lock.read().unwrap_or_else(PoisonError::into_inner)
@@ -207,11 +304,13 @@ impl Core {
             home: RwLock::default(),
             events: broadcast::channel(EVENT_BUFFER).0,
             links: RwLock::default(),
+            action_links: RwLock::default(),
             busy: Mutex::default(),
             extensions: RwLock::default(),
             extension_settings: watch::Sender::new(ExtensionSettings::default()),
             disabled: watch::Sender::new(BTreeSet::new()),
             storage: RwLock::new(Arc::new(irori_protocol::MemoryStorage::default())),
+            logs: RwLock::new(BTreeMap::new()),
         }))
     }
 
@@ -493,6 +592,38 @@ impl Core {
         outcome
     }
 
+    /// Triggers one of an extension's declared actions — the Zigbee `zigbee` protocol's
+    /// `permit_join`, say — and waits for its answer (at most [`SERVICE_CALL_TIMEOUT`]).
+    /// Unlike a service call, there's no entity to resolve through: the extension id is all
+    /// that's needed.
+    pub async fn call_action(
+        &self,
+        extension: &ExtensionId,
+        action_id: &str,
+    ) -> Result<(), CallActionError> {
+        let sender = read(&self.0.action_links)
+            .get(extension)
+            .cloned()
+            .ok_or_else(|| CallActionError::NotRunning(extension.clone()))?;
+        let (incoming, result) = irori_protocol::host::incoming_action(action_id.to_owned());
+        let deadline = tokio::time::Instant::now() + SERVICE_CALL_TIMEOUT;
+        let sent = tokio::time::timeout_at(deadline, sender.send(incoming)).await;
+        if !matches!(sent, Ok(Ok(()))) {
+            return Err(match sent {
+                Err(_) => CallActionError::Timeout,
+                _ => CallActionError::NotRunning(extension.clone()),
+            });
+        }
+        match tokio::time::timeout_at(deadline, result).await {
+            Err(_) => Err(CallActionError::Timeout),
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(why))) => Err(CallActionError::Failed(why)),
+            Ok(Err(_)) => Err(CallActionError::Failed(
+                "the extension dropped the call without answering".into(),
+            )),
+        }
+    }
+
     fn forget_call(&self, protocol: &ProtocolId, context_id: &ContextId, entity_id: &EntityId) {
         let mut home = write(&self.0.home);
         home.forget_call(protocol, context_id);
@@ -562,6 +693,10 @@ impl Core {
             Op::Store(key, value, reply) => (self.store(extension, &key, value.as_ref()), reply),
             Op::SetWaiting(waiting) => {
                 self.set_waiting(extension, waiting);
+                return;
+            }
+            Op::SetAvailableActions(actions) => {
+                self.set_available_actions(extension, actions);
                 return;
             }
             Op::SetHealth(health) => {
@@ -644,6 +779,14 @@ impl Core {
         write(&self.0.links).remove(protocol);
     }
 
+    fn link_action(&self, extension: &ExtensionId, actions: mpsc::Sender<IncomingAction>) {
+        write(&self.0.action_links).insert(extension.clone(), actions);
+    }
+
+    fn unlink_action(&self, extension: &ExtensionId) {
+        write(&self.0.action_links).remove(extension);
+    }
+
     /// Records what an extension is, before it starts. Called once per extension by the host.
     pub(crate) fn describe_extension(&self, extension: &ExtensionId, info: ExtensionInfo) {
         let mut extensions = write(&self.0.extensions);
@@ -658,6 +801,7 @@ impl Core {
                         rejected_reports: 0,
                         dropped_reports: 0,
                         waiting: Vec::new(),
+                        available_actions: Vec::new(),
                     },
                 );
             }
@@ -688,6 +832,25 @@ impl Core {
         }]);
     }
 
+    /// Replaces which of an extension's declared actions are usable right now.
+    pub(crate) fn set_available_actions(&self, extension: &ExtensionId, actions: Vec<String>) {
+        let status = {
+            let mut extensions = write(&self.0.extensions);
+            let Some(overview) = extensions.get_mut(extension) else {
+                return;
+            };
+            if overview.available_actions == actions {
+                return;
+            }
+            overview.available_actions = actions;
+            overview.status.clone()
+        };
+        self.publish(vec![Event::ExtensionStatusChanged {
+            extension_id: extension.clone(),
+            status,
+        }]);
+    }
+
     fn set_status(&self, extension: &ExtensionId, status: ExtensionStatus) {
         let changed = {
             let mut extensions = write(&self.0.extensions);
@@ -706,6 +869,7 @@ impl Core {
                             rejected_reports: 0,
                             dropped_reports: 0,
                             waiting: Vec::new(),
+                            available_actions: Vec::new(),
                         },
                     );
                     true
@@ -718,6 +882,65 @@ impl Core {
                 status,
             }]);
         }
+    }
+
+    /// Keeps one line an extension wrote to its own stderr, dropping the oldest once
+    /// [`LOG_LINES_KEPT`] are held.
+    pub fn log_line(&self, extension: &ExtensionId, line: &str) {
+        let line = without_colour(line.trim_end());
+        if line.is_empty() {
+            return;
+        }
+        let mut line = line;
+        if line.len() > LOG_LINE_MAX {
+            line.truncate(
+                (0..=LOG_LINE_MAX)
+                    .rev()
+                    .find(|at| line.is_char_boundary(*at))
+                    .unwrap_or(0),
+            );
+            line.push('…');
+        }
+        let mut logs = write(&self.0.logs);
+        let kept = logs.entry(extension.clone()).or_default();
+        if kept.len() >= LOG_LINES_KEPT {
+            kept.pop_front();
+        }
+        kept.push_back(line);
+    }
+
+    /// What an extension has said for itself lately, oldest first. Empty for one that has said
+    /// nothing, and for a built-in, which has no process of its own to write anywhere.
+    pub fn log(&self, extension: &ExtensionId) -> Vec<String> {
+        read(&self.0.logs)
+            .get(extension)
+            .map(|kept| kept.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// The last thing an extension said that was worth saying, for a failure that would
+    /// otherwise read only as an exit status. `None` when it said nothing at all.
+    ///
+    /// Not simply the final line: a dying process often prints its actual complaint and then goes
+    /// on logging routine things while it unwinds — a broker noticing the connection drop, say.
+    /// Lines an extension itself marked `INFO`, `DEBUG` or `TRACE` are skipped in favour of the
+    /// last one it didn't, which is either an error it logged or something it wrote straight to
+    /// stderr on its way out. If everything it said was routine, the last line stands: an
+    /// unhelpful reason still beats none.
+    pub fn last_words(&self, extension: &ExtensionId) -> Option<String> {
+        let logs = read(&self.0.logs);
+        let kept = logs.get(extension)?;
+        kept.iter()
+            .rev()
+            .find(|line| !is_routine(line))
+            .or_else(|| kept.back())
+            .cloned()
+    }
+
+    /// Forgets what an extension said — on uninstall, so a reinstall doesn't inherit the last
+    /// install's complaints.
+    pub fn forget_log(&self, extension: &ExtensionId) {
+        write(&self.0.logs).remove(extension);
     }
 }
 
