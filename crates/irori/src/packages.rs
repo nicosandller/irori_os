@@ -362,6 +362,11 @@ fn stage_package(source: &Path, binary: &Path, dest: &Path, bin_name: &str) -> R
     // `config_schema` then reads as `None` — to the UI, the same as an extension with no
     // settings at all. `xtask/src/package.rs` does this for release tarballs, identically.
     for path in declared_files(source)? {
+        if path.overwrites_packaged_file(bin_name) {
+            return Err(format!(
+                "the manifest's `{path}` would replace a file the package writes itself"
+            ));
+        }
         let from = source.join(path.as_str());
         if !from.is_file() {
             return Err(format!(
@@ -527,6 +532,31 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dest.join("config.schema.json")).expect("read"),
             "{}"
+        );
+    }
+
+    /// The manifest is copied first and the declared files after it. A schema path of
+    /// `irori-extension.toml` would replace the manifest, and the installed package would no
+    /// longer parse.
+    #[test]
+    fn staging_refuses_a_declared_file_that_would_replace_the_manifest_or_the_binary() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let source = checkout(
+            root.path(),
+            "config_schema = \"irori-extension.toml\"\n",
+            &[],
+        );
+        let binary = root.path().join("built-binary");
+        std::fs::write(&binary, "not a real elf, just bytes").expect("write binary");
+        let dest = root.path().join("dest");
+
+        let error = stage_package(&source, &binary, &dest, "irori-ext-x").expect_err("refused");
+        assert!(error.contains("would replace"), "{error}");
+        let manifest =
+            std::fs::read_to_string(dest.join("irori-extension.toml")).expect("still there");
+        assert!(
+            manifest.contains("id = \"x\""),
+            "the manifest must still be the manifest:\n{manifest}"
         );
     }
 

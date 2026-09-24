@@ -106,6 +106,12 @@ fn package(
     fs::copy(&manifest, stage.join("irori-extension.toml"))?;
     let declared = declared_files(&manifest)?;
     for path in &declared {
+        if path.overwrites_packaged_file(&item.bin) {
+            bail!(
+                "{}'s manifest `{path}` would replace a file the package writes itself",
+                item.bin
+            );
+        }
         let from = source.join(path.as_str());
         if !from.is_file() {
             bail!(

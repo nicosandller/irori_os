@@ -16,6 +16,13 @@ more than volume: one verified finding beats five guesses.
 
 ## Decisions already made (don't flag these)
 
+- **The embedded Zigbee broker's port check cannot own the socket rumqttd binds.**
+  `rumqttd::Broker::start` binds `127.0.0.1:{port}` on its own thread and only logs a failure
+  (`extensions/protocols/zigbee/src/broker.rs`). It does not accept an existing listener or
+  return the bind error. `start_embedded` binds first so a port already taken fails immediately,
+  then drops that listener so rumqttd can take it. The gap between the drop and rumqttd's bind
+  is real. Don't ask to hold the socket, pass the file descriptor, or add a readiness channel
+  unless rumqttd grows an API for it.
 - **Zigbee's full access is shown, and install refuses to proceed without an acknowledgement.**
   `host_shell = true` in `extensions/protocols/zigbee/irori-extension.toml` is the declaration.
   The catalog carries `full_access` (`extensions/official.toml`, checked against the manifest by

@@ -185,15 +185,13 @@ impl Config {
                 .set(extension, std::slice::from_ref(key), text.clone())
                 .map_err(|e| EditError::Refused(Refused(e.to_string())))?;
         }
-        if store
-            .save_extension(extension, &file)
-            .map_err(EditError::Io)?
-        {
-            tracing::info!(file = %format!("extensions/{extension}.toml"), "config written");
-        }
-        if store.save_secrets(&secrets).map_err(EditError::Io)? {
-            tracing::info!(file = "secrets.toml", "config written");
-        }
+        store
+            .save_extension_and_secrets(extension, &file, &secrets)
+            .map_err(EditError::Io)?;
+        tracing::info!(
+            files = %format!("extensions/{extension}.toml, secrets.toml"),
+            "config written"
+        );
         core.apply_extension_settings(store.extension_settings());
         Ok(made)
     }
@@ -602,6 +600,54 @@ mod tests {
         assert!(
             !secrets.contains("serial_port"),
             "the plain setting must stay out of secrets.toml:\n{secrets}"
+        );
+        Ok(())
+    }
+
+    /// The secrets write can fail after the settings file is already in place (a rename onto a
+    /// `secrets.toml` that is somehow not a file). The settings file has to be the old one
+    /// again, or the next reload restarts Zigbee with the new port and no key.
+    #[tokio::test]
+    async fn a_failed_secret_write_puts_the_settings_file_back() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let core = core();
+        let config = Config::open_dir(dir.path(), &core);
+        let helpers: irori_types::ExtensionId = "helpers".parse().expect("valid");
+
+        config
+            .edit_extension(&core, &helpers, |file| {
+                file.insert("serial_port".into(), serde_json::json!("/dev/ttyUSB0"));
+                Ok(())
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        // A directory where the file should be: the rename of the new secrets file fails.
+        std::fs::create_dir(dir.path().join("secrets.toml"))?;
+
+        let failed = config
+            .edit_extension_with_secrets(
+                &core,
+                &helpers,
+                |file| {
+                    file.insert("serial_port".into(), serde_json::json!("/dev/ttyACM0"));
+                    Ok(())
+                },
+                &[(
+                    "network_key".into(),
+                    "00112233445566778899aabbccddeeff".into(),
+                )],
+            )
+            .await;
+        assert!(failed.is_err(), "the secrets write has to fail");
+
+        let extension = std::fs::read_to_string(dir.path().join("extensions/helpers.toml"))?;
+        assert!(
+            extension.contains("/dev/ttyUSB0"),
+            "the previous settings must still be the file:\n{extension}"
+        );
+        assert!(
+            !extension.contains("/dev/ttyACM0"),
+            "the new settings must not be left behind without the secret:\n{extension}"
         );
         Ok(())
     }

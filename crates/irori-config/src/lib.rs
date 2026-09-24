@@ -189,6 +189,43 @@ impl Store {
         Ok(changed)
     }
 
+    /// Writes `extensions/<id>.toml` and `secrets.toml` as one change.
+    ///
+    /// Each file is still renamed into place on its own — a rename can't cover two files. If the
+    /// secrets write fails after the extension file was replaced, that file is put back first.
+    /// Otherwise a later reload would see the new settings without the secret that was supposed
+    /// to arrive with them, and Zigbee2MQTT would generate a network identity of its own.
+    pub fn save_extension_and_secrets(
+        &mut self,
+        extension: &ExtensionId,
+        file: &serde_json::Map<String, serde_json::Value>,
+        secrets: &ExtensionSettings,
+    ) -> std::io::Result<()> {
+        let had_file = self.extensions.contains_key(extension);
+        let previous = self.extension_file(extension);
+        self.save_extension(extension, file)?;
+        if let Err(error) = self.save_secrets(secrets) {
+            let restored = if had_file {
+                self.save_extension(extension, &previous).is_ok()
+            } else {
+                let path = self
+                    .dir
+                    .join("extensions")
+                    .join(format!("{extension}.toml"));
+                let removed = std::fs::remove_file(&path).is_ok() || !path.exists();
+                self.extensions.remove(extension);
+                removed
+            };
+            if !restored {
+                return Err(std::io::Error::other(format!(
+                    "{error}; also couldn't restore extensions/{extension}.toml"
+                )));
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Re-reads whatever has changed on disk since the last call, and says what went wrong.
     ///
     /// The first call reads everything. After that an untouched file costs one `stat`, which is

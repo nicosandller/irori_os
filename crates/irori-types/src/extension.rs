@@ -575,6 +575,17 @@ pub struct PackagePath(String);
 
 string_newtype!(PackagePath, check_package_path);
 
+impl PackagePath {
+    /// Whether copying this declared file would replace one the packager writes itself.
+    ///
+    /// The manifest is copied first, then each declared icon and schema. A path of
+    /// `irori-extension.toml`, or `bin/<bin_name>` where the built binary is about to be
+    /// written, would replace that file and leave a package the host can't run.
+    pub fn overwrites_packaged_file(&self, bin_name: &str) -> bool {
+        self.as_str() == "irori-extension.toml" || self.as_str() == format!("bin/{bin_name}")
+    }
+}
+
 fn check_package_path(value: &str) -> Result<(), IdError> {
     const WHAT: &str = "package path";
     check_length(WHAT, value)?;
@@ -871,6 +882,13 @@ mod tests {
             ("bin/.hidden", false),
             ("bin\\esphome", false),
         ]);
+        let manifest = PackagePath::try_from("irori-extension.toml").expect("a valid path");
+        let binary = PackagePath::try_from("bin/irori-ext-x").expect("a valid path");
+        let schema = PackagePath::try_from("config.schema.json").expect("a valid path");
+        assert!(manifest.overwrites_packaged_file("irori-ext-x"));
+        assert!(binary.overwrites_packaged_file("irori-ext-x"));
+        assert!(!binary.overwrites_packaged_file("irori-ext-other"));
+        assert!(!schema.overwrites_packaged_file("irori-ext-x"));
         agree::<SerialPath>(&[
             ("/dev/ttyUSB0", true),
             (

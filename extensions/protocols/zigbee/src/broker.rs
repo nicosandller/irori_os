@@ -30,12 +30,10 @@ pub fn start_embedded(port: u16) -> Result<(), String> {
         .parse()
         .map_err(|e| format!("bad broker port {port}: {e}"))?;
     // `rumqttd::Broker::start` binds its listener on a thread of its own and only logs a bind
-    // failure from inside it — the caller who just spawned that thread has no way to know it
-    // failed, and would carry on connecting to `port` regardless. If something unrelated is
-    // already listening there, this instance's Zigbee2MQTT and our own client would silently
-    // talk to that instead of to each other. Claiming the port here first, synchronously, turns
-    // that into an immediate, reportable error; dropping the listener immediately after hands it
-    // back for `rumqttd` to bind in turn.
+    // failure from inside it — it neither accepts a socket we already hold nor returns that
+    // failure to the caller. Claiming the port here first turns "something is already listening"
+    // into an immediate error. The listener is then dropped so rumqttd can bind it. The gap
+    // between that drop and rumqttd's own bind is real and unclosable from here.
     std::net::TcpListener::bind(listen)
         .map_err(|e| format!("port {port} is already in use: {e}"))?;
     let mut v4 = HashMap::new();
