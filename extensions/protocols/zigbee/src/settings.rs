@@ -29,7 +29,12 @@ pub struct Settings {
     #[serde(default)]
     pub adapter: Adapter,
     /// The Zigbee channel, 11-26. Left to Zigbee2MQTT's own default (25) if omitted.
+    ///
+    /// The range is in the schema, not only in this sentence: an out-of-range channel is written
+    /// straight into Zigbee2MQTT's config, where it fails at startup as something the settings
+    /// form had no opinion about.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 11, max = 26))]
     pub channel: Option<u8>,
     /// The Zigbee network's PAN id. Left to Zigbee2MQTT's own default if omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -46,7 +51,12 @@ pub struct Settings {
     /// The port of the embedded broker this extension runs for its own Zigbee2MQTT to publish
     /// into. Not Irori's own network-facing port; loopback only. Change it only if something
     /// else on this machine already uses the default.
+    ///
+    /// Not zero: that asks the operating system for whatever port is free, and nothing here can
+    /// find out which one it picked — Zigbee2MQTT and this extension's own client would both go
+    /// looking for port 0 and neither would arrive.
     #[serde(default = "default_broker_port")]
+    #[schemars(range(min = 1))]
     pub broker_port: u16,
 }
 

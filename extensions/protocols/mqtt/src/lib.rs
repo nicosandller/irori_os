@@ -56,7 +56,9 @@ struct Registry {
     /// always one, but nothing stops two entities from sharing a topic.
     state_topics: BTreeMap<String, Vec<UniqueId>>,
     /// An availability topic -> its payload strings and the entities it speaks for.
-    availability_topics: BTreeMap<String, (String, String, Vec<UniqueId>)>,
+    /// By topic: every entity listening on it, each with its own pair of payload words
+    /// (`irori_ha_discovery::discovery::Listener` says why the pair isn't the topic's).
+    availability_topics: BTreeMap<String, Vec<discovery::Listener>>,
 }
 
 async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
@@ -115,21 +117,25 @@ async fn apply(
         describe(discovered, &message, registry, broker, ctx).await;
         return;
     }
-    if let Some((payload_available, payload_not_available, entities)) =
-        registry.availability_topics.get(&message.topic)
-    {
+    if let Some(listeners) = registry.availability_topics.get(&message.topic) {
         let text = String::from_utf8_lossy(&message.payload);
-        let text = text.trim();
-        let availability = if text == payload_available {
-            Some(Availability::Available)
-        } else if text == payload_not_available {
-            Some(Availability::Unavailable)
-        } else {
-            None
-        };
-        if let Some(availability) = availability {
+        // Two entities can share this topic and read its payloads differently, so each is
+        // judged by its own words and the two answers are sent separately.
+        let (available, unavailable) = discovery::resolve(listeners, text.trim());
+        if !available.is_empty() {
             let _ = ctx
-                .set_availability(AvailabilityTarget::Entities(entities.clone()), availability)
+                .set_availability(
+                    AvailabilityTarget::Entities(available),
+                    Availability::Available,
+                )
+                .await;
+        }
+        if !unavailable.is_empty() {
+            let _ = ctx
+                .set_availability(
+                    AvailabilityTarget::Entities(unavailable),
+                    Availability::Unavailable,
+                )
                 .await;
         }
         return;
@@ -232,9 +238,12 @@ async fn describe(
         registry
             .availability_topics
             .entry(topic.clone())
-            .or_insert_with(|| (payload_available, payload_not_available, Vec::new()))
-            .2
-            .push(unique_id.clone());
+            .or_default()
+            .push(discovery::Listener {
+                unique_id: unique_id.clone(),
+                payload_available,
+                payload_not_available,
+            });
         let _ = broker.subscribe(&topic).await;
     }
     registry
@@ -262,12 +271,12 @@ fn deindex(unique_id: &UniqueId, old_topics: &EntityTopics, registry: &mut Regis
             }
         }
     }
-    for (_, _, ids) in registry.availability_topics.values_mut() {
-        ids.retain(|id| id != unique_id);
+    for listeners in registry.availability_topics.values_mut() {
+        listeners.retain(|listener| &listener.unique_id != unique_id);
     }
     registry
         .availability_topics
-        .retain(|_, (_, _, ids)| !ids.is_empty());
+        .retain(|_, listeners| !listeners.is_empty());
 }
 
 /// Sends a service call to the broker for the entity it belongs to.
@@ -586,7 +595,7 @@ mod tests {
             registry
                 .availability_topics
                 .get("zigbee2mqtt/bridge/state")
-                .map(|(_, _, ids)| ids.len()),
+                .map(Vec::len),
             Some(1)
         );
     }

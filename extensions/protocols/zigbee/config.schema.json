@@ -8,22 +8,22 @@
       "$ref": "#/$defs/Adapter"
     },
     "broker_port": {
-      "description": "The port of the embedded broker this extension runs for its own Zigbee2MQTT to publish\ninto. Not Irori's own network-facing port; loopback only. Change it only if something\nelse on this machine already uses the default.",
+      "description": "The port of the embedded broker this extension runs for its own Zigbee2MQTT to publish\ninto. Not Irori's own network-facing port; loopback only. Change it only if something\nelse on this machine already uses the default.\n\nNot zero: that asks the operating system for whatever port is free, and nothing here can\nfind out which one it picked — Zigbee2MQTT and this extension's own client would both go\nlooking for port 0 and neither would arrive.",
       "type": "integer",
       "format": "uint16",
       "default": 17883,
       "maximum": 65535,
-      "minimum": 0
+      "minimum": 1
     },
     "channel": {
-      "description": "The Zigbee channel, 11-26. Left to Zigbee2MQTT's own default (25) if omitted.",
+      "description": "The Zigbee channel, 11-26. Left to Zigbee2MQTT's own default (25) if omitted.\n\nThe range is in the schema, not only in this sentence: an out-of-range channel is written\nstraight into Zigbee2MQTT's config, where it fails at startup as something the settings\nform had no opinion about.",
       "type": [
         "integer",
         "null"
       ],
       "format": "uint8",
-      "maximum": 255,
-      "minimum": 0
+      "maximum": 26,
+      "minimum": 11
     },
     "network_key": {
       "description": "The network's encryption key. Left out, Zigbee2MQTT generates and keeps its own on first\nrun — the simpler default for a new network. Only needed to join an existing one.",

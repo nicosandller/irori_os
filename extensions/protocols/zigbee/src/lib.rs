@@ -41,7 +41,21 @@ use crate::settings::Settings;
 const BASE_TOPIC: &str = "zigbee2mqtt";
 /// HA Discovery's own default prefix, same reasoning.
 const DISCOVERY_PREFIX: &str = "homeassistant";
-const DATA_DIR: &str = "z2m-data";
+/// Zigbee2MQTT's own state directory — its `configuration.yaml`, and the database holding the
+/// network key and every device it has paired.
+///
+/// Under `IRORI_EXTENSION_DATA` (`docs/specs/protocols.md` §5), never inside this package's own
+/// directory: uninstalling deletes the package whole, and putting the network's identity there
+/// would mean an uninstall — which is also how an upgrade happens today — silently strands every
+/// paired device and makes them all need re-pairing by hand. Falls back to the working directory
+/// only for a host too old to set it, where the old behaviour is still better than refusing to
+/// start.
+fn data_dir() -> std::path::PathBuf {
+    match std::env::var_os("IRORI_EXTENSION_DATA") {
+        Some(given) => std::path::PathBuf::from(given).join("z2m-data"),
+        None => std::path::PathBuf::from("z2m-data"),
+    }
+}
 /// The one action this protocol declares (`irori-extension.toml`).
 const PERMIT_JOIN: &str = "permit_join";
 
@@ -72,7 +86,9 @@ struct Registry {
     entities: BTreeMap<UniqueId, Entity>,
     config_topics: BTreeMap<String, UniqueId>,
     state_topics: BTreeMap<String, Vec<UniqueId>>,
-    availability_topics: BTreeMap<String, (String, String, Vec<UniqueId>)>,
+    /// By topic: every entity listening on it, each with its own pair of payload words
+    /// (`irori_ha_discovery::discovery::Listener` says why the pair isn't the topic's).
+    availability_topics: BTreeMap<String, Vec<discovery::Listener>>,
     /// Whether Zigbee2MQTT's own bridge/info has been seen yet — `permit_join` is only declared
     /// available once it has, since that's the confirmation Zigbee2MQTT itself is up and
     /// connected, not just that our embedded broker is.
@@ -89,7 +105,8 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
         .await
         .map_err(ProtocolError::new)?;
 
-    let config_path = Path::new(DATA_DIR).join("configuration.yaml");
+    let data_dir = data_dir();
+    let config_path = data_dir.join("configuration.yaml");
     // Zigbee2MQTT persists its own generated `network_key`/`pan_id` back into this same file
     // when neither is configured — read whatever's there before overwriting it, so regenerating
     // below doesn't silently erase that generated identity on every restart.
@@ -104,9 +121,9 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
         existing_advanced.as_deref(),
     )
     .map_err(ProtocolError::new)?;
-    tokio::fs::create_dir_all(DATA_DIR)
+    tokio::fs::create_dir_all(&data_dir)
         .await
-        .map_err(|e| ProtocolError::new(format!("couldn't create {DATA_DIR}: {e}")))?;
+        .map_err(|e| ProtocolError::new(format!("couldn't create {}: {e}", data_dir.display())))?;
     write_atomically(&config_path, &yaml)
         .await
         .map_err(|e| ProtocolError::new(format!("couldn't write configuration.yaml: {e}")))?;
@@ -121,7 +138,7 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
     // absolute — `provision::node_binary` already is (see its own note there).
     let node = provision::node_binary();
     let entry = absolute(provision::zigbee2mqtt_entry());
-    let data_dir = absolute(Path::new(DATA_DIR).to_path_buf());
+    let data_dir = absolute(data_dir);
     let mut spawned = supervisor::spawn(&node, &entry, &data_dir).map_err(ProtocolError::new)?;
 
     let (client, mut events, broker_task) = broker::connect(settings.broker_port);
@@ -198,7 +215,7 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
 /// or full disk mid-write of an in-place truncate could leave a half-written file with no usable
 /// `advanced` block, and the next start would read nothing back and generate (and persist) a
 /// brand new identity, dropping every paired device. A rename is atomic on the same filesystem,
-/// which the temp file always is: it's written next to `path`, inside the same `DATA_DIR`.
+/// which the temp file always is: it's written next to `path`, inside the same data directory.
 async fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
     let tmp = path.with_file_name(format!(
         "{}.tmp",
@@ -258,21 +275,25 @@ async fn apply(
         describe(discovered, &message, registry, client, ctx).await;
         return;
     }
-    if let Some((payload_available, payload_not_available, entities)) =
-        registry.availability_topics.get(&message.topic)
-    {
+    if let Some(listeners) = registry.availability_topics.get(&message.topic) {
         let text = String::from_utf8_lossy(&message.payload);
-        let text = text.trim();
-        let availability = if text == payload_available {
-            Some(Availability::Available)
-        } else if text == payload_not_available {
-            Some(Availability::Unavailable)
-        } else {
-            None
-        };
-        if let Some(availability) = availability {
+        // Two entities can share this topic and read its payloads differently, so each is
+        // judged by its own words and the two answers are sent separately.
+        let (available, unavailable) = discovery::resolve(listeners, text.trim());
+        if !available.is_empty() {
             let _ = ctx
-                .set_availability(AvailabilityTarget::Entities(entities.clone()), availability)
+                .set_availability(
+                    AvailabilityTarget::Entities(available),
+                    Availability::Available,
+                )
+                .await;
+        }
+        if !unavailable.is_empty() {
+            let _ = ctx
+                .set_availability(
+                    AvailabilityTarget::Entities(unavailable),
+                    Availability::Unavailable,
+                )
                 .await;
         }
         return;
@@ -373,9 +394,12 @@ async fn describe(
         registry
             .availability_topics
             .entry(topic.clone())
-            .or_insert_with(|| (payload_available, payload_not_available, Vec::new()))
-            .2
-            .push(unique_id.clone());
+            .or_default()
+            .push(discovery::Listener {
+                unique_id: unique_id.clone(),
+                payload_available,
+                payload_not_available,
+            });
         let _ = client.subscribe(&topic).await;
     }
     registry
@@ -403,12 +427,12 @@ fn deindex(unique_id: &UniqueId, old_topics: &EntityTopics, registry: &mut Regis
             }
         }
     }
-    for (_, _, ids) in registry.availability_topics.values_mut() {
-        ids.retain(|id| id != unique_id);
+    for listeners in registry.availability_topics.values_mut() {
+        listeners.retain(|listener| &listener.unique_id != unique_id);
     }
     registry
         .availability_topics
-        .retain(|_, (_, _, ids)| !ids.is_empty());
+        .retain(|_, listeners| !listeners.is_empty());
 }
 
 async fn route(incoming: IncomingCall, registry: &Registry, client: &impl Publisher) {

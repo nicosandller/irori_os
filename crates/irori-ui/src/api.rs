@@ -589,6 +589,10 @@ pub struct CatalogEntry {
     pub reason: Option<String>,
     #[serde(default)]
     pub config_schema: Option<serde_json::Value>,
+    /// What it's configured with now, secrets excluded — the settings form opens showing this,
+    /// so changing one field doesn't mean retyping the others.
+    #[serde(default)]
+    pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
 pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {

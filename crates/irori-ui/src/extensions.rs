@@ -146,6 +146,7 @@ pub fn Extensions() -> impl IntoView {
                     <SettingsForm
                         id=id.clone()
                         schema=schema
+                        current=entry.settings.clone()
                         on_close=move || {
                             settings_open.set(None);
                             reload();

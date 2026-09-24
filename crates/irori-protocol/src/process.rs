@@ -406,7 +406,13 @@ pub struct ExtProcess {
 /// part of talking to the extension: the host hands it straight to a reader task and never looks
 /// at it again. **Whoever takes it must read it continuously** — an undrained pipe fills, and the
 /// child blocks forever on its next line of output, which for a chatty extension is seconds.
-pub fn spawn(package_dir: &Path, run: &RunCommand) -> Result<(ExtProcess, ChildStderr), String> {
+/// `state_dir` is handed to the child as `IRORI_EXTENSION_DATA`: the one directory it may keep
+/// things in that outlive the package itself. It is created here if it isn't there.
+pub fn spawn(
+    package_dir: &Path,
+    state_dir: &Path,
+    run: &RunCommand,
+) -> Result<(ExtProcess, ChildStderr), String> {
     let command = package_dir.join(run.command.as_str());
     if !command.is_file() {
         return Err(format!("package has no program at `{}`", command.display()));
@@ -419,8 +425,14 @@ pub fn spawn(package_dir: &Path, run: &RunCommand) -> Result<(ExtProcess, ChildS
     let command = command
         .canonicalize()
         .map_err(|e| format!("couldn't resolve {}: {e}", command.display()))?;
+    // Absolute, because the child's own working directory is `package_dir`: a relative path here
+    // would mean somewhere inside the very directory this exists to stay out of.
+    let state_dir = std::path::absolute(state_dir).unwrap_or_else(|_| state_dir.to_path_buf());
+    std::fs::create_dir_all(&state_dir)
+        .map_err(|e| format!("couldn't create {}: {e}", state_dir.display()))?;
     let mut child = Command::new(&command)
         .current_dir(package_dir)
+        .env("IRORI_EXTENSION_DATA", &state_dir)
         .args(&run.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -523,7 +535,8 @@ mod tests {
             command: PackagePath::try_from("bin/prog").expect("a valid package path"),
             args: Vec::new(),
         };
-        let (process, _stderr) = spawn(Path::new("pkg"), &run).expect(
+        let state = tmp.path().join("state");
+        let (process, _stderr) = spawn(Path::new("pkg"), &state, &run).expect(
             "spawn should resolve `pkg/bin/prog` against this process's cwd, \
              not the child's post-chdir one",
         );
@@ -553,7 +566,8 @@ mod tests {
             command: PackagePath::try_from("bin/prog").expect("a valid package path"),
             args: Vec::new(),
         };
-        let (_process, stderr) = spawn(tmp.path(), &run).expect("starts");
+        let state = tmp.path().join("state");
+        let (_process, stderr) = spawn(tmp.path(), &state, &run).expect("starts");
 
         let mut lines = tokio::io::BufReader::new(stderr).lines();
         assert_eq!(

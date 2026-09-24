@@ -322,6 +322,31 @@ async fn settings_changed(
     }
 }
 
+/// Where an extension may keep what has to outlive the package: `$DATA/extension-data/<id>`,
+/// alongside `$DATA/extensions/<id>` rather than inside it.
+///
+/// Uninstalling deletes the package directory whole, so anything an extension wrote there is
+/// gone — which for a package that only holds a manifest and a binary is right, and for the state
+/// underneath one is not. Zigbee is the case that makes it obvious: Zigbee2MQTT's network key and
+/// pairing table live in a directory of its own, and losing them means every paired device is
+/// stranded and has to be re-paired by hand. An upgrade, which today is an uninstall and a
+/// reinstall, would cost the whole network.
+///
+/// The extension learns of it as `IRORI_EXTENSION_DATA` (`docs/specs/protocols.md` §5).
+fn state_dir(package_dir: &Path) -> PathBuf {
+    match package_dir.parent().and_then(Path::parent) {
+        // `$DATA/extensions/<id>` → `$DATA/extension-data/<id>`.
+        Some(data) => data.join("extension-data").join(
+            package_dir
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("unknown")),
+        ),
+        // No layout to hang it off — a package somewhere unusual, which is only the case in
+        // tests. Beside the package rather than nowhere.
+        None => package_dir.with_extension("data"),
+    }
+}
+
 /// Reads an extension's stderr for as long as it runs, keeping the tail in the core and echoing
 /// each line to Irori's own log.
 ///
@@ -920,7 +945,7 @@ async fn supervise_package(
             }
         }
         core.set_status(&extension, crate::ExtensionStatus::Starting);
-        let (mut child, stderr) = match spawn(&dir, &run) {
+        let (mut child, stderr) = match spawn(&dir, &state_dir(&dir), &run) {
             Ok(started) => started,
             Err(reason) => {
                 tracing::error!(%extension, %reason, "can't start extension");

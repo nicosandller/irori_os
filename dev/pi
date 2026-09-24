@@ -105,7 +105,11 @@ usb_bridge() {
   echo "  tcp://host.docker.internal:$port"
   echo
   echo "Leave this running while you use the dongle; Ctrl-C to stop."
-  exec socat -d -d "TCP-LISTEN:$port,reuseaddr,fork" "FILE:$device,raw,echo=0,b$baud"
+  # `bind=127.0.0.1`, not every interface: without it this puts a raw, unauthenticated
+  # serial link to the Zigbee coordinator on the LAN, where anyone nearby could write
+  # bytes to the radio. Docker Desktop's `host.docker.internal` reaches the host's own
+  # loopback, so the container still gets there and nothing else does.
+  exec socat -d -d "TCP-LISTEN:$port,bind=127.0.0.1,reuseaddr,fork" "FILE:$device,raw,echo=0,b$baud"
 }
 
 require_docker() {

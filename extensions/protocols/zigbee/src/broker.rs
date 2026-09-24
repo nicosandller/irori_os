@@ -16,6 +16,16 @@ use tokio::sync::mpsc;
 /// normal way a protocol stops — the thread goes with it, the same as any other thread still
 /// running when `main` returns.
 pub fn start_embedded(port: u16) -> Result<(), String> {
+    // Zero means "any free port" to the operating system, and nothing here can find out which
+    // one it picked: Zigbee2MQTT and this extension's own client would both go looking for port
+    // 0 and neither would arrive. The schema refuses it too; this is the hand-edited file.
+    if port == 0 {
+        return Err(
+            "the broker port can't be 0: it has to be a port both Zigbee2MQTT and \
+                    Irori can connect to by number"
+                .to_owned(),
+        );
+    }
     let listen: std::net::SocketAddr = format!("127.0.0.1:{port}")
         .parse()
         .map_err(|e| format!("bad broker port {port}: {e}"))?;

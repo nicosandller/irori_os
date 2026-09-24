@@ -1142,6 +1142,16 @@ async fn give_secret(
 /// Official catalog plus whether each one is installed in this instance.
 async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
     let running = state.0.core.extensions();
+    // What each installed extension is configured with right now, so its settings form opens
+    // showing it. Read before the loop because reading takes the config lock, and the loop is a
+    // plain `map`; only for installed extensions, since nothing else has a file.
+    let mut configured: std::collections::BTreeMap<
+        ExtensionId,
+        serde_json::Map<String, serde_json::Value>,
+    > = std::collections::BTreeMap::new();
+    for id in running.keys() {
+        configured.insert(id.clone(), state.0.config.extension_settings(id).await);
+    }
     Json(
         crate::packages::official()
             .into_iter()
@@ -1153,6 +1163,26 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                 // contribution never gets described at all (host.rs). Either way, this says
                 // whether `extension_icon` actually has bytes right now.
                 let icon = state.0.core.has_extension_icon(&item.id);
+                // Secrets never come back out (§3.4). They live in `secrets.toml` and so aren't
+                // in this file at all, but a hand-written one could still name a `writeOnly`
+                // field, and it would be this response that leaked it.
+                let settings = configured.get(&item.id).map(|file| {
+                    let schema = overview
+                        .and_then(|o| o.info.as_ref())
+                        .and_then(|info| info.config_schema.as_ref());
+                    file.iter()
+                        .filter(|(key, _)| match schema {
+                            // A key the schema doesn't mention is not one this can vouch for, so
+                            // it stays here rather than going out.
+                            Some(schema) => schema
+                                .get("properties")
+                                .and_then(|properties| properties.get(key.as_str()))
+                                .is_some_and(|field| !is_write_only(field, schema)),
+                            None => false,
+                        })
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect()
+                });
                 CatalogEntry {
                     id: item.id,
                     name: item.name.to_string(),
@@ -1183,6 +1213,7 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                     config_schema: overview
                         .and_then(|o| o.info.as_ref())
                         .and_then(|info| info.config_schema.clone()),
+                    settings,
                 }
             })
             .collect(),
@@ -1219,6 +1250,9 @@ struct CatalogEntry {
     reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     config_schema: Option<serde_json::Value>,
+    /// What it's configured with now, secrets excluded — so its form can open showing it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    settings: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 async fn install_official(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {

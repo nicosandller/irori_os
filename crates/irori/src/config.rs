@@ -102,6 +102,21 @@ impl Config {
         Ok(made)
     }
 
+    /// One extension's `extensions/<id>.toml` as it currently stands.
+    ///
+    /// Only that file: secrets live in `secrets.toml` and are never read back out (§3.4). This is
+    /// what lets the settings form open showing what is already configured, so changing one field
+    /// doesn't mean retyping the rest — and so a required field it can't show isn't mistaken for
+    /// one nobody has filled in.
+    pub async fn extension_settings(
+        &self,
+        extension: &irori_types::ExtensionId,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+        store.extension_file(extension)
+    }
+
     /// Changes one extension's `extensions/<id>.toml`, writes it, and tells the core — which
     /// restarts that extension with it.
     pub async fn edit_extension<T>(

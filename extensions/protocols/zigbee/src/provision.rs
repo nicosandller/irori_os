@@ -116,6 +116,13 @@ pub async fn ensure_node() -> Result<(), String> {
             .args([
                 "--fail",
                 "--location",
+                // Redirects may only stay on https. `--location` otherwise lets an https URL
+                // redirect to plain http, and since the checksum file is fetched the same way,
+                // a downgrade would have the archive checked against an attacker's own hash.
+                "--proto",
+                "=https",
+                "--proto-redir",
+                "=https",
                 "--silent",
                 "--show-error",
                 "--output",
@@ -166,6 +173,8 @@ async fn verify_checksum(
     let url = format!("https://nodejs.org/dist/v{version}/SHASUMS256.txt");
     let output = Command::new("curl")
         .args(["--fail", "--location", "--silent", "--show-error"])
+        // https only, both hops — see the note on the archive download above.
+        .args(["--proto", "=https", "--proto-redir", "=https"])
         .arg(&url)
         .output()
         .await
@@ -231,7 +240,7 @@ pub async fn ensure_zigbee2mqtt(version: Option<&str>) -> Result<(), String> {
         .await
         .map_err(|e| format!("couldn't create {Z2M_DIR}: {e}"))?;
     let spec = match version {
-        Some(v) => format!("zigbee2mqtt@{v}"),
+        Some(v) => format!("zigbee2mqtt@{}", checked_version(v)?),
         None => "zigbee2mqtt@latest".to_owned(),
     };
     tracing::info!(package = %spec, "installing Zigbee2MQTT");
@@ -272,9 +281,60 @@ fn path_with_managed_node() -> std::ffi::OsString {
     path
 }
 
+/// A pinned Zigbee2MQTT version, checked before it goes anywhere near a package spec.
+///
+/// This value comes from a settings file a person writes, and lands in `pnpm add zigbee2mqtt@…`
+/// run with this extension's `host_shell` trust. npm's own spec syntax accepts far more than a
+/// version there — an alias, a tarball URL, a git repository — so an unchecked value is a way to
+/// have pnpm install and run something else entirely. Only a release version, the thing the
+/// setting claims to be: digits and dots, optionally a `-suffix` for a pre-release.
+fn checked_version(version: &str) -> Result<&str, String> {
+    let (number, pre) = match version.split_once('-') {
+        Some((number, pre)) => (number, Some(pre)),
+        None => (version, None),
+    };
+    let number_ok = !number.is_empty()
+        && number
+            .split('.')
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
+    let pre_ok = pre.is_none_or(|pre| {
+        !pre.is_empty()
+            && pre
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    });
+    if number_ok && pre_ok {
+        Ok(version)
+    } else {
+        Err(format!(
+            "`{version}` isn't a Zigbee2MQTT version: digits and dots, e.g. `2.6.2`, \
+             optionally with a `-rc.1` style suffix"
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pinned_version_is_a_version_and_not_an_npm_spec() {
+        for good in ["2.6.2", "2", "2.6.2-rc.1", "1.42.0-dev-3"] {
+            assert_eq!(checked_version(good), Ok(good), "{good}");
+        }
+        // Every one of these is a spec npm would happily install *something* from.
+        for bad in [
+            "latest",
+            "npm:evil@1.0.0",
+            "https://example.com/z2m.tgz",
+            "github:someone/zigbee2mqtt",
+            "../../../etc",
+            "2.6.2 --allow-build=anything",
+            "",
+        ] {
+            assert!(checked_version(bad).is_err(), "accepted `{bad}`");
+        }
+    }
 
     #[test]
     fn known_platforms_map_to_nodejs_orgs_own_names() {

@@ -2,10 +2,10 @@
 //! icon on its Extensions card. Generic on purpose: this page doesn't know MQTT or Zigbee from
 //! any other extension, the same way `crate::waiting` doesn't know what a secret is for.
 //!
-//! There's no way to show what's already configured: secrets never round-trip, and non-secret
-//! settings aren't sent back either (kept simple, matching the existing secrets form's own
-//! limit) — a field with a schema `default` starts pre-filled with it; everything else starts
-//! blank. Only fields the user actually touched are sent on submit — a field left exactly as it
+//! A field opens showing what's already saved, so changing one setting never means retyping the
+//! others — and a required field that's already set doesn't look unfilled. Secrets are the
+//! exception: they never travel back from the server, so a password field always opens blank and,
+//! left alone, keeps whatever it already had. Only fields the user actually touched are sent on submit — a field left exactly as it
 //! started (blank, or at its schema default) is omitted, so saving one field never resets the
 //! others back to their defaults; a touched field left blank is also omitted, so this form still
 //! has no way to explicitly clear a field back to blank.
@@ -226,18 +226,44 @@ fn default_value(field_schema: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// One saved setting as the form's own text, or `None` when it isn't set.
+///
+/// A secret is never here — the server doesn't send them back — so a password field stays blank
+/// and untouched, which still means "leave it as it is" on save.
+fn current_value(
+    current: &serde_json::Map<String, serde_json::Value>,
+    field: &Field,
+) -> Option<String> {
+    if field.kind == FieldKind::Secret {
+        return None;
+    }
+    match current.get(&field.key)? {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        // Null is how a setting says "unset"; anything else has no text box shape.
+        _ => None,
+    }
+}
+
 /// A form generated from `schema`; `on_close` fires after a successful save, and on Cancel.
 #[component]
 pub fn SettingsForm(
     id: String,
     schema: serde_json::Value,
+    /// What the extension is configured with now, secrets excluded — see `current_value`.
+    current: serde_json::Map<String, serde_json::Value>,
     #[prop(into)] on_close: Callback<()>,
 ) -> impl IntoView {
     let fields = fields_from_schema(&schema);
     let rows: Vec<(Field, RwSignal<String>, RwSignal<bool>)> = fields
         .into_iter()
         .map(|field| {
-            let initial = field.default.clone().unwrap_or_default();
+            // What's saved, else the schema's default, else blank. A field that shows what it
+            // already holds is the difference between editing settings and re-entering them.
+            let initial = current_value(&current, &field)
+                .or_else(|| field.default.clone())
+                .unwrap_or_default();
             (field, RwSignal::new(initial), RwSignal::new(false))
         })
         .collect();
@@ -530,6 +556,39 @@ fn SerialPortField(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The regression this guards: with a required field the form couldn't show, every later
+    /// edit was refused for leaving it blank — changing only the adapter meant retyping the
+    /// serial port from memory.
+    #[test]
+    fn a_saved_value_fills_the_field_in_and_a_secret_still_doesnt() {
+        let schema = serde_json::json!({
+            "properties": {
+                "serial_port": {"type": "string"},
+                "broker_port": {"type": "integer", "default": 17883},
+                "network_key": {"anyOf": [{"$ref": "#/$defs/Secret"}, {"type": "null"}]},
+            },
+            "required": ["serial_port"],
+            "$defs": {"Secret": {"type": "string", "writeOnly": true}},
+        });
+        let current = serde_json::json!({
+            "serial_port": "/dev/ttyUSB0",
+            "broker_port": 18000,
+            "network_key": "should never have been sent, and is ignored anyway",
+        });
+        let serde_json::Value::Object(current) = current else {
+            panic!("an object");
+        };
+        let fields = fields_from_schema(&schema);
+        let of = |key: &str| {
+            let field = fields.iter().find(|f| f.key == key).expect("present");
+            current_value(&current, field)
+        };
+        assert_eq!(of("serial_port").as_deref(), Some("/dev/ttyUSB0"));
+        // What's saved beats the schema's default.
+        assert_eq!(of("broker_port").as_deref(), Some("18000"));
+        assert_eq!(of("network_key"), None, "a secret is never shown");
+    }
 
     #[test]
     fn required_fields_sort_before_optional_ones_alphabetically_within_each_group() {

@@ -37,6 +37,36 @@ pub struct AvailabilityTopic {
     pub payload_not_available: String,
 }
 
+/// One entity listening on an availability topic, with the words *it* reads as online and
+/// offline.
+///
+/// The pair belongs to the listener rather than to the topic: Home Assistant lets two entities
+/// share an availability topic and still disagree about its payloads (Tasmota's `Online`/`Offline`
+/// beside a default `online`/`offline`), and keeping one pair per topic applied whichever entity
+/// happened to be indexed first to all of them — marking some of them the wrong way round.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listener {
+    pub unique_id: UniqueId,
+    pub payload_available: String,
+    pub payload_not_available: String,
+}
+
+/// Which of `listeners` this payload makes available, and which unavailable, each judged by its
+/// own words. A listener whose words the payload matches neither of is in neither list: the
+/// message said nothing about it, which is not the same as saying it's offline.
+pub fn resolve(listeners: &[Listener], payload: &str) -> (Vec<UniqueId>, Vec<UniqueId>) {
+    let mut available = Vec::new();
+    let mut unavailable = Vec::new();
+    for listener in listeners {
+        if payload == listener.payload_available {
+            available.push(listener.unique_id.clone());
+        } else if payload == listener.payload_not_available {
+            unavailable.push(listener.unique_id.clone());
+        }
+    }
+    (available, unavailable)
+}
+
 /// The topics and wire schema for one entity, once its kind is known.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntityTopics {
@@ -183,6 +213,15 @@ fn unnamed_device() -> Name {
     Name::try_from("Unnamed device").expect("a fixed, valid name")
 }
 
+/// Every availability topic an entity lists, with the payload words it reads each one by.
+///
+/// **Known limit: `availability_mode` is ignored, and every topic is treated as `any`.** Home
+/// Assistant also defines `all` (every topic must say online) and `latest` (only the newest
+/// message counts); honouring those means remembering each topic's last word per entity, which
+/// nothing here does yet. Where an entity lists one availability topic — which is every entity
+/// Zigbee2MQTT and Tasmota produce — the three modes agree, so this is a gap for hand-written
+/// discovery configs rather than for anything Irori talks to today. Under `all`, one topic saying
+/// online will mark the entity available while another still says offline.
 fn parse_availability(root: &serde_json::Value) -> Vec<AvailabilityTopic> {
     let default_on = || owned_str(root, "payload_available", "online");
     let default_off = || owned_str(root, "payload_not_available", "offline");
@@ -423,6 +462,41 @@ fn binary_sensor_class(text: &str) -> Option<BinarySensorClass> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn two_entities_sharing_a_topic_are_each_read_by_their_own_words() {
+        use super::{Listener, resolve};
+
+        let uid = |s: &str| irori_types::UniqueId::try_from(s).expect("valid");
+        let listeners = vec![
+            // Tasmota's capitalised pair, and the HA default, on one topic.
+            Listener {
+                unique_id: uid("tasmota"),
+                payload_available: "Online".into(),
+                payload_not_available: "Offline".into(),
+            },
+            Listener {
+                unique_id: uid("plain"),
+                payload_available: "online".into(),
+                payload_not_available: "offline".into(),
+            },
+        ];
+
+        let (available, unavailable) = resolve(&listeners, "Online");
+        assert_eq!(available, vec![uid("tasmota")]);
+        assert!(
+            unavailable.is_empty(),
+            "`Online` says nothing about an entity reading `online`/`offline`, and \
+             certainly not that it is offline"
+        );
+
+        let (available, unavailable) = resolve(&listeners, "offline");
+        assert!(available.is_empty());
+        assert_eq!(unavailable, vec![uid("plain")]);
+
+        let (available, unavailable) = resolve(&listeners, "something else entirely");
+        assert!(available.is_empty() && unavailable.is_empty());
+    }
+
     use super::*;
 
     /// A Zigbee2MQTT-shaped light: JSON schema, modern `supported_color_modes`.

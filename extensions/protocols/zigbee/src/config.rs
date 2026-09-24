@@ -44,6 +44,14 @@ pub fn generate(
     // existing `advanced:` block is carried over untouched, below.
     let mut decided: Vec<&str> = Vec::new();
     if let Some(channel) = settings.channel {
+        // The schema says 11–26 too, but the schema only guards the settings *form*: this file
+        // can also be edited by hand, and an out-of-range channel written into Zigbee2MQTT's
+        // config fails at startup as something nobody chose.
+        if !(11..=26).contains(&channel) {
+            return Err(format!(
+                "channel {channel} isn't a Zigbee channel: they run 11 to 26"
+            ));
+        }
         advanced.push_str(&format!("  channel: {channel}\n"));
         decided.push("channel");
     }
