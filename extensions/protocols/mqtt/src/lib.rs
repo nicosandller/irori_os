@@ -258,10 +258,15 @@ async fn describe(
     );
 }
 
-/// Drops `unique_id`'s entries from `state_topics` and `availability_topics` — shared by the
-/// redescribe and removal paths in `describe`, so an entity that's redescribed or cleared always
-/// loses its old topic-index entries. Left in place, a topic it no longer uses would keep
-/// reporting for it, and one it still uses would end up listed (and so double-processed) twice.
+/// Drops `unique_id`'s entries from the topic indexes — shared by the redescribe and removal
+/// paths in `describe`, so an entity that's redescribed or cleared always loses its old ones.
+/// Left in place, a topic it no longer uses would keep reporting for it, and one it still uses
+/// would end up listed (and so double-processed) twice.
+///
+/// `config_topics` is included. A discovery config can move to a new topic while keeping the
+/// same `unique_id`. The old topic would still point here, and a later empty payload on it —
+/// the broker dropping the retained message it replaced — would delete the entity now described
+/// by the new topic.
 fn deindex(unique_id: &UniqueId, old_topics: &EntityTopics, registry: &mut Registry) {
     for (topic, _) in state::topics_of(unique_id, old_topics) {
         if let Some(ids) = registry.state_topics.get_mut(&topic) {
@@ -277,6 +282,7 @@ fn deindex(unique_id: &UniqueId, old_topics: &EntityTopics, registry: &mut Regis
     registry
         .availability_topics
         .retain(|_, listeners| !listeners.is_empty());
+    registry.config_topics.retain(|_, id| id != unique_id);
 }
 
 /// Sends a service call to the broker for the entity it belongs to.
@@ -467,6 +473,73 @@ mod tests {
             registry.availability_topics.is_empty(),
             "a removed entity's availability topics shouldn't linger either: {:?}",
             registry.availability_topics
+        );
+    }
+
+    /// The same device can be republished under a new discovery topic (a retained move). The old
+    /// topic's later empty payload is the broker forgetting the message it replaced, not a
+    /// request to delete the device that now lives on the new topic.
+    #[tokio::test]
+    async fn a_config_that_moves_topics_survives_the_old_topic_being_cleared() {
+        let (ctx, host) = host::connect();
+        let _drain = drain_ops(host.ops);
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+        let old_topic = "homeassistant/light/0x0017880104e45520_light/config";
+        let new_topic = "homeassistant/light/living_room_lamp/config";
+        let unique_id = UniqueId::try_from("0x0017880104e45520_light").expect("valid");
+
+        describe(
+            topic::parse(old_topic, "homeassistant").expect("valid"),
+            &message(old_topic, Z2M_LIGHT),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        describe(
+            topic::parse(new_topic, "homeassistant").expect("valid"),
+            &message(new_topic, Z2M_LIGHT),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        assert_eq!(
+            registry.config_topics.get(new_topic),
+            Some(&unique_id),
+            "the new topic is the one that describes it now"
+        );
+        assert!(
+            !registry.config_topics.contains_key(old_topic),
+            "the old topic must not still point at it: {:?}",
+            registry.config_topics
+        );
+
+        describe(
+            topic::parse(old_topic, "homeassistant").expect("valid"),
+            &message(old_topic, b""),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        assert!(
+            registry.entities.contains_key(&unique_id),
+            "clearing the topic it moved away from must not delete it"
+        );
+
+        describe(
+            topic::parse(new_topic, "homeassistant").expect("valid"),
+            &message(new_topic, b""),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        assert!(
+            registry.entities.is_empty(),
+            "the topic it lives on still removes it"
         );
     }
 

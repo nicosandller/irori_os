@@ -159,6 +159,9 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
     ctx.set_health(Health::Degraded("starting Zigbee2MQTT".to_owned()))
         .await;
 
+    // Set when Zigbee2MQTT's own process ends. The error is built after the loop, once its
+    // log has been drained — see the note there.
+    let mut zigbee_exit = None;
     let outcome = loop {
         tokio::select! {
             incoming = ctx.next() => {
@@ -191,15 +194,10 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                 }
             }
             status = spawned.child.wait() => {
-                // Its own account of why, not just that it happened: an exit status alone is
-                // not something a person can act on (ROADMAP D47), and this extension is the
-                // only thing that ever sees Zigbee2MQTT's own error.
-                let said = spawned.last_error();
-                break Err(ProtocolError::new(match (status, said) {
-                    (Ok(status), Some(said)) => format!("Zigbee2MQTT stopped: {said} ({status})"),
-                    (Ok(status), None) => format!("Zigbee2MQTT exited: {status}"),
-                    (Err(e), _) => format!("Zigbee2MQTT: {e}"),
-                }));
+                // Not turned into the error yet. The line that says why is often still in the
+                // pipe, and `last_error` only sees it once `drain_logs` has run.
+                zigbee_exit = Some(status);
+                break Ok(());
             }
         }
     };
@@ -207,11 +205,19 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
     drop(events);
     broker_task.abort();
     let _ = spawned.child.start_kill();
-    // After, not before: on the crash path that just broke the loop, Zigbee2MQTT logged its own
-    // reason moments before exiting, and only draining now gives the forwarding tasks a chance
-    // to have read it before this process's own `main` can exit and take them down mid-read.
-    spawned.drain_logs().await;
-    outcome
+    // After the wait, before the error is built: Zigbee2MQTT logs its reason and then exits,
+    // so the line can still be sitting in the pipe when `wait` returns. Draining is what reads
+    // it, and this process's own `main` can exit as soon as `run` returns — the tasks have to
+    // have finished by then.
+    let said = spawned.drain_logs().await;
+    match zigbee_exit {
+        Some(status) => Err(ProtocolError::new(match (status, said) {
+            (Ok(status), Some(said)) => format!("Zigbee2MQTT stopped: {said} ({status})"),
+            (Ok(status), None) => format!("Zigbee2MQTT exited: {status}"),
+            (Err(e), _) => format!("Zigbee2MQTT: {e}"),
+        })),
+        None => outcome,
+    }
 }
 
 /// Writes `contents` to `path` by writing a sibling temp file and renaming it over `path`, rather
@@ -419,10 +425,14 @@ async fn describe(
     );
 }
 
-/// Drops `unique_id`'s entries from `state_topics` and `availability_topics` — shared by the
-/// redescribe and removal paths in `describe`, so an entity that's redescribed or cleared always
-/// loses its old topic-index entries. Left in place, a topic it no longer uses would keep
-/// reporting for it, and one it still uses would end up listed (and so double-processed) twice.
+/// Drops `unique_id`'s entries from the topic indexes — shared by the redescribe and removal
+/// paths in `describe`, so an entity that's redescribed or cleared always loses its old ones.
+/// Left in place, a topic it no longer uses would keep reporting for it, and one it still uses
+/// would end up listed (and so double-processed) twice.
+///
+/// `config_topics` is included, for the same reason as in `irori-protocol-mqtt`: a discovery
+/// config can move to a new topic, and the old one's later empty payload must not delete the
+/// entity now described by the new one.
 fn deindex(unique_id: &UniqueId, old_topics: &EntityTopics, registry: &mut Registry) {
     for (topic, _) in state::topics_of(unique_id, old_topics) {
         if let Some(ids) = registry.state_topics.get_mut(&topic) {
@@ -438,6 +448,7 @@ fn deindex(unique_id: &UniqueId, old_topics: &EntityTopics, registry: &mut Regis
     registry
         .availability_topics
         .retain(|_, listeners| !listeners.is_empty());
+    registry.config_topics.retain(|_, id| id != unique_id);
 }
 
 async fn route(incoming: IncomingCall, registry: &Registry, client: &impl Publisher) {
@@ -625,6 +636,54 @@ mod tests {
             registry.state_topics.is_empty(),
             "a removed entity's state topics shouldn't linger and double-report if reused: {:?}",
             registry.state_topics
+        );
+    }
+
+    /// Same case as `irori-protocol-mqtt`: a retained discovery config can move topics, and the
+    /// old topic going empty afterwards is the broker dropping what it replaced.
+    #[tokio::test]
+    async fn a_config_that_moves_topics_survives_the_old_topic_being_cleared() {
+        let (ctx, host) = host::connect();
+        let _drain = drain_ops(host.ops);
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+        let old_topic = "homeassistant/light/0x0017880104e45520_light/config";
+        let new_topic = "homeassistant/light/living_room_lamp/config";
+        let unique_id = UniqueId::try_from("0x0017880104e45520_light").expect("valid");
+
+        describe(
+            topic::parse(old_topic, DISCOVERY_PREFIX).expect("valid"),
+            &message(old_topic, Z2M_LIGHT),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        describe(
+            topic::parse(new_topic, DISCOVERY_PREFIX).expect("valid"),
+            &message(new_topic, Z2M_LIGHT),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        assert!(
+            !registry.config_topics.contains_key(old_topic),
+            "the old topic must not still point at it: {:?}",
+            registry.config_topics
+        );
+
+        describe(
+            topic::parse(old_topic, DISCOVERY_PREFIX).expect("valid"),
+            &message(old_topic, b""),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        assert!(
+            registry.entities.contains_key(&unique_id),
+            "clearing the topic it moved away from must not delete it"
         );
     }
 

@@ -1190,6 +1190,7 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                     description: item.description,
                     version: item.version,
                     official: true,
+                    full_access: item.full_access,
                     installed: overview.is_some(),
                     icon,
                     state: overview.map(|o| match &o.status {
@@ -1242,6 +1243,9 @@ struct CatalogEntry {
     description: String,
     version: String,
     official: bool,
+    /// `host_shell`, or a `host_fs` path outside Irori's own folders. The page says "full
+    /// access to this machine" and install is refused until that is approved.
+    full_access: bool,
     installed: bool,
     icon: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1255,13 +1259,35 @@ struct CatalogEntry {
     settings: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
-async fn install_official(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {
+/// What the Extensions page sends when the person has read the full-access warning and chosen
+/// Install anyway. Absent means they have not: a plain POST must not skip the warning.
+#[derive(Debug, Deserialize)]
+struct InstallApproval {
+    #[serde(default)]
+    approve_full_access: bool,
+}
+
+async fn install_official(
+    State(state): State<AppState>,
+    Path(id): Path<ExtensionId>,
+    approval: Option<Json<InstallApproval>>,
+) -> Response {
     let Some(item) = crate::packages::official_by_id(&id) else {
         return refused(
             StatusCode::NOT_FOUND,
             format!("`{id}` isn't an official extension"),
         );
     };
+    // There are no accounts yet (the server's own note at the top of this file), so this cannot
+    // check that the approver is the owner. It can refuse a request that never acknowledged the
+    // warning. The page collects that acknowledgement; this is what stops anything else.
+    let approved = approval.is_some_and(|Json(approval)| approval.approve_full_access);
+    if item.full_access && !approved {
+        return refused(
+            StatusCode::CONFLICT,
+            format!("`{id}` has full access to this machine. Install it only by approving that."),
+        );
+    }
     // Stage out of any live package's way and let `install_package` decide where it lands, so a
     // double-click or a race can't overwrite files while a copy is running. A leftover staging
     // dir is never read as a package again (its name isn't a slug, and `installed_packages`
@@ -2092,7 +2118,40 @@ mod tests {
             .find(|e| e["id"] == "mqtt")
             .expect("mqtt is official");
         assert_eq!(mqtt["icon"], false, "{catalog}");
+        assert_eq!(mqtt["full_access"], false, "{catalog}");
+        let zigbee = entries
+            .iter()
+            .find(|e| e["id"] == "zigbee")
+            .expect("zigbee is official");
+        assert_eq!(
+            zigbee["full_access"], true,
+            "zigbee downloads and runs other programs; the page has to be able to say so: {catalog}"
+        );
 
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A bare install must not skip the warning. There are no accounts yet, so this is the
+    /// acknowledgement itself, not a check of who sent it.
+    #[tokio::test]
+    async fn installing_zigbee_is_refused_until_full_access_is_approved() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core)?;
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/zigbee/install",
+                serde_json::json!({}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("full access to this machine")),
+            "{body}"
+        );
         host.shutdown().await;
         Ok(())
     }

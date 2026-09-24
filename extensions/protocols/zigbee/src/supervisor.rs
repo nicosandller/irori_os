@@ -21,7 +21,7 @@ pub struct Spawned {
     pub child: Child,
     logs: [JoinHandle<()>; 2],
     /// The last line Zigbee2MQTT called an error, kept so the exit can say *why* rather than
-    /// only that it happened — see [`Spawned::last_error`].
+    /// only that it happened. [`Spawned::drain_logs`] returns it once the pipes are read.
     last_error: Arc<Mutex<Option<String>>>,
 }
 
@@ -56,19 +56,6 @@ pub fn spawn(node: &Path, entry: &Path, data_dir: &Path) -> Result<Spawned, Stri
 }
 
 impl Spawned {
-    /// The last thing Zigbee2MQTT called an error, if it called anything one.
-    ///
-    /// `exited exit status: 1` is not a reason anyone can act on, and this extension is the only
-    /// thing that ever sees Zigbee2MQTT's own account of why it stopped — "Failed to start EZSP
-    /// layer with status=HOST_FATAL_ERROR", meaning the radio isn't answering. Reporting that
-    /// alongside the status is this extension's half of ROADMAP D47.
-    pub fn last_error(&self) -> Option<String> {
-        self.last_error
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
     /// Gives the log-forwarding tasks a bounded chance to finish draining and logging whatever
     /// Zigbee2MQTT wrote right before exiting — its own crash reason, almost always, since it
     /// logs that before exiting rather than after. Without this, the caller's own process can
@@ -76,16 +63,29 @@ impl Spawned {
     /// `tokio::spawn`s ever get scheduled to read what's still sitting in the pipe, silently
     /// losing exactly the diagnostic this exists to surface.
     ///
+    /// Returns that reason, read after the tasks have finished. Reading it at the moment
+    /// `child.wait` returns can still be empty: the last line is often still in the pipe.
+    ///
     /// Not a hang risk in the ordinary case: each task returns on its own once the child's exit
     /// closes its end of the pipe (`next_line` sees end of file). The timeout only guards a
     /// Zigbee2MQTT that somehow leaves a grandchild alive holding the pipe open.
-    pub async fn drain_logs(self) {
-        let [stdout, stderr] = self.logs;
+    pub async fn drain_logs(self) -> Option<String> {
+        let Self {
+            logs: [stdout, stderr],
+            last_error,
+            // Already signalled by the caller. Dropping it here is what `kill_on_drop` does
+            // for a child that is still alive on the way out.
+            child: _,
+        } = self;
         let _ = tokio::time::timeout(Duration::from_secs(2), async {
             let _ = stdout.await;
             let _ = stderr.await;
         })
         .await;
+        last_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -173,12 +173,32 @@ mod tests {
         spawned.child.wait().await.expect("echo exits");
 
         let started = std::time::Instant::now();
-        spawned.drain_logs().await;
+        let _ = spawned.drain_logs().await;
 
         assert!(
             started.elapsed() < Duration::from_secs(1),
             "should drain almost instantly once the child's pipes have closed, not wait out the \
              timeout meant for a stuck grandchild"
         );
+    }
+
+    /// The reason is what `drain_logs` returns, not whatever `last_error` held at the moment
+    /// `wait` completed. The line is written and the process exits in the same breath; the
+    /// forwarding task may not have read it until it is asked to finish.
+    #[tokio::test]
+    async fn drain_logs_returns_the_error_line_written_just_before_exit() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let script = dir.path().join("die.sh");
+        std::fs::write(
+            &script,
+            "echo '[2026-09-24 00:56:35] error:\tz2m: Error: radio is not answering'\nexit 1\n",
+        )
+        .expect("write the script");
+
+        let mut spawned = spawn(Path::new("/bin/sh"), &script, Path::new("/tmp")).expect("spawns");
+        spawned.child.wait().await.expect("the script exits");
+        let said = spawned.drain_logs().await;
+
+        assert_eq!(said.as_deref(), Some("radio is not answering"));
     }
 }

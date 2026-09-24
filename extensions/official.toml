@@ -41,6 +41,9 @@ version = "0.1.0"
 source = "extensions/protocols/zigbee"
 crate = "irori-protocol-zigbee"
 bin = "irori-ext-zigbee"
+# `host_shell` in the manifest: it downloads and runs Node.js and Zigbee2MQTT. The page has to
+# say "full access to this machine" before Install does anything (extensions.md §7).
+full_access = true
 
 # Helpers aren't listed here: they're core to Irori (crates/irori-helpers), built in and always
 # running, not an installable package.

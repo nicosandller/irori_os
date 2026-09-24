@@ -581,6 +581,10 @@ pub struct CatalogEntry {
     pub description: String,
     pub version: String,
     pub official: bool,
+    /// The extension can do anything on the machine. The card says so, and Install asks
+    /// before it proceeds.
+    #[serde(default)]
+    pub full_access: bool,
     pub installed: bool,
     pub icon: bool,
     #[serde(default)]
@@ -647,8 +651,10 @@ pub async fn fetch_serial_ports() -> Result<Vec<String>, String> {
     response.json().await.map_err(unreachable)
 }
 
-pub async fn install_extension(id: &str) -> Result<(), String> {
+pub async fn install_extension(id: &str, approve_full_access: bool) -> Result<(), String> {
     let response = Request::post(&format!("/api/dev/extensions/{id}/install"))
+        .json(&serde_json::json!({ "approve_full_access": approve_full_access }))
+        .map_err(|e| e.to_string())?
         .send()
         .await
         .map_err(unreachable)?;

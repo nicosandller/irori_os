@@ -20,6 +20,9 @@ pub fn Extensions() -> impl IntoView {
     let settings_open = RwSignal::new(None::<String>);
     // And which one's log window, same rule.
     let log_open = RwSignal::new(None::<String>);
+    // An extension with full access to the machine doesn't install on the first click. This is
+    // the one waiting for that approval.
+    let confirm_install = RwSignal::new(None::<String>);
 
     let reload = move || {
         spawn_local(async move {
@@ -122,7 +125,17 @@ pub fn Extensions() -> impl IntoView {
                         {
                             entries
                                 .into_iter()
-                                .map(|entry| card(entry, busy, catalog, trouble, settings_open, log_open))
+                                .map(|entry| {
+                                    card(
+                                        entry,
+                                        busy,
+                                        catalog,
+                                        trouble,
+                                        settings_open,
+                                        log_open,
+                                        confirm_install,
+                                    )
+                                })
                                 .collect_view()
                         }
                     </div>
@@ -159,6 +172,48 @@ pub fn Extensions() -> impl IntoView {
         {move || log_open.get().map(|id| view! {
             <crate::log_window::LogWindow id=id on_close=move || log_open.set(None) />
         })}
+
+        // Full access is the one install that has to be asked about (extensions.md §7). The
+        // words are the contract's own: "full access to this machine".
+        {move || {
+            let id = confirm_install.get()?;
+            let entry = catalog.get().into_iter().find(|entry| entry.id == id)?;
+            let name = entry.name.clone();
+            let id_install = id.clone();
+            Some(view! {
+                <crate::modal::Modal
+                    title=format!("Install {name}?")
+                    on_close=move || confirm_install.set(None)
+                >
+                    <p>
+                        {name}
+                        " has "
+                        <strong>"full access to this machine"</strong>
+                        ". It can download and run other programs, the same as a terminal. "
+                        "Install it only if that is what you want."
+                    </p>
+                    <div class="ext-actions">
+                        <button
+                            type="button"
+                            class="danger"
+                            on:click=move |_| confirm_install.set(None)
+                        >
+                            "Cancel"
+                        </button>
+                        <button
+                            type="button"
+                            class="add solid"
+                            on:click=move |_| {
+                                confirm_install.set(None);
+                                act(id_install.clone(), true, busy, catalog, trouble, true);
+                            }
+                        >
+                            "Install"
+                        </button>
+                    </div>
+                </crate::modal::Modal>
+            })
+        }}
     }
 }
 
@@ -169,6 +224,7 @@ fn card(
     trouble: RwSignal<Option<String>>,
     settings_open: RwSignal<Option<String>>,
     log_open: RwSignal<Option<String>>,
+    confirm_install: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let id = entry.id.clone();
     let id_busy = id.clone();
@@ -177,6 +233,7 @@ fn card(
     let id_log = id.clone();
     let id_log_btn = id.clone();
     let installed = entry.installed;
+    let full_access = entry.full_access;
     let running = entry.state.as_deref() == Some("running");
     // Nothing is wrong with it — it just hasn't been told something it can't start without, and
     // the way out is the very button next to this.
@@ -204,6 +261,9 @@ fn card(
                 </span>
             })}
             <p class="muted ext-description">{entry.description.clone()}</p>
+            {full_access.then(|| view! {
+                <p class="ext-access">"Full access to this machine."</p>
+            })}
             // The reason, and a way to the whole of what the extension said — one line rarely
             // covers a crash, and the alternative is a terminal the person may not have open.
             {entry.reason.clone().map(|why| {
@@ -231,7 +291,7 @@ fn card(
                             type="button"
                             class="danger ext-btn"
                             disabled=move || is_busy.get()
-                            on:click=move |_| act(id_click.clone(), false, busy, catalog, trouble)
+                            on:click=move |_| act(id_click.clone(), false, busy, catalog, trouble, false)
                         >
                             {move || is_busy.get().then(|| view! { <span class="bar" aria-hidden="true"></span> })}
                             <span class="label">
@@ -246,7 +306,13 @@ fn card(
                             type="button"
                             class="add ext-btn"
                             disabled=move || is_busy.get()
-                            on:click=move |_| act(id.clone(), true, busy, catalog, trouble)
+                            on:click=move |_| {
+                                if full_access {
+                                    confirm_install.set(Some(id.clone()));
+                                } else {
+                                    act(id.clone(), true, busy, catalog, trouble, false);
+                                }
+                            }
                         >
                             {move || is_busy.get().then(|| view! { <span class="bar" aria-hidden="true"></span> })}
                             <span class="label">
@@ -315,11 +381,12 @@ fn act(
     busy: RwSignal<Option<String>>,
     catalog: RwSignal<Vec<CatalogEntry>>,
     trouble: RwSignal<Option<String>>,
+    approve_full_access: bool,
 ) {
     busy.set(Some(id.clone()));
     spawn_local(async move {
         let result = if install {
-            api::install_extension(&id).await
+            api::install_extension(&id, approve_full_access).await
         } else {
             api::uninstall_extension(&id).await
         };
