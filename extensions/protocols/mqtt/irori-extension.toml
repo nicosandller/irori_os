@@ -11,9 +11,8 @@ iot_class = "local_push"
 entity_kinds = ["light", "switch", "sensor", "binary_sensor"]
 run = { command = "bin/irori-ext-mqtt" }
 
-# The broker itself is usually on the local network (a Zigbee2MQTT/Mosquitto instance, most
-# often); a broker reached by hostname over the internet isn't distinguishable from one in this
-# check yet (extensions.md's `lan` vs `network` split assumes a protocol knows in advance, which
-# a user-entered broker address doesn't fit any better than ESPHome's own `lan = true` does).
+# The broker address is typed in later, so it can't be listed under `network` the way a known
+# internet host is. It is checked when the settings are read instead: only a local-network
+# address is accepted, which is what `lan` means. A broker on the internet is refused.
 [permissions]
 lan = true

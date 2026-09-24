@@ -1283,10 +1283,7 @@ async fn install_official(
     // warning. The page collects that acknowledgement; this is what stops anything else.
     let approved = approval.is_some_and(|Json(approval)| approval.approve_full_access);
     if item.full_access && !approved {
-        return refused(
-            StatusCode::CONFLICT,
-            format!("`{id}` has full access to this machine. Install it only by approving that."),
-        );
+        return refused(StatusCode::CONFLICT, full_access_refusal(&id));
     }
     // Stage out of any live package's way and let `install_package` decide where it lands, so a
     // double-click or a race can't overwrite files while a copy is running. A leftover staging
@@ -1324,6 +1321,37 @@ fn staging_dir() -> String {
 #[derive(Debug, Deserialize)]
 struct InstallUrl {
     url: String,
+    /// Same acknowledgement as an official install. A tarball's manifest isn't known until it
+    /// has been downloaded, so this is checked after that, against the manifest itself.
+    #[serde(default)]
+    approve_full_access: bool,
+}
+
+fn full_access_refusal(id: &ExtensionId) -> String {
+    format!("`{id}` has full access to this machine. Install it only by approving that.")
+}
+
+/// Reads the staged package's manifest and refuses full access unless `approved`.
+///
+/// A package that can't be read is refused too: installing it would start whatever the manifest
+/// says, and a manifest we couldn't check might be the one that needed the approval.
+fn unapproved_full_access(
+    dir: &std::path::Path,
+    approved: bool,
+) -> Result<(), (StatusCode, String)> {
+    let path = dir.join("irori-extension.toml");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{}: {e}", path.display())))?;
+    let manifest =
+        irori_protocol::parse_manifest(&text).map_err(|why| (StatusCode::BAD_REQUEST, why))?;
+    if manifest.permissions.full_access() && !approved {
+        Err((
+            StatusCode::CONFLICT,
+            full_access_refusal(&manifest.extension.id),
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 async fn install_url(State(state): State<AppState>, Json(body): Json<InstallUrl>) -> Response {
@@ -1350,6 +1378,10 @@ async fn install_url(State(state): State<AppState>, Json(body): Json<InstallUrl>
     {
         let _ = std::fs::remove_dir_all(&dest);
         return refused(StatusCode::BAD_GATEWAY, why);
+    }
+    if let Err((status, why)) = unapproved_full_access(&dest, body.approve_full_access) {
+        let _ = std::fs::remove_dir_all(&dest);
+        return refused(status, why);
     }
     match state.0.host.install_package(dest.clone()) {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
@@ -2154,6 +2186,64 @@ mod tests {
         );
         host.shutdown().await;
         Ok(())
+    }
+
+    /// The URL install route sees the manifest only after the tarball is on disk. The same
+    /// approval the official route requires has to apply to that manifest, or a third-party
+    /// package skips the warning by using the other endpoint.
+    #[test]
+    fn a_downloaded_package_with_full_access_needs_the_same_approval() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::write(
+            dir.path().join("irori-extension.toml"),
+            r#"
+                [extension]
+                id = "toolbox"
+                name = "Toolbox"
+                version = "0.1.0"
+                irori = ">=0.0.0"
+
+                [[contributes.protocol]]
+                iot_class = "local_push"
+                entity_kinds = ["switch"]
+
+                [permissions]
+                host_shell = true
+            "#,
+        )
+        .expect("manifest");
+
+        let refused = unapproved_full_access(dir.path(), false).expect_err("needs approval");
+        assert_eq!(refused.0, StatusCode::CONFLICT);
+        assert!(
+            refused.1.contains("full access to this machine"),
+            "{}",
+            refused.1
+        );
+        assert!(unapproved_full_access(dir.path(), true).is_ok());
+
+        std::fs::write(
+            dir.path().join("irori-extension.toml"),
+            r#"
+                [extension]
+                id = "toolbox"
+                name = "Toolbox"
+                version = "0.1.0"
+                irori = ">=0.0.0"
+
+                [[contributes.protocol]]
+                iot_class = "local_push"
+                entity_kinds = ["switch"]
+
+                [permissions]
+                lan = true
+            "#,
+        )
+        .expect("rewrite the manifest");
+        assert!(
+            unapproved_full_access(dir.path(), false).is_ok(),
+            "lan alone is not full access"
+        );
     }
 
     // --- Rooms and names ------------------------------------------------------------------
