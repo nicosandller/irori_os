@@ -347,6 +347,13 @@ fn state_dir(package_dir: &Path) -> PathBuf {
     }
 }
 
+/// How much of one stderr line to hold before handing it off and reading on.
+///
+/// Longer than a line the core keeps. Past this, a child that never writes a newline would
+/// grow the buffer without bound and eventually stop being read — the same hang a full pipe
+/// causes. The extra bytes are still drained; they just become more than one stored line.
+const STDERR_LINE_CAP: usize = 8192;
+
 /// Reads an extension's stderr for as long as it runs, keeping the tail in the core and echoing
 /// each line to Irori's own log.
 ///
@@ -354,29 +361,78 @@ fn state_dir(package_dir: &Path) -> PathBuf {
 /// inheriting stderr, and a pipe nobody reads fills up: the extension then blocks on its own next
 /// line of output, and for anything as chatty as Zigbee2MQTT that is a hang within seconds.
 ///
+/// Bytes, not `BufRead::lines`: that stops at the first sequence that isn't UTF-8 and treats it
+/// as the end of the stream. An extension can emit arbitrary bytes (a coloured log, a binary
+/// complaint). One bad line must not end the read, or everything after it sits in the pipe until
+/// the pipe fills and the child blocks.
+///
 /// A line is kept whatever the extension's own exit status turns out to be. Most of the time
 /// nothing reads it; the point is the times something has gone wrong, when this is the only
 /// account of what.
 async fn keep_what_it_says(
     core: Core,
     extension: ExtensionId,
-    stderr: tokio::process::ChildStderr,
+    stderr: impl tokio::io::AsyncRead + Unpin,
 ) {
-    use tokio::io::AsyncBufReadExt as _;
+    use tokio::io::AsyncReadExt as _;
 
-    let mut lines = tokio::io::BufReader::new(stderr).lines();
+    let mut stderr = tokio::io::BufReader::new(stderr);
+    let mut pending = Vec::new();
+    let mut chunk = [0u8; 4096];
     loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => {
-                core.log_line(&extension, &line);
-                // At info, not error: most of what comes through here is an extension's ordinary
-                // chatter, and a subprocess's own log level isn't Irori's to judge.
-                tracing::info!(%extension, "{line}");
+        match stderr.read(&mut chunk).await {
+            Ok(0) => {
+                remember_stderr(&core, &extension, &pending);
+                return;
             }
-            // The child closed its stderr, or wrote something that isn't UTF-8 — either way
-            // there's nothing further to read from this process.
-            Ok(None) | Err(_) => return,
+            Ok(n) => {
+                pending.extend_from_slice(&chunk[..n]);
+                while let Some(at) = pending.iter().position(|byte| *byte == b'\n') {
+                    let line: Vec<u8> = pending.drain(..=at).collect();
+                    remember_stderr(&core, &extension, &line);
+                }
+                if pending.len() > STDERR_LINE_CAP {
+                    remember_stderr(&core, &extension, &pending);
+                    pending.clear();
+                }
+            }
+            // The pipe broke. Keep whatever arrived and stop; reading again would spin.
+            Err(_) => {
+                remember_stderr(&core, &extension, &pending);
+                return;
+            }
         }
+    }
+}
+
+/// One chunk of stderr, lossy where the bytes aren't UTF-8, stored and echoed.
+fn remember_stderr(core: &Core, extension: &ExtensionId, bytes: &[u8]) {
+    let mut end = bytes.len();
+    if bytes.last() == Some(&b'\n') {
+        end -= 1;
+    }
+    if end > 0 && bytes[end - 1] == b'\r' {
+        end -= 1;
+    }
+    if end == 0 {
+        return;
+    }
+    let line = String::from_utf8_lossy(&bytes[..end]);
+    core.log_line(extension, &line);
+    // At info, not error: most of what comes through here is an extension's ordinary
+    // chatter, and a subprocess's own log level isn't Irori's to judge.
+    tracing::info!(%extension, "{line}");
+}
+
+/// Waits until the stderr reader finishes, which is when the child closes the pipe.
+///
+/// Aborting the reader while the child can still write stops the drain: the pipe fills and the
+/// child blocks on its next line. A child stuck where even `start_kill` waits (uninterruptible
+/// I/O) must not stall supervision, so the wait is bounded and the reader is then aborted.
+async fn finish_reading(mut reading: JoinHandle<()>) {
+    tokio::select! {
+        _ = &mut reading => {}
+        _ = tokio::time::sleep(Duration::from_secs(2)) => reading.abort(),
     }
 }
 
@@ -976,7 +1032,7 @@ async fn supervise_package(
         {
             tracing::error!(%extension, %reason, "can't talk to extension");
             let _ = child.child.start_kill();
-            reading.abort();
+            finish_reading(reading).await;
             core.set_status(
                 &extension,
                 crate::ExtensionStatus::Failed {
@@ -1023,8 +1079,10 @@ async fn supervise_package(
         core.set_available_actions(&extension, Vec::new());
         let _ = child.send(&ToExt::Stop).await;
         let _ = child.child.start_kill();
-        // After the process is on its way out, so anything it said on the way is already kept.
-        reading.abort();
+        // Until the pipe closes, not merely until we asked the process to die: the last lines
+        // are often still in the pipe, and aborting the reader here would discard them and
+        // stop the drain while the child can still be writing.
+        finish_reading(reading).await;
         match outcome {
             Outcome::Stopped => {
                 tracing::info!(%extension, "extension stopped");
@@ -1346,6 +1404,40 @@ async fn send_reply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `BufRead::lines` stops at the first byte sequence that isn't UTF-8. An extension's
+    /// stderr is arbitrary bytes; one bad line must not end the read, or the lines after it
+    /// — often the actual reason it died — are never kept, and a chatty child can block once
+    /// the pipe fills.
+    #[tokio::test]
+    async fn stderr_is_still_read_after_a_line_that_isnt_utf8() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let core = Core::new(Arc::new(crate::SystemClock));
+        let extension = ExtensionId::try_from("loud").expect("valid");
+        let (mut writer, reader) = tokio::io::duplex(64);
+        let reading = tokio::spawn(keep_what_it_says(core.clone(), extension.clone(), reader));
+
+        writer
+            .write_all(b"bad \xff byte\nstill here after the bad line\n")
+            .await
+            .expect("the pipe takes both lines");
+        drop(writer);
+        reading
+            .await
+            .expect("the reader finishes at EOF, not at the bad byte");
+
+        let log = core.log(&extension);
+        assert!(
+            log.iter()
+                .any(|line| line.contains("still here after the bad line")),
+            "{log:?}"
+        );
+        assert!(
+            log.iter().any(|line| line.contains('\u{FFFD}')),
+            "the bad byte is kept, lossy, rather than ending the read: {log:?}"
+        );
+    }
 
     #[test]
     fn a_config_schema_is_read_and_parsed() {

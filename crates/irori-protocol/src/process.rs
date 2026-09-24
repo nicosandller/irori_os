@@ -391,6 +391,29 @@ async fn write_json<T: Serialize>(
     out.flush().await.map_err(|e| e.to_string())
 }
 
+/// Creates `dir` if it isn't there and, on Unix, restricts it to its owner.
+///
+/// A directory created with the process umask is, on a typical system, traversable by every
+/// local user. `IRORI_EXTENSION_DATA` holds things like Zigbee2MQTT's `configuration.yaml` —
+/// the network key and the pairing table. Mode `0700` matches the owner-only handling of
+/// `secrets.toml`. It is set again after create: a directory that already existed keeps
+/// whatever mode it was given, and the mode on `DirBuilder` does not apply to that case.
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    builder.recursive(true).create(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 /// A running extension process, as the host talks to it.
 #[derive(Debug)]
 pub struct ExtProcess {
@@ -407,7 +430,8 @@ pub struct ExtProcess {
 /// at it again. **Whoever takes it must read it continuously** — an undrained pipe fills, and the
 /// child blocks forever on its next line of output, which for a chatty extension is seconds.
 /// `state_dir` is handed to the child as `IRORI_EXTENSION_DATA`: the one directory it may keep
-/// things in that outlive the package itself. It is created here if it isn't there.
+/// things in that outlive the package itself. It is created here if it isn't there, and on
+/// Unix only its owner may read it.
 pub fn spawn(
     package_dir: &Path,
     state_dir: &Path,
@@ -428,7 +452,7 @@ pub fn spawn(
     // Absolute, because the child's own working directory is `package_dir`: a relative path here
     // would mean somewhere inside the very directory this exists to stay out of.
     let state_dir = std::path::absolute(state_dir).unwrap_or_else(|_| state_dir.to_path_buf());
-    std::fs::create_dir_all(&state_dir)
+    create_private_dir(&state_dir)
         .map_err(|e| format!("couldn't create {}: {e}", state_dir.display()))?;
     let mut child = Command::new(&command)
         .current_dir(package_dir)
@@ -573,6 +597,52 @@ mod tests {
         assert_eq!(
             lines.next_line().await.expect("readable"),
             Some("no such port".to_owned())
+        );
+    }
+
+    /// Extension data holds Zigbee2MQTT's network key. Left at the umask, that directory is
+    /// traversable by every local user on a typical system, and the key with it.
+    #[tokio::test]
+    async fn spawn_restricts_the_extension_data_dir_to_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("a temp dir");
+        std::fs::create_dir_all(tmp.path().join("bin")).expect("mkdir");
+        let program = tmp.path().join("bin/prog");
+        std::fs::write(&program, "#!/bin/sh\nexit 0\n").expect("write the program");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+        let run = RunCommand {
+            command: PackagePath::try_from("bin/prog").expect("a valid package path"),
+            args: Vec::new(),
+        };
+
+        let mode_of = |path: &Path| {
+            std::fs::metadata(path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+
+        // Already there, and wider than it should be: create must tighten it, not leave it.
+        let widened = tmp.path().join("already");
+        std::fs::create_dir(&widened).expect("mkdir");
+        std::fs::set_permissions(&widened, std::fs::Permissions::from_mode(0o755))
+            .expect("widen it");
+        let _existing = spawn(tmp.path(), &widened, &run).expect("starts");
+        assert_eq!(
+            mode_of(&widened),
+            0o700,
+            "an existing directory is tightened, not left as it was"
+        );
+
+        let fresh = tmp.path().join("fresh");
+        let _created = spawn(tmp.path(), &fresh, &run).expect("starts");
+        assert_eq!(
+            mode_of(&fresh),
+            0o700,
+            "a directory this creates is owner-only from the start"
         );
     }
 }

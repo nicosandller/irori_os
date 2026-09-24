@@ -205,10 +205,13 @@ impl ProtocolContribution {
         let action_ids: Vec<&str> = self.actions.iter().map(|a| a.id.as_str()).collect();
         no_duplicates("contributes.protocol.actions ids", &action_ids)?;
         for action in &self.actions {
-            if action.id.trim().is_empty() {
-                return Err(InvariantError(
-                    "contributes.protocol.actions: an action needs a non-empty id".into(),
-                ));
+            // A slug, so the id is one URL path segment. The UI posts to
+            // `/api/dev/extensions/{id}/actions/{action_id}` without encoding; a `/`, `?`,
+            // or `#` would not round-trip.
+            if let Err(error) = crate::id::check_slug("action id", &action.id) {
+                return Err(InvariantError(format!(
+                    "contributes.protocol.actions: {error}"
+                )));
             }
             if action.label.trim().is_empty() {
                 return Err(InvariantError(format!(
@@ -228,13 +231,16 @@ impl ProtocolContribution {
 pub struct ProtocolAction {
     /// Its own id, unique within this protocol, e.g. `permit_join`.
     ///
-    /// `validate` below is the actual authority on emptiness and uniqueness — a manifest is
-    /// always parsed through it, in this crate, regardless of what any JSON Schema consumer
-    /// independently accepts. `minLength`/`pattern` here close what JSON Schema *can* express
-    /// (blank or whitespace-only); id uniqueness across `actions` can't be, since JSON Schema
-    /// has no keyword for "unique by one field of an array item" — `validate` remains the only
-    /// place that catches a repeated id.
-    #[schemars(length(min = 1), pattern(r"\S"))]
+    /// A slug — the same shape as an extension id — because the UI and the API place it in a
+    /// URL as one path segment (`/api/dev/extensions/{id}/actions/{action_id}`) without
+    /// encoding. Anything with a `/`, `?`, or `#` would not round-trip through that route.
+    ///
+    /// `validate` is the authority: a manifest is always parsed through it, whatever a JSON
+    /// Schema consumer independently accepts. The pattern here is the same slug, so the schema
+    /// rejects the same ids. Uniqueness across `actions` can't be expressed in JSON Schema —
+    /// there is no keyword for "unique by one field of an array item" — so `validate` remains
+    /// the only place that catches a repeated id.
+    #[schemars(length(min = 1, max = 64), pattern(r"^[a-z0-9]+(_[a-z0-9]+)*$"))]
     pub id: String,
     /// The button's label, e.g. "Permit joining".
     #[schemars(length(min = 1), pattern(r"\S"))]
@@ -929,22 +935,18 @@ mod tests {
 
     /// `ProtocolContribution::validate` is the actual authority on this — it's what every
     /// manifest is checked against — but a JSON Schema consumer never runs Rust code, so the
-    /// exported schema should reject the same blank/whitespace-only cases wherever JSON Schema
-    /// can express that (id uniqueness across `actions` can't be; `validate`'s own doc comment
-    /// on the field says why).
+    /// exported schema should reject the same ids. Uniqueness across `actions` can't be
+    /// expressed in JSON Schema; `validate`'s own doc comment on the field says why.
     #[test]
-    fn protocol_action_schema_rejects_blank_or_whitespace_only_ids_and_labels() {
+    fn protocol_action_ids_are_slugs_the_schema_and_the_parser_agree_on() {
         let validator = validator::<ProtocolAction>();
         let action = |id: &str, label: &str| serde_json::json!({"id": id, "label": label});
         assert!(validator.is_valid(&action("permit_join", "Permit joining")));
-        assert!(
-            !validator.is_valid(&action("", "Permit joining")),
-            "blank id"
-        );
-        assert!(
-            !validator.is_valid(&action("   ", "Permit joining")),
-            "whitespace-only id"
-        );
+        for id in [
+            "", "   ", "Permit", "foo/bar", "foo?x", "foo#x", "foo bar", "a__b", "_a",
+        ] {
+            assert!(!validator.is_valid(&action(id, "Permit joining")), "{id}");
+        }
         assert!(
             !validator.is_valid(&action("permit_join", "")),
             "blank label"
@@ -953,6 +955,27 @@ mod tests {
             !validator.is_valid(&action("permit_join", "   ")),
             "whitespace-only label"
         );
+
+        let manifest = |id: &str| {
+            serde_json::from_value::<ExtensionManifest>(serde_json::json!({
+                "extension": {
+                    "id": "zigbee",
+                    "name": "Zigbee",
+                    "version": "0.1.0",
+                    "irori": ">=0.0.0"
+                },
+                "contributes": {
+                    "protocol": [{
+                        "iot_class": "local_push",
+                        "entity_kinds": ["light"],
+                        "actions": [{"id": id, "label": "Permit joining"}]
+                    }]
+                }
+            }))
+        };
+        assert!(manifest("permit_join").is_ok());
+        let rejected = manifest("foo/bar").expect_err("a slash is not one path segment");
+        assert!(rejected.to_string().contains("action id"), "{rejected}");
     }
 
     #[test]

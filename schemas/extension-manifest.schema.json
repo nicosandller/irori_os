@@ -314,10 +314,11 @@
       "type": "object",
       "properties": {
         "id": {
-          "description": "Its own id, unique within this protocol, e.g. `permit_join`.\n\n`validate` below is the actual authority on emptiness and uniqueness — a manifest is\nalways parsed through it, in this crate, regardless of what any JSON Schema consumer\nindependently accepts. `minLength`/`pattern` here close what JSON Schema *can* express\n(blank or whitespace-only); id uniqueness across `actions` can't be, since JSON Schema\nhas no keyword for \"unique by one field of an array item\" — `validate` remains the only\nplace that catches a repeated id.",
+          "description": "Its own id, unique within this protocol, e.g. `permit_join`.\n\nA slug — the same shape as an extension id — because the UI and the API place it in a\nURL as one path segment (`/api/dev/extensions/{id}/actions/{action_id}`) without\nencoding. Anything with a `/`, `?`, or `#` would not round-trip through that route.\n\n`validate` is the authority: a manifest is always parsed through it, whatever a JSON\nSchema consumer independently accepts. The pattern here is the same slug, so the schema\nrejects the same ids. Uniqueness across `actions` can't be expressed in JSON Schema —\nthere is no keyword for \"unique by one field of an array item\" — so `validate` remains\nthe only place that catches a repeated id.",
           "type": "string",
+          "maxLength": 64,
           "minLength": 1,
-          "pattern": "\\S"
+          "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
         },
         "label": {
           "description": "The button's label, e.g. \"Permit joining\".",
