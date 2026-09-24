@@ -191,9 +191,14 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                 }
             }
             status = spawned.child.wait() => {
-                break Err(ProtocolError::new(match status {
-                    Ok(status) => format!("Zigbee2MQTT exited: {status}"),
-                    Err(e) => format!("Zigbee2MQTT: {e}"),
+                // Its own account of why, not just that it happened: an exit status alone is
+                // not something a person can act on (ROADMAP D47), and this extension is the
+                // only thing that ever sees Zigbee2MQTT's own error.
+                let said = spawned.last_error();
+                break Err(ProtocolError::new(match (status, said) {
+                    (Ok(status), Some(said)) => format!("Zigbee2MQTT stopped: {said} ({status})"),
+                    (Ok(status), None) => format!("Zigbee2MQTT exited: {status}"),
+                    (Err(e), _) => format!("Zigbee2MQTT: {e}"),
                 }));
             }
         }
