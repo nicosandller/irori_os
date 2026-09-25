@@ -861,6 +861,27 @@ impl Home {
         self.remove_device(&protocol, &unique_id)
     }
 
+    /// The entities a device keeps — in the home, or remembered for an ignored one — as protocol
+    /// and unique id pairs, the two fields an `entities.toml` key is made of.
+    pub fn device_entity_keys(&self, id: &DeviceId) -> Option<Vec<(ProtocolId, UniqueId)>> {
+        if let Some(device) = self.devices.get(id) {
+            return Some(
+                self.entities
+                    .iter()
+                    .filter(|(_, entity)| entity.device_id.as_ref() == Some(id))
+                    .map(|(_, entity)| (device.protocol.clone(), entity.unique_id.clone()))
+                    .collect(),
+            );
+        }
+        self.ignored.get(id).map(|ignored| {
+            ignored
+                .entities
+                .keys()
+                .map(|unique_id| (ignored.protocol.clone(), unique_id.clone()))
+                .collect()
+        })
+    }
+
     // --- State ----------------------------------------------------------------------------
 
     pub fn report_state(
