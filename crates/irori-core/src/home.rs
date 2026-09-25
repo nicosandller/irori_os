@@ -840,6 +840,27 @@ impl Home {
         events
     }
 
+    /// Forgets a device a person is done with: out of the home, or out of the ignored list if it
+    /// was one, with nothing kept for putting it back (`docs/specs/config.md` §3.2).
+    ///
+    /// Unlike [`Self::ignore`], nothing is remembered: if the device is still out there its
+    /// protocol finds it again and, with asking on, it waits to be added like any new device.
+    pub fn forget_device(&mut self, id: &DeviceId) -> Result<Vec<Event>, Rejected> {
+        let known = self
+            .devices
+            .get(id)
+            .map(|device| (device.protocol.clone(), device.unique_id.clone()))
+            .or_else(|| {
+                self.ignored
+                    .get(id)
+                    .map(|held| (held.protocol.clone(), held.description.unique_id.clone()))
+            });
+        let Some((protocol, unique_id)) = known else {
+            return Err(Rejected(format!("there's no device `{id}`")));
+        };
+        self.remove_device(&protocol, &unique_id)
+    }
+
     // --- State ----------------------------------------------------------------------------
 
     pub fn report_state(
@@ -1751,6 +1772,40 @@ mod tests {
         home.remove_device(&protocol(), &uid("lamp"))
             .expect("removed");
         assert!(home.held_devices().is_empty());
+    }
+
+    /// Forgetting a device is stronger than ignoring: nothing is kept for putting it back, so a
+    /// device that's still out there comes back as if it had never been seen.
+    #[test]
+    fn forgetting_a_device_leaves_nothing_to_come_back() {
+        let mut home = home_with_lamp();
+        home.forget_device(&key("lamp")).expect("forgot");
+        assert!(
+            home.devices.is_empty() && home.entities.is_empty() && home.states.is_empty(),
+            "out of the home, entities and readings"
+        );
+
+        // The protocol carries on as usual — and nothing keeps this device out, so it's back in
+        // as a live device rather than one held for a person to let back in.
+        home.describe_device(&protocol(), device("lamp", "Desk lamp"))
+            .expect("described while nobody remembered it");
+        assert!(home.devices.contains_key(&key("lamp")));
+        assert!(home.held_devices().is_empty());
+    }
+
+    /// Forgetting an ignored device drops the memory that would let it back in.
+    #[test]
+    fn forgetting_an_ignored_device_forgets_it_entirely() {
+        let mut home = home_with_lamp();
+        home.settle(ignoring("lamp"));
+        assert_eq!(home.held_devices().len(), 1);
+
+        home.forget_device(&key("lamp")).expect("forgot");
+        assert!(home.held_devices().is_empty());
+
+        // Letting everything back in has nothing to restore any more.
+        home.settle(Settings::default());
+        assert!(home.devices.is_empty() && home.entities.is_empty());
     }
 
     /// While Irori asks before adding, a new device waits outside the home until a person adds

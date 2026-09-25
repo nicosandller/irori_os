@@ -118,6 +118,16 @@ would only clear the setting, let the suggestion back in, and put the device str
 word like `"none"` would read better than `false`, but `none` is a perfectly good room id, so the
 two have to be different types rather than different spellings. `area = true` is an error.
 
+Forgetting a device removes its row from this file — and, at the same time, its entities' rows
+from `entities.toml` and everything else Irori keeps of it (ROADMAP D48). It's the "Remove" on
+the device's page, and it's what makes a stale file row impossible: once the file no longer says
+anything about the device, a restart can't bring it back. The device itself isn't told, so if
+it's still out there its protocol finds it again, and with asking on it turns up as a new device
+to be decided. Floorplan placement and `secrets.toml` are deliberately left alone — a secret may
+be what the device needs when it returns. Where `ignored` keeps the device's place warm (its held
+description survives, so letting it back in is instant), forgetting drops that too: nothing is
+left but the device's actual presence on the network.
+
 ### 3.3 `entities.toml`
 
 ```toml

@@ -139,7 +139,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/dev/areas/{id}", patch(edit_area).delete(remove_area))
         .route("/api/dev/floorplan", get(floorplan).put(save_floorplan))
-        .route("/api/dev/devices/{id}", patch(edit_device))
+        .route(
+            "/api/dev/devices/{id}",
+            patch(edit_device).delete(remove_device),
+        )
         .route("/api/dev/entities/{id}", patch(edit_entity))
         .route("/api/dev/extensions/{id}/secrets", put(give_secret))
         .route(
@@ -722,6 +725,23 @@ async fn edit_device(
     match edited {
         // The device as it now is, so the page doesn't have to guess what the change produced.
         Ok(()) => Json(core.devices().into_iter().find(|device| device.id == id)).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+/// Forgets a device: its settings leave the config files and Irori forgets it — home, an
+/// ignored entry, entities, all of it. The device itself isn't told: if it's still around, its
+/// protocol finds it again and, with asking on, it waits to be added (`docs/specs/config.md` §3.2).
+async fn remove_device(State(state): State<AppState>, Path(id): Path<DeviceId>) -> Response {
+    let core = &state.0.core;
+    // An ignored device isn't in the registry, but it's still one a person can forget.
+    let known = core.devices().iter().any(|device| device.id == id)
+        || core.held_devices().iter().any(|device| device.id == id);
+    if !known {
+        return refused(StatusCode::NOT_FOUND, format!("there's no device `{id}`"));
+    }
+    match state.0.config.forget_device(core, &id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => edit_failed(e),
     }
 }
@@ -2472,6 +2492,63 @@ mod tests {
             Some("study"),
             "the device remembered where it belonged"
         );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Forgetting a device answers 204 and takes it out of the core and the config files —
+    /// device, entities and all — while its neighbours stay.
+    #[tokio::test]
+    async fn forgetting_a_device_removes_it_and_writes_it_down() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+        let before = core.devices().len();
+        assert!(
+            core.entities().iter().any(|entity| entity
+                .device_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == "demo_lamp")),
+            "the demo lamp has entities"
+        );
+
+        let (status, _) = server
+            .json(
+                "DELETE",
+                "/api/dev/devices/demo_lamp",
+                serde_json::Value::Null,
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(
+            !core
+                .devices()
+                .iter()
+                .any(|device| device.id.as_str() == "demo_lamp"),
+            "out of the core"
+        );
+        assert_eq!(core.devices().len(), before - 1, "its neighbours stayed");
+        assert!(
+            !core.entities().iter().any(|entity| entity
+                .device_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == "demo_lamp")),
+            "its entities went with it"
+        );
+
+        // The files agree, so a restart couldn't bring a stale row back.
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(!devices.contains("demo_lamp"), "{devices}");
+
+        // Forgetting something nobody knows is a 404.
+        let (status, _) = server
+            .json(
+                "DELETE",
+                "/api/dev/devices/demo_lamp",
+                serde_json::Value::Null,
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
 
         host.shutdown().await;
         Ok(())

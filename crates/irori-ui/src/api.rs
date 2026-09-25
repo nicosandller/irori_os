@@ -411,6 +411,15 @@ pub async fn edit_device(device_id: &DeviceId, edit: &DeviceEdit) -> Result<(), 
     checked(response).await
 }
 
+/// Forgets a device: its settings leave the config files and Irori forgets it.
+pub async fn remove_device(device_id: &DeviceId) -> Result<(), String> {
+    let response = Request::delete(&format!("/api/dev/devices/{device_id}"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
 #[derive(Debug, Serialize)]
 struct EntityEdit {
     name: Option<Name>,

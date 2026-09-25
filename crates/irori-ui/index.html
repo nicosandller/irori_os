@@ -357,6 +357,12 @@
     .inline-form button:hover, .room-actions button:not(.toggle):hover {
         border-color: var(--ember); color: var(--ember); }
     .room-actions .danger:hover { border-color: #b4342c; color: #b4342c; }
+
+    /* Picking several found devices at once: a checkbox lining up with a row, and the
+       select-all box that feeds the "Add/Ignore selected" buttons. */
+    .pick { display: flex; align-items: center; align-self: center; }
+    .pick input, .pick-all input { width: 1rem; height: 1rem; margin: 0;
+                                   accent-color: var(--ember); cursor: pointer; }
     .page-head > button { padding: .35rem .7rem; font: inherit; font-size: .85rem;
                           color: var(--muted); background: transparent;
                           border: 1px solid var(--line); border-radius: .4rem; cursor: pointer; }
@@ -851,6 +857,9 @@
     .protocol-back { padding: 0; margin-bottom: .6rem; font-size: .85rem; }
     /* Step two: what this one extension has found, waiting and already here. */
     .protocol-found { margin-top: 1rem; }
+    .protocol-found-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem;
+                           margin: 0 0 .4rem; }
+    .protocol-found-head h3 { margin: 0; font-size: .9rem; }
     .protocol-found h3 { margin: 0 0 .4rem; font-size: .9rem; }
     .protocol-found p { margin: 0; }
 

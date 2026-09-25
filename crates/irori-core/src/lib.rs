@@ -16,9 +16,9 @@ use std::time::Duration;
 use irori_protocol::host::{Op, incoming_call};
 use irori_protocol::{IncomingAction, IncomingCall, Rejected, ServiceErrorCode};
 use irori_types::{
-    Area, Context, ContextId, Description, Device, Entity, EntityId, EntityKind, EntityState,
-    ExtensionId, ExtensionSettings, IotClass, Name, Origin, ProtocolId, ServiceCall, Settings,
-    SettingsKey, StateReport, Timestamp, Version, Waiting,
+    Area, Context, ContextId, Description, Device, DeviceId, Entity, EntityId, EntityKind,
+    EntityState, ExtensionId, ExtensionSettings, IotClass, Name, Origin, ProtocolId, ServiceCall,
+    Settings, SettingsKey, StateReport, Timestamp, Version, Waiting,
 };
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -759,6 +759,12 @@ impl Core {
     pub fn remove_protocol(&self, protocol: &ProtocolId) {
         let events = write(&self.0.home).remove_protocol(protocol);
         self.publish(events);
+    }
+
+    /// Forgets a device a person is done with: out of the home (or out of the ignored list) and
+    /// nothing kept for putting it back, so its protocol may find it again (`docs/specs/config.md` §3.2).
+    pub fn forget_device(&self, id: &DeviceId) -> Result<(), Rejected> {
+        self.change(|home, _| home.forget_device(id))
     }
 
     /// Forgets an extension's overview so it no longer appears as installed.
