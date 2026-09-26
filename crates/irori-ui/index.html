@@ -863,11 +863,40 @@
     .protocol-found h3 { margin: 0 0 .4rem; font-size: .9rem; }
     .protocol-found p { margin: 0; }
 
+    /* The log window: the copy button in the corner, and the log itself below it. The wrapper is
+       what the button is positioned against, so the button stays put while the log scrolls. */
+    .log-window { position: relative; }
+    /* Room at the top of the log for the button to sit in, rather than over its first line. */
+    .log-window .ext-log { margin-top: .6rem; padding-top: 2rem; }
+
     /* An extension's own output. Scrolls in both directions rather than wrapping: a stack trace
        or a config dump is easier to read with its lines intact. */
     .ext-log { max-height: 26rem; margin: .6rem 0 0; padding: .6rem .75rem; overflow: auto;
                font: .78rem/1.5 var(--mono); white-space: pre; background: var(--sunk);
                border-radius: .4rem; }
+
+    /* A line of the log, coloured by how seriously to take what it says (log_window.rs). A
+       warning is a quieter ember and a failure the ember itself and bold, so the two are told
+       apart at a glance and neither is a wall of colour. Both are checked for contrast against
+       the sunk background in both schemes. */
+    .ext-log .log-plain { color: var(--fg); }
+    .ext-log .log-warn { color: #a8560a; }
+    .ext-log .log-error { color: #a8431f; font-weight: 600; }
+    /* The timestamp off the front of a line, set back so the message reads first and the times
+       line up into a column beside it. */
+    .ext-log .log-stamp { color: var(--muted); }
+    @media (prefers-color-scheme: dark) {
+      .ext-log .log-warn { color: #e8a05c; }
+      .ext-log .log-error { color: #e07a4d; }
+    }
+
+    /* The copy button. Quiet until it's wanted, and it keeps its own width as it changes what it
+       says, so saying "Copied" doesn't shuffle the log sideways. */
+    .log-copy { position: absolute; top: 0; right: 0; z-index: 1;
+                min-width: 4.5rem; padding: .2rem .5rem; font: .75rem var(--sans);
+                color: var(--muted); background: var(--card); border: 1px solid var(--line);
+                border-radius: .3rem; cursor: pointer; }
+    .log-copy:hover { color: var(--fg); border-color: var(--muted); }
 
     /* While a pairing window is open: what to do now, and what has arrived so far. */
     .listening { margin-top: .6rem; padding: .6rem .75rem; background: var(--sunk);
@@ -879,8 +908,6 @@
       .modal-backdrop { padding: 0; align-items: flex-end; }
       .modal { max-width: none; height: 100%; border-radius: 0; border: none; }
     }
-  </style>
-  <link data-trunk rel="copy-file" href="./src/styles.css">
   </style>
 </head>
 <body></body>

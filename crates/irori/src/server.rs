@@ -3635,10 +3635,16 @@ mod tests {
         let server = Server::new(core())?;
 
         let empty = server.read("/api/dev/system/log").await?;
-        assert_eq!(empty["lines"], serde_json::json!([]), "nothing logged yet is an answer");
+        assert_eq!(
+            empty["lines"],
+            serde_json::json!([]),
+            "nothing logged yet is an answer"
+        );
 
         server.log.keep("2026-09-26T10:00:00Z  INFO irori is ready");
-        server.log.keep("2026-09-26T10:00:01Z  WARN listening beyond this machine");
+        server
+            .log
+            .keep("2026-09-26T10:00:01Z  WARN listening beyond this machine");
 
         let log = server.read("/api/dev/system/log").await?;
         assert_eq!(

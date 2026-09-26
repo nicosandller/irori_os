@@ -11,7 +11,6 @@ mod device;
 mod devices;
 mod extensions;
 mod floorplan;
-mod lib;
 mod log_window;
 mod modal;
 mod settings;
