@@ -865,32 +865,9 @@
 
     /* An extension's own output. Scrolls in both directions rather than wrapping: a stack trace
        or a config dump is easier to read with its lines intact. */
-    .ext-log { max-height: 32rem; width: fit-content; min-width: 30%; margin: .6rem 0 0; padding: .85rem .9rem; overflow: auto;
-               font: .82rem/1.5 var(--mono); white-space: pre-wrap; background: var(--sunk);
-               border-radius: .4rem; position: relative; }
-
-    /* Color-coded log lines for better readability */
-    .ext-log span.log-error { color: #e06c75; }          /* Red for errors */
-    .ext-log span.log-warn { color: #ebcb8b; }            /* Orange/yellow for warnings */
-    .ext-log span.log-info { color: var(--fg); opacity: .95; }  /* Slightly muted for info */
-    .ext-log span.log-time { color: #61afef; font-weight: 500; }  /* Blue-gray for timestamps */
-    .ext-log span.log-path { color: #98c379; }            /* Greenish for file paths */
-
-    /* Copy button in top-right corner */
-    .ext-log .copy-btn { position: absolute; top: .4rem; right: .5rem;
-                        width: 1.7rem; height: 1.7rem; padding: 0;
-                        font-size: .75rem; color: var(--muted);
-                        background: transparent; border: none; cursor: pointer;
-                        opacity: .6; transition: opacity .2s ease, transform .1s ease; }
-    .ext-log .copy-btn:hover { opacity: .9; filter: brightness(0.85); transform: scale(1.05); }
-    .ext-log .copy-btn:active { transform: scale(0.95); }
-
-    /* Copy feedback state */
-    .ext-log .copy-feedback { position: absolute; top: 1rem; right: .6rem;
-                             padding: .1rem .4rem; font-size: .7rem;
-                             color: #98c379; background: rgba(152, 195, 121, .15);
-                             border-radius: .2rem; opacity: 0; transition: opacity .2s ease; pointer-events: none; }
-    .ext-log .copy-feedback.visible { opacity: 1; }
+    .ext-log { max-height: 26rem; margin: .6rem 0 0; padding: .6rem .75rem; overflow: auto;
+               font: .78rem/1.5 var(--mono); white-space: pre; background: var(--sunk);
+               border-radius: .4rem; }
 
     /* While a pairing window is open: what to do now, and what has arrived so far. */
     .listening { margin-top: .6rem; padding: .6rem .75rem; background: var(--sunk);
