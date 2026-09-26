@@ -26,6 +26,7 @@ use crate::build_info::{BuildInfo, VERSION};
 use crate::config::{Config, EditError, Refused};
 use crate::db::Database;
 use crate::history::History;
+use crate::syslog;
 
 /// Who commands are attributed to until there are accounts to attribute them to (M1.5).
 static UNAUTHENTICATED: LazyLock<UserId> =
@@ -49,6 +50,10 @@ struct Inner {
     config: Config,
     host: ExtensionHost,
     history: History,
+    /// What this process has said lately, kept by the log subscriber's writer (`syslog`) and
+    /// served to the Settings page. Held here rather than reached for globally so a test can put
+    /// lines in it without standing up a subscriber.
+    log: Arc<syslog::Log>,
     /// Waking this asks `serve` (crates/irori/src/main.rs) to shut down and start this binary
     /// again. The atomic records that the shutdown was a requested restart: `serve` reads it
     /// once the server has stopped and re-execs itself instead of just stopping.
@@ -68,6 +73,7 @@ impl AppState {
         config: Config,
         host: ExtensionHost,
         history: History,
+        log: Arc<syslog::Log>,
         restart: Arc<tokio::sync::Notify>,
         restarting: Arc<AtomicBool>,
     ) -> Self {
@@ -80,6 +86,7 @@ impl AppState {
             config,
             host,
             history,
+            log,
             restart,
             restarting,
             last_restart: Mutex::new(None),
@@ -124,6 +131,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/dev/history/{entity_id}", get(entity_history))
         .route("/api/dev/system", get(host_info))
+        .route("/api/dev/system/log", get(system_log))
         .route("/api/dev/serial-ports", get(serial_ports))
         .route("/api/dev/restart", post(restart))
         .route(
@@ -919,6 +927,25 @@ async fn extension_icon(State(state): State<AppState>, Path(id): Path<ExtensionI
 /// error. A built-in has no process of its own and so never has anything here.
 async fn extension_log(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {
     axum::Json(serde_json::json!({ "lines": state.0.core.log(&id) })).into_response()
+}
+
+/// What Irori itself has said lately: the tail of this process's own log, oldest line first.
+///
+/// The same window an extension gets (`extension_log`), for the words Irori writes rather than
+/// the ones it forwards — which is where a refused write, a taken port, an unauthenticated bind,
+/// or a config edit that can't apply ends up. Extension output is in here too, tagged with the
+/// extension it came from, because the core logs a line for each (`irori_core`'s `log_line`).
+///
+/// Deliberately a window and not an archive: the last [`syslog::LINES_KEPT`] lines of this
+/// process, in memory, gone on restart. Irori normally writes the whole log to stdout as well —
+/// `journalctl -u irori`, `docker logs`, or the terminal it was started from — and this is what
+/// makes the same lines reachable from the page when nothing is watching that.
+///
+/// Always a 200, and the same `{"lines": …}` shape as an extension's, so one window component
+/// reads both. "Nothing to show" is an answer: it means nothing has been logged yet, which is
+/// what a `log_level` above `info` looks like.
+async fn system_log(State(state): State<AppState>) -> Response {
+    axum::Json(serde_json::json!({ "lines": state.0.log.lines() })).into_response()
 }
 
 /// An extension's own settings, given as one JSON object matching its `config_schema` — the
@@ -1719,6 +1746,9 @@ mod tests {
         core: Core,
         config: Config,
         history: History,
+        // The log this instance is serving, so a test can put lines in it. The real one is filled
+        // by the log subscriber's writer (`syslog::Tee`), which a test has no reason to stand up.
+        log: Arc<syslog::Log>,
         // The restart handle, held back so a test can check that POST /api/dev/restart woke the
         // shutdown and told it to restart, not just that it answered 202.
         restart: Arc<tokio::sync::Notify>,
@@ -1740,6 +1770,7 @@ mod tests {
                 core,
                 config,
                 history: History::default(),
+                log: Arc::new(syslog::Log::default()),
                 restart: Arc::new(tokio::sync::Notify::new()),
                 restarting: Arc::new(AtomicBool::new(false)),
             })
@@ -1758,6 +1789,7 @@ mod tests {
                 self.config.clone(),
                 host,
                 self.history.clone(),
+                Arc::clone(&self.log),
                 self.restart.clone(),
                 self.restarting.clone(),
             )))
@@ -3593,6 +3625,29 @@ mod tests {
             .await?;
         assert_eq!(status, StatusCode::NOT_FOUND);
         host.shutdown().await;
+        Ok(())
+    }
+
+    /// Irori's own log is served the way an extension's is: a 200 with `lines`, oldest first,
+    /// and empty rather than an error when there is nothing to show.
+    #[tokio::test]
+    async fn the_system_log_is_whatever_this_process_has_said() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+
+        let empty = server.read("/api/dev/system/log").await?;
+        assert_eq!(empty["lines"], serde_json::json!([]), "nothing logged yet is an answer");
+
+        server.log.keep("2026-09-26T10:00:00Z  INFO irori is ready");
+        server.log.keep("2026-09-26T10:00:01Z  WARN listening beyond this machine");
+
+        let log = server.read("/api/dev/system/log").await?;
+        assert_eq!(
+            log["lines"],
+            serde_json::json!([
+                "2026-09-26T10:00:00Z  INFO irori is ready",
+                "2026-09-26T10:00:01Z  WARN listening beyond this machine",
+            ])
+        );
         Ok(())
     }
 

@@ -46,7 +46,7 @@ cd crates/irori-ui && trunk serve --open # the page on 8080, API proxied to 8480
 | **Devices** (`/devices`) | Two ways to read the same home, remembered per browser: **Entities** groups everything by the device it came from, with switches; **Devices** is a row per device — what brought it in, make, model, battery, how many entities, and which area it's in. **Add device** explains where devices come from — every installed extension, what it's for, and what it can provide — because nothing is typed in by hand yet. |
 | **A device** (`/devices/<id>`) | One device: which extension brought it in, what that extension knows it as (the MAC address, for ESPHome), make, model, firmware, hardware, battery, what it's reached through, and every entity it provides with its controls. Its name, description and area are yours to decide. |
 | **Extensions** (`/extensions`) | Official extensions from this repo (protocols, Demo, Helpers). Install copies a package into the instance and starts it; uninstall deletes the package and the devices it brought in. |
-| **Settings** (`/settings`) | The instance itself (version, uptime, database, features), the home's arrangement (**Areas** and **Floors**, the same places the Rooms page used to manage), **Users** (none yet — there's nothing to sign in with), and **System**: the machine running the instance — host, operating system, kernel, CPU, memory, and the disk its data sits on, asked again on demand rather than kept. |
+| **Settings** (`/settings`) | The instance itself (version, uptime, database, features), the home's arrangement (**Areas** and **Floors**, the same places the Rooms page used to manage), **Users** (none yet — there's nothing to sign in with), **Logs** (what Irori has said since it started, and each extension's own output tagged with the extension, behind **Show log**), and **System**: the machine running the instance — host, operating system, kernel, CPU, memory, and the disk its data sits on, asked again on demand rather than kept. |
 
 Routing is client-side (`leptos_router`), so the binary serves the app for any path that isn't a
 file, and the app decides what to show.
@@ -76,6 +76,10 @@ file, and the app decides what to show.
   Saving also writes `devices.toml` for any device drawn standing in a room, and says how many
   it moved; a device deliberately in no room is left alone.
 - Lists the extensions behind it all, with their status and any reports they lost.
+- Shows what Irori and its extensions have said, in one window that keeps itself up to date:
+  **View log** on an extension's card for that extension's own output, and **Show log** in the
+  **Logs** section of Settings for the core's own log, which carries each extension's lines too,
+  tagged with the extension they came from.
 
 **Not yet:** users and signing in, automations, history beyond a device's last 24 hours, and
 installing the firmware update whose version the device page shows (ROADMAP M1.8, D30). The

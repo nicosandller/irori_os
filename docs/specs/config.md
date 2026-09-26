@@ -195,6 +195,13 @@ setting. Setting `bind_fallback` equal to `bind` locks the port: Irori tries onl
 loudly if it's taken, never stepping — the way to keep a fixed published and health-checked port
 (e.g. the dev container) on the address everything expects.
 
+`log_level` decides how much Irori says, and it is read once at startup: a quiet instance has less
+in its log to read, including in the log window on the Settings page, which shows the same lines
+Irori wrote rather than a filtered copy of them. Nothing else chooses a level of its own — there is
+no per-extension level, and an extension logs at its own process's default, which Irori passes on
+verbatim. `--log-level` and `IRORI_LOG_LEVEL` say the same as this setting; `debug` is where every
+device and state change shows up.
+
 `[devices] new` is what happens when a protocol finds a device nobody has decided about.
 `"ask"`, the default, holds it back, as if ignored, until a person adds it (`added = true`) or
 ignores it (`ignored = true`) — from the Devices page, or from that extension's own screen under
