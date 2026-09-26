@@ -67,13 +67,19 @@ pub fn LogWindow(id: String, #[prop(into)] on_close: Callback<()>) -> impl IntoV
     fn find_word_boundary(text: &str, pattern: &str) -> Option<usize> {
         text.find(pattern).and_then(|pos| {
             if pos == 0 || text[pos - 1].is_whitespace() {
-                if pos + pattern.len() >= text.len() 
-                    || text[pos + pattern.len()] == '\n' 
-                    || text[pos + pattern.len()] == ' ' 
-                    || !text[pos + pattern.len()].is_alphabetic() {
-                    Some(pos)
+                // Check if pattern is at end of string or followed by non-alphabetic char
+                let next_pos = pos + pattern.len();
+                if next_pos >= text.len() {
+                    Some(pos) // At end of string, it's a word boundary
                 } else {
-                    None
+                    let next_char = text[next_pos];
+                    if next_char == '\n' 
+                        || next_char == ' ' 
+                        || !next_char.is_alphabetic() {
+                        Some(pos)
+                    } else {
+                        None
+                    }
                 }
             } else {
                 None
@@ -108,18 +114,18 @@ pub fn LogWindow(id: String, #[prop(into)] on_close: Callback<()>) -> impl IntoV
         
         // Find where the timestamp ends (either at position 8, or with optional .ddd)
         let mut ts_end = 8;
-        
+
         if ts_end < first_chars.len() && first_chars[ts_end] == '.' {
-            // Check for milliseconds (.ddd format)
-            ts_end += 1; // skip the dot
-            if ts_end + 2 < first_chars.len() {
-                let ms = &first_chars[ts_end..ts_end+3].collect::<String>();
-                if ms.chars().all(|c| c.is_ascii_digit()) && ms.len() == 3 {
-                    ts_end += 3; // include milliseconds
+            // Check for milliseconds (.ddd format) - need exactly 3 digits after dot
+            if ts_end + 4 <= first_chars.len() {
+                let ms_bytes: &[u8] = &first_chars.as_bytes()[ts_end+1..ts_end+4];
+                let ms_str: String = ms_bytes.iter().collect();
+                if ms_str.chars().all(|c| c.is_ascii_digit()) && ms_str.len() == 3 {
+                    ts_end += 4; // include dot + milliseconds
                 }
             }
         }
-        
+
         Some(ts_end) // Return the actual end position of the timestamp
     }
 
@@ -215,9 +221,93 @@ pub fn LogWindow(id: String, #[prop(into)] on_close: Callback<()>) -> impl IntoV
 
 /// Escape HTML special characters to prevent XSS when displaying log content
 fn escape_html(s: &str) -> String {
-    s.replace("&", "&amp;")
-     .replace("<", "&lt;")
-     .replace(">", "&gt;")
-     .replace("\"", "&quot;")
-     .replace("'", "&#x27;")
+    let mut escaped = s
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;");
+    escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_escape_html() {
+        assert_eq!(escape_html("Hello <World>"), "Hello &lt;World&gt;");
+        assert_eq!(escape_html("A&B"), "A&amp;B");
+        assert_eq!(escape_html(""), "");
+    }
+
+    #[test]
+    fn test_find_word_boundary() {
+        // Should find ERROR with word boundary
+        assert!(find_word_boundary("My ERROR message", "ERROR").is_some());
+        
+        // Should NOT find ERROR without word boundary (part of another word)
+        assert!(find_word_boundary("MyERRORmessage", "ERROR").is_none());
+
+        // Should find ERROR at start
+        assert!(find_word_boundary("ERROR occurred", "ERROR").is_some());
+
+        // ERROR at end of line (no trailing character)
+        assert!(find_word_boundary("This has ERROR", "ERROR").is_some());
+    }
+
+    #[test]
+    fn test_find_timestamp_start() {
+        // Basic HH:MM:SS format
+        assert_eq!(find_timestamp_start("12:34:56 message"), Some(8));
+        
+        // HH:MM:SS with milliseconds
+        assert_eq!(find_timestamp_start("12:34:56.123 message"), Some(12));
+        
+        // No timestamp (too short)
+        assert_eq!(find_timestamp_start("short"), None);
+        
+        // Valid time but not at start
+        assert_eq!(find_timestamp_start("text 12:34:56"), None);
+
+        // HH:MM format only
+        assert_eq!(find_timestamp_start("09:00 started"), Some(5));
+    }
+
+    #[test]
+    fn test_format_log_line_error() {
+        let result = format_log_line(String::from("ERROR something bad"));
+        assert!(result.contains("<span class=\"log-error\""));
+    }
+
+    #[test]
+    fn test_format_log_line_timestamp() {
+        let result = format_log_line(String::from("12:34:56 Error message"));
+        assert!(result.contains("[12:34:56]"));
+        assert!(result.contains("<span class=\"log-info\""));
+    }
+
+    #[test]
+    fn test_format_log_line_milliseconds() {
+        let result = format_log_line(String::from("12:34:56.999 Warning here"));
+        assert!(result.contains("[12:34:56.999]"));
+    }
+
+    #[test]
+    fn test_format_log_line_empty() {
+        let result = format_log_line(String::from(""));
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_find_path_start() {
+        // Windows path with backslash
+        assert_eq!(find_path_start("C:\\Users\\test"), Some(1));
+        
+        // Unix path with forward slash
+        assert_eq!(find_path_start("/home/user/test"), Some(0));
+
+        // No path
+        assert_eq!(find_path_start("hello world"), None);
+    }
 }
