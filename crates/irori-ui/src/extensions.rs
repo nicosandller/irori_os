@@ -170,7 +170,10 @@ pub fn Extensions() -> impl IntoView {
         }}
 
         {move || log_open.get().map(|id| view! {
-            <crate::log_window::LogWindow id=id on_close=move || log_open.set(None) />
+            <crate::log_window::LogWindow
+                source=crate::log_window::Source::Extension(id)
+                on_close=move || log_open.set(None)
+            />
         })}
 
         // Full access is the one install that has to be asked about (extensions.md §7). The

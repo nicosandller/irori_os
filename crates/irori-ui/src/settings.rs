@@ -1,10 +1,10 @@
 //! The Settings page: the instance itself, the home's arrangement, and the machine running it.
 //!
-//! Four sections, in the order someone setting a home up is likely to want them: is the instance
+//! Five sections, in the order someone setting a home up is likely to want them: is the instance
 //! I mean to run? the floors and areas that say what's where (a card that folds away until
-//! wanted)? the people allowed in (none yet); and the machine it all runs on. The last of these
-//! is asked for on demand rather than kept — a Settings check that cached could shrug at a disk
-//! that filled since the last look.
+//! wanted)? the people allowed in (none yet); what it has been saying (the log, a window away);
+//! and the machine it all runs on. The last of these is asked for on demand rather than kept — a
+//! Settings check that cached could shrug at a disk that filled since the last look.
 
 use irori_types::{Area, AreaId, Device, DeviceId, Name};
 use leptos::prelude::*;
@@ -116,6 +116,10 @@ pub fn Settings() -> impl IntoView {
     let floor_draft_name = RwSignal::new(String::new());
     let floor_draft_level = RwSignal::new(String::new());
 
+    // Whether Irori's own log window is open. A flag rather than the lines themselves: the
+    // window fetches and keeps itself up to date, and this only decides whether it exists.
+    let log_open = RwSignal::new(false);
+
     // The machine under the instance. Asked once when the page opens, and again when "Ask again"
     // is clicked: nothing here is worth polling, and the values are only any use if they're the
     // machine's, now.
@@ -184,6 +188,7 @@ pub fn Settings() -> impl IntoView {
             <a href="#instance">"Instance"</a>
             <a href="#floors-and-areas">"Floors & areas"</a>
             <a href="#users">"Users"</a>
+            <a href="#logs">"Logs"</a>
             <a href="#system">"System"</a>
         </nav>
 
@@ -394,6 +399,25 @@ pub fn Settings() -> impl IntoView {
             </p>
         </section>
 
+        <section class="card settings-section" id="logs">
+            <div class="room-head">
+                <h2>"Logs"</h2>
+                <span class="room-actions">
+                    <button type="button" on:click=move |_| log_open.set(true)>
+                        "Show log"
+                    </button>
+                </span>
+            </div>
+            <p class="muted small">
+                "What Irori has said since it started. The window keeps up as new lines arrive, \
+                 and an extension's own output is in there too, tagged with the extension it came \
+                 from — the same words its View log button shows on the Extensions page. How much \
+                 there is depends on the level set by --log-level or [server] log_level in \
+                 irori.toml, and only the most recent lines are kept, in memory: the whole log \
+                 also goes to the terminal or the service log Irori was started with."
+            </p>
+        </section>
+
         <section class="card settings-section" id="system">
             <div class="room-head">
                 <h2>"System"</h2>
@@ -465,6 +489,19 @@ pub fn Settings() -> impl IntoView {
                 .into_any(),
             }}
         </section>
+
+        // The log window, drawn last so it lands over the page rather than under anything in it:
+        // it's a way out of the page for a moment, not another part of it.
+        {move || {
+            log_open.get().then(|| {
+                view! {
+                    <crate::log_window::LogWindow
+                        source=crate::log_window::Source::System
+                        on_close=move || log_open.set(false)
+                    />
+                }
+            })
+        }}
     }
 }
 
