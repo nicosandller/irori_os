@@ -625,15 +625,24 @@ pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {
 /// The tail of an extension's own output, oldest line first — what the log window shows, and
 /// where a failure's real reason is written out in full rather than summarised onto the card.
 pub async fn fetch_extension_log(id: &str) -> Result<Vec<String>, String> {
+    fetch_log(&format!("/api/dev/extensions/{id}/log")).await
+}
+
+/// Irori's own log, oldest line first: what this process has said since it started, which
+/// includes the lines an extension's output arrived as. The Settings page's log window shows it.
+pub async fn fetch_system_log() -> Result<Vec<String>, String> {
+    fetch_log("/api/dev/system/log").await
+}
+
+/// Either log. The same `{"lines": [...]}` shape by design, so one window reads both, and always
+/// a 200, so a log with nothing in it is an empty list rather than an error.
+async fn fetch_log(path: &str) -> Result<Vec<String>, String> {
     #[derive(Deserialize)]
     struct Log {
         #[serde(default)]
         lines: Vec<String>,
     }
-    let response = Request::get(&format!("/api/dev/extensions/{id}/log"))
-        .send()
-        .await
-        .map_err(unreachable)?;
+    let response = Request::get(path).send().await.map_err(unreachable)?;
     if !response.ok() {
         return match checked(response).await {
             Err(reason) => Err(reason),
