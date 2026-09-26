@@ -73,7 +73,6 @@ pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl I
     // Helper to detect and format log line elements using simple string patterns
     fn format_log_line(line: String) -> Option<String> {
         let upper = line.to_uppercase();
-        
         // Priority 1: ERROR messages (word boundary check)
         if find_word_boundary(&upper, "ERROR").is_some() {
             return Some(format!(
@@ -82,7 +81,7 @@ pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl I
             ));
         }
 
-        // Priority 2: WARNING/WARN messages (word boundary check)  
+        // Priority 2: WARNING/WARN messages (word boundary check)
         if find_word_boundary(&upper, "WARNING").is_some() {
             return Some(format!(
                 "<span class=\"log-warn\">{}</span>",
@@ -103,7 +102,7 @@ pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl I
         if let Some(pos) = find_path_start(&line) {
             if pos > 0 || line[pos] != ':' {
                 let rest = &line[pos..];
-                
+
                 return Some(format!(
                     "<span class=\"log-path\">{}</span>{rest}",
                     escape_html(rest.trim_start_matches(['\\', '/', ' ', '\t']))
@@ -118,9 +117,10 @@ pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl I
     fn find_word_boundary(text: &str, pattern: &str) -> Option<usize> {
         text.find(pattern).and_then(|pos| {
             if pos == 0 || text[pos - 1].is_whitespace() {
-                if pos + pattern.len() >= text.len() 
-                    || text[pos + pattern.len()] == '\n' 
-                    || text[pos + pattern.len()] == ' ' 
+                if pos + pattern.len() >= text.len()
+                    || text[pos + pattern.len()] == '\n'
+                    || text[pos + pattern.len()] == ' '
+                    || !text[pos + pattern.len()].is_alphabetic()
                     || !text[pos + pattern.len()].is_alphabetic() {
                     Some(pos)
                 } else {
@@ -135,31 +135,31 @@ pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl I
     // Find timestamp start (HH:MM:SS.ddd or HH:MM:SS at start of line)
     fn find_timestamp_start(line: &str) -> Option<usize> {
         if line.len() < 12 { return None; }
-        
+
         // Check first 13 chars for HH:MM:SS pattern
         let first_chars: Vec<char> = line.chars().take(13).collect();
-        
+
         // Need at least "HH:MM:" (6 chars) plus either SS or SS.something (2+ chars)
         if first_chars.len() < 8 { return None; }
-        
+
         // Check for colons at positions 2 and 5
         if first_chars[2] != ':' || first_chars[5] != ':' { return None; }
-        
+
         // Check HH are digits
         let hh = first_chars[0..2].collect::<String>();
         if !hh.chars().all(|c| c.is_ascii_digit()) { return None; }
-        
+
         // Check MM are digits
         let mm = first_chars[3..5].collect::<String>();
         if !mm.chars().all(|c| c.is_ascii_digit()) { return None; }
-        
+
         // Check SS are digits
         let ss = first_chars[6..8].collect::<String>();
         if !ss.chars().all(|c| c.is_ascii_digit()) { return None; }
-        
+
         // Find where the timestamp ends (either at position 8, or with optional .ddd)
         let mut ts_end = 8;
-        
+
         if ts_end < first_chars.len() && first_chars[ts_end] == '.' {
             // Check for milliseconds (.ddd format)
             ts_end += 1; // skip the dot
@@ -170,7 +170,6 @@ pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl I
                 }
             }
         }
-        
         Some(0) // Return 0 since timestamp starts at beginning of line
     }
 
@@ -206,7 +205,7 @@ pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl I
     let copy_btn = move |_| {
         let lines = lines.read();
         let text = lines.join("\n");
-        
+
         leptos_use_navigator::navigator()
             .map(|nav| {
                 let _ = navigator::clipboard::write(&text);
