@@ -10,6 +10,7 @@ mod host_info;
 mod packages;
 mod serial;
 mod server;
+mod syslog;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -174,10 +175,14 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
         log_level,
     } = resolve(flags, &store.irori().server, &config);
 
-    // Logs go to stdout, with no color codes when that's journald, Docker, or a file.
+    // Logs go to stdout, with no color codes when that's journald, Docker, or a file. The same
+    // lines are kept a second time in memory for the Settings page's log window (`syslog`),
+    // because stdout belongs to whoever started this process: on a box Irori starts itself there
+    // is nothing else to read.
     let ansi = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let log = Arc::new(syslog::Log::default());
     tracing_subscriber::fmt()
-        .with_writer(std::io::stdout)
+        .with_writer(syslog::Tee::new(Arc::clone(&log)))
         .with_target(false)
         .with_ansi(ansi)
         .with_max_level(log_level)
@@ -262,6 +267,7 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
                     settings,
                     host.clone(),
                     history,
+                    log,
                     restart.clone(),
                     restarting.clone(),
                 )),

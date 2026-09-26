@@ -219,7 +219,9 @@ So, for every extension run as its own process:
 
 - Its **stderr is piped, never inherited**, and the host reads it continuously — an unread pipe
   fills and the extension blocks on its own next line of output — keeping the most recent lines
-  and echoing each to Irori's log.
+  and echoing each to Irori's log. Both views show the same lines: this extension's own at
+  `GET /api/dev/extensions/<id>/log` (below), and in Irori's own log on the Settings page, tagged
+  with the extension the line came from.
 - A **failure's reason is the host's own description plus the extension's last words**:
   `exited exit status: 1 — couldn't open /dev/ttyUSB0: No such file or directory`. The extension
   itself nearly always printed the real reason a moment before dying.
