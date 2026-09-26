@@ -262,8 +262,8 @@ pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl I
 /// Escape HTML special characters to prevent XSS when displaying log content
 fn escape_html(s: &str) -> String {
     s.replace("&", "&amp;")
-     .replace("<", "&lt;")
-     .replace(">", "&gt;")
-     .replace("\"", "&quot;")
-     .replace("'", "&#x27;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&#x27;")
 }
