@@ -123,6 +123,22 @@ IRORI_PI_MEMORY=512m IRORI_PORT=9000 dev/pi up
 Colima's default VM has 2 CPUs and 2–4 GB. Limits above that fail to start; raise them with
 `colima start --cpu 4 --memory 8`.
 
+## Lab devices
+
+`dev/pi up --lab` is the same Pi, plus stand-ins for the hardware the container cannot see.
+It raises the memory limit to 2 GB (Zigbee2MQTT needs it) unless `IRORI_PI_MEMORY` is already set.
+
+| | Where it shows up |
+|---|---|
+| Zigbee dongle | `/dev/zigbee0`, an Ember coordinator. In the Zigbee extension's settings set the serial port to that path and `zigbee2mqtt_version` to `2.14.1`. |
+| Zigbee devices | Named and placed from `dev/lab/home/devices.toml`. They pair on Permit joining once the coordinator answers the rest of the ember startup commands; until then those commands are logged and Zigbee2MQTT will not stay up. |
+| ESPHome | Four boards announce `_esphomelib._tcp` inside the container. One extra encrypted board prints its key in `dev/pi logs`. |
+| Matter | Three nodes, once their binaries are pinned in `dev/lab/matter/`. Until then the log names each one's discriminator and passcode. |
+
+Rooms and the names in `dev/lab/home/` are copied into an empty data volume only. A volume that already has `areas.toml` is left alone. `dev/pi down --wipe` starts the house over.
+
+The emulators live under `dev/lab/` and are not linked into `irori` or any extension. The coordinator speaks the ASH framing Zigbee2MQTT 2.14.1's ember driver uses, and answers the EZSP version command. Further EZSP commands are logged as `not handled yet` until each one is filled in against that pin; Permit joining does not interview the 14 devices until that list is done.
+
 ## What this does *not* emulate
 
 The container is a close functional stand-in, not a benchmark rig. Before trusting a
@@ -133,12 +149,11 @@ performance number (ROADMAP §4.3), measure it on real hardware:
 - **Storage.** SD card write speed and wear aren't simulated; the Docker volume is fast.
 - **GPIO and Bluetooth.** Nothing bridges these into the container.
 - **USB, directly.** Docker Desktop has no host to pass a USB device through *from* — it's a VM,
-  not this Mac. A Zigbee dongle still reaches the container, over TCP rather than a device node:
-  see "Reach a Zigbee dongle" below.
-- **mDNS discovery.** ESPHome devices announce themselves over multicast, which doesn't cross
-  the container's network boundary either way — nothing here relays it. A device already known
-  by IP is unaffected: `dev/pi`'s default network forwards ordinary outbound TCP to your LAN
-  fine, only the multicast announcement itself doesn't arrive.
+  not this Mac. A real Zigbee dongle still reaches the container over TCP: see "Reach a Zigbee
+  dongle" below. `dev/pi up --lab` instead presents `/dev/zigbee0` inside the container.
+- **mDNS from this Mac.** Announcements on the desk don't cross into the container. `dev/pi up
+  --lab` publishes ESPHome boards on the container's own network, which is the one the extension
+  listens on. A device already known by IP is unaffected: ordinary outbound TCP to your LAN works.
 - **armv7 / 32-bit Pi OS.** Only 64-bit is covered.
 - **Intel Macs.** `linux/arm64` still works, but through QEMU emulation, so builds are slow.
 
@@ -169,3 +184,4 @@ of a device path, for exactly this: a network-attached coordinator. `dev/pi usb-
 | `Dockerfile` | `toolchain` (Rust on Alpine/musl), `build` (static binary), `pi` (Debian slim runtime) |
 | `compose.yaml` | The `pi` service and the on-demand `toolchain` service |
 | `smoke-test.sh` | Smoke test shared with CI: health, WAL mode, UI present or absent per build, and the demo extension's devices when it's compiled in |
+| `lab/` | Opt-in emulators for `dev/pi up --lab`: Zigbee dongle, ESPHome boards, Matter nodes, and the house seed |

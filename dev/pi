@@ -17,7 +17,9 @@ usage() {
 usage: dev/pi <command> [args]
 
 Run irori like a Pi would:
-  up [--barebones]   build the image and start irori at http://127.0.0.1:$port
+  up [--barebones] [--lab]
+                     build the image and start irori at http://127.0.0.1:$port
+                     --lab adds the Zigbee dongle, ESPHome boards, and Matter nodes
   down [--wipe]      stop it; --wipe also deletes its data volume
   restart            rebuild from the current checkout and restart
   status             container state and /api/health
@@ -41,12 +43,36 @@ EOF
 }
 
 up() {
-  if [[ "${1:-}" == "--barebones" ]]; then
-    export IRORI_FEATURES="--no-default-features"
+  local lab=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --barebones) export IRORI_FEATURES="--no-default-features" ;;
+      --lab) lab=1 ;;
+      *)
+        echo "error: unknown argument: $1" >&2
+        exit 1
+        ;;
+    esac
+    shift
+  done
+  if [[ "$lab" -eq 1 ]]; then
+    export IRORI_LAB=1
+    # Zigbee2MQTT's Node runtime does not fit in the default 1 GB.
+    if [[ -z "${IRORI_PI_MEMORY:-}" ]]; then
+      export IRORI_PI_MEMORY=2g
+    fi
   fi
   "${compose[@]}" up --build --detach --wait pi
   echo
   echo "irori is running at http://127.0.0.1:$port"
+  if [[ "$lab" -eq 1 ]]; then
+    echo
+    echo "Lab Zigbee dongle: /dev/zigbee0"
+    echo "In the Zigbee extension settings, set:"
+    echo "  serial port  /dev/zigbee0"
+    echo "  zigbee2mqtt_version  2.14.1"
+    echo "The ESPHome encryption key is in \`dev/pi logs\`."
+  fi
 }
 
 check() {

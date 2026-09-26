@@ -1,0 +1,227 @@
+# What the emulators are. Irori never reads this file.
+# `irori_id` is the devices.toml key: protocol, then the handle, slugged.
+# Zigbee `model` / `vendor` are the Home Assistant display strings. `zigbee_model`
+# and `manufacturer_name` are what the Basic cluster must answer so Zigbee2MQTT
+# 2.14.1's converters pick that display model. Empty until that lookup is filled in.
+
+zigbee2mqtt_version = "2.14.1"
+
+[[zigbee]]
+irori_id = "zigbee_0x0211000000000001"
+ieee = "0x0211000000000001"
+name = "Main living room switch"
+vendor = "SONOFF"
+model = "Zigbee Smart three-channel wall switch (type 120)"
+zigbee_model = ""
+manufacturer_name = ""
+kind = "switch"
+area = "living_room"
+
+[[zigbee]]
+irori_id = "zigbee_0x0211000000000002"
+ieee = "0x0211000000000002"
+name = "Presence sensor"
+vendor = "Wenzhi"
+model = "Human presence sensor"
+zigbee_model = ""
+manufacturer_name = ""
+kind = "presence"
+area = "living_room"
+
+[[zigbee]]
+irori_id = "zigbee_0x0211000000000003"
+ieee = "0x0211000000000003"
+name = "Office window contact"
+vendor = "Moes"
+model = "Door/window alarm sensor"
+zigbee_model = ""
+manufacturer_name = ""
+kind = "contact"
+area = "office_room"
+
+[[zigbee]]
+irori_id = "zigbee_0x0211000000000004"
+ieee = "0x0211000000000004"
+name = "Second bedroom window"
+vendor = "Moes"
+model = "Door/window alarm sensor"
+zigbee_model = ""
+manufacturer_name = ""
+kind = "contact"
+area = "second_bedroom"
+
+[[zigbee]]
+irori_id = "zigbee_0x0211000000000005"
+ieee = "0x0211000000000005"
+name = "Second bedroom window 2"
+vendor = "Moes"
+model = "Door/window alarm sensor"
+zigbee_model = ""
+manufacturer_name = ""
+kind = "contact"
+area = "second_bedroom"
+
+[[zigbee]]
+irori_id = "zigbee_0x0211000000000006"
+ieee = "0x0211000000000006"
+name = "temperature sensor -1"
+vendor = "SONOFF"
+model = "Temperature and humidity sensor"
+zigbee_model = ""
+manufacturer_name = ""
+kind = "climate"
+area = "office_room"
+
+[[zigbee]]
+irori_id = "zigbee_0x0211000000000007"
+ieee = "0x0211000000000007"
+name = "Temperature sensor - 2"
+vendor = "SONOFF"
+model = "Temperature and humidity sensor"
+zigbee_model = ""
+manufacturer_name = ""
+kind = "climate"
+area = "shoe_closet"
+
+[[zigbee]]
+irori_id = "zigbee_0x0211000000000008"
+ieee = "0x0211000000000008"
+name = "Temperature sensor - Outdoor 1"
+vendor = "Tuya"
+model = "Temperature and humidity sensor"
+zigbee_model = ""
+manufacturer_name = ""
+kind = "climate"
+
+[[zigbee]]
+irori_id = "zigbee_0x0211000000000009"
+ieee = "0x0211000000000009"
+name = "Vibration sensor - 1"
+vendor = "iHseno"
+model = "Vibration sensor"
+zigbee_model = ""
+manufacturer_name = ""
+kind = "vibration"
+area = "living_room"
+
+[[zigbee]]
+irori_id = "zigbee_0x021100000000000a"
+ieee = "0x021100000000000a"
+name = "Vibration sensor - 2"
+vendor = "iHseno"
+model = "Vibration sensor"
+zigbee_model = ""
+manufacturer_name = ""
+kind = "vibration"
+area = "approach"
+
+[[zigbee]]
+irori_id = "zigbee_0x021100000000000b"
+ieee = "0x021100000000000b"
+name = "Kitchen smoke alarm"
+vendor = "Heiman"
+model = "Smart smoke alarm"
+zigbee_model = ""
+manufacturer_name = ""
+kind = "smoke"
+area = "kitchen"
+
+[[zigbee]]
+irori_id = "zigbee_0x021100000000000c"
+ieee = "0x021100000000000c"
+name = "Water sensor - 1"
+vendor = "HOBEIAN"
+model = "Water leak sensor"
+zigbee_model = ""
+manufacturer_name = ""
+kind = "leak"
+area = "nook_room"
+
+[[zigbee]]
+irori_id = "zigbee_0x021100000000000d"
+ieee = "0x021100000000000d"
+name = "Water sensor - 2"
+vendor = "HOBEIAN"
+model = "Water leak sensor"
+zigbee_model = ""
+manufacturer_name = ""
+kind = "leak"
+area = "shoe_closet"
+
+[[zigbee]]
+irori_id = "zigbee_0x021100000000000e"
+ieee = "0x021100000000000e"
+name = "Repeater 1"
+vendor = "HOBEIAN"
+model = "USB signal repeater"
+zigbee_model = ""
+manufacturer_name = ""
+kind = "repeater"
+
+[[esphome]]
+irori_id = "esphome_02_11_00_00_d8_21"
+mac = "02:11:00:00:D8:21"
+name = "Bluetooth Proxy d82104"
+hostname = "lab-bt-d82104"
+model = "bluetooth-proxy"
+area = "Living room"
+
+[[esphome]]
+irori_id = "esphome_02_11_00_00_2b_09"
+mac = "02:11:00:00:2B:09"
+name = "Bluetooth Proxy 2b0900"
+hostname = "lab-bt-2b0900"
+model = "bluetooth-proxy"
+area = "Living room"
+
+[[esphome]]
+irori_id = "esphome_02_11_00_00_00_03"
+mac = "02:11:00:00:00:03"
+name = "Living room board"
+hostname = "lab-living-room"
+model = "esp32"
+area = "Living room"
+
+[[esphome]]
+irori_id = "esphome_02_11_00_00_00_04"
+mac = "02:11:00:00:00:04"
+name = "kitchen bt proxy"
+hostname = "lab-kitchen"
+model = "esp32"
+area = "Kitchen"
+
+# Not a house device. Announced encrypted so the waiting-for-a-key panel can be tried.
+[[esphome]]
+mac = "02:11:00:00:00:EE"
+name = "Lab lock"
+hostname = "lab-lock"
+model = "esp32"
+area = "Office"
+encrypted = true
+
+[[matter]]
+name = "Outside wall switch"
+vendor = "SONOFF"
+model = "WiFi Smart Switch"
+role = "switch"
+discriminator = 3840
+passcode = 20202021
+port = 5540
+
+[[matter]]
+name = "Living Room Dehumidifier"
+vendor = "Tapo"
+model = "Smart Wi-Fi Plug"
+role = "plug"
+discriminator = 3841
+passcode = 20202022
+port = 5541
+
+[[matter]]
+name = "Closet motion sensor"
+vendor = "IKEA of Sweden"
+model = "MYGGSPRAY wrlss mtn sensor"
+role = "occupancy"
+discriminator = 3842
+passcode = 20202023
+port = 5542

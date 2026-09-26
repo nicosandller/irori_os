@@ -62,18 +62,32 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp /target/release/irori-ext-mqtt /official/mqtt/bin/ \
     && cp extensions/protocols/zigbee/irori-extension.toml extensions/protocols/zigbee/config.schema.json /official/zigbee/ \
     && cp /target/release/irori-ext-zigbee /official/zigbee/bin/
+# Lab emulators are not part of the Irori workspace. The musl target already
+# links the finished binary statically, same as irori above. Forcing that
+# through RUSTFLAGS also forces it onto proc-macro crates (prost-derive),
+# which musl cannot build.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/target-lab \
+    CARGO_TARGET_DIR=/target-lab \
+    cargo build --locked --release --manifest-path dev/lab/esphome/Cargo.toml \
+    && cp /target-lab/release/irori-lab-esphome /irori-lab-esphome
 
 FROM debian:${DEBIAN_RELEASE}-slim AS pi
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && apt-get install -y --no-install-recommends curl ca-certificates python3 util-linux \
     && rm -rf /var/lib/apt/lists/*
 # Run unprivileged, the way the systemd unit will (M1.7).
 RUN useradd --system --home-dir /var/lib/irori --create-home --shell /usr/sbin/nologin irori
 COPY --from=build /irori /usr/local/bin/irori
+COPY --from=build /irori-lab-esphome /usr/local/bin/irori-lab-esphome
 COPY --from=build /official /usr/share/irori/extensions
+COPY dev/lab /usr/share/irori/lab
+COPY dev/lab/entrypoint.sh /usr/local/bin/irori-lab-entrypoint
+RUN chmod 755 /usr/local/bin/irori-lab-entrypoint /usr/share/irori/lab/matter/run.sh
 # Fails the build if the binary isn't really static (it was built against musl, this is glibc).
 RUN irori version
-USER irori
+# Root only so the lab entrypoint can create /dev/zigbee0, then it drops to irori.
+# With IRORI_LAB unset the entrypoint does that drop and nothing else.
 # Listening on all interfaces is needed inside a container. It stays private: compose publishes
 # the port on the host's 127.0.0.1 only. The flag goes away when auth lands (ROADMAP D12, M1.5).
 # Both absolute: the container has no WORKDIR, so the relative defaults would land in `/`, which
@@ -90,5 +104,5 @@ ENV IRORI_DATA=/var/lib/irori \
 EXPOSE 8480
 HEALTHCHECK --interval=5s --timeout=2s --start-period=5s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8480/api/health || exit 1
-ENTRYPOINT ["irori"]
+ENTRYPOINT ["/usr/local/bin/irori-lab-entrypoint"]
 CMD ["serve"]

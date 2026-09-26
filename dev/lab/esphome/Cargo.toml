@@ -1,0 +1,18 @@
+[workspace]
+
+[package]
+name = "irori-lab-esphome"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Lab ESPHome devices for dev/pi --lab. Not part of the Irori workspace."
+
+[[bin]]
+name = "irori-lab-esphome"
+path = "src/main.rs"
+
+[dependencies]
+esphome-client = { version = "0.2.1", features = ["api-1-15"] }
+mdns-sd = "0.21"
+snow = "0.10.0"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "io-util", "sync", "time"] }
