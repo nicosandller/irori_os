@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use irori_config::{Problem, ServerSettings, Store};
 use irori_core::{Core, Event};
-use irori_types::{ExtensionSettings, Settings};
+use irori_types::{DeviceId, ExtensionSettings, Settings, SettingsKey};
 use tokio::sync::Mutex;
 use tokio::sync::broadcast::error::RecvError;
 
@@ -100,6 +100,46 @@ impl Config {
         }
         core.apply_settings(settings);
         Ok(made)
+    }
+
+    /// Forgets a device a person is done with: its settings leave the config files, and the
+    /// core forgets it — home, an ignored entry, entities, all of it.
+    ///
+    /// Written down first, then forgotten, like every change here: the files and the core never
+    /// disagree, so a save that fails leaves the core agreeing with the disk. The device itself
+    /// isn't told anything, so if it's still around its protocol finds it again and, with asking
+    /// on, it waits to be added like any new device (`docs/specs/config.md` §3.2).
+    ///
+    /// What was said about it in the floorplan is kept: a plan naming a device that no longer
+    /// exists is a stale drawing that does nothing, and it survives a device that comes back.
+    pub async fn forget_device(&self, core: &Core, id: &DeviceId) -> Result<(), EditError> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+
+        let mut settings = store.settings();
+        settings.devices.remove(id);
+        // The rows its entities keep in `entities.toml`, keyed by protocol and unique id. Read
+        // from the core, because the files say nothing about which entity belongs to which
+        // device — and an ignored device's entities live in the core too, so its rows are found
+        // as well: nothing kept means nothing kept.
+        let owned: std::collections::BTreeSet<SettingsKey> = core
+            .device_entity_keys(id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(protocol, unique_id)| SettingsKey::new(protocol, unique_id))
+            .collect();
+        if !owned.is_empty() {
+            settings.entities.retain(|key, _| !owned.contains(key));
+        }
+        let written = store.save(&settings).map_err(EditError::Io)?;
+        if !written.is_empty() {
+            let files: Vec<&str> = written.iter().map(|file| file.name()).collect();
+            tracing::info!(files = ?files, "config written");
+        }
+        core.forget_device(id)
+            .map_err(|why| EditError::Refused(Refused(why.to_string())))?;
+        core.apply_settings(settings);
+        Ok(())
     }
 
     /// One extension's `extensions/<id>.toml` as it currently stands.
@@ -315,7 +355,7 @@ mod tests {
     use std::sync::Arc;
 
     use irori_core::SystemClock;
-    use irori_types::{Area, DeviceSettings, Name};
+    use irori_types::{Area, DeviceSettings, EntitySettings, Name};
 
     use super::*;
 
@@ -458,8 +498,160 @@ mod tests {
         Ok(())
     }
 
-    /// Asking already on in `irori.toml` at startup keeps a home that joined while asking was
-    /// off: those devices were written down as added, so they are not "new".
+    /// Forgetting a device writes it out of the config files and out of the core: the device
+    /// itself, its entities, and everything that was said about either.
+    #[tokio::test]
+    async fn forgetting_a_device_reaches_the_core_and_the_files() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let core = core();
+        std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"add\"\n")?;
+        let config = Config::open_dir(dir.path(), &core);
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![
+                irori_protocol::builtin::<irori_protocol_demo::Demo>()
+                    .map_err(anyhow::Error::msg)?,
+            ],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        for _ in 0..500 {
+            if !core.devices().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let Some(device) = core.devices().first().cloned() else {
+            anyhow::bail!("no demo device arrived");
+        };
+        let id = device.id.clone();
+        let neighbours = core.devices().iter().filter(|d| d.id != id).count();
+
+        config
+            .edit(&core, |settings| {
+                settings.devices.insert(
+                    id.clone(),
+                    DeviceSettings {
+                        added: true,
+                        name: Some("Shared".parse::<Name>().expect("a valid name")),
+                        description: None,
+                        area: irori_types::Placement::Unsaid,
+                        ignored: false,
+                    },
+                );
+                Ok(())
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+        config
+            .forget_device(&core, &id)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+        assert!(
+            !core.devices().iter().any(|d| d.id == id),
+            "out of the home"
+        );
+        assert!(
+            !core
+                .entities()
+                .iter()
+                .any(|e| e.device_id.as_ref() == Some(&id)),
+            "its entities went with it"
+        );
+        assert_eq!(
+            core.devices().iter().filter(|d| d.id != id).count(),
+            neighbours,
+            "its neighbours stayed"
+        );
+        let written = std::fs::read_to_string(dir.path().join("devices.toml"))?;
+        assert!(!written.contains(&id.to_string()), "{written}");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// An ignored device's entities aren't in the registry, but their rows are still in
+    /// `entities.toml` — forgetting has to reach them too, or a rediscovered device would come
+    /// back with renames a person had already forgotten.
+    #[tokio::test]
+    async fn forgetting_an_ignored_device_prunes_its_entity_settings() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let core = core();
+        std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"add\"\n")?;
+        let config = Config::open_dir(dir.path(), &core);
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![
+                irori_protocol::builtin::<irori_protocol_demo::Demo>()
+                    .map_err(anyhow::Error::msg)?,
+            ],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        for _ in 0..500 {
+            if !core.devices().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let Some(device) = core.devices().first().cloned() else {
+            anyhow::bail!("no demo device arrived");
+        };
+        let id = device.id.clone();
+        let first = core
+            .entities()
+            .into_iter()
+            .find(|entity| entity.device_id.as_ref() == Some(&id))
+            .expect("the device has entities");
+        let key = SettingsKey::new(first.protocol, first.unique_id);
+
+        config
+            .edit(&core, |settings| {
+                settings.devices.insert(
+                    id.clone(),
+                    DeviceSettings {
+                        added: true,
+                        ignored: true,
+                        name: None,
+                        description: None,
+                        area: irori_types::Placement::Unsaid,
+                    },
+                );
+                let said = EntitySettings {
+                    name: Some("Reading light".parse::<Name>().expect("a valid name")),
+                };
+                settings.entities.insert(key.clone(), said);
+                Ok(())
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+        // Ignored: out of the home, but its row is still in the file where forgetting will find it.
+        assert!(
+            !core
+                .entities()
+                .iter()
+                .any(|e| e.device_id.as_ref() == Some(&id)),
+            "ignoring took it out of the home"
+        );
+        let entities = std::fs::read_to_string(dir.path().join("entities.toml"))?;
+        assert!(entities.contains(&key.to_string()), "{entities}");
+
+        config
+            .forget_device(&core, &id)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+        let entities = std::fs::read_to_string(dir.path().join("entities.toml"))?;
+        assert!(!entities.contains(&key.to_string()), "{entities}");
+        let devices = std::fs::read_to_string(dir.path().join("devices.toml"))?;
+        assert!(!devices.contains(&id.to_string()), "{devices}");
+
+        host.shutdown().await;
+        Ok(())
+    }
     #[tokio::test]
     async fn starting_with_asking_already_on_keeps_the_devices_already_here() -> anyhow::Result<()>
     {

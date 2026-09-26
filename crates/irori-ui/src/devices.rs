@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use irori_types::{
     AreaId, Availability, BinarySensorCapabilities, BinarySensorClass, Capabilities, Device,
-    Entity, EntityId, EntityState, ExtensionId, LightCapabilities, LightState, LightTurnOn,
-    SensorCapabilities, SensorClass, SensorValue, State,
+    DeviceId, Entity, EntityId, EntityState, ExtensionId, LightCapabilities, LightState,
+    LightTurnOn, SensorCapabilities, SensorClass, SensorValue, State,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -551,19 +551,40 @@ fn NewDevices() -> impl IntoView {
             .collect::<Vec<_>>()
     });
     let trouble = RwSignal::new(None::<String>);
-    let decide = move |ids: Vec<irori_types::DeviceId>, add: bool| {
+    // What the checkboxes have picked. This card isn't made and unmade as devices change, so the
+    // selection lives here — a device joining while something was picked must not clear the rest.
+    let chosen = RwSignal::new(BTreeSet::<DeviceId>::new());
+    // The devices asking to be in right now, and the picked ones cut to that list — both Copy
+    // handles, so any number of event handlers can read them without giving one ownership.
+    let every = Memo::new(move |_| {
+        waiting
+            .get()
+            .iter()
+            .map(|device| device.id.clone())
+            .collect::<Vec<_>>()
+    });
+    let picked = Memo::new(move |_| {
+        every
+            .get()
+            .iter()
+            .filter(|id| chosen.get().contains(*id))
+            .cloned()
+            .collect::<Vec<_>>()
+    });
+    let decide = move |ids: Vec<DeviceId>, add: bool| {
         spawn_local(async move {
-            for id in ids {
+            for id in &ids {
                 let edit = crate::api::DeviceEdit {
                     added: add.then_some(true),
                     ignored: (!add).then_some(true),
                     ..Default::default()
                 };
-                if let Err(why) = crate::api::edit_device(&id, &edit).await {
+                if let Err(why) = crate::api::edit_device(id, &edit).await {
                     trouble.set(Some(why));
                     break;
                 }
             }
+            chosen.update(|set| set.retain(|id| !ids.contains(id)));
             crate::refresh(live);
         });
     };
@@ -571,7 +592,6 @@ fn NewDevices() -> impl IntoView {
         let all = waiting.get();
         (!all.is_empty()).then(|| {
             let count = all.len();
-            let every: Vec<_> = all.iter().map(|device| device.id.clone()).collect();
             view! {
                 <section class="card waiting new-devices">
                     <div class="room-head">
@@ -579,11 +599,36 @@ fn NewDevices() -> impl IntoView {
                             {format!("{count} new device{} found", if count == 1 { "" } else { "s" })}
                         </h2>
                         {(count > 1).then(|| {
-                            let every = every.clone();
                             view! {
-                                <span class="room-actions">
-                                    <button type="button" on:click=move |_| decide(every.clone(), true)>
-                                        "Add all"
+                                <span class="room-actions pick">
+                                    <label class="pick-all">
+                                        <input
+                                            type="checkbox"
+                                            aria-label="Select all"
+                                            prop:checked=move || picked.get().len() == every.get().len()
+                                            on:change=move |ev| {
+                                                if event_target_checked(&ev) {
+                                                    chosen.update(|set| set.extend(every.get()));
+                                                } else {
+                                                    chosen.update(|set| set.retain(|id| !every.get().contains(id)));
+                                                }
+                                            }
+                                        />
+                                    </label>
+                                    <button
+                                        type="button"
+                                        class="add"
+                                        disabled=move || picked.get().is_empty()
+                                        on:click=move |_| decide(picked.get(), true)
+                                    >
+                                        {move || format!("Add selected ({})", picked.get().len())}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        disabled=move || picked.get().is_empty()
+                                        on:click=move |_| decide(picked.get(), false)
+                                    >
+                                        {move || format!("Ignore selected ({})", picked.get().len())}
                                     </button>
                                 </span>
                             }
@@ -599,8 +644,34 @@ fn NewDevices() -> impl IntoView {
                             .into_iter()
                             .map(|device| {
                                 let (add, ignore) = (device.id.clone(), device.id.clone());
+                                let pick = device.id.clone();
                                 view! {
                                     <li>
+                                        {(count > 1).then(|| {
+                                        let pick = pick.clone();
+                                        view! {
+                                            <label class="pick">
+                                                <input
+                                                    type="checkbox"
+                                                    aria-label={format!("Select {}", device.name)}
+                                                    prop:checked={
+                                                        let pick = pick.clone();
+                                                        move || chosen.get().contains(&pick)
+                                                    }
+                                                    on:change={
+                                                        let pick = pick.clone();
+                                                        move |ev| {
+                                                            if event_target_checked(&ev) {
+                                                                chosen.update(|set| { set.insert(pick.clone()); });
+                                                            } else {
+                                                                chosen.update(|set| { set.remove(&pick); });
+                                                            }
+                                                        }
+                                                    }
+                                                />
+                                            </label>
+                                        }
+                                    })}
                                         {icon(&device.protocol, has_icon(live, &device.protocol))}
                                         <span class="name">{device.name.to_string()}</span>
                                         <span class="muted small">{device.protocol.clone()}</span>
@@ -1024,17 +1095,40 @@ fn ProtocolDevices(id: ExtensionId) -> impl IntoView {
         })
     };
 
-    let decide = move |device: irori_types::DeviceId, add: bool| {
+    let decided = RwSignal::new(BTreeSet::<DeviceId>::new());
+    // The devices asking to be in right now, and the picked ones cut to that list — both Copy
+    // handles, so any number of event handlers can read them without giving one ownership.
+    let every = Memo::new(move |_| {
+        held.get()
+            .iter()
+            .map(|device| device.id.clone())
+            .collect::<Vec<_>>()
+    });
+    let picked = Memo::new(move |_| {
+        every
+            .get()
+            .iter()
+            .filter(|id| decided.get().contains(*id))
+            .cloned()
+            .collect::<Vec<_>>()
+    });
+    let decide = move |ids: Vec<DeviceId>, add: bool| {
         spawn_local(async move {
-            let edit = crate::api::DeviceEdit {
-                added: add.then_some(true),
-                ignored: (!add).then_some(true),
-                ..Default::default()
-            };
-            match crate::api::edit_device(&device, &edit).await {
-                Ok(()) => trouble.set(None),
-                Err(why) => trouble.set(Some(why)),
+            for id in &ids {
+                let edit = crate::api::DeviceEdit {
+                    added: add.then_some(true),
+                    ignored: (!add).then_some(true),
+                    ..Default::default()
+                };
+                match crate::api::edit_device(id, &edit).await {
+                    Ok(()) => trouble.set(None),
+                    Err(why) => {
+                        trouble.set(Some(why));
+                        break;
+                    }
+                }
             }
+            decided.update(|set| set.retain(|id| !ids.contains(id)));
             crate::refresh(live);
         });
     };
@@ -1047,31 +1141,94 @@ fn ProtocolDevices(id: ExtensionId) -> impl IntoView {
                 let count = held.len();
                 view! {
                     <div class="protocol-found">
-                        <h3>
-                            {format!(
-                                "{count} device{} found, waiting for you",
-                                if count == 1 { "" } else { "s" },
-                            )}
-                        </h3>
+                        <div class="protocol-found-head">
+                            <h3>
+                                {format!(
+                                    "{count} device{} found, waiting for you",
+                                    if count == 1 { "" } else { "s" },
+                                )}
+                            </h3>
+                            {(count > 1).then(|| {
+                                view! {
+                                    <span class="room-actions pick">
+                                        <label class="pick-all">
+                                            <input
+                                                type="checkbox"
+                                                aria-label="Select all"
+                                                prop:checked=move || picked.get().len() == every.get().len()
+                                                on:change=move |ev| {
+                                                    if event_target_checked(&ev) {
+                                                        decided.update(|set| set.extend(every.get()));
+                                                    } else {
+                                                        decided.update(|set| set.retain(|id| !every.get().contains(id)));
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                        <button
+                                            type="button"
+                                            class="add"
+                                            disabled=move || picked.get().is_empty()
+                                            on:click=move |_| decide(picked.get(), true)
+                                        >
+                                            {move || format!("Add selected ({})", picked.get().len())}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            disabled=move || picked.get().is_empty()
+                                            on:click=move |_| decide(picked.get(), false)
+                                        >
+                                            {move || format!("Ignore selected ({})", picked.get().len())}
+                                        </button>
+                                    </span>
+                                }
+                            })}
+                        </div>
                         <ul class="room-devices">
                             {held
                                 .into_iter()
                                 .map(|device| {
                                     let (add, ignore) = (device.id.clone(), device.id.clone());
+                                    let pick = device.id.clone();
                                     view! {
                                         <li>
+                                            {(count > 1).then(|| {
+                                        let pick = pick.clone();
+                                        view! {
+                                            <label class="pick">
+                                                <input
+                                                    type="checkbox"
+                                                    aria-label={format!("Select {}", device.name)}
+                                                    prop:checked={
+                                                        let pick = pick.clone();
+                                                        move || decided.get().contains(&pick)
+                                                    }
+                                                    on:change={
+                                                        let pick = pick.clone();
+                                                        move |ev| {
+                                                            if event_target_checked(&ev) {
+                                                                decided.update(|set| { set.insert(pick.clone()); });
+                                                            } else {
+                                                                decided.update(|set| { set.remove(&pick); });
+                                                            }
+                                                        }
+                                                    }
+                                                />
+                                            </label>
+                                        }
+                                    })}
                                             <span class="name">{device.name.to_string()}</span>
                                             <span class="room-actions">
                                                 <button
                                                     type="button"
                                                     class="add"
-                                                    on:click=move |_| decide(add.clone(), true)
+                                                    on:click=move |_| decide(vec![add.clone()], true)
                                                 >
                                                     "Add"
                                                 </button>
                                                 <button
                                                     type="button"
-                                                    on:click=move |_| decide(ignore.clone(), false)
+                                                    on:click=move |_| decide(vec![ignore.clone()], false)
                                                 >
                                                     "Ignore"
                                                 </button>

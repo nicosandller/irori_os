@@ -257,6 +257,31 @@ fn page(
             });
         }
     };
+    let remove = {
+        let id = device.id.clone();
+        let what = device.name.to_string();
+        move |_| {
+            let asked = window()
+                .confirm_with_message(&format!(
+                    "Forget {what}? It's taken out of Irori — settings, entities and all. \
+                     If it's still out there, it turns up as a new device again."
+                ))
+                .unwrap_or(false);
+            if !asked {
+                return;
+            }
+            let id = id.clone();
+            spawn_local(async move {
+                match api::remove_device(&id).await {
+                    Ok(()) => {
+                        crate::refresh(live);
+                        leave.run(());
+                    }
+                    Err(why) => trouble.set(Some(why)),
+                }
+            });
+        }
+    };
     let start = {
         let name = device.name.to_string();
         let description = device
@@ -314,11 +339,12 @@ fn page(
         <div class="page-head">
             <h1>{device.name.to_string()}</h1>
             <div class="page-actions">
-                // The two things a person decides about a device, kept as buttons rather than a
-                // section: Edit opens the fields below; Ignore is what a device that has no use
-                // here is for.
+                // The three things a person decides about a device, kept as buttons rather than
+                // a section: Edit opens the fields below; Ignore is what a device that has no
+                // use here is for; Remove forgets it, settings included.
                 <button type="button" on:click=start>"Edit"</button>
                 <button type="button" class="danger-button" on:click=ignore>"Ignore"</button>
+                <button type="button" class="danger-button" on:click=remove>"Remove"</button>
             </div>
         </div>
         {device
