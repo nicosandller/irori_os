@@ -19,32 +19,32 @@ pub fn LogWindow(id: String, #[prop(into)] on_close: Callback<()>) -> impl IntoV
     let asked = RwSignal::new(false);
 
     // Helper to detect and format log line elements using simple string patterns
-    fn format_log_line(line: String) -> Option<String> {
+    fn format_log_line(line: String) -> String {
         let upper = line.to_uppercase();
         
         // Priority 1: ERROR messages (word boundary check)
         if find_word_boundary(&upper, "ERROR").is_some() {
-            return Some(format!(
+            return format!(
                 "<span class=\"log-error\">{}</span>",
                 escape_html(&line)
-            ));
+            );
         }
 
         // Priority 2: WARNING/WARN messages (word boundary check)  
         if find_word_boundary(&upper, "WARNING").is_some() {
-            return Some(format!(
+            return format!(
                 "<span class=\"log-warn\">{}</span>",
                 escape_html(&line)
-            ));
+            );
         }
 
         // Priority 3: Timestamps at start of line (HH:MM:SS.ddd or HH:MM:SS)
         if let Some(ts_pos) = find_timestamp_start(&line) {
-            return Some(format!(
+            return format!(
                 "<span class=\"log-time\">[{}]</span><span class=\"log-info\">{}</span>",
-                escape_html(&line[ts_pos..]),
-                escape_html(&line[(ts_pos + 12)..])
-            ));
+                escape_html(&line[..ts_pos]),
+                escape_html(&line[ts_pos..])
+            );
         }
 
         // Priority 4: Windows paths (C:\ or C:/ at start of line, not just bare drive letter)
@@ -52,14 +52,15 @@ pub fn LogWindow(id: String, #[prop(into)] on_close: Callback<()>) -> impl IntoV
             if pos > 0 || line[pos] != ':' {
                 let rest = &line[pos..];
                 
-                return Some(format!(
+                return format!(
                     "<span class=\"log-path\">{}</span>{rest}",
                     escape_html(rest.trim_start_matches(['\\', '/', ' ', '\t']))
-                ));
+                );
             }
         }
 
-        None
+        // No pattern matched - return raw escaped line
+        escape_html(&line)
     }
 
     // Find position where a word pattern starts (word boundary check)
@@ -119,7 +120,7 @@ pub fn LogWindow(id: String, #[prop(into)] on_close: Callback<()>) -> impl IntoV
             }
         }
         
-        Some(0) // Return 0 since timestamp starts at beginning of line
+        Some(ts_end) // Return the actual end position of the timestamp
     }
 
     // Find Windows path start (first \ or / character)
