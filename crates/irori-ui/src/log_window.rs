@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use crate::lib::{CopyFeedback, CopyFeedback};
+use crate::lib::{CopyFeedback};
 
 /// How often an open log window asks for more. The same rhythm as the Devices page's own polling
 /// — a crash loop writes a fresh round of output every few seconds, and a log that stopped
@@ -262,8 +262,8 @@ pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl I
 /// Escape HTML special characters to prevent XSS when displaying log content
 fn escape_html(s: &str) -> String {
     s.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace("\"", "&quot;")
-        .replace("'", "&#x27;")
+      .replace("<", "&lt;")
+      .replace(">", "&gt;")
+      .replace("\"", "&quot;")
+      .replace("'", "&#x27;")
 }
