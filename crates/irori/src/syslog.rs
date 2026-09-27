@@ -81,6 +81,9 @@ impl Log {
 ///
 /// Lines are reassembled from the byte stream before being kept, because the formatter is free to
 /// write a line in several `write` calls; splitting on a call boundary would show fragments.
+///
+/// Everything it writes still goes to the process's own stdout — that is what it is for — so a
+/// test of the writer puts its lines into the test output as well.
 #[derive(Clone, Debug)]
 pub struct Tee {
     log: Arc<Log>,
