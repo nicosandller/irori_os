@@ -62,6 +62,14 @@ log="$(curl -fsS --max-time 2 "$base_url/api/dev/system/log" 2>/dev/null)" || \
 grep -q 'irori is ready' <<<"$log" || fail "the system log doesn't carry what Irori logged: $log"
 echo "log: the system log carries this boot's own lines"
 
+# Helpers is a built-in, not an extension (D45, issue 34), and the log words the two apart. The
+# unit tests check how a line is worded; this is the wiring — the ids reach the event log from
+# `irori serve` — and it is the negative that holds at any log level and however far the window
+# has rolled: a line calling helpers an extension is wrong in every state, including the last one
+# of a run, which is where it was noticed.
+grep -q 'extension=helpers' <<<"$log" && fail "the log calls the helpers builtin an extension: $log"
+echo "log: the helpers builtin is not logged as an extension"
+
 # The config directory: a room can be made, is listed, and can be removed again. Writing is the
 # part worth testing — a read-only or missing directory fails here and nowhere else.
 room="$(curl -fsS --max-time 5 -X POST "$base_url/api/dev/areas" \

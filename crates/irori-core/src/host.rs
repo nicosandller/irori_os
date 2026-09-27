@@ -476,6 +476,13 @@ fn missing_required(
         .collect()
 }
 
+/// Supervises one built-in: a protocol compiled into `irori` rather than installed on disk.
+///
+/// Everything it says is worded `builtin` and tagged `builtin=<id>`, where [`supervise_package`]
+/// says `extension` and tags `extension=<id>`. The two run the same supervision, but they are not
+/// the same kind of thing to a person reading a log: a built-in is part of Irori, always running
+/// and never on the Extensions page (helpers, ROADMAP D45), and a line calling it an extension
+/// points at a list it is deliberately absent from.
 async fn supervise(
     core: Core,
     builtin: Arc<Builtin>,
@@ -485,7 +492,7 @@ async fn supervise(
     let manifest = &builtin.manifest;
     let extension = manifest.extension.id.clone();
     for warning in manifest.warnings() {
-        tracing::warn!(%extension, "{warning}");
+        tracing::warn!(builtin = %extension, "{warning}");
     }
     let (Some(protocol), Some(contribution)) = (
         manifest.protocol_id(),
@@ -518,7 +525,7 @@ async fn supervise(
             manifest.extension.irori,
             core.version()
         );
-        tracing::error!(%extension, "{reason}");
+        tracing::error!(builtin = %extension, "{reason}");
         core.set_status(
             &extension,
             ExtensionStatus::Failed {
@@ -543,7 +550,7 @@ async fn supervise(
                     if result.is_err() {
                         return;
                     }
-                    tracing::info!(%extension, "turned on; starting extension");
+                    tracing::info!(builtin = %extension, "turned on; starting builtin");
                     delay = timing.first_retry;
                     continue;
                 }
@@ -558,7 +565,7 @@ async fn supervise(
         let started_with = settings.borrow_and_update().of(&extension);
         let missing = missing_required(Some(&builtin.config_schema), &started_with);
         if !missing.is_empty() {
-            tracing::info!(%extension, missing = %missing.join(", "), "extension needs setup");
+            tracing::info!(builtin = %extension, missing = %missing.join(", "), "builtin needs setup");
             core.set_status(&extension, ExtensionStatus::NeedsSetup { missing });
             tokio::select! {
                 biased;
@@ -589,7 +596,7 @@ async fn supervise(
                 let task = tokio::spawn(run);
                 running_since = Some(Instant::now());
                 core.set_status(&extension, ExtensionStatus::Running);
-                tracing::info!(%extension, "extension started");
+                tracing::info!(builtin = %extension, "builtin started");
 
                 let outcome = pump(
                     &core,
@@ -614,18 +621,18 @@ async fn supervise(
                 core.set_available_actions(&extension, Vec::new());
                 match outcome {
                     Outcome::Stopped => {
-                        tracing::info!(%extension, "extension stopped");
+                        tracing::info!(builtin = %extension, "builtin stopped");
                         core.set_status(&extension, ExtensionStatus::Disabled);
                         return;
                     }
                     Outcome::Disabled => {
-                        tracing::info!(%extension, "turned off; extension stopped");
+                        tracing::info!(builtin = %extension, "turned off; builtin stopped");
                         continue;
                     }
                     Outcome::Reconfigured => {
                         // Not a failure, so no backoff: somebody changed its settings and
                         // expects to see the result.
-                        tracing::info!(%extension, "settings changed; restarting extension");
+                        tracing::info!(builtin = %extension, "settings changed; restarting builtin");
                         delay = timing.first_retry;
                         continue;
                     }
@@ -635,7 +642,7 @@ async fn supervise(
             Ok(Err(reason)) => {
                 // Invalid settings: retrying won't help until they change, so wait for that
                 // rather than giving up for good. The reason names what's wrong, never a value.
-                tracing::error!(%extension, %reason, "can't start extension");
+                tracing::error!(builtin = %extension, %reason, "can't start builtin");
                 core.set_status(
                     &extension,
                     ExtensionStatus::Failed {
@@ -650,7 +657,7 @@ async fn supervise(
                         return;
                     }
                     () = settings_changed(&mut settings, &extension, &started_with) => {
-                        tracing::info!(%extension, "settings changed; trying again");
+                        tracing::info!(builtin = %extension, "settings changed; trying again");
                         continue;
                     }
                     // Turned off while its settings were wrong: the top of the loop says so.
@@ -670,7 +677,7 @@ async fn supervise(
             .checked_add(delay)
             .ok()
             .map(irori_types::Timestamp::from_jiff);
-        tracing::error!(%extension, %reason, retry_in_secs = delay.as_secs_f64(), "extension failed; restarting it");
+        tracing::error!(builtin = %extension, %reason, retry_in_secs = delay.as_secs_f64(), "builtin failed; restarting it");
         core.set_status(&extension, ExtensionStatus::Failed { reason, retry_at });
         tokio::select! {
             // Stop first: when the wait and the stop are both ready, never start it again.
@@ -682,7 +689,7 @@ async fn supervise(
             () = settings_changed(&mut settings, &extension, &started_with) => {
                 // New settings, not another crash: start again now, no backoff
                 // (`docs/specs/protocols.md` §3 step 6).
-                tracing::info!(%extension, "settings changed; restarting extension");
+                tracing::info!(builtin = %extension, "settings changed; restarting builtin");
                 delay = timing.first_retry;
                 continue;
             }
@@ -704,7 +711,10 @@ struct Watching<'a> {
     started_with: &'a serde_json::Value,
 }
 
-/// Feeds the protocol's operations and reports into the core until it ends or we stop it.
+/// Feeds a built-in's operations and reports into the core until it ends or we stop it.
+///
+/// A package's own copy of this is [`pump_process`], which reads a child process instead of a
+/// channel. This one says `builtin` in the log, as [`supervise`] does.
 #[allow(clippy::too_many_arguments)]
 async fn pump(
     core: &Core,
@@ -764,7 +774,7 @@ async fn pump(
                 return why;
             }
             () = &mut grace => {
-                tracing::warn!(%extension, "extension didn't stop in time; cancelling it");
+                tracing::warn!(builtin = %extension, "builtin didn't stop in time; cancelling it");
                 task.abort();
                 drain(core, extension, protocol, kinds, &mut ops, &reports);
                 return why;
@@ -866,6 +876,12 @@ fn load_config_schema(dir: &Path, path: &PackagePath) -> Result<serde_json::Valu
     .map_err(|why| format!("config schema `{path}`: {why}"))
 }
 
+/// Supervises one installed package: a protocol Irori runs as its own process, out of a directory
+/// under `packages_dir`.
+///
+/// The mirror of [`supervise`], and worded the other way round: everything here is an
+/// `extension` tagged `extension=<id>`, because that is what a package is — something a person
+/// installs, and something the Extensions page lists. A built-in is neither.
 async fn supervise_package(
     core: Core,
     dir: PathBuf,

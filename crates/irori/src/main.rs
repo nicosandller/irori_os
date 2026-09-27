@@ -234,8 +234,21 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             );
             let core = Core::new(Arc::new(SystemClock));
             core.use_storage(storage);
-            // Subscribe before any extension starts, so the log sees their first events.
-            tokio::spawn(extensions::log_events(core.subscribe()));
+            // Helpers are core to Irori, not an installable extension: they run every time,
+            // in-process, and never appear on the Extensions page. Named here rather than at the
+            // host, because this is the list that says what Irori was built with.
+            let builtins = vec![
+                irori_protocol::builtin::<irori_helpers::Helpers>().map_err(anyhow::Error::msg)?,
+            ];
+            // Subscribe before any extension starts, so the log sees their first events — and
+            // tell it which ids are built in, so it never calls one of them an extension.
+            tokio::spawn(extensions::log_events(
+                core.subscribe(),
+                builtins
+                    .iter()
+                    .map(|builtin| builtin.manifest.extension.id.clone())
+                    .collect(),
+            ));
             // And the recorder feeding the page's per-entity "last 24 hours" table. In memory,
             // so it starts empty with each server (the SQLite recorder, M1.3, keeps the rest).
             let history = history::History::default();
@@ -246,11 +259,6 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             let settings = config::Config::open(store, &problems, &core);
             tokio::spawn(settings.clone().watch(core.clone()));
             tokio::spawn(settings.clone().remember_arrivals(core.clone()));
-            // Helpers are core to Irori, not an installable extension: they run every time,
-            // in-process, and never appear on the Extensions page.
-            let builtins = vec![
-                irori_protocol::builtin::<irori_helpers::Helpers>().map_err(anyhow::Error::msg)?,
-            ];
             let host = ExtensionHost::start_with_packages(
                 &core,
                 builtins,

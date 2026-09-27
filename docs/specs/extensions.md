@@ -208,6 +208,17 @@ stateDiagram-v2
 An extension's state is the worst of its contributions'. Supervision and retries are in
 [protocols.md](protocols.md) §3.
 
+**A built-in is not an extension, and the log says so.** A **built-in** is compiled into `irori`
+and runs in-process; an **extension** is a package a person installs, which the Extensions page
+lists and which a person can uninstall. Helpers are the one built-in there is today (ROADMAP D45):
+they are core to what a home needs rather than an add-on, so they are on no such list.
+
+Every line Irori's log writes about one is worded **`builtin`** and tagged `builtin=<id>` —
+`builtin started builtin=helpers`, `builtin status builtin=helpers status={…}` — where an
+installed package's lines say `extension` and `extension=<id>`. To anyone reading a log,
+`extension=<id>` means something on the Extensions page, and a built-in is deliberately absent
+from it. So the two are never worded the same way, whatever state they happen to be in.
+
 ### 8.1 A reason is something a person can act on
 
 **A state a person can see must come with a reason they can do something about.** `exited exit
