@@ -11,6 +11,8 @@
 
 # Local Claude Code settings
 .claude/settings.local.json
+# Local opencode config (personal providers/models)
+opencode.json
 # The UI: it's outside the workspace, so it has its own target dir; plus trunk's output and the
 # copy embedded into the binary (`cargo xtask ui`).
 /crates/irori-ui/target

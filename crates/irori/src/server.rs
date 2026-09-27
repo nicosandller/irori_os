@@ -3633,7 +3633,6 @@ mod tests {
     #[tokio::test]
     async fn the_system_log_is_whatever_this_process_has_said() -> anyhow::Result<()> {
         let server = Server::new(core())?;
-        let said = Arc::clone(&server.log);
 
         let empty = server.read("/api/dev/system/log").await?;
         assert_eq!(
@@ -3642,13 +3641,19 @@ mod tests {
             "nothing logged yet is an answer"
         );
 
-        let ready = "2026-09-26T10:00:00Z  INFO irori is ready";
-        let warning = "2026-09-26T10:00:01Z  WARN listening beyond this machine";
-        said.keep(ready);
-        said.keep(warning);
+        server.log.keep("2026-09-26T10:00:00Z  INFO irori is ready");
+        server
+            .log
+            .keep("2026-09-26T10:00:01Z  WARN listening beyond this machine");
 
         let log = server.read("/api/dev/system/log").await?;
-        assert_eq!(log["lines"], serde_json::json!([ready, warning]));
+        assert_eq!(
+            log["lines"],
+            serde_json::json!([
+                "2026-09-26T10:00:00Z  INFO irori is ready",
+                "2026-09-26T10:00:01Z  WARN listening beyond this machine",
+            ])
+        );
         Ok(())
     }
 

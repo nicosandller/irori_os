@@ -32,7 +32,15 @@ web-sys = { version = "0.3", features = [
     "DomRect",
     "Element",
     "WheelEvent",
+    # The copy button: `navigator.clipboard` (log_window.rs). `Window` is what `web_sys::window`
+    # comes back as, and `Clipboard` is what its `navigator` hands back.
+    "Window",
+    "Navigator",
+    "Clipboard",
 ] }
+# Already in the bundle transitively (leptos uses it); this is only so the copy button can await
+# the promise the clipboard API returns — no size cost of its own.
+wasm-bindgen-futures = "0.4.78"
 
 [profile.release]
 # Download size is the budget that matters here (ROADMAP §4.3).

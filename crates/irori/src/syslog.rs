@@ -10,7 +10,7 @@
 //! across restarts is a different job and still to come (ROADMAP D18).
 
 use std::collections::VecDeque;
-use std::io::{self, Write};
+use std::io;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tracing_subscriber::fmt::MakeWriter;
@@ -101,7 +101,7 @@ impl Tee {
     }
 }
 
-impl Write for Tee {
+impl io::Write for Tee {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         io::stdout().write_all(buf)?;
         // Bytes rather than a `String`: the formatter's own writes are pieces of a line, and one
@@ -162,7 +162,20 @@ fn without_colour(line: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    // The `io::Write` methods the tests drive the writer through. The code itself reaches them
+    // through the `impl io::Write for Tee` block below, so the trait is only in scope here.
+    use std::io::Write as _;
+
     use super::*;
+
+    #[test]
+    fn a_colour_code_that_is_cut_short_does_not_take_the_line_with_it() {
+        // A truncated write can leave an `ESC [` with nothing after it. The escape is still
+        // dropped, so no control character reaches the page, and the words after it survive.
+        let log = Log::default();
+        log.keep("plain, then \u{1b}[");
+        assert_eq!(log.lines(), vec!["plain, then "]);
+    }
 
     #[test]
     fn a_new_log_has_said_nothing() {
@@ -233,8 +246,8 @@ mod tests {
         let log = Arc::new(Log::default());
         let mut tee = Tee::new(Arc::clone(&log));
         for piece in ["2026-09-26T10:00:00Z  INFO irori", " is ready", "\nnext\n"] {
-            let bytes = piece.as_bytes();
-            tee.write_all(bytes).expect("stdout accepts this");
+            tee.write_all(piece.as_bytes())
+                .expect("stdout accepts this");
         }
         assert_eq!(
             log.lines(),
