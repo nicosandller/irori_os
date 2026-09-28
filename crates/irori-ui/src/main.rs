@@ -11,6 +11,7 @@ mod device;
 mod devices;
 mod extensions;
 mod floorplan;
+mod glide;
 mod log_window;
 mod modal;
 mod settings;
@@ -136,6 +137,8 @@ fn App() -> impl IntoView {
     Effect::new(move |_| devices::remember(MOTION_KEY, if motion.get() { "on" } else { "off" }));
     provide_context(Motion(motion));
 
+    let sidebar = NodeRef::<leptos::html::Aside>::new();
+
     view! {
         <Router>
             <div
@@ -143,7 +146,8 @@ fn App() -> impl IntoView {
                 class:folded=move || folded.get()
                 data-motion=move || if motion.get() { "on" } else { "off" }
             >
-                <aside class="sidebar">
+                <aside class="sidebar" node_ref=sidebar>
+                    <SidebarGlide sidebar=sidebar />
                     <div class="sidebar-top">
                         <A href="/" attr:class="mark" attr:title="IroriOS">
                             // Mark A (assets/irori-mark-a-mono.svg): frame follows the text,
@@ -254,6 +258,20 @@ const SECTIONS: [(&str, &str, &str); 3] = [
         r#"<rect x="4" y="4" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="4" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="4" y="13" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="13" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/>"#,
     ),
 ];
+
+/// The sidebar's highlight, gliding to the page being shown. Its own component because it asks
+/// the router where the page is, which only works inside `<Router>`.
+#[component]
+fn SidebarGlide(sidebar: NodeRef<leptos::html::Aside>) -> impl IntoView {
+    let location = use_location();
+    // Not the wordmark, though it's a link to Start too: Start has no entry here to glide to.
+    glide::glide(
+        sidebar,
+        r#"nav a[aria-current="page"], .settings-link[aria-current="page"]"#,
+        move || location.pathname.track(),
+    );
+    view! { <span class="glide" aria-hidden="true"></span> }
+}
 
 #[component]
 fn NotFound() -> impl IntoView {

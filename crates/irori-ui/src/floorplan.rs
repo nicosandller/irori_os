@@ -1431,8 +1431,13 @@ pub fn Floorplan() -> impl IntoView {
                 </div>
             </div>
 
-            {move || editing.get().then(|| view! {
-                <div class="toolbar" role="toolbar" aria-label="Drawing tools">
+            {move || editing.get().then(|| {
+                let bar = NodeRef::<leptos::html::Div>::new();
+                // The tool in hand is marked by a highlight that slides between tools.
+                crate::glide::glide(bar, ":scope > button.chosen", move || tool.track());
+                view! {
+                <div class="toolbar" role="toolbar" aria-label="Drawing tools" node_ref=bar>
+                    <span class="glide" aria-hidden="true"></span>
                     {TOOLS.iter().map(|(which, label, icon)| {
                         let which = *which;
                         view! {
@@ -1490,6 +1495,7 @@ pub fn Floorplan() -> impl IntoView {
                         <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=BIN></svg>
                     </button>
                 </div>
+                }
             })}
 
             {move || (editing.get() && tool.get() == Tool::Device).then(|| view! {
@@ -1606,8 +1612,12 @@ fn FloorPicker(
             return None;
         }
         let plan = plan.get();
+        let picker = NodeRef::<leptos::html::Div>::new();
+        // Changing floor slides the highlight up or down the list, the way the floors stack.
+        crate::glide::glide(picker, ":scope > button.chosen", move || floor.track());
         Some(view! {
-            <div class="floor-picker" role="group" aria-label="Floors">
+            <div class="floor-picker" role="group" aria-label="Floors" node_ref=picker>
+                <span class="glide" aria-hidden="true"></span>
                 {floors
                     .into_iter()
                     .rev()
@@ -1796,6 +1806,10 @@ fn SnapControl(snap: RwSignal<Snap>) -> impl IntoView {
                         max=*SNAP_RANGE.end()
                         step="1"
                         prop:value=move || snap.get().step()
+                        style:--fill=move || format!(
+                            "{}%",
+                            crate::devices::fill(snap.get().step(), *SNAP_RANGE.start(), *SNAP_RANGE.end())
+                        )
                         on:input=move |event| {
                             if let Ok(step) = event_target_value(&event).parse::<i32>() {
                                 snap.set(Snap::Custom(step));
@@ -1844,6 +1858,14 @@ fn Inspector(
                                 max=*Wall::THICKNESS_RANGE.end()
                                 step="1"
                                 prop:value=thick
+                                style:--fill=format!(
+                                    "{}%",
+                                    crate::devices::fill(
+                                        thick,
+                                        *Wall::THICKNESS_RANGE.start(),
+                                        *Wall::THICKNESS_RANGE.end(),
+                                    )
+                                )
                                 on:pointerdown=move |_| remember.run(())
                                 on:keydown=move |_| remember.run(())
                                 on:input=move |event| {
@@ -1887,6 +1909,7 @@ fn Inspector(
                                 max=widest
                                 step="1"
                                 prop:value=width
+                                style:--fill=format!("{}%", crate::devices::fill(width, 1, widest))
                                 on:pointerdown=move |_| remember.run(())
                                 on:keydown=move |_| remember.run(())
                                 on:input=move |event| {

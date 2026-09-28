@@ -103,6 +103,16 @@ off everything.
 - **Sliders** are drawn by the page: brightness fills in ember up to the thumb, colour
   temperature shows the colours themselves, and the thumb swells under the pointer. The label
   follows the thumb while it's dragged, and letting go still sends one command.
+- **The sidebar** marks the page you're on with a highlight that glides from one entry to the
+  next, rather than the choice jumping; an icon leans toward its page under the pointer, and the
+  Settings cog turns a notch. The same glide (`src/glide.rs`) marks the tool in hand and the floor
+  shown on the Floorplan. On a phone, where these lists are rows, the chosen item draws its own
+  highlight instead.
+- **The Floorplan:** the tools, the device and room pickers and the inspector slide in when they
+  appear; a device marker leans in under the pointer, and a lamp's pip warms up and sends out one
+  ring when it comes on; what's picked, and the line being drawn, march like any drawing tool's
+  selection. Its sliders (a wall's thickness, an opening's width, the snap step) are drawn like
+  the lights'.
 - **Ambient:** the Live dot breathes while the core answers and goes still when it doesn't, the
   ember on Start flickers, the Start tiles come in one after another, and a banner drops in
   when something goes wrong.
@@ -110,6 +120,8 @@ off everything.
 **Nothing animates as it appears in the device list.** The list is rebuilt whenever a reading
 changes, so an entrance animation there would replay every couple of seconds. Motion goes on
 state changes (a transition on `aria-pressed`, say) and on things that appear once per visit.
+The same goes for the Floorplan's markers and drawing, which redraw on every reading and every
+pan: they transition, and nothing on them plays as it appears.
 
 **Turning it off:** Settings → Appearance → Motion, remembered per browser (`irori.motion`), sets
 `data-motion="off"` on `.shell`. The system's *reduce motion* setting does the same whatever

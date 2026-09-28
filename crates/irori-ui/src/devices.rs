@@ -1751,13 +1751,14 @@ fn light_controls(
     .into_any()
 }
 
-/// How far along a slider's track `value` sits, as a percentage — where its filled part ends.
-fn fill(value: u16, min: u16, max: u16) -> u16 {
+/// How far along a slider's track `value` sits, as a whole percentage — where its filled part
+/// ends. Any number type a slider holds: a light's level, a wall's thickness, a snap step.
+pub(crate) fn fill(value: impl Into<f64>, min: impl Into<f64>, max: impl Into<f64>) -> u16 {
+    let (value, min, max) = (value.into(), min.into(), max.into());
     if max <= min {
         return 100;
     }
-    let along = value.clamp(min, max) - min;
-    (u32::from(along) * 100 / u32::from(max - min)) as u16
+    ((value.clamp(min, max) - min) * 100.0 / (max - min)).floor() as u16
 }
 
 fn reading(level: u8) -> impl IntoView {

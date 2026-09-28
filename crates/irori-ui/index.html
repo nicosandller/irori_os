@@ -83,6 +83,31 @@
                                                    border-left-color: var(--ember); }
     .sidebar .live { padding: .5rem .6rem; }
 
+    /* A highlight that glides to whatever is chosen in a column, rather than the choice jumping
+       (src/glide.rs measures where; each list says how wide and what colour). It lands without
+       travelling the first time, and fades out where nothing is chosen. */
+    .glide { position: absolute; top: 0; z-index: 0; pointer-events: none; opacity: 0;
+             transition: transform var(--dur-base) var(--ease-out),
+                         height var(--dur-base) var(--ease-out), opacity var(--dur-fast); }
+    .glide[data-shown] { opacity: 1; }
+    .glide:not([data-placed]) { transition: opacity var(--dur-fast); }
+
+    /* The sidebar's: the page being shown. The links sit over it and stop drawing their own
+       — except on a phone, where they're a row and draw it themselves again. */
+    .sidebar > .glide { left: .6rem; right: .6rem; border-radius: .4rem;
+                        background: var(--sunk); box-shadow: inset 2px 0 0 var(--ember); }
+    .sidebar nav a, .sidebar .settings-link { position: relative; z-index: 1; }
+    @media (min-width: 721px) {
+      .sidebar nav a[aria-current="page"], .sidebar .settings-link[aria-current="page"] {
+          background: transparent; border-left-color: transparent; }
+    }
+    /* Under the pointer, an icon leans toward its page; the cog turns a notch. */
+    .sidebar nav a svg, .sidebar .settings-link svg {
+        transition: translate var(--dur-base) var(--ease-spring),
+                    rotate var(--dur-base) var(--ease-spring); }
+    .sidebar nav a:hover svg { translate: 2px 0; }
+    .sidebar .settings-link:hover svg { rotate: 45deg; }
+
     /* Folded: icons only. Labels stay in the page for screen readers, and in each link's title. */
     .folded .sidebar .label { position: absolute; width: 1px; height: 1px; overflow: hidden;
                               clip: rect(0 0 0 0); white-space: nowrap; }
@@ -101,6 +126,7 @@
       .sidebar-top { margin: 0; }
       .sidebar nav { flex-direction: row; }
       .sidebar nav a { padding: .4rem .5rem; border-left: none; }
+      .sidebar > .glide { display: none; }
       .fold { display: none; }
       .sidebar-bottom { flex-direction: row; align-items: center; margin: 0 0 0 auto; gap: .25rem; }
       .sidebar .live { padding: 0; }
@@ -374,50 +400,51 @@
     .light-controls .dim { display: inline-flex; align-items: center; gap: .45rem;
                            font: .72rem var(--mono); color: var(--muted); }
     .light-controls .lv { min-width: 2.6rem; text-align: right; font-variant-numeric: tabular-nums; }
-    /* The sliders are drawn here rather than left to the browser, so the track can say what the
-       slider means: the level filled in ember up to the thumb, or color temperature as the
+    /* Every slider is drawn here rather than left to the browser, so the track can say what the
+       slider means: the value filled in ember up to the thumb, or color temperature as the
        colors themselves. The thumb swells under the pointer and more while held. `--fill` is set
        from the page as the thumb moves. */
-    .light-controls input[type="range"] {
-        width: 7rem; height: 1.1rem; margin: 0; padding: 0; background: transparent;
+    .light-controls input[type="range"] { width: 7rem; }
+    input[type="range"] {
+        height: 1.1rem; margin: 0; padding: 0; background: transparent;
         -webkit-appearance: none; appearance: none; cursor: pointer; }
-    .light-controls input[type="range"]::-webkit-slider-runnable-track {
+    input[type="range"]::-webkit-slider-runnable-track {
         height: 4px; border-radius: 2px;
         background: linear-gradient(to right, var(--ember) var(--fill, 0%),
                                     var(--line) var(--fill, 0%)); }
-    .light-controls input[type="range"]::-moz-range-track {
+    input[type="range"]::-moz-range-track {
         height: 4px; border-radius: 2px; background: var(--line); }
-    .light-controls input[type="range"]::-moz-range-progress {
+    input[type="range"]::-moz-range-progress {
         height: 4px; border-radius: 2px; background: var(--ember); }
-    .light-controls input[type="range"].kelvin::-webkit-slider-runnable-track {
+    input[type="range"].kelvin::-webkit-slider-runnable-track {
         background: linear-gradient(to right, #f5a54a, #fbe3c4, #e9f1ff); }
-    .light-controls input[type="range"].kelvin::-moz-range-track {
+    input[type="range"].kelvin::-moz-range-track {
         background: linear-gradient(to right, #f5a54a, #fbe3c4, #e9f1ff); }
-    .light-controls input[type="range"].kelvin::-moz-range-progress { background: transparent; }
-    .light-controls input[type="range"]::-webkit-slider-thumb {
+    input[type="range"].kelvin::-moz-range-progress { background: transparent; }
+    input[type="range"]::-webkit-slider-thumb {
         -webkit-appearance: none; appearance: none; width: 14px; height: 14px; margin-top: -5px;
         border-radius: 50%; background: var(--card); border: 2px solid var(--ember);
         box-shadow: 0 1px 2px rgba(28, 23, 20, .2);
         transition: transform var(--dur-fast) var(--ease-spring),
                     box-shadow var(--dur-fast) var(--ease-out); }
-    .light-controls input[type="range"]::-moz-range-thumb {
+    input[type="range"]::-moz-range-thumb {
         box-sizing: border-box; width: 14px; height: 14px; border-radius: 50%;
         background: var(--card); border: 2px solid var(--ember);
         box-shadow: 0 1px 2px rgba(28, 23, 20, .2);
         transition: transform var(--dur-fast) var(--ease-spring),
                     box-shadow var(--dur-fast) var(--ease-out); }
-    .light-controls input[type="range"]:hover:not(:disabled)::-webkit-slider-thumb {
+    input[type="range"]:hover:not(:disabled)::-webkit-slider-thumb {
         transform: scale(1.15); }
-    .light-controls input[type="range"]:hover:not(:disabled)::-moz-range-thumb {
+    input[type="range"]:hover:not(:disabled)::-moz-range-thumb {
         transform: scale(1.15); }
-    .light-controls input[type="range"]:active:not(:disabled)::-webkit-slider-thumb {
+    input[type="range"]:active:not(:disabled)::-webkit-slider-thumb {
         transform: scale(1.3); box-shadow: 0 0 0 5px rgba(196, 85, 43, .18); }
-    .light-controls input[type="range"]:active:not(:disabled)::-moz-range-thumb {
+    input[type="range"]:active:not(:disabled)::-moz-range-thumb {
         transform: scale(1.3); box-shadow: 0 0 0 5px rgba(196, 85, 43, .18); }
-    .light-controls input[type="range"]:focus { outline: none; }
-    .light-controls input[type="range"]:focus-visible::-webkit-slider-thumb {
+    input[type="range"]:focus { outline: none; }
+    input[type="range"]:focus-visible::-webkit-slider-thumb {
         box-shadow: 0 0 0 3px var(--card), 0 0 0 5px var(--ember); }
-    .light-controls input[type="range"]:focus-visible::-moz-range-thumb {
+    input[type="range"]:focus-visible::-moz-range-thumb {
         box-shadow: 0 0 0 3px var(--card), 0 0 0 5px var(--ember); }
     .light-controls input[type="color"] { width: 2.1rem; height: 1.55rem; padding: 0 .1rem;
                                           border: 1px solid var(--line); border-radius: .4rem;
@@ -909,11 +936,62 @@
                               border: 1px solid var(--ember); border-radius: .4rem;
                               font-size: .85rem; }
 
+    /* Motion on the plan. The markers and the plan itself are redrawn with every reading and on
+       every pan, so they only ever transition — nothing on them plays as it appears. The panels
+       around the canvas appear once per Edit or per pick, so those can slide in. */
+    .floorplan .toolbar, .floorplan .device-picker {
+        animation: from-left var(--dur-base) var(--ease-out) backwards; }
+    .floorplan .inspector { animation: from-right var(--dur-base) var(--ease-out) backwards; }
+    .floorplan .plan-banner { animation: lift var(--dur-base) var(--ease-out) backwards; }
+    /* `translate`, not `transform`: several of these are already placed by their transform. */
+    @keyframes from-left { from { opacity: 0; translate: -8px 0; } }
+    @keyframes from-right { from { opacity: 0; translate: 8px 0; } }
+    @keyframes lift { from { opacity: 0; translate: 0 6px; } }
+
+    /* The tool in hand and the floor shown: a highlight that slides between them. */
+    .floorplan .toolbar > .glide { left: .3rem; right: .3rem; border-radius: .4rem;
+                                   background: var(--ember); }
+    .floorplan .floor-picker { position: relative; }
+    .floorplan .floor-picker > .glide { left: .3rem; right: .3rem; border-radius: .35rem;
+                                        background: var(--ember); }
+    .floorplan .toolbar button, .floorplan .floor-picker > button { position: relative;
+                                                                    z-index: 1; }
+    .floorplan .floor-picker > button.chosen { background: transparent; border-color: transparent; }
+    @media (min-width: 721px) {
+      .floorplan .toolbar button.chosen { background: transparent; border-color: transparent; }
+    }
+
+    /* Devices: a marker leans in under the pointer and gives under a press; a lamp's pip warms
+       up rather than snapping on, and sends out one ring as it does. */
+    .floorplan .marker { transition: scale var(--dur-fast) var(--ease-spring),
+                                     border-color var(--dur-base), opacity var(--dur-base); }
+    .floorplan .marker.switchable:hover, .floorplan .marker.movable:hover { scale: 1.06; }
+    .floorplan .marker.switchable:active, .floorplan .marker.movable:active { scale: .96; }
+    .floorplan .marker .pip { position: relative;
+                              transition: background-color var(--dur-base) var(--ease-out),
+                                          box-shadow var(--dur-base) var(--ease-out); }
+    .floorplan .marker.on .pip::after { content: ""; position: absolute; inset: 0;
+                                        border-radius: 50%; pointer-events: none;
+                                        animation: ring .6s var(--ease-out) forwards; }
+    @keyframes ring {
+        from { box-shadow: 0 0 0 0 rgba(196, 85, 43, .55); }
+        to { box-shadow: 0 0 0 .7rem rgba(196, 85, 43, 0); }
+    }
+
+    /* What's picked, and what's being drawn: dashed lines that march, the way a selection does
+       in any drawing tool. Walls and openings change colour rather than switching. */
+    .floorplan .area.chosen, .floorplan .pending line, .floorplan .tracing polygon {
+        animation: march .8s linear infinite; }
+    @keyframes march { to { stroke-dashoffset: -10; } }
+    .floorplan .wall, .floorplan .door, .floorplan .window {
+        transition: stroke var(--dur-fast) var(--ease-out); }
+
     /* On a phone the tools take the width rather than a column down the side of a small canvas. */
     @media (max-width: 720px) {
       .floorplan .toolbar { top: auto; bottom: 4.5rem; left: 1rem; right: 1rem;
                             flex-direction: row; justify-content: center; }
       .floorplan .tool-gap { width: 1px; height: auto; margin: .3rem .2rem; }
+      .floorplan .toolbar > .glide { display: none; }
       .floorplan .device-picker { top: 4rem; left: 1rem; right: 1rem; width: auto; }
       .floorplan .inspector { width: auto; }
       .floorplan .plan-side { top: 4rem; right: 1rem; max-height: 45%; }
