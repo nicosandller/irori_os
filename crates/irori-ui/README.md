@@ -46,7 +46,7 @@ cd crates/irori-ui && trunk serve --open # the page on 8080, API proxied to 8480
 | **Devices** (`/devices`) | Two ways to read the same home, remembered per browser: **Entities** groups everything by the device it came from, with switches; **Devices** is a row per device — what brought it in, make, model, battery, how many entities, and which area it's in. **Add device** explains where devices come from — every installed extension, what it's for, and what it can provide — because nothing is typed in by hand yet. |
 | **A device** (`/devices/<id>`) | One device: which extension brought it in, what that extension knows it as (the MAC address, for ESPHome), make, model, firmware, hardware, battery, what it's reached through, and every entity it provides with its controls. Its name, description and area are yours to decide. |
 | **Extensions** (`/extensions`) | Official extensions from this repo (protocols, Demo, Helpers). Install copies a package into the instance and starts it; uninstall deletes the package and the devices it brought in. |
-| **Settings** (`/settings`) | The instance itself (version, uptime, database, features), the home's arrangement (**Areas** and **Floors**, the same places the Rooms page used to manage), **Users** (none yet — there's nothing to sign in with), **Logs** (what Irori has said since it started, and each extension's own output tagged with the extension, behind **Show log**), and **System**: the machine running the instance — host, operating system, kernel, CPU, memory, and the disk its data sits on, asked again on demand rather than kept. |
+| **Settings** (`/settings`) | The instance itself (version, uptime, database, features), **Appearance** (whether the page animates), the home's arrangement (**Areas** and **Floors**, the same places the Rooms page used to manage), **Users** (none yet — there's nothing to sign in with), **Logs** (what Irori has said since it started, and each extension's own output tagged with the extension, behind **Show log**), and **System**: the machine running the instance — host, operating system, kernel, CPU, memory, and the disk its data sits on, asked again on demand rather than kept. |
 
 Routing is client-side (`leptos_router`), so the binary serves the app for any path that isn't a
 file, and the app decides what to show.
@@ -89,6 +89,31 @@ walls one of which runs at an odd angle can still nick the outside of the corner
 **polls** `/api/dev/home` every 2 seconds; the WebSocket API (M1.5) will push changes instead,
 and `src/api.rs` is what goes away then. The binary also serves these files **uncompressed**
 (see the budget below).
+
+## Motion
+
+Small and quick, all of it in CSS. The durations and easings are tokens on `:root` in
+`index.html` (`--dur-fast` 120 ms, `--dur-base` 180 ms, `--ease-out`, and `--ease-spring` for
+the few things a finger pushes). Use them rather than new numbers, so turning motion off turns
+off everything.
+
+- **Buttons** ease into their hover colours and give a little under a press.
+- **The toggle's knob** springs across, stretches while held, and breathes while a command is
+  waiting on the device (`.pending`). Offline stays plain and dim: nothing is coming.
+- **Sliders** are drawn by the page: brightness fills in ember up to the thumb, colour
+  temperature shows the colours themselves, and the thumb swells under the pointer. The label
+  follows the thumb while it's dragged, and letting go still sends one command.
+- **Ambient:** the Live dot breathes while the core answers and goes still when it doesn't, the
+  ember on Start flickers, the Start tiles come in one after another, and a banner drops in
+  when something goes wrong.
+
+**Nothing animates as it appears in the device list.** The list is rebuilt whenever a reading
+changes, so an entrance animation there would replay every couple of seconds. Motion goes on
+state changes (a transition on `aria-pressed`, say) and on things that appear once per visit.
+
+**Turning it off:** Settings → Appearance → Motion, remembered per browser (`irori.motion`), sets
+`data-motion="off"` on `.shell`. The system's *reduce motion* setting does the same whatever
+the switch says.
 
 ## Why Leptos (ROADMAP D27)
 

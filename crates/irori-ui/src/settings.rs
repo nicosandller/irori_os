@@ -16,6 +16,7 @@ use crate::api;
 #[component]
 pub fn Settings() -> impl IntoView {
     let live = expect_context::<crate::Live>();
+    let crate::Motion(motion) = expect_context::<crate::Motion>();
     let trouble = RwSignal::new(None::<String>);
     let adding = RwSignal::new(String::new());
     // Where an area is going: the floor whose + is open, if any. An area is made straight onto
@@ -186,6 +187,7 @@ pub fn Settings() -> impl IntoView {
 
         <nav class="settings-menu" aria-label="Sections of Settings">
             <a href="#instance">"Instance"</a>
+            <a href="#appearance">"Appearance"</a>
             <a href="#floors-and-areas">"Floors & areas"</a>
             <a href="#users">"Users"</a>
             <a href="#logs">"Logs"</a>
@@ -227,6 +229,28 @@ pub fn Settings() -> impl IntoView {
                 }
                 .into_any(),
             }}
+        </section>
+
+        <section class="card settings-section" id="appearance">
+            <div class="room-head">
+                <h2>"Motion"</h2>
+                <span class="room-actions">
+                    <button
+                        type="button"
+                        class="toggle"
+                        aria-label="Motion"
+                        aria-pressed=move || motion.get().to_string()
+                        on:click=move |_| motion.update(|on| *on = !*on)
+                    >
+                        <span class="knob"></span>
+                    </button>
+                </span>
+            </div>
+            <p class="muted small">
+                "Switches that spring across, sliders that swell under a finger, and the Live dot \
+                 breathing while Irori answers. Remembered by this browser, and always off when \
+                 the system is set to reduce motion."
+            </p>
         </section>
 
         // It folds, but starts open: this is where the home's arrangement is managed, so the

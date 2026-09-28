@@ -45,15 +45,15 @@ pub fn Start() -> impl IntoView {
             </div>
 
             <div class="tiles">
-                <A href="/devices" attr:class="tile">
+                <A href="/devices" attr:class="tile" attr:style="--i: 0">
                     <span class="count">{move || counts().0}</span>
                     <span class="label">"devices"</span>
                 </A>
-                <A href="/devices" attr:class="tile">
+                <A href="/devices" attr:class="tile" attr:style="--i: 1">
                     <span class="count">{move || counts().1}</span>
                     <span class="label">"entities"</span>
                 </A>
-                <A href="/extensions" attr:class="tile">
+                <A href="/extensions" attr:class="tile" attr:style="--i: 2">
                     <span class="count">
                         {move || {
                             let (_, _, running, total) = counts();

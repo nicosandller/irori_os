@@ -15,18 +15,35 @@
       --fg: var(--ink); --bg: var(--paper); --line: #e6dfd8; --card: #fffdfb; --sunk: #efe9e3;
       --sans: "IBM Plex Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
       --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+      /* Motion: quick, and small. A control panel is used every day, so nothing should make
+         anyone wait for it; motion here says "that worked" or "still working", not "look". */
+      --dur-fast: 120ms; --dur-base: 180ms;
+      --ease-out: cubic-bezier(.2, .7, .3, 1);
+      /* A mild overshoot, for the few things that are pushed around by a finger: the toggle's
+         knob and a slider's thumb. */
+      --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
     }
     @media (prefers-color-scheme: dark) {
       :root { --fg: var(--paper); --bg: var(--ink); --muted: #a89e96; --line: #3a322d;
               --card: #241e1a; --sunk: #17120f; }
     }
     * { box-sizing: border-box; }
+
+    /* Motion off: when the system asks for less motion, or Settings says so. Nothing moves, and
+       every change lands at once — the page says the same things, just without the travel. */
+    @media (prefers-reduced-motion: reduce) {
+      :root { --dur-fast: 0ms; --dur-base: 0ms; }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
+    .shell[data-motion="off"] { --dur-fast: 0ms; --dur-base: 0ms; }
+    .shell[data-motion="off"] *, .shell[data-motion="off"] *::before,
+    .shell[data-motion="off"] *::after { animation: none !important; transition: none !important; }
     body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 var(--sans); }
 
     /* The shell: a sidebar that folds down to icons, and the page beside it. The same on every
        page, so nothing moves when you switch. */
     .shell { display: grid; grid-template-columns: 13rem 1fr; min-height: 100vh;
-             transition: grid-template-columns .15s; }
+             transition: grid-template-columns var(--dur-base) var(--ease-out); }
     .shell.folded { grid-template-columns: 3.5rem 1fr; }
     main { width: 100%; max-width: 56rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; min-width: 0; }
 
@@ -41,7 +58,9 @@
     .sidebar nav { display: flex; flex-direction: column; gap: .15rem; }
     .sidebar nav a { display: flex; align-items: center; gap: .7rem; padding: .5rem .6rem;
                      border-radius: .4rem; color: var(--muted); text-decoration: none;
-                     font-size: .95rem; white-space: nowrap; border-left: 2px solid transparent; }
+                     font-size: .95rem; white-space: nowrap; border-left: 2px solid transparent;
+                     transition: color var(--dur-fast), background-color var(--dur-fast),
+                                 border-color var(--dur-base) var(--ease-out); }
     .sidebar nav a svg { width: 1.25rem; height: 1.25rem; flex: none; }
     .sidebar nav a:hover { color: var(--fg); background: var(--sunk); }
     .sidebar nav a[aria-current="page"] { color: var(--fg); background: var(--sunk);
@@ -50,12 +69,14 @@
             color: var(--muted); background: transparent; border: 1px solid transparent;
             border-radius: .4rem; cursor: pointer; flex: none; }
     .fold:hover { color: var(--fg); border-color: var(--line); }
-    .fold svg { width: 1rem; height: 1rem; transition: transform .15s; }
+    .fold svg { width: 1rem; height: 1rem; transition: transform var(--dur-base) var(--ease-out); }
     .sidebar-bottom { margin-top: auto; display: flex; flex-direction: column; gap: .25rem; }
     .sidebar .settings-link { display: flex; align-items: center; gap: .7rem; padding: .5rem .6rem;
                               border-radius: .4rem; color: var(--muted); text-decoration: none;
                               font-size: .95rem; white-space: nowrap;
-                              border-left: 2px solid transparent; }
+                              border-left: 2px solid transparent;
+                              transition: color var(--dur-fast), background-color var(--dur-fast),
+                                          border-color var(--dur-base) var(--ease-out); }
     .sidebar .settings-link svg { width: 1.25rem; height: 1.25rem; flex: none; }
     .sidebar .settings-link:hover { color: var(--fg); background: var(--sunk); }
     .sidebar .settings-link[aria-current="page"] { color: var(--fg); background: var(--sunk);
@@ -154,7 +175,14 @@
     .tiles .tile { flex: 1 1 8rem; padding: .9rem 1rem; border: 1px solid var(--line);
                    border-radius: .5rem; background: var(--card); text-decoration: none;
                    color: inherit; display: block; }
-    .tiles a.tile:hover { border-color: var(--ember); }
+    .tiles a.tile:hover { border-color: var(--ember); transform: translateY(-2px);
+                          box-shadow: 0 .4rem 1rem rgba(28, 23, 20, .08); }
+    .tiles a.tile:active { transform: translateY(0); box-shadow: none; }
+    /* On arrival, the counts come in one after another. Only once: the tiles are fixed markup
+       and only the numbers inside them are live, so a new reading doesn't play this again. */
+    .tiles .tile { animation: rise var(--dur-base) var(--ease-out) backwards;
+                   animation-delay: calc(var(--i, 0) * 60ms); }
+    @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
     .tiles .count { display: block; font-size: 1.75rem; font-weight: 500;
                     font-variant-numeric: tabular-nums; }
     .tiles .label { display: block; color: var(--muted); font-size: .8rem; }
@@ -183,6 +211,16 @@
                     border-radius: .4rem; cursor: pointer; }
     button.danger:hover { border-color: var(--ember); }
     button:disabled { opacity: .55; cursor: default; }
+
+    /* Every button eases into its hover colours rather than snapping, and gives a little under
+       a press. `:where` keeps these at no specificity, so each button's own rules still win.
+       Left out: the toggle, which has a press of its own, and the Floorplan's device markers,
+       which are placed by their transform. */
+    :where(button:not(.toggle, .marker), .add, a.tile) {
+        transition: color var(--dur-fast), background-color var(--dur-fast),
+                    border-color var(--dur-fast), box-shadow var(--dur-base) var(--ease-out),
+                    transform var(--dur-fast) var(--ease-out), opacity var(--dur-fast); }
+    :where(button:not(.toggle, .marker, :disabled)):active { transform: scale(.97); }
 
     /* Extensions page: search, quick filters, and a grid of cards. */
     .ext-controls { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center;
@@ -230,7 +268,11 @@
         .ext-btn .bar { animation: none; background: rgba(196, 85, 43, .18); }
     }
     .dot { width: .5rem; height: .5rem; border-radius: 2px; background: var(--muted); }
-    .dot.ok { background: var(--ember); box-shadow: 0 0 .4rem var(--ember); }
+    .dot.ok { background: var(--ember); box-shadow: 0 0 .4rem var(--ember);
+              animation: breathe 2.4s ease-in-out infinite; }
+    /* Live: the dot breathes while the core keeps answering, and goes still when it doesn't —
+       stillness here is itself the news. */
+    @keyframes breathe { 50% { box-shadow: 0 0 .15rem var(--ember); } }
 
     /* The gear icon (settings) and the form it opens, generated from an extension's own schema.
        Sits beside the install/uninstall button rather than in the top-right corner, which the
@@ -264,7 +306,11 @@
     .filter:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
 
     .banner { margin: 0 0 1.25rem; padding: .6rem .8rem; border: 1px solid var(--ember);
-              border-radius: .4rem; color: var(--ember); font-size: .875rem; }
+              border-radius: .4rem; color: var(--ember); font-size: .875rem;
+              animation: drop-in var(--dur-base) var(--ease-out) backwards; }
+    /* Once, when something goes wrong: a banner stays put while the trouble does, and a new
+       reason only changes its words. */
+    @keyframes drop-in { from { opacity: 0; transform: translateY(-4px); } }
 
     .device { margin-bottom: 1.5rem; border: 1px solid var(--line); border-radius: .5rem;
               background: var(--card); overflow: hidden; }
@@ -296,14 +342,30 @@
     /* The toggle: a switch that shows what the entity is doing, not what was clicked. */
     .toggle { flex: none; width: 3.1rem; height: 1.75rem; padding: .18rem; cursor: pointer;
               background: var(--sunk); border: 1px solid var(--line); border-radius: 1rem;
-              display: flex; justify-content: flex-start; transition: background .15s; }
-    .toggle .knob { width: 1.3rem; height: 1.3rem; border-radius: 50%; background: var(--card);
-                    border: 1px solid var(--line); transition: transform .15s; }
+              display: flex; justify-content: flex-start;
+              transition: background-color var(--dur-base) var(--ease-out),
+                          border-color var(--dur-base) var(--ease-out), opacity var(--dur-fast); }
+    /* The knob springs across, a touch past where it lands and back. */
+    .toggle .knob { width: 1.3rem; height: 1.3rem; border-radius: .65rem; background: var(--card);
+                    border: 1px solid var(--line);
+                    transition: transform var(--dur-base) var(--ease-spring),
+                                width var(--dur-fast) var(--ease-out),
+                                border-color var(--dur-base); }
     .toggle[aria-pressed="true"] { background: var(--ember); border-color: var(--ember); }
     .toggle[aria-pressed="true"] .knob { transform: translateX(1.35rem); border-color: transparent; }
     .toggle:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
-    .toggle:disabled { cursor: progress; opacity: .5; }
+    .toggle:disabled { cursor: default; opacity: .5; }
     .toggle.unknown .knob { transform: translateX(.67rem); }
+    /* Held down, the knob stretches toward where it's about to go, keeping the edge it leaves
+       from where it was: the press is felt before the device has answered. */
+    .toggle:active:not(:disabled) .knob { width: 1.6rem; }
+    .toggle[aria-pressed="true"]:active:not(:disabled) .knob { transform: translateX(1.05rem); }
+    .toggle.unknown:active:not(:disabled) .knob { transform: translateX(.52rem); }
+    /* Asked, and waiting for the device to say it's done: the knob breathes, so a slow device
+       reads as busy rather than broken. Offline stays plain and dim — nothing is coming. */
+    .toggle.pending { cursor: progress; opacity: .8; }
+    .toggle.pending .knob { animation: knob-wait .9s ease-in-out infinite alternate; }
+    @keyframes knob-wait { to { scale: .78; } }
 
     /* A lit light's level and color, on its own line under the row: one slider per thing the
        light can set. The value a slider shows is the device's, not the last thing asked for. */
@@ -312,7 +374,51 @@
     .light-controls .dim { display: inline-flex; align-items: center; gap: .45rem;
                            font: .72rem var(--mono); color: var(--muted); }
     .light-controls .lv { min-width: 2.6rem; text-align: right; font-variant-numeric: tabular-nums; }
-    .light-controls input[type="range"] { width: 7rem; accent-color: var(--ember); }
+    /* The sliders are drawn here rather than left to the browser, so the track can say what the
+       slider means: the level filled in ember up to the thumb, or color temperature as the
+       colors themselves. The thumb swells under the pointer and more while held. `--fill` is set
+       from the page as the thumb moves. */
+    .light-controls input[type="range"] {
+        width: 7rem; height: 1.1rem; margin: 0; padding: 0; background: transparent;
+        -webkit-appearance: none; appearance: none; cursor: pointer; }
+    .light-controls input[type="range"]::-webkit-slider-runnable-track {
+        height: 4px; border-radius: 2px;
+        background: linear-gradient(to right, var(--ember) var(--fill, 0%),
+                                    var(--line) var(--fill, 0%)); }
+    .light-controls input[type="range"]::-moz-range-track {
+        height: 4px; border-radius: 2px; background: var(--line); }
+    .light-controls input[type="range"]::-moz-range-progress {
+        height: 4px; border-radius: 2px; background: var(--ember); }
+    .light-controls input[type="range"].kelvin::-webkit-slider-runnable-track {
+        background: linear-gradient(to right, #f5a54a, #fbe3c4, #e9f1ff); }
+    .light-controls input[type="range"].kelvin::-moz-range-track {
+        background: linear-gradient(to right, #f5a54a, #fbe3c4, #e9f1ff); }
+    .light-controls input[type="range"].kelvin::-moz-range-progress { background: transparent; }
+    .light-controls input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none; appearance: none; width: 14px; height: 14px; margin-top: -5px;
+        border-radius: 50%; background: var(--card); border: 2px solid var(--ember);
+        box-shadow: 0 1px 2px rgba(28, 23, 20, .2);
+        transition: transform var(--dur-fast) var(--ease-spring),
+                    box-shadow var(--dur-fast) var(--ease-out); }
+    .light-controls input[type="range"]::-moz-range-thumb {
+        box-sizing: border-box; width: 14px; height: 14px; border-radius: 50%;
+        background: var(--card); border: 2px solid var(--ember);
+        box-shadow: 0 1px 2px rgba(28, 23, 20, .2);
+        transition: transform var(--dur-fast) var(--ease-spring),
+                    box-shadow var(--dur-fast) var(--ease-out); }
+    .light-controls input[type="range"]:hover:not(:disabled)::-webkit-slider-thumb {
+        transform: scale(1.15); }
+    .light-controls input[type="range"]:hover:not(:disabled)::-moz-range-thumb {
+        transform: scale(1.15); }
+    .light-controls input[type="range"]:active:not(:disabled)::-webkit-slider-thumb {
+        transform: scale(1.3); box-shadow: 0 0 0 5px rgba(196, 85, 43, .18); }
+    .light-controls input[type="range"]:active:not(:disabled)::-moz-range-thumb {
+        transform: scale(1.3); box-shadow: 0 0 0 5px rgba(196, 85, 43, .18); }
+    .light-controls input[type="range"]:focus { outline: none; }
+    .light-controls input[type="range"]:focus-visible::-webkit-slider-thumb {
+        box-shadow: 0 0 0 3px var(--card), 0 0 0 5px var(--ember); }
+    .light-controls input[type="range"]:focus-visible::-moz-range-thumb {
+        box-shadow: 0 0 0 3px var(--card), 0 0 0 5px var(--ember); }
     .light-controls input[type="color"] { width: 2.1rem; height: 1.55rem; padding: 0 .1rem;
                                           border: 1px solid var(--line); border-radius: .4rem;
                                           background: var(--card); cursor: pointer; }
@@ -398,7 +504,7 @@
                       background: transparent; border: 1px solid var(--line); border-radius: .4rem;
                       cursor: pointer; }
     .history-toggle:hover { border-color: var(--ember); color: var(--ember); }
-    .history-toggle .chevron { transition: transform .15s; }
+    .history-toggle .chevron { transition: transform var(--dur-base) var(--ease-out); }
     .history-toggle.open .chevron { transform: rotate(-45deg); }
     .history { border-top: 1px solid var(--line); }
     .history-scroll { max-height: 14rem; overflow-y: auto; }
@@ -428,7 +534,8 @@
     table.devices .group-name { font-weight: 500; }
     .chevron { width: .5rem; height: .5rem; border-right: 2px solid var(--muted);
                border-bottom: 2px solid var(--muted); transform: rotate(45deg);
-               margin: 0 .2rem .2rem .1rem; transition: transform .15s; flex: none; }
+               margin: 0 .2rem .2rem .1rem; flex: none;
+               transition: transform var(--dur-base) var(--ease-out), margin var(--dur-base) var(--ease-out); }
     .group.folded .chevron { transform: rotate(-45deg); margin-bottom: 0; }
     .group.folded tr:not(.group-head) { display: none; }
     table.devices th[scope="row"] .description { display: block; color: var(--muted);
@@ -514,7 +621,17 @@
     .start-wordmark { display: flex; align-items: center; gap: 1.5rem; padding: .5rem 0 .25rem; }
     .start-box { display: grid; place-items: center; width: 6rem; height: 6rem; flex: none;
                  border: 2px solid var(--fg); border-radius: .5rem; }
-    .start-ember { width: 2.5rem; height: 2.5rem; border-radius: .25rem; background: var(--ember); }
+    .start-ember { width: 2.5rem; height: 2.5rem; border-radius: .25rem; background: var(--ember);
+                   animation: embers 3.2s ease-in-out infinite; }
+    /* The hearth, alive: an uneven glow rather than a steady pulse, so it reads as a fire and not
+       a clock. */
+    @keyframes embers {
+        0%, 100% { opacity: 1; box-shadow: 0 0 1.2rem rgba(196, 85, 43, .45); }
+        17% { opacity: .9; box-shadow: 0 0 .7rem rgba(196, 85, 43, .3); }
+        31% { opacity: 1; box-shadow: 0 0 1.5rem rgba(196, 85, 43, .55); }
+        58% { opacity: .86; box-shadow: 0 0 .8rem rgba(196, 85, 43, .3); }
+        73% { opacity: .97; box-shadow: 0 0 1.35rem rgba(196, 85, 43, .5); }
+    }
     .start-letters { display: grid; gap: .35rem; min-width: 0; }
     .start-title { margin: 0; font-size: 1.9rem; font-weight: 600; letter-spacing: .3em; line-height: 1.05;
                    text-indent: .3em; overflow-wrap: anywhere; }

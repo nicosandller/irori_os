@@ -1618,10 +1618,14 @@ fn light_controls(
             let entity_id = entity_id.clone();
             move || offline || controls.busy.get().contains(&entity_id)
         };
+        // Where the thumb is while it's being dragged: the label and the filled part of the track
+        // follow it, and only letting go sends anything. Starts at what the device reported, and
+        // does again whenever the device reports.
+        let dragged = RwSignal::new(level);
         sub.push(
             view! {
                 <label class="dim" title="Brightness">
-                    <span class="lv">{level}%</span>
+                    <span class="lv">{move || dragged.get()}%</span>
                     <input
                         type="range"
                         min="1"
@@ -1629,7 +1633,13 @@ fn light_controls(
                         step="1"
                         aria-label={format!("Brightness for {}", entity.name)}
                         prop:value=level.to_string()
+                        style:--fill=move || format!("{}%", fill(dragged.get(), 1, 100))
                         disabled=disable
+                        on:input:target=move |ev| {
+                            if let Ok(pct) = ev.target().value().parse::<u16>() {
+                                dragged.set(pct);
+                            }
+                        }
                         on:change:target=move |ev| {
                             let pct = ev.target().value().parse::<u16>().unwrap_or(level);
                             run(pct)
@@ -1661,18 +1671,26 @@ fn light_controls(
             let entity_id = entity_id.clone();
             move || offline || controls.busy.get().contains(&entity_id)
         };
+        let dragged = RwSignal::new(current);
         sub.push(
             view! {
                 <label class="dim" title="Color temperature">
-                    <span class="lv">{current}K</span>
+                    <span class="lv">{move || dragged.get()}K</span>
+                    // No fill here: the track is the colors themselves, warm to cool.
                     <input
                         type="range"
+                        class="kelvin"
                         min=range.min.to_string()
                         max=range.max.to_string()
                         step="100"
                         aria-label={format!("Color temperature for {}", entity.name)}
                         prop:value=current.to_string()
                         disabled=disable
+                        on:input:target=move |ev| {
+                            if let Ok(kelvin) = ev.target().value().parse::<u16>() {
+                                dragged.set(kelvin);
+                            }
+                        }
                         on:change:target=move |ev| {
                             let kelvin = ev.target().value().parse::<u16>().unwrap_or(current);
                             run(kelvin)
@@ -1733,6 +1751,15 @@ fn light_controls(
     .into_any()
 }
 
+/// How far along a slider's track `value` sits, as a percentage — where its filled part ends.
+fn fill(value: u16, min: u16, max: u16) -> u16 {
+    if max <= min {
+        return 100;
+    }
+    let along = value.clamp(min, max) - min;
+    (u32::from(along) * 100 / u32::from(max - min)) as u16
+}
+
 fn reading(level: u8) -> impl IntoView {
     view! {
         <span class="reading">
@@ -1750,6 +1777,7 @@ fn knob(entity: &Entity, on: Option<bool>, offline: bool, controls: Controls) ->
         let entity_id = entity_id.clone();
         move || controls.busy.get().contains(&entity_id)
     };
+    let pending = busy.clone();
     // What the click means is "I want it off", not "flip whatever it is now": the page sends the
     // state the person asked for, so a second click on a stale row can't undo the first.
     let wanted = !on.unwrap_or(false);
@@ -1770,6 +1798,9 @@ fn knob(entity: &Entity, on: Option<bool>, offline: bool, controls: Controls) ->
             type="button"
             class="toggle"
             class:unknown=on.is_none()
+            // Waiting on the device, as opposed to unable to reach it: both disable the switch,
+            // but only this one is going to change.
+            class:pending=pending
             aria-label=label
             aria-pressed=pressed
             disabled=move || offline || busy()
@@ -1936,6 +1967,18 @@ mod tests {
                 "level for {pct}% must read back as {pct}%"
             );
         }
+    }
+
+    /// A slider's filled part ends where its thumb is, at either end of any range — and a value
+    /// outside the range, or a range with nothing in it, can't push the fill off the track.
+    #[test]
+    fn a_slider_fills_up_to_its_thumb() {
+        assert_eq!(fill(1, 1, 100), 0);
+        assert_eq!(fill(100, 1, 100), 100);
+        assert_eq!(fill(2700, 2000, 6500), 15);
+        assert_eq!(fill(9000, 2000, 6500), 100);
+        assert_eq!(fill(0, 2000, 6500), 0);
+        assert_eq!(fill(50, 50, 50), 100);
     }
 
     #[test]

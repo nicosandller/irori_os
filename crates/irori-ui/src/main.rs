@@ -48,6 +48,12 @@ pub struct Live {
     pub trouble: RwSignal<Option<String>>,
 }
 
+/// Whether the page animates: switches that spring, sliders that swell, the Live dot breathing.
+/// On unless Settings turned it off. The system's own "reduce motion" wins over this either way —
+/// that's CSS, and needs nothing from here.
+#[derive(Debug, Clone, Copy)]
+pub struct Motion(pub RwSignal<bool>);
+
 fn main() {
     console_error_panic_hook::set_once();
     leptos::mount::mount_to_body(App);
@@ -125,9 +131,18 @@ fn App() -> impl IntoView {
         devices::remember(SIDEBAR_KEY, if folded.get() { "folded" } else { "open" })
     });
 
+    // Remembered the same way, and for the same reason: it's about this screen, not the home.
+    let motion = RwSignal::new(devices::stored(MOTION_KEY).as_deref() != Some("off"));
+    Effect::new(move |_| devices::remember(MOTION_KEY, if motion.get() { "on" } else { "off" }));
+    provide_context(Motion(motion));
+
     view! {
         <Router>
-            <div class="shell" class:folded=move || folded.get()>
+            <div
+                class="shell"
+                class:folded=move || folded.get()
+                data-motion=move || if motion.get() { "on" } else { "off" }
+            >
                 <aside class="sidebar">
                     <div class="sidebar-top">
                         <A href="/" attr:class="mark" attr:title="IroriOS">
@@ -215,6 +230,9 @@ fn Page(live: Live) -> impl IntoView {
 
 /// Where the sidebar's folded-or-open state is remembered.
 const SIDEBAR_KEY: &str = "irori.sidebar";
+
+/// Where turning motion off in Settings is remembered.
+const MOTION_KEY: &str = "irori.motion";
 
 /// The pages the sidebar links to, besides Settings: address, name, and an icon drawn in 24×24
 /// strokes. Written here, not taken from any extension, so `inner_html` only ever holds these
