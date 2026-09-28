@@ -234,7 +234,25 @@ pub fn StepChart(
             })
         }
     };
-    let tip = Memo::new(move |_| tip());
+    // Read in two places — the drawing and what's said aloud — as a plain closure cloned for
+    // each, rather than a `Memo`: a new reactive type is a lot of download for one tooltip.
+
+    // The drawing never changes once it's made, so it's written out once as markup rather than
+    // built from reactive nodes — the same page for far less code in the download. Only the
+    // pointer's reading moves.
+    let drawing = drawing(
+        &line,
+        &area,
+        (&with_unit(range.1), &with_unit(range.0)),
+        last_y,
+        &latest,
+    );
+    let spoken = tip.clone();
+    let hover = move || {
+        tip()
+            .map(|(percent, y, value, at, anchor)| hover(percent, y, &value, &at, anchor))
+            .unwrap_or_default()
+    };
 
     view! {
         <figure class="chart">
@@ -249,35 +267,8 @@ pub fn StepChart(
                 on:focus=on_focus
                 on:blur=move |_| pointed.set(None)
             >
-                <svg viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true">
-                    <g class="chart-grid">
-                        <line x1="0" x2="1000" y1=TOP y2=TOP />
-                        <line x1="0" x2="1000" y1="50" y2="50" />
-                        <line x1="0" x2="1000" y1=BOTTOM y2=BOTTOM />
-                    </g>
-                    <path class="chart-area" d=area />
-                    <path class="chart-line" d=line vector-effect="non-scaling-stroke" />
-                </svg>
-                <span class="chart-tick top">{with_unit(range.1)}</span>
-                <span class="chart-tick bottom">{with_unit(range.0)}</span>
-                // Now: the reading the row above shows, marked where the line ends — unless the
-                // sensor isn't saying anything now.
-                {(!last_y.is_nan()).then(|| view! {
-                    <span class="chart-end" style=format!("top:{last_y:.1}%")></span>
-                    <span class="chart-latest" style=format!("top:{last_y:.1}%")>{latest}</span>
-                })}
-                {move || tip.get().map(|(percent, y, value, at, anchor)| view! {
-                    <span class="chart-rule" style=format!("left:{percent:.2}%")></span>
-                    <span
-                        class="chart-dot"
-                        hidden=y.is_nan()
-                        style=format!("left:{percent:.2}%;top:{y:.1}%")
-                    ></span>
-                    <span class=format!("chart-tip {anchor}") style=format!("left:{percent:.2}%")>
-                        <strong>{value}</strong>
-                        <span>"since " {at}</span>
-                    </span>
-                })}
+                <div class="chart-layer" inner_html=drawing></div>
+                <div class="chart-layer" inner_html=hover></div>
             </div>
             <figcaption class="chart-axis">
                 <span>{since}</span>
@@ -285,10 +276,55 @@ pub fn StepChart(
             </figcaption>
             // What the keys are on, said out loud as it changes.
             <p class="visually-hidden" aria-live="polite">
-                {move || tip.get().map(|(_, _, value, at, _)| format!("{value}, since {at}"))}
+                {move || spoken().map(|(_, _, value, at, _)| format!("{value}, since {at}"))}
             </p>
         </figure>
     }
+}
+
+/// Text for markup: a unit is whatever the extension said it was.
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// The chart itself: the gridlines, the area and the line, the value axis's two ends, and — if
+/// the sensor is saying anything now — now's dot and reading where the line ends.
+fn drawing(
+    line: &str,
+    area: &str,
+    (top, bottom): (&str, &str),
+    last_y: f64,
+    latest: &str,
+) -> String {
+    let mut markup = format!(
+        r#"<svg viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true"><g class="chart-grid"><line x1="0" x2="1000" y1="{TOP}" y2="{TOP}"/><line x1="0" x2="1000" y1="50" y2="50"/><line x1="0" x2="1000" y1="{BOTTOM}" y2="{BOTTOM}"/></g><path class="chart-area" d="{area}"/><path class="chart-line" d="{line}" vector-effect="non-scaling-stroke"/></svg><span class="chart-tick top">{}</span><span class="chart-tick bottom">{}</span>"#,
+        escape(top),
+        escape(bottom),
+    );
+    if !last_y.is_nan() {
+        markup.push_str(&format!(
+            r#"<span class="chart-end" style="top:{last_y:.1}%"></span><span class="chart-latest" style="top:{last_y:.1}%">{}</span>"#,
+            escape(latest),
+        ));
+    }
+    markup
+}
+
+/// What's under the pointer: a rule across, a dot on the line, and the reading in effect then.
+fn hover(percent: f64, y: f64, value: &str, at: &str, anchor: &str) -> String {
+    let dot = if y.is_nan() {
+        String::new()
+    } else {
+        format!(r#"<span class="chart-dot" style="left:{percent:.2}%;top:{y:.1}%"></span>"#)
+    };
+    format!(
+        r#"<span class="chart-rule" style="left:{percent:.2}%"></span>{dot}<span class="chart-tip {anchor}" style="left:{percent:.2}%"><strong>{}</strong><span>since {}</span></span>"#,
+        escape(value),
+        escape(at),
+    )
 }
 
 #[cfg(test)]
@@ -336,6 +372,15 @@ mod tests {
             area,
             "M0.0 80.0H300.0V100H0.0ZM600.0 20.0H1000.0V100H600.0Z"
         );
+    }
+
+    /// A unit comes from an extension, so it goes into the drawing as text, never as markup.
+    #[test]
+    fn a_unit_cant_become_markup() {
+        let markup = drawing("M0 0", "M0 0Z", ("<b>5</b> °C", "0"), 50.0, "x\"y");
+        assert!(markup.contains("&lt;b&gt;5&lt;/b&gt; °C"));
+        assert!(markup.contains("x&quot;y"));
+        assert!(!markup.contains("<b>"));
     }
 
     /// Pointing anywhere between two readings is pointing at the earlier one — it was in effect.

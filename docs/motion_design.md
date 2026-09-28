@@ -122,8 +122,8 @@ motion (a script-driven animation, a new pseudo-element tree) needs adding to th
    change, never animates on appearing (§4).
 4. Placed by `transform` already? Use `translate` / `scale` / `rotate` instead.
 5. Turn Motion off in Settings and check the page still says the same thing.
-6. Check it in the browser (§6), and keep an eye on the download budget — the UI is close to
-   its 500 KB limit, so CSS is cheaper than code.
+6. Check it in the browser (§6). The download budget is 5 MB, so there's room — but CSS is still
+   cheaper than code, and a new reactive type in Rust costs more than it looks.
 7. Add it to §3's catalogue.
 
 ## 6. Checking it
