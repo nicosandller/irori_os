@@ -7,15 +7,34 @@
 //! Settings check that cached could shrug at a disk that filled since the last look.
 
 use irori_types::{Area, AreaId, Device, DeviceId, Name};
+use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
 
 use crate::api;
 
+/// Jumps to a section of Settings: scrolls there — smoothly, with motion on — and has it flash
+/// once, so the eye lands where the page went. The link still names the section, for anything
+/// that reads links rather than clicking them.
+fn jump(id: &'static str) -> impl Fn(ev::MouseEvent) {
+    move |event| {
+        let Some(section) = document().get_element_by_id(id) else {
+            return;
+        };
+        event.prevent_default();
+        section.scroll_into_view();
+        // Two names for the same flash, alternated, so a second jump to the same section plays
+        // it again rather than finding it already applied.
+        let again = section.get_attribute("data-flash").as_deref() == Some("a");
+        let _ = section.set_attribute("data-flash", if again { "b" } else { "a" });
+    }
+}
+
 #[component]
 pub fn Settings() -> impl IntoView {
     let live = expect_context::<crate::Live>();
+    let crate::Motion(motion) = expect_context::<crate::Motion>();
     let trouble = RwSignal::new(None::<String>);
     let adding = RwSignal::new(String::new());
     // Where an area is going: the floor whose + is open, if any. An area is made straight onto
@@ -185,14 +204,15 @@ pub fn Settings() -> impl IntoView {
         {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
 
         <nav class="settings-menu" aria-label="Sections of Settings">
-            <a href="#instance">"Instance"</a>
-            <a href="#floors-and-areas">"Floors & areas"</a>
-            <a href="#users">"Users"</a>
-            <a href="#logs">"Logs"</a>
-            <a href="#system">"System"</a>
+            <a href="#instance" on:click=jump("instance")>"Instance"</a>
+            <a href="#appearance" on:click=jump("appearance")>"Appearance"</a>
+            <a href="#floors-and-areas" on:click=jump("floors-and-areas")>"Floors & areas"</a>
+            <a href="#users" on:click=jump("users")>"Users"</a>
+            <a href="#logs" on:click=jump("logs")>"Logs"</a>
+            <a href="#system" on:click=jump("system")>"System"</a>
         </nav>
 
-        <section class="card settings-section" id="instance">
+        <section class="card settings-section" id="instance" style="--i: 0">
             <h2>"Instance"</h2>
             {move || match live.health.get() {
                 None => view! { <p class="muted">"Asking…"</p> }.into_any(),
@@ -229,9 +249,31 @@ pub fn Settings() -> impl IntoView {
             }}
         </section>
 
+        <section class="card settings-section" id="appearance" style="--i: 1">
+            <div class="room-head">
+                <h2>"Motion"</h2>
+                <span class="room-actions">
+                    <button
+                        type="button"
+                        class="toggle"
+                        aria-label="Motion"
+                        aria-pressed=move || motion.get().to_string()
+                        on:click=move |_| motion.update(|on| *on = !*on)
+                    >
+                        <span class="knob"></span>
+                    </button>
+                </span>
+            </div>
+            <p class="muted small">
+                "Switches that spring across, sliders that swell under a finger, and the Live dot \
+                 breathing while Irori answers. Remembered by this browser, and always off when \
+                 the system is set to reduce motion."
+            </p>
+        </section>
+
         // It folds, but starts open: this is where the home's arrangement is managed, so the
         // floors, the areas on them, and the unassigned devices are useful to see at once.
-        <details class="card settings-section floors" id="floors-and-areas" open>
+        <details class="card settings-section floors" id="floors-and-areas" style="--i: 2" open>
             <summary>"Floors and areas"</summary>
             <p class="muted small">
                 "Floors are the levels of the home, lowest first, and the areas are the places on "
@@ -390,7 +432,7 @@ pub fn Settings() -> impl IntoView {
             </form>
         </details>
 
-        <section class="card settings-section" id="users">
+        <section class="card settings-section" id="users" style="--i: 3">
             <h2>"Users"</h2>
             <p class="muted">
                 "No users yet — and nothing to sign in with. IroriOS is for the person in the "
@@ -399,7 +441,7 @@ pub fn Settings() -> impl IntoView {
             </p>
         </section>
 
-        <section class="card settings-section" id="logs">
+        <section class="card settings-section" id="logs" style="--i: 4">
             <div class="room-head">
                 <h2>"Logs"</h2>
                 <span class="room-actions">
@@ -418,7 +460,7 @@ pub fn Settings() -> impl IntoView {
             </p>
         </section>
 
-        <section class="card settings-section" id="system">
+        <section class="card settings-section" id="system" style="--i: 5">
             <div class="room-head">
                 <h2>"System"</h2>
                 <span class="room-actions">

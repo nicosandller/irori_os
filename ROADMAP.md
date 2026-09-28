@@ -33,7 +33,7 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | C21 | UI: Entity history | Last-24h list / sparkline per entity | - | C18 |
 | C22 | CLI command tree | Full UI parity (`devices`, `rules`, `extensions`, `token`…) with `--json` | 🟠 | C17 |
 | C23 | Firmware updates | `update` entity kind, update from UI | - | C5 |
-| C24 | Performance budgets in CI | Binary size, RSS, latency, throughput checks (only UI bundle size today) | 🟠 | C1 |
+| C24 | Performance budgets in CI | Binary size, RSS, latency, throughput checks (only UI bundle size today: under 5 MB brotli) | 🟠 | C1 |
 | C25 | JSON Schemas & golden examples | Schemas generated from `irori-types`, valid/invalid example tests | - | C2, C3, C4, C9 |
 | C26 | Extension signing & permissions | Signature verification, approve permissions on install/update | - | C7 |
 | C27 | Automation visualizer | Rule graph, trace playback, run timeline, version diff, backtest | - | C18, C19 |

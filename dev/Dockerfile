@@ -21,11 +21,11 @@ ENV CARGO_TARGET_DIR=/target
 FROM toolchain AS build
 # Extra cargo flags, e.g. "--no-default-features" for the barebones build.
 ARG FEATURES=""
-COPY . .
-# The default build's `ui` feature only embeds whatever `cargo xtask ui` has already put in
-# `crates/irori/ui/` (`crates/irori/src/server.rs`'s own doc comment on this) — a plain `cargo
-# build` does not build it, so without this the server always falls back to the placeholder
-# page. Skipped for the barebones build, which doesn't compile the `ui` feature in at all.
+# The wasm build tools, installed *before* `COPY . .` below on purpose: nothing here reads the
+# source tree, so keeping them above the copy makes this ~570 MB layer a function of the pinned
+# toolchain alone. Run after the copy, every source change invalidated it and left a fresh copy
+# of the layer behind in the build cache — a new PR under `dev/pi review` is a source change, and
+# six of those came to fill a 20 GB Colima disk.
 #
 # `trunk` is downloaded prebuilt rather than `cargo install`ed: its own release build (LTO,
 # one codegen unit) needs more memory than this environment reliably has to spare, and gets
@@ -44,8 +44,17 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       && curl --fail --location --silent --show-error \
          "https://github.com/trunk-rs/trunk/releases/latest/download/trunk-$(uname -m)-unknown-linux-musl.tar.gz" \
       | tar xz -C /usr/local/bin trunk \
-      && cargo install wasm-bindgen-cli --version 0.2.128 --locked --profile dev \
-      && cargo xtask ui ; \
+      && cargo install wasm-bindgen-cli --version 0.2.128 --locked --profile dev ; \
+    fi
+COPY . .
+# The default build's `ui` feature only embeds whatever `cargo xtask ui` has already put in
+# `crates/irori/ui/` (`crates/irori/src/server.rs`'s own doc comment on this) — a plain `cargo
+# build` does not build it, so without this the server always falls back to the placeholder
+# page. Skipped for the barebones build, which doesn't compile the `ui` feature in at all.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/target \
+    if [ "$FEATURES" != "--no-default-features" ]; then \
+      cargo xtask ui ; \
     fi
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/target \

@@ -46,7 +46,7 @@ cd crates/irori-ui && trunk serve --open # the page on 8080, API proxied to 8480
 | **Devices** (`/devices`) | Two ways to read the same home, remembered per browser: **Entities** groups everything by the device it came from, with switches; **Devices** is a row per device — what brought it in, make, model, battery, how many entities, and which area it's in. **Add device** explains where devices come from — every installed extension, what it's for, and what it can provide — because nothing is typed in by hand yet. |
 | **A device** (`/devices/<id>`) | One device: which extension brought it in, what that extension knows it as (the MAC address, for ESPHome), make, model, firmware, hardware, battery, what it's reached through, and every entity it provides with its controls. Its name, description and area are yours to decide. |
 | **Extensions** (`/extensions`) | Official extensions from this repo (protocols, Demo, Helpers). Install copies a package into the instance and starts it; uninstall deletes the package and the devices it brought in. |
-| **Settings** (`/settings`) | The instance itself (version, uptime, database, features), the home's arrangement (**Areas** and **Floors**, the same places the Rooms page used to manage), **Users** (none yet — there's nothing to sign in with), **Logs** (what Irori has said since it started, and each extension's own output tagged with the extension, behind **Show log**), and **System**: the machine running the instance — host, operating system, kernel, CPU, memory, and the disk its data sits on, asked again on demand rather than kept. |
+| **Settings** (`/settings`) | The instance itself (version, uptime, database, features), **Appearance** (whether the page animates), the home's arrangement (**Areas** and **Floors**, the same places the Rooms page used to manage), **Users** (none yet — there's nothing to sign in with), **Logs** (what Irori has said since it started, and each extension's own output tagged with the extension, behind **Show log**), and **System**: the machine running the instance — host, operating system, kernel, CPU, memory, and the disk its data sits on, asked again on demand rather than kept. |
 
 Routing is client-side (`leptos_router`), so the binary serves the app for any path that isn't a
 file, and the app decides what to show.
@@ -90,6 +90,56 @@ walls one of which runs at an odd angle can still nick the outside of the corner
 and `src/api.rs` is what goes away then. The binary also serves these files **uncompressed**
 (see the budget below).
 
+## Motion
+
+The guidelines — principles, tokens, the rules, and what moves where — are in
+[docs/motion_design.md](../../docs/motion_design.md). In short: small and quick, mostly CSS. The durations and easings are tokens on `:root` in
+`index.html` (`--dur-fast` 120 ms, `--dur-base` 180 ms, `--ease-out`, and `--ease-spring` for
+the few things a finger pushes). Use them rather than new numbers, so turning motion off turns
+off everything.
+
+- **Buttons** ease into their hover colours and give a little under a press.
+- **The toggle's knob** springs across, stretches while held, and breathes while a command is
+  waiting on the device (`.pending`). Offline stays plain and dim: nothing is coming.
+- **Sliders** are drawn by the page: brightness fills in ember up to the thumb, colour
+  temperature shows the colours themselves, and the thumb swells under the pointer. The label
+  follows the thumb while it's dragged, and letting go still sends one command.
+- **The sidebar** marks the page you're on with a highlight that glides from one entry to the
+  next, rather than the choice jumping; an icon leans toward its page under the pointer, and the
+  Settings cog turns a notch. The same glide (`src/glide.rs`) marks the tool in hand and the floor
+  shown on the Floorplan. On a phone, where these lists are rows, the chosen item draws its own
+  highlight instead.
+- **List to device:** opening a device from the list slides the page aside and the device's
+  name travels from its row up into the heading (the View Transition API, `src/transition.rs`);
+  going back reverses it. Every other page change moves the way the sidebar goes, and a Start
+  tile grows into the page it opens.
+- **Live numbers** count to their new value as readings arrive (`src/count.rs`), and a
+  device's chart grows with them. **Toggles swipe**, a history **pulls down**
+  (`src/gesture.rs`), and on the **Floorplan** lit lights pool warm light in their rooms and
+  motion sensors ripple (`src/floorplan/ambience.rs`); changing floor, the plan sinks or rises.
+- **A device's history:** on a device's page a sensor's reading is itself the way into its last
+  24 hours (a switch or light has a chevron beside it); the drawer rolls down to its content. A
+  number's day is a chart (`src/chart.rs`) that draws itself in, with a crosshair and the reading
+  at any moment under the pointer or the arrow keys, and the table a click away.
+- **The Floorplan:** the tools, the device and room pickers and the inspector slide in when they
+  appear; a device marker leans in under the pointer, and a lamp's pip warms up and sends out one
+  ring when it comes on; what's picked, and the line being drawn, march like any drawing tool's
+  selection. Its sliders (a wall's thickness, an opening's width, the snap step) are drawn like
+  the lights'.
+- **Ambient:** the Live dot breathes while the core answers and goes still when it doesn't, the
+  ember on Start flickers, the Start tiles come in one after another, and a banner drops in
+  when something goes wrong.
+
+**Nothing animates as it appears in the device list.** The list is rebuilt whenever a reading
+changes, so an entrance animation there would replay every couple of seconds. Motion goes on
+state changes (a transition on `aria-pressed`, say) and on things that appear once per visit.
+The same goes for the Floorplan's markers and drawing, which redraw on every reading and every
+pan: they transition, and nothing on them plays as it appears.
+
+**Turning it off:** Settings → Appearance → Motion, remembered per browser (`irori.motion`), sets
+`data-motion="off"` on `.shell`. The system's *reduce motion* setting does the same whatever
+the switch says.
+
 ## Why Leptos (ROADMAP D27)
 
 The M0.8 spike built this same page twice, once in Leptos and once in Dioxus, both fetching
@@ -110,11 +160,13 @@ mobile reach that a page served by the core doesn't need. The spikes are in the 
 
 ## The size budget, and what a browser really downloads
 
-**Budget (ROADMAP §4.3):** under 500 KB brotli for the barebones UI. CI checks it on every pull
-request; the pages together compress to about 380 KB.
+**Budget:** under 5 MB brotli. CI checks it on every pull request; the pages together compress
+to about 520 KB. It was 500 KB until 2026-09-28, when the motion work (charts, page
+transitions) reached it and it was raised to leave room for the UI to be richer rather than
+smaller.
 
 That is the budget's unit, not yet what goes over the wire. `irori serve` hands these files out
 **as they are**, so a browser opening the page today downloads roughly **1.3 MB** — the wasm is
 most of it. Serving precompressed assets with `Accept-Encoding` negotiation is part of the plan
-(ROADMAP §2.2) and hasn't been done; until it is, read the 380 KB as "this fits, with room", not
-as the transfer. On a LAN the difference is a fraction of a second; over a slow link it isn't.
+(ROADMAP §2.2) and hasn't been done; until it is, read the compressed number as the budget's
+unit, not as the transfer. On a LAN the difference is a fraction of a second; over a slow link it isn't.

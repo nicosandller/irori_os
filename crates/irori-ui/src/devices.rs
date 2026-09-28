@@ -8,6 +8,7 @@ use irori_types::{
     DeviceId, Entity, EntityId, EntityState, ExtensionId, LightCapabilities, LightState,
     LightTurnOn, SensorCapabilities, SensorClass, SensorValue, State,
 };
+use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
@@ -406,7 +407,16 @@ fn group(
                 <tr>
                     <td class="icon-col">{icon(&protocol, has_icon)}</td>
                     <th scope="row">
-                        <A href=format!("/devices/{id}")>{device.name.to_string()}</A>
+                        <A
+                            href=format!("/devices/{id}")
+                            attr:style=crate::transition::list_name(&id)
+                            on:click={
+                                let (id, travelling) = (id.clone(), expect_context::<crate::transition::Travelling>().0);
+                                move |_| travelling.set(Some(id.clone()))
+                            }
+                        >
+                            {device.name.to_string()}
+                        </A>
                         {device.description.as_ref().map(|description| view! {
                             <span class="description">{description.to_string()}</span>
                         })}
@@ -1461,14 +1471,27 @@ fn group_view(group: Group, controls: Controls) -> AnyView {
             {group
                 .entities
                 .into_iter()
-                .map(|(entity, state)| row(entity, state, controls))
+                .map(|(entity, state)| row(entity, state, controls, None))
                 .collect_view()}
         </section>
     }
     .into_any()
 }
 
-pub fn row(entity: Entity, state: Option<EntityState>, controls: Controls) -> AnyView {
+/// A row's way into its own last 24 hours. The device page gives its rows one; the list, which
+/// is for switching things rather than reading them back, doesn't.
+#[derive(Debug, Clone, Copy)]
+pub struct Unroll {
+    pub open: RwSignal<bool>,
+    pub toggle: Callback<()>,
+}
+
+pub fn row(
+    entity: Entity,
+    state: Option<EntityState>,
+    controls: Controls,
+    unroll: Option<Unroll>,
+) -> AnyView {
     let offline = state
         .as_ref()
         .is_some_and(|s| s.availability == Availability::Unavailable);
@@ -1484,11 +1507,80 @@ pub fn row(entity: Entity, state: Option<EntityState>, controls: Controls) -> An
                 <span class="id" title=full_id>{id}</span>
             </span>
             {offline.then(|| view! { <span class="badge">"offline"</span> })}
-            {control(&entity, state.as_ref(), offline, controls)}
+            {unrolling(&entity, control(&entity, state.as_ref(), offline, controls), unroll)}
             {move || failure().map(|why| view! { <p class="why">{why}</p> })}
         </div>
     }
     .into_any()
+}
+
+/// The call to open a row's history, where the eye already is. A reading *is* the thing to ask
+/// about, so for sensors the reading itself is the button; a light or switch's control is for
+/// switching, so there the button is the chevron beside it.
+fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyView {
+    let Some(Unroll { open, toggle }) = unroll else {
+        return control;
+    };
+    let expanded = move || open.get().to_string();
+    let chevron = view! { <span class="unroll-mark" aria-hidden="true"></span> };
+    let hint = view! { <span class="visually-hidden">" — last 24 hours"</span> };
+    match entity.capabilities {
+        Capabilities::Sensor(_) | Capabilities::BinarySensor(_) => view! {
+            <button
+                type="button"
+                class="unroll reading-unroll"
+                class:open=move || open.get()
+                title="Last 24 hours"
+                aria-expanded=expanded
+                on:click=move |event| {
+                    if !crate::gesture::swallow_click(&event) {
+                        toggle.run(());
+                    }
+                }
+                on:pointerdown=|event| crate::gesture::pull_down(&event)
+                on:pointermove=move |event| pull(&event, open, toggle)
+                on:pointerup=|event| crate::gesture::pull_up(&event)
+                on:pointercancel=|event| crate::gesture::pull_up(&event)
+            >
+                {control}
+                {hint}
+                {chevron}
+            </button>
+        }
+        .into_any(),
+        Capabilities::Light(_) | Capabilities::Switch(_) => view! {
+            {control}
+            <button
+                type="button"
+                class="unroll"
+                class:open=move || open.get()
+                title="Last 24 hours"
+                aria-label=format!("{} — last 24 hours", entity.name)
+                aria-expanded=expanded
+                on:click=move |event| {
+                    if !crate::gesture::swallow_click(&event) {
+                        toggle.run(());
+                    }
+                }
+                on:pointerdown=|event| crate::gesture::pull_down(&event)
+                on:pointermove=move |event| pull(&event, open, toggle)
+                on:pointerup=|event| crate::gesture::pull_up(&event)
+                on:pointercancel=|event| crate::gesture::pull_up(&event)
+            >
+                {chevron}
+            </button>
+        }
+        .into_any(),
+    }
+}
+
+/// A pull on a history handle: down opens the drawer, up closes it.
+fn pull(event: &ev::PointerEvent, open: RwSignal<bool>, toggle: Callback<()>) {
+    if let Some(down) = crate::gesture::pull_move(event)
+        && down != open.get_untracked()
+    {
+        toggle.run(());
+    }
 }
 
 fn control(
@@ -1618,10 +1710,14 @@ fn light_controls(
             let entity_id = entity_id.clone();
             move || offline || controls.busy.get().contains(&entity_id)
         };
+        // Where the thumb is while it's being dragged: the label and the filled part of the track
+        // follow it, and only letting go sends anything. Starts at what the device reported, and
+        // does again whenever the device reports.
+        let dragged = RwSignal::new(level);
         sub.push(
             view! {
                 <label class="dim" title="Brightness">
-                    <span class="lv">{level}%</span>
+                    <span class="lv">{move || dragged.get()}%</span>
                     <input
                         type="range"
                         min="1"
@@ -1629,7 +1725,13 @@ fn light_controls(
                         step="1"
                         aria-label={format!("Brightness for {}", entity.name)}
                         prop:value=level.to_string()
+                        style:--fill=move || format!("{}%", fill(dragged.get(), 1, 100))
                         disabled=disable
+                        on:input:target=move |ev| {
+                            if let Ok(pct) = ev.target().value().parse::<u16>() {
+                                dragged.set(pct);
+                            }
+                        }
                         on:change:target=move |ev| {
                             let pct = ev.target().value().parse::<u16>().unwrap_or(level);
                             run(pct)
@@ -1661,18 +1763,26 @@ fn light_controls(
             let entity_id = entity_id.clone();
             move || offline || controls.busy.get().contains(&entity_id)
         };
+        let dragged = RwSignal::new(current);
         sub.push(
             view! {
                 <label class="dim" title="Color temperature">
-                    <span class="lv">{current}K</span>
+                    <span class="lv">{move || dragged.get()}K</span>
+                    // No fill here: the track is the colors themselves, warm to cool.
                     <input
                         type="range"
+                        class="kelvin"
                         min=range.min.to_string()
                         max=range.max.to_string()
                         step="100"
                         aria-label={format!("Color temperature for {}", entity.name)}
                         prop:value=current.to_string()
                         disabled=disable
+                        on:input:target=move |ev| {
+                            if let Ok(kelvin) = ev.target().value().parse::<u16>() {
+                                dragged.set(kelvin);
+                            }
+                        }
                         on:change:target=move |ev| {
                             let kelvin = ev.target().value().parse::<u16>().unwrap_or(current);
                             run(kelvin)
@@ -1733,10 +1843,23 @@ fn light_controls(
     .into_any()
 }
 
+/// How far along a slider's track `value` sits, as a whole percentage — where its filled part
+/// ends. Any number type a slider holds: a light's level, a wall's thickness, a snap step.
+pub(crate) fn fill(value: impl Into<f64>, min: impl Into<f64>, max: impl Into<f64>) -> u16 {
+    let (value, min, max) = (value.into(), min.into(), max.into());
+    if max <= min {
+        return 100;
+    }
+    ((value.clamp(min, max) - min) * 100.0 / (max - min)).floor() as u16
+}
+
 fn reading(level: u8) -> impl IntoView {
     view! {
         <span class="reading">
-            {format!("{}%", brightness_pct(level))}
+            <span class="n" data-n=brightness_pct(level).to_string()>
+                {brightness_pct(level).to_string()}
+            </span>
+            "%"
         </span>
     }
 }
@@ -1750,12 +1873,29 @@ fn knob(entity: &Entity, on: Option<bool>, offline: bool, controls: Controls) ->
         let entity_id = entity_id.clone();
         move || controls.busy.get().contains(&entity_id)
     };
+    let pending = busy.clone();
     // What the click means is "I want it off", not "flip whatever it is now": the page sends the
     // state the person asked for, so a second click on a stale row can't undo the first.
     let wanted = !on.unwrap_or(false);
     let click = {
         let entity_id = entity_id.clone();
-        move |_| controls.set_on.run((entity_id.clone(), wanted))
+        move |event: ev::MouseEvent| {
+            // A swipe already said what it wanted when it let go.
+            if !crate::gesture::swallow_click(&event) {
+                controls.set_on.run((entity_id.clone(), wanted));
+            }
+        }
+    };
+    // Swiped: whichever side the knob was let go on, if that's not where it already is.
+    let let_go = {
+        let entity_id = entity_id.clone();
+        move |event: ev::PointerEvent| {
+            if let Some(side) = crate::gesture::knob_up(&event)
+                && Some(side) != on
+            {
+                controls.set_on.run((entity_id.clone(), side));
+            }
+        }
     };
     let label = format!("Turn {} {}", entity.name, if wanted { "on" } else { "off" });
     // A screen reader is told what the knob shows. `mixed` is how ARIA says "neither", which is
@@ -1770,10 +1910,19 @@ fn knob(entity: &Entity, on: Option<bool>, offline: bool, controls: Controls) ->
             type="button"
             class="toggle"
             class:unknown=on.is_none()
+            // Waiting on the device, as opposed to unable to reach it: both disable the switch,
+            // but only this one is going to change.
+            class:pending=pending
             aria-label=label
             aria-pressed=pressed
             disabled=move || offline || busy()
             on:click=click
+            on:pointerdown=|event| crate::gesture::knob_down(&event)
+            on:pointermove=|event| crate::gesture::knob_move(&event)
+            on:pointerup=let_go
+            on:pointercancel=|event| {
+                crate::gesture::knob_up(&event);
+            }
         >
             <span class="knob"></span>
         </button>
@@ -1781,19 +1930,20 @@ fn knob(entity: &Entity, on: Option<bool>, offline: bool, controls: Controls) ->
 }
 
 fn sensor(capabilities: &SensorCapabilities, value: Option<&State>) -> AnyView {
-    let (reading, unit) = match value {
-        Some(State::Sensor(sensor)) => (
+    let (reading, unit, counts) = match value {
+        Some(State::Sensor(sensor)) => {
+            let unit = capabilities.unit.clone().unwrap_or_default();
             match &sensor.value {
-                SensorValue::Number(n) => number(*n),
-                SensorValue::Text(text) => text.clone(),
-            },
-            capabilities.unit.clone().unwrap_or_default(),
-        ),
-        _ => (UNKNOWN.to_owned(), String::new()),
+                SensorValue::Number(n) => (number(*n), unit, Some(n.to_string())),
+                SensorValue::Text(text) => (text.clone(), unit, None),
+            }
+        }
+        _ => (UNKNOWN.to_owned(), String::new(), None),
     };
+    // A number counts to its next value as it changes (count.rs); words just change.
     view! {
         <span class="reading">
-            {reading}
+            <span class="n" data-n=counts>{reading}</span>
             <span class="unit">{(!unit.is_empty()).then(|| format!(" {unit}"))}</span>
         </span>
     }
@@ -1936,6 +2086,18 @@ mod tests {
                 "level for {pct}% must read back as {pct}%"
             );
         }
+    }
+
+    /// A slider's filled part ends where its thumb is, at either end of any range — and a value
+    /// outside the range, or a range with nothing in it, can't push the fill off the track.
+    #[test]
+    fn a_slider_fills_up_to_its_thumb() {
+        assert_eq!(fill(1, 1, 100), 0);
+        assert_eq!(fill(100, 1, 100), 100);
+        assert_eq!(fill(2700, 2000, 6500), 15);
+        assert_eq!(fill(9000, 2000, 6500), 100);
+        assert_eq!(fill(0, 2000, 6500), 0);
+        assert_eq!(fill(50, 50, 50), 100);
     }
 
     #[test]
