@@ -91,18 +91,22 @@ Keyed by the device's id — the same id as its page's address and in the API (�
 optional. `name` and `description` are the device's **only** name and description: nothing else
 in Irori keeps a second one to fall out of step with (ROADMAP D36).
 
-`ignored = true` keeps the device out of the home altogether: it isn't listed, can't be switched,
-and nothing it reports is kept. Its protocol may go on talking to it; Irori just doesn't let
-it in. What the protocol says meanwhile is remembered, so taking `ignored` away puts the device
-back as it is now, without a restart.
+A device joins the home only when a person adds it. What an extension finds is a proposal, not a
+decision: installing one never puts whatever is on the network into the home. Until it's added,
+a found device is listed under **+ Add device**, on the screen for the extension that found it,
+and nowhere else — it isn't on the Devices page, can't be switched, and nothing it reports is
+kept. Its protocol goes on talking to it, and what it says is remembered, so adding it shows it
+as it is now.
 
-`added = true` records that the device is in the home: a person added it while Irori was asking
-(`[devices] new = "ask"` in `irori.toml`, §3.5 — the default), or it joined while asking was
-off and Irori
-wrote this so a later restart with asking already on doesn't hold it as new. Any other entry
-for the device (a name, a room) is the same decision — that device is not new. Turning asking
-on marks every device already in the home as added, so switching the setting on never empties
-the home.
+`added = true` records that a person added the device. Any other entry for the device (a name,
+a room) is the same decision — that device is in the home. Earlier versions of Irori wrote
+`added = true` for every device already in the home, so a home kept its devices across the change
+to adding them by hand.
+
+`ignored = true` is from when a device could be ignored rather than removed. A row that says it
+still reads, so the rest of the file isn't refused, but that device is simply not in the home:
+it's listed as found, to be added if wanted, and Irori drops the row the next time it writes the
+file.
 
 `area` has **three** states, not two, because "nobody has said" and "it isn't in a room" are
 different answers:
@@ -118,15 +122,17 @@ would only clear the setting, let the suggestion back in, and put the device str
 word like `"none"` would read better than `false`, but `none` is a perfectly good room id, so the
 two have to be different types rather than different spellings. `area = true` is an error.
 
-Forgetting a device removes its row from this file — and, at the same time, its entities' rows
-from `entities.toml` and everything else Irori keeps of it (ROADMAP D48). It's the "Remove" on
-the device's page, and it's what makes a stale file row impossible: once the file no longer says
-anything about the device, a restart can't bring it back. The device itself isn't told, so if
-it's still out there its protocol finds it again, and with asking on it turns up as a new device
-to be decided. Floorplan placement and `secrets.toml` are deliberately left alone — a secret may
-be what the device needs when it returns. Where `ignored` keeps the device's place warm (its held
-description survives, so letting it back in is instant), forgetting drops that too: nothing is
-left but the device's actual presence on the network.
+Removing a device — the "Remove" on its page — deletes everything Irori keeps of it: its row in
+this file, its entities' rows in `entities.toml`, its spot on the floorplan, and the history of its
+readings (ROADMAP D48). Nothing in Irori can refer to it afterwards, and once the files say nothing
+about it, a restart can't bring it back. The device itself isn't told: it goes straight back to
+being one its extension has found, listed under **+ Add device** at once — without waiting for it
+to announce itself again — to be added back like any new device. `secrets.toml` is left alone:
+which of an extension's secrets belongs to which device is the extension's business, and a key is
+what an encrypted device needs to be added back.
+
+Uninstalling an extension removes every device it brought in the same way, including ones that
+aren't around at the time, so installing it again starts with nothing of it in the home.
 
 ### 3.3 `entities.toml`
 
@@ -179,8 +185,6 @@ data = "/var/lib/irori"       # relative paths are relative to this directory
 [extensions]
 disabled = ["demo"]
 
-[devices]
-new = "add"                   # "ask" (the default) or "add"
 ```
 
 A command-line flag, or its environment variable, wins over the file, and the file wins over the
@@ -202,15 +206,9 @@ no per-extension level, and an extension logs at its own process's default, whic
 verbatim. `--log-level` and `IRORI_LOG_LEVEL` say the same as this setting; `debug` is where every
 device and state change shows up.
 
-`[devices] new` is what happens when a protocol finds a device nobody has decided about.
-`"ask"`, the default, holds it back, as if ignored, until a person adds it (`added = true`) or
-ignores it (`ignored = true`) — from the Devices page, or from that extension's own screen under
-"+ Add device". `"add"` puts it in the home straight away — the way to stop
-a busy network filling the home with a neighbour's plugs. A device that already has a
-`devices.toml` entry is not new: it stays in the home. Irori writes `added = true` for devices
-that join while asking is off, so restarting with asking already on doesn't empty the home.
-What the protocol says about a held device is kept, so adding it shows it as it is now. It
-applies while Irori runs.
+`[devices] new` (`"ask"` or `"add"`) is from when a found device could join the home on its own.
+It no longer does anything: a device joins when a person adds it (§3.2). An `irori.toml` that
+still says it is read as usual, and Irori logs once that the setting is no longer used.
 
 ### 3.6 `extensions/<id>.toml`
 

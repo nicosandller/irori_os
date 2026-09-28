@@ -419,9 +419,51 @@ fn remember_stderr(core: &Core, extension: &ExtensionId, bytes: &[u8]) {
     }
     let line = String::from_utf8_lossy(&bytes[..end]);
     core.log_line(extension, &line);
-    // At info, not error: most of what comes through here is an extension's ordinary
-    // chatter, and a subprocess's own log level isn't Irori's to judge.
-    tracing::info!(%extension, "{line}");
+    // Into Irori's own log, at the level the extension gave the line when it says one — so a
+    // warning reads as a warning there too — and without the colour codes and the timestamp of
+    // its own, which Irori's line already has. A line that doesn't say is logged at info: most
+    // of what comes through here is ordinary chatter, and a subprocess's level isn't Irori's to
+    // judge.
+    let line = crate::without_colour(&line);
+    let (level, said) = said_at(&line);
+    match level {
+        Some(tracing::Level::ERROR) => tracing::error!(%extension, "{said}"),
+        Some(tracing::Level::WARN) => tracing::warn!(%extension, "{said}"),
+        Some(tracing::Level::DEBUG) => tracing::debug!(%extension, "{said}"),
+        Some(tracing::Level::TRACE) => tracing::trace!(%extension, "{said}"),
+        _ => tracing::info!(%extension, "{said}"),
+    }
+}
+
+/// The level an extension's line says it was written at, and what it said: `tracing`'s own
+/// shape, `2026-09-28T13:38:35.043301Z  WARN connected without authentication`, or the same
+/// without the timestamp. Anything else is all message, with no level.
+fn said_at(line: &str) -> (Option<tracing::Level>, &str) {
+    let rest = line.trim_start();
+    let rest = match rest.split_once(char::is_whitespace) {
+        // A timestamp is digits and dashes up to its `T`; it's said again by Irori's own line.
+        Some((first, after))
+            if first.len() >= 19
+                && first.as_bytes()[..4].iter().all(u8::is_ascii_digit)
+                && first.as_bytes()[4] == b'-'
+                && first.contains('T') =>
+        {
+            after.trim_start()
+        }
+        _ => rest,
+    };
+    let Some((word, message)) = rest.split_once(char::is_whitespace) else {
+        return (None, line);
+    };
+    let level = match word {
+        "ERROR" => tracing::Level::ERROR,
+        "WARN" => tracing::Level::WARN,
+        "INFO" => tracing::Level::INFO,
+        "DEBUG" => tracing::Level::DEBUG,
+        "TRACE" => tracing::Level::TRACE,
+        _ => return (None, line),
+    };
+    (Some(level), message.trim_start())
 }
 
 /// Waits until the stderr reader finishes, which is when the child closes the pipe.
@@ -1404,6 +1446,29 @@ async fn send_reply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_extension_line_keeps_its_own_level_and_loses_its_own_timestamp() {
+        assert_eq!(
+            said_at("2026-09-28T13:38:35.043301Z  WARN connected without authentication"),
+            (
+                Some(tracing::Level::WARN),
+                "connected without authentication"
+            )
+        );
+        assert_eq!(
+            said_at("ERROR couldn't open /dev/ttyUSB0"),
+            (Some(tracing::Level::ERROR), "couldn't open /dev/ttyUSB0")
+        );
+        // Anything else is all message, with no level to go by.
+        assert_eq!(said_at("ser: opening port"), (None, "ser: opening port"));
+        assert_eq!(said_at("ready"), (None, "ready"));
+        assert_eq!(
+            said_at("Warning: it is odd"),
+            (None, "Warning: it is odd"),
+            "a word in a sentence is not a level"
+        );
+    }
 
     /// `BufRead::lines` stops at the first byte sequence that isn't UTF-8. An extension's
     /// stderr is arbitrary bytes; one bad line must not end the read, or the lines after it

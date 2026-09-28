@@ -98,6 +98,25 @@ pub fn around(kind: &'static str, change: impl FnOnce() + 'static) {
     }
 }
 
+/// Which way a step inside the Add device window goes: into an extension's screen, or back out
+/// to all of them. Not a page change — the address stays put — so it goes through [`around`].
+pub fn step(forward: bool) -> &'static str {
+    if forward { "step-in" } else { "step-out" }
+}
+
+/// Gives the element an event was on the `view-transition-name` `name`, for the next change: the
+/// thing clicked is what travels (a card growing into the heading of the step it opens).
+pub fn name_target(event: &ev::MouseEvent, name: &str) {
+    let Some(target) = event
+        .current_target()
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+    else {
+        return;
+    };
+    let style = target.get_attribute("style").unwrap_or_default();
+    let _ = target.set_attribute("style", &format!("{style};view-transition-name: {name}"));
+}
+
 /// A Start tile, clicked: it grows into the heading of the page it opens, so it takes the
 /// heading's name for the change (`hero`), and says so for [`watch`] to read.
 pub fn expand(event: ev::MouseEvent) {
@@ -195,6 +214,12 @@ mod tests {
             navigation("/floorplan", "/devices", Some("tile")),
             Some("down")
         );
+    }
+
+    #[test]
+    fn a_step_in_the_add_device_window_says_which_way_it_goes() {
+        assert_eq!(step(true), "step-in");
+        assert_eq!(step(false), "step-out");
     }
 
     #[test]

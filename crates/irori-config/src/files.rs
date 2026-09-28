@@ -98,7 +98,10 @@ struct RawDevice {
     description: Option<Description>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     area: Option<RawPlacement>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    /// Read, never written: devices were once ignored rather than removed. Such a row is left
+    /// out of what Irori reads, so the device is simply not in the home — it's listed under
+    /// "+ Add device" like any other found device — and the next write drops the row.
+    #[serde(default, skip_serializing)]
     ignored: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     added: bool,
@@ -193,6 +196,7 @@ pub fn read_devices(text: &str) -> Result<BTreeMap<DeviceId, DeviceSettings>, St
     let file: DevicesFile = toml::from_str(text).map_err(|e| e.to_string())?;
     file.devices
         .into_iter()
+        .filter(|(_, raw)| !raw.ignored)
         .map(|(id, raw)| {
             let area = match raw.area {
                 Some(raw) => raw.placement().map_err(|e| format!("`{id}`: {e}"))?,
@@ -204,7 +208,6 @@ pub fn read_devices(text: &str) -> Result<BTreeMap<DeviceId, DeviceSettings>, St
                     name: raw.name,
                     description: raw.description,
                     area,
-                    ignored: raw.ignored,
                     added: raw.added,
                 },
             ))
@@ -239,25 +242,15 @@ pub struct IroriSettings {
     pub devices: DevicesSection,
 }
 
-/// `[devices]`. Applied while Irori runs.
+/// `[devices]`. Nothing in it is used any more: a device joins the home only when a person adds
+/// it from "+ Add device" (`docs/specs/config.md` §3.5).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DevicesSection {
-    /// What happens to a device Irori finds and hasn't been told about.
+    /// `new = "ask"` or `"add"`, from when a found device could join on its own. Still read, so
+    /// an old `irori.toml` isn't refused over it, and Irori says once that it does nothing.
     #[serde(default)]
-    pub new: NewDevices,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum NewDevices {
-    /// It joins the home straight away.
-    Add,
-    /// It waits until a person adds or ignores it — on the Devices page, or on the extension's
-    /// own screen under "+ Add device". The default: what an extension finds is a proposal, not
-    /// a decision, and installing one shouldn't fill the home with whatever is on the network.
-    #[default]
-    Ask,
+    pub new: Option<String>,
 }
 
 /// `[server]`: what command-line flags also say. A flag, or its environment variable, wins over
@@ -415,7 +408,7 @@ pub fn write(file: File, settings: &Settings) -> String {
                             name: device.name.clone(),
                             description: device.description.clone(),
                             area: RawPlacement::of(&device.area),
-                            ignored: device.ignored,
+                            ignored: false,
                             added: device.added,
                         },
                     )
@@ -525,13 +518,11 @@ mod tests {
         assert_eq!(read_irori("").expect("empty"), IroriSettings::default());
         assert!(read_irori("[server]\nlog_level = \"loud\"\n").is_err());
         assert!(read_irori("[server]\nport = 80\n").is_err());
-        let adding = read_irori("[devices]\nnew = \"add\"\n").expect("valid");
-        assert_eq!(adding.devices.new, NewDevices::Add);
-        assert_eq!(
-            IroriSettings::default().devices.new,
-            NewDevices::Ask,
-            "asking is the default"
-        );
+        // From when a found device could join on its own: still read, so the file isn't
+        // refused, but it no longer decides anything.
+        let adding = read_irori("[devices]\nnew = \"add\"\n").expect("still valid");
+        assert_eq!(adding.devices.new.as_deref(), Some("add"));
+        assert_eq!(IroriSettings::default().devices.new, None);
     }
 
     #[test]
@@ -630,6 +621,30 @@ mod tests {
         assert!(error.contains("lamp"), "{error}");
     }
 
+    /// Devices were once ignored rather than removed. Such a row still reads — refusing the file
+    /// would throw away every other device's name — but the device isn't in the home: it's
+    /// listed as found, to be added again, and the next write drops the row.
+    #[test]
+    fn a_row_from_when_devices_could_be_ignored_leaves_the_device_out() {
+        let devices = read_devices(
+            "[devices.demo_plug]\nname = \"Plug\"\nignored = true\nadded = true\n\n\
+             [devices.demo_lamp]\nadded = true\n",
+        )
+        .expect("still valid");
+        let plug: DeviceId = "demo_plug".parse().expect("valid");
+        assert!(!devices.contains_key(&plug), "{devices:?}");
+        assert!(devices.contains_key(&"demo_lamp".parse::<DeviceId>().expect("valid")));
+        let written = write(
+            File::Devices,
+            &Settings {
+                devices,
+                ..Settings::default()
+            },
+        );
+        assert!(!written.contains("ignored"), "{written}");
+        assert!(!written.contains("demo_plug"), "{written}");
+    }
+
     #[test]
     fn what_is_written_reads_back_the_same() {
         let settings = Settings {
@@ -654,7 +669,6 @@ mod tests {
                     name: Some(name("Hallway radar")),
                     description: Some("By the door".parse().expect("valid")),
                     area: Placement::In(area_id("hall")),
-                    ignored: false,
                 },
             )]
             .into(),
@@ -802,7 +816,6 @@ mod tests {
                         name: Some(name("Plug")),
                         description: None,
                         area: Placement::Unsaid,
-                        ignored: false,
                     },
                 ),
             ]

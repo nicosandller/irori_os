@@ -30,7 +30,7 @@ pub use services::{CallError, Command};
 
 pub use home::{device_id_for, new_area_id, new_floor_id};
 
-pub use home::{Held, HeldDevice};
+pub use home::HeldDevice;
 
 use home::{Home, Stamp};
 
@@ -150,7 +150,7 @@ fn is_routine(line: &str) -> bool {
 /// A line without its terminal colour codes. An extension logging in colour — anything built on
 /// `tracing` writing to a pipe it believes is a terminal — otherwise puts raw escape sequences
 /// into a reason the page shows as text.
-fn without_colour(line: &str) -> String {
+pub(crate) fn without_colour(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.chars();
     while let Some(c) = chars.next() {
@@ -761,13 +761,13 @@ impl Core {
         self.publish(events);
     }
 
-    /// Forgets a device a person is done with: out of the home (or out of the ignored list) and
-    /// nothing kept for putting it back, so its protocol may find it again (`docs/specs/config.md` §3.2).
+    /// Removes a device from the home: out of the registry, and back among what its protocol has
+    /// found, so "+ Add device" lists it again straight away (`docs/specs/config.md` §3.2).
     pub fn forget_device(&self, id: &DeviceId) -> Result<(), Rejected> {
         self.change(|home, _| home.forget_device(id))
     }
 
-    /// The entities a device keeps — in the home, or remembered for an ignored one — as protocol
+    /// The entities a device keeps — in the home, or remembered for a found one — as protocol
     /// and unique id pairs, the two fields an `entities.toml` key is made of.
     pub fn device_entity_keys(&self, id: &DeviceId) -> Option<Vec<(ProtocolId, UniqueId)>> {
         read(&self.0.home).device_entity_keys(id)

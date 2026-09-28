@@ -9,10 +9,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use irori_config::{Problem, ServerSettings, Store};
-use irori_core::{Core, Event};
-use irori_types::{DeviceId, ExtensionSettings, Settings, SettingsKey};
+use irori_core::Core;
+use std::collections::BTreeSet;
+
+use irori_types::{DeviceId, ExtensionSettings, ProtocolId, Settings, SettingsKey, UniqueId};
 use tokio::sync::Mutex;
-use tokio::sync::broadcast::error::RecvError;
 
 /// How often the files are checked for outside edits. Two seconds is fast enough that editing a
 /// file feels live, and slow enough that the cost is three `stat` calls.
@@ -68,6 +69,13 @@ impl Config {
             tracing::info!(extensions = ?disabled, "turned off in irori.toml");
         }
         core.apply_disabled_extensions(disabled);
+        if let Some(new) = store.irori().devices.new {
+            tracing::warn!(
+                new = %new,
+                "irori.toml's [devices] new is no longer used: a device joins the home when \
+                 you add it from + Add device"
+            );
+        }
         Self(Arc::new(Mutex::new(store)))
     }
 
@@ -102,35 +110,36 @@ impl Config {
         Ok(made)
     }
 
-    /// Forgets a device a person is done with: its settings leave the config files, and the
-    /// core forgets it — home, an ignored entry, entities, all of it.
+    /// Removes a device from the home (`docs/specs/config.md` §3.2): everything Irori keeps of it
+    /// leaves the config files — its row in `devices.toml`, its entities' rows in `entities.toml`,
+    /// and its spot on the floorplan — and the core takes it out of the registry. The device
+    /// itself isn't told anything: it goes back among what its protocol has found, so
+    /// "+ Add device" lists it straight away and it can be added again like any new device.
+    ///
+    /// `secrets.toml` is left alone: which of an extension's secrets belongs to which device is
+    /// the extension's business, and a key is what an encrypted device needs to be added back.
     ///
     /// Written down first, then forgotten, like every change here: the files and the core never
-    /// disagree, so a save that fails leaves the core agreeing with the disk. The device itself
-    /// isn't told anything, so if it's still around its protocol finds it again and, with asking
-    /// on, it waits to be added like any new device (`docs/specs/config.md` §3.2).
-    ///
-    /// What was said about it in the floorplan is kept: a plan naming a device that no longer
-    /// exists is a stale drawing that does nothing, and it survives a device that comes back.
+    /// disagree, so a save that fails leaves the core agreeing with the disk.
     pub async fn forget_device(&self, core: &Core, id: &DeviceId) -> Result<(), EditError> {
         let mut store = self.0.lock().await;
         report(&store.reload());
 
         let mut settings = store.settings();
-        settings.devices.remove(id);
         // The rows its entities keep in `entities.toml`, keyed by protocol and unique id. Read
         // from the core, because the files say nothing about which entity belongs to which
-        // device — and an ignored device's entities live in the core too, so its rows are found
-        // as well: nothing kept means nothing kept.
-        let owned: std::collections::BTreeSet<SettingsKey> = core
+        // device.
+        let owned: BTreeSet<SettingsKey> = core
             .device_entity_keys(id)
             .unwrap_or_default()
             .into_iter()
             .map(|(protocol, unique_id)| SettingsKey::new(protocol, unique_id))
             .collect();
-        if !owned.is_empty() {
-            settings.entities.retain(|key, _| !owned.contains(key));
-        }
+        forget(
+            &mut settings,
+            |device| device == id,
+            |key| owned.contains(key),
+        );
         let written = store.save(&settings).map_err(EditError::Io)?;
         if !written.is_empty() {
             let files: Vec<&str> = written.iter().map(|file| file.name()).collect();
@@ -138,6 +147,37 @@ impl Config {
         }
         core.forget_device(id)
             .map_err(|why| EditError::Refused(Refused(why.to_string())))?;
+        core.apply_settings(settings);
+        Ok(())
+    }
+
+    /// Removes every device an extension brought in, for when the extension itself goes: the
+    /// same as removing each of them, including the ones that aren't around right now. Without
+    /// this, installing the extension again would put every device it ever had straight back in
+    /// the home, because their `devices.toml` rows would still say they'd been added.
+    pub async fn forget_protocol(
+        &self,
+        core: &Core,
+        protocol: &ProtocolId,
+    ) -> Result<(), EditError> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+
+        let mut settings = store.settings();
+        let before = settings.clone();
+        forget(
+            &mut settings,
+            |device| brought_in_by(device, protocol),
+            |key| &key.protocol == protocol,
+        );
+        if settings == before {
+            return Ok(());
+        }
+        let written = store.save(&settings).map_err(EditError::Io)?;
+        if !written.is_empty() {
+            let files: Vec<&str> = written.iter().map(|file| file.name()).collect();
+            tracing::info!(files = ?files, extension = %protocol, "config written");
+        }
         core.apply_settings(settings);
         Ok(())
     }
@@ -247,13 +287,7 @@ impl Config {
             report(&problems);
             // All of these publish nothing when nothing changed, so this is free on the
             // overwhelming majority of ticks.
-            let mut settings = store.settings();
-            if settings.ask_before_adding && !core.settings().ask_before_adding {
-                keep_what_is_here(&mut store, &mut settings, &core);
-            } else if !settings.ask_before_adding {
-                remember_who_is_here(&mut store, &mut settings, &core);
-            }
-            core.apply_settings(settings);
+            core.apply_settings(store.settings());
             core.apply_extension_settings(store.extension_settings());
             let irori = store.irori();
             core.apply_disabled_extensions(irori.extensions.disabled);
@@ -267,75 +301,30 @@ impl Config {
             }
         }
     }
+}
 
-    /// Writes `added = true` for devices that join while Irori isn't asking, so a later restart
-    /// with asking already on in `irori.toml` doesn't hold the home as new.
-    pub async fn remember_arrivals(self, core: Core) {
-        let mut events = core.subscribe();
-        loop {
-            match events.recv().await {
-                Ok(Event::DeviceAdded { .. }) | Err(RecvError::Lagged(_)) => {
-                    if core.settings().ask_before_adding {
-                        continue;
-                    }
-                    let mut store = self.0.lock().await;
-                    let mut settings = store.settings();
-                    remember_who_is_here(&mut store, &mut settings, &core);
-                    core.apply_settings(settings);
-                }
-                Ok(_) => {}
-                Err(RecvError::Closed) => return,
-            }
-        }
+/// Takes the chosen devices and entities out of `settings`, and the devices off the floorplan.
+fn forget(
+    settings: &mut Settings,
+    device: impl Fn(&DeviceId) -> bool,
+    entity: impl Fn(&SettingsKey) -> bool,
+) {
+    settings.devices.retain(|id, _| !device(id));
+    settings.entities.retain(|key, _| !entity(key));
+    for level in settings.floorplan.floors.values_mut() {
+        level.devices.retain(|placed| !device(&placed.device));
     }
 }
 
-/// Asking before adding is about what Irori finds from now on. Turning it on mustn't empty the
-/// home of everything already in it, so those devices are written down as added — the one time
-/// Irori writes `devices.toml` without being asked for that exact change, because the change a
-/// person did ask for would otherwise undo their whole home.
-fn keep_what_is_here(store: &mut Store, settings: &mut Settings, core: &Core) {
-    let kept = mark_present_as_added(settings, core);
-    if kept == 0 {
-        return;
-    }
-    match store.save(settings) {
-        Ok(_) => tracing::info!(
-            devices = kept,
-            "asking before adding new devices; the ones already in the home stay"
-        ),
-        // The devices file didn't change. Asking still comes from irori.toml, so restoring
-        // `store.settings()` would enable it without `added` and hold the whole home. Leave
-        // asking off in what we apply; the next poll retries the write.
-        Err(e) => {
-            tracing::error!(%e, "couldn't record the devices already in the home as added");
-            *settings = store.settings();
-            settings.ask_before_adding = false;
-        }
-    }
-}
-
-/// Devices that joined while asking is off, so a restart with asking already on keeps them.
-fn remember_who_is_here(store: &mut Store, settings: &mut Settings, core: &Core) {
-    if mark_present_as_added(settings, core) == 0 {
-        return;
-    }
-    if let Err(e) = store.save(settings) {
-        tracing::error!(%e, "couldn't record a device as already in the home");
-        *settings = store.settings();
-    }
-}
-
-fn mark_present_as_added(settings: &mut Settings, core: &Core) -> usize {
-    let mut kept = 0;
-    for device in core.devices() {
-        let entry = settings.devices.entry(device.id).or_default();
-        if !entry.added && !entry.ignored {
-            entry.added = true;
-            kept += 1;
-        }
-    }
-    kept
+/// Whether `device` came in through `protocol`: its id starts with the protocol's, the way
+/// [`irori_core::device_id_for`] makes every id — which is what finds the rows of devices that
+/// aren't around right now, and that the core has never heard of this time round.
+fn brought_in_by(device: &DeviceId, protocol: &ProtocolId) -> bool {
+    let probe = UniqueId::try_from("x").expect("a valid unique id");
+    let made = irori_core::device_id_for(protocol, &probe);
+    made.as_str()
+        .strip_suffix('x')
+        .is_some_and(|prefix| device.as_str().starts_with(prefix))
 }
 
 /// A file Irori couldn't read is worth saying loudly and repeatedly: it means someone's edit
@@ -432,7 +421,6 @@ mod tests {
                         name: Some("Reading lamp".parse::<Name>().expect("a valid name")),
                         description: None,
                         area: irori_types::Placement::Unsaid,
-                        ignored: false,
                     },
                 );
                 Ok(())
@@ -448,19 +436,11 @@ mod tests {
         Ok(())
     }
 
-    /// Turning on "ask before adding" keeps the home as it is: what's already in it is written
-    /// down as added, so neither this moment nor the next restart empties it.
-    #[tokio::test]
-    async fn asking_before_adding_keeps_the_devices_already_here() -> anyhow::Result<()> {
-        let dir = tempfile::tempdir()?;
-        let core = core();
-        // Asking is the default, and this test is about turning it *on*: start by adding on
-        // sight, so there's a home here to protect when it goes on a few lines below.
-        std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"add\"\n")?;
-        let config = Config::open_dir(dir.path(), &core);
+    /// The demo extension, running, with every device it brings in added — the way a person
+    /// would from "+ Add device".
+    async fn demo_home(config: &Config, core: &Core) -> anyhow::Result<irori_core::ExtensionHost> {
         let host = irori_core::ExtensionHost::start(
-            &core,
-            // The demo alone: ESPHome would find whatever is on this network partway through.
+            core,
             vec![
                 irori_protocol::builtin::<irori_protocol_demo::Demo>()
                     .map_err(anyhow::Error::msg)?,
@@ -469,76 +449,92 @@ mod tests {
         )
         .map_err(anyhow::Error::msg)?;
         for _ in 0..500 {
-            if core.devices().len() >= 3 {
+            if core.held_devices().len() >= 3 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        let before = core.devices().len();
-        assert!(before >= 3, "the demo devices arrived");
-        tokio::spawn(config.clone().watch(core.clone()));
-
-        std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"ask\"\n")?;
+        assert!(
+            core.devices().is_empty(),
+            "nothing joins the home on its own"
+        );
+        let found: Vec<DeviceId> = core.held_devices().into_iter().map(|d| d.id).collect();
+        assert!(found.len() >= 3, "the demo devices were found");
+        config
+            .edit(core, |settings| {
+                for id in &found {
+                    settings.devices.entry(id.clone()).or_default().added = true;
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
         for _ in 0..500 {
-            if core.settings().ask_before_adding {
+            if core.devices().len() == found.len() && !core.entities().is_empty() {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(
-            core.settings().ask_before_adding,
-            "the change was picked up"
-        );
-        assert_eq!(core.devices().len(), before, "nothing left the home");
-        assert!(core.held_devices().is_empty());
-        let devices = std::fs::read_to_string(dir.path().join("devices.toml"))?;
-        assert!(devices.contains("added = true"), "{devices}");
+        Ok(host)
+    }
 
-        host.shutdown().await;
+    /// `[devices] new` is from when a found device could join on its own. An `irori.toml` that
+    /// still says it loads, and asking before adding stays on whatever it says.
+    #[tokio::test]
+    async fn an_old_new_devices_setting_no_longer_adds_anything() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let core = core();
+        std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"add\"\n")?;
+        let _config = Config::open_dir(dir.path(), &core);
+        assert!(core.settings().ask_before_adding);
         Ok(())
     }
 
-    /// Forgetting a device writes it out of the config files and out of the core: the device
-    /// itself, its entities, and everything that was said about either.
+    /// Removing a device writes it out of the config files and out of the home — the device, its
+    /// entities, everything said about either, and its spot on the floorplan — and it's listed
+    /// as found again at once, to be added back if wanted.
     #[tokio::test]
-    async fn forgetting_a_device_reaches_the_core_and_the_files() -> anyhow::Result<()> {
+    async fn removing_a_device_reaches_the_files_and_the_core_and_finds_it_again()
+    -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let core = core();
-        std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"add\"\n")?;
         let config = Config::open_dir(dir.path(), &core);
-        let host = irori_core::ExtensionHost::start(
-            &core,
-            vec![
-                irori_protocol::builtin::<irori_protocol_demo::Demo>()
-                    .map_err(anyhow::Error::msg)?,
-            ],
-            irori_core::Timing::default(),
-        )
-        .map_err(anyhow::Error::msg)?;
-        for _ in 0..500 {
-            if !core.devices().is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let host = demo_home(&config, &core).await?;
         let Some(device) = core.devices().first().cloned() else {
-            anyhow::bail!("no demo device arrived");
+            anyhow::bail!("no demo device in the home");
         };
         let id = device.id.clone();
-        let neighbours = core.devices().iter().filter(|d| d.id != id).count();
+        let neighbours = core.devices().len() - 1;
+        let first = core
+            .entities()
+            .into_iter()
+            .find(|entity| entity.device_id.as_ref() == Some(&id))
+            .expect("the device has entities");
+        let key = SettingsKey::new(first.protocol, first.unique_id);
 
         config
             .edit(&core, |settings| {
-                settings.devices.insert(
-                    id.clone(),
-                    DeviceSettings {
-                        added: true,
-                        name: Some("Shared".parse::<Name>().expect("a valid name")),
-                        description: None,
-                        area: irori_types::Placement::Unsaid,
-                        ignored: false,
+                let said = settings.devices.entry(id.clone()).or_default();
+                said.name = Some("Shared".parse::<Name>().expect("a valid name"));
+                settings.entities.insert(
+                    key.clone(),
+                    EntitySettings {
+                        name: Some("Reading light".parse::<Name>().expect("a valid name")),
                     },
                 );
+                settings.floorplan = irori_types::Floorplan {
+                    floors: [(
+                        "ground".parse().expect("a valid floor id"),
+                        irori_types::Level {
+                            devices: vec![irori_types::PlacedDevice {
+                                device: id.clone(),
+                                at: irori_types::Point { x: 10, y: 20 },
+                            }],
+                            ..Default::default()
+                        },
+                    )]
+                    .into(),
+                };
                 Ok(())
             })
             .await
@@ -560,158 +556,67 @@ mod tests {
                 .any(|e| e.device_id.as_ref() == Some(&id)),
             "its entities went with it"
         );
-        assert_eq!(
-            core.devices().iter().filter(|d| d.id != id).count(),
-            neighbours,
-            "its neighbours stayed"
-        );
-        let written = std::fs::read_to_string(dir.path().join("devices.toml"))?;
-        assert!(!written.contains(&id.to_string()), "{written}");
-
-        host.shutdown().await;
-        Ok(())
-    }
-
-    /// An ignored device's entities aren't in the registry, but their rows are still in
-    /// `entities.toml` — forgetting has to reach them too, or a rediscovered device would come
-    /// back with renames a person had already forgotten.
-    #[tokio::test]
-    async fn forgetting_an_ignored_device_prunes_its_entity_settings() -> anyhow::Result<()> {
-        let dir = tempfile::tempdir()?;
-        let core = core();
-        std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"add\"\n")?;
-        let config = Config::open_dir(dir.path(), &core);
-        let host = irori_core::ExtensionHost::start(
-            &core,
-            vec![
-                irori_protocol::builtin::<irori_protocol_demo::Demo>()
-                    .map_err(anyhow::Error::msg)?,
-            ],
-            irori_core::Timing::default(),
-        )
-        .map_err(anyhow::Error::msg)?;
-        for _ in 0..500 {
-            if !core.devices().is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        let Some(device) = core.devices().first().cloned() else {
-            anyhow::bail!("no demo device arrived");
-        };
-        let id = device.id.clone();
-        let first = core
-            .entities()
-            .into_iter()
-            .find(|entity| entity.device_id.as_ref() == Some(&id))
-            .expect("the device has entities");
-        let key = SettingsKey::new(first.protocol, first.unique_id);
-
-        config
-            .edit(&core, |settings| {
-                settings.devices.insert(
-                    id.clone(),
-                    DeviceSettings {
-                        added: true,
-                        ignored: true,
-                        name: None,
-                        description: None,
-                        area: irori_types::Placement::Unsaid,
-                    },
-                );
-                let said = EntitySettings {
-                    name: Some("Reading light".parse::<Name>().expect("a valid name")),
-                };
-                settings.entities.insert(key.clone(), said);
-                Ok(())
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-
-        // Ignored: out of the home, but its row is still in the file where forgetting will find it.
+        assert_eq!(core.devices().len(), neighbours, "its neighbours stayed");
+        let found = core.held_devices();
         assert!(
-            !core
-                .entities()
+            found
                 .iter()
-                .any(|e| e.device_id.as_ref() == Some(&id)),
-            "ignoring took it out of the home"
+                .any(|d| d.id == id && d.name.as_str() != "Shared"),
+            "found again straight away, under its own name: {found:?}"
         );
-        let entities = std::fs::read_to_string(dir.path().join("entities.toml"))?;
-        assert!(entities.contains(&key.to_string()), "{entities}");
-
-        config
-            .forget_device(&core, &id)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-
-        let entities = std::fs::read_to_string(dir.path().join("entities.toml"))?;
-        assert!(!entities.contains(&key.to_string()), "{entities}");
         let devices = std::fs::read_to_string(dir.path().join("devices.toml"))?;
         assert!(!devices.contains(&id.to_string()), "{devices}");
+        let entities = std::fs::read_to_string(dir.path().join("entities.toml"))?;
+        assert!(!entities.contains(&key.to_string()), "{entities}");
+        assert!(
+            core.floorplan()
+                .floors
+                .values()
+                .all(|level| level.devices.is_empty()),
+            "off the floorplan"
+        );
 
         host.shutdown().await;
         Ok(())
     }
+
+    /// Uninstalling an extension removes every device it brought in — including one that isn't
+    /// around right now — so installing it again starts with nothing in the home. Other
+    /// extensions' devices are left alone.
     #[tokio::test]
-    async fn starting_with_asking_already_on_keeps_the_devices_already_here() -> anyhow::Result<()>
-    {
+    async fn forgetting_a_protocol_forgets_every_device_it_brought_in() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
-        let before = {
-            let core = core();
-            // The first run is the one where asking is off; the second half of the test turns it
-            // on in the same directory. Asking being the default makes that first part explicit.
-            std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"add\"\n")?;
-            let _config = Config::open_dir(dir.path(), &core);
-            let host = irori_core::ExtensionHost::start(
-                &core,
-                vec![
-                    irori_protocol::builtin::<irori_protocol_demo::Demo>()
-                        .map_err(anyhow::Error::msg)?,
-                ],
-                irori_core::Timing::default(),
-            )
-            .map_err(anyhow::Error::msg)?;
-            for _ in 0..500 {
-                if core.devices().len() >= 3 {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            let before = core.devices().len();
-            assert!(before >= 3, "the demo devices arrived");
-            let mut store = Store::new(dir.path());
-            store.reload();
-            let mut settings = store.settings();
-            remember_who_is_here(&mut store, &mut settings, &core);
-            let devices = std::fs::read_to_string(dir.path().join("devices.toml"))?;
-            assert!(devices.contains("added = true"), "{devices}");
-            host.shutdown().await;
-            before
-        };
-
-        std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"ask\"\n")?;
+        std::fs::write(
+            dir.path().join("devices.toml"),
+            "[devices.demo_lamp]\nadded = true\n\n\
+             [devices.demo_unplugged]\nname = \"Away\"\nadded = true\n\n\
+             [devices.demonic_1]\nadded = true\n\n\
+             [devices.esphome_00_11]\nadded = true\n",
+        )?;
+        std::fs::write(
+            dir.path().join("entities.toml"),
+            "[entities.\"demo/lamp-light\"]\nname = \"Lamp\"\n\n\
+             [entities.\"esphome/00:11-light\"]\nname = \"Other\"\n",
+        )?;
         let core = core();
-        let _config = Config::open_dir(dir.path(), &core);
-        assert!(core.settings().ask_before_adding);
-        let host = irori_core::ExtensionHost::start(
-            &core,
-            vec![
-                irori_protocol::builtin::<irori_protocol_demo::Demo>()
-                    .map_err(anyhow::Error::msg)?,
-            ],
-            irori_core::Timing::default(),
-        )
-        .map_err(anyhow::Error::msg)?;
-        for _ in 0..500 {
-            if core.devices().len() >= before {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert_eq!(core.devices().len(), before, "nothing left the home");
-        assert!(core.held_devices().is_empty());
+        let config = Config::open_dir(dir.path(), &core);
 
-        host.shutdown().await;
+        config
+            .forget_protocol(&core, &"demo".parse().expect("a valid protocol id"))
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+        let devices = std::fs::read_to_string(dir.path().join("devices.toml"))?;
+        assert!(!devices.contains("demo_lamp"), "{devices}");
+        assert!(!devices.contains("demo_unplugged"), "{devices}");
+        assert!(
+            devices.contains("demonic_1"),
+            "another protocol's: {devices}"
+        );
+        assert!(devices.contains("esphome_00_11"), "{devices}");
+        let entities = std::fs::read_to_string(dir.path().join("entities.toml"))?;
+        assert!(!entities.contains("demo/lamp-light"), "{entities}");
+        assert!(entities.contains("esphome/00:11-light"), "{entities}");
         Ok(())
     }
 
@@ -841,52 +746,6 @@ mod tests {
             !extension.contains("/dev/ttyACM0"),
             "the new settings must not be left behind without the secret:\n{extension}"
         );
-        Ok(())
-    }
-
-    /// If recording `added` fails when asking is turned on, asking must not take effect: the
-    /// devices already in the home would otherwise move to the held list.
-    #[tokio::test]
-    async fn a_failed_write_when_asking_starts_does_not_hold_the_home() -> anyhow::Result<()> {
-        let dir = tempfile::tempdir()?;
-        let core = core();
-        // Asking is the default; this test is about what happens as it's turned on, so the home
-        // has to fill up first.
-        std::fs::write(dir.path().join("irori.toml"), "[devices]\nnew = \"add\"\n")?;
-        let _config = Config::open_dir(dir.path(), &core);
-        let host = irori_core::ExtensionHost::start(
-            &core,
-            vec![
-                irori_protocol::builtin::<irori_protocol_demo::Demo>()
-                    .map_err(anyhow::Error::msg)?,
-            ],
-            irori_core::Timing::default(),
-        )
-        .map_err(anyhow::Error::msg)?;
-        for _ in 0..500 {
-            if core.devices().len() >= 3 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        let before = core.devices().len();
-        assert!(before >= 3, "the demo devices arrived");
-
-        std::fs::create_dir(dir.path().join("devices.toml.writing"))?;
-        let mut store = Store::new(dir.path());
-        store.reload();
-        let mut settings = store.settings();
-        settings.ask_before_adding = true;
-        keep_what_is_here(&mut store, &mut settings, &core);
-        assert!(
-            !settings.ask_before_adding,
-            "asking must wait until the home is recorded as added"
-        );
-        core.apply_settings(settings);
-        assert_eq!(core.devices().len(), before);
-        assert!(core.held_devices().is_empty());
-
-        host.shutdown().await;
         Ok(())
     }
 }

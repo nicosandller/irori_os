@@ -18,6 +18,9 @@ pub fn Modal(
     /// Named in the heading, and what a screen reader announces the window as.
     title: String,
     #[prop(into)] on_close: Callback<()>,
+    /// Wider than a form needs, for what's read across: a log.
+    #[prop(optional)]
+    wide: bool,
     children: Children,
 ) -> impl IntoView {
     let label = title.clone();
@@ -34,6 +37,7 @@ pub fn Modal(
             // in the form, or dragging to select text in it, mustn't throw the form away.
             <div
                 class="modal"
+                class:wide=wide
                 role="dialog"
                 aria-modal="true"
                 aria-label=label

@@ -4,6 +4,11 @@
 //! usually written down (`docs/specs/extensions.md` §8); Irori's own log is where the words
 //! Irori writes itself end up. The same window for both, so a person chasing a problem reads one
 //! thing the same way whichever of the two said it.
+//!
+//! Each line is read into its parts — when, how serious, who said it, what, and the details
+//! after it — and shown as a row of its own, so a log reads down the page rather than across it.
+//! Nothing is dropped for not fitting that shape: a line that's only words is a row that's only a
+//! message.
 
 use std::time::Duration;
 
@@ -64,6 +69,234 @@ impl Source {
             ),
         }
     }
+}
+
+/// The level a line says it was written at, where it says one — `tracing`'s five words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Level {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl Level {
+    fn read(word: &str) -> Option<Level> {
+        Some(match word {
+            "ERROR" => Level::Error,
+            "WARN" => Level::Warn,
+            "INFO" => Level::Info,
+            "DEBUG" => Level::Debug,
+            "TRACE" => Level::Trace,
+            _ => return None,
+        })
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            Level::Error => "error",
+            Level::Warn => "warn",
+            Level::Info => "info",
+            Level::Debug => "debug",
+            Level::Trace => "trace",
+        }
+    }
+}
+
+/// One line of a log, in its parts.
+#[derive(Clone, Debug, PartialEq)]
+struct Line {
+    /// The whole line as it was written, for the copy button and the search box.
+    raw: String,
+    /// When, as written: `2026-09-26T10:00:00.123456Z`. Empty for a line that doesn't say.
+    stamp: String,
+    /// The level it was written at, if it says — or, if it doesn't, what the words in it amount
+    /// to: a line that says ERROR is an error whoever printed it.
+    level: Option<Level>,
+    /// The extension a line in Irori's own log came from (`extension=esphome`).
+    source: Option<String>,
+    /// What it said.
+    message: String,
+    /// The `key=value` details `tracing` writes after the message, in order.
+    fields: Vec<(String, String)>,
+}
+
+impl Line {
+    /// How seriously to take it, for the colour and the filters.
+    fn weight(&self) -> Weight {
+        match self.level {
+            Some(Level::Error) => Weight::Error,
+            Some(Level::Warn) => Weight::Warn,
+            _ => Weight::Plain,
+        }
+    }
+
+    /// `HH:MM:SS` out of the stamp: the part that tells one line from the next.
+    fn clock(&self) -> &str {
+        self.stamp.get(11..19).unwrap_or(&self.stamp)
+    }
+}
+
+/// Reads a line into its parts. Never fails: what can't be read as a part stays in the message.
+///
+/// Irori's own lines are `tracing`'s: `2026-…Z  WARN connected device=… extension=esphome`. An
+/// extension's own output often is too, and an older Irori passed an extension's line on whole,
+/// as an INFO line wrapped round the extension's own timestamp and level — so a second stamp and
+/// level straight after the first are read as well, and the more serious of the two levels wins:
+/// an extension's ERROR is an error, whatever the line round it said.
+fn parse(raw: &str) -> Line {
+    let clean = without_escaped_colour(raw);
+    let (stamp, rest) = split_timestamp(&clean);
+    let (mut level, mut rest) = take_level(rest);
+    // The wrapped line's own stamp and level, when there are any.
+    let (inner_stamp, inner) = split_timestamp(rest);
+    let (inner_level, inner_rest) = take_level(inner);
+    if inner_level.is_some() || !inner_stamp.is_empty() {
+        level = level.max(inner_level);
+        rest = inner_rest;
+    }
+    let (message, mut fields) = split_fields(rest);
+    let source = fields
+        .iter()
+        .position(|(key, _)| key == "extension")
+        .map(|at| fields.remove(at).1);
+    let level = level.or(match weight(&clean) {
+        Weight::Error => Some(Level::Error),
+        Weight::Warn => Some(Level::Warn),
+        Weight::Plain => None,
+    });
+    Line {
+        raw: raw.to_owned(),
+        stamp: stamp.to_owned(),
+        level,
+        source,
+        message: message.to_owned(),
+        fields,
+    }
+}
+
+/// A level word off the front of `text`, and what follows it.
+fn take_level(text: &str) -> (Option<Level>, &str) {
+    let text = text.trim_start();
+    match text.split_once(char::is_whitespace) {
+        Some((word, rest)) => match Level::read(word) {
+            Some(level) => (Some(level), rest.trim_start()),
+            None => (None, text),
+        },
+        None => match Level::read(text) {
+            Some(level) => (Some(level), ""),
+            None => (None, text),
+        },
+    }
+}
+
+/// The message, and the `key=value` details after it.
+///
+/// `tracing` writes its fields last, each a word, `=`, and a value that runs until the next
+/// field — a value may have spaces in it (`name=Sensor fusion radar`). So the message is what
+/// comes before the first word shaped like `key=`, and each field runs to the next. A message
+/// that happens to contain a `key=` word is split there too; everything is still shown, just
+/// with the rest set back as details.
+fn split_fields(text: &str) -> (&str, Vec<(String, String)>) {
+    let mut starts = Vec::new();
+    let mut at = 0;
+    for word in text.split(' ') {
+        if is_field(word) {
+            starts.push(at);
+        }
+        at += word.len() + 1;
+    }
+    let Some(&first) = starts.first() else {
+        return (text.trim_end(), Vec::new());
+    };
+    let message = text[..first].trim_end();
+    let mut fields = Vec::new();
+    for (i, &start) in starts.iter().enumerate() {
+        let end = starts.get(i + 1).map_or(text.len(), |&next| next);
+        let field = text[start..end].trim_end();
+        if let Some((key, value)) = field.split_once('=') {
+            fields.push((key.to_owned(), value.to_owned()));
+        }
+    }
+    (message, fields)
+}
+
+/// Whether `word` starts a field: an identifier, then `=`.
+fn is_field(word: &str) -> bool {
+    let Some((key, _)) = word.split_once('=') else {
+        return false;
+    };
+    let mut chars = key.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_lowercase() || first == '_')
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '.'))
+}
+
+/// A line without the colour codes an older Irori let through as text: `\x1b[2m`, written out
+/// as the four characters it is, where the terminal escape used to be. Only that shape is taken
+/// out — a backslash that's part of what a line said stays.
+fn without_escaped_colour(line: &str) -> String {
+    const ESCAPE: &str = "\\x1b[";
+    if !line.contains(ESCAPE) {
+        return line.to_owned();
+    }
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(at) = rest.find(ESCAPE) {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + ESCAPE.len()..];
+        let params = after
+            .find(|c: char| !matches!(c, '0'..='9' | ';'))
+            .unwrap_or(after.len());
+        rest = match after[params..].chars().next() {
+            Some(end) if end.is_ascii_alphabetic() => &after[params + 1..],
+            _ => {
+                out.push_str(ESCAPE);
+                after
+            }
+        };
+    }
+    out.push_str(rest);
+    out
+}
+
+/// How many lines fell off the front of `old` to make `new`: the smallest cut that leaves the
+/// rest of `old` as the start of `new`. The server keeps only the newest lines, so once the log
+/// is full every new line pushes one off the front — and a row keeps its place on the page only
+/// if it keeps its key, which counts lines from the first one this window ever saw. All of `old`
+/// when nothing lines up: Irori restarted, or more arrived than it keeps.
+fn fell_off(old: &[String], new: &[String]) -> usize {
+    (0..old.len())
+        .find(|&cut| {
+            let rest = &old[cut..];
+            rest.len() <= new.len() && new[..rest.len()] == *rest
+        })
+        .unwrap_or(old.len())
+}
+
+/// Which lines a filter shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Showing {
+    All,
+    Warnings,
+    Errors,
+}
+
+impl Showing {
+    fn keeps(self, weight: Weight) -> bool {
+        match self {
+            Showing::All => true,
+            Showing::Warnings => weight != Weight::Plain,
+            Showing::Errors => weight == Weight::Error,
+        }
+    }
+}
+
+/// Whether `line` has `needle` in it, ignoring case. An empty needle is in every line.
+fn mentions(line: &Line, needle: &str) -> bool {
+    needle.is_empty() || line.raw.to_lowercase().contains(needle)
 }
 
 /// How seriously to take a line, which is what decides its colour.
@@ -217,25 +450,81 @@ async fn write_to_clipboard(text: &str) -> bool {
         .is_ok()
 }
 
+/// The copy button's picture: a clipboard, and the check it turns into once the copy worked.
+fn copy_icon() -> impl IntoView {
+    view! {
+        <svg class="copy-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none"
+             stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <g class="copy-clip">
+                <rect x="8" y="8" width="12" height="12" rx="2" />
+                <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+            </g>
+            <path class="copy-check" d="M5 12.5l4.5 4.5L19 7.5" pathLength="1" />
+        </svg>
+    }
+}
+
 #[component]
 pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl IntoView {
-    let lines = RwSignal::new(Vec::<String>::new());
+    // Every line so far, each with the key it keeps for as long as the window is open.
+    let rows = RwSignal::new(Vec::<(usize, Line)>::new());
+    // The key the next new line gets.
+    let next = StoredValue::new(0usize);
+    // Keys below this arrived with the first answer; the ones after it arrived while the window
+    // was open, and those are the ones that fade in.
+    let first_batch = StoredValue::new(None::<usize>);
     let trouble = RwSignal::new(None::<String>);
     // Distinguishes "nothing to show" from "haven't looked yet": an empty log is a real answer
     // and shouldn't flash an explanation before the first response arrives.
     let asked = RwSignal::new(false);
     let (title, note, quiet) = source.say();
 
-    // What the copy button last did, or `None` when it isn't saying anything. A signal holding a
-    // word for a person rather than a type of its own: there is nothing else to know about it.
-    let copied: RwSignal<Option<&'static str>> = RwSignal::new(None);
+    // The filters. Outside what redraws as lines arrive, so a search being typed survives a
+    // refresh (ROADMAP D33).
+    let showing = RwSignal::new(Showing::All);
+    let needle = RwSignal::new(String::new());
+
+    // What the copy button last did, or `None` when it isn't saying anything.
+    let copied: RwSignal<Option<bool>> = RwSignal::new(None);
+
+    // The scrolling log itself, to keep the newest line in view while you're reading it.
+    let scroller = NodeRef::<leptos::html::Div>::new();
+    // Whether the log is scrolled to its end: a new line then scrolls into view. Scrolled up to
+    // read something, it stays where you are.
+    let pinned = StoredValue::new(true);
 
     let load = move || {
         let source = source.clone();
         spawn_local(async move {
             match source.lines().await {
                 Ok(said) => {
-                    lines.set(said);
+                    let old: Vec<String> = rows.with_untracked(|rows| {
+                        rows.iter().map(|(_, line)| line.raw.clone()).collect()
+                    });
+                    // Nothing new, nothing to redraw.
+                    if old != said {
+                        let gone = fell_off(&old, &said);
+                        let kept = old.len() - gone;
+                        let start = next.get_value() - kept;
+                        rows.update(|rows| {
+                            rows.drain(..gone);
+                            for (i, raw) in said.iter().enumerate().skip(kept) {
+                                rows.push((start + i, parse(raw)));
+                            }
+                        });
+                        next.set_value(start + said.len());
+                        if first_batch.get_value().is_none() {
+                            first_batch.set_value(Some(next.get_value()));
+                        }
+                        if pinned.get_value() {
+                            // After the new rows are drawn.
+                            request_animation_frame(move || {
+                                if let Some(log) = scroller.get_untracked() {
+                                    log.set_scroll_top(log.scroll_height());
+                                }
+                            });
+                        }
+                    }
                     trouble.set(None);
                 }
                 Err(why) => trouble.set(Some(why)),
@@ -252,76 +541,163 @@ pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl I
         }
     });
 
-    // The whole log at once, which is what someone reading a window of it wants to paste into an
-    // issue: a single line out of a stack trace is rarely the useful part. Formatting stays in
-    // the view, so what is copied is the text as it was written and not as it is coloured.
+    // The lines the filters let through.
+    let shown = Memo::new(move |_| {
+        let needle = needle.get().to_lowercase();
+        let showing = showing.get();
+        rows.with(|rows| {
+            rows.iter()
+                .filter(|(_, line)| showing.keeps(line.weight()) && mentions(line, &needle))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+    });
+    let count = move |weight: Weight| {
+        rows.with(|rows| {
+            rows.iter()
+                .filter(|(_, line)| line.weight() == weight)
+                .count()
+        })
+    };
+
+    // What's showing, as it was written — so a filtered log copies as the lines you picked out,
+    // and a colour never ends up in an issue someone pastes this into.
     let copy = move || {
-        let text = lines.read().join("\n");
+        let text = shown.with(|shown| {
+            shown
+                .iter()
+                .map(|(_, line)| line.raw.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
         spawn_local(async move {
-            let said = if write_to_clipboard(&text).await {
-                "Copied"
-            } else {
-                "Copy failed"
-            };
-            copied.set(Some(said));
+            copied.set(Some(write_to_clipboard(&text).await));
             set_timeout(move || copied.set(None), COPIED_FOR);
         });
     };
 
+    let filter = move |to: Showing, label: &'static str, weight: Option<Weight>| {
+        view! {
+            <button
+                type="button"
+                class:chosen=move || showing.get() == to
+                aria-pressed=move || (showing.get() == to).to_string()
+                on:click=move |_| showing.set(to)
+            >
+                {label}
+                {weight.map(|weight| view! {
+                    <span class="log-count" class:none=move || count(weight) == 0>
+                        {move || count(weight)}
+                    </span>
+                })}
+            </button>
+        }
+    };
+
     view! {
-        <crate::modal::Modal title=title on_close=on_close>
-            <p class="muted small">
-                {note}
-            </p>
+        <crate::modal::Modal title=title on_close=on_close wide=true>
+            <p class="muted small">{note}</p>
             {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
-            {move || {
-                let said = lines.get();
-                if said.is_empty() {
-                    (asked.get())
-                        .then(|| view! {
-                            <p class="muted">
-                                {quiet}
-                            </p>
-                        })
-                        .into_any()
-                } else {
-                    // One element per line, coloured by what it says, with its timestamp set
-                    // apart from the message. The line is a real element holding the real text:
-                    // nothing here is built as HTML for the browser to parse, so a line carrying
-                    // someone else's `<script>` is shown as the words `<script>`, which is what
-                    // it is. Every line is shown, including the ones that match nothing — a log
-                    // window that quietly dropped the lines it didn't recognise would be worse
-                    // than no window at all.
-                    let rendered = said
-                        .iter()
-                        .map(|line| {
-                            let (stamp, message) = split_timestamp(line);
-                            let class = weight(line).class();
-                            view! {
-                                <span class=class>
-                                    <span class="log-stamp">{stamp}</span>
-                                    {message}
-                                </span>
-                            }
-                            .into_any()
-                        })
-                        .collect::<Vec<_>>();
-                    view! {
-                        <div class="log-window">
-                            <button
-                                type="button"
-                                class="log-copy"
-                                on:click=move |_| copy()
-                                title="Copy the whole log"
-                            >
-                                {move || copied.get().unwrap_or("Copy")}
-                            </button>
-                            <pre class="ext-log">{rendered}</pre>
-                        </div>
+            <div class="log-bar">
+                <div class="switcher log-filter" role="group" aria-label="Which lines">
+                    {filter(Showing::All, "All", None)}
+                    {filter(Showing::Warnings, "Warnings", Some(Weight::Warn))}
+                    {filter(Showing::Errors, "Errors", Some(Weight::Error))}
+                </div>
+                <input
+                    class="log-search"
+                    type="search"
+                    placeholder="Search the log"
+                    aria-label="Search the log"
+                    prop:value=needle
+                    on:input:target=move |ev| needle.set(ev.target().value())
+                />
+                <button
+                    type="button"
+                    class="log-copy"
+                    class:done=move || copied.get() == Some(true)
+                    class:failed=move || copied.get() == Some(false)
+                    on:click=move |_| copy()
+                    aria-label="Copy what's showing"
+                    title=move || match copied.get() {
+                        Some(true) => "Copied",
+                        Some(false) => "Copy failed — the browser didn't allow it",
+                        None => "Copy what's showing",
                     }
-                        .into_any()
+                >
+                    {copy_icon()}
+                </button>
+                <span class="visually-hidden" aria-live="polite">
+                    {move || match copied.get() {
+                        Some(true) => "Copied",
+                        Some(false) => "Copy failed",
+                        None => "",
+                    }}
+                </span>
+            </div>
+            <div
+                class="log-window"
+                node_ref=scroller
+                on:scroll=move |_| {
+                    if let Some(log) = scroller.get_untracked() {
+                        pinned.set_value(
+                            log.scroll_top() + log.client_height() >= log.scroll_height() - 8,
+                        );
+                    }
                 }
-            }}
+            >
+                {move || {
+                    let empty = rows.with(Vec::is_empty);
+                    (empty && asked.get()).then(|| view! { <p class="muted log-quiet">{quiet}</p> })
+                }}
+                {move || {
+                    let nothing = !rows.with(Vec::is_empty) && shown.with(Vec::is_empty);
+                    nothing.then(|| view! { <p class="muted log-quiet">"No lines match."</p> })
+                }}
+                // One row per line, keyed so a row stays put as newer lines arrive and older ones
+                // fall off the top. Every part is a real element holding the real text: nothing
+                // here is built as HTML for the browser to parse, so a line carrying someone
+                // else's `<script>` is shown as the words `<script>`, which is what it is.
+                <ol class="log-lines">
+                    <For
+                        each=move || shown.get()
+                        key=|(key, _)| *key
+                        children=move |(key, line)| {
+                            let fresh = first_batch.get_value().is_some_and(|first| key >= first);
+                            let level = line.level.map(Level::word);
+                            view! {
+                                <li
+                                    class=format!("log-row {}", line.weight().class())
+                                    class:fresh=fresh
+                                >
+                                    <time class="log-stamp" title=line.stamp.clone()>
+                                        {line.clock().to_owned()}
+                                    </time>
+                                    <span class=format!("log-level {}", level.unwrap_or("none"))>
+                                        {level.unwrap_or("")}
+                                    </span>
+                                    <span class="log-text">
+                                        {line.source.clone().map(|source| view! {
+                                            <span class="log-source">{source}</span>
+                                        })}
+                                        <span class="log-message">{line.message.clone()}</span>
+                                        {line
+                                            .fields
+                                            .iter()
+                                            .map(|(key, value)| view! {
+                                                <span class="log-field">
+                                                    <span class="log-key">{format!("{key}=")}</span>
+                                                    {value.clone()}
+                                                </span>
+                                            })
+                                            .collect_view()}
+                                    </span>
+                                </li>
+                            }
+                        }
+                    />
+                </ol>
+            </div>
         </crate::modal::Modal>
     }
 }
@@ -424,5 +800,93 @@ mod tests {
         let (stamp, message) = split_timestamp("ready");
         assert_eq!(stamp, "");
         assert_eq!(message, "ready");
+    }
+
+    #[test]
+    fn a_line_of_irori_s_own_reads_into_its_parts() {
+        let line = parse(
+            "2026-09-28T13:38:35.195523Z  WARN connected without authentication \
+             device=30:83:98:CA:6A:08 name=Sensor fusion radar extension=esphome",
+        );
+        assert_eq!(line.stamp, "2026-09-28T13:38:35.195523Z");
+        assert_eq!(line.clock(), "13:38:35");
+        assert_eq!(line.level, Some(Level::Warn));
+        assert_eq!(line.source.as_deref(), Some("esphome"));
+        assert_eq!(line.message, "connected without authentication");
+        assert_eq!(
+            line.fields,
+            [
+                ("device".to_owned(), "30:83:98:CA:6A:08".to_owned()),
+                ("name".to_owned(), "Sensor fusion radar".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_wrapped_extension_line_reads_as_its_own_level() {
+        // How an older Irori passed an extension's line on: INFO round the extension's ERROR,
+        // with the colour codes written out as text.
+        let line = parse(
+            "2026-09-28T13:38:35.124795Z  INFO \\x1b[2m2026-09-28T13:38:35.124696Z\\x1b[0m \
+             \\x1b[31mERROR\\x1b[0m couldn't connect extension=esphome",
+        );
+        assert_eq!(line.level, Some(Level::Error));
+        assert_eq!(line.message, "couldn't connect");
+        assert_eq!(line.source.as_deref(), Some("esphome"));
+        assert_eq!(line.weight(), Weight::Error);
+    }
+
+    #[test]
+    fn a_line_that_is_only_words_is_all_message() {
+        let line = parse("ser: opening /dev/ttyUSB0");
+        assert_eq!(line.stamp, "");
+        assert_eq!(line.level, None);
+        assert_eq!(line.message, "ser: opening /dev/ttyUSB0");
+        assert!(line.fields.is_empty());
+        // And one that says it's trouble is trouble, whatever else it looks like.
+        assert_eq!(parse("couldn't open it: ERROR").level, Some(Level::Error));
+        assert_eq!(parse("").message, "");
+    }
+
+    #[test]
+    fn an_equals_sign_in_a_message_is_not_a_field_unless_it_is_shaped_like_one() {
+        let line = parse("2026-09-26T10:00:00Z  INFO 2 + 2 = 4 answer=four");
+        assert_eq!(line.message, "2 + 2 = 4");
+        assert_eq!(line.fields, [("answer".to_owned(), "four".to_owned())]);
+        assert!(parse("https://example.com/?a=b").fields.is_empty());
+    }
+
+    #[test]
+    fn a_backslash_that_is_not_a_colour_code_stays() {
+        assert_eq!(
+            without_escaped_colour(r"C:\x1b and \x1b[2mdim\x1b[0m"),
+            r"C:\x1b and dim"
+        );
+    }
+
+    #[test]
+    fn lines_that_fell_off_the_front_are_counted() {
+        let lines = |all: &[&str]| all.iter().map(|&s| s.to_owned()).collect::<Vec<_>>();
+        assert_eq!(fell_off(&lines(&["a", "b"]), &lines(&["a", "b", "c"])), 0);
+        assert_eq!(
+            fell_off(&lines(&["a", "b", "c"]), &lines(&["b", "c", "d"])),
+            1
+        );
+        assert_eq!(fell_off(&lines(&[]), &lines(&["a"])), 0);
+        // Nothing lines up: a restart, or more than the server keeps.
+        assert_eq!(fell_off(&lines(&["a", "b"]), &lines(&["x"])), 2);
+        // A repeated line doesn't fool it.
+        assert_eq!(
+            fell_off(&lines(&["a", "a", "b"]), &lines(&["a", "b", "a"])),
+            1
+        );
+    }
+
+    #[test]
+    fn the_filters_keep_what_they_say() {
+        assert!(Showing::All.keeps(Weight::Plain));
+        assert!(Showing::Warnings.keeps(Weight::Error));
+        assert!(!Showing::Warnings.keeps(Weight::Plain));
+        assert!(!Showing::Errors.keeps(Weight::Warn));
     }
 }

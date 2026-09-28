@@ -13,6 +13,10 @@
       color-scheme: light dark;
       --ink: #1c1714; --paper: #faf7f4; --ember: #c4552b; --muted: #6b625b;
       --fg: var(--ink); --bg: var(--paper); --line: #e6dfd8; --card: #fffdfb; --sunk: #efe9e3;
+      /* A warning: amber, quieter than the ember a failure gets. */
+      --warn: #a8560a;
+      /* A failure, as text: the ember, deepened until it reads on the page. */
+      --error: #a8431f;
       --sans: "IBM Plex Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
       --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
       /* Motion: quick, and small. A control panel is used every day, so nothing should make
@@ -37,7 +41,8 @@
     }
     @media (prefers-color-scheme: dark) {
       :root { --fg: var(--paper); --bg: var(--ink); --muted: #a89e96; --line: #3a322d;
-              --card: #241e1a; --sunk: #17120f; }
+              --card: #241e1a; --sunk: #17120f; --warn: #e8a05c;
+              --error: #e07a4d; }
     }
     * { box-sizing: border-box; }
     /* Jumps within a page glide there — with motion on. */
@@ -1225,6 +1230,22 @@
                    border: 1px solid transparent; border-radius: .4rem; cursor: pointer; }
     .modal-close:hover { color: var(--ember); border-color: var(--line); }
     .modal-body { padding: 1rem 1.25rem 1.25rem; overflow-y: auto; }
+    /* A window arrives: the page dims behind it and the window rises into place. Once per
+       opening — a window is fixed markup around whatever redraws inside it. */
+    .modal-backdrop { animation: dim var(--dur-base) var(--ease-out) backwards; }
+    .modal { animation: rise-in var(--dur-layout) var(--ease-emphasized) backwards; }
+    @keyframes dim { from { background: rgba(28, 23, 20, 0); } }
+    @keyframes rise-in { from { opacity: 0; translate: 0 .75rem; scale: .98; } }
+
+    /* Asking before something that can't be taken back. */
+    .confirm p { margin: 0 0 .6rem; }
+    .confirm-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
+    .confirm-actions button { padding: .45rem .9rem; font: inherit; font-size: .9rem;
+                              color: var(--fg); background: var(--card);
+                              border: 1px solid var(--line); border-radius: .4rem; cursor: pointer; }
+    .confirm-actions button:hover { border-color: var(--muted); }
+    .confirm-actions .danger-solid { color: #fff; background: #b4342c; border-color: #b4342c; }
+    .confirm-actions .danger-solid:hover { background: #982b24; border-color: #982b24; }
     /* In a window of its own, the form needs no rule dividing it off from a card above it. */
     .modal .settings-form { margin-top: 0; padding-top: 0; border-top: none; }
     .modal .add-device { margin: 0; }
@@ -1249,17 +1270,148 @@
     .ext-settings-btn.wants-setup { width: auto; padding: 0 .7rem; font-size: .85rem;
                                     color: var(--ember); border-color: var(--ember); }
 
-    /* Step one of adding a device: the extensions as things to press, not a list that expands. */
+    /* Step one of adding a device: the extensions as things to press, not a list that expands.
+       They come in one after another when the window opens. */
     .protocol-cards { display: grid; gap: .6rem; margin-top: .8rem;
                       grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); }
     .protocol-card { display: flex; flex-direction: column; align-items: flex-start; gap: .3rem;
                      padding: .8rem; font: inherit; text-align: left; color: inherit;
                      background: var(--card); border: 1px solid var(--line); border-radius: .5rem;
-                     cursor: pointer; }
-    .protocol-card:hover { border-color: var(--ember); }
+                     cursor: pointer;
+                     animation: rise var(--dur-base) var(--ease-out) backwards;
+                     animation-delay: calc(var(--i, 0) * 45ms); }
+    .protocol-card:hover { border-color: var(--ember); translate: 0 -2px;
+                           box-shadow: 0 .4rem 1rem rgba(28, 23, 20, .08); }
     .protocol-card .protocol-icon { width: 1.75rem; height: 1.75rem; margin-bottom: .2rem; }
     .protocol-card .name { font-weight: 500; }
-    .protocol-back { padding: 0; margin-bottom: .6rem; font-size: .85rem; }
+    .protocol-card-counts { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+    .protocol-back { padding: 0; margin: 0 0 .6rem; font-size: .85rem; }
+
+    /* A number of things found: a small ember pill, the one colour on the page that says
+       "something here for you". On the Devices page it sits on the Add device button. */
+    .found-count, .count-badge { display: inline-grid; place-items: center; min-width: 1.25rem;
+                   height: 1.25rem; padding: 0 .35rem; font: 500 .7rem/1 var(--mono);
+                   color: #fff; background: var(--ember); border-radius: 1rem; }
+    .found-count.quiet { color: var(--muted); background: var(--sunk); }
+    h4 .found-count { margin-left: .45rem; vertical-align: .1em; }
+    .add .count-badge { margin-left: .45rem; vertical-align: .05em;
+                        animation: pop var(--dur-expressive) var(--ease-bounce) backwards; }
+    @keyframes pop { from { scale: 0; } }
+
+    /* Step two: one extension. Its heading is the card that was picked, grown. */
+    .add-step-head { display: flex; align-items: center; gap: .6rem; margin-bottom: .6rem;
+                     view-transition-name: add-hero; }
+    .add-step-head h3 { margin: 0; font-size: 1.05rem; }
+    .add-step-head .protocol-icon { width: 1.75rem; height: 1.75rem; }
+    .add-step { view-transition-name: add-step; }
+    .found, .in-home { margin-top: 1rem; }
+    .found-head { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem;
+                  margin-bottom: .5rem; }
+    .found h4, .in-home h4 { margin: 0; font-size: .7rem; font-family: var(--mono);
+                             font-weight: 400; letter-spacing: .08em; text-transform: uppercase;
+                             color: var(--muted); }
+    .in-home h4 { margin-bottom: .5rem; }
+    .found-actions { margin-left: auto; display: flex; gap: .5rem; }
+    button.primary { padding: .4rem .85rem; font: inherit; font-size: .85rem; font-weight: 500;
+                     color: #fff; background: var(--ember); border: 1px solid var(--ember);
+                     border-radius: .4rem; cursor: pointer;
+                     animation: rise var(--dur-fast) var(--ease-out) backwards; }
+    button.primary:hover { background: #ab4717; border-color: #ab4717; }
+
+    /* A device, as a card: what it is and what it would bring, and one button to bring it in. */
+    .device-cards { display: grid; gap: .4rem; margin: 0; padding: 0; list-style: none; }
+    .device-card { display: grid; grid-template-rows: 1fr;
+                   animation: rise var(--dur-base) var(--ease-out) backwards;
+                   animation-delay: calc(min(var(--i, 0), 8) * 40ms);
+                   transition: grid-template-rows var(--dur-layout) var(--ease-emphasized),
+                               opacity var(--dur-layout), margin var(--dur-layout); }
+    .device-card-inner { display: flex; align-items: center; gap: .7rem; min-height: 0;
+                         overflow: hidden; padding: .6rem .75rem; color: inherit;
+                         text-decoration: none; background: var(--card);
+                         border: 1px solid var(--line); border-radius: .5rem;
+                         transition: border-color var(--dur-fast), box-shadow var(--dur-base),
+                                     background-color var(--dur-fast); }
+    .device-card .protocol-icon { flex: none; width: 1.6rem; height: 1.6rem; }
+    .device-card-text { display: flex; flex-direction: column; gap: .15rem; min-width: 0;
+                        flex: 1; }
+    .device-card .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .device-card-made { color: var(--muted); font-size: .78rem; }
+    .provides { display: flex; flex-wrap: wrap; gap: .25rem; margin-top: .1rem; }
+    .chip { padding: .05rem .4rem; font: .65rem/1.5 var(--mono); color: var(--muted);
+            background: var(--sunk); border-radius: .25rem; }
+    .chip.quiet { font-style: italic; }
+    .found-card.picked .device-card-inner { border-color: var(--ember);
+        background: color-mix(in srgb, var(--ember) 5%, var(--card)); }
+    .found-card .device-card-inner:hover { border-color: var(--muted); }
+    /* One that turned up while the window was open says so, once. */
+    .device-card.arrived { animation: arrive var(--dur-expressive) var(--ease-out) backwards; }
+    .device-card.arrived .device-card-inner { animation: glow 1.6s var(--ease-out); }
+    @keyframes arrive { from { opacity: 0; translate: 0 -6px; scale: .98; } }
+    @keyframes glow { from { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ember) 35%, transparent); } }
+    /* Added: the check shows, then the card folds away to nothing and the ones below close up. */
+    .device-card.leaving { grid-template-rows: 0fr; opacity: 0; margin-bottom: -.4rem;
+                           transition-delay: var(--dur-base); pointer-events: none; }
+
+    .add-one { position: relative; flex: none; min-width: 4.2rem; height: 2rem; padding: 0 .8rem;
+               font: inherit; font-size: .85rem; font-weight: 500; color: var(--ember);
+               background: var(--card); border: 1px solid var(--ember); border-radius: .4rem;
+               cursor: pointer; }
+    .add-one:hover { color: #fff; background: var(--ember); }
+    .add-one-label { transition: opacity var(--dur-fast); }
+    .add-one-check { position: absolute; inset: 0; margin: auto; width: 1.1rem; height: 1.1rem;
+                     stroke-dasharray: 1; stroke-dashoffset: 1; }
+    /* On its way: the word gives way to a turning ring. */
+    .add-one.busy .add-one-label, .add-one.done .add-one-label { opacity: 0; }
+    .add-one.busy::after { content: ""; position: absolute; inset: 0; margin: auto; width: .9rem;
+                           height: .9rem; border: 2px solid currentColor; border-right-color: transparent;
+                           border-radius: 50%; animation: turn .7s linear infinite; }
+    @keyframes turn { to { rotate: 1turn; } }
+    .add-one.done { color: #fff; background: var(--ember); opacity: 1; }
+    .add-one.done .add-one-check { stroke-dashoffset: 0;
+        transition: stroke-dashoffset var(--dur-expressive) var(--ease-spring); }
+
+    /* Nothing found yet: it's listening, and a ring breathing out from the middle says so. */
+    .listening-empty { display: flex; flex-direction: column; align-items: center; gap: .3rem;
+                       padding: 1.2rem 1rem; text-align: center; border: 1px dashed var(--line);
+                       border-radius: .5rem; }
+    .listening-empty p { margin: 0; }
+    .listening-ring { position: relative; width: .7rem; height: .7rem; margin-bottom: .4rem;
+                      border-radius: 50%; background: var(--ember); }
+    .listening-ring::after { content: ""; position: absolute; inset: 0; border-radius: 50%;
+                             border: 2px solid var(--ember);
+                             animation: ping 1.8s var(--ease-out) infinite; }
+    @keyframes ping { to { scale: 3; opacity: 0; } }
+
+    /* What's already in the home: the same card, pointing to the device's page. */
+    .home-card .device-card-inner:hover { border-color: var(--ember); }
+    .home-card .chevron { flex: none; color: var(--muted); font-size: 1.2rem; line-height: 1;
+                          transition: translate var(--dur-fast) var(--ease-out), color var(--dur-fast); }
+    .home-card .device-card-inner:hover .chevron { color: var(--ember); translate: 3px 0; }
+
+    /* Between the two steps (transition.rs `step`): the step being left slides away and the
+       next comes in from the side it's going to, while the picked card and the heading become
+       each other. The page behind stays still. */
+    html[data-nav^="step"]::view-transition-group(root),
+    html[data-nav^="step"]::view-transition-group(page) { animation: none; }
+    html[data-nav^="step"]::view-transition-old(root),
+    html[data-nav^="step"]::view-transition-new(root),
+    html[data-nav^="step"]::view-transition-old(page),
+    html[data-nav^="step"]::view-transition-new(page) { animation: none; }
+    html[data-nav^="step"]::view-transition-group(add-hero) {
+        animation-duration: var(--dur-expressive); animation-timing-function: var(--ease-emphasized); }
+    html[data-nav="step-in"]::view-transition-old(add-step) {
+        animation: step-away-left var(--dur-layout) var(--ease-out) both; }
+    html[data-nav="step-in"]::view-transition-new(add-step) {
+        animation: step-from-right var(--dur-expressive) var(--ease-emphasized) both; }
+    html[data-nav="step-out"]::view-transition-old(add-step) {
+        animation: step-away-right var(--dur-layout) var(--ease-out) both; }
+    html[data-nav="step-out"]::view-transition-new(add-step) {
+        animation: step-from-left var(--dur-expressive) var(--ease-emphasized) both; }
+    @keyframes step-away-left { to { opacity: 0; translate: -2rem 0; } }
+    @keyframes step-away-right { to { opacity: 0; translate: 2rem 0; } }
+    @keyframes step-from-right { from { opacity: 0; translate: 2rem 0; } }
+    @keyframes step-from-left { from { opacity: 0; translate: -2rem 0; } }
+
     /* Step two: what this one extension has found, waiting and already here. */
     .protocol-found { margin-top: 1rem; }
     .protocol-found-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem;
@@ -1268,40 +1420,77 @@
     .protocol-found h3 { margin: 0 0 .4rem; font-size: .9rem; }
     .protocol-found p { margin: 0; }
 
-    /* The log window: the copy button in the corner, and the log itself below it. The wrapper is
-       what the button is positioned against, so the button stays put while the log scrolls. */
-    .log-window { position: relative; }
-    /* Room at the top of the log for the button to sit in, rather than over its first line. */
-    .log-window .ext-log { margin-top: .6rem; padding-top: 2rem; }
+    /* The log window (log_window.rs): a bar of filters, a search and the copy button, then the
+       log itself — one row per line, so it reads down the page rather than across it. */
+    .modal.wide { max-width: 60rem; }
+    .log-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: .6rem 0; }
+    .log-filter button { display: inline-flex; align-items: center; gap: .35rem; }
+    .log-count { min-width: 1.2rem; padding: 0 .3rem; font: .65rem/1.4 var(--mono);
+                 text-align: center; color: var(--card); background: var(--muted);
+                 border-radius: 1rem; }
+    .log-filter button:nth-child(2) .log-count { background: var(--warn); }
+    .log-filter button:nth-child(3) .log-count { background: var(--error); }
+    .log-count.none { color: var(--muted); background: transparent; }
+    .log-search { flex: 1 1 10rem; min-width: 0; padding: .35rem .6rem; font: inherit;
+                  font-size: .85rem; color: var(--fg); background: var(--card);
+                  border: 1px solid var(--line); border-radius: .4rem; }
+    .log-search:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
 
-    /* An extension's own output. Scrolls in both directions rather than wrapping: a stack trace
-       or a config dump is easier to read with its lines intact. */
-    .ext-log { max-height: 26rem; margin: .6rem 0 0; padding: .6rem .75rem; overflow: auto;
-               font: .78rem/1.5 var(--mono); white-space: pre; background: var(--sunk);
-               border-radius: .4rem; }
-
-    /* A line of the log, coloured by how seriously to take what it says (log_window.rs). A
-       warning is a quieter ember and a failure the ember itself and bold, so the two are told
-       apart at a glance and neither is a wall of colour. Both are checked for contrast against
-       the sunk background in both schemes. */
-    .ext-log .log-plain { color: var(--fg); }
-    .ext-log .log-warn { color: #a8560a; }
-    .ext-log .log-error { color: #a8431f; font-weight: 600; }
-    /* The timestamp off the front of a line, set back so the message reads first and the times
-       line up into a column beside it. */
-    .ext-log .log-stamp { color: var(--muted); }
-    @media (prefers-color-scheme: dark) {
-      .ext-log .log-warn { color: #e8a05c; }
-      .ext-log .log-error { color: #e07a4d; }
-    }
-
-    /* The copy button. Quiet until it's wanted, and it keeps its own width as it changes what it
-       says, so saying "Copied" doesn't shuffle the log sideways. */
-    .log-copy { position: absolute; top: 0; right: 0; z-index: 1;
-                min-width: 4.5rem; padding: .2rem .5rem; font: .75rem var(--sans);
-                color: var(--muted); background: var(--card); border: 1px solid var(--line);
-                border-radius: .3rem; cursor: pointer; }
+    /* Copy: an icon, quiet until it's wanted. The clipboard gives way to a check that draws
+       itself in when the copy worked, and gives a little shake when the browser said no. */
+    .log-copy { display: inline-grid; place-items: center; width: 2.1rem; height: 2.1rem;
+                padding: 0; color: var(--muted); background: var(--card);
+                border: 1px solid var(--line); border-radius: .4rem; cursor: pointer; }
     .log-copy:hover { color: var(--fg); border-color: var(--muted); }
+    .log-copy .copy-icon { width: 1.1rem; height: 1.1rem; overflow: visible; }
+    .log-copy .copy-clip { transform-origin: center; transform-box: fill-box;
+                           transition: opacity var(--dur-fast), scale var(--dur-base) var(--ease-out); }
+    .log-copy .copy-check { stroke-dasharray: 1; stroke-dashoffset: 1; opacity: 0;
+                            transition: stroke-dashoffset var(--dur-expressive) var(--ease-spring),
+                                        opacity var(--dur-fast); }
+    .log-copy.done { color: var(--ember); border-color: var(--ember); }
+    .log-copy.done .copy-clip { opacity: 0; scale: .6; }
+    .log-copy.done .copy-check { stroke-dashoffset: 0; opacity: 1; }
+    .log-copy.failed { color: #b4342c; border-color: #b4342c;
+                       animation: shake var(--dur-expressive) var(--ease-out); }
+    @keyframes shake { 20%, 60% { translate: -3px 0; } 40%, 80% { translate: 3px 0; } }
+
+    /* The log: scrolls in place, newest at the bottom. */
+    .log-window { max-height: min(60vh, 34rem); overflow: auto; background: var(--sunk);
+                  border-radius: .4rem; font: .78rem/1.5 var(--mono); }
+    .log-quiet { margin: 0; padding: .8rem; font-family: var(--sans); }
+    .log-lines { margin: 0; padding: .3rem 0; list-style: none; }
+    /* A row: when, how serious, and what — the time and the level in columns of their own, so
+       the eye can run down either. A long message wraps under itself rather than off the edge. */
+    .log-row { display: grid; grid-template-columns: 4.6rem 3.4rem 1fr; gap: .6rem;
+               align-items: baseline; padding: .12rem .75rem .12rem calc(.75rem - 2px);
+               border-left: 2px solid transparent; }
+    .log-row:hover { background: color-mix(in srgb, var(--line) 45%, transparent); }
+    .log-row.log-warn { border-left-color: var(--warn);
+                        background: color-mix(in srgb, var(--warn) 7%, transparent); }
+    .log-row.log-error { border-left-color: var(--error);
+                         background: color-mix(in srgb, var(--error) 9%, transparent); }
+    /* A line that arrived while the window was open fades in where it lands. */
+    .log-row.fresh { animation: log-in var(--dur-layout) var(--ease-out) backwards; }
+    @keyframes log-in { from { opacity: 0; translate: 0 4px; } }
+    .log-stamp { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .log-level { justify-self: start; padding: 0 .35rem; font-size: .62rem; line-height: 1.5;
+                 letter-spacing: .06em; text-transform: uppercase; border-radius: .25rem; }
+    .log-level.error { color: var(--card); background: var(--error); font-weight: 600; }
+    .log-level.warn { color: var(--warn); border: 1px solid var(--warn); }
+    .log-level.info { color: var(--muted); border: 1px solid var(--line); }
+    .log-level.debug, .log-level.trace { color: var(--muted); opacity: .7; }
+    .log-text { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
+    .log-row.log-error .log-message { color: var(--error); font-weight: 600; }
+    .log-source { display: inline-block; margin-right: .45rem; padding: 0 .35rem;
+                  font-size: .68rem; color: var(--fg); background: var(--card);
+                  border: 1px solid var(--line); border-radius: .25rem; }
+    .log-field { margin-left: .6rem; color: var(--muted); }
+    .log-key { opacity: .75; }
+    @media (max-width: 40rem) {
+      .log-row { grid-template-columns: auto 1fr; }
+      .log-row .log-text { grid-column: 1 / -1; }
+    }
 
     /* While a pairing window is open: what to do now, and what has arrived so far. */
     .listening { margin-top: .6rem; padding: .6rem .75rem; background: var(--sunk);
