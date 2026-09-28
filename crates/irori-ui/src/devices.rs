@@ -406,7 +406,16 @@ fn group(
                 <tr>
                     <td class="icon-col">{icon(&protocol, has_icon)}</td>
                     <th scope="row">
-                        <A href=format!("/devices/{id}")>{device.name.to_string()}</A>
+                        <A
+                            href=format!("/devices/{id}")
+                            attr:style=crate::transition::list_name(&id)
+                            on:click={
+                                let (id, travelling) = (id.clone(), expect_context::<crate::transition::Travelling>().0);
+                                move |_| travelling.set(Some(id.clone()))
+                            }
+                        >
+                            {device.name.to_string()}
+                        </A>
                         {device.description.as_ref().map(|description| view! {
                             <span class="description">{description.to_string()}</span>
                         })}
@@ -1461,14 +1470,27 @@ fn group_view(group: Group, controls: Controls) -> AnyView {
             {group
                 .entities
                 .into_iter()
-                .map(|(entity, state)| row(entity, state, controls))
+                .map(|(entity, state)| row(entity, state, controls, None))
                 .collect_view()}
         </section>
     }
     .into_any()
 }
 
-pub fn row(entity: Entity, state: Option<EntityState>, controls: Controls) -> AnyView {
+/// A row's way into its own last 24 hours. The device page gives its rows one; the list, which
+/// is for switching things rather than reading them back, doesn't.
+#[derive(Debug, Clone, Copy)]
+pub struct Unroll {
+    pub open: RwSignal<bool>,
+    pub toggle: Callback<()>,
+}
+
+pub fn row(
+    entity: Entity,
+    state: Option<EntityState>,
+    controls: Controls,
+    unroll: Option<Unroll>,
+) -> AnyView {
     let offline = state
         .as_ref()
         .is_some_and(|s| s.availability == Availability::Unavailable);
@@ -1484,11 +1506,55 @@ pub fn row(entity: Entity, state: Option<EntityState>, controls: Controls) -> An
                 <span class="id" title=full_id>{id}</span>
             </span>
             {offline.then(|| view! { <span class="badge">"offline"</span> })}
-            {control(&entity, state.as_ref(), offline, controls)}
+            {unrolling(&entity, control(&entity, state.as_ref(), offline, controls), unroll)}
             {move || failure().map(|why| view! { <p class="why">{why}</p> })}
         </div>
     }
     .into_any()
+}
+
+/// The call to open a row's history, where the eye already is. A reading *is* the thing to ask
+/// about, so for sensors the reading itself is the button; a light or switch's control is for
+/// switching, so there the button is the chevron beside it.
+fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyView {
+    let Some(Unroll { open, toggle }) = unroll else {
+        return control;
+    };
+    let expanded = move || open.get().to_string();
+    let chevron = view! { <span class="unroll-mark" aria-hidden="true"></span> };
+    let hint = view! { <span class="visually-hidden">" — last 24 hours"</span> };
+    match entity.capabilities {
+        Capabilities::Sensor(_) | Capabilities::BinarySensor(_) => view! {
+            <button
+                type="button"
+                class="unroll reading-unroll"
+                class:open=move || open.get()
+                title="Last 24 hours"
+                aria-expanded=expanded
+                on:click=move |_| toggle.run(())
+            >
+                {control}
+                {hint}
+                {chevron}
+            </button>
+        }
+        .into_any(),
+        Capabilities::Light(_) | Capabilities::Switch(_) => view! {
+            {control}
+            <button
+                type="button"
+                class="unroll"
+                class:open=move || open.get()
+                title="Last 24 hours"
+                aria-label=format!("{} — last 24 hours", entity.name)
+                aria-expanded=expanded
+                on:click=move |_| toggle.run(())
+            >
+                {chevron}
+            </button>
+        }
+        .into_any(),
+    }
 }
 
 fn control(

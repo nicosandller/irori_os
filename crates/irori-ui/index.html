@@ -18,6 +18,10 @@
       /* Motion: quick, and small. A control panel is used every day, so nothing should make
          anyone wait for it; motion here says "that worked" or "still working", not "look". */
       --dur-fast: 120ms; --dur-base: 180ms;
+      /* For things that move the layout around them, or travel across the page: a drawer
+         rolling down, the page changing. Still short — the eye has further to go, not longer
+         to wait. */
+      --dur-layout: 240ms;
       --ease-out: cubic-bezier(.2, .7, .3, 1);
       /* A mild overshoot, for the few things that are pushed around by a finger: the toggle's
          knob and a slider's thumb. */
@@ -32,13 +36,43 @@
     /* Motion off: when the system asks for less motion, or Settings says so. Nothing moves, and
        every change lands at once — the page says the same things, just without the travel. */
     @media (prefers-reduced-motion: reduce) {
-      :root { --dur-fast: 0ms; --dur-base: 0ms; }
+      :root { --dur-fast: 0ms; --dur-base: 0ms; --dur-layout: 0ms; }
       *, *::before, *::after { animation: none !important; transition: none !important; }
+      ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) {
+          animation: none !important; }
     }
-    .shell[data-motion="off"] { --dur-fast: 0ms; --dur-base: 0ms; }
+    html[data-motion="off"]::view-transition-group(*),
+    html[data-motion="off"]::view-transition-old(*),
+    html[data-motion="off"]::view-transition-new(*) { animation: none !important; }
+    .shell[data-motion="off"] { --dur-fast: 0ms; --dur-base: 0ms; --dur-layout: 0ms; }
     .shell[data-motion="off"] *, .shell[data-motion="off"] *::before,
     .shell[data-motion="off"] *::after { animation: none !important; transition: none !important; }
     body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 var(--sans); }
+
+    /* Changing page is instant — except between the device list and a device (src/transition.rs),
+       where the page slides the way you're going and the device's name travels between its row
+       and the heading. The router asks the browser for a view transition on every change; every
+       one but that pair is told to have no animation, which ends it at once. */
+    main { view-transition-name: page; }
+    html:not([data-nav])::view-transition-group(*),
+    html:not([data-nav])::view-transition-old(*),
+    html:not([data-nav])::view-transition-new(*) { animation: none; }
+    html[data-nav]::view-transition-group(root), html[data-nav]::view-transition-old(root),
+    html[data-nav]::view-transition-new(root), html[data-nav]::view-transition-group(page) {
+        animation: none; }
+    /* The name: from where it was to where it lands, and from list size to heading size. */
+    html[data-nav]::view-transition-group(*) {
+        animation-duration: var(--dur-layout); animation-timing-function: var(--ease-out); }
+    html[data-nav="into-device"]::view-transition-old(page) {
+        animation: page-away var(--dur-fast) var(--ease-out) both; --away: -16px; }
+    html[data-nav="into-device"]::view-transition-new(page) {
+        animation: page-arrive var(--dur-layout) var(--ease-out) both; --from: 24px; }
+    html[data-nav="to-list"]::view-transition-old(page) {
+        animation: page-away var(--dur-fast) var(--ease-out) both; --away: 16px; }
+    html[data-nav="to-list"]::view-transition-new(page) {
+        animation: page-arrive var(--dur-layout) var(--ease-out) both; --from: -24px; }
+    @keyframes page-away { to { opacity: 0; translate: var(--away) 0; } }
+    @keyframes page-arrive { from { opacity: 0; translate: var(--from) 0; } }
 
     /* The shell: a sidebar that folds down to icons, and the page beside it. The same on every
        page, so nothing moves when you switch. */
@@ -524,15 +558,91 @@
                   color: var(--ember); background: none; border: none; cursor: pointer;
                   text-decoration: underline; }
 
-    /* The expandable "last 24 hours" table under an entity: its own scroll, so a day of
-       changes from a chatty sensor rolls through it instead of stretching the page. */
-    .history-toggle { margin-left: auto; display: inline-flex; align-items: center; gap: .3rem;
-                      padding: .25rem .5rem; font: inherit; font-size: .8rem; color: var(--muted);
-                      background: transparent; border: 1px solid var(--line); border-radius: .4rem;
-                      cursor: pointer; }
-    .history-toggle:hover { border-color: var(--ember); color: var(--ember); }
-    .history-toggle .chevron { transition: transform var(--dur-base) var(--ease-out); }
-    .history-toggle.open .chevron { transform: rotate(-45deg); }
+    /* The way into an entity's last 24 hours, where the eye already is: on the device page a
+       sensor's reading is itself the button, and a switch or light has a chevron beside its
+       control. The chevron turns as the drawer rolls down. */
+    .unroll { display: inline-flex; align-items: center; gap: .4rem; padding: .2rem .45rem;
+              margin: -.2rem -.45rem -.2rem 0; font: inherit; color: inherit; cursor: pointer;
+              background: transparent; border: 1px solid transparent; border-radius: .4rem; }
+    .unroll:hover, .unroll.open { border-color: var(--line); background: var(--sunk); }
+    .unroll:focus-visible { outline: 2px solid var(--ember); outline-offset: 1px; }
+    .reading-unroll .reading { text-decoration: underline dotted var(--muted);
+                               text-underline-offset: .25em; }
+    .reading-unroll:hover .reading { text-decoration-color: var(--ember); }
+    .unroll-mark { width: .45rem; height: .45rem; margin: -.15rem .1rem 0;
+                   border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted);
+                   rotate: 45deg; transition: rotate var(--dur-base) var(--ease-spring),
+                                              margin var(--dur-base) var(--ease-out); }
+    .unroll.open .unroll-mark { rotate: 225deg; margin-top: .25rem; }
+    .unroll:hover .unroll-mark { border-color: var(--ember); }
+    /* A light's sliders take their own line: the chevron stays up by the switch. */
+    .entity .light-controls { order: 2; }
+    .entity .why { order: 3; }
+
+    /* The drawer the history rolls down in. Rows of a grid from nothing to its content's
+       height, so it opens to exactly what's inside, and closes as smoothly as it opens. */
+    .drawer { display: grid; grid-template-rows: 0fr;
+              transition: grid-template-rows var(--dur-layout) var(--ease-out); }
+    .drawer.open { grid-template-rows: 1fr; }
+    .drawer-inner { min-height: 0; overflow: hidden; opacity: 0; translate: 0 -6px;
+                    transition: opacity var(--dur-base) var(--ease-out),
+                                translate var(--dur-layout) var(--ease-out); }
+    .drawer.open .drawer-inner { opacity: 1; translate: 0 0; }
+    .history-head { display: flex; justify-content: flex-end; padding: .5rem .75rem 0; }
+    .history-head .switcher button { padding: .2rem .6rem; font-size: .75rem; }
+
+    /* A number's day. The line draws itself in from the left once, when the day arrives (it's
+       the one thing here allowed to take longer: it's the data arriving, not the page moving);
+       the area settles in behind it, and now's dot lands and rings once. Pointing, or the
+       arrow keys, put a rule, a dot and the reading at that moment over it. */
+    .chart { margin: 0; padding: .6rem .75rem .5rem; }
+    .chart-plot { position: relative; height: 9.5rem; margin: .6rem 3.4rem .2rem 0;
+                  cursor: crosshair; touch-action: pan-y; border-radius: .25rem; }
+    .chart-plot:focus { outline: none; }
+    .chart-plot:focus-visible { outline: 2px solid var(--ember); outline-offset: 4px; }
+    .chart-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible;
+                      animation: chart-draw 560ms var(--ease-out) both; }
+    @keyframes chart-draw { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
+    .chart-grid line { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .chart-line { fill: none; stroke: var(--ember); stroke-width: 2; stroke-linejoin: round;
+                  stroke-linecap: round; }
+    .chart-area { fill: var(--ember); opacity: .12;
+                  animation: settle 400ms var(--ease-out) 200ms backwards; }
+    @keyframes settle { from { opacity: 0; } }
+    .chart-tick { position: absolute; left: 0; translate: 0 -120%; color: var(--muted);
+                  font: .65rem var(--mono); font-variant-numeric: tabular-nums; }
+    .chart-tick.top { top: 8%; }
+    .chart-tick.bottom { top: 92%; }
+    .chart-end, .chart-dot { position: absolute; width: .6rem; height: .6rem;
+                             translate: -50% -50%; border-radius: 50%;
+                             background: var(--ember); box-shadow: 0 0 0 2px var(--card); }
+    .chart-end { left: 100%; animation: pop var(--dur-base) var(--ease-spring) 480ms backwards; }
+    .chart-end::after { content: ""; position: absolute; inset: 0; border-radius: 50%;
+                        animation: ring .7s var(--ease-out) 560ms backwards; }
+    @keyframes pop { from { scale: 0; } }
+    .chart-latest { position: absolute; left: 100%; translate: .6rem -50%; white-space: nowrap;
+                    color: var(--fg); font: .75rem var(--mono); font-variant-numeric: tabular-nums;
+                    animation: settle var(--dur-base) var(--ease-out) 480ms backwards; }
+    .chart-rule { position: absolute; top: 0; bottom: 0; width: 1px; translate: -.5px 0;
+                  background: var(--muted); opacity: .5; pointer-events: none; }
+    .chart-dot { pointer-events: none; animation: pop var(--dur-fast) var(--ease-spring); }
+    .chart-tip { position: absolute; bottom: calc(100% + .3rem); translate: -50% 0; z-index: 1;
+                 display: grid; padding: .3rem .5rem; pointer-events: none; white-space: nowrap;
+                 background: var(--card); border: 1px solid var(--line); border-radius: .4rem;
+                 box-shadow: 0 .3rem .8rem rgba(28, 23, 20, .12); font-size: .75rem;
+                 animation: settle var(--dur-fast) var(--ease-out); }
+    .chart-tip.start { translate: -.6rem 0; }
+    .chart-tip.end { translate: calc(-100% + .6rem) 0; }
+    .chart-tip strong { font: 500 .85rem var(--mono); font-variant-numeric: tabular-nums; }
+    .chart-tip span { color: var(--muted); font-family: var(--mono); }
+    .chart-axis { display: flex; justify-content: space-between; margin-right: 3.4rem;
+                  color: var(--muted); font: .65rem var(--mono); }
+    /* Waiting for the day: the chart's own height, gently lit, so nothing jumps when it comes. */
+    .chart-waiting { height: 9.5rem; margin: 1.3rem 4.15rem 2rem .75rem; border-radius: .4rem;
+                     background: linear-gradient(90deg, var(--sunk) 30%, var(--line) 50%,
+                                 var(--sunk) 70%) 0 0 / 300% 100%;
+                     animation: waiting 1.4s ease-in-out infinite; }
+    @keyframes waiting { from { background-position: 100% 0; } to { background-position: 0 0; } }
     .history { border-top: 1px solid var(--line); }
     .history-scroll { max-height: 14rem; overflow-y: auto; }
     table.history { width: 100%; border-collapse: collapse; font-size: .85rem; }

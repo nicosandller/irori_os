@@ -7,6 +7,7 @@
 //! moving between pages doesn't refetch and the two can't disagree.
 
 mod api;
+mod chart;
 mod device;
 mod devices;
 mod extensions;
@@ -17,6 +18,7 @@ mod modal;
 mod settings;
 mod settings_form;
 mod start;
+mod transition;
 mod waiting;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -134,8 +136,18 @@ fn App() -> impl IntoView {
 
     // Remembered the same way, and for the same reason: it's about this screen, not the home.
     let motion = RwSignal::new(devices::stored(MOTION_KEY).as_deref() != Some("off"));
-    Effect::new(move |_| devices::remember(MOTION_KEY, if motion.get() { "on" } else { "off" }));
+    Effect::new(move |_| {
+        let on = if motion.get() { "on" } else { "off" };
+        devices::remember(MOTION_KEY, on);
+        // Page changes are drawn by the browser over the whole document, outside `.shell`, so
+        // the switch has to reach `<html>` as well.
+        if let Some(root) = document().document_element() {
+            let _ = root.set_attribute("data-motion", on);
+        }
+    });
     provide_context(Motion(motion));
+
+    provide_context(transition::Travelling(RwSignal::new(None)));
 
     let sidebar = NodeRef::<leptos::html::Aside>::new();
 
@@ -217,10 +229,11 @@ fn App() -> impl IntoView {
 #[component]
 fn Page(live: Live) -> impl IntoView {
     let location = use_location();
+    transition::watch(location.pathname);
     view! {
         <main class:full=move || location.pathname.get() == "/floorplan">
             {move || live.trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
-            <Routes fallback=NotFound>
+            <Routes fallback=NotFound transition=true>
                 <Route path=path!("/") view=start::Start />
                 <Route path=path!("/floorplan") view=floorplan::Floorplan />
                 <Route path=path!("/devices") view=devices::Devices />

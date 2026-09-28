@@ -92,7 +92,8 @@ and `src/api.rs` is what goes away then. The binary also serves these files **un
 
 ## Motion
 
-Small and quick, all of it in CSS. The durations and easings are tokens on `:root` in
+The guidelines — principles, tokens, the rules, and what moves where — are in
+[docs/motion_design.md](../../docs/motion_design.md). In short: small and quick, mostly CSS. The durations and easings are tokens on `:root` in
 `index.html` (`--dur-fast` 120 ms, `--dur-base` 180 ms, `--ease-out`, and `--ease-spring` for
 the few things a finger pushes). Use them rather than new numbers, so turning motion off turns
 off everything.
@@ -108,6 +109,13 @@ off everything.
   Settings cog turns a notch. The same glide (`src/glide.rs`) marks the tool in hand and the floor
   shown on the Floorplan. On a phone, where these lists are rows, the chosen item draws its own
   highlight instead.
+- **List to device:** opening a device from the list slides the page aside and the device's
+  name travels from its row up into the heading (the View Transition API, `src/transition.rs`);
+  going back reverses it. Every other page change is instant.
+- **A device's history:** on a device's page a sensor's reading is itself the way into its last
+  24 hours (a switch or light has a chevron beside it); the drawer rolls down to its content. A
+  number's day is a chart (`src/chart.rs`) that draws itself in, with a crosshair and the reading
+  at any moment under the pointer or the arrow keys, and the table a click away.
 - **The Floorplan:** the tools, the device and room pickers and the inspector slide in when they
   appear; a device marker leans in under the pointer, and a lamp's pip warms up and sends out one
   ring when it comes on; what's picked, and the line being drawn, march like any drawing tool's
