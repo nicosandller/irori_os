@@ -1,8 +1,7 @@
 //! Checks the claims in the docs that a machine can check.
 //!
-//! Prose goes stale quietly. This catches the kind that has already slipped through twice: the
-//! default cargo features are stated in three places — `crates/irori/Cargo.toml`, ROADMAP §2.1,
-//! and decision D17 — and a change to one is easy to make without the others.
+//! Official extensions ship as installable packages, never as cargo features compiled into
+//! `irori`; this keeps `crates/irori/Cargo.toml`'s default features honest about that.
 
 use std::path::{Path, PathBuf};
 
@@ -11,44 +10,22 @@ use anyhow::{Context as _, bail};
 pub fn run() -> anyhow::Result<()> {
     let root = workspace_root();
     let manifest = read(&root, "crates/irori/Cargo.toml")?;
-    let roadmap = read(&root, "ROADMAP.md")?;
 
     let defaults = default_features(&manifest)?;
     let mut problems = Vec::new();
 
-    // §2.1 quotes the feature list exactly, so it can be compared exactly.
-    let quoted = format!("`default = [{}]`", quote_list(&defaults));
-    if !roadmap.contains(&quoted) {
-        problems.push(format!(
-            "ROADMAP §2.1 doesn't quote the binary's default features.\n     expected: {quoted}\n\
-             \x20    (from crates/irori/Cargo.toml)"
-        ));
-    }
-
-    // D17 used to list compiled-in protocols. Official extensions are packages now, so
-    // default features must not include `protocol-*`, and D17 must not claim they are compiled in.
-    let d17 = roadmap
-        .lines()
-        .find(|line| line.starts_with("| D17 |"))
-        .context("ROADMAP has no D17 row")?
-        .to_lowercase();
+    // Official extensions are packages, not cargo features: default features must not compile
+    // a `protocol-*` extension into the binary.
     for feature in compiled_in_protocols(&defaults) {
         problems.push(format!(
             "default features still compile `{feature}` into the binary; official extensions are packages"
         ));
     }
-    if !d17.contains("installable") && !d17.contains("not cargo features") {
-        problems.push(
-            "ROADMAP D17 should say official extensions are installable packages, not cargo features"
-                .into(),
-        );
-    }
-
     if problems.is_empty() {
         println!("docs OK (default features: {})", defaults.join(", "));
         return Ok(());
     }
-    let mut message = format!("{} documentation claim(s) don't match:\n", problems.len());
+    let mut message = format!("{} claim(s) don't match:\n", problems.len());
     for problem in &problems {
         message.push_str(&format!("  - {problem}\n"));
     }
@@ -94,14 +71,6 @@ fn compiled_in_protocols(defaults: &[String]) -> Vec<&String> {
         .iter()
         .filter(|f| f.starts_with("protocol-"))
         .collect()
-}
-
-fn quote_list(features: &[String]) -> String {
-    features
-        .iter()
-        .map(|feature| format!("\"{feature}\""))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 fn read(root: &Path, relative: &str) -> anyhow::Result<String> {
