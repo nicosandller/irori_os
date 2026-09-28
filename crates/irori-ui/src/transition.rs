@@ -1,22 +1,116 @@
-//! Moving between the device list and a device.
+//! Changing page.
 //!
-//! Page changes are instant, except this one pair: the list slides aside for the device, and
-//! the device's name travels from its row up into the page's heading, so it's plain which row
-//! was opened. The browser does the drawing (the View Transition API, started by the router);
-//! this says which way the page is going, as `data-nav` on `<html>`, and gives the two ends of
-//! the name the same `view-transition-name`. A browser without view transitions just changes
-//! page.
+//! Every page change moves, the way the sidebar goes: a page further down the sidebar comes up
+//! from below, one further up comes down from above, so the page and the sidebar's highlight
+//! travel together. Two changes say more than a direction:
+//!
+//! - **The device list and a device**: the list slides aside, and the device's name travels from
+//!   its row up into the page's heading, so it's plain which row was opened.
+//! - **A Start tile**: the tile grows into the heading of the page it opens, and the page rises
+//!   in behind it.
+//!
+//! The browser does the drawing (the View Transition API, started by the router); this says
+//! which change it is, as `data-nav` on `<html>`, and gives the two ends of what travels the same
+//! `view-transition-name`. A browser without view transitions just changes page.
 
+use leptos::ev;
 use leptos::prelude::*;
+use web_sys::wasm_bindgen::JsCast;
 
-/// Which of the animated page changes this is, if either.
-pub fn navigation(from: &str, to: &str) -> Option<&'static str> {
+/// Which page change this is.
+pub fn navigation(from: &str, to: &str, hint: Option<&str>) -> Option<&'static str> {
+    if from == to {
+        return None;
+    }
     if from == "/devices" && is_device(to) {
-        Some("into-device")
-    } else if is_device(from) && to == "/devices" {
-        Some("to-list")
-    } else {
-        None
+        return Some("into-device");
+    }
+    if is_device(from) && to == "/devices" {
+        return Some("to-list");
+    }
+    if from == "/" && hint == Some("tile") {
+        return Some("tile");
+    }
+    Some(match (place(from), place(to)) {
+        (Some(from), Some(to)) if to > from => "down",
+        (Some(from), Some(to)) if to < from => "up",
+        // Between two devices, or somewhere the sidebar doesn't list: no direction to go in.
+        _ => "fade",
+    })
+}
+
+/// Where a page sits in the sidebar, top to bottom. A device's page sits with the list.
+fn place(path: &str) -> Option<u8> {
+    match path {
+        "/" => Some(0),
+        "/floorplan" => Some(1),
+        "/devices" => Some(2),
+        path if is_device(path) => Some(2),
+        "/extensions" => Some(3),
+        "/settings" => Some(4),
+        _ => None,
+    }
+}
+
+/// Makes `change` a view transition of `kind` — for changes that aren't a page change, like the
+/// Floorplan changing floor. The browser pictures the page, `change` runs, and once the page has
+/// been redrawn it animates between the two; `data-nav` says which change it was until it's done.
+/// Without view transitions, `change` just happens.
+pub fn around(kind: &'static str, change: impl FnOnce() + 'static) {
+    use web_sys::js_sys::{Function, Promise, Reflect};
+    use web_sys::wasm_bindgen::{JsValue, closure::Closure};
+
+    let document = document();
+    let start = Reflect::get(&document, &JsValue::from_str("startViewTransition"))
+        .ok()
+        .and_then(|start| start.dyn_into::<Function>().ok());
+    let (Some(start), Some(root)) = (start, document.document_element()) else {
+        change();
+        return;
+    };
+    let _ = root.set_attribute("data-nav", kind);
+    let update = Closure::once_into_js(move || {
+        change();
+        // Leptos redraws in its own time, a task or two later. Not "the next frame": the browser
+        // holds frames back until this answers, so waiting for one would wait forever.
+        Promise::new(&mut |resolve, _| {
+            set_timeout(
+                move || {
+                    let _ = resolve.call0(&JsValue::NULL);
+                },
+                std::time::Duration::ZERO,
+            );
+        })
+    });
+    let Ok(transition) = start.call1(&document, &update) else {
+        return;
+    };
+    let done = Closure::once_into_js(move |_: JsValue| {
+        if root.get_attribute("data-nav").as_deref() == Some(kind) {
+            let _ = root.remove_attribute("data-nav");
+        }
+    });
+    if let Ok(finished) = Reflect::get(&transition, &JsValue::from_str("finished"))
+        && let Ok(then) = Reflect::get(&finished, &JsValue::from_str("then"))
+        && let Ok(then) = then.dyn_into::<Function>()
+    {
+        let _ = then.call1(&finished, &done);
+    }
+}
+
+/// A Start tile, clicked: it grows into the heading of the page it opens, so it takes the
+/// heading's name for the change (`hero`), and says so for [`watch`] to read.
+pub fn expand(event: ev::MouseEvent) {
+    let Some(tile) = event
+        .current_target()
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+    else {
+        return;
+    };
+    let style = tile.get_attribute("style").unwrap_or_default();
+    let _ = tile.set_attribute("style", &format!("{style};view-transition-name: hero"));
+    if let Some(root) = document().document_element() {
+        let _ = root.set_attribute("data-hint", "tile");
     }
 }
 
@@ -61,7 +155,12 @@ pub fn watch(pathname: Memo<String>) {
     Effect::new(move |from: Option<String>| {
         let to = pathname.get();
         if let Some(root) = document().document_element() {
-            match from.as_deref().and_then(|from| navigation(from, &to)) {
+            let hint = root.get_attribute("data-hint");
+            let _ = root.remove_attribute("data-hint");
+            match from
+                .as_deref()
+                .and_then(|from| navigation(from, &to, hint.as_deref()))
+            {
                 Some(kind) => {
                     let _ = root.set_attribute("data-nav", kind);
                 }
@@ -78,21 +177,24 @@ pub fn watch(pathname: Memo<String>) {
 mod tests {
     use super::*;
 
-    /// Only the list and a device animate, in either direction; everything else is instant.
+    /// Pages move the way the sidebar goes; the list and a device slide sideways; a tile grows.
     #[test]
-    fn only_the_list_and_a_device_animate() {
+    fn a_page_change_goes_the_way_the_sidebar_does() {
+        let go = |from, to| navigation(from, to, None);
+        assert_eq!(go("/devices", "/devices/demo_lamp"), Some("into-device"));
+        assert_eq!(go("/devices/demo_lamp", "/devices"), Some("to-list"));
+        assert_eq!(go("/floorplan", "/extensions"), Some("down"));
+        assert_eq!(go("/settings", "/devices"), Some("up"));
+        assert_eq!(go("/", "/floorplan"), Some("down"));
+        assert_eq!(go("/devices/demo_lamp", "/settings"), Some("down"));
+        assert_eq!(go("/devices/a", "/devices/b"), Some("fade"));
+        assert_eq!(go("/nowhere", "/devices"), Some("fade"));
+        assert_eq!(go("/devices", "/devices"), None);
+        assert_eq!(navigation("/", "/devices", Some("tile")), Some("tile"));
         assert_eq!(
-            navigation("/devices", "/devices/demo_lamp"),
-            Some("into-device")
+            navigation("/floorplan", "/devices", Some("tile")),
+            Some("down")
         );
-        assert_eq!(
-            navigation("/devices/demo_lamp", "/devices"),
-            Some("to-list")
-        );
-        assert_eq!(navigation("/devices", "/extensions"), None);
-        assert_eq!(navigation("/", "/devices/demo_lamp"), None);
-        assert_eq!(navigation("/devices/a", "/devices/b"), None);
-        assert_eq!(navigation("/devices", "/devices/"), None);
     }
 
     #[test]

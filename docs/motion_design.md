@@ -9,8 +9,11 @@ it updates this page in the same PR.
 
 ## 1. Principles
 
-1. **Quick and small.** A control panel is used every day. Nothing should make anyone wait for
-   it: most motion is over in 120–180 ms and travels 2–8 px.
+1. **Expressive, but snappy.** Irori moves like it means it — pages arrive from where they are
+   in the sidebar, a tile grows into its page, light pools in the rooms, numbers count to their
+   new value — but a control panel is used every day, so nothing makes anyone wait. Controls
+   answer in 120–180 ms; the moments that are the point (a page, a floor, a count) take up to
+   about 340 ms, arriving fast and settling long.
 2. **Motion answers something.** Every animation here explains a change: a switch moved, a
    command is in flight, a page came from that row, the data just arrived. If it explains
    nothing, it doesn't ship.
@@ -33,13 +36,17 @@ switch works by setting the durations to zero, so a hard-coded `200ms` escapes i
 |---|---|---|
 | `--dur-fast` | 120 ms | Feedback on something touched: hover colours, a press, a tooltip appearing. |
 | `--dur-base` | 180 ms | A small move: the toggle's knob, the gliding highlight, a panel sliding in, a chevron turning. |
-| `--dur-layout` | 240 ms | Something that moves the layout around it, or crosses the page: a drawer rolling down, the list-to-device page change. |
+| `--dur-layout` | 240 ms | Something that moves the layout around it: a drawer rolling down. |
+| `--dur-expressive` | 340 ms | The moments that are the point: a page arriving, a tile growing into its page, a floor changing, a device's name travelling, a light pool fading. |
 | `--ease-out` | `cubic-bezier(.2, .7, .3, 1)` | The default: starts quick, settles gently. |
-| `--ease-spring` | `cubic-bezier(.34, 1.56, .64, 1)` | Only for what a finger pushes around: the toggle's knob, a slider's thumb, a marker leaning in, a chevron turning. A mild overshoot. |
+| `--ease-spring` | `cubic-bezier(.34, 1.56, .64, 1)` | For what a finger pushes around: the toggle's knob, a marker leaning in, a chevron turning. A mild overshoot. |
+| `--ease-emphasized` | `cubic-bezier(.2, 0, 0, 1)` | For things crossing the page: arrives fast, settles long. Page and floor changes. |
+| `--ease-bounce` | `cubic-bezier(.34, 1.9, .5, 1)` | For things *let go of*: a slider's thumb released, a marker put down, a pulled handle springing back. |
 
-Ambient loops (the Live dot, the Start page's ember) run slower, 2.4–3.2 s, and are the only
-things that repeat forever. **Data arriving** is the one allowed exception to the durations: a
-chart draws its line in over 560 ms, once, when its day arrives.
+Ambient loops (the Live dot, the Start page's ember, a motion sensor's ripples) run slower,
+1.8–3.2 s, and are the only things that repeat forever — and only while what they show is true.
+**Data arriving** has its own timing: a chart draws its line in over 560 ms, once, when its day
+arrives; a number counts to its new value over 420 ms.
 
 ## 3. The catalogue
 
@@ -51,9 +58,15 @@ What moves today, and where to find it.
 | Toggle | Knob springs across, stretches while held, breathes while a command waits on the device (`.pending`). | `devices.rs` `knob`; CSS `.toggle`. |
 | Sliders | Drawn by the page: filled to the thumb (`--fill`), colour temperature as its colours; the thumb swells under the pointer; the label follows while dragging. | `devices.rs` `light_controls`, `floorplan.rs` inspector; CSS `input[type="range"]`. |
 | Sidebar | The current page is a highlight that glides between entries; icons lean in on hover, the cog turns. | `glide.rs`; CSS `.glide`, `.sidebar > .glide`. |
-| List → device | The list slides aside and the device's name travels from its row into the heading; back reverses it. | `transition.rs` (View Transition API through the router); CSS `::view-transition-*`. |
-| Device page history | The reading is the button; a drawer rolls down to its content; a number's day is a chart that draws itself in, with a crosshair, a tooltip and arrow-key stepping. | `device.rs` `EntityRow`, `chart.rs`; CSS `.unroll`, `.drawer`, `.chart-*`. |
-| Floorplan | Tools and floor highlight glide; the toolbar, pickers and inspector slide in; markers lean in; a lamp's pip warms up and rings once; the picked room and the line being drawn march. | `floorplan.rs`; CSS `.floorplan …`. |
+| Changing page | The page arrives from where it is in the sidebar — up from below for a page further down, down from above for one further up; between devices it crossfades. | `transition.rs` (View Transition API through the router); CSS `::view-transition-*`. |
+| List → device | The list slides aside and the device's name travels from its row into the heading; back reverses it. | `transition.rs`; only the opened device's name carries a transition name. |
+| Start tiles | A tile grows into the heading of the page it opens, while the page rises in behind. | `transition.rs` `expand`; the tile and the new `.page-head` are `hero`. |
+| Settings | Sections arrive one after another; a menu link glides to its section and flashes it. | `settings.rs` `jump`; CSS `.settings-section`. |
+| Live numbers | A reading counts to its new value and lifts or drops into place in ember, the way it went. | `count.rs`, for anything marked `data-n`. |
+| Device page history | The reading is the button — or pull it down; a drawer rolls down to its content; a number's day is a chart that draws itself in and then **grows with each new reading**, with a crosshair, a tooltip and arrow-key stepping. | `device.rs` `EntityRow`, `chart.rs`, `gesture.rs`; CSS `.unroll`, `.drawer`, `.chart-*`. |
+| Swiping a toggle | The knob follows the finger; let go past halfway and it switches, springing home from where it was let go. | `gesture.rs`, `devices.rs` `knob`. |
+| Floorplan | Tools and floor highlight glide; the toolbar, pickers and inspector slide in; markers lean in, lift when held and settle with a bounce when put down; a lamp's pip warms up and rings once; the picked room and the line being drawn march. | `floorplan.rs`; CSS `.floorplan …`. |
+| Floorplan ambience | A lit light pools warm light, as bright as the light and clipped to its room's walls; a motion sensor ripples across its room while it senses someone; changing floor, the plan sinks away and the next floor comes down (or the reverse). | `floorplan/ambience.rs`, `transition.rs` `around`. |
 | Ambient | Live dot breathes (still when the core stops answering); the Start ember flickers; Start tiles stagger in; a banner drops in. | CSS `.dot.ok`, `.start-ember`, `.tiles .tile`, `.banner`. |
 
 ## 4. Rules
@@ -92,12 +105,48 @@ the choice is a `<span class="glide">` that `glide.rs` moves to the chosen item.
 without travelling the first time, and fades out where nothing is chosen. Where the column
 becomes a row (on a phone), CSS hides it and the chosen item draws its own highlight.
 
-### Page changes are instant — except list ↔ device
+### Every page change says where it's going
 
-The router asks the browser for a view transition on every page change; every one but the
-device list ↔ a device is told to have no animation, which ends it at once. For that pair,
-`transition.rs` sets `data-nav` on `<html>` so CSS knows the direction, and the device's name
-carries the same `view-transition-name` on both pages. A new pair gets added there, with a test.
+The router asks the browser for a view transition on every page change; `transition.rs` says
+which change it is as `data-nav` on `<html>`, and CSS animates by it:
+
+| `data-nav` | When | What moves |
+|---|---|---|
+| `down` / `up` | To a page further down / up the sidebar | The page rises from below / drops from above; the shell stays put, its highlight gliding on its own. |
+| `into-device` / `to-list` | The device list ↔ a device | Sideways, and the device's name travels between its row and the heading. |
+| `tile` | A Start tile, clicked | The tile grows into the new page's heading row. |
+| `fade` | Between two devices, or anywhere the sidebar doesn't list | A crossfade. |
+| `floor-up` / `floor-down` | Changing floor on the Floorplan (`around`) | Only the plan. |
+
+A new kind of change gets a row here, a case in `navigation`, and a test.
+
+### Numbers that change count, through `data-n`
+
+Give an element `data-n="<value>"` and the number inside it (its first text node) counts from
+its old value to its new one when it changes, then lands on exactly the text Leptos wrote
+(`count.rs`). It also gets `data-moved` for the ember lift or drop. Nothing else is needed; a
+number seen for the first time just appears. Keep the markup the same shape for numbers and
+words (`data-n` is simply absent for words), so the element is updated in place.
+
+### What a gesture is in the middle of lives on the element
+
+Rows are redrawn as readings arrive — in place, but with fresh handlers — so a drag in progress
+keeps its state in `data-*` attributes on the element, not in Rust (`gesture.rs`). A drag is
+never also the click that follows it (`swallow_click`). Where a gesture belongs to an element,
+set `touch-action` so the page doesn't take it for a scroll.
+
+### Always draw what fades both ways
+
+Something that should fade out as well as in is always drawn and made transparent, never
+removed: every light has its pool, at opacity 0 when off. Removing it would make it blink out.
+
+### A view transition's update never waits for a frame
+
+`transition::around` wraps any change that isn't a page change (a floor) in a view transition.
+The browser holds frames back until the update answers, so the update waits for Leptos with a
+zero-length timeout — waiting for an animation frame there waits forever. Two elements may never
+share a transition name in the same picture, or the browser skips the transition: that is why a
+Start tile is `hero`, not `page`.
 
 ### Charts
 

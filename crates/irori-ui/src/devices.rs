@@ -8,6 +8,7 @@ use irori_types::{
     DeviceId, Entity, EntityId, EntityState, ExtensionId, LightCapabilities, LightState,
     LightTurnOn, SensorCapabilities, SensorClass, SensorValue, State,
 };
+use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
@@ -1531,7 +1532,15 @@ fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyVi
                 class:open=move || open.get()
                 title="Last 24 hours"
                 aria-expanded=expanded
-                on:click=move |_| toggle.run(())
+                on:click=move |event| {
+                    if !crate::gesture::swallow_click(&event) {
+                        toggle.run(());
+                    }
+                }
+                on:pointerdown=|event| crate::gesture::pull_down(&event)
+                on:pointermove=move |event| pull(&event, open, toggle)
+                on:pointerup=|event| crate::gesture::pull_up(&event)
+                on:pointercancel=|event| crate::gesture::pull_up(&event)
             >
                 {control}
                 {hint}
@@ -1548,12 +1557,29 @@ fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyVi
                 title="Last 24 hours"
                 aria-label=format!("{} — last 24 hours", entity.name)
                 aria-expanded=expanded
-                on:click=move |_| toggle.run(())
+                on:click=move |event| {
+                    if !crate::gesture::swallow_click(&event) {
+                        toggle.run(());
+                    }
+                }
+                on:pointerdown=|event| crate::gesture::pull_down(&event)
+                on:pointermove=move |event| pull(&event, open, toggle)
+                on:pointerup=|event| crate::gesture::pull_up(&event)
+                on:pointercancel=|event| crate::gesture::pull_up(&event)
             >
                 {chevron}
             </button>
         }
         .into_any(),
+    }
+}
+
+/// A pull on a history handle: down opens the drawer, up closes it.
+fn pull(event: &ev::PointerEvent, open: RwSignal<bool>, toggle: Callback<()>) {
+    if let Some(down) = crate::gesture::pull_move(event)
+        && down != open.get_untracked()
+    {
+        toggle.run(());
     }
 }
 
@@ -1830,7 +1856,10 @@ pub(crate) fn fill(value: impl Into<f64>, min: impl Into<f64>, max: impl Into<f6
 fn reading(level: u8) -> impl IntoView {
     view! {
         <span class="reading">
-            {format!("{}%", brightness_pct(level))}
+            <span class="n" data-n=brightness_pct(level).to_string()>
+                {brightness_pct(level).to_string()}
+            </span>
+            "%"
         </span>
     }
 }
@@ -1850,7 +1879,23 @@ fn knob(entity: &Entity, on: Option<bool>, offline: bool, controls: Controls) ->
     let wanted = !on.unwrap_or(false);
     let click = {
         let entity_id = entity_id.clone();
-        move |_| controls.set_on.run((entity_id.clone(), wanted))
+        move |event: ev::MouseEvent| {
+            // A swipe already said what it wanted when it let go.
+            if !crate::gesture::swallow_click(&event) {
+                controls.set_on.run((entity_id.clone(), wanted));
+            }
+        }
+    };
+    // Swiped: whichever side the knob was let go on, if that's not where it already is.
+    let let_go = {
+        let entity_id = entity_id.clone();
+        move |event: ev::PointerEvent| {
+            if let Some(side) = crate::gesture::knob_up(&event)
+                && Some(side) != on
+            {
+                controls.set_on.run((entity_id.clone(), side));
+            }
+        }
     };
     let label = format!("Turn {} {}", entity.name, if wanted { "on" } else { "off" });
     // A screen reader is told what the knob shows. `mixed` is how ARIA says "neither", which is
@@ -1872,6 +1917,12 @@ fn knob(entity: &Entity, on: Option<bool>, offline: bool, controls: Controls) ->
             aria-pressed=pressed
             disabled=move || offline || busy()
             on:click=click
+            on:pointerdown=|event| crate::gesture::knob_down(&event)
+            on:pointermove=|event| crate::gesture::knob_move(&event)
+            on:pointerup=let_go
+            on:pointercancel=|event| {
+                crate::gesture::knob_up(&event);
+            }
         >
             <span class="knob"></span>
         </button>
@@ -1879,19 +1930,20 @@ fn knob(entity: &Entity, on: Option<bool>, offline: bool, controls: Controls) ->
 }
 
 fn sensor(capabilities: &SensorCapabilities, value: Option<&State>) -> AnyView {
-    let (reading, unit) = match value {
-        Some(State::Sensor(sensor)) => (
+    let (reading, unit, counts) = match value {
+        Some(State::Sensor(sensor)) => {
+            let unit = capabilities.unit.clone().unwrap_or_default();
             match &sensor.value {
-                SensorValue::Number(n) => number(*n),
-                SensorValue::Text(text) => text.clone(),
-            },
-            capabilities.unit.clone().unwrap_or_default(),
-        ),
-        _ => (UNKNOWN.to_owned(), String::new()),
+                SensorValue::Number(n) => (number(*n), unit, Some(n.to_string())),
+                SensorValue::Text(text) => (text.clone(), unit, None),
+            }
+        }
+        _ => (UNKNOWN.to_owned(), String::new(), None),
     };
+    // A number counts to its next value as it changes (count.rs); words just change.
     view! {
         <span class="reading">
-            {reading}
+            <span class="n" data-n=counts>{reading}</span>
             <span class="unit">{(!unit.is_empty()).then(|| format!(" {unit}"))}</span>
         </span>
     }

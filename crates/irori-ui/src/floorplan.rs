@@ -22,6 +22,8 @@ use leptos::task::spawn_local;
 use crate::api::{self, Home};
 use crate::devices::Controls;
 
+mod ambience;
+
 /// What the editor rounds to by default, in centimetres. Fine enough to draw a real room,
 /// coarse enough that two walls meant to meet actually do.
 const SNAP: i32 = 10;
@@ -912,7 +914,22 @@ pub fn Floorplan() -> impl IntoView {
         }
     };
 
-    let on_up = move |_: ev::MouseEvent| drag.set(None);
+    // The marker just put down, for the moment it takes to settle.
+    let dropped = RwSignal::new(None::<usize>);
+    let on_up = move |_: ev::MouseEvent| {
+        if let Some(Drag::Device { device }) = drag.get_untracked() {
+            dropped.set(Some(device));
+            set_timeout(
+                move || {
+                    if dropped.get_untracked() == Some(device) {
+                        dropped.set(None);
+                    }
+                },
+                std::time::Duration::from_millis(600),
+            );
+        }
+        drag.set(None);
+    };
 
     // A click that was really the end of a drag isn't a click: panning the view an inch and
     // then finding a new wall corner there would be maddening.
@@ -1174,6 +1191,13 @@ pub fn Floorplan() -> impl IntoView {
                             })
                             .collect_view()
                     }}
+                    // Light and movement in the rooms, under the walls. Not while drawing,
+                    // where it would only get in the way of the lines.
+                    {move || {
+                        (!editing.get()).then(|| {
+                            ambience::ambience(&level.get(), &live.home.get(), transform(view.get()))
+                        })
+                    }}
                     {move || {
                         let here = view.get();
                         let level = level.get();
@@ -1329,6 +1353,7 @@ pub fn Floorplan() -> impl IntoView {
                                     picked,
                                     drag,
                                     dragged,
+                                    dropped,
                                     remember_cb,
                                 ))
                             })
@@ -1612,6 +1637,8 @@ fn FloorPicker(
             return None;
         }
         let plan = plan.get();
+        // Each floor's level, for telling up from down when the floor changes.
+        let levels: Vec<(FloorId, i8)> = floors.iter().map(|f| (f.id.clone(), f.level)).collect();
         let picker = NodeRef::<leptos::html::Div>::new();
         // Changing floor slides the highlight up or down the list, the way the floors stack.
         crate::glide::glide(picker, ":scope > button.chosen", move || floor.track());
@@ -1624,6 +1651,7 @@ fn FloorPicker(
                     .map(|level| {
                         let id = level.id.clone();
                         let (chosen, pressed) = (id.clone(), id.clone());
+                        let (target, levels) = (level.level, levels.clone());
                         let drawn = plan.level(&level.id).is_some_and(|level| !level.is_empty());
                         view! {
                             <button
@@ -1632,7 +1660,23 @@ fn FloorPicker(
                                 aria-pressed=move || {
                                     (floor.get().as_ref() == Some(&pressed)).to_string()
                                 }
-                                on:click=move |_| floor.set(Some(id.clone()))
+                                on:click=move |_| {
+                                    let now = floor.get_untracked();
+                                    if now.as_ref() == Some(&id) {
+                                        return;
+                                    }
+                                    // Up a floor, the plan sinks away and the one above comes
+                                    // down into view; down a floor, the other way.
+                                    let here = now.and_then(|now| {
+                                        levels.iter().find(|(id, _)| *id == now).map(|(_, at)| *at)
+                                    });
+                                    let up = here.is_some_and(|here| target > here);
+                                    let id = id.clone();
+                                    crate::transition::around(
+                                        if up { "floor-up" } else { "floor-down" },
+                                        move || floor.set(Some(id)),
+                                    );
+                                }
                             >
                                 <span class="floor-name">{level.name.to_string()}</span>
                                 <span class="floor-level">
@@ -2189,9 +2233,11 @@ fn marker(
     picked: RwSignal<Option<Pick>>,
     drag: RwSignal<Option<Drag>>,
     dragged: RwSignal<bool>,
+    dropped: RwSignal<Option<usize>>,
     remember: Callback<()>,
 ) -> impl IntoView + use<> {
     let (x, y) = view.screen(placed.at);
+    let sensing = ambience::sensing(home, &device.id);
     let look = looks(home, &device.id);
     let name = device.name.to_string();
     let (on, offline) = (look.on, look.offline);
@@ -2213,6 +2259,10 @@ fn marker(
             class="marker"
             class:on=move || on == Some(true)
             class:offline=offline
+            class:sensing=sensing
+            // Held, it lifts off the plan; put down, it settles with a bounce.
+            class:lifted=move || matches!(drag.get(), Some(Drag::Device { device }) if device == index)
+            class:dropped=move || dropped.get() == Some(index)
             class:chosen=chosen
             class:movable=editing
             class:switchable=!editing && switchable

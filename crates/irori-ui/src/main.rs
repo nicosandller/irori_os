@@ -8,10 +8,12 @@
 
 mod api;
 mod chart;
+mod count;
 mod device;
 mod devices;
 mod extensions;
 mod floorplan;
+mod gesture;
 mod glide;
 mod log_window;
 mod modal;
@@ -148,6 +150,8 @@ fn App() -> impl IntoView {
     provide_context(Motion(motion));
 
     provide_context(transition::Travelling(RwSignal::new(None)));
+    // Every new reading: numbers on the page count to where they're going.
+    count::watch(move || live.home.track());
 
     let sidebar = NodeRef::<leptos::html::Aside>::new();
 

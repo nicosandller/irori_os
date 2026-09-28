@@ -22,21 +22,33 @@
          rolling down, the page changing. Still short — the eye has further to go, not longer
          to wait. */
       --dur-layout: 240ms;
+      /* For the moments that are the point: a page arriving, a tile becoming a page, a floor
+         changing, a number counting to where it's going. Long enough to be seen, never long
+         enough to wait for. */
+      --dur-expressive: 340ms;
       --ease-out: cubic-bezier(.2, .7, .3, 1);
       /* A mild overshoot, for the few things that are pushed around by a finger: the toggle's
          knob and a slider's thumb. */
       --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
+      /* Arrives fast and settles long: for things crossing the page. */
+      --ease-emphasized: cubic-bezier(.2, 0, 0, 1);
+      /* A proper bounce, for things that are let go of: a thumb released, a marker put down. */
+      --ease-bounce: cubic-bezier(.34, 1.9, .5, 1);
     }
     @media (prefers-color-scheme: dark) {
       :root { --fg: var(--paper); --bg: var(--ink); --muted: #a89e96; --line: #3a322d;
               --card: #241e1a; --sunk: #17120f; }
     }
     * { box-sizing: border-box; }
+    /* Jumps within a page glide there — with motion on. */
+    html { scroll-behavior: smooth; }
+    html[data-motion="off"] { scroll-behavior: auto; }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 
     /* Motion off: when the system asks for less motion, or Settings says so. Nothing moves, and
        every change lands at once — the page says the same things, just without the travel. */
     @media (prefers-reduced-motion: reduce) {
-      :root { --dur-fast: 0ms; --dur-base: 0ms; --dur-layout: 0ms; }
+      :root { --dur-fast: 0ms; --dur-base: 0ms; --dur-layout: 0ms; --dur-expressive: 0ms; }
       *, *::before, *::after { animation: none !important; transition: none !important; }
       ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) {
           animation: none !important; }
@@ -44,35 +56,42 @@
     html[data-motion="off"]::view-transition-group(*),
     html[data-motion="off"]::view-transition-old(*),
     html[data-motion="off"]::view-transition-new(*) { animation: none !important; }
-    .shell[data-motion="off"] { --dur-fast: 0ms; --dur-base: 0ms; --dur-layout: 0ms; }
+    .shell[data-motion="off"] { --dur-fast: 0ms; --dur-base: 0ms; --dur-layout: 0ms;
+                                --dur-expressive: 0ms; }
     .shell[data-motion="off"] *, .shell[data-motion="off"] *::before,
     .shell[data-motion="off"] *::after { animation: none !important; transition: none !important; }
     body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 var(--sans); }
 
-    /* Changing page is instant — except between the device list and a device (src/transition.rs),
-       where the page slides the way you're going and the device's name travels between its row
-       and the heading. The router asks the browser for a view transition on every change; every
-       one but that pair is told to have no animation, which ends it at once. */
+    /* Changing page (src/transition.rs says which change it is, as `data-nav` on <html>). The
+       shell stays put — its sidebar highlight glides on its own — and the page moves: up from
+       below for a page further down the sidebar, down from above for one further up, sideways
+       between the device list and a device (whose name travels between its row and the
+       heading), and growing out of a Start tile into the page it opens. */
     main { view-transition-name: page; }
+    ::view-transition-group(root), ::view-transition-old(root),
+    ::view-transition-new(root) { animation: none; }
     html:not([data-nav])::view-transition-group(*),
     html:not([data-nav])::view-transition-old(*),
     html:not([data-nav])::view-transition-new(*) { animation: none; }
-    html[data-nav]::view-transition-group(root), html[data-nav]::view-transition-old(root),
-    html[data-nav]::view-transition-new(root), html[data-nav]::view-transition-group(page) {
-        animation: none; }
-    /* The name: from where it was to where it lands, and from list size to heading size. */
     html[data-nav]::view-transition-group(*) {
-        animation-duration: var(--dur-layout); animation-timing-function: var(--ease-out); }
-    html[data-nav="into-device"]::view-transition-old(page) {
-        animation: page-away var(--dur-fast) var(--ease-out) both; --away: -16px; }
-    html[data-nav="into-device"]::view-transition-new(page) {
-        animation: page-arrive var(--dur-layout) var(--ease-out) both; --from: 24px; }
-    html[data-nav="to-list"]::view-transition-old(page) {
-        animation: page-away var(--dur-fast) var(--ease-out) both; --away: 16px; }
-    html[data-nav="to-list"]::view-transition-new(page) {
-        animation: page-arrive var(--dur-layout) var(--ease-out) both; --from: -24px; }
-    @keyframes page-away { to { opacity: 0; translate: var(--away) 0; } }
-    @keyframes page-arrive { from { opacity: 0; translate: var(--from) 0; } }
+        animation-duration: var(--dur-expressive); animation-timing-function: var(--ease-emphasized); }
+    html[data-nav]::view-transition-group(page) { animation: none; }
+    html[data-nav]::view-transition-old(page) {
+        animation: page-away var(--dur-fast) var(--ease-out) both; }
+    html[data-nav]::view-transition-new(page) {
+        animation: page-arrive var(--dur-expressive) var(--ease-emphasized) both; }
+    html[data-nav="down"] { --away: 0 -12px; --from: 0 36px; }
+    html[data-nav="up"] { --away: 0 12px; --from: 0 -36px; }
+    html[data-nav="into-device"] { --away: -16px 0; --from: 32px 0; }
+    html[data-nav="to-list"] { --away: 16px 0; --from: -32px 0; }
+    html[data-nav="fade"] { --away: 0 0; --from: 0 0; }
+    html[data-nav="tile"] { --away: 0 0; --from: 0 24px; }
+    @keyframes page-away { to { opacity: 0; translate: var(--away); } }
+    @keyframes page-arrive { from { opacity: 0; translate: var(--from); } }
+    /* A Start tile, clicked, grows into the heading of the page it opens: the tile is `hero`
+       for the change (transition.rs), and so is the new page's heading row — the browser grows
+       one into the other while the rest of the page rises in behind. */
+    html[data-nav="tile"] .page-head { view-transition-name: hero; }
 
     /* The shell: a sidebar that folds down to icons, and the page beside it. The same on every
        page, so nothing moves when you switch. */
@@ -394,6 +413,17 @@
     .reading { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
     .reading .unit { color: var(--muted); }
     .reading.on { color: var(--ember); }
+    /* A number that just changed (count.rs) counts to its new value, lit in ember as it goes and
+       rising into place if it went up, dropping into place if it went down. */
+    .n { display: inline-block; }
+    [data-moved="up-a"] { animation: rose-a 700ms var(--ease-out); }
+    [data-moved="up-b"] { animation: rose-b 700ms var(--ease-out); }
+    [data-moved="down-a"] { animation: fell-a 700ms var(--ease-out); }
+    [data-moved="down-b"] { animation: fell-b 700ms var(--ease-out); }
+    @keyframes rose-a { from { color: var(--ember); translate: 0 .3em; } }
+    @keyframes rose-b { from { color: var(--ember); translate: 0 .3em; } }
+    @keyframes fell-a { from { color: var(--ember); translate: 0 -.3em; } }
+    @keyframes fell-b { from { color: var(--ember); translate: 0 -.3em; } }
     .badge { color: var(--muted); font: .65rem var(--mono); letter-spacing: .08em;
              text-transform: uppercase; }
     /* Why the last command was refused, on its own line under the row it belongs to. */
@@ -423,6 +453,10 @@
     .toggle.unknown:active:not(:disabled) .knob { transform: translateX(.52rem); }
     /* Asked, and waiting for the device to say it's done: the knob breathes, so a slow device
        reads as busy rather than broken. Offline stays plain and dim — nothing is coming. */
+    /* Swiped (gesture.rs): the knob is under the finger, so nothing eases it; let go, and it
+       springs home from there. A horizontal swipe on a phone is the toggle's, not the page's. */
+    .toggle { touch-action: pan-y; }
+    .toggle[data-dragging] .knob { transition: width var(--dur-fast) var(--ease-out); }
     .toggle.pending { cursor: progress; opacity: .8; }
     .toggle.pending .knob { animation: knob-wait .9s ease-in-out infinite alternate; }
     @keyframes knob-wait { to { scale: .78; } }
@@ -459,22 +493,22 @@
         -webkit-appearance: none; appearance: none; width: 14px; height: 14px; margin-top: -5px;
         border-radius: 50%; background: var(--card); border: 2px solid var(--ember);
         box-shadow: 0 1px 2px rgba(28, 23, 20, .2);
-        transition: transform var(--dur-fast) var(--ease-spring),
+        transition: transform var(--dur-base) var(--ease-bounce),
                     box-shadow var(--dur-fast) var(--ease-out); }
     input[type="range"]::-moz-range-thumb {
         box-sizing: border-box; width: 14px; height: 14px; border-radius: 50%;
         background: var(--card); border: 2px solid var(--ember);
         box-shadow: 0 1px 2px rgba(28, 23, 20, .2);
-        transition: transform var(--dur-fast) var(--ease-spring),
+        transition: transform var(--dur-base) var(--ease-bounce),
                     box-shadow var(--dur-fast) var(--ease-out); }
     input[type="range"]:hover:not(:disabled)::-webkit-slider-thumb {
         transform: scale(1.15); }
     input[type="range"]:hover:not(:disabled)::-moz-range-thumb {
         transform: scale(1.15); }
     input[type="range"]:active:not(:disabled)::-webkit-slider-thumb {
-        transform: scale(1.3); box-shadow: 0 0 0 5px rgba(196, 85, 43, .18); }
+        transform: scale(1.4); box-shadow: 0 0 0 5px rgba(196, 85, 43, .18); }
     input[type="range"]:active:not(:disabled)::-moz-range-thumb {
-        transform: scale(1.3); box-shadow: 0 0 0 5px rgba(196, 85, 43, .18); }
+        transform: scale(1.4); box-shadow: 0 0 0 5px rgba(196, 85, 43, .18); }
     input[type="range"]:focus { outline: none; }
     input[type="range"]:focus-visible::-webkit-slider-thumb {
         box-shadow: 0 0 0 3px var(--card), 0 0 0 5px var(--ember); }
@@ -565,6 +599,12 @@
               margin: -.2rem -.45rem -.2rem 0; font: inherit; color: inherit; cursor: pointer;
               background: transparent; border: 1px solid transparent; border-radius: .4rem; }
     .unroll:hover, .unroll.open { border-color: var(--line); background: var(--sunk); }
+    /* Pulled (gesture.rs): it gives a little under the finger and bounces back when let go. A
+       vertical pull here is the drawer's, not the page's. */
+    .unroll { touch-action: pan-x;
+              transition: translate var(--dur-base) var(--ease-bounce),
+                          border-color var(--dur-fast), background-color var(--dur-fast); }
+    .unroll[data-y0] { transition: none; }
     .unroll:focus-visible { outline: 2px solid var(--ember); outline-offset: 1px; }
     .reading-unroll .reading { text-decoration: underline dotted var(--muted);
                                text-underline-offset: .25em; }
@@ -603,14 +643,16 @@
        is placed against the plot itself. */
     .chart-layer { display: contents; }
     .chart-plot:focus-visible { outline: 2px solid var(--ember); outline-offset: 4px; }
-    .chart-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible;
-                      animation: chart-draw 560ms var(--ease-out) both; }
+    .chart-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+    /* The day arriving draws itself in, once (chart.rs marks that drawing `arriving`). After
+       that the day grows a reading at a time: the line simply runs on, and the end rings. */
+    .chart-plot svg.arriving { animation: chart-draw 560ms var(--ease-out) both; }
     @keyframes chart-draw { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
     .chart-grid line { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
     .chart-line { fill: none; stroke: var(--ember); stroke-width: 2; stroke-linejoin: round;
                   stroke-linecap: round; }
-    .chart-area { fill: var(--ember); opacity: .12;
-                  animation: settle 400ms var(--ease-out) 200ms backwards; }
+    .chart-area { fill: var(--ember); opacity: .12; }
+    .arriving .chart-area { animation: settle 400ms var(--ease-out) 200ms backwards; }
     @keyframes settle { from { opacity: 0; } }
     .chart-tick { position: absolute; left: 0; translate: 0 -120%; color: var(--muted);
                   font: .65rem var(--mono); font-variant-numeric: tabular-nums; }
@@ -619,13 +661,16 @@
     .chart-end, .chart-dot { position: absolute; width: .6rem; height: .6rem;
                              translate: -50% -50%; border-radius: 50%;
                              background: var(--ember); box-shadow: 0 0 0 2px var(--card); }
-    .chart-end { left: 100%; animation: pop var(--dur-base) var(--ease-spring) 480ms backwards; }
-    .chart-end::after { content: ""; position: absolute; inset: 0; border-radius: 50%;
-                        animation: ring .7s var(--ease-out) 560ms backwards; }
+    .chart-end { left: 100%; }
+    .chart-end.arriving { animation: pop var(--dur-base) var(--ease-spring) 480ms backwards; }
+    .chart-end::after { content: ""; position: absolute; inset: 0; border-radius: 50%; }
+    .chart-end.arriving::after { animation: ring .7s var(--ease-out) 560ms backwards; }
+    .chart-end.grown::after { animation: ring .7s var(--ease-out); }
     @keyframes pop { from { scale: 0; } }
     .chart-latest { position: absolute; left: 100%; translate: .6rem -50%; white-space: nowrap;
-                    color: var(--fg); font: .75rem var(--mono); font-variant-numeric: tabular-nums;
-                    animation: settle var(--dur-base) var(--ease-out) 480ms backwards; }
+                    color: var(--fg); font: .75rem var(--mono); font-variant-numeric: tabular-nums; }
+    .chart-latest.arriving { animation: settle var(--dur-base) var(--ease-out) 480ms backwards; }
+    .chart-latest.grown { animation: rose-a 700ms var(--ease-out); }
     .chart-rule { position: absolute; top: 0; bottom: 0; width: 1px; translate: -.5px 0;
                   background: var(--muted); opacity: .5; pointer-events: none; }
     /* The hover layer is written afresh as the pointer moves, so nothing in it animates on
@@ -785,7 +830,14 @@
                        color: var(--muted); text-decoration: none;
                        border: 1px solid var(--line); border-radius: .4rem; }
     .settings-menu a:hover { color: var(--fg); border-color: var(--ember); }
-    .settings-section { scroll-margin-top: 1rem; }
+    .settings-section { scroll-margin-top: 1rem;
+                        animation: rise var(--dur-base) var(--ease-out) backwards;
+                        animation-delay: calc(var(--i, 0) * 45ms); }
+    /* Where a menu link landed: one ember ring, fading. */
+    .settings-section[data-flash="a"] { animation: flash-a 900ms var(--ease-out); }
+    .settings-section[data-flash="b"] { animation: flash-b 900ms var(--ease-out); }
+    @keyframes flash-a { from { box-shadow: 0 0 0 3px rgba(196, 85, 43, .5); } }
+    @keyframes flash-b { from { box-shadow: 0 0 0 3px rgba(196, 85, 43, .5); } }
     .settings-section > .inline-form { margin-top: .75rem; }
 
     /* The Floorplan: a canvas that takes the whole page, with its controls floating over it.
@@ -1077,7 +1129,8 @@
 
     /* Devices: a marker leans in under the pointer and gives under a press; a lamp's pip warms
        up rather than snapping on, and sends out one ring as it does. */
-    .floorplan .marker { transition: scale var(--dur-fast) var(--ease-spring),
+    .floorplan .marker { transition: scale var(--dur-base) var(--ease-spring),
+                                     box-shadow var(--dur-base) var(--ease-out),
                                      border-color var(--dur-base), opacity var(--dur-base); }
     .floorplan .marker.switchable:hover, .floorplan .marker.movable:hover { scale: 1.06; }
     .floorplan .marker.switchable:active, .floorplan .marker.movable:active { scale: .96; }
@@ -1091,6 +1144,49 @@
         from { box-shadow: 0 0 0 0 rgba(196, 85, 43, .55); }
         to { box-shadow: 0 0 0 .7rem rgba(196, 85, 43, 0); }
     }
+
+    /* Held, a marker lifts off the plan; put down, it settles with a bounce. A motion sensor
+       that senses someone lights its pip. */
+    .floorplan .marker.lifted { scale: 1.12;
+                                box-shadow: 0 .6rem 1.2rem rgba(28, 23, 20, .22); }
+    .floorplan .marker.dropped { animation: settle-down 520ms var(--ease-bounce); }
+    @keyframes settle-down { from { scale: 1.14; } }
+    .floorplan .marker.sensing .pip { background: var(--ember);
+                                      box-shadow: 0 0 .5rem var(--ember); }
+
+    /* The plan, alive (floorplan/ambience.rs): a lit light's warm pool, as bright as the light
+       and stopped by its room's walls, fading as the light changes; a motion sensor's ripples
+       spreading across its room while it senses someone. With motion off the ripples stand
+       still as a faint ring — still saying someone's there. */
+    .floorplan .pool { transition: opacity var(--dur-expressive) var(--ease-out); }
+    .floorplan .ripple circle { fill: none; stroke: var(--ember); stroke-width: 2;
+                                vector-effect: non-scaling-stroke; opacity: .3; scale: .6;
+                                transform-box: fill-box; transform-origin: center;
+                                animation: ripple 1.8s var(--ease-out) infinite; }
+    .floorplan .ripple .later { animation-delay: .9s; }
+    @keyframes ripple { from { scale: .08; opacity: .6; } to { scale: 1; opacity: 0; } }
+    @media (prefers-color-scheme: dark) {
+      .floorplan .pool { mix-blend-mode: screen; }
+    }
+
+    /* Changing floor (transition.rs `around`): the plan, and only the plan, moves — going up,
+       the floor below sinks away and the one above comes down into view. */
+    .floorplan .canvas { view-transition-name: plan; }
+    html[data-nav][data-nav^="floor"]::view-transition-old(page),
+    html[data-nav][data-nav^="floor"]::view-transition-new(page),
+    html[data-nav][data-nav^="floor"]::view-transition-group(plan) { animation: none; }
+    html[data-nav][data-nav^="floor"]::view-transition-old(plan) {
+        animation: page-away var(--dur-base) var(--ease-out) both; }
+    html[data-nav][data-nav^="floor"]::view-transition-new(plan) {
+        animation: page-arrive var(--dur-expressive) var(--ease-emphasized) both; }
+    html[data-nav="floor-up"] { --away: 0 56px; --from: 0 -56px; }
+    /* Changing page onto or off the Floorplan, the plan is part of the page, and moves with it. */
+    html[data-nav]:not([data-nav^="floor"])::view-transition-group(plan) { animation: none; }
+    html[data-nav]:not([data-nav^="floor"])::view-transition-old(plan) {
+        animation: page-away var(--dur-fast) var(--ease-out) both; }
+    html[data-nav]:not([data-nav^="floor"])::view-transition-new(plan) {
+        animation: page-arrive var(--dur-expressive) var(--ease-emphasized) both; }
+    html[data-nav="floor-down"] { --away: 0 -56px; --from: 0 56px; }
 
     /* What's picked, and what's being drawn: dashed lines that march, the way a selection does
        in any drawing tool. Walls and openings change colour rather than switching. */

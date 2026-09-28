@@ -118,135 +118,184 @@ pub fn in_effect(xs: &[f64], x: f64) -> usize {
     xs.iter().rposition(|&at| at <= x).unwrap_or(0)
 }
 
+/// Where everything goes for a day of readings, worked out again as the day grows.
+struct Layout {
+    xs: Vec<f64>,
+    ys: Vec<f64>,
+    range: (f64, f64),
+    min: f64,
+    max: f64,
+}
+
+fn layout(readings: &[Reading], now_ms: f64) -> Layout {
+    // `min` and `max` pass over a gap's NaN, keeping the number.
+    let (min, max) = readings
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), reading| {
+            (lo.min(reading.value), hi.max(reading.value))
+        });
+    let range = value_range(min, max);
+    let xs = across(readings, now_ms);
+    let ys = readings
+        .iter()
+        .map(|reading| down(reading.value, range))
+        .collect();
+    Layout {
+        xs,
+        ys,
+        range,
+        min,
+        max,
+    }
+}
+
 #[component]
 pub fn StepChart(
+    /// The day so far, oldest first.
     readings: Vec<Reading>,
-    now_ms: f64,
+    /// The reading as it is now, as each one arrives: the line runs on with it.
+    live: Signal<Option<Reading>>,
     /// What the numbers are in, if anything: "°C", "lx".
     unit: String,
     /// What the chart is of, for a screen reader.
     name: String,
 ) -> impl IntoView {
-    let values = readings.iter().map(|reading| reading.value);
-    let (min, max) = values.fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), value| {
-        (lo.min(value), hi.max(value))
+    let series = RwSignal::new(readings);
+    // A reading joins the day if it's newer than the last one and says something different —
+    // the row's own reading, the moment it changes.
+    Effect::new(move |_| {
+        let Some(reading) = live.get() else { return };
+        let joins = series.with_untracked(|series| {
+            series.last().is_none_or(|last| {
+                reading.at_ms > last.at_ms && reading.value.to_bits() != last.value.to_bits()
+            })
+        });
+        if joins {
+            series.update(|series| series.push(reading));
+        }
     });
-    let range = value_range(min, max);
-    let xs = across(&readings, now_ms);
-    let ys: Vec<f64> = readings
-        .iter()
-        .map(|reading| down(reading.value, range))
-        .collect();
-    let (line, area) = step_paths(&xs, &ys);
-    let with_unit = {
-        let unit = unit.clone();
-        move |value: f64| {
-            if value.is_nan() {
-                return "No reading".to_owned();
-            }
-            let number = crate::devices::number(value);
-            if unit.is_empty() {
-                number
-            } else {
-                format!("{number} {unit}")
-            }
+
+    let with_unit = move |value: f64| -> String {
+        if value.is_nan() {
+            return "No reading".to_owned();
+        }
+        let number = crate::devices::number(value);
+        if unit.is_empty() {
+            number
+        } else {
+            format!("{number} {unit}")
         }
     };
-    let last = readings.len().saturating_sub(1);
-    let last_y = ys.last().copied().unwrap_or(BOTTOM);
-    let latest = readings
-        .last()
-        .map(|reading| with_unit(reading.value))
-        .unwrap_or_default();
-    let since = readings
-        .first()
-        .map(|reading| reading.at.clone())
-        .unwrap_or_default();
-    let summary = format!(
-        "{name}, last 24 hours: between {} and {}, now {latest}. Arrow keys step through the \
-         readings.",
-        with_unit(min),
-        with_unit(max),
-    );
+
+    // When the drawing was made: the right-hand edge, which pointing has to agree with.
+    let drawn_at = StoredValue::new(0.0);
+    let renders = StoredValue::new(0_u32);
+    let drawing = {
+        let with_unit = with_unit.clone();
+        move || {
+            let readings = series.get();
+            let now = web_sys::js_sys::Date::now();
+            drawn_at.set_value(now);
+            let layout = layout(&readings, now);
+            let (line, area) = step_paths(&layout.xs, &layout.ys);
+            let last_y = layout.ys.last().copied().unwrap_or(f64::NAN);
+            let latest = readings
+                .last()
+                .map(|reading| with_unit(reading.value))
+                .unwrap_or_default();
+            // The first drawing draws itself in; after that, each new reading rings at the end.
+            let first = renders.get_value() == 0;
+            renders.update_value(|renders| *renders += 1);
+            drawing(
+                (&line, &area),
+                (&with_unit(layout.range.1), &with_unit(layout.range.0)),
+                last_y,
+                &latest,
+                first,
+            )
+        }
+    };
+    let summary = {
+        let with_unit = with_unit.clone();
+        move || {
+            let readings = series.get();
+            let layout = layout(&readings, drawn_at.get_value());
+            let latest = readings
+                .last()
+                .map(|reading| with_unit(reading.value))
+                .unwrap_or_default();
+            format!(
+                "{name}, last 24 hours: between {} and {}, now {latest}. Arrow keys step \
+                 through the readings.",
+                with_unit(layout.min),
+                with_unit(layout.max),
+            )
+        }
+    };
+    let since = move || series.with(|series| series.first().map(|first| first.at.clone()));
 
     // What the pointer or the arrow keys are on: the reading, and where across the rule is.
     let pointed = RwSignal::new(None::<(usize, f64)>);
-    let point_at = {
-        let xs = xs.clone();
-        move |ev: ev::PointerEvent| {
-            let Some(plot) = ev.current_target() else {
-                return;
-            };
-            let rect = plot
-                .unchecked_into::<web_sys::Element>()
-                .get_bounding_client_rect();
-            let fraction =
-                ((f64::from(ev.client_x()) - rect.left()) / rect.width()).clamp(0.0, 1.0);
-            let x = fraction * WIDTH;
-            pointed.set(Some((in_effect(&xs, x), x)));
+    let point_at = move |ev: ev::PointerEvent| {
+        let Some(plot) = ev.current_target() else {
+            return;
+        };
+        let rect = plot
+            .unchecked_into::<web_sys::Element>()
+            .get_bounding_client_rect();
+        let fraction = ((f64::from(ev.client_x()) - rect.left()) / rect.width()).clamp(0.0, 1.0);
+        let x = fraction * WIDTH;
+        let xs = series.with_untracked(|series| across(series, drawn_at.get_value()));
+        pointed.set(Some((in_effect(&xs, x), x)));
+    };
+    let step = move |ev: ev::KeyboardEvent| {
+        let xs = series.with_untracked(|series| across(series, drawn_at.get_value()));
+        let last = xs.len().saturating_sub(1);
+        let now = pointed.get_untracked().map_or(last, |(index, _)| index);
+        let next = match ev.key().as_str() {
+            "ArrowLeft" => now.saturating_sub(1),
+            "ArrowRight" => (now + 1).min(last),
+            "Home" => 0,
+            "End" => last,
+            _ => return,
+        };
+        ev.prevent_default();
+        if let Some(&x) = xs.get(next) {
+            pointed.set(Some((next, x)));
         }
     };
-    let step = {
-        let xs = xs.clone();
-        move |ev: ev::KeyboardEvent| {
-            let now = pointed.get_untracked().map_or(last, |(index, _)| index);
-            let next = match ev.key().as_str() {
-                "ArrowLeft" => now.saturating_sub(1),
-                "ArrowRight" => (now + 1).min(last),
-                "Home" => 0,
-                "End" => last,
-                _ => return,
-            };
-            ev.prevent_default();
-            pointed.set(Some((next, xs[next])));
-        }
-    };
-    let on_focus = {
-        let xs = xs.clone();
-        move |_| {
-            if pointed.get_untracked().is_none() {
-                pointed.set(Some((last, xs[last])));
+    let on_focus = move |_| {
+        if pointed.get_untracked().is_none() {
+            let xs = series.with_untracked(|series| across(series, drawn_at.get_value()));
+            if let Some(&x) = xs.last() {
+                pointed.set(Some((xs.len() - 1, x)));
             }
         }
     };
-    let tip = {
-        let readings = readings.clone();
-        let with_unit = with_unit.clone();
-        move || {
-            pointed.get().map(|(index, x)| {
-                let reading = &readings[index];
-                let percent = x / WIDTH * 100.0;
-                // Kept inside the plot at either end, rather than hanging off it.
-                let anchor = if percent > 75.0 {
-                    "end"
-                } else if percent < 25.0 {
-                    "start"
-                } else {
-                    "mid"
-                };
-                (
-                    percent,
-                    ys[index],
-                    with_unit(reading.value),
-                    reading.at.clone(),
-                    anchor,
-                )
-            })
-        }
-    };
     // Read in two places — the drawing and what's said aloud — as a plain closure cloned for
-    // each, rather than a `Memo`: a new reactive type is a lot of download for one tooltip.
-
-    // The drawing never changes once it's made, so it's written out once as markup rather than
-    // built from reactive nodes — the same page for far less code in the download. Only the
-    // pointer's reading moves.
-    let drawing = drawing(
-        &line,
-        &area,
-        (&with_unit(range.1), &with_unit(range.0)),
-        last_y,
-        &latest,
-    );
+    // each, rather than a `Memo`: a new reactive type is a lot of code for one tooltip.
+    let tip = move || {
+        let (index, x) = pointed.get()?;
+        let readings = series.get();
+        let reading = readings.get(index)?;
+        let y = layout(&readings, drawn_at.get_value()).ys[index];
+        let percent = x / WIDTH * 100.0;
+        // Kept inside the plot at either end, rather than hanging off it.
+        let anchor = if percent > 75.0 {
+            "end"
+        } else if percent < 25.0 {
+            "start"
+        } else {
+            "mid"
+        };
+        Some((
+            percent,
+            y,
+            with_unit(reading.value),
+            reading.at.clone(),
+            anchor,
+        ))
+    };
     let spoken = tip.clone();
     let hover = move || {
         tip()
@@ -291,22 +340,25 @@ fn escape(text: &str) -> String {
 }
 
 /// The chart itself: the gridlines, the area and the line, the value axis's two ends, and — if
-/// the sensor is saying anything now — now's dot and reading where the line ends.
+/// the sensor is saying anything now — now's dot and reading where the line ends. The first
+/// drawing of a day draws its line in; every one after that is the day growing, and rings the
+/// dot at the end for the reading that just arrived.
 fn drawing(
-    line: &str,
-    area: &str,
+    (line, area): (&str, &str),
     (top, bottom): (&str, &str),
     last_y: f64,
     latest: &str,
+    first: bool,
 ) -> String {
+    let arriving = if first { "arriving" } else { "grown" };
     let mut markup = format!(
-        r#"<svg viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true"><g class="chart-grid"><line x1="0" x2="1000" y1="{TOP}" y2="{TOP}"/><line x1="0" x2="1000" y1="50" y2="50"/><line x1="0" x2="1000" y1="{BOTTOM}" y2="{BOTTOM}"/></g><path class="chart-area" d="{area}"/><path class="chart-line" d="{line}" vector-effect="non-scaling-stroke"/></svg><span class="chart-tick top">{}</span><span class="chart-tick bottom">{}</span>"#,
+        r#"<svg class="{arriving}" viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true"><g class="chart-grid"><line x1="0" x2="1000" y1="{TOP}" y2="{TOP}"/><line x1="0" x2="1000" y1="50" y2="50"/><line x1="0" x2="1000" y1="{BOTTOM}" y2="{BOTTOM}"/></g><path class="chart-area" d="{area}"/><path class="chart-line" d="{line}" vector-effect="non-scaling-stroke"/></svg><span class="chart-tick top">{}</span><span class="chart-tick bottom">{}</span>"#,
         escape(top),
         escape(bottom),
     );
     if !last_y.is_nan() {
         markup.push_str(&format!(
-            r#"<span class="chart-end" style="top:{last_y:.1}%"></span><span class="chart-latest" style="top:{last_y:.1}%">{}</span>"#,
+            r#"<span class="chart-end {arriving}" style="top:{last_y:.1}%"></span><span class="chart-latest {arriving}" style="top:{last_y:.1}%">{}</span>"#,
             escape(latest),
         ));
     }
@@ -377,7 +429,7 @@ mod tests {
     /// A unit comes from an extension, so it goes into the drawing as text, never as markup.
     #[test]
     fn a_unit_cant_become_markup() {
-        let markup = drawing("M0 0", "M0 0Z", ("<b>5</b> °C", "0"), 50.0, "x\"y");
+        let markup = drawing(("M0 0", "M0 0Z"), ("<b>5</b> °C", "0"), 50.0, "x\"y", true);
         assert!(markup.contains("&lt;b&gt;5&lt;/b&gt; °C"));
         assert!(markup.contains("x&quot;y"));
         assert!(!markup.contains("<b>"));

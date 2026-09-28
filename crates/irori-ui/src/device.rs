@@ -687,7 +687,7 @@ fn EntityRow(
             // Always there, rolled up or down, so it can roll both ways; `inert` while rolled
             // up, so nobody tabs into what they can't see.
             <div class="drawer" class:open=move || open.get() inert=move || (!open.get()).then_some("")>
-                <div class="drawer-inner">{history_panel(entity, history)}</div>
+                <div class="drawer-inner">{history_panel(entity, history, state)}</div>
             </div>
         </div>
     }
@@ -701,6 +701,8 @@ fn EntityRow(
 fn history_panel(
     entity: Entity,
     history: RwSignal<Option<Result<Vec<EntityState>, String>>>,
+    // The row's reading as it is now, so a chart can grow with it.
+    live: Memo<Option<EntityState>>,
 ) -> AnyView {
     let numeric = matches!(entity.capabilities, Capabilities::Sensor(_));
     view! {
@@ -729,7 +731,7 @@ fn history_panel(
                 }
                 .into_any(),
                 Some(Ok(states)) => match readings(&states) {
-                    Some(numbers) => charted(&entity, numbers, states),
+                    Some(numbers) => charted(&entity, numbers, states, live),
                     None => table(&entity, states),
                 },
             }}
@@ -745,29 +747,41 @@ fn history_panel(
 fn readings(states: &[EntityState]) -> Option<Vec<chart::Reading>> {
     let mut numbers = Vec::new();
     for state in states {
-        let value = match (state.availability, state.state.as_ref()) {
-            (Availability::Unavailable, _) | (_, None) => f64::NAN,
-            (_, Some(State::Sensor(sensor))) => match sensor.value {
-                SensorValue::Number(value) => value,
-                SensorValue::Text(_) => return None,
-            },
-            (_, Some(_)) => return None,
-        };
-        if value.is_nan() && numbers.is_empty() {
+        let reading = as_reading(state)?;
+        if reading.value.is_nan() && numbers.is_empty() {
             continue;
         }
-        numbers.push(chart::Reading {
-            at_ms: state.last_changed.as_jiff().as_millisecond() as f64,
-            at: clock_time(state.last_changed),
-            value,
-        });
+        numbers.push(reading);
     }
     (!numbers.is_empty()).then_some(numbers)
 }
 
+/// One state as a point on the chart: its number, or a gap. Nothing if it's words or not a
+/// sensor at all.
+fn as_reading(state: &EntityState) -> Option<chart::Reading> {
+    let value = match (state.availability, state.state.as_ref()) {
+        (Availability::Unavailable, _) | (_, None) => f64::NAN,
+        (_, Some(State::Sensor(sensor))) => match sensor.value {
+            SensorValue::Number(value) => value,
+            SensorValue::Text(_) => return None,
+        },
+        (_, Some(_)) => return None,
+    };
+    Some(chart::Reading {
+        at_ms: state.last_changed.as_jiff().as_millisecond() as f64,
+        at: clock_time(state.last_changed),
+        value,
+    })
+}
+
 /// The chart, with the same day as a table behind a switch: the table is where every number is
 /// readable without pointing at it.
-fn charted(entity: &Entity, numbers: Vec<chart::Reading>, states: Vec<EntityState>) -> AnyView {
+fn charted(
+    entity: &Entity,
+    numbers: Vec<chart::Reading>,
+    states: Vec<EntityState>,
+    live: Memo<Option<EntityState>>,
+) -> AnyView {
     let as_table = RwSignal::new(false);
     let unit = match &entity.capabilities {
         Capabilities::Sensor(capabilities) => capabilities.unit.clone().unwrap_or_default(),
@@ -777,7 +791,7 @@ fn charted(entity: &Entity, numbers: Vec<chart::Reading>, states: Vec<EntityStat
     let chart = view! {
         <chart::StepChart
             readings=numbers
-            now_ms=web_sys::js_sys::Date::now()
+            live=Signal::derive(move || live.get().as_ref().and_then(as_reading))
             unit=unit
             name=name
         />

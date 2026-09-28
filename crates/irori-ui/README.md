@@ -111,7 +111,12 @@ off everything.
   highlight instead.
 - **List to device:** opening a device from the list slides the page aside and the device's
   name travels from its row up into the heading (the View Transition API, `src/transition.rs`);
-  going back reverses it. Every other page change is instant.
+  going back reverses it. Every other page change moves the way the sidebar goes, and a Start
+  tile grows into the page it opens.
+- **Live numbers** count to their new value as readings arrive (`src/count.rs`), and a
+  device's chart grows with them. **Toggles swipe**, a history **pulls down**
+  (`src/gesture.rs`), and on the **Floorplan** lit lights pool warm light in their rooms and
+  motion sensors ripple (`src/floorplan/ambience.rs`); changing floor, the plan sinks or rises.
 - **A device's history:** on a device's page a sensor's reading is itself the way into its last
   24 hours (a switch or light has a chevron beside it); the drawer rolls down to its content. A
   number's day is a chart (`src/chart.rs`) that draws itself in, with a crosshair and the reading
