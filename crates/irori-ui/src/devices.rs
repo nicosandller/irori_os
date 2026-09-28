@@ -1273,7 +1273,11 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                                                 {room.unwrap_or_else(|| "No room".to_owned())}
                                             </span>
                                         </span>
-                                        <span class="chevron" aria-hidden="true">"›"</span>
+                                        <svg class="home-chevron" viewBox="0 0 24 24" aria-hidden="true"
+                                             fill="none" stroke="currentColor" stroke-width="2"
+                                             stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M9 6l6 6-6 6" />
+                                        </svg>
                                     </A>
                                 </li>
                             }
@@ -1294,7 +1298,11 @@ fn provides(kinds: &BTreeMap<String, usize>) -> AnyView {
         .iter()
         .map(|(kind, count)| {
             let word = kind.replace('_', " ");
-            let plural = if *count == 1 { "" } else { "s" };
+            let plural = match (*count, word.ends_with(['s', 'h', 'x'])) {
+                (1, _) => "",
+                (_, true) => "es",
+                _ => "s",
+            };
             view! { <span class="chip">{format!("{count} {word}{plural}")}</span> }
         })
         .collect_view()

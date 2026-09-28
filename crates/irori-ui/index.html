@@ -1382,11 +1382,21 @@
                              animation: ping 1.8s var(--ease-out) infinite; }
     @keyframes ping { to { scale: 3; opacity: 0; } }
 
+    /* Found but locked: the same card, with its key form inside it and a dashed ember edge that
+       says it needs something from you before it can be added. The sentence explaining the whole
+       list is the section heading's job here. */
+    .found .waiting-for > p { display: none; }
+    .found .waiting-list { display: grid; gap: .4rem; margin-bottom: .4rem; }
+    .found .waiting-list li { padding: .7rem .8rem; background: var(--card);
+                              border: 1px dashed var(--ember); border-radius: .5rem;
+                              animation: rise var(--dur-base) var(--ease-out) backwards; }
+    .found .waiting-list li:last-child { border-bottom: 1px dashed var(--ember); }
+
     /* What's already in the home: the same card, pointing to the device's page. */
     .home-card .device-card-inner:hover { border-color: var(--ember); }
-    .home-card .chevron { flex: none; color: var(--muted); font-size: 1.2rem; line-height: 1;
+    .home-card .home-chevron { flex: none; width: 1rem; height: 1rem; color: var(--muted);
                           transition: translate var(--dur-fast) var(--ease-out), color var(--dur-fast); }
-    .home-card .device-card-inner:hover .chevron { color: var(--ember); translate: 3px 0; }
+    .home-card .device-card-inner:hover .home-chevron { color: var(--ember); translate: 3px 0; }
 
     /* Between the two steps (transition.rs `step`): the step being left slides away and the
        next comes in from the side it's going to, while the picked card and the heading become
@@ -1430,7 +1440,7 @@
                  border-radius: 1rem; }
     .log-filter button:nth-child(2) .log-count { background: var(--warn); }
     .log-filter button:nth-child(3) .log-count { background: var(--error); }
-    .log-count.none { color: var(--muted); background: transparent; }
+    .log-filter button .log-count.none { color: var(--muted); background: transparent; }
     .log-search { flex: 1 1 10rem; min-width: 0; padding: .35rem .6rem; font: inherit;
                   font-size: .85rem; color: var(--fg); background: var(--card);
                   border: 1px solid var(--line); border-radius: .4rem; }
