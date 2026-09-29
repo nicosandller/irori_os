@@ -28,6 +28,8 @@ use crate::db::Database;
 use crate::history::History;
 use crate::syslog;
 
+mod apps;
+
 /// Who commands are attributed to until there are accounts to attribute them to (M1.5).
 static UNAUTHENTICATED: LazyLock<UserId> =
     LazyLock::new(|| UserId::try_from("unauthenticated").expect("a valid user id"));
@@ -172,6 +174,13 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/dev/extensions/{id}/icon.svg", get(extension_icon))
         .route("/api/dev/extensions/{id}/log", get(extension_log))
+        // Extensions' own pages and their engines (`docs/specs/automations.md` §B3).
+        .route("/api/dev/apps", get(apps::list))
+        .route("/api/dev/apps/{id}/rpc", post(apps::rpc))
+        // Their files. Not under `/apps/`: those addresses are the shell's own pages that show
+        // them, and must reach the shell when reloaded.
+        .route("/pages/{id}/", get(apps::index))
+        .route("/pages/{id}/{*path}", get(apps::file))
         .fallback(get(ui::serve))
         .with_state(state)
 }

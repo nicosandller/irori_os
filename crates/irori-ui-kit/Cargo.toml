@@ -1,0 +1,36 @@
+[package]
+name = "irori-ui-kit"
+description = "What the shell and an extension's page share: the bridge between them, and the theme."
+version = "0.0.0"
+edition = "2024"
+publish = false
+repository = "https://github.com/nicosandller/irori_os"
+license = "Apache-2.0"
+
+# Not a workspace member, like irori-ui: it builds for wasm32, inside the pages that use it.
+
+[dependencies]
+futures-channel = "0.3.34"
+js-sys = "0.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "CssStyleDeclaration",
+    "MessageEvent",
+    "EventTarget",
+    "MediaQueryList",
+] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"

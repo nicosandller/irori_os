@@ -141,7 +141,7 @@ instead:
 | `get_states { id }` | `states:read` | `[EntityState]` |
 | `get_history { id, entities: [EntityId], since: Timestamp }` | `history:read` | `{ "<entity_id>": [EntityState] }`, oldest first |
 | `subscribe { id, states: bool, registry: bool }` | `events:read` | `null`. Afterwards the core pushes the events asked for |
-| `call_service { id, entity_id, service, data?, run_id, parent_id? }` | `services:call` | `null`, or an error |
+| `call_service { id, entity_id, command, data?, run_id, parent_id? }` | `services:call` | `null`, or an error |
 | `app_answer { id, value?, error? }` | — | (answers `app_request`) |
 
 **Core → extension**
@@ -157,9 +157,10 @@ A request outside the extension's declared scopes is answered with an error nami
 scope, e.g. `this extension didn't ask for services:call`. **Scopes are enforced here**, on every
 request.
 
-`call_service` takes the people-facing form a person would write — `light.turn_on` with
-`brightness_pct` — and the core converts it exactly as it does for the UI
-([protocols.md](protocols.md) §7.1). The core builds the call's context itself:
+`call_service` takes what a person's command takes: `command` (`turn_on`, `turn_off`,
+`toggle`) and, for `turn_on`, `data` (`brightness` 1–255, `color_temp_kelvin`, `rgb`), resolved
+against the entity exactly as a command from the UI is ([protocols.md](protocols.md) §7.1).
+People-facing spellings such as `brightness_pct` are the engine's to convert. The core builds the call's context itself:
 `Origin::Automation { extension: <this extension>, run_id }`, with `parent_id` if given (the
 context of the state change that started the run). An engine can't claim to be another
 extension or a person.
@@ -177,7 +178,9 @@ For each running extension with an `app` contribution, the core:
 
 - lists it at `GET /api/dev/apps`:
   `[{ "extension": "automations", "label": "Automations", "has_icon": true, "api": [scopes], "has_engine": true, "built": true }]`;
-- serves the package's files under `/apps/<extension>/…`, with `entry` at `/apps/<extension>/`.
+- serves the package's files under `/pages/<extension>/…`, with `entry` at `/pages/<extension>/`
+  and its sibling files beside it. (`/apps/<extension>/…` is the shell's own address for the page,
+  so a reload there reaches the shell.)
   A package whose `entry` file is missing is still listed, with `built: false`, and the shell
   says so on the page instead of showing an empty frame;
 - relays `POST /api/dev/apps/<extension>/rpc` with body `{ "method": "…", "params": … }` to the
@@ -198,7 +201,7 @@ sections, with the extension's icon loaded as an image. `/apps/<extension>/<rest
 full-width in:
 
 ```html
-<iframe sandbox="allow-scripts" src="/apps/<extension>/#/<rest>">
+<iframe sandbox="allow-scripts" src="/pages/<extension>/#/<rest>">
 ```
 
 `allow-scripts` without `allow-same-origin`: the page can't read the shell's storage or call
