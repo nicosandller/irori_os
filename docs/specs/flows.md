@@ -41,7 +41,7 @@ same file the canvas saves (rules.md D18).
   "name": "Hallway motion light",
   "mode": "restart",
   "nodes": {
-    "motion": { "type": "trigger", "trigger": { "type": "state", "entity": "binary_sensor.demo_movement_motion", "to": true } },
+    "motion": { "type": "trigger", "trigger": { "type": "state", "entity": "binary_sensor.demo_movement_occupancy", "to": true } },
     "dark":   { "type": "gate", "condition": { "type": "expr", "expr": "num('sensor.demo_luminosity_illuminance') < 30" } },
     "on":     { "type": "call", "service": "light.turn_on", "entity": "light.demo_hall_light", "data": { "brightness_pct": 60 } },
     "clear":  { "type": "wait", "until": { "type": "state", "entity": "binary_sensor.demo_mmwave_occupancy", "is": false, "for": "2m" }, "timeout": "10m" },
@@ -247,6 +247,7 @@ What the page calls through the bridge's `rpc`:
 | `timeline` | `id`, `from`, `to` | Watched entities' changes, near-misses and runs in the window |
 | `test` | §7 | The run record |
 | `backtest` | §7 | Would-be runs, actual runs, covered window |
+| `tests.get` / `tests.save` | `id`, `settings` | How the page last set up a test of this flow (up to 16 KB, kept as given), so it runs again the same way. Deleted with the flow |
 
 ---
 

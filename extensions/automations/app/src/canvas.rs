@@ -198,7 +198,7 @@ pub fn Canvas() -> impl IntoView {
             }
             return;
         } else {
-            ed.selected.set(Selected::Nothing);
+            // Moving the canvas leaves an open node open; a click on it closes it (`on_up`).
             drag.set_value(Some(Drag::Pan {
                 from: client,
                 pan: pan.get_untracked(),
@@ -250,11 +250,20 @@ pub fn Canvas() -> impl IntoView {
     };
 
     let on_up = move |event: web_sys::PointerEvent| {
-        // A node pressed and let go without moving: a click, which opens it.
-        if let Some(Drag::Node { id, .. }) = drag.get_value()
-            && dragging.get_untracked().is_none()
-        {
-            ed.selected.set(Selected::Node(id));
+        // A node pressed and let go without moving: a click, which opens it. The same on the
+        // empty canvas closes what's open.
+        match drag.get_value() {
+            Some(Drag::Node { id, .. }) if dragging.get_untracked().is_none() => {
+                ed.selected.set(Selected::Node(id));
+            }
+            Some(Drag::Pan { from, .. })
+                if (f64::from(event.client_x()) - from[0]).abs()
+                    + (f64::from(event.client_y()) - from[1]).abs()
+                    < 4.0 =>
+            {
+                ed.selected.set(Selected::Nothing);
+            }
+            _ => {}
         }
         if let Some(Drag::Wire { from }) = drag.get_value() {
             let target = document()
@@ -285,18 +294,11 @@ pub fn Canvas() -> impl IntoView {
     };
 
     let on_wheel = move |event: web_sys::WheelEvent| {
-        // Over an open node's form, the wheel moves the canvas rather than zooming it, so a long
-        // form can be scrolled through; a list or a text box in it scrolls itself.
-        if let Some(target) = event.target()
-            && closest(&target, "[data-sheet]").is_some()
+        // The open node's panel scrolls itself.
+        if event
+            .target()
+            .is_some_and(|t| closest(&t, "[data-sheet]").is_some())
         {
-            if closest(&target, ".combo-list, textarea").is_none() {
-                event.prevent_default();
-                pan.update(|p| {
-                    p[0] -= event.delta_x();
-                    p[1] -= event.delta_y();
-                });
-            }
             return;
         }
         event.prevent_default();
@@ -435,9 +437,10 @@ pub fn Canvas() -> impl IntoView {
                     key=|id| id.clone()
                     let:id
                 >
-                    <NodeCard id=id flow=flow positions=positions visits=visits diff=diff dragging=dragging zoom=zoom />
+                    <NodeCard id=id flow=flow positions=positions visits=visits diff=diff dragging=dragging />
                 </For>
             </div>
+            <NodePanel pan=pan zoom=zoom positions=positions root=root />
             {move || match ed.view.get() {
                 View::Trace { record, .. } => {
                     let summary = record.summary();
@@ -497,7 +500,6 @@ fn NodeCard(
     visits: Memo<(BTreeMap<NodeId, Visit>, BTreeSet<Wire>)>,
     diff: Memo<BTreeMap<NodeId, &'static str>>,
     dragging: RwSignal<Option<NodeId>>,
-    zoom: RwSignal<f64>,
 ) -> impl IntoView {
     let ed = expect_context::<Editing>();
     let home = expect_context::<Home>();
@@ -505,39 +507,17 @@ fn NodeCard(
         let id = id.clone();
         Memo::new(move |_| flow.with(|f| f.as_ref().and_then(|f| f.nodes.get(&id).cloned())))
     };
-    // Selected while editing, the node opens up into its own form.
+    // Selected while editing, its form is open in the panel over the canvas.
     let open = {
         let id = id.clone();
         Memo::new(move |_| {
             matches!(ed.view.get(), View::Edit) && ed.selected.get() == Selected::Node(id.clone())
         })
     };
-    // Kept a moment after it closes, so it can fold away rather than vanish.
-    let shown = RwSignal::new(open.get_untracked());
-    let closing = RwSignal::new(false);
-    Effect::new(move |_| {
-        if open.get() {
-            closing.set(false);
-            shown.set(true);
-        } else if shown.get_untracked() {
-            closing.set(true);
-            set_timeout(
-                // The node may have been deleted meanwhile.
-                move || {
-                    if open.try_get_untracked() == Some(false) {
-                        let _ = shown.try_set(false);
-                        let _ = closing.try_set(false);
-                    }
-                },
-                std::time::Duration::from_millis(170),
-            );
-        }
-    });
     let for_class = id.clone();
     let for_badge = id.clone();
     let for_status = id.clone();
     let for_place = id.clone();
-    let for_sheet = id.clone();
 
     let class = move || {
         let mut class = String::from("node");
@@ -583,7 +563,7 @@ fn NodeCard(
     let live_value = move || {
         let entity = node.with(|n| n.as_ref().and_then(model::primary_entity))?;
         home.states
-            .with(|states| states.get(&entity).map(model::state_words))
+            .with(|states| states.get(&entity).map(|s| model::state_words(s, &home)))
     };
 
     let status = move || {
@@ -703,22 +683,93 @@ fn NodeCard(
                 _ => None,
             }}
             {move || live_value().map(|value| view! { <span class="now">{format!("now {value}")}</span> })}
-            {move || (!shown.get()).then(|| status().map(|s| view! { <div class="status">{s}</div> })).flatten()}
-            {move || shown.get().then(|| {
-                let id = for_sheet.clone();
-                view! {
-                    // Readable at any zoom: the form is scaled back to its own size.
-                    <div
-                        class="sheet"
-                        data-sheet=""
-                        style=move || format!("transform: scale({})", 1.0 / zoom.get())
-                    >
-                        <div class="sheet-body" class:closing=move || closing.get()>
-                            <crate::inspector::NodeForm id=id />
-                        </div>
-                    </div>
-                }
-            })}
+            {move || status().map(|s| view! { <div class="status">{s}</div> })}
         </div>
+    }
+}
+
+/// The open node's form, in a panel over the middle of the canvas — wherever the node is, and
+/// however long the form — that scrolls on its own. It grows out of the node and shrinks back.
+#[component]
+fn NodePanel(
+    pan: RwSignal<[f64; 2]>,
+    zoom: RwSignal<f64>,
+    positions: Memo<BTreeMap<NodeId, [f64; 2]>>,
+    root: NodeRef<leptos::html::Div>,
+) -> impl IntoView {
+    let ed = expect_context::<Editing>();
+    let open = Memo::new(move |_| match (ed.view.get(), ed.selected.get()) {
+        (View::Edit, Selected::Node(id))
+            if ed
+                .draft
+                .with(|d| d.as_ref().is_some_and(|f| f.nodes.contains_key(&id))) =>
+        {
+            Some(id)
+        }
+        _ => None,
+    });
+    // Kept a moment after it closes, so it can shrink away rather than vanish.
+    let shown = RwSignal::new(None::<NodeId>);
+    let closing = RwSignal::new(false);
+    Effect::new(move |_| match open.get() {
+        Some(id) => {
+            closing.set(false);
+            if shown.get_untracked().as_ref() != Some(&id) {
+                shown.set(Some(id));
+            }
+        }
+        None if shown.get_untracked().is_some() => {
+            closing.set(true);
+            set_timeout(
+                move || {
+                    if open.try_get_untracked() == Some(None) {
+                        let _ = shown.try_set(None);
+                        let _ = closing.try_set(false);
+                    }
+                },
+                std::time::Duration::from_millis(170),
+            );
+        }
+        None => {}
+    });
+    // Where the node is, from the middle of the canvas: where the panel grows out of.
+    let origin = move |id: &NodeId| {
+        let at = positions
+            .get_untracked()
+            .get(id)
+            .copied()
+            .unwrap_or([0.0, 0.0]);
+        let [px, py] = pan.get_untracked();
+        let z = zoom.get_untracked();
+        let (w, h) = root
+            .get_untracked()
+            .map(|el| (f64::from(el.client_width()), f64::from(el.client_height())))
+            .unwrap_or((800.0, 600.0));
+        let x = px + (at[0] + model::NODE_W / 2.0) * z - w / 2.0;
+        let y = py + at[1] * z - h * 0.3;
+        format!("--from-x: {x:.0}px; --from-y: {y:.0}px")
+    };
+    move || {
+        shown.get().map(|id| {
+            let style = origin(&id);
+            let title = ed.draft.with_untracked(|d| {
+                d.as_ref()
+                    .and_then(|f| f.nodes.get(&id))
+                    .map(model::label)
+                    .unwrap_or_default()
+            });
+            view! {
+                <div class="node-panel" class:closing=move || closing.get() data-sheet="" style=style>
+                    <div class="node-panel-head">
+                        <span class="grow">{title}<span class="nid">{id.to_string()}</span></span>
+                        <button class="x" title="Close (Esc)" aria-label="Close"
+                            on:click=move |_| ed.selected.set(Selected::Nothing)>"×"</button>
+                    </div>
+                    <div class="node-panel-body">
+                        <crate::inspector::NodeForm id=id />
+                    </div>
+                </div>
+            }
+        })
     }
 }

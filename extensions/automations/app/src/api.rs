@@ -98,6 +98,15 @@ pub async fn test(request: &TestRequest) -> Result<RunRecord, String> {
     .await
 }
 
+/// How a test of this flow was last set up, as the page left it (`null` if never).
+pub async fn test_settings(id: &str) -> Result<Value, String> {
+    call("tests.get", json!({ "id": id })).await
+}
+
+pub async fn save_test_settings(id: &str, settings: &Value) -> Result<Value, String> {
+    call("tests.save", json!({ "id": id, "settings": settings })).await
+}
+
 pub async fn backtest(id: &str, draft: Option<&Flow>) -> Result<Backtest, String> {
     call("backtest", json!({ "id": id, "flow": draft })).await
 }

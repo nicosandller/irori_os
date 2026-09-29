@@ -2019,8 +2019,8 @@ pub(crate) fn wording(class: Option<BinarySensorClass>, on: bool) -> &'static st
     match (class, on) {
         (Some(Motion | Vibration), true) => "Motion",
         (Some(Motion | Vibration), false) => "Still",
-        (Some(Occupancy), true) => "Occupied",
-        (Some(Occupancy), false) => "Empty",
+        (Some(Occupancy), true) => "Detected",
+        (Some(Occupancy), false) => "Clear",
         (Some(Door | Window), true) => "Open",
         (Some(Door | Window), false) => "Closed",
         (Some(Moisture), true) => "Wet",

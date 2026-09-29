@@ -10,9 +10,10 @@ use irori_flow_types::{Flow, NodeId};
 use irori_types::EntityId;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use serde::{Deserialize, Serialize};
 
 use crate::editor::{Editing, Selected, Tab, View};
-use crate::widgets::{Choice, Combo, Toggle};
+use crate::widgets::{Choice, Combo};
 use crate::{Home, api, model, time};
 
 /// Shows `record` on the canvas, drawn on the definition it ran: `flow` if given (a test of a
@@ -268,9 +269,45 @@ fn Trace(record: RunRecord, upto: usize) -> impl IntoView {
     }
 }
 
+/// What a test does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TestMode {
+    /// The draft, with nothing switched and time skipping ahead.
+    #[default]
+    Dry,
+    /// The saved flow, fired now, for real.
+    Trigger,
+    /// The draft over the last day of history.
+    Backtest,
+}
+
+/// A value to pretend an entity has, in a dry run.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+struct Pretend {
+    entity: String,
+    value: serde_json::Value,
+}
+
+/// How a flow is tested, kept by the engine so it runs the same way next time.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct TestSettings {
+    mode: TestMode,
+    trigger: Option<NodeId>,
+    pretend: Vec<Pretend>,
+}
+
+const MODES: [(TestMode, &str, &str); 3] = [
+    (TestMode::Dry, "dry", "Dry run"),
+    (TestMode::Trigger, "trigger", "Trigger now"),
+    (TestMode::Backtest, "backtest", "Backtest"),
+];
+
 #[component]
 pub fn Test() -> impl IntoView {
     let ed = expect_context::<Editing>();
+    let home = expect_context::<Home>();
     let triggers = move || {
         ed.draft.with(|d| {
             d.as_ref()
@@ -278,50 +315,73 @@ pub fn Test() -> impl IntoView {
                     f.nodes
                         .iter()
                         .filter(|(_, n)| n.is_trigger())
-                        .map(|(id, _)| id.clone())
-                        .collect::<Vec<NodeId>>()
+                        .map(|(id, n)| (id.clone(), model::sentence(n, &home)))
+                        .collect::<Vec<_>>()
                 })
                 .unwrap_or_default()
         })
     };
-    let trigger = RwSignal::new(None::<NodeId>);
-    let dry = RwSignal::new(true);
-    let overrides = RwSignal::new(Vec::<(String, String)>::new());
+    let settings = RwSignal::new(TestSettings::default());
     let result = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     let backtest = RwSignal::new(None::<Result<Backtest, String>>);
+
+    // What was set up last time, then every change kept for next time.
+    let loaded = RwSignal::new(ed.is_new.get_untracked());
+    if !ed.is_new.get_untracked() {
+        let id = ed.id();
+        spawn_local(async move {
+            if let Ok(value) = api::test_settings(&id).await
+                && let Ok(kept) = serde_json::from_value::<TestSettings>(value)
+            {
+                let _ = settings.try_set(kept);
+            }
+            let _ = loaded.try_set(true);
+        });
+    }
+    Effect::new(move |before: Option<TestSettings>| {
+        let now = settings.get();
+        if loaded.get()
+            && !ed.is_new.get_untracked()
+            && before.as_ref().is_some_and(|b| b != &now)
+            && let Ok(value) = serde_json::to_value(&now)
+        {
+            let id = ed.id();
+            spawn_local(async move {
+                let _ = api::save_test_settings(&id, &value).await;
+            });
+        }
+        now
+    });
+    let mode = move || settings.with(|s| s.mode);
 
     let run = move || {
         let Some(flow) = ed.draft.get_untracked() else {
             return;
         };
-        let Some(trigger) = trigger
-            .get_untracked()
-            .or_else(|| triggers().into_iter().next())
+        let kept = settings.get_untracked();
+        let Some(trigger) = kept
+            .trigger
+            .filter(|t| flow.nodes.contains_key(t))
+            .or_else(|| triggers().into_iter().next().map(|(id, _)| id))
         else {
             result.set(Some("add a trigger first".into()));
             return;
         };
-        let dry = dry.get_untracked();
+        let dry = kept.mode == TestMode::Dry;
         if !dry && ed.dirty() {
-            result.set(Some("save first: a live test runs the saved flow".into()));
+            result.set(Some("save first: triggering runs the saved flow".into()));
             return;
         }
-        let mut pretend = BTreeMap::new();
-        for (entity, value) in overrides.get_untracked() {
-            let Ok(entity) = entity.parse::<EntityId>() else {
-                continue;
-            };
-            let value = match value.trim() {
-                "on" | "true" => serde_json::json!(true),
-                "off" | "false" => serde_json::json!(false),
-                text => text
-                    .parse::<f64>()
-                    .map(|n| serde_json::json!(n))
-                    .unwrap_or_else(|_| serde_json::json!(text)),
-            };
-            pretend.insert(entity, value);
-        }
+        let pretend: BTreeMap<EntityId, serde_json::Value> = if dry {
+            kept.pretend
+                .iter()
+                .filter(|p| !p.value.is_null())
+                .filter_map(|p| Some((p.entity.parse().ok()?, p.value.clone())))
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
         let request = TestRequest {
             flow: dry.then(|| flow.clone()),
             id: flow.id.clone(),
@@ -333,12 +393,14 @@ pub fn Test() -> impl IntoView {
         spawn_local(async move {
             match api::test(&request).await {
                 Ok(record) => {
-                    result.set(None);
+                    let _ = result.try_set(None);
                     show_run(ed, record, dry.then_some(flow));
                 }
-                Err(why) => result.set(Some(why)),
+                Err(why) => {
+                    let _ = result.try_set(Some(why));
+                }
             }
-            busy.set(false);
+            let _ = busy.try_set(false);
         });
     };
 
@@ -350,76 +412,173 @@ pub fn Test() -> impl IntoView {
         busy.set(true);
         spawn_local(async move {
             let answer = api::backtest(&id, if dirty { draft.as_ref() } else { None }).await;
-            backtest.set(Some(answer));
-            busy.set(false);
+            let _ = backtest.try_set(Some(answer));
+            let _ = busy.try_set(false);
         });
+    };
+
+    let picker = move || {
+        let all = triggers();
+        let chosen = settings.with(|s| s.trigger.clone());
+        match all.len() {
+            0 => view! { <p class="problem">"Add a trigger first."</p> }.into_any(),
+            1 => view! {
+                <label>"Starts from"</label>
+                <p class="starts">{all[0].1.clone()}</p>
+            }
+            .into_any(),
+            _ => view! {
+                <label>"Starts from"</label>
+                <select on:change=move |e| {
+                    let picked = event_target_value(&e).parse().ok();
+                    settings.update(|s| s.trigger = picked);
+                }>
+                    {all.into_iter().map(|(id, words)| {
+                        let selected = chosen.as_ref() == Some(&id);
+                        view! { <option value=id.to_string() selected=selected>{words}</option> }
+                    }).collect_view()}
+                </select>
+            }
+            .into_any(),
+        }
+    };
+
+    let body = move || {
+        match mode() {
+        TestMode::Dry => view! {
+            <div class="mode-body">
+            <p class="muted mode-note">"Runs your draft with nothing switched, and waits skip ahead. Pretend values first to try a situation."</p>
+            {picker}
+            <PretendList settings=settings />
+            <div class="row" style="margin-top:.9rem">
+                <button class="btn primary" disabled=move || busy.get() on:click=move |_| run()>"Dry run"</button>
+            </div>
+            </div>
+        }
+        .into_any(),
+        TestMode::Trigger => view! {
+            <div class="mode-body">
+            <p class="muted mode-note">"Fires the saved flow now, for real, as if its trigger had happened: devices switch."</p>
+            {picker}
+            {move || ed.dirty().then(|| view! { <p class="problem warning">"Save your changes first: this runs the saved flow."</p> })}
+            <div class="row" style="margin-top:.9rem">
+                <button class="btn primary" disabled=move || busy.get() || ed.dirty() on:click=move |_| run()>"Trigger now"</button>
+            </div>
+            </div>
+        }
+        .into_any(),
+        TestMode::Backtest => view! {
+            <div class="mode-body">
+            <p class="muted mode-note">"What this version would have done over the last day of history, next to what the saved flow actually did."</p>
+            <button class="btn primary" disabled=move || busy.get() || ed.is_new.get() on:click=move |_| run_backtest()>"Backtest the last 24 hours"</button>
+            {move || backtest.get().map(|answer| match answer {
+                Err(why) => view! { <div class="problem">{why}</div> }.into_any(),
+                Ok(result) => view! { <BacktestResult result=result /> }.into_any(),
+            })}
+            </div>
+        }
+        .into_any(),
+    }
     };
 
     view! {
         <h2>"Try it"</h2>
-        <p class="muted" style="font-size:.85rem">"Fire a trigger by hand and watch the path light up on the canvas."</p>
-        <label>"Trigger"</label>
-        <select on:change=move |e| trigger.set(event_target_value(&e).parse().ok())>
-            {move || triggers().into_iter().map(|id| view! { <option value=id.to_string()>{id.to_string()}</option> }).collect_view()}
-        </select>
-        <label>"How"</label>
-        <div class="row"><Toggle on=dry set=Callback::new(move |on: bool| dry.set(on)) label="Dry run" />
-            <span style="font-size:.9rem">"Dry run: nothing is switched, time skips ahead"</span></div>
-        {move || dry.get().then(|| view! {
-            <label>"Pretend (dry run only)"</label>
-            {move || overrides.get().into_iter().enumerate().map(|(i, (entity, value))| view! {
-                <div class="row" style="margin:.2rem 0">
-                    <OverridePicker index=i entity=entity overrides=overrides />
-                    <input type="text" style="width:6rem" placeholder="on / 20" prop:value=value
-                        on:change=move |e| { let v = event_target_value(&e); overrides.update(|o| if let Some(row) = o.get_mut(i) { row.1 = v; }); } />
-                    <button class="btn small" on:click=move |_| overrides.update(|o| { if i < o.len() { o.remove(i); } })>"×"</button>
-                </div>
+        <div
+            class="modes"
+            role="radiogroup"
+            aria-label="How to test"
+            style=move || format!("--at: {}", MODES.iter().position(|(m, _, _)| *m == mode()).unwrap_or(0))
+        >
+            <span class="modes-thumb" data-mode=move || MODES.iter().find(|(m, _, _)| *m == mode()).map_or("dry", |(_, key, _)| *key)></span>
+            {MODES.into_iter().map(|(which, key, words)| view! {
+                <button
+                    type="button"
+                    role="radio"
+                    data-mode=key
+                    class:on=move || mode() == which
+                    aria-checked=move || (mode() == which).to_string()
+                    on:click=move |_| {
+                        result.set(None);
+                        settings.update(|s| s.mode = which);
+                    }
+                >{words}</button>
             }).collect_view()}
-            <button class="btn small" on:click=move |_| overrides.update(|o| o.push((String::new(), String::new())))>"Pretend a value…"</button>
-        })}
-        <div class="row" style="margin-top:.8rem">
-            <button class="btn primary" disabled=move || busy.get() on:click=move |_| run()>
-                {move || if dry.get() { "Dry run" } else { "Run it for real" }}
-            </button>
         </div>
+        {body}
         {move || result.get().map(|r| view! { <div class="problem">{r}</div> })}
-
-        <h2 style="margin-top:1.4rem">"Backtest"</h2>
-        <p class="muted" style="font-size:.85rem">
-            "What this version would have done over the last day of history, next to what the saved flow actually did."
-        </p>
-        <button class="btn" disabled=move || busy.get() || ed.is_new.get() on:click=move |_| run_backtest()>"Backtest the last 24 hours"</button>
-        {move || backtest.get().map(|answer| match answer {
-            Err(why) => view! { <div class="problem">{why}</div> }.into_any(),
-            Ok(result) => view! { <BacktestResult result=result /> }.into_any(),
-        })}
     }
 }
 
+/// The values a dry run pretends, each on an entity this flow uses.
 #[component]
-fn OverridePicker(
-    index: usize,
-    entity: String,
-    overrides: RwSignal<Vec<(String, String)>>,
-) -> impl IntoView {
+fn PretendList(settings: RwSignal<TestSettings>) -> impl IntoView {
+    let ed = expect_context::<Editing>();
     let home = expect_context::<Home>();
     let choices = Signal::derive(move || {
+        let used = ed
+            .draft
+            .with(|d| d.as_ref().map(model::entities_used).unwrap_or_default());
         home.entities.with(|entities| {
             entities
                 .iter()
-                .map(|e| Choice::new(e.id.to_string(), e.name.to_string()).detail(e.id.to_string()))
+                .filter(|e| used.contains(&e.id))
+                .map(|e| {
+                    let now = home
+                        .states
+                        .with(|states| states.get(&e.id).map(|s| model::state_words(s, &home)))
+                        .map(|now| format!(" · {now}"))
+                        .unwrap_or_default();
+                    Choice::new(e.id.to_string(), e.name.to_string())
+                        .detail(format!("{}{now}", e.id))
+                })
                 .collect::<Vec<_>>()
         })
     });
     view! {
-        <div class="grow">
-            <Combo
-                choices=choices
-                value=Signal::stored(entity)
-                placeholder="Which device…"
-                pick=Callback::new(move |id: String| overrides.update(|o| if let Some(row) = o.get_mut(index) { row.0 = id; }))
-            />
-        </div>
+        <label>"Pretend"</label>
+        {move || {
+            let rows = settings.with(|s| s.pretend.clone());
+            if rows.is_empty() {
+                return view! { <p class="muted" style="font-size:.85rem;margin:.2rem 0">"Everything as it is now."</p> }.into_any();
+            }
+            rows.into_iter().enumerate().map(|(i, row)| {
+                let entity = row.entity.clone();
+                view! {
+                    <div class="pretend">
+                        <div class="row">
+                            <div class="grow">
+                                <Combo
+                                    choices=choices
+                                    value=Signal::stored(row.entity.clone())
+                                    placeholder="One of this flow's devices…"
+                                    pick=Callback::new(move |id: String| settings.update(|s| {
+                                        if let Some(row) = s.pretend.get_mut(i) {
+                                            row.entity = id;
+                                            row.value = serde_json::Value::Null;
+                                        }
+                                    }))
+                                />
+                            </div>
+                            <button class="btn small" title="Don't pretend this" on:click=move |_| settings.update(|s| {
+                                if i < s.pretend.len() { s.pretend.remove(i); }
+                            })>"×"</button>
+                        </div>
+                        {(!entity.is_empty()).then(|| view! {
+                            <div class="pretend-value">
+                                <span class="muted">"is"</span>
+                                <div class="grow">
+                                    <crate::inspector::ValueInput entity=entity value=row.value.clone() allow_any=false
+                                        pick=move |value| settings.update(|s| {
+                                            if let Some(row) = s.pretend.get_mut(i) { row.value = value; }
+                                        }) />
+                                </div>
+                            </div>
+                        })}
+                    </div>
+                }
+            }).collect_view().into_any()
+        }}
+        <button class="btn small" on:click=move |_| settings.update(|s| s.pretend.push(Pretend::default()))>"Pretend a value…"</button>
     }
 }
 
@@ -519,7 +678,7 @@ pub fn Why() -> impl IntoView {
                     Row::Change(state) => view! {
                         <div class="item" style="cursor:default">
                             <span class="when">{time::clock(&at)}</span>" "
-                            {format!("{} → {}", home.name(&state.entity_id), model::state_words(&state))}
+                            {format!("{} → {}", home.name(&state.entity_id), model::state_words(&state, &home))}
                         </div>
                     }.into_any(),
                     Row::Miss(miss) => view! {

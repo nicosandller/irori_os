@@ -178,6 +178,20 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
             service.apply_effects();
             answer(cancelled)
         }
+        "tests.get" => {
+            let ById { id } = params(raw)?;
+            answer(service.store.test_settings(&id))
+        }
+        "tests.save" => {
+            #[derive(Deserialize)]
+            struct Settings {
+                id: RuleId,
+                settings: Value,
+            }
+            let Settings { id, settings } = params(raw)?;
+            service.store.keep_test_settings(&id, &settings)?;
+            answer(json!({}))
+        }
         "nearmiss.list" => {
             let ById { id } = params(raw)?;
             answer(service.store.near_misses(&id))

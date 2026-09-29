@@ -254,24 +254,58 @@
     .node:not(.dragging) { transition: border-color var(--dur-fast), box-shadow var(--dur-base),
       opacity var(--dur-base), scale var(--dur-base) var(--ease-spring); }
     .node .text, .node .head { cursor: grab; }
-    /* An open node: its form unfolds out of it, and folds back in when it closes. */
+    /* The open node: its form in a panel over the middle of the canvas, grown out of the node. */
     .node.open { z-index: 6; border-color: var(--ember);
-      box-shadow: 0 0 0 3px color-mix(in srgb, var(--ember) 22%, transparent), 0 18px 40px rgb(0 0 0 / .22); }
-    .sheet { position: absolute; left: -8px; top: calc(100% + 10px); width: 372px; transform-origin: 0 0;
-             user-select: text; cursor: default; }
-    .sheet-body { position: relative; background: var(--card); border: 1px solid var(--line); border-radius: .8rem;
-      padding: .4rem 1rem 1rem; box-shadow: 0 22px 48px rgb(0 0 0 / .24), 0 4px 12px rgb(0 0 0 / .1);
-      transform-origin: 116px -10px; animation: sheet-in var(--dur-expressive) var(--ease-spring) both; }
-    .sheet-body::before { content: ""; position: absolute; left: 108px; top: -7px; width: 12px; height: 12px;
-      background: var(--card); border-left: 1px solid var(--line); border-top: 1px solid var(--line); rotate: 45deg; }
-    .sheet-body.closing { animation: sheet-out 160ms var(--ease-out) forwards; }
-    @keyframes sheet-in { from { opacity: 0; scale: .58 .25; translate: 0 -18px; } }
-    @keyframes sheet-out { to { opacity: 0; scale: .58 .25; translate: 0 -18px; } }
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--ember) 22%, transparent), 0 12px 28px rgb(0 0 0 / .18); }
+    .node-panel { position: absolute; z-index: 30; left: 50%; top: 16px; width: min(440px, calc(100% - 32px));
+      max-height: calc(100% - 72px); transform: translateX(-50%); display: flex; flex-direction: column;
+      background: var(--card); border: 1px solid var(--line); border-radius: .9rem; cursor: default;
+      box-shadow: 0 24px 56px rgb(0 0 0 / .26), 0 4px 12px rgb(0 0 0 / .1);
+      animation: panel-in var(--dur-expressive) var(--ease-spring) both; }
+    .node-panel.closing { animation: panel-out 160ms var(--ease-out) forwards; }
+    @keyframes panel-in { from { opacity: 0; scale: .35; translate: var(--from-x) var(--from-y); } }
+    @keyframes panel-out { to { opacity: 0; scale: .35; translate: var(--from-x) var(--from-y); } }
+    .node-panel-head { display: flex; align-items: center; gap: .5rem; padding: .7rem .7rem .6rem 1rem;
+      border-bottom: 1px solid var(--line); font-size: .78rem; text-transform: uppercase;
+      letter-spacing: .05em; color: var(--muted); }
+    .node-panel-head .nid { margin-left: .5rem; font-family: var(--mono); text-transform: none; letter-spacing: 0; }
+    .node-panel-head .x { width: 1.9rem; height: 1.9rem; border-radius: 50%; border: 1px solid var(--line);
+      background: var(--bg); font-size: 1.1rem; line-height: 1; display: grid; place-items: center;
+      transition: background-color var(--dur-fast), scale var(--dur-fast) var(--ease-out); }
+    .node-panel-head .x:hover { background: var(--sunk); }
+    .node-panel-head .x:active { scale: .92; }
+    .node-panel-body { overflow-y: auto; padding: .2rem 1rem 1rem; overscroll-behavior: contain; }
+    /* The test's three ways, as one switch: the chosen one slides under its name, in its colour. */
+    :root { --mode-dry: #d4e5fb; --mode-trigger: #fbdcc8; --mode-backtest: #d3ecd5; --mode-ink: #1c1714; }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) { --mode-dry: #29405e; --mode-trigger: #5b3a27; --mode-backtest: #2b4a31; --mode-ink: #faf7f4; } }
+    html[data-theme="dark"] { --mode-dry: #29405e; --mode-trigger: #5b3a27; --mode-backtest: #2b4a31; --mode-ink: #faf7f4; }
+    .modes { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); padding: 4px;
+      margin: .4rem 0 .2rem; background: var(--sunk); border: 1px solid var(--line); border-radius: 999px; }
+    .modes-thumb { position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc((100% - 8px) / 3);
+      border-radius: 999px; background: var(--mode-dry); translate: calc(var(--at) * 100%) 0;
+      box-shadow: 0 1px 3px rgb(0 0 0 / .12);
+      transition: translate var(--dur-expressive) var(--ease-spring), background-color var(--dur-base); }
+    .modes-thumb[data-mode="trigger"] { background: var(--mode-trigger); }
+    .modes-thumb[data-mode="backtest"] { background: var(--mode-backtest); }
+    .modes button { position: relative; z-index: 1; border: 0; background: none; padding: .55rem .3rem;
+      border-radius: 999px; font-size: .88rem; font-weight: 500; color: var(--muted);
+      transition: color var(--dur-base); }
+    .modes button.on { color: var(--mode-ink); }
+    .modes button:not(.on):hover { color: var(--fg); }
+    .mode-body { animation: rise-in var(--dur-base) var(--ease-out) both; }
+    .mode-note { font-size: .85rem; margin: .8rem 0 0; }
+    .starts { margin: 0; font-size: .92rem; }
+    .pretend { border: 1px solid var(--line); border-radius: .6rem; padding: .5rem; margin: .4rem 0; }
+    .pretend-value { display: flex; align-items: center; gap: .5rem; margin-top: .4rem; }
+    .pretend:focus-within { position: relative; z-index: 5; }
     .check { display: flex; align-items: center; gap: .55rem; color: var(--fg); font-size: .9rem; cursor: pointer; }
     .check input { width: 1.1rem; height: 1.1rem; accent-color: var(--ember); margin: 0; }
     .check .muted { margin-left: auto; font-size: .8rem; font-weight: 400; }
     .clause { border: 1px solid var(--line); border-radius: .6rem; padding: .6rem; margin: .5rem 0;
-              background: color-mix(in srgb, var(--sunk) 55%, transparent); animation: rise-in var(--dur-base) var(--ease-out) both; }
+              background: color-mix(in srgb, var(--sunk) 55%, transparent); animation: rise-in var(--dur-base) var(--ease-out) backwards; }
+    /* A list that opens sits over whatever comes after it. */
+    .clause:focus-within, .combo.open { position: relative; z-index: 5; }
     .clause .row.test { margin-top: .45rem; gap: .4rem; }
     .clause .row.test > select { flex: 1; }
     .clause .row.test > input { width: 7.5rem; }

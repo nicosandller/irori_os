@@ -7,7 +7,9 @@ use irori_flow_types::{
     CallData, Condition, Flow, JoinMode, Node, NodeId, Port, RuleService, Trigger, TypedValue,
     WaitUntil,
 };
-use irori_types::{EntityId, EntityKind, EntityState, SensorValue, State};
+use irori_types::{
+    BinarySensorClass, Capabilities, EntityId, EntityKind, EntityState, SensorValue, State,
+};
 use leptos::prelude::WithUntracked;
 
 use crate::Home;
@@ -134,10 +136,51 @@ pub fn port_label(node: &Node, port: Port) -> String {
     }
 }
 
-fn value_words(value: &TypedValue) -> String {
+/// What a flag's `true` and `false` mean for this kind of thing: open and closed for a door,
+/// detected and clear for presence. Switches and lights, and sensors that don't say what they
+/// sense, are on and off.
+pub fn flag_words(class: Option<BinarySensorClass>) -> (&'static str, &'static str) {
+    use BinarySensorClass::*;
+    match class {
+        Some(Motion | Occupancy) => ("detected", "clear"),
+        Some(Vibration) => ("shaking", "still"),
+        Some(Door | Window) => ("open", "closed"),
+        Some(Moisture) => ("wet", "dry"),
+        Some(Smoke) => ("smoke", "clear"),
+        Some(Gas) => ("gas", "clear"),
+        Some(Plug) => ("plugged in", "unplugged"),
+        Some(Connectivity) => ("connected", "disconnected"),
+        Some(Battery) => ("low", "ok"),
+        Some(Problem) => ("a problem", "ok"),
+        None => ("on", "off"),
+    }
+}
+
+impl Home {
+    /// The binary sensor's class, if `entity` is one and says.
+    pub fn flag_class(&self, entity: &EntityId) -> Option<BinarySensorClass> {
+        self.entities.with_untracked(|entities| {
+            entities
+                .iter()
+                .find(|e| &e.id == entity)
+                .and_then(|e| match &e.capabilities {
+                    Capabilities::BinarySensor(b) => b.device_class,
+                    _ => None,
+                })
+        })
+    }
+
+    /// What on and off mean for `entity`.
+    pub fn flag_words(&self, entity: &EntityId) -> (&'static str, &'static str) {
+        flag_words(self.flag_class(entity))
+    }
+}
+
+fn value_words(value: &TypedValue, entity: &EntityId, home: &Home) -> String {
+    let (on, off) = home.flag_words(entity);
     match value {
-        TypedValue::Bool(true) => "on".into(),
-        TypedValue::Bool(false) => "off".into(),
+        TypedValue::Bool(true) => on.into(),
+        TypedValue::Bool(false) => off.into(),
         TypedValue::Number(n) => format!("{n}"),
         TypedValue::Text(text) => format!("“{text}”"),
         TypedValue::Null => "unknown".into(),
@@ -152,7 +195,7 @@ pub fn condition_words(condition: &Condition, home: &Home) -> String {
             is,
             availability,
         } => match (is, availability) {
-            (Some(is), _) => format!("{} is {}", home.name(entity), value_words(is)),
+            (Some(is), _) => format!("{} is {}", home.name(entity), value_words(is, entity, home)),
             (None, Some(availability)) => {
                 format!(
                     "{} is {}",
@@ -192,13 +235,25 @@ pub fn sentence(node: &Node, home: &Home) -> String {
             } => {
                 let name = home.name(entity);
                 let mut text = match (from, to) {
+                    (None, Some(TypedValue::Bool(on))) if home.flag_class(entity).is_some() => {
+                        format!(
+                            "{name} becomes {}",
+                            value_words(&TypedValue::Bool(*on), entity, home)
+                        )
+                    }
                     (None, Some(TypedValue::Bool(true))) => format!("{name} turns on"),
                     (None, Some(TypedValue::Bool(false))) => format!("{name} turns off"),
-                    (None, Some(to)) => format!("{name} becomes {}", value_words(to)),
+                    (None, Some(to)) => format!("{name} becomes {}", value_words(to, entity, home)),
                     (Some(from), Some(to)) => {
-                        format!("{name} goes {} → {}", value_words(from), value_words(to))
+                        format!(
+                            "{name} goes {} → {}",
+                            value_words(from, entity, home),
+                            value_words(to, entity, home)
+                        )
                     }
-                    (Some(from), None) => format!("{name} stops being {}", value_words(from)),
+                    (Some(from), None) => {
+                        format!("{name} stops being {}", value_words(from, entity, home))
+                    }
                     (None, None) => format!("{name} changes"),
                 };
                 if let Some(hold) = hold {
@@ -263,7 +318,9 @@ pub fn sentence(node: &Node, home: &Home) -> String {
                     hold,
                 } => {
                     let mut text = match (is, availability) {
-                        (Some(is), _) => format!("{} is {}", home.name(entity), value_words(is)),
+                        (Some(is), _) => {
+                            format!("{} is {}", home.name(entity), value_words(is, entity, home))
+                        }
                         (None, Some(a)) => {
                             format!(
                                 "{} is {}",
@@ -328,6 +385,35 @@ pub fn primary_entity(node: &Node) -> Option<EntityId> {
 }
 
 /// The first `'kind.object'` string literal in an expression.
+/// Every entity the flow names: in its nodes' fields, and inside their expressions.
+pub fn entities_used(flow: &Flow) -> BTreeSet<EntityId> {
+    fn walk(value: &serde_json::Value, found: &mut BTreeSet<EntityId>) {
+        match value {
+            serde_json::Value::String(text) => {
+                if let Ok(id) = text.parse() {
+                    found.insert(id);
+                }
+                found.extend(
+                    text.split(['\'', '"'])
+                        .skip(1)
+                        .step_by(2)
+                        .filter_map(|literal| literal.parse().ok()),
+                );
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|v| walk(v, found)),
+            serde_json::Value::Object(fields) => fields.values().for_each(|v| walk(v, found)),
+            _ => {}
+        }
+    }
+    let mut found = BTreeSet::new();
+    for node in flow.nodes.values() {
+        if let Ok(value) = serde_json::to_value(node) {
+            walk(&value, &mut found);
+        }
+    }
+    found
+}
+
 fn first_entity_in(expr: &str) -> Option<EntityId> {
     expr.split(['\'', '"'])
         .skip(1)
@@ -336,7 +422,7 @@ fn first_entity_in(expr: &str) -> Option<EntityId> {
 }
 
 /// A state's value the way a person says it.
-pub fn state_words(state: &EntityState) -> String {
+pub fn state_words(state: &EntityState, home: &Home) -> String {
     if state.availability == irori_types::Availability::Unavailable {
         return "unavailable".into();
     }
@@ -348,7 +434,10 @@ pub fn state_words(state: &EntityState) -> String {
             (false, _) => "off".into(),
         },
         Some(State::Switch(s)) => if s.on { "on" } else { "off" }.into(),
-        Some(State::BinarySensor(s)) => if s.on { "on" } else { "off" }.into(),
+        Some(State::BinarySensor(s)) => {
+            let (on, off) = home.flag_words(&state.entity_id);
+            if s.on { on } else { off }.into()
+        }
         Some(State::Sensor(s)) => match &s.value {
             SensorValue::Number(n) => {
                 if n.fract() == 0.0 {

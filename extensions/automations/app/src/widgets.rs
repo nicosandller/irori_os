@@ -213,9 +213,13 @@ pub fn Combo(
                                 class:active=move || active.get() == i
                                 class:chosen=chosen
                                 aria-selected=chosen.to_string()
-                                // Before the field loses focus and closes the list.
+                                // Before the field loses focus and closes the list. Picking
+                                // redraws the list at once, so the press mustn't go on to what
+                                // holds it: by then the option isn't in the page to say where
+                                // it was.
                                 on:pointerdown=move |event| {
                                     event.prevent_default();
+                                    event.stop_propagation();
                                     choose(value.clone());
                                 }
                                 on:pointerenter=move |_| active.set(i)

@@ -272,4 +272,40 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     .await
     .expect("a backtest");
     assert_eq!(backtest["changes"], 0);
+
+    // How a test was set up is kept, as the page gave it, and goes when the flow does.
+    let id = serde_json::json!({ "id": "hallway_motion_light" });
+    let none = rpc::handle(&mut service, "tests.get", id.clone())
+        .await
+        .expect("nothing kept yet");
+    assert!(none.is_null(), "{none}");
+    let settings = serde_json::json!({ "mode": "dry", "pretend": { "sensor.lux": 20 } });
+    rpc::handle(
+        &mut service,
+        "tests.save",
+        serde_json::json!({ "id": "hallway_motion_light", "settings": settings }),
+    )
+    .await
+    .expect("kept");
+    let kept = rpc::handle(&mut service, "tests.get", id.clone())
+        .await
+        .expect("read back");
+    assert_eq!(kept, settings);
+    let huge = "x".repeat(20_000);
+    assert!(
+        rpc::handle(
+            &mut service,
+            "tests.save",
+            serde_json::json!({ "id": "hallway_motion_light", "settings": huge }),
+        )
+        .await
+        .is_err()
+    );
+    rpc::handle(&mut service, "flows.delete", id.clone())
+        .await
+        .expect("deleted");
+    let gone = rpc::handle(&mut service, "tests.get", id)
+        .await
+        .expect("asked");
+    assert!(gone.is_null(), "{gone}");
 }

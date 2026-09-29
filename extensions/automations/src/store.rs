@@ -22,6 +22,8 @@ use serde::de::DeserializeOwned;
 pub const RUNS_KEPT: usize = 200;
 /// Near-misses kept per flow.
 pub const NEAR_MISSES_KEPT: usize = 100;
+/// A flow's saved test settings, at most.
+const TEST_SETTINGS_MAX: usize = 16 * 1024;
 
 /// A flow file that couldn't be read, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +145,8 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("couldn't delete {}: {e}", path.display())),
         }
+        // Its versions and runs stay, to look back on; how it was tested goes with it.
+        let _ = std::fs::remove_file(self.tests_file(id));
         self.reload();
         Ok(())
     }
@@ -189,6 +193,35 @@ impl Store {
             return None;
         }
         read_json(&self.versions_dir(id).join(format!("{version}.json"))).ok()
+    }
+
+    fn tests_file(&self, id: &RuleId) -> PathBuf {
+        self.data_dir.join("tests").join(format!("{id}.json"))
+    }
+
+    /// How the page last set up a test of this flow, so it can be run again as it was. What's in
+    /// it is the page's business; it's kept as given.
+    pub fn test_settings(&self, id: &RuleId) -> Option<serde_json::Value> {
+        read_json(&self.tests_file(id)).ok()
+    }
+
+    pub fn keep_test_settings(
+        &self,
+        id: &RuleId,
+        settings: &serde_json::Value,
+    ) -> Result<(), String> {
+        let text = serde_json::to_string(settings).map_err(|e| e.to_string())?;
+        if text.len() > TEST_SETTINGS_MAX {
+            return Err(format!(
+                "test settings are kept up to {} KB",
+                TEST_SETTINGS_MAX / 1024
+            ));
+        }
+        let path = self.tests_file(id);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        write_atomically(&path, text.as_bytes())
     }
 
     fn log(&self, kind: &str, id: &RuleId) -> PathBuf {

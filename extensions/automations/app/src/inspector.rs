@@ -233,7 +233,7 @@ fn EntityPicker(
                 .map(|e| {
                     let now = home
                         .states
-                        .with(|states| states.get(&e.id).map(model::state_words))
+                        .with(|states| states.get(&e.id).map(|s| model::state_words(s, &home)))
                         .map(|now| format!(" · {now}"))
                         .unwrap_or_default();
                     Choice::new(e.id.to_string(), e.name.to_string())
@@ -263,7 +263,7 @@ fn EntityPicker(
 /// A value an entity can have — on/off for flags, a number or text for sensors — searched or
 /// typed in the same kind of field.
 #[component]
-fn ValueInput(
+pub fn ValueInput(
     entity: String,
     value: Value,
     allow_any: bool,
@@ -281,7 +281,7 @@ fn ValueInput(
     });
     let now = entity.parse::<irori_types::EntityId>().ok().and_then(|id| {
         home.states
-            .with_untracked(|states| states.get(&id).map(model::state_words))
+            .with_untracked(|states| states.get(&id).map(|s| model::state_words(s, &home)))
     });
     match sensor_type {
         Some(kind) => {
@@ -323,10 +323,13 @@ fn ValueInput(
                 Value::Bool(false) => "off",
                 _ => "any",
             };
-            let mut choices = vec![Choice::new("on", "on"), Choice::new("off", "off")];
+            let (on, off) = entity
+                .parse::<irori_types::EntityId>()
+                .map_or(("on", "off"), |id| home.flag_words(&id));
+            let mut choices = vec![Choice::new("on", on), Choice::new("off", off)];
             if let Some(now) = now {
                 for choice in &mut choices {
-                    if choice.value == now {
+                    if choice.label == now {
                         choice.detail = "now".into();
                     }
                 }
@@ -338,7 +341,7 @@ fn ValueInput(
                 <Combo
                     choices=Signal::stored(choices)
                     value=Signal::stored(shown.to_owned())
-                    placeholder="on or off"
+                    placeholder=format!("{on} or {off}")
                     pick=Callback::new(move |text: String| pick(match text.as_str() {
                         "on" => json!(true),
                         "off" => json!(false),
@@ -1042,7 +1045,13 @@ pub fn expr_words(expr: &str, home: &Home) -> Option<String> {
             .parse::<irori_types::EntityId>()
             .map_or_else(|_| clause.entity.clone(), |id| home.name(&id));
         match &clause.test {
-            Test::On(on) => format!("{name} {}", if *on { "on" } else { "off" }),
+            Test::On(on) => {
+                let (yes, no) = clause
+                    .entity
+                    .parse::<irori_types::EntityId>()
+                    .map_or(("on", "off"), |id| home.flag_words(&id));
+                format!("{name} {}", if *on { yes } else { no })
+            }
             Test::Num { op, value } => {
                 let op = match *op {
                     "<" => "below",
@@ -1100,7 +1109,7 @@ fn CompareForm(
     };
     let rows = compare.clauses.iter().cloned().enumerate().map(|(i, clause)| {
         let now = clause.entity.parse::<irori_types::EntityId>().ok().and_then(|id| {
-            home.states.with_untracked(|states| states.get(&id).map(model::state_words))
+            home.states.with_untracked(|states| states.get(&id).map(|s| model::state_words(s, &home)))
         });
         let (put_entity, put_test, put_value, put_remove) = (put.clone(), put.clone(), put.clone(), put.clone());
         let (c1, c2, c3, c4) = (compare.clone(), compare.clone(), compare.clone(), compare.clone());
@@ -1127,16 +1136,22 @@ fn CompareForm(
                         put_value(next);
                     } />
             }.into_any(),
-            Test::On(on) => view! {
+            Test::On(on) => {
+                let (yes, no) = clause
+                    .entity
+                    .parse::<irori_types::EntityId>()
+                    .map_or(("on", "off"), |id| home.flag_words(&id));
+                view! {
                 <select on:change=move |e| {
                     let mut next = c2.clone();
                     next.clauses[i].test = Test::On(event_target_value(&e) == "on");
                     put_test(next);
                 }>
-                    <option value="on" selected=on>"is on"</option>
-                    <option value="off" selected=!on>"is off"</option>
+                    <option value="on" selected=on>{format!("is {yes}")}</option>
+                    <option value="off" selected=!on>{format!("is {no}")}</option>
                 </select>
-            }.into_any(),
+            }.into_any()
+            }
             Test::Text { equal, value } => {
                 let for_value = value.clone();
                 let choices: Vec<Choice> = now
@@ -1360,7 +1375,7 @@ fn ExprInput(value: String, commit: impl Fn(String) + Send + Sync + 'static) -> 
                     let value = choice.value.clone();
                     view! {
                         <li role="option" class="combo-option" class:active=move || active.get() == i
-                            on:pointerdown=move |e| { e.prevent_default(); insert(value.clone()); }
+                            on:pointerdown=move |e| { e.prevent_default(); e.stop_propagation(); insert(value.clone()); }
                             on:pointerenter=move |_| active.set(i)>
                             <span class="combo-label">{choice.label.clone()}</span>
                             <span class="combo-option-detail">{choice.detail.clone()}</span>
@@ -1374,7 +1389,7 @@ fn ExprInput(value: String, commit: impl Fn(String) + Send + Sync + 'static) -> 
                 .into_iter()
                 .map(|(template, words)| view! {
                     <button type="button" class="chip" title=template
-                        on:pointerdown=move |e| { e.prevent_default(); put_function(template); }>{words}</button>
+                        on:pointerdown=move |e| { e.prevent_default(); e.stop_propagation(); put_function(template); }>{words}</button>
                 })
                 .collect_view()}
         </div>
