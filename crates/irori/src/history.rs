@@ -3,7 +3,8 @@
 //! "Last 24 hours" can only honestly mean what this process has seen: the real recorder, the
 //! one that survives restarts and keeps the long view, is `irori-recorder` (M1.3, ROADMAP §2.1).
 //! Until then, every [`Event::StateChanged`] the core publishes is remembered here, pruned to a
-//! day, and served to the page's expandable table.
+//! day, and served to the page's expandable table. An entity that leaves the home takes its
+//! history with it.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -48,6 +49,16 @@ impl History {
         }
     }
 
+    /// Drops everything recorded for an entity: it has left the home, and a device removed from
+    /// the home takes its history with it (`docs/specs/config.md` §3.2). Were it added again, its
+    /// table starts from then.
+    pub fn forget(&self, entity_id: &EntityId) {
+        self.0
+            .lock()
+            .expect("history not poisoned")
+            .remove(entity_id);
+    }
+
     /// Everything recorded for an entity within the last day, oldest first. Empty when the
     /// entity is known but has changed nothing since the server started.
     pub fn for_entity(&self, entity_id: &EntityId) -> Vec<EntityState> {
@@ -86,6 +97,7 @@ pub async fn record(history: History, mut events: broadcast::Receiver<Event>) {
                 new_state,
                 ..
             }) => history.record(entity_id, *new_state),
+            Ok(Event::EntityRemoved { entity_id }) => history.forget(&entity_id),
             Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
             Err(broadcast::error::RecvError::Closed) => return,
         }

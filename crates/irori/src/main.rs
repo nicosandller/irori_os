@@ -245,7 +245,6 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // and moving a moment later.
             let settings = config::Config::open(store, &problems, &core);
             tokio::spawn(settings.clone().watch(core.clone()));
-            tokio::spawn(settings.clone().remember_arrivals(core.clone()));
             // Helpers are core to Irori, not an installable extension: they run every time,
             // in-process, and never appear on the Extensions page.
             let builtins = vec![

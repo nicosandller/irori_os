@@ -141,20 +141,17 @@ config/
 ```
 
 Make areas and floors on the Settings page; name, describe or place a device on its own page, where you can
-also **ignore** it — it leaves Irori until you let it back in from the Devices page. Or open
-the files in an editor — Irori picks up changes within a couple of seconds, and a file that
-doesn't parse is ignored with an explanation in the log while the last good version keeps
-running. There is no second copy in the database: the UI writes the same files you would.
+also **remove** it. Or open the files in an editor — Irori picks up changes within a couple of
+seconds, and a file that doesn't parse is ignored with an explanation in the log while the last
+good version keeps running. There is no second copy in the database: the UI writes the same files
+you would.
 
-A device Irori finds waits for you: it shows up under **+ Add device**, on the screen for the
-extension that found it, with **Add** and **Ignore** on each. Nothing joins the home on its own,
-so installing an extension never means whatever is on the network is now yours. If you'd rather
-everything found just appear, put this in `irori.toml`:
-
-```toml
-[devices]
-new = "add"
-```
+Nothing joins the home on its own, so installing an extension never means whatever is on the
+network is now yours. Open **+ Add device**, pick the extension, and it lists everything it has
+found — what each device is and what it would bring — with **Add** on each, or **Add all**.
+Removing a device deletes everything Irori keeps about it (name, room, entities, floorplan spot,
+history); it goes back to that list, ready to be added again. Uninstalling an extension removes
+its devices the same way.
 
 **Helpers** are switches Irori keeps itself, like "guests are over": make them on the Devices
 page's **Helpers** tab. They stay as you left them through restarts, and rules will be able to use
@@ -168,8 +165,8 @@ See [docs/specs/config.md](docs/specs/config.md).
 ### ESPHome devices
 
 Nothing to configure: Irori listens for ESPHome devices announcing themselves on the local
-network, connects to each one, and puts everything it has on the Devices page. Lights and
-switches can be switched from there.
+network, and connects to each one. Everything it finds is listed under **+ Add device** → ESPHome;
+the ones you add appear on the Devices page, where lights and switches can be switched.
 
 A device with **encryption** (`api: encryption: key:` in its YAML) is found but not connected to
 until Irori has its key. The Devices page says so; **Add device** lists it by name with a field

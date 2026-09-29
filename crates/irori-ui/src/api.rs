@@ -43,14 +43,20 @@ pub struct Home {
     pub floorplan: Floorplan,
 }
 
-/// A device kept out of the home: enough to recognise it and let it in.
+/// A device an extension has found that isn't in the home: enough to recognise it and decide
+/// whether it belongs. What it is, never what it's reporting, so the list of these holds still.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct HeldDevice {
     pub id: DeviceId,
     pub protocol: String,
     pub name: Name,
-    /// `ignored`, or `new` while Irori asks before adding.
-    pub why: String,
+    #[serde(default)]
+    pub manufacturer: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// How many entities of each kind it would bring — `{"light": 1, "sensor": 2}`.
+    #[serde(default)]
+    pub provides: std::collections::BTreeMap<String, usize>,
 }
 
 impl Home {
@@ -381,10 +387,7 @@ pub struct DeviceEdit {
     /// `None` leaves the area alone; `Some(None)` un-says it, letting the device suggest again.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub area: Option<Option<WhereTo>>,
-    /// `Some(true)` keeps the device out of the home; `Some(false)` lets it back in.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ignored: Option<bool>,
-    /// `Some(true)` adds a device that's waiting to be added.
+    /// `Some(true)` adds a device an extension has found ("+ Add device").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub added: Option<bool>,
 }
@@ -411,7 +414,8 @@ pub async fn edit_device(device_id: &DeviceId, edit: &DeviceEdit) -> Result<(), 
     checked(response).await
 }
 
-/// Forgets a device: its settings leave the config files and Irori forgets it.
+/// Removes a device from the home: everything Irori keeps of it goes, and it's listed as found
+/// again, to be added back from "+ Add device" if wanted.
 pub async fn remove_device(device_id: &DeviceId) -> Result<(), String> {
     let response = Request::delete(&format!("/api/dev/devices/{device_id}"))
         .send()

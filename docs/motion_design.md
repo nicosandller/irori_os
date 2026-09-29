@@ -67,6 +67,9 @@ What moves today, and where to find it.
 | Swiping a toggle | The knob follows the finger; let go past halfway and it switches, springing home from where it was let go. | `gesture.rs`, `devices.rs` `knob`. |
 | Floorplan | Tools and floor highlight glide; the toolbar, pickers and inspector slide in; markers lean in, lift when held and settle with a bounce when put down; a lamp's pip warms up and rings once; the picked room and the line being drawn march. | `floorplan.rs`; CSS `.floorplan …`. |
 | Floorplan ambience | A lit light pools warm light, as bright as the light and clipped to its room's walls; a motion sensor ripples across its room while it senses someone; changing floor, the plan sinks away and the next floor comes down (or the reverse). | `floorplan/ambience.rs`, `transition.rs` `around`. |
+| Windows | A window rises into place while the page dims behind it. | `modal.rs`; CSS `.modal`, `.modal-backdrop`. |
+| Add device | The extension cards arrive one after another; picking one grows it into the next step's heading while the step slides aside (Back reverses it); found devices come in one after another, one that turns up later glows once; **Add** turns into a ring, then a check that draws itself, and the card folds away as the device appears under "In your home"; with nothing found yet, a ring pings to say it's listening; the button's count pops in. | `devices.rs` `AddDevice`, `ProtocolStep`; `transition.rs` `step`, `name_target`; CSS `.protocol-card`, `.device-card`, `.add-one`, `.listening-ring`, `.count-badge`. |
+| Log window | A line that arrives while the window is open fades in where it lands; the copy button's clipboard gives way to a check that draws itself, or shakes when the browser refused. | `log_window.rs`; CSS `.log-row.fresh`, `.log-copy`. |
 | Ambient | Live dot breathes (still when the core stops answering); the Start ember flickers; Start tiles stagger in; a banner drops in. | CSS `.dot.ok`, `.start-ember`, `.tiles .tile`, `.banner`. |
 
 ## 4. Rules
@@ -117,6 +120,7 @@ which change it is as `data-nav` on `<html>`, and CSS animates by it:
 | `tile` | A Start tile, clicked | The tile grows into the new page's heading row. |
 | `fade` | Between two devices, or anywhere the sidebar doesn't list | A crossfade. |
 | `floor-up` / `floor-down` | Changing floor on the Floorplan (`around`) | Only the plan. |
+| `step-in` / `step-out` | Into an extension's screen in the Add device window, and back (`around`, `step`) | Only the window's step; the picked card and the step's heading (`add-hero`) become each other. |
 
 A new kind of change gets a row here, a case in `navigation`, and a test.
 

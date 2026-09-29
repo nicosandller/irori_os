@@ -235,59 +235,31 @@ fn page(
         }
     };
 
-    let ignore = {
-        let id = device.id.clone();
-        let what = device.name.to_string();
-        move |_| {
-            let asked = window()
-                .confirm_with_message(&format!(
-                    "Ignore {what}? It leaves Irori until you let it back in."
-                ))
-                .unwrap_or(false);
-            if !asked {
-                return;
-            }
-            let id = id.clone();
-            spawn_local(async move {
-                let edit = DeviceEdit {
-                    ignored: Some(true),
-                    ..DeviceEdit::default()
-                };
-                match api::edit_device(&id, &edit).await {
-                    Ok(()) => {
-                        crate::refresh(live);
-                        leave.run(());
-                    }
-                    Err(why) => trouble.set(Some(why)),
-                }
-            });
-        }
-    };
+    // Removing asks first, in a window of Irori's own rather than the browser's: it says what
+    // goes and how to get the device back, which is the part worth reading before pressing it.
+    let confirming = RwSignal::new(false);
+    let removing = RwSignal::new(false);
     let remove = {
         let id = device.id.clone();
-        let what = device.name.to_string();
-        move |_| {
-            let asked = window()
-                .confirm_with_message(&format!(
-                    "Forget {what}? It's taken out of Irori — settings, entities and all. \
-                     If it's still out there, it turns up as a new device again."
-                ))
-                .unwrap_or(false);
-            if !asked {
-                return;
-            }
+        move || {
             let id = id.clone();
+            removing.set(true);
             spawn_local(async move {
                 match api::remove_device(&id).await {
                     Ok(()) => {
                         crate::refresh(live);
                         leave.run(());
                     }
-                    Err(why) => trouble.set(Some(why)),
+                    Err(why) => {
+                        removing.set(false);
+                        confirming.set(false);
+                        trouble.set(Some(why));
+                    }
                 }
             });
         }
     };
+    let what = device.name.to_string();
     let start = {
         let name = device.name.to_string();
         let description = device
@@ -348,14 +320,49 @@ fn page(
                 {device.name.to_string()}
             </h1>
             <div class="page-actions">
-                // The three things a person decides about a device, kept as buttons rather than
-                // a section: Edit opens the fields below; Ignore is what a device that has no
-                // use here is for; Remove forgets it, settings included.
+                // The two things a person decides about a device, kept as buttons rather than a
+                // section: Edit opens the fields below; Remove takes it out of the home.
                 <button type="button" on:click=start>"Edit"</button>
-                <button type="button" class="danger-button" on:click=ignore>"Ignore"</button>
-                <button type="button" class="danger-button" on:click=remove>"Remove"</button>
+                <button type="button" class="danger-button" on:click=move |_| confirming.set(true)>
+                    "Remove"
+                </button>
             </div>
         </div>
+        {move || confirming.get().then(|| {
+            let remove = remove.clone();
+            view! {
+                <crate::modal::Modal
+                    title=format!("Remove {what}?")
+                    on_close=move || confirming.set(false)
+                >
+                    <div class="confirm">
+                        <p>
+                            "Irori deletes everything it keeps about it — its name, room, "
+                            "entities, spot on the floorplan and history — and nothing can use it "
+                            "any more."
+                        </p>
+                        <p class="muted small">
+                            "The device itself isn't touched. It'll be listed under "
+                            <strong>"+ Add device"</strong>
+                            " if you want it back."
+                        </p>
+                        <div class="confirm-actions">
+                            <button type="button" on:click=move |_| confirming.set(false)>
+                                "Cancel"
+                            </button>
+                            <button
+                                type="button"
+                                class="danger-solid"
+                                disabled=move || removing.get()
+                                on:click=move |_| remove()
+                            >
+                                {move || if removing.get() { "Removing…" } else { "Remove" }}
+                            </button>
+                        </div>
+                    </div>
+                </crate::modal::Modal>
+            }
+        })}
         {device
             .description
             .as_ref()

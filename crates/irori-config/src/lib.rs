@@ -24,9 +24,7 @@ use irori_types::{
     FloorId, Floorplan, Settings, SettingsKey,
 };
 
-pub use files::{
-    DevicesSection, ExtensionsSection, File, IroriSettings, LogLevel, NewDevices, ServerSettings,
-};
+pub use files::{DevicesSection, ExtensionsSection, File, IroriSettings, LogLevel, ServerSettings};
 
 /// Something wrong with one file, to be logged and shown. Never fatal: the file keeps whatever it
 /// last held.
@@ -120,7 +118,9 @@ impl Store {
             floorplan: self.floorplan.value.clone(),
             devices: self.devices.value.clone(),
             entities: self.entities.value.clone(),
-            ask_before_adding: self.irori.value.devices.new == NewDevices::Ask,
+            // Always: what an extension finds is a proposal, and only a person adds it to the
+            // home (`docs/specs/config.md` §3.2).
+            ask_before_adding: true,
         }
     }
 
@@ -620,7 +620,6 @@ mod tests {
             name: Some(name(what)),
             description: None,
             area: irori_types::Placement::Unsaid,
-            ignored: false,
         }
     }
 
