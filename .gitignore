@@ -9,8 +9,10 @@
 # QA screenshot output from `cargo xtask qa`
 .qa-shots-*/
 
-# Local Claude Code settings
-.claude/settings.local.json
+# Claude Code: local settings, agents, and anything else it keeps here.
+.claude/
+CLAUDE.md
+CLAUDE.local.md
 # Local opencode config (personal providers/models)
 opencode.json
 # The UI: it's outside the workspace, so it has its own target dir; plus trunk's output and the
