@@ -11,6 +11,8 @@ use std::time::Duration;
 use irori_protocol::Builtin;
 use irori_protocol::host::{HostEnd, Op, Reports, connect};
 use irori_protocol::{ExtProcess, FromExt, IncomingAction, IncomingCall, ToExt, spawn};
+
+use crate::engine::EngineLink;
 use std::collections::BTreeSet;
 
 use irori_types::{
@@ -551,6 +553,8 @@ async fn supervise(
             icon: builtin.icon.map(str::to_owned),
             config_schema: Some(builtin.config_schema.clone()),
             actions: contribution.actions.clone(),
+            app: None,
+            engine: false,
         },
     );
 
@@ -919,14 +923,41 @@ async fn supervise_package(
     for warning in manifest.warnings() {
         tracing::warn!(%extension, "{warning}");
     }
-    let (Some(protocol), Some(contribution)) = (
-        manifest.protocol_id(),
-        manifest.contributes.protocol.first(),
-    ) else {
+    let contribution = manifest.contributes.protocol.first();
+    // A protocol's id is its extension's (D25); an engine has no protocol, but the same id keys
+    // its stored values, which is all the core uses it for there.
+    let is_protocol = contribution.is_some();
+    let protocol = ProtocolId::try_from(extension.as_str())
+        .expect("extension ids and protocol ids share the slug format");
+    let app = crate::engine::app_info(&manifest);
+    if !is_protocol && !manifest.is_engine() {
+        // Nothing to run: a page on its own, or only kinds this version ignores.
+        let has_app = app.is_some();
+        core.describe_extension(
+            &extension,
+            crate::ExtensionInfo {
+                name: manifest.extension.name.clone(),
+                description: manifest.extension.description.clone(),
+                version: manifest.extension.version.clone(),
+                entity_kinds: Vec::new(),
+                iot_class: None,
+                icon: read_icon(&dir, &manifest),
+                config_schema: None,
+                actions: Vec::new(),
+                app,
+                engine: false,
+            },
+        );
+        if !has_app {
+            core.set_status(&extension, crate::ExtensionStatus::Disabled);
+            return;
+        }
+        core.set_status(&extension, crate::ExtensionStatus::Running);
+        let _ = stop.wait_for(|stop| *stop).await;
         core.set_status(&extension, crate::ExtensionStatus::Disabled);
         return;
-    };
-    let Some(run) = contribution.run.clone() else {
+    }
+    let Some(run) = manifest.run_command().cloned() else {
         let reason = "external packages need `run.command` in the manifest".to_owned();
         tracing::error!(%extension, "{reason}");
         core.set_status(
@@ -938,12 +969,10 @@ async fn supervise_package(
         );
         return;
     };
-    let kinds = contribution.entity_kinds.clone();
-    let icon = manifest.extension.icon.as_ref().and_then(|path| {
-        std::fs::read_to_string(dir.join(path.as_str()))
-            .ok()
-            .filter(|svg| svg.trim_start().starts_with("<svg"))
-    });
+    let kinds = contribution
+        .map(|contribution| contribution.entity_kinds.clone())
+        .unwrap_or_default();
+    let icon = read_icon(&dir, &manifest);
     let config_schema = match manifest
         .extension
         .config_schema
@@ -978,10 +1007,14 @@ async fn supervise_package(
             description: manifest.extension.description.clone(),
             version: manifest.extension.version.clone(),
             entity_kinds: kinds.clone(),
-            iot_class: Some(contribution.iot_class),
+            iot_class: contribution.map(|contribution| contribution.iot_class),
             icon,
             config_schema,
-            actions: contribution.actions.clone(),
+            actions: contribution
+                .map(|contribution| contribution.actions.clone())
+                .unwrap_or_default(),
+            app: app.clone(),
+            engine: manifest.is_engine(),
         },
     );
 
@@ -1043,7 +1076,8 @@ async fn supervise_package(
             }
         }
         core.set_status(&extension, crate::ExtensionStatus::Starting);
-        let (mut child, stderr) = match spawn(&dir, &state_dir(&dir), &run) {
+        let env = crate::engine::process_env(&core, &manifest);
+        let (mut child, stderr) = match spawn(&dir, &state_dir(&dir), &run, &env) {
             Ok(started) => started,
             Err(reason) => {
                 tracing::error!(%extension, %reason, "can't start extension");
@@ -1093,8 +1127,14 @@ async fn supervise_package(
 
         let (calls_tx, calls_rx) = mpsc::channel(64);
         let (actions_tx, actions_rx) = mpsc::channel(64);
-        core.link(&protocol, calls_tx);
-        core.link_action(&extension, actions_tx);
+        if is_protocol {
+            core.link(&protocol, calls_tx);
+            core.link_action(&extension, actions_tx);
+        }
+        let mut engine = EngineLink::new(&manifest);
+        if manifest.is_engine() && app.is_some() {
+            core.link_app(&extension, engine.app_sender());
+        }
         core.set_status(&extension, crate::ExtensionStatus::Running);
         tracing::info!(%extension, "extension started");
         let outcome = pump_process(
@@ -1105,6 +1145,7 @@ async fn supervise_package(
             &mut child,
             calls_rx,
             actions_rx,
+            &mut engine,
             Watching {
                 stop: &mut stop,
                 settings: &mut settings,
@@ -1114,9 +1155,12 @@ async fn supervise_package(
             timing,
         )
         .await;
-        core.unlink(&protocol);
-        core.unlink_action(&extension);
-        core.mark_unavailable(&protocol);
+        core.unlink_app(&extension);
+        if is_protocol {
+            core.unlink(&protocol);
+            core.unlink_action(&extension);
+            core.mark_unavailable(&protocol);
+        }
         core.set_waiting(&extension, Vec::new());
         core.set_available_actions(&extension, Vec::new());
         let _ = child.send(&ToExt::Stop).await;
@@ -1183,6 +1227,7 @@ async fn pump_process(
     proc: &mut ExtProcess,
     mut calls: mpsc::Receiver<IncomingCall>,
     mut actions: mpsc::Receiver<IncomingAction>,
+    engine: &mut EngineLink,
     watching: Watching<'_>,
     timing: Timing,
 ) -> Outcome {
@@ -1241,9 +1286,20 @@ async fn pump_process(
                     return Outcome::Ended(reason);
                 }
             }
+            message = engine.next_outgoing(core) => {
+                if let Some(message) = message
+                    && let Err(reason) = ExtProcess::send_on(stdin, &message).await
+                {
+                    return Outcome::Ended(reason);
+                }
+            }
             msg = ExtProcess::recv_on(stdout) => {
                 match msg {
                     Ok(from) => {
+                        let from = match engine.handle(core, extension, from) {
+                            Some(from) => from,
+                            None => continue,
+                        };
                         if let Err(reason) = apply_from_ext(
                             core, extension, protocol, kinds, stdin, from, &mut pending_calls,
                             &mut pending_actions,
@@ -1273,7 +1329,9 @@ async fn pump_process(
                 return why;
             }
             msg = ExtProcess::recv_on(stdout) => {
-                if let Ok(from) = msg {
+                if let Ok(from) = msg
+                    && let Some(from) = engine.handle(core, extension, from)
+                {
                     let _ = apply_from_ext(
                         core, extension, protocol, kinds, stdin, from, &mut pending_calls,
                         &mut pending_actions,
@@ -1420,7 +1478,23 @@ async fn apply_from_ext(
             }
             Ok(())
         }
+        // Answered by `EngineLink::handle` before they get here.
+        FromExt::GetRegistry { .. }
+        | FromExt::GetStates { .. }
+        | FromExt::GetHistory { .. }
+        | FromExt::Subscribe { .. }
+        | FromExt::CallService { .. }
+        | FromExt::AppAnswer { .. } => Ok(()),
     }
+}
+
+/// The extension's icon, if its manifest names one and the file is an SVG.
+fn read_icon(dir: &Path, manifest: &ExtensionManifest) -> Option<String> {
+    manifest.extension.icon.as_ref().and_then(|path| {
+        std::fs::read_to_string(dir.join(path.as_str()))
+            .ok()
+            .filter(|svg| svg.trim_start().starts_with("<svg"))
+    })
 }
 
 async fn send_reply(

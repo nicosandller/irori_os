@@ -240,6 +240,10 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // so it starts empty with each server (the SQLite recorder, M1.3, keeps the rest).
             let history = history::History::default();
             tokio::spawn(history::record(history.clone(), core.subscribe()));
+            // Engines that ask for history (`history:read`) read the same shelf, and engines
+            // whose permissions name the config directory are told where it is.
+            core.use_history(Arc::new(history.clone()));
+            core.use_config_dir(config.clone());
             // Before the extensions, so a device that arrives in the first second already has
             // the name and the room its owner gave it, rather than appearing under its old name
             // and moving a moment later.

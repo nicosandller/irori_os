@@ -3,6 +3,7 @@
 
 mod clock;
 mod context_id;
+mod engine;
 mod events;
 mod home;
 mod host;
@@ -10,15 +11,17 @@ mod services;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
 use irori_protocol::host::{Op, incoming_call};
 use irori_protocol::{IncomingAction, IncomingCall, Rejected, ServiceErrorCode};
 use irori_types::{
-    Area, Context, ContextId, Description, Device, DeviceId, Entity, EntityId, EntityKind,
-    EntityState, ExtensionId, ExtensionSettings, IotClass, Name, Origin, ProtocolId, ServiceCall,
-    Settings, SettingsKey, StateReport, Timestamp, UniqueId, Version, Waiting,
+    ApiScope, Area, Context, ContextId, Description, Device, DeviceId, Entity, EntityId,
+    EntityKind, EntityState, ExtensionId, ExtensionSettings, IotClass, Name, Origin, PackagePath,
+    ProtocolId, ServiceCall, Settings, SettingsKey, StateReport, Timestamp, UniqueId, Version,
+    Waiting,
 };
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -36,6 +39,48 @@ use home::{Home, Stamp};
 
 /// How long a service call may take before the caller gets [`CallError::Timeout`].
 pub const SERVICE_CALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long an extension's page waits for its engine to answer. Longer than a service call: a
+/// backtest replays a day of history (`docs/specs/automations.md` §B3).
+pub const APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Where the recent history of entity states comes from, for engines that ask for it
+/// (`history:read`). The binary keeps it; the core only passes it on.
+pub trait HistorySource: Send + Sync + fmt::Debug {
+    /// This entity's states since `since`, oldest first.
+    fn changes(&self, entity_id: &EntityId, since: Timestamp) -> Vec<EntityState>;
+}
+
+/// A question from an extension's page to its engine, on its way to the engine's process.
+#[derive(Debug)]
+pub struct AppCall {
+    pub method: String,
+    pub params: serde_json::Value,
+    pub reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+}
+
+/// Why a page's question didn't get an answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppRequestError {
+    /// No such extension, it has no engine, or it isn't running.
+    NotRunning(ExtensionId),
+    /// The engine answered with an error.
+    Failed(String),
+    /// Didn't answer within [`APP_REQUEST_TIMEOUT`].
+    Timeout,
+}
+
+impl fmt::Display for AppRequestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotRunning(extension) => write!(f, "`{extension}` isn't running"),
+            Self::Failed(why) => f.write_str(why),
+            Self::Timeout => f.write_str("the extension didn't answer within 30 seconds"),
+        }
+    }
+}
+
+impl std::error::Error for AppRequestError {}
 
 /// Events waiting for a slow listener before it starts missing them.
 const EVENT_BUFFER: usize = 1024;
@@ -93,6 +138,23 @@ pub struct ExtensionInfo {
     /// `ExtensionOverview::available_actions`). Empty for an extension with none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<irori_types::ProtocolAction>,
+    /// Its page in the sidebar, if it has one (`docs/specs/automations.md` §B3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<AppInfo>,
+    /// Whether it's an automation engine.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub engine: bool,
+}
+
+/// An extension's page, as the shell lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AppInfo {
+    /// The sidebar entry's text.
+    pub label: Name,
+    /// The page, relative to the package.
+    pub entry: PackagePath,
+    /// The API scopes it declared: what the shell's bridge may hand its page.
+    pub api: Vec<ApiScope>,
 }
 
 fn is_present<S: serde::Serializer>(
@@ -231,6 +293,12 @@ struct Shared {
     /// itself, not resolved through an entity the way a service call is (D25 makes the two ids
     /// equal in practice, but this table's key says what it's actually keyed by).
     action_links: RwLock<HashMap<ExtensionId, mpsc::Sender<IncomingAction>>>,
+    /// Running engines that have a page, keyed by extension id: where the page's questions go.
+    app_links: RwLock<HashMap<ExtensionId, mpsc::Sender<AppCall>>>,
+    /// Where `history:read` is answered from; nothing until the binary provides it.
+    history: RwLock<Option<Arc<dyn HistorySource>>>,
+    /// The config directory, handed to engines whose permissions name it.
+    config_dir: RwLock<Option<PathBuf>>,
     /// One lock per entity, so calls on the same entity happen one after another.
     busy: Mutex<HashMap<EntityId, Arc<tokio::sync::Mutex<()>>>>,
     extensions: RwLock<BTreeMap<ExtensionId, ExtensionOverview>>,
@@ -305,6 +373,9 @@ impl Core {
             events: broadcast::channel(EVENT_BUFFER).0,
             links: RwLock::default(),
             action_links: RwLock::default(),
+            app_links: RwLock::default(),
+            history: RwLock::default(),
+            config_dir: RwLock::default(),
             busy: Mutex::default(),
             extensions: RwLock::default(),
             extension_settings: watch::Sender::new(ExtensionSettings::default()),
@@ -592,6 +663,63 @@ impl Core {
         outcome
     }
 
+    /// Asks an extension's engine something on behalf of its page, and waits for the answer (at
+    /// most [`APP_REQUEST_TIMEOUT`]).
+    pub async fn app_request(
+        &self,
+        extension: &ExtensionId,
+        method: String,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, AppRequestError> {
+        let sender = read(&self.0.app_links)
+            .get(extension)
+            .cloned()
+            .ok_or_else(|| AppRequestError::NotRunning(extension.clone()))?;
+        let (reply, result) = tokio::sync::oneshot::channel();
+        let deadline = tokio::time::Instant::now() + APP_REQUEST_TIMEOUT;
+        let call = AppCall {
+            method,
+            params,
+            reply,
+        };
+        let sent = tokio::time::timeout_at(deadline, sender.send(call)).await;
+        if !matches!(sent, Ok(Ok(()))) {
+            return Err(match sent {
+                Err(_) => AppRequestError::Timeout,
+                _ => AppRequestError::NotRunning(extension.clone()),
+            });
+        }
+        match tokio::time::timeout_at(deadline, result).await {
+            Err(_) => Err(AppRequestError::Timeout),
+            Ok(Ok(Ok(value))) => Ok(value),
+            Ok(Ok(Err(why))) => Err(AppRequestError::Failed(why)),
+            Ok(Err(_)) => Err(AppRequestError::NotRunning(extension.clone())),
+        }
+    }
+
+    /// Where engines' history questions are answered from. Set it before starting extensions.
+    pub fn use_history(&self, history: Arc<dyn HistorySource>) {
+        *write(&self.0.history) = Some(history);
+    }
+
+    /// An entity's states since `since`, oldest first; empty when nobody keeps history.
+    pub fn history(&self, entity_id: &EntityId, since: Timestamp) -> Vec<EntityState> {
+        read(&self.0.history)
+            .as_ref()
+            .map(|history| history.changes(entity_id, since))
+            .unwrap_or_default()
+    }
+
+    /// The config directory, for engines whose permissions name it. Set it before starting
+    /// extensions.
+    pub fn use_config_dir(&self, dir: PathBuf) {
+        *write(&self.0.config_dir) = Some(dir);
+    }
+
+    pub(crate) fn config_dir(&self) -> Option<PathBuf> {
+        read(&self.0.config_dir).clone()
+    }
+
     /// Triggers one of an extension's declared actions — the Zigbee `zigbee` protocol's
     /// `permit_join`, say — and waits for its answer (at most [`SERVICE_CALL_TIMEOUT`]).
     /// Unlike a service call, there's no entity to resolve through: the extension id is all
@@ -793,6 +921,14 @@ impl Core {
 
     fn link_action(&self, extension: &ExtensionId, actions: mpsc::Sender<IncomingAction>) {
         write(&self.0.action_links).insert(extension.clone(), actions);
+    }
+
+    fn link_app(&self, extension: &ExtensionId, calls: mpsc::Sender<AppCall>) {
+        write(&self.0.app_links).insert(extension.clone(), calls);
+    }
+
+    fn unlink_app(&self, extension: &ExtensionId) {
+        write(&self.0.app_links).remove(extension);
     }
 
     fn unlink_action(&self, extension: &ExtensionId) {

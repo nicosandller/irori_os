@@ -1,0 +1,13 @@
+[extension]
+id = "pages"
+name = "Pages"
+version = "0.1.0"
+irori = ">=0.1.0, <0.2.0"
+
+[[contributes.app]]
+label = "One"
+entry = "one/index.html"
+
+[[contributes.app]]
+label = "Two"
+entry = "two/index.html"

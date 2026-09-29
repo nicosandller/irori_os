@@ -1,0 +1,13 @@
+[extension]
+id = "both"
+name = "Both"
+version = "0.1.0"
+irori = ">=0.1.0, <0.2.0"
+
+[[contributes.protocol]]
+iot_class = "local_push"
+entity_kinds = ["switch"]
+run = { command = "bin/both" }
+
+[[contributes.automation]]
+run = { command = "bin/both" }
