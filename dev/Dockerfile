@@ -56,13 +56,17 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     if [ "$FEATURES" != "--no-default-features" ]; then \
       cargo xtask ui ; \
     fi
+# The official packages, laid out as `IRORI_OFFICIAL_PACKAGES` expects. Automations also carries
+# its page, which `cargo xtask ui` built above; the barebones build has none, so the extension
+# still installs and the shell says its page wasn't built.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/target \
     cargo build --locked --release -p irori $FEATURES \
       -p irori-protocol-demo -p irori-protocol-esphome -p irori-protocol-mqtt \
-      -p irori-protocol-zigbee \
+      -p irori-protocol-zigbee -p irori-engine-automations \
     && cp /target/release/irori /irori \
     && mkdir -p /official/demo/bin /official/esphome/bin /official/mqtt/bin /official/zigbee/bin \
+      /official/automations/bin \
     && cp extensions/demo/irori-extension.toml extensions/demo/icon.svg /official/demo/ \
     && cp /target/release/irori-ext-demo /official/demo/bin/ \
     && cp extensions/protocols/esphome/irori-extension.toml extensions/protocols/esphome/icon.svg /official/esphome/ \
@@ -70,7 +74,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp extensions/protocols/mqtt/irori-extension.toml extensions/protocols/mqtt/config.schema.json /official/mqtt/ \
     && cp /target/release/irori-ext-mqtt /official/mqtt/bin/ \
     && cp extensions/protocols/zigbee/irori-extension.toml extensions/protocols/zigbee/config.schema.json /official/zigbee/ \
-    && cp /target/release/irori-ext-zigbee /official/zigbee/bin/
+    && cp /target/release/irori-ext-zigbee /official/zigbee/bin/ \
+    && cp extensions/automations/irori-extension.toml extensions/automations/icon.svg /official/automations/ \
+    && cp /target/release/irori-ext-automations /official/automations/bin/ \
+    && if [ -f extensions/automations/app/dist/index.html ]; then \
+         cp -r extensions/automations/app/dist /official/automations/app ; \
+       fi
 
 FROM debian:${DEBIAN_RELEASE}-slim AS pi
 RUN apt-get update \
