@@ -193,13 +193,23 @@ impl Service {
                     .state_changed(old_state.map(|s| *s), *new_state, now());
                 self.apply_effects();
             }
-            Incoming::RegistryChanged => match self.client.get_registry().await {
-                Ok(registry) => {
-                    self.registry = registry_view(registry);
-                    self.arm();
+            Incoming::RegistryChanged => {
+                // The registry changed, or this engine missed events: read both again.
+                match self.client.get_registry().await {
+                    Ok(registry) => {
+                        self.registry = registry_view(registry);
+                        self.arm();
+                    }
+                    Err(error) => tracing::warn!(%error, "couldn't read the registry again"),
                 }
-                Err(error) => tracing::warn!(%error, "couldn't read the registry again"),
-            },
+                match self.client.get_states().await {
+                    Ok(states) => {
+                        self.engine.resync(states, now());
+                        self.apply_effects();
+                    }
+                    Err(error) => tracing::warn!(%error, "couldn't read the states again"),
+                }
+            }
             Incoming::App(request) => {
                 let result = rpc::handle(self, &request.method, request.params.clone()).await;
                 request.answer(result);

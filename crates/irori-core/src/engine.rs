@@ -65,6 +65,9 @@ impl EngineLink {
                 Some(call) = self.app_rx.recv() => {
                     let id = self.next_app;
                     self.next_app += 1;
+                    // Questions whose asker gave up (timed out, went away) are dropped here, so
+                    // an engine that never answers can't grow this without bound.
+                    self.pending_app.retain(|_, reply| !reply.is_closed());
                     self.pending_app.insert(id, call.reply);
                     return Some(ToExt::AppRequest {
                         id,
@@ -79,7 +82,12 @@ impl EngineLink {
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(missed)) => {
-                        tracing::warn!(missed, "an engine fell behind the home's events; it missed some");
+                        tracing::warn!(missed, "an engine fell behind the home's events; telling it to read the home again");
+                        // What it knows is out of date: the nudge makes it ask again for the
+                        // registry and the states (`docs/specs/automations.md` §B2).
+                        if self.states || self.registry {
+                            return Some(ToExt::RegistryChanged {});
+                        }
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         self.events = None;

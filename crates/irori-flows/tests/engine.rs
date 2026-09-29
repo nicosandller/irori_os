@@ -624,3 +624,90 @@ fn queued_runs_take_their_turn() {
         "the first turns off, the queued one turns on"
     );
 }
+
+#[test]
+fn a_join_that_timed_out_doesnt_go_on_again_when_the_late_path_arrives() {
+    let late = flow(serde_json::json!({
+        "id": "late", "name": "Late",
+        "nodes": {
+            "motion": { "type": "trigger", "trigger": { "type": "state", "entity": MOTION, "to": true } },
+            "slow": { "type": "delay", "for": "2m" },
+            "dark": { "type": "gate", "condition": { "type": "expr", "expr": format!("num('{LUX}') < 30") } },
+            "both": { "type": "join", "mode": "all", "timeout": "1m" },
+            "on": { "type": "call", "service": "light.turn_on", "entity": LIGHT },
+            "off": { "type": "call", "service": "light.turn_off", "entity": LIGHT }
+        },
+        "wires": [["motion", "slow"], ["motion", "dark"], ["slow", "both"], ["dark:yes", "both"],
+                  ["both", "on"], ["both:timeout", "off"]]
+    }));
+    let mut engine = engine_with(late);
+    change(&mut engine, flag(MOTION, true, 10));
+    engine.advance(at(70));
+    let (calls, _, _) = effects(&mut engine, at(70));
+    assert_eq!(
+        calls,
+        [(id(LIGHT), "light.turn_off".to_owned())],
+        "it timed out"
+    );
+    engine.advance(at(130));
+    let (calls, done, _) = effects(&mut engine, at(130));
+    assert!(
+        calls.is_empty(),
+        "the late path ends at the join: {calls:?}"
+    );
+    assert!(
+        done[0]
+            .steps
+            .iter()
+            .any(|s| s.note.as_deref() == Some("arrived after the join had already gone on"))
+    );
+}
+
+#[test]
+fn cancelling_a_queued_flows_run_lets_the_next_one_start() {
+    let mut queued = hallway();
+    queued.mode =
+        serde_json::from_value(serde_json::json!({ "type": "queued", "max": 2 })).expect("a mode");
+    let mut engine = engine_with(queued);
+    change(&mut engine, flag(OCCUPANCY, true, 1));
+    change(&mut engine, flag(MOTION, true, 10));
+    change(&mut engine, flag(MOTION, false, 11));
+    change(&mut engine, flag(MOTION, true, 12));
+    let (calls, _, _) = effects(&mut engine, at(12));
+    assert_eq!(calls.len(), 1, "one running, one waiting");
+    let first = engine.active(None)[0].record.run_id.clone();
+    assert!(engine.cancel(&first, at(20)));
+    let (calls, done, _) = effects(&mut engine, at(20));
+    assert_eq!(
+        done[0].outcome,
+        Some(Outcome::Aborted {
+            reason: AbortReason::Cancelled
+        })
+    );
+    assert_eq!(calls.len(), 1, "the waiting one started");
+    assert_eq!(engine.active(None).len(), 1);
+}
+
+#[test]
+fn a_resync_looks_at_every_wait_again() {
+    let mut engine = engine_with(flow(serde_json::json!({
+        "id": "waits", "name": "Waits",
+        "nodes": {
+            "motion": { "type": "trigger", "trigger": { "type": "state", "entity": MOTION, "to": true } },
+            "clear": { "type": "wait", "until": { "type": "state", "entity": OCCUPANCY, "is": false }, "timeout": "10m" },
+            "off": { "type": "call", "service": "light.turn_off", "entity": LIGHT }
+        },
+        "wires": [["motion", "clear"], ["clear:matched", "off"]]
+    })));
+    change(&mut engine, flag(OCCUPANCY, true, 1));
+    change(&mut engine, flag(MOTION, true, 10));
+    let (calls, _, _) = effects(&mut engine, at(10));
+    assert!(calls.is_empty());
+    // The change to clear was missed; a resync with the home as it is now still sees it.
+    let mut home = engine.states();
+    home.retain(|s| s.entity_id != id(OCCUPANCY));
+    home.push(flag(OCCUPANCY, false, 30));
+    engine.resync(home, at(40));
+    let (calls, _, _) = effects(&mut engine, at(40));
+    assert_eq!(calls, [(id(LIGHT), "light.turn_off".to_owned())]);
+}

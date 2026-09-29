@@ -226,6 +226,27 @@ impl Engine {
         self.states.get(entity)
     }
 
+    /// Replaces what the engine knows of the home after it may have missed changes, and looks
+    /// at every wait again against the fresh values. Triggers don't fire: a missed change can't
+    /// be told apart from no change.
+    pub fn resync(&mut self, states: impl IntoIterator<Item = EntityState>, now: Timestamp) {
+        self.load_states(states);
+        let waiting: Vec<(ContextId, u32)> = self
+            .runs
+            .iter()
+            .flat_map(|(run_id, run)| {
+                run.tokens
+                    .iter()
+                    .filter(|(_, token)| matches!(token.doing, Doing::Wait { .. }))
+                    .map(move |(token_id, _)| (run_id.clone(), *token_id))
+            })
+            .collect();
+        for (run, token) in waiting {
+            self.check_wait(&run, token, now);
+        }
+        self.drive(now);
+    }
+
     /// Everything the engine knows of the home.
     pub fn states(&self) -> Vec<EntityState> {
         self.states.values().cloned().collect()
@@ -1364,6 +1385,14 @@ impl Engine {
                     self.pass(run_id, token_id, Port::Out, now);
                 }
             }
+            JoinMode::All if join.passed => {
+                // It already went on (everyone arrived, it timed out, or it gave up): a path
+                // arriving now ends here, rather than sending the run on a second time.
+                self.with_step(run_id, token_id, |step| {
+                    step.note = Some("arrived after the join had already gone on".into());
+                });
+                self.end_token(run_id, token_id, now);
+            }
             JoinMode::All => {
                 let first = join.arrived.is_empty();
                 if let Some(via) = via {
@@ -1617,10 +1646,17 @@ impl Engine {
         run.record.outcome = Some(outcome);
         self.ready.retain(|(id, _)| id != run_id);
         let flow = run.record.flow_id.clone();
+        let outcome_now = run.record.outcome.clone();
         self.effects.push(Effect::Finished(Box::new(run.record)));
-        // A queued firing gets its turn — unless the run was aborted from outside, when the
-        // queue goes with it.
-        if !cut_short
+        // A queued firing gets its turn — a cancelled run included — unless the flow itself was
+        // turned off, changed or removed, or the engine is stopping (`abort_flow` has cleared
+        // the queue for those).
+        let flow_going = matches!(
+            outcome_now,
+            Some(Outcome::Aborted { reason })
+                if reason != AbortReason::Cancelled
+        );
+        if !flow_going
             && let Some(next) = self
                 .flows
                 .get_mut(&flow)

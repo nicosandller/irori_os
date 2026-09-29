@@ -26,6 +26,10 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncWrite, BufReader};
 use tokio::sync::{mpsc, oneshot};
 
+/// How long a request waits for the core's answer. Longer than any service call (10 s) or
+/// history read; past it, the core is taken to have lost the request.
+pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 use crate::process::{FromExt, ToExt, WireCommand, read_json, write_json};
 
 /// What `get_registry` answers.
@@ -121,8 +125,18 @@ impl EngineClient {
             .unwrap_or_else(PoisonError::into_inner)
             .insert(id, tx);
         self.out.send(build(id));
-        rx.await
-            .unwrap_or_else(|_| Err(EngineError("the core went away".into())))
+        match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
+            Ok(answer) => answer.unwrap_or_else(|_| Err(EngineError("the core went away".into()))),
+            Err(_) => {
+                self.pending
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&id);
+                Err(EngineError(
+                    "the core didn't answer within 30 seconds".into(),
+                ))
+            }
+        }
     }
 
     async fn ask_as<T: for<'de> Deserialize<'de>>(
@@ -190,8 +204,14 @@ impl EngineClient {
 
 /// Connects over this process's stdin and stdout, the way the core starts an engine. Returns its
 /// settings (from `hello`), the client, and what the core pushes.
-pub async fn connect_stdio()
--> Result<(serde_json::Value, EngineClient, mpsc::Receiver<Incoming>), EngineError> {
+pub async fn connect_stdio() -> Result<
+    (
+        serde_json::Value,
+        EngineClient,
+        mpsc::UnboundedReceiver<Incoming>,
+    ),
+    EngineError,
+> {
     connect(tokio::io::stdin(), tokio::io::stdout()).await
 }
 
@@ -199,7 +219,14 @@ pub async fn connect_stdio()
 pub async fn connect<R, W>(
     reader: R,
     writer: W,
-) -> Result<(serde_json::Value, EngineClient, mpsc::Receiver<Incoming>), EngineError>
+) -> Result<
+    (
+        serde_json::Value,
+        EngineClient,
+        mpsc::UnboundedReceiver<Incoming>,
+    ),
+    EngineError,
+>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -228,14 +255,17 @@ where
         next_id: Arc::new(AtomicU64::new(0)),
         pending: Arc::new(Mutex::new(HashMap::new())),
     };
-    let (in_tx, in_rx) = mpsc::channel(256);
+    // Unbounded: the reader must never wait on the engine. An engine that awaits an answer
+    // while pushes pile up would otherwise block the reader on a full channel, and the answer
+    // it's waiting for — behind those pushes — would never be read.
+    let (in_tx, in_rx) = mpsc::unbounded_channel();
     let pending = Arc::clone(&client.pending);
     tokio::spawn(async move {
         loop {
             let message = match read_json::<ToExt>(&mut reader).await {
                 Ok(message) => message,
                 Err(_) => {
-                    let _ = in_tx.send(Incoming::Stop).await;
+                    let _ = in_tx.send(Incoming::Stop);
                     return;
                 }
             };
@@ -270,7 +300,7 @@ where
                     out: out.clone(),
                 }),
                 ToExt::Stop => {
-                    let _ = in_tx.send(Incoming::Stop).await;
+                    let _ = in_tx.send(Incoming::Stop);
                     return;
                 }
                 // Protocol traffic: an engine has no devices and makes no protocol requests.
@@ -280,7 +310,7 @@ where
                 | ToExt::ServiceCall { .. }
                 | ToExt::ActionCall { .. } => continue,
             };
-            if in_tx.send(incoming).await.is_err() {
+            if in_tx.send(incoming).is_err() {
                 return;
             }
         }
@@ -333,5 +363,20 @@ mod tests {
         request.answer(Ok(serde_json::json!({"flows": []})));
         let line = lines.next_line().await.expect("read").expect("a line");
         assert_eq!(line, r#"{"type":"app_answer","id":7,"value":{"flows":[]}}"#);
+    }
+
+    /// A request the core never answers fails after a while, instead of hanging the engine.
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_request_times_out() {
+        let (core_side, engine_side) = tokio::io::duplex(64 * 1024);
+        let (engine_read, engine_write) = tokio::io::split(engine_side);
+        let (_core_read, mut core_write) = tokio::io::split(core_side);
+        core_write
+            .write_all(b"{\"type\":\"hello\",\"settings\":{}}\n")
+            .await
+            .expect("write hello");
+        let (_, client, _incoming) = connect(engine_read, engine_write).await.expect("connects");
+        let error = client.get_states().await.expect_err("no answer");
+        assert!(error.0.contains("30 seconds"), "{error}");
     }
 }

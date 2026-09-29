@@ -150,8 +150,12 @@ instead:
 |---|---|
 | `answer { id, value?, error? }` | Reply to any request above |
 | `state_changed { entity_id, old_state?, new_state }` | After `subscribe { states: true }`, for every state change in the home |
-| `registry_changed {}` | After `subscribe { registry: true }`, when an entity or device is added, changed or removed. A nudge: the engine asks again with `get_registry` |
+| `registry_changed {}` | After `subscribe { registry: true }`, when an entity or device is added, changed or removed; and after any subscription, when the engine fell too far behind and missed events. A nudge: the engine asks again with `get_registry` and `get_states` |
 | `app_request { id, method, params }` | The engine's page asked it something (§B3) |
+
+The core never waits on an engine: pushes queue without limit on the engine's side, so an
+engine that awaits an answer while changes pour in still gets it. A request unanswered after 30 s
+fails with an error.
 
 A request outside the extension's declared scopes is answered with an error naming the missing
 scope, e.g. `this extension didn't ask for services:call`. **Scopes are enforced here**, on every
