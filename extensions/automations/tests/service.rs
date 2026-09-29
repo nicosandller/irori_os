@@ -304,6 +304,16 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     rpc::handle(&mut service, "flows.delete", id.clone())
         .await
         .expect("deleted");
+    assert!(
+        rpc::handle(
+            &mut service,
+            "tests.save",
+            serde_json::json!({ "id": "hallway_motion_light", "settings": settings }),
+        )
+        .await
+        .is_err(),
+        "no settings for a flow that isn't there"
+    );
     let gone = rpc::handle(&mut service, "tests.get", id)
         .await
         .expect("asked");

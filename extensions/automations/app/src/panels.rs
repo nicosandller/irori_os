@@ -333,6 +333,8 @@ pub fn Test() -> impl IntoView {
         spawn_local(async move {
             if let Ok(value) = api::test_settings(&id).await
                 && let Ok(kept) = serde_json::from_value::<TestSettings>(value)
+                // Changed while this was on its way: what they just set wins.
+                && settings.try_with_untracked(|s| *s == TestSettings::default()) == Some(true)
             {
                 let _ = settings.try_set(kept);
             }

@@ -189,6 +189,10 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
                 settings: Value,
             }
             let Settings { id, settings } = params(raw)?;
+            // Only for a flow there is: nothing would ever clean up after one there isn't.
+            if service.store.flow(&id).is_none() {
+                return Err(format!("there's no flow `{id}`"));
+            }
             service.store.keep_test_settings(&id, &settings)?;
             answer(json!({}))
         }

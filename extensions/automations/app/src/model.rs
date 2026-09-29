@@ -384,7 +384,6 @@ pub fn primary_entity(node: &Node) -> Option<EntityId> {
     }
 }
 
-/// The first `'kind.object'` string literal in an expression.
 /// Every entity the flow names: in its nodes' fields, and inside their expressions.
 pub fn entities_used(flow: &Flow) -> BTreeSet<EntityId> {
     fn walk(value: &serde_json::Value, found: &mut BTreeSet<EntityId>) {
@@ -414,6 +413,7 @@ pub fn entities_used(flow: &Flow) -> BTreeSet<EntityId> {
     found
 }
 
+/// The first `'kind.object'` string literal in an expression.
 fn first_entity_in(expr: &str) -> Option<EntityId> {
     expr.split(['\'', '"'])
         .skip(1)
