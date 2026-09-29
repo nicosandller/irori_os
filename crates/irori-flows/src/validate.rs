@@ -410,3 +410,64 @@ fn check_home(
         }
     }
 }
+
+/// Every entity the flow reads or acts on: its triggers', conditions', waits' and calls'
+/// entities, and what its expressions read. For the "why didn't it fire?" timeline and backtests.
+pub fn watched(flow: &Flow, registry: &impl RegistryView) -> BTreeSet<irori_types::EntityId> {
+    let mut out = BTreeSet::new();
+    for node in flow.nodes.values() {
+        match node {
+            Node::Trigger {
+                trigger: Trigger::State { entity, .. },
+            }
+            | Node::Call { entity, .. } => {
+                out.insert(entity.clone());
+            }
+            Node::Gate { condition } => watched_condition(condition, &mut out),
+            Node::Switch { cases } => {
+                for case in cases {
+                    watched_condition(case, &mut out);
+                }
+            }
+            Node::Wait {
+                until: WaitUntil::State { entity, .. },
+                ..
+            } => {
+                out.insert(entity.clone());
+            }
+            _ => {}
+        }
+        for expr in node_exprs(node) {
+            if let Ok(inspected) = irori_rules::inspect(expr, registry, &every_var(flow)) {
+                out.extend(inspected.ids);
+            }
+        }
+    }
+    out
+}
+
+fn watched_condition(condition: &Condition, out: &mut BTreeSet<irori_types::EntityId>) {
+    match condition {
+        Condition::State { entity, .. } => {
+            out.insert(entity.clone());
+        }
+        Condition::All { conditions } | Condition::Any { conditions } => {
+            for child in conditions {
+                watched_condition(child, out);
+            }
+        }
+        Condition::Not { condition } => watched_condition(condition, out),
+        _ => {}
+    }
+}
+
+/// Every variable the flow sets, loosely typed: enough to read its expressions' entities.
+fn every_var(flow: &Flow) -> BTreeMap<String, VarKind> {
+    flow.nodes
+        .values()
+        .filter_map(|node| match node {
+            Node::Set { name, .. } => Some((name.as_str().to_owned(), VarKind::Scalar)),
+            _ => None,
+        })
+        .collect()
+}

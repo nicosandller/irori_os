@@ -1,0 +1,21 @@
+[extension]
+id = "automations"
+name = "Automations"
+version = "0.1.0"
+irori = ">=0.0.0"
+description = "Build automations as flows on a canvas, watch them run, and see why one didn't."
+icon = "icon.svg"
+
+[[contributes.automation]]
+run = { command = "bin/irori-ext-automations" }
+
+[[contributes.app]]
+label = "Automations"
+entry = "app/index.html"
+
+# It watches the home (registry, states, changes, the last day of history) and acts on it
+# (service calls). Its flows live in the config directory, beside irori.toml, so they're plain
+# files you can put in git.
+[permissions]
+api = ["registry:read", "states:read", "events:read", "services:call", "history:read"]
+host_fs = ["$CONFIG/flows"]

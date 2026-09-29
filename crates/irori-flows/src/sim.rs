@@ -59,17 +59,23 @@ pub fn dry_run(
 /// runs it would have made between `from` and `to`, and how many changes it replayed.
 ///
 /// Each entity starts from its first state in the history; the rest are replayed in the order
-/// of their own timestamps. Calls don't feed back into state: the history already holds what
-/// really happened.
+/// of their own timestamps. An entity with no history didn't change in the window, so its
+/// state in `baseline` (the home now) held throughout. Calls don't feed back into state: the
+/// history already holds what really happened.
 pub fn backtest(
     flow: &Flow,
     history: &BTreeMap<EntityId, Vec<EntityState>>,
+    baseline: &[EntityState],
     to: Timestamp,
 ) -> (Vec<RunRecord>, usize) {
     let mut flow = flow.clone();
     flow.enabled = true;
     let mut engine = Engine::dry(Box::new(CountingIds::default()));
-    let mut initial = Vec::new();
+    let mut initial: Vec<EntityState> = baseline
+        .iter()
+        .filter(|state| history.get(&state.entity_id).is_none_or(Vec::is_empty))
+        .cloned()
+        .collect();
     let mut changes: Vec<(Timestamp, EntityState)> = Vec::new();
     for states in history.values() {
         let mut states = states.iter();
@@ -80,8 +86,9 @@ pub fn backtest(
     }
     // Stable, so two changes at the same instant keep their order.
     changes.sort_by_key(|(at, _)| *at);
-    let start = initial
-        .iter()
+    let start = history
+        .values()
+        .filter_map(|states| states.first())
         .map(|state| state.last_updated)
         .min()
         .unwrap_or(to);

@@ -45,5 +45,15 @@ bin = "irori-ext-zigbee"
 # say "full access to this machine" before Install does anything (extensions.md §7).
 full_access = true
 
+[[extension]]
+id = "automations"
+name = "Automations"
+category = "automation"
+description = "Build automations as flows on a canvas, test them before trusting them, and see why one didn't run."
+version = "0.1.0"
+source = "extensions/automations"
+crate = "irori-engine-automations"
+bin = "irori-ext-automations"
+
 # Helpers aren't listed here: they're core to Irori (crates/irori-helpers), built in and always
 # running, not an installable package.

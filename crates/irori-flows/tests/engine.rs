@@ -498,7 +498,7 @@ fn a_backtest_replays_history_into_the_runs_it_would_have_made() {
         (id(LUX), vec![lux(8.0, 0), lux(300.0, 4000)]),
         (id(OCCUPANCY), vec![flag(OCCUPANCY, false, 0)]),
     ]);
-    let (runs, changes) = sim::backtest(&hallway(), &history, at(10_000));
+    let (runs, changes) = sim::backtest(&hallway(), &history, &[], at(10_000));
     assert_eq!(changes, 5);
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[0].started_at, at(100));

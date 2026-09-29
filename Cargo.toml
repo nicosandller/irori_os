@@ -15,6 +15,7 @@ members = [
     "crates/irori-ha-discovery",
     "crates/irori",
     "extensions/demo",
+    "extensions/automations",
     "extensions/protocols/esphome",
     "extensions/protocols/mqtt",
     "extensions/protocols/zigbee",

@@ -1371,6 +1371,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "irori-engine-automations"
+version = "0.0.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "irori-flow-types",
+ "irori-flows",
+ "irori-protocol",
+ "irori-rules",
+ "irori-types",
+ "jiff",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "irori-flow-types"
 version = "0.0.0"
 dependencies = [

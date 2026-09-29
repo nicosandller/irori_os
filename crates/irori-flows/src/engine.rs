@@ -226,6 +226,11 @@ impl Engine {
         self.states.get(entity)
     }
 
+    /// Everything the engine knows of the home.
+    pub fn states(&self) -> Vec<EntityState> {
+        self.states.values().cloned().collect()
+    }
+
     /// The flows to run. A flow whose definition changed, that was turned off, or that now has
     /// problems has its runs aborted; one that's the same keeps them.
     pub fn set_flows(&mut self, arms: Vec<Arm>, now: Timestamp) {
