@@ -59,9 +59,16 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # The official packages, laid out as `IRORI_OFFICIAL_PACKAGES` expects. Automations also carries
 # its page, which `cargo xtask ui` built above; the barebones build has none, so the extension
 # still installs and the shell says its page wasn't built.
+#
+# `irori` is built on its own first: every release binary is linked with fat LTO, and cargo
+# links the binaries of one invocation side by side. Six of them at once can take more memory
+# than a default Colima VM (4 GB) has, and the linker is killed with nothing but "exit code 101"
+# at the end of a long log. The extensions then link two at a time (`-j 2`), whatever the VM's
+# CPU count.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/target \
     cargo build --locked --release -p irori $FEATURES \
+    && cargo build --locked --release -j 2 \
       -p irori-protocol-demo -p irori-protocol-esphome -p irori-protocol-mqtt \
       -p irori-protocol-zigbee -p irori-engine-automations \
     && cp /target/release/irori /irori \
