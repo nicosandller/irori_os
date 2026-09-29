@@ -24,21 +24,19 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | C12 | UI: Start & Settings | Start screen, Settings, restart button | ✅ | C11 |
 | C13 | UI: Extensions page | Browse, install, uninstall official extensions | ✅ | C7 |
 | C14 | UI: Setup wizard | First run: owner account, extensions, location/time zone | - | C16 |
-| C15 | Trace spec | Trace format for rule runs (`docs/specs/traces.md`) | - | C9 |
 | C16 | API spec & auth | Public API protocol, tokens, auth (`docs/specs/api.md`) | - | |
 | C17 | Public API | Real API replacing `/api/dev/*`, push instead of polling, external extensions | - | C16 |
 | C18 | Recorder | History storage; registry survives restarts | - | C5 |
-| C19 | Rules engine runtime | Run rules, emit traces | - | C9, C15 |
-| C20 | UI: Automations | Rule list, JSON editor with inline validation, trace table | - | C19 |
 | C21 | UI: Entity history | Last-24h list / sparkline per entity | - | C18 |
 | C22 | CLI command tree | Full UI parity (`devices`, `rules`, `extensions`, `token`…) with `--json` | 🟠 | C17 |
 | C23 | Firmware updates | `update` entity kind, update from UI | - | C5 |
 | C24 | Performance budgets in CI | Binary size, RSS, latency, throughput checks (only UI bundle size today: under 5 MB brotli) | 🟠 | C1 |
 | C25 | JSON Schemas & golden examples | Schemas generated from `irori-types`, valid/invalid example tests | - | C2, C3, C4, C9 |
 | C26 | Extension signing & permissions | Signature verification, approve permissions on install/update | - | C7 |
-| C27 | Automation visualizer | Rule graph, trace playback, run timeline, version diff, backtest | - | C18, C19 |
 | C28 | Multi-user | Users, roles, per-area permissions, audit log | - | C17 |
 | C29 | Backup & restore | Single-file snapshots, scheduled backups | - | C18 |
+| C30 | Engine API for extensions | Engines subscribe to state and registry, read history, call services as `Origin::Automation`; API scopes enforced (`docs/specs/automations.md` §B2) | 🟠 | C6 |
+| C31 | App pages in the sidebar | Extensions add a sidebar page: static bundle, sandboxed frame, bridge, engine RPC (`docs/specs/automations.md` §B3–B4) | 🟠 | C6, C12 |
 
 ## Extensions
 
@@ -52,13 +50,14 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | X6 | Floorplan | Walls, floors, rooms, drag devices into rooms — built in the UI, to move out into an extension | 🟠 | C11 |
 | X7 | Shadow mode | Run alongside HA on the same devices to validate Irori | - | X5 |
 | X8 | Extension SDKs & templates | `cargo generate` templates, Python package, docs | - | C17 |
-| X9 | App contributions | Extensions serving pages under `/apps/<id>/` (config editor, log viewer, terminal) | - | C17, C26 |
+| X9 | App contributions | Pages under `/apps/<id>/` beyond the sidebar slot (config editor, log viewer, terminal); first slice is C31 | - | C17, C26, C31 |
 | X10 | AI providers | `irori-assist`: Anthropic, OpenAI-compatible, Ollama | - | |
-| X11 | AI rule authoring | Natural language → validated rule; "why did/didn't this fire?" | - | X10, C19, C27 |
+| X11 | AI rule authoring | Natural language → validated flow; "why did/didn't this fire?" | - | X10, X19 |
 | X12 | Dashboards & cards | Sandboxed HTML dashboards with `irori.js` bridge, installable as extensions | - | C17 |
 | X13 | AI dashboards | Generate dashboards from a prompt | - | X10, X12 |
-| X14 | HA backend adapter | Visualizer and AI features against an existing HA instance | - | C27 |
-| X15 | HA automation importer | HA YAML → Irori rules, with a report of what didn't convert | - | C19 |
+| X14 | HA backend adapter | Visualizer and AI features against an existing HA instance | - | X19 |
+| X15 | HA automation importer | HA YAML → Irori flows, with a report of what didn't convert | - | X19 |
 | X16 | Z-Wave | Via `zwave-js-server` | - | C17 |
 | X17 | Matter | Via `rs-matter` | - | C6 |
 | X18 | Vendor cloud connector | e.g. SwitchBot: proves cloud polling/push and secrets | - | C6 |
+| X19 | Automations (flows) | Freeform flow engine + canvas editor: live validation, traces on the canvas, near-misses, live runs, test and dry runs, 24h backtest, versions (`docs/specs/flows.md`) | 🟠 | C9, C30, C31 |

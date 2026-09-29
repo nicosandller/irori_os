@@ -15,7 +15,8 @@ SwitchBot connector, a dashboard, a terminal app. An extension is one package wi
 that says:
 
 - **who it is:** id, name, version, and which versions of Irori it works with;
-- **what it contributes:** a protocol now; dashboards, cards, and apps later (D22);
+- **what it contributes:** a protocol, an automation engine, an app page; dashboards and cards
+  later (D22);
 - **what it may access:** the local network, internet hosts, serial ports, files, a shell (D23).
 
 Official first-party extensions live in this repo under `extensions/` and are **not** linked
@@ -29,9 +30,10 @@ flowchart LR
     manifest["irori-extension.toml"] --> info["[extension]<br/>id · name · version · irori"]
     manifest --> contributes["[contributes]"]
     manifest --> permissions["[permissions]<br/>lan · network · serial · host_fs · host_shell · api"]
-    contributes --> protocol["protocol<br/>(Phase 1)"]
-    contributes -.-> dashboard["dashboard · card<br/>(Phase 2c, reserved)"]
-    contributes -.-> app["app<br/>(Phase 3, reserved)"]
+    contributes --> protocol["protocol"]
+    contributes --> automation["automation"]
+    contributes --> app["app"]
+    contributes -.-> dashboard["dashboard · card<br/>(reserved)"]
 ```
 
 ## 3. The package
@@ -117,8 +119,8 @@ One list per contribution kind, written as TOML arrays of tables (`[[contributes
 | `protocol` | **Phase 1**, specified below and in [protocols.md](protocols.md) | Brings in devices and entities — MQTT, ESPHome, Zigbee, or a vendor API |
 | `dashboard` | Reserved for Phase 2c (ROADMAP §6.4) | A pre-built view that binds to matching devices |
 | `card` | Reserved for Phase 2c | A visualization used inside dashboards |
-| `app` | Reserved for Phase 3 (ROADMAP §8.2) | A tool with its own page, served by the extension |
-| `automation` | Reserved | An automation engine. The core does not ship one; engines are installed as extensions. This version reads the contribution and ignores it with a warning, like dashboard/card. |
+| `app` | **Specified** in [automations.md](automations.md) §B1, §B3 | A page of its own in the sidebar, served from the package |
+| `automation` | **Specified** in [automations.md](automations.md) §B1, §B2 | An automation engine. The core does not ship one; engines are installed as extensions |
 
 ### 6.1 Protocol
 
@@ -130,6 +132,9 @@ One list per contribution kind, written as TOML arrays of tables (`[[contributes
 
 **At most one protocol per extension** in this version (D25). The protocol's id is the
 extension id.
+
+**At most one process per extension**: it contributes a `protocol` or an `automation`, not both.
+An `app` can accompany either, or come alone ([automations.md](automations.md) §B1).
 
 ### 6.2 Kinds this version doesn't implement
 
@@ -158,7 +163,7 @@ increase on update needs approval again (D23).
 | `serial` | list of `/dev/…` paths, no repeats | These serial or USB devices, e.g. `/dev/ttyUSB0` |
 | `host_fs` | list of paths, no repeats | These files and folders. `$CONFIG` and `$DATA` (optionally `/sub/path`) are Irori's own folders; any absolute path (`/`, `/home/pi`) is outside them |
 | `host_shell` | bool | Running commands on the machine |
-| `api` | list of scopes, no repeats | Irori API access beyond its own devices: `registry:read`, `states:read`, `events:read`, `services:call` |
+| `api` | list of scopes, no repeats | Irori API access beyond its own devices: `registry:read`, `states:read`, `events:read`, `services:call`, `history:read` ([automations.md](automations.md) §B2) |
 
 **No permission is needed** for what every protocol extension does: creating and updating its own
 devices and entities, reporting their state, and handling service calls for them.
@@ -167,7 +172,8 @@ devices and entities, reporting their state, and handling service calls for them
 the extension can do anything on the machine. The UI and CLI must say that in those words, and
 only the owner can approve it. A terminal app is honest about what it is instead of hiding it.
 
-**Enforcement.** In Phase 1, API scopes are enforced on the extension's token. `lan`, `network`,
+**Enforcement.** API scopes are enforced on every engine request over the wire
+([automations.md](automations.md) §B2) and by the shell's bridge for app pages (§B4). `lan`, `network`,
 `serial`, and host access are recorded, shown, and approved, but only enforced where the OS
 makes it practical (ROADMAP M1.5). The UI must not suggest otherwise. When `network` is enforced,
 it has to check the addresses a name resolves to as well: a public-looking name can point at a
@@ -256,7 +262,8 @@ Warnings for ignored contribution kinds come from layer 2 (`ExtensionManifest::w
 | Protocol lifecycle, services, and messages | [protocols.md](protocols.md) |
 | Turning extensions off, and where their settings live | [config.md](config.md) §3.4–3.5. Approved permissions: planned for `extensions/<id>.toml` |
 | Signing, registry index, `install`/`update` | Phase 3 (ROADMAP §8.1) |
-| Dashboard, card, and app fields | The phases that build them (§6) |
+| Dashboard and card fields | The phases that build them (§6) |
+| Automation and app fields, engine wire operations | [automations.md](automations.md) |
 | Namespaced ids (`author.switchbot`) | ROADMAP open question 12, before the registry opens |
 | Icons, homepage, author, license | Later, when the Extensions page needs them |
 

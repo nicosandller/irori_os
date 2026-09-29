@@ -1,5 +1,10 @@
 # Spec: sequential automation engine
 
+> **Note (X19).** The first engine shipped as an extension is the **flow** engine
+> ([flows.md](flows.md)), a freeform graph on a canvas. It reuses this spec's trigger, condition,
+> wait and service shapes, durations, CEL surface and registry type-check (`irori-rules`), but
+> not the rule document. The sequential engine below stays a specified library, not shipped.
+
 Status: **draft for Phase 0** (M0.3). This document is the **first-party sequential engine**, not
 the Irori OS. The core does not ship an engine, does not load `rules/*.json`, and does not run
 automations. This engine will be **downloadable and installable** as an extension
