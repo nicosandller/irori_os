@@ -71,16 +71,23 @@ jobs:
           workspaces: |
             .
             crates/irori-ui
+            extensions/automations/app
       - uses: taiki-e/install-action@v2
         with:
           tool: trunk
 
-      # The UI is outside the workspace, so the check job's fmt and clippy don't reach it.
+      # The UI, the Automations page and the kit they share are outside the workspace, so the
+      # check job's fmt and clippy don't reach them.
       - name: rustfmt
-        run: cargo fmt --manifest-path crates/irori-ui/Cargo.toml --all --check
+        run: |
+          cargo fmt --manifest-path crates/irori-ui/Cargo.toml --all --check
+          cargo fmt --manifest-path crates/irori-ui-kit/Cargo.toml --all --check
+          cargo fmt --manifest-path extensions/automations/app/Cargo.toml --all --check
       - name: clippy
         run: |
           cargo clippy --locked --manifest-path crates/irori-ui/Cargo.toml \
+            --target wasm32-unknown-unknown --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path extensions/automations/app/Cargo.toml \
             --target wasm32-unknown-unknown --all-targets -- -D warnings
       # The page's own logic (what to show, and which of two states is newer) is plain Rust and
       # runs on the host; the browser is not needed to check it.
@@ -94,7 +101,9 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq brotli
           total=0
-          for file in crates/irori/ui/*.wasm crates/irori/ui/*.js crates/irori/ui/*.html; do
+          for file in crates/irori/ui/*.wasm crates/irori/ui/*.js crates/irori/ui/*.html \
+                      extensions/automations/app/dist/*.wasm extensions/automations/app/dist/*.js \
+                      extensions/automations/app/dist/*.html; do
             size=$(brotli -q 11 -c "$file" | wc -c)
             echo "$(basename "$file"): $size bytes brotli"
             total=$((total + size))

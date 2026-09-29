@@ -25,7 +25,7 @@ members = [
 default-members = ["crates/irori"]
 # The UI is a wasm crate with its own dependency tree, built with `trunk` (`cargo xtask ui`),
 # not by workspace commands. Keeping it out means a plain `cargo build` needs no wasm toolchain.
-exclude = ["crates/irori-ui", "crates/irori-ui-kit"]
+exclude = ["crates/irori-ui", "crates/irori-ui-kit", "extensions/automations/app"]
 
 [workspace.package]
 version = "0.0.0"
