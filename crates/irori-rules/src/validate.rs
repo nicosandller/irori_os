@@ -780,7 +780,7 @@ fn check_state_match(
     let Some(entity) = registry.entity(id) else {
         problems.push(problem(
             path,
-            format!("no such entity {id:?} — check the entity id"),
+            format!("no such entity {id} — check the entity id"),
         ));
         return;
     };
@@ -841,7 +841,7 @@ fn check_call_inner(
     let Some(entity) = registry.entity(target) else {
         problems.push(problem(
             path,
-            format!("no such entity {target:?} — check the entity id"),
+            format!("no such entity {target} — check the entity id"),
         ));
         return;
     };

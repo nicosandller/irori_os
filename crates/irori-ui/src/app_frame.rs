@@ -228,6 +228,8 @@ fn Frame(id: String) -> impl IntoView {
                     }
                     post(&Reply::answer(request.id, Ok(serde_json::Value::Null)));
                 }
+                // What went wrong inside the page, where its own console is out of sight.
+                "log" => leptos::logging::error!("{id}'s page: {}", request.args),
                 other => post(&Reply::answer(
                     request.id,
                     Err(format!("the bridge has no `{other}`")),

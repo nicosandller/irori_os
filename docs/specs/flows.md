@@ -54,7 +54,7 @@ same file the canvas saves (rules.md D18).
     ["clear:matched", "off"],
     ["clear:timeout", "off"]
   ],
-  "layout": { "motion": [0, 0], "dark": [240, 0], "on": [480, 0], "clear": [720, 0], "off": [960, 0] }
+  "layout": { "motion": [0, 0], "dark": [280, 0], "on": [560, 0], "clear": [840, 0], "off": [1120, 0] }
 }
 ```
 

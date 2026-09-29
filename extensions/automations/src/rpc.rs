@@ -256,13 +256,23 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
             let history = history(service, &flow, window).await?;
             // An entity the core kept its most changes for may reach back less than a day; the
             // backtest only covers as far back as every entity does.
-            let from = history
+            // History only reaches back as far as the core has been keeping it, and an entity
+            // the core kept its most changes for reaches back less than a day: the backtest
+            // covers only what every entity covers.
+            let capped = history
                 .values()
                 .filter(|states| states.len() >= HISTORY_CAP)
                 .filter_map(|states| states.first().map(|state| state.last_updated))
+                .max();
+            let kept_since = history
+                .values()
+                .filter_map(|states| states.first().map(|state| state.last_updated))
+                .min();
+            let from = [Some(window), capped, kept_since]
+                .into_iter()
+                .flatten()
                 .max()
-                .unwrap_or(window)
-                .max(window);
+                .unwrap_or(window);
             let (would, changes) = sim::backtest(&flow, &history, &service.engine.states(), to);
             answer(Backtest {
                 from,

@@ -109,7 +109,31 @@ struct Registry {
 }
 
 fn main() {
-    console_error_panic_hook::set_once();
+    // A bug shouldn't leave a blank frame: say what broke, on the page as well as the console.
+    std::panic::set_hook(Box::new(|info| {
+        console_error_panic_hook::hook(info);
+        // Tell the shell too: the frame's own console is out of sight.
+        if let Ok(Some(parent)) = window().parent() {
+            let message =
+                serde_json::json!({ "irori": 1, "id": 0, "op": "log", "args": info.to_string() });
+            let _ = parent.post_message(&message.to_string().into(), "*");
+        }
+        if let Some(body) = document().body() {
+            let note = document().create_element("div").ok();
+            if let Some(note) = note {
+                let _ = note.set_attribute(
+                    "style",
+                    "position:fixed;left:1rem;right:1rem;top:1rem;z-index:10;padding:.8rem 1rem;\
+                     border:1px solid var(--error);border-radius:.5rem;background:var(--card);\
+                     color:var(--error);font-size:.85rem",
+                );
+                note.set_text_content(Some(&format!(
+                    "Something went wrong on this page; reload it to carry on. ({info})"
+                )));
+                let _ = body.append_child(&note);
+            }
+        }
+    }));
     leptos::mount::mount_to_body(App);
 }
 

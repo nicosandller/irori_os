@@ -222,6 +222,7 @@ Page → shell: `{ irori: 1, id, op, args }`. Shell → page: `{ irori: 1, id, v
 | `states` | `states:read` | Current states |
 | `history` `{ entity_id }` | `history:read` | The last day of one entity's changes |
 | `navigate` `{ path }` | — | Updates the address bar's `/apps/<id>/<path>`, so back/forward and deep links work |
+| `log` `"…"` | — | Writes a line to the shell's console, unanswered: how a page reports its own crash |
 
 | `event` | When |
 |---|---|
