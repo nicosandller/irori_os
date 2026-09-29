@@ -46,19 +46,75 @@
     .mono { font-family: var(--mono); font-size: .85em; }
     .row { display: flex; align-items: center; gap: .5rem; }
     .grow { flex: 1; }
-    .btn { border: 1px solid var(--line); background: var(--card); border-radius: .4rem;
-           padding: .35rem .75rem; transition: background-color var(--dur-fast), border-color var(--dur-fast); }
+    .btn { border: 1px solid var(--line); background: var(--card); border-radius: .5rem;
+           padding: .45rem .9rem; transition: background-color var(--dur-fast), border-color var(--dur-fast),
+           scale var(--dur-fast) var(--ease-out), box-shadow var(--dur-base); }
+    .btn:active { scale: .96; }
     .btn:hover { border-color: var(--muted); }
     .btn.primary { background: var(--ember); border-color: var(--ember); color: #fff; }
     .btn.primary:disabled { opacity: .45; cursor: default; }
     .btn.small { padding: .15rem .5rem; font-size: .85rem; }
     .btn.danger { color: var(--error); }
     .link { background: none; border: 0; padding: 0; color: var(--ember); text-decoration: underline; }
+    /* Fields: big enough to read and hit, like the rest of Irori. Focus glows ember. */
     input[type=text], input[type=number], input[type=datetime-local], select, textarea {
-      border: 1px solid var(--line); background: var(--card); border-radius: .35rem;
-      padding: .3rem .45rem; width: 100%; }
-    textarea { font-family: var(--mono); font-size: .8rem; min-height: 5rem; resize: vertical; }
-    label { display: block; font-size: .8rem; color: var(--muted); margin: .6rem 0 .2rem; }
+      border: 1px solid var(--line); background: var(--bg); border-radius: .55rem;
+      padding: .6rem .75rem; width: 100%; min-height: 2.75rem; font-size: .95rem;
+      transition: border-color var(--dur-fast), box-shadow var(--dur-base) var(--ease-out),
+                  background-color var(--dur-fast); }
+    input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var(--muted) 60%, var(--line)); }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--ember);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--ember) 22%, transparent); }
+    select { appearance: none; padding-right: 2.2rem; cursor: pointer;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a817a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right .7rem center; background-size: 1rem; }
+    textarea { font-family: var(--mono); font-size: .85rem; min-height: 5rem; resize: vertical; line-height: 1.5; }
+    input[type=range] { width: 100%; accent-color: var(--ember); }
+    label { display: block; font-size: .8rem; color: var(--muted); margin: .85rem 0 .3rem; font-weight: 500; }
+
+    /* A switch. The knob slides with a little spring; the track fills ember. */
+    .switch { position: relative; flex: none; width: 2.6rem; height: 1.5rem; border-radius: 1rem;
+      border: 1px solid var(--line); background: var(--sunk); padding: 0; cursor: pointer;
+      transition: background-color var(--dur-base) var(--ease-out), border-color var(--dur-base); }
+    .switch .knob { position: absolute; top: 50%; left: .15rem; width: 1.15rem; height: 1.15rem;
+      border-radius: 50%; background: var(--card); box-shadow: 0 1px 3px rgb(0 0 0 / .3);
+      translate: 0 -50%; transition: translate var(--dur-base) var(--ease-spring), scale var(--dur-fast); }
+    .switch.on { background: var(--ember); border-color: var(--ember); }
+    .switch.on .knob { translate: 1.1rem -50%; }
+    .switch:active .knob { scale: 1.12 .9; }
+    .switch:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ember) 30%, transparent); }
+
+    /* The combo box: a big field that searches as you type, its matches in a list below. */
+    .combo { position: relative; }
+    .combo-input { padding-right: 2.4rem !important; }
+    .combo-detail { position: absolute; right: 2.3rem; top: 50%; translate: 0 -50%; max-width: 45%;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .75rem;
+      color: var(--muted); pointer-events: none; }
+    .combo-chevron { position: absolute; right: .8rem; top: 50%; width: .5rem; height: .5rem;
+      border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
+      translate: 0 -70%; rotate: 45deg; pointer-events: none;
+      transition: rotate var(--dur-base) var(--ease-out), translate var(--dur-base) var(--ease-out); }
+    .combo.open .combo-chevron { rotate: 225deg; translate: 0 -25%; }
+    .combo-list { position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + .35rem);
+      margin: 0; padding: .3rem; list-style: none; max-height: 18rem; overflow-y: auto;
+      background: var(--card); border: 1px solid var(--line); border-radius: .6rem;
+      box-shadow: 0 12px 32px rgb(0 0 0 / .22), 0 2px 6px rgb(0 0 0 / .12);
+      opacity: 0; translate: 0 -.4rem; scale: .98; transform-origin: top center; pointer-events: none;
+      visibility: hidden;
+      transition: opacity var(--dur-fast) var(--ease-out), translate var(--dur-base) var(--ease-out),
+                  scale var(--dur-base) var(--ease-out), visibility 0s var(--dur-base); }
+    .combo.open .combo-list { opacity: 1; translate: 0 0; scale: 1; pointer-events: auto;
+      visibility: visible; transition-delay: 0s; }
+    .combo-option { display: flex; flex-direction: column; gap: .05rem; padding: .5rem .65rem;
+      border-radius: .45rem; cursor: pointer; transition: background-color var(--dur-fast); }
+    .combo-option.active { background: var(--sunk); }
+    .combo-option.chosen .combo-label { color: var(--ember); font-weight: 500; }
+    .combo-label { font-size: .92rem; }
+    .combo-option-detail { font-size: .75rem; color: var(--muted); font-family: var(--mono);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .combo-list mark { background: color-mix(in srgb, var(--ember) 25%, transparent); color: inherit;
+      border-radius: .15rem; padding: 0 .05rem; }
+    .combo-empty { padding: .6rem .7rem; color: var(--muted); font-size: .85rem; }
     .chip { display: inline-flex; align-items: center; gap: .3rem; font-size: .75rem; padding: .1rem .5rem;
             border-radius: 1rem; border: 1px solid var(--line); background: var(--sunk); white-space: nowrap; }
     .chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.error { color: var(--error); }
@@ -187,6 +243,31 @@
     .banner { position: absolute; left: 50%; top: .75rem; translate: -50% 0; background: var(--card);
               border: 1px solid var(--line); border-radius: 2rem; padding: .3rem .9rem; font-size: .85rem;
               display: flex; gap: .6rem; align-items: center; box-shadow: 0 2px 8px rgb(0 0 0 / .08); }
+    /* Motion. Things arrive, lift, and settle; nothing makes anyone wait. */
+    @keyframes pop-in { from { opacity: 0; scale: .9; } }
+    @keyframes rise-in { from { opacity: 0; translate: 0 8px; } }
+    @keyframes slide-in { from { opacity: 0; translate: 12px 0; } }
+    .node { animation: pop-in var(--dur-expressive) var(--ease-spring) both; }
+    .node.dragging { z-index: 5; scale: 1.03; cursor: grabbing;
+      box-shadow: 0 16px 36px rgb(0 0 0 / .28), 0 3px 8px rgb(0 0 0 / .14);
+      transition: scale var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast); }
+    .node:not(.dragging) { transition: border-color var(--dur-fast), box-shadow var(--dur-base),
+      opacity var(--dur-base), scale var(--dur-base) var(--ease-spring); }
+    .node .text, .node .head { cursor: grab; }
+    .panel-body > .tab { animation: rise-in var(--dur-base) var(--ease-out) both; }
+    .flow-card { animation: rise-in var(--dur-expressive) var(--ease-out) both; }
+    .flow-card:nth-child(2) { animation-delay: 40ms; } .flow-card:nth-child(3) { animation-delay: 80ms; }
+    .flow-card:nth-child(4) { animation-delay: 120ms; } .flow-card:nth-child(n+5) { animation-delay: 160ms; }
+    .bar .muted { animation: slide-in var(--dur-base) var(--ease-out) both; }
+    .item { transition: border-color var(--dur-fast), background-color var(--dur-fast), translate var(--dur-fast) var(--ease-out); }
+    .item:hover { translate: 2px 0; }
+    .tabs button { transition: color var(--dur-fast), border-color var(--dur-base) var(--ease-out); }
+    .palette button { transition: background-color var(--dur-fast), translate var(--dur-fast) var(--ease-out); }
+    .palette button:hover { translate: 3px 0; }
+    .palette button:active { scale: .97; }
+    .chip { transition: background-color var(--dur-fast), color var(--dur-fast); }
+    .badge { animation: pop-in var(--dur-base) var(--ease-spring) both; }
+
     @media (max-width: 900px) {
       .body { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
       .palette { display: flex; gap: .2rem; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: .4rem; }

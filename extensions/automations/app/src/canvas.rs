@@ -59,6 +59,8 @@ pub fn Canvas() -> impl IntoView {
     let zoom = RwSignal::new(1.0_f64);
     let drag = StoredValue::new(None::<Drag>);
     let loose = RwSignal::new(None::<([f64; 2], [f64; 2])>);
+    // The node being dragged, so it can lift while it moves.
+    let dragging = RwSignal::new(None::<NodeId>);
     let root = NodeRef::<leptos::html::Div>::new();
 
     // What's drawn: the draft, or the definition a run ran.
@@ -184,16 +186,30 @@ pub fn Canvas() -> impl IntoView {
                 }));
             }
         } else if let Some(node) = closest(&target, "[data-node]") {
-            if let Some(id) = node
+            // Anywhere on a node picks it up; a press that doesn't move just selects it.
+            let Some(id) = node
                 .get_attribute("data-node")
-                .and_then(|id| id.parse().ok())
-            {
-                ed.selected.set(Selected::Node(id));
-                if matches!(ed.tab.get_untracked(), Tab::Versions | Tab::Why) {
-                    ed.tab.set(Tab::Node);
-                }
+                .and_then(|id| id.parse::<NodeId>().ok())
+            else {
+                return;
+            };
+            ed.selected.set(Selected::Node(id.clone()));
+            if matches!(ed.tab.get_untracked(), Tab::Versions | Tab::Why) {
+                ed.tab.set(Tab::Node);
             }
-            return;
+            if !editing {
+                return;
+            }
+            let at = positions
+                .get_untracked()
+                .get(&id)
+                .copied()
+                .unwrap_or([0.0, 0.0]);
+            drag.set_value(Some(Drag::Node {
+                id,
+                from: client,
+                at,
+            }));
         } else if let Some(wire) = closest(&target, "[data-wire]") {
             if let Some(index) = wire.get_attribute("data-wire").and_then(|i| i.parse().ok()) {
                 ed.selected.set(Selected::Wire(index));
@@ -225,8 +241,11 @@ pub fn Canvas() -> impl IntoView {
                 let z = zoom.get_untracked();
                 let dx = (client[0] - from[0]) / z;
                 let dy = (client[1] - from[1]) / z;
-                if dx.abs() + dy.abs() < 2.0 {
+                if dx.abs() + dy.abs() < 3.0 && dragging.get_untracked().is_none() {
                     return;
+                }
+                if dragging.get_untracked().as_ref() != Some(&id) {
+                    dragging.set(Some(id.clone()));
                 }
                 let snapped = [
                     ((at[0] + dx) / 8.0).round() * 8.0,
@@ -271,6 +290,7 @@ pub fn Canvas() -> impl IntoView {
         }
         loose.set(None);
         drag.set_value(None);
+        dragging.set(None);
         if let Some(el) = root.get_untracked() {
             let _ = el.release_pointer_capture(event.pointer_id());
         }
@@ -345,7 +365,7 @@ pub fn Canvas() -> impl IntoView {
             on:pointerdown=on_down
             on:pointermove=on_move
             on:pointerup=on_up
-            on:pointercancel=move |_| { loose.set(None); drag.set_value(None); }
+            on:pointercancel=move |_| { loose.set(None); drag.set_value(None); dragging.set(None); }
             on:wheel=on_wheel
         >
             <div
@@ -388,14 +408,27 @@ pub fn Canvas() -> impl IntoView {
                         <path class="wire draft" d=model::curve(a, b)></path>
                     })}
                 </svg>
-                {move || {
-                    let Some(flow) = flow.get() else { return Vec::new() };
-                    let at = positions.get();
-                    flow.nodes.iter().map(|(id, node)| {
-                        let position = at.get(id).copied().unwrap_or([0.0, 0.0]);
-                        view! { <NodeCard id=id.clone() node=node.clone() at=position visits=visits diff=diff /> }
-                    }).collect::<Vec<_>>()
-                }}
+                // Keyed by the node's definition: moving a node only moves it, and only a node
+                // that really changed is drawn again.
+                <For
+                    each=move || {
+                        flow.get()
+                            .map(|flow| {
+                                flow.nodes
+                                    .into_iter()
+                                    .map(|(id, node)| {
+                                        let key = format!("{id}{}", serde_json::to_string(&node).unwrap_or_default());
+                                        (key, id, node)
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default()
+                    }
+                    key=|(key, _, _)| key.clone()
+                    let:item
+                >
+                    <NodeCard id=item.1 node=item.2 positions=positions visits=visits diff=diff dragging=dragging />
+                </For>
             </div>
             {move || match ed.view.get() {
                 View::Trace { record, .. } => {
@@ -441,9 +474,10 @@ pub fn remove_node(ed: &Editing, id: &NodeId) {
 fn NodeCard(
     id: NodeId,
     node: Node,
-    at: [f64; 2],
+    positions: Memo<BTreeMap<NodeId, [f64; 2]>>,
     visits: Memo<(BTreeMap<NodeId, Visit>, BTreeSet<Wire>)>,
     diff: Memo<BTreeMap<NodeId, &'static str>>,
+    dragging: RwSignal<Option<NodeId>>,
 ) -> impl IntoView {
     let ed = expect_context::<Editing>();
     let home = expect_context::<Home>();
@@ -457,6 +491,7 @@ fn NodeCard(
     let for_badge = id.clone();
     let for_status = id.clone();
     let for_select = id.clone();
+    let for_place = id.clone();
     let is_trigger = node.is_trigger();
     let hold_ms = match &node {
         Node::Wait {
@@ -499,6 +534,9 @@ fn NodeCard(
         if let Some(change) = diff.get().get(&for_class) {
             class.push(' ');
             class.push_str(change);
+        }
+        if dragging.get().as_ref() == Some(&for_class) {
+            class.push_str(" dragging");
         }
         class
     };
@@ -557,7 +595,10 @@ fn NodeCard(
         <div
             class=class
             data-node=node_id.to_string()
-            style=format!("left:{}px; top:{}px; min-height:{}px", at[0], at[1], height)
+            style=move || {
+                let at = positions.with(|p| p.get(&for_place).copied().unwrap_or([0.0, 0.0]));
+                format!("left:{}px; top:{}px; min-height:{}px", at[0], at[1], height)
+            }
             on:dblclick=move |_| {
                 ed.selected.set(Selected::Node(for_select.clone()));
                 ed.tab.set(Tab::Node);

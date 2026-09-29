@@ -12,6 +12,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::editor::{Editing, Selected, Tab, View};
+use crate::widgets::{Choice, Combo, Toggle};
 use crate::{Home, api, model, time};
 
 /// Shows `record` on the canvas, drawn on the definition it ran: `flow` if given (a test of a
@@ -362,7 +363,7 @@ pub fn Test() -> impl IntoView {
             {move || triggers().into_iter().map(|id| view! { <option value=id.to_string()>{id.to_string()}</option> }).collect_view()}
         </select>
         <label>"How"</label>
-        <div class="row"><input type="checkbox" prop:checked=move || dry.get() on:change=move |e| dry.set(event_target_checked(&e)) />
+        <div class="row"><Toggle on=dry set=Callback::new(move |on: bool| dry.set(on)) label="Dry run" />
             <span style="font-size:.9rem">"Dry run: nothing is switched, time skips ahead"</span></div>
         {move || dry.get().then(|| view! {
             <label>"Pretend (dry run only)"</label>
@@ -402,15 +403,23 @@ fn OverridePicker(
     overrides: RwSignal<Vec<(String, String)>>,
 ) -> impl IntoView {
     let home = expect_context::<Home>();
+    let choices = Signal::derive(move || {
+        home.entities.with(|entities| {
+            entities
+                .iter()
+                .map(|e| Choice::new(e.id.to_string(), e.name.to_string()).detail(e.id.to_string()))
+                .collect::<Vec<_>>()
+        })
+    });
     view! {
-        <select on:change=move |e| { let id = event_target_value(&e); overrides.update(|o| if let Some(row) = o.get_mut(index) { row.0 = id; }); }>
-            <option value="">"choose…"</option>
-            {move || home.entities.get().into_iter().map(|e| {
-                let id = e.id.to_string();
-                let chosen = id == entity;
-                view! { <option value=id.clone() selected=chosen>{format!("{} · {}", e.name, id)}</option> }
-            }).collect_view()}
-        </select>
+        <div class="grow">
+            <Combo
+                choices=choices
+                value=Signal::stored(entity)
+                placeholder="Which device…"
+                pick=Callback::new(move |id: String| overrides.update(|o| if let Some(row) = o.get_mut(index) { row.0 = id; }))
+            />
+        </div>
     }
 }
 

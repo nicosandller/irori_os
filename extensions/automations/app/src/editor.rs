@@ -288,6 +288,7 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                             }
                         }
                     />
+                    <HeaderToggle />
                     {status}
                     <span class="grow"></span>
                     {move || ed.message.get().map(|m| view! { <span class="muted" style="font-size:.85rem">{m}</span> })}
@@ -310,11 +311,11 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                         </nav>
                         <div class="panel-body">
                             {move || match ed.tab.get() {
-                                Tab::Node => view! { <inspector::Inspector /> }.into_any(),
-                                Tab::Runs => view! { <panels::Runs /> }.into_any(),
-                                Tab::Test => view! { <panels::Test /> }.into_any(),
-                                Tab::Why => view! { <panels::Why /> }.into_any(),
-                                Tab::Versions => view! { <panels::Versions /> }.into_any(),
+                                Tab::Node => view! { <div class="tab"><inspector::Inspector /></div> }.into_any(),
+                                Tab::Runs => view! { <div class="tab"><panels::Runs /></div> }.into_any(),
+                                Tab::Test => view! { <div class="tab"><panels::Test /></div> }.into_any(),
+                                Tab::Why => view! { <div class="tab"><panels::Why /></div> }.into_any(),
+                                Tab::Versions => view! { <div class="tab"><panels::Versions /></div> }.into_any(),
                             }}
                         </div>
                     </aside>
@@ -322,6 +323,38 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
             </div>
         })}
     }
+}
+
+/// Turns the flow on or off. A saved flow switches at once; a new one when it's saved.
+#[component]
+fn HeaderToggle() -> impl IntoView {
+    let ed = expect_context::<Editing>();
+    let on = Signal::derive(move || ed.draft.with(|d| d.as_ref().is_some_and(|f| f.enabled)));
+    let set = Callback::new(move |on: bool| {
+        if ed.is_new.get_untracked() || ed.dirty() {
+            ed.edit(|flow| flow.enabled = on);
+            return;
+        }
+        let id = ed.id();
+        spawn_local(async move {
+            match api::enable(&id, on).await {
+                Ok(_) => {
+                    for signal in [ed.draft, ed.saved] {
+                        signal.update(|f| {
+                            if let Some(f) = f {
+                                f.enabled = on;
+                            }
+                        });
+                    }
+                    if let Ok(detail) = api::get(&id).await {
+                        ed.armed.set(detail.armed);
+                    }
+                }
+                Err(why) => ed.message.set(Some(why)),
+            }
+        });
+    });
+    view! { <crate::widgets::Toggle on=on set=set label="On or off" /> }
 }
 
 /// What can be added: click one and it lands in view, selected.

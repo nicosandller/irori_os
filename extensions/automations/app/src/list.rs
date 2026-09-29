@@ -7,6 +7,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::time::ago;
+use crate::widgets::Toggle;
 use crate::{Route, api, go};
 
 fn status(summary: &FlowSummary) -> impl IntoView + use<> {
@@ -114,14 +115,17 @@ pub fn List() -> impl IntoView {
                                                         <span class="chip">{format!("{misses} near-miss{}", if misses == 1 { "" } else { "es" })}</span>
                                                     })}
                                                 </div>
-                                                <button class="btn small" on:click=move |event| {
-                                                    event.stop_propagation();
-                                                    let id = toggle.clone();
-                                                    spawn_local(async move {
-                                                        let _ = api::enable(&id, !enabled).await;
-                                                        listing.set(Some(api::list().await));
-                                                    });
-                                                }>{if enabled { "Turn off" } else { "Turn on" }}</button>
+                                                <Toggle
+                                                    on=Signal::stored(enabled)
+                                                    label=if enabled { "Turn off" } else { "Turn on" }
+                                                    set=Callback::new(move |on: bool| {
+                                                        let id = toggle.clone();
+                                                        spawn_local(async move {
+                                                            let _ = api::enable(&id, on).await;
+                                                            listing.set(Some(api::list().await));
+                                                        });
+                                                    })
+                                                />
                                                 <div class="meta">
                                                     {format!("{} trigger{} · {} steps · {last}", flow.triggers,
                                                         if flow.triggers == 1 { "" } else { "s" }, flow.nodes)}

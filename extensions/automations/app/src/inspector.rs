@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 
 use crate::canvas::remove_node;
 use crate::editor::{Editing, Selected};
+use crate::widgets::{Choice, Combo, Toggle};
 use crate::{Home, model};
 
 /// Rewrites the node's JSON with `f`, and keeps it if it's still a node. `Err` says why not.
@@ -154,8 +155,11 @@ fn FlowForm() -> impl IntoView {
         })}
         <label>"Enabled"</label>
         <div class="row">
-            <input type="checkbox" prop:checked=move || flow().is_some_and(|f| f.enabled)
-                on:change=move |e| { let on = event_target_checked(&e); ed.edit(|flow| flow.enabled = on); } />
+            <Toggle
+                on=Signal::derive(move || flow().is_some_and(|f| f.enabled))
+                set=Callback::new(move |on: bool| ed.edit(|flow| flow.enabled = on))
+                label="Enabled"
+            />
             <span class="muted" style="font-size:.85rem">"Off keeps the flow and its history; nothing runs."</span>
         </div>
         <h2 style="margin-top:1.2rem">"Checked against your home"</h2>
@@ -248,8 +252,8 @@ fn JsonEditor(
     }
 }
 
-/// Entities to choose from, those of `kinds` (all when empty), the current one kept even if it's
-/// gone so the form can say so.
+/// Entities to choose from, those of `kinds` (all when empty), searched as you type. The current
+/// one is kept even if it's gone, so the form can say so.
 #[component]
 fn EntityPicker(
     value: String,
@@ -258,34 +262,43 @@ fn EntityPicker(
 ) -> impl IntoView {
     let home = expect_context::<Home>();
     let current = value.clone();
-    let options = move || {
-        let mut options: Vec<(String, String)> = home.entities.with(|entities| {
+    let choices = Signal::derive(move || {
+        let mut choices: Vec<Choice> = home.entities.with(|entities| {
             entities
                 .iter()
                 .filter(|e| kinds.is_empty() || kinds.contains(&e.id.kind()))
-                .map(|e| (e.id.to_string(), format!("{} · {}", e.name, e.id)))
+                .map(|e| {
+                    let now = home
+                        .states
+                        .with(|states| states.get(&e.id).map(model::state_words))
+                        .map(|now| format!(" · {now}"))
+                        .unwrap_or_default();
+                    Choice::new(e.id.to_string(), e.name.to_string())
+                        .detail(format!("{}{now}", e.id))
+                })
                 .collect()
         });
-        if !current.is_empty() && !options.iter().any(|(id, _)| *id == current) {
-            options.insert(
+        choices.sort_by_key(|choice| choice.label.to_lowercase());
+        if !current.is_empty() && !choices.iter().any(|c| c.value == current) {
+            choices.insert(
                 0,
-                (current.clone(), format!("{current} (not in your home)")),
+                Choice::new(current.clone(), current.clone()).detail("not in your home"),
             );
         }
-        options
-    };
-    let selected = value;
+        choices
+    });
     view! {
-        <select on:change=move |e| pick(event_target_value(&e))>
-            {move || options().into_iter().map(|(id, label)| {
-                let is = id == selected;
-                view! { <option value=id selected=is>{label}</option> }
-            }).collect_view()}
-        </select>
+        <Combo
+            choices=choices
+            value=Signal::stored(value)
+            pick=Callback::new(pick)
+            placeholder="Search your devices…"
+        />
     }
 }
 
-/// A value an entity can have: on/off for flags, a number or text for sensors, or nothing.
+/// A value an entity can have — on/off for flags, a number or text for sensors — searched or
+/// typed in the same kind of field.
 #[component]
 fn ValueInput(
     entity: String,
@@ -303,6 +316,10 @@ fn ValueInput(
                 _ => None,
             })
     });
+    let now = entity.parse::<irori_types::EntityId>().ok().and_then(|id| {
+        home.states
+            .with_untracked(|states| states.get(&id).map(model::state_words))
+    });
     match sensor_type {
         Some(kind) => {
             let shown = match &value {
@@ -310,22 +327,30 @@ fn ValueInput(
                 Value::String(s) => s.clone(),
                 other => other.to_string(),
             };
-            let placeholder = if allow_any { "any change" } else { "" };
+            let mut choices = Vec::new();
+            if let Some(now) = now.filter(|n| n != "unknown" && n != "unavailable") {
+                choices.push(Choice::new(now.clone(), now).detail("its value now"));
+            }
+            if allow_any {
+                choices.insert(0, Choice::new("", "any change"));
+            }
             view! {
-                <input type=if kind == SensorValueType::Number { "number" } else { "text" }
-                    placeholder=placeholder
-                    prop:value=shown
-                    on:change=move |e| {
-                        let text = event_target_value(&e);
-                        let value = if text.trim().is_empty() {
+                <Combo
+                    choices=Signal::stored(choices)
+                    value=Signal::stored(shown)
+                    custom=true
+                    placeholder=if kind == SensorValueType::Number { "Type a number…" } else { "Type a value…" }
+                    pick=Callback::new(move |text: String| {
+                        let text = text.trim().to_owned();
+                        pick(if text.is_empty() {
                             Value::Null
                         } else if kind == SensorValueType::Number {
                             text.parse::<f64>().map(|n| json!(n)).unwrap_or(Value::Null)
                         } else {
                             json!(text)
-                        };
-                        pick(value);
-                    } />
+                        });
+                    })
+                />
             }
             .into_any()
         }
@@ -335,17 +360,30 @@ fn ValueInput(
                 Value::Bool(false) => "off",
                 _ => "any",
             };
+            let mut choices = vec![Choice::new("on", "on"), Choice::new("off", "off")];
+            if let Some(now) = now {
+                for choice in &mut choices {
+                    if choice.value == now {
+                        choice.detail = "now".into();
+                    }
+                }
+            }
+            if allow_any {
+                choices.insert(0, Choice::new("any", "any change"));
+            }
             view! {
-                <select on:change=move |e| pick(match event_target_value(&e).as_str() {
-                    "on" => json!(true),
-                    "off" => json!(false),
-                    _ => Value::Null,
-                })>
-                    {allow_any.then(|| view! { <option value="any" selected=shown == "any">"any change"</option> })}
-                    <option value="on" selected=shown == "on">"on"</option>
-                    <option value="off" selected=shown == "off">"off"</option>
-                </select>
-            }.into_any()
+                <Combo
+                    choices=Signal::stored(choices)
+                    value=Signal::stored(shown.to_owned())
+                    placeholder="on or off"
+                    pick=Callback::new(move |text: String| pick(match text.as_str() {
+                        "on" => json!(true),
+                        "off" => json!(false),
+                        _ => Value::Null,
+                    }))
+                />
+            }
+            .into_any()
         }
     }
 }

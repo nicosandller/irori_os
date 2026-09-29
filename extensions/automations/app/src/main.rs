@@ -13,6 +13,7 @@ mod list;
 mod model;
 mod panels;
 mod time;
+mod widgets;
 
 use std::cell::OnceCell;
 use std::collections::BTreeMap;
