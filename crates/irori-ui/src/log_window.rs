@@ -161,11 +161,17 @@ fn parse(raw: &str) -> Line {
         .iter()
         .position(|(key, _)| key == "extension")
         .map(|at| fields.remove(at).1);
-    let level = level.or(match weight(&clean) {
+    // What the words say counts too: an extension that prints `error: failed to bind` without
+    // a level of its own arrives in Irori's log as INFO, and it's still an error.
+    let said = match weight(message) {
         Weight::Error => Some(Level::Error),
         Weight::Warn => Some(Level::Warn),
         Weight::Plain => None,
-    });
+    };
+    let level = match (level, said) {
+        (Some(level), Some(said)) => Some(level.max(said)),
+        (level, said) => level.or(said),
+    };
     Line {
         raw: raw.to_owned(),
         stamp: stamp.to_owned(),
@@ -834,6 +840,15 @@ mod tests {
         assert_eq!(line.message, "couldn't connect");
         assert_eq!(line.source.as_deref(), Some("esphome"));
         assert_eq!(line.weight(), Weight::Error);
+    }
+
+    #[test]
+    fn an_error_in_the_words_of_an_info_line_is_an_error() {
+        let line = parse("2026-09-28T13:38:35Z  INFO error: failed to bind port extension=zigbee");
+        assert_eq!(line.level, Some(Level::Error));
+        // A field that mentions it isn't the message saying it.
+        let quiet = parse("2026-09-28T13:38:35Z  INFO connected errors=0");
+        assert_eq!(quiet.level, Some(Level::Info));
     }
 
     #[test]

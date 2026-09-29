@@ -1285,7 +1285,16 @@
     .protocol-card .protocol-icon { width: 1.75rem; height: 1.75rem; margin-bottom: .2rem; }
     .protocol-card .name { font-weight: 500; }
     .protocol-card-counts { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
-    .protocol-back { padding: 0; margin: 0 0 .6rem; font-size: .85rem; }
+    /* A secondary action in the window: a small bordered button, not a word to find. */
+    .quiet-button { display: inline-flex; align-items: center; gap: .3rem; padding: .3rem .65rem;
+                    font: inherit; font-size: .82rem; color: var(--muted); text-decoration: none;
+                    background: var(--card); border: 1px solid var(--line); border-radius: .4rem;
+                    cursor: pointer; white-space: nowrap; }
+    .quiet-button:hover { color: var(--ember); border-color: var(--ember); }
+    .quiet-button svg { width: .9rem; height: .9rem; }
+    .protocol-back { margin: 0 0 .75rem; }
+    .add-intro { display: flex; align-items: flex-start; gap: 1rem; }
+    .add-intro p { margin: 0; flex: 1; }
 
     /* A number of things found: a small ember pill, the one colour on the page that says
        "something here for you". On the Devices page it sits on the Add device button. */

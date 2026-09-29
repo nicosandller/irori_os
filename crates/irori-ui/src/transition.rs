@@ -113,6 +113,20 @@ pub fn name_target(event: &ev::MouseEvent, name: &str) {
     else {
         return;
     };
+    // Two elements with one name in the same picture and the browser skips the change: the card
+    // that last came back from a step still has it.
+    if let Ok(others) = document().query_selector_all(&format!("[style*=\"{name}\"]")) {
+        for i in 0..others.length() {
+            if let Some(other) = others
+                .item(i)
+                .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
+            {
+                let style = other.get_attribute("style").unwrap_or_default();
+                let kept = style.replace(&format!("view-transition-name: {name}"), "");
+                let _ = other.set_attribute("style", &kept);
+            }
+        }
+    }
     let style = target.get_attribute("style").unwrap_or_default();
     let _ = target.set_attribute("style", &format!("{style};view-transition-name: {name}"));
 }

@@ -785,6 +785,9 @@ fn AddDevice() -> impl IntoView {
             })
             .collect::<Vec<_>>()
     });
+    let ids = Memo::new(move |_| {
+        extensions.with(|all| all.iter().map(|(id, ..)| id.clone()).collect::<Vec<_>>())
+    });
     // Going somewhere inside the window is a change of its own (`transition.rs`): the step being
     // left slides away and the card you picked grows into the next step's heading, or shrinks
     // back into its card.
@@ -803,23 +806,28 @@ fn AddDevice() -> impl IntoView {
             // while the rows below it stay put reads as a disclosure, not as going somewhere.
             None => view! {
                 <section class="add-device add-step">
-                    <p class="muted">
-                        "Irori doesn't talk to devices itself: each kind of device arrives "
-                        "through an extension. Pick the one your device speaks to see what it "
-                        "has found. "
-                        <A href="/extensions">"Manage extensions"</A>
-                        "."
-                    </p>
+                    <div class="add-intro">
+                        <p class="muted">
+                            "Irori doesn't talk to devices itself: each kind of device arrives "
+                            "through an extension. Pick the one your device speaks to see what it "
+                            "has found."
+                        </p>
+                        <A href="/extensions" attr:class="quiet-button">"Manage extensions"</A>
+                    </div>
+                    // Keyed by extension, so a card arrives once and then keeps up — what it
+                    // has found and what's in the home change while the window is open.
                     <div class="protocol-cards">
-                        {extensions
-                            .get_untracked()
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, (id, extension, here, found))| {
+                        <For
+                            each=move || ids.get()
+                            key=|id| id.clone()
+                            children=move |id| {
+                                let i = ids
+                                    .with_untracked(|ids| ids.iter().position(|known| *known == id))
+                                    .unwrap_or(0);
                                 let back_here = came_from.get_value().as_ref() == Some(&id);
-                                protocol_card(i, id, extension, here, found, back_here, go)
-                            })
-                            .collect_view()}
+                                protocol_card(i, id, extensions, back_here, go)
+                            }
+                        />
                     </div>
                 </section>
             }
@@ -835,9 +843,7 @@ fn AddDevice() -> impl IntoView {
 fn protocol_card(
     i: usize,
     id: ExtensionId,
-    extension: crate::api::Extension,
-    here: usize,
-    found: usize,
+    extensions: Memo<Vec<(ExtensionId, crate::api::Extension, usize, usize)>>,
     back_here: bool,
     go: impl Fn(Option<ExtensionId>) + Copy + 'static,
 ) -> impl IntoView {
@@ -858,25 +864,47 @@ fn protocol_card(
             ""
         }
     );
+    let this = {
+        let id = id.clone();
+        move || {
+            extensions.with(|all| {
+                all.iter()
+                    .find(|(known, ..)| *known == id)
+                    .map(|(_, extension, here, found)| (extension.clone(), *here, *found))
+            })
+        }
+    };
+    let Some((extension, _, _)) = this() else {
+        return ().into_any();
+    };
+    let counts = this.clone();
+    let state = this.clone();
 
     view! {
         <button type="button" class="protocol-card" style=style on:click=pick>
             {icon(id.as_str(), extension.has_icon)}
             <span class="name">{extension.name.clone()}</span>
             <span class="badge">{how(&extension.iot_class)}</span>
-            <span
-                class="state"
-                class:ok=extension.state == "running"
-                class:wants-setup=extension.state == "needs_setup"
-            >
-                {extension.state.replace('_', " ")}
-            </span>
+            {move || state().map(|(extension, ..)| view! {
+                <span
+                    class="state"
+                    class:ok=extension.state == "running"
+                    class:wants-setup=extension.state == "needs_setup"
+                >
+                    {extension.state.replace('_', " ")}
+                </span>
+            })}
             <span class="protocol-card-counts">
-                {(found > 0).then(|| view! { <span class="found-count">{format!("{found} found")}</span> })}
-                <span class="muted small">{format!("{here} in your home")}</span>
+                {move || counts().map(|(_, here, found)| view! {
+                    {(found > 0).then(|| view! {
+                        <span class="found-count">{format!("{found} found")}</span>
+                    })}
+                    <span class="muted small">{format!("{here} in your home")}</span>
+                })}
             </span>
         </button>
     }
+    .into_any()
 }
 
 /// How long a device that was just added stays drawn in the found list while it leaves it. A
@@ -1045,8 +1073,12 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
 
     view! {
         <section class="add-device add-step">
-            <button type="button" class="link protocol-back" on:click=back>
-                "‹ All extensions"
+            <button type="button" class="quiet-button protocol-back" on:click=back>
+                <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M15 6l-6 6 6 6" />
+                </svg>
+                "All extensions"
             </button>
             <div class="add-step-head">
                 {move || icon(protocol.as_str(), icon_there())}

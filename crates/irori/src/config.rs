@@ -165,9 +165,17 @@ impl Config {
 
         let mut settings = store.settings();
         let before = settings.clone();
+        // The other extensions still installed: a device of theirs can have an id that starts
+        // the same way (`zigbee_mqtt_…` against `zigbee`), and it's theirs, not this one's.
+        let others: Vec<ProtocolId> = core
+            .extensions()
+            .keys()
+            .filter_map(|id| ProtocolId::try_from(id.as_str()).ok())
+            .filter(|other| other != protocol)
+            .collect();
         forget(
             &mut settings,
-            |device| brought_in_by(device, protocol),
+            |device| brought_in_by(device, protocol, &others),
             |key| &key.protocol == protocol,
         );
         if settings == before {
@@ -319,12 +327,21 @@ fn forget(
 /// Whether `device` came in through `protocol`: its id starts with the protocol's, the way
 /// [`irori_core::device_id_for`] makes every id — which is what finds the rows of devices that
 /// aren't around right now, and that the core has never heard of this time round.
-fn brought_in_by(device: &DeviceId, protocol: &ProtocolId) -> bool {
-    let probe = UniqueId::try_from("x").expect("a valid unique id");
-    let made = irori_core::device_id_for(protocol, &probe);
-    made.as_str()
-        .strip_suffix('x')
-        .is_some_and(|prefix| device.as_str().starts_with(prefix))
+///
+/// Where another installed protocol's prefix also fits, and is longer, the device is that one's.
+fn brought_in_by(device: &DeviceId, protocol: &ProtocolId, others: &[ProtocolId]) -> bool {
+    let prefix = |protocol: &ProtocolId| {
+        let probe = UniqueId::try_from("x").expect("a valid unique id");
+        let made = irori_core::device_id_for(protocol, &probe);
+        made.as_str().strip_suffix('x').unwrap_or("").to_owned()
+    };
+    let own = prefix(protocol);
+    !own.is_empty()
+        && device.as_str().starts_with(&own)
+        && !others
+            .iter()
+            .map(prefix)
+            .any(|other| other.len() > own.len() && device.as_str().starts_with(&other))
 }
 
 /// A file Irori couldn't read is worth saying loudly and repeatedly: it means someone's edit
@@ -583,6 +600,17 @@ mod tests {
     /// Uninstalling an extension removes every device it brought in — including one that isn't
     /// around right now — so installing it again starts with nothing in the home. Other
     /// extensions' devices are left alone.
+    /// A device of another installed protocol whose id starts like this one's stays.
+    #[test]
+    fn a_longer_protocol_keeps_its_own_devices() {
+        let demo: ProtocolId = "demo".parse().expect("valid");
+        let extra: ProtocolId = "demo_extra".parse().expect("valid");
+        let lamp: DeviceId = "demo_extra_lamp".parse().expect("valid");
+        assert!(brought_in_by(&lamp, &demo, &[]), "nobody else claims it");
+        assert!(!brought_in_by(&lamp, &demo, std::slice::from_ref(&extra)));
+        assert!(brought_in_by(&lamp, &extra, &[demo]));
+    }
+
     #[tokio::test]
     async fn forgetting_a_protocol_forgets_every_device_it_brought_in() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
