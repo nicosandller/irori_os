@@ -25,7 +25,8 @@ pub fn List() -> impl IntoView {
     let listing = RwSignal::new(None::<Result<api::Listing, String>>);
     let refresh = move || {
         spawn_local(async move {
-            listing.set(Some(api::list().await));
+            // The list may be gone by the time the answer comes.
+            let _ = listing.try_set(Some(api::list().await));
         });
     };
     refresh();
@@ -38,9 +39,10 @@ pub fn List() -> impl IntoView {
                 return;
             }
             if let Ok(fresh) = api::list().await
-                && listing.get_untracked().and_then(Result::ok).as_ref() != Some(&fresh)
+                && let Some(shown) = listing.try_get_untracked()
+                && shown.and_then(Result::ok).as_ref() != Some(&fresh)
             {
-                listing.set(Some(Ok(fresh)));
+                let _ = listing.try_set(Some(Ok(fresh)));
             }
         }
     });
@@ -122,7 +124,7 @@ pub fn List() -> impl IntoView {
                                                         let id = toggle.clone();
                                                         spawn_local(async move {
                                                             let _ = api::enable(&id, on).await;
-                                                            listing.set(Some(api::list().await));
+                                                            let _ = listing.try_set(Some(api::list().await));
                                                         });
                                                     })
                                                 />

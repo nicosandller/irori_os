@@ -1,5 +1,6 @@
-//! A flow's editor: the canvas in the middle, what can be added on the left, and a panel on the
-//! right for the selected node, the runs, tests, "why didn't it fire?", and versions.
+//! A flow's editor: the canvas in the middle, where a node opens up to be edited; what can be
+//! added on the left; and a panel on the right for the flow's settings, its runs, tests, "why
+//! didn't it fire?", and versions.
 
 use std::time::Duration;
 
@@ -37,7 +38,7 @@ pub enum View {
 /// The panel's tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
-    Node,
+    Flow,
     Runs,
     Test,
     Why,
@@ -106,7 +107,7 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
         problems: RwSignal::new(Vec::new()),
         selected: RwSignal::new(Selected::Nothing),
         view: RwSignal::new(View::Edit),
-        tab: RwSignal::new(Tab::Node),
+        tab: RwSignal::new(Tab::Flow),
         active: RwSignal::new(Vec::new()),
         armed: RwSignal::new(Armed::Disabled),
         message: RwSignal::new(None),
@@ -161,15 +162,19 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                 return;
             }
             let id = ed.id();
+            // The editor may be closed while the answer is on its way.
             if !id.is_empty()
                 && !ed.is_new.get_untracked()
                 && let Ok(active) = api::active(&id).await
-                && active != ed.active.get_untracked()
+                && ed
+                    .active
+                    .try_get_untracked()
+                    .is_some_and(|shown| shown != active)
             {
-                ed.active.set(active);
+                let _ = ed.active.try_set(active);
             }
-            if !ed.active.with_untracked(Vec::is_empty) {
-                ed.tick.update(|t| *t += 1);
+            if ed.active.try_with_untracked(|runs| !runs.is_empty()) == Some(true) {
+                let _ = ed.tick.try_update(|t| *t += 1);
             }
             gloo_timers::future::sleep(Duration::from_secs(1)).await;
         }
@@ -232,6 +237,10 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
         });
     };
 
+    // Drawn once the flow is there, and not again with every edit: that would start the canvas
+    // over, and drop a drag halfway through.
+    let loaded = Memo::new(move |_| ed.draft.with(Option::is_some));
+
     let status = move || {
         let errors = ed
             .problems
@@ -253,13 +262,13 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
             {(errors > 0).then(|| view! {
                 <button class="chip error" on:click=move |_| {
                     ed.selected.set(Selected::Nothing);
-                    ed.tab.set(Tab::Node);
+                    ed.tab.set(Tab::Flow);
                 }>{format!("{errors} to fix")}</button>
             })}
             {(warnings > 0).then(|| view! {
                 <button class="chip warn" on:click=move |_| {
                     ed.selected.set(Selected::Nothing);
-                    ed.tab.set(Tab::Node);
+                    ed.tab.set(Tab::Flow);
                 }>{format!("{warnings} warning{}", if warnings == 1 { "" } else { "s" })}</button>
             })}
         }
@@ -272,7 +281,7 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                 <p><button class="link" on:click=move |_| go(Route::List)>"Back to all flows"</button></p>
             </section>
         })}
-        {move || ed.draft.with(Option::is_some).then(|| view! {
+        {move || loaded.get().then(|| view! {
             <div class="editor">
                 <header class="bar">
                     <button class="btn small" on:click=move |_| go(Route::List) title="All flows">"←"</button>
@@ -302,7 +311,7 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                     <canvas::Canvas />
                     <aside class="panel">
                         <nav class="tabs">
-                            {[(Tab::Node, "Edit"), (Tab::Runs, "Runs"), (Tab::Test, "Test"), (Tab::Why, "Why?"), (Tab::Versions, "Versions")]
+                            {[(Tab::Flow, "Edit"), (Tab::Runs, "Runs"), (Tab::Test, "Test"), (Tab::Why, "Why?"), (Tab::Versions, "Versions")]
                                 .into_iter()
                                 .map(|(tab, label)| view! {
                                     <button class:on=move || ed.tab.get() == tab on:click=move |_| ed.tab.set(tab)>{label}</button>
@@ -311,7 +320,7 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                         </nav>
                         <div class="panel-body">
                             {move || match ed.tab.get() {
-                                Tab::Node => view! { <div class="tab"><inspector::Inspector /></div> }.into_any(),
+                                Tab::Flow => view! { <div class="tab"><inspector::FlowForm /></div> }.into_any(),
                                 Tab::Runs => view! { <div class="tab"><panels::Runs /></div> }.into_any(),
                                 Tab::Test => view! { <div class="tab"><panels::Test /></div> }.into_any(),
                                 Tab::Why => view! { <div class="tab"><panels::Why /></div> }.into_any(),
@@ -357,7 +366,7 @@ fn HeaderToggle() -> impl IntoView {
     view! { <crate::widgets::Toggle on=on set=set label="On or off" /> }
 }
 
-/// What can be added: click one and it lands in view, selected.
+/// What can be added: click one and it lands on the canvas, open.
 #[component]
 fn Palette() -> impl IntoView {
     let ed = expect_context::<Editing>();
@@ -390,9 +399,9 @@ fn Palette() -> impl IntoView {
                                 flow.nodes.insert(id.clone(), node);
                                 added = Some(id);
                             });
+                            // It opens where it lands, ready to fill in.
                             if let Some(id) = added {
                                 ed.selected.set(Selected::Node(id));
-                                ed.tab.set(Tab::Node);
                             }
                         }>
                             <span class="swatch" style=format!("background:{colour}")></span>

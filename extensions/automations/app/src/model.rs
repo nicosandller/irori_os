@@ -162,7 +162,8 @@ pub fn condition_words(condition: &Condition, home: &Home) -> String {
             }
             (None, None) => home.name(entity),
         },
-        Condition::Expr { expr } => expr.as_str().to_owned(),
+        Condition::Expr { expr } => crate::inspector::expr_words(expr.as_str(), home)
+            .unwrap_or_else(|| expr.as_str().to_owned()),
         Condition::Time { .. } => "in the time window".into(),
         Condition::Sun { .. } => "the sun is where it should be".into(),
         Condition::All { conditions } => conditions

@@ -115,5 +115,24 @@ ENV IRORI_DATA=/var/lib/irori \
 EXPOSE 8480
 HEALTHCHECK --interval=5s --timeout=2s --start-period=5s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8480/api/health || exit 1
-ENTRYPOINT ["irori"]
+# Installing copies a package into the data volume, which outlives the image. So an official
+# extension installed before a rebuild would keep running its old files. On start, each one
+# installed is refreshed from the image's copy first. Its data (`extension-data/`) and its
+# settings (`config/`) live elsewhere and aren't touched.
+COPY <<'EOF' /usr/local/bin/irori-dev-start
+#!/bin/sh
+set -e
+for installed in "$IRORI_DATA"/extensions/*/; do
+  id=$(basename "$installed")
+  bundled="$IRORI_OFFICIAL_PACKAGES/$id"
+  [ -d "$bundled" ] || continue
+  rm -rf "$installed"
+  cp -r "$bundled" "$IRORI_DATA/extensions/$id"
+done
+exec irori "$@"
+EOF
+USER root
+RUN chmod 755 /usr/local/bin/irori-dev-start
+USER irori
+ENTRYPOINT ["irori-dev-start"]
 CMD ["serve"]

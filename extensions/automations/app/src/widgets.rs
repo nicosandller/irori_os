@@ -175,6 +175,8 @@ pub fn Combo(
                             }
                         }
                         "Escape" => {
+                            // Only the list closes, not whatever this field sits in.
+                            event.prevent_default();
                             open.set(false);
                             if let Some(input) = input.get_untracked() {
                                 let _ = input.blur();

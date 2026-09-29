@@ -8,7 +8,7 @@ use irori_flow_types::{Flow, Node, NodeId, Port, PortRef, Wire};
 use leptos::prelude::*;
 use web_sys::wasm_bindgen::JsCast;
 
-use crate::editor::{Editing, Selected, Tab, View};
+use crate::editor::{Editing, Selected, View};
 use crate::{Home, model, time};
 
 /// A place for a new node: right of everything, level with the first.
@@ -139,6 +139,11 @@ pub fn Canvas() -> impl IntoView {
         let Some(target) = event.target() else {
             return;
         };
+        // An open node's form is for typing and picking, not for dragging the canvas, and the
+        // canvas's own buttons are just buttons.
+        if closest(&target, "[data-sheet], button, .banner").is_some() {
+            return;
+        }
         let client = [f64::from(event.client_x()), f64::from(event.client_y())];
         let editing = matches!(ed.view.get_untracked(), View::Edit | View::Diff { .. });
         if let Some(port) = closest(&target, "[data-port]") {
@@ -165,39 +170,16 @@ pub fn Canvas() -> impl IntoView {
             drag.set_value(Some(Drag::Wire {
                 from: PortRef { node, port: which },
             }));
-        } else if let Some(head) = closest(&target, "[data-drag]") {
-            let Some(id) = head
-                .get_attribute("data-drag")
-                .and_then(|id| id.parse::<NodeId>().ok())
-            else {
-                return;
-            };
-            let at = positions
-                .get_untracked()
-                .get(&id)
-                .copied()
-                .unwrap_or([0.0, 0.0]);
-            ed.selected.set(Selected::Node(id.clone()));
-            if editing {
-                drag.set_value(Some(Drag::Node {
-                    id,
-                    from: client,
-                    at,
-                }));
-            }
         } else if let Some(node) = closest(&target, "[data-node]") {
-            // Anywhere on a node picks it up; a press that doesn't move just selects it.
+            // Anywhere on a node picks it up; a press that doesn't move opens it (see `on_up`).
             let Some(id) = node
                 .get_attribute("data-node")
                 .and_then(|id| id.parse::<NodeId>().ok())
             else {
                 return;
             };
-            ed.selected.set(Selected::Node(id.clone()));
-            if matches!(ed.tab.get_untracked(), Tab::Versions | Tab::Why) {
-                ed.tab.set(Tab::Node);
-            }
             if !editing {
+                ed.selected.set(Selected::Node(id));
                 return;
             }
             let at = positions
@@ -213,7 +195,6 @@ pub fn Canvas() -> impl IntoView {
         } else if let Some(wire) = closest(&target, "[data-wire]") {
             if let Some(index) = wire.get_attribute("data-wire").and_then(|i| i.parse().ok()) {
                 ed.selected.set(Selected::Wire(index));
-                ed.tab.set(Tab::Node);
             }
             return;
         } else {
@@ -226,6 +207,7 @@ pub fn Canvas() -> impl IntoView {
         if let Some(el) = root.get_untracked() {
             let _ = el.set_pointer_capture(event.pointer_id());
         }
+        event.prevent_default();
     };
 
     let on_move = move |event: web_sys::PointerEvent| {
@@ -268,6 +250,12 @@ pub fn Canvas() -> impl IntoView {
     };
 
     let on_up = move |event: web_sys::PointerEvent| {
+        // A node pressed and let go without moving: a click, which opens it.
+        if let Some(Drag::Node { id, .. }) = drag.get_value()
+            && dragging.get_untracked().is_none()
+        {
+            ed.selected.set(Selected::Node(id));
+        }
         if let Some(Drag::Wire { from }) = drag.get_value() {
             let target = document()
                 .element_from_point(event.client_x() as f32, event.client_y() as f32)
@@ -297,6 +285,20 @@ pub fn Canvas() -> impl IntoView {
     };
 
     let on_wheel = move |event: web_sys::WheelEvent| {
+        // Over an open node's form, the wheel moves the canvas rather than zooming it, so a long
+        // form can be scrolled through; a list or a text box in it scrolls itself.
+        if let Some(target) = event.target()
+            && closest(&target, "[data-sheet]").is_some()
+        {
+            if closest(&target, ".combo-list, textarea").is_none() {
+                event.prevent_default();
+                pan.update(|p| {
+                    p[0] -= event.delta_x();
+                    p[1] -= event.delta_y();
+                });
+            }
+            return;
+        }
         event.prevent_default();
         let client = [f64::from(event.client_x()), f64::from(event.client_y())];
         let before = world(client);
@@ -311,8 +313,23 @@ pub fn Canvas() -> impl IntoView {
         ]);
     };
 
-    // Delete removes what's selected, unless typing somewhere.
+    // Moves and releases are heard on the whole page, so a drag keeps going wherever the
+    // pointer goes and whatever is drawn under it.
+    let moves = window_event_listener(leptos::ev::pointermove, on_move);
+    let ups = window_event_listener(leptos::ev::pointerup, on_up);
+    on_cleanup(move || {
+        moves.remove();
+        ups.remove();
+    });
+
+    // Escape closes an open node; Delete removes what's selected, unless typing somewhere.
     let keys = window_event_listener(leptos::ev::keydown, move |event: web_sys::KeyboardEvent| {
+        if event.key() == "Escape" {
+            if !event.default_prevented() {
+                ed.selected.set(Selected::Nothing);
+            }
+            return;
+        }
         if event.key() != "Delete" && event.key() != "Backspace" {
             return;
         }
@@ -363,8 +380,6 @@ pub fn Canvas() -> impl IntoView {
             class="canvas"
             node_ref=root
             on:pointerdown=on_down
-            on:pointermove=on_move
-            on:pointerup=on_up
             on:pointercancel=move |_| { loose.set(None); drag.set_value(None); dragging.set(None); }
             on:wheel=on_wheel
         >
@@ -408,26 +423,19 @@ pub fn Canvas() -> impl IntoView {
                         <path class="wire draft" d=model::curve(a, b)></path>
                     })}
                 </svg>
-                // Keyed by the node's definition: moving a node only moves it, and only a node
-                // that really changed is drawn again.
+                // Keyed by id: a node keeps its card, and its open form, while it's moved or edited.
                 <For
                     each=move || {
-                        flow.get()
-                            .map(|flow| {
-                                flow.nodes
-                                    .into_iter()
-                                    .map(|(id, node)| {
-                                        let key = format!("{id}{}", serde_json::to_string(&node).unwrap_or_default());
-                                        (key, id, node)
-                                    })
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default()
+                        flow.with(|flow| {
+                            flow.as_ref()
+                                .map(|flow| flow.nodes.keys().cloned().collect::<Vec<_>>())
+                                .unwrap_or_default()
+                        })
                     }
-                    key=|(key, _, _)| key.clone()
-                    let:item
+                    key=|id| id.clone()
+                    let:id
                 >
-                    <NodeCard id=item.1 node=item.2 positions=positions visits=visits diff=diff dragging=dragging />
+                    <NodeCard id=id flow=flow positions=positions visits=visits diff=diff dragging=dragging zoom=zoom />
                 </For>
             </div>
             {move || match ed.view.get() {
@@ -447,9 +455,20 @@ pub fn Canvas() -> impl IntoView {
                         <button class="btn small" on:click=move |_| ed.view.set(View::Edit)>"Done"</button>
                     </div>
                 }.into_any()),
-                View::Edit => None,
+                View::Edit => match ed.selected.get() {
+                    Selected::Wire(index) => Some(view! {
+                        <div class="banner">
+                            <span>"Wire selected"</span>
+                            <button class="btn small danger" on:click=move |_| {
+                                ed.edit(|flow| { if index < flow.wires.len() { flow.wires.remove(index); } });
+                                ed.selected.set(Selected::Nothing);
+                            }>"Remove it"</button>
+                        </div>
+                    }.into_any()),
+                    _ => None,
+                },
             }}
-            <div class="hint">"Drag from a port on the right of a node to another node to wire them. Delete removes what's selected."</div>
+            <div class="hint">"Click a node to open it. Drag a port on its right to another node to wire them."</div>
             <div class="zoom">
                 <button class="btn small" on:click=move |_| zoom.update(|z| *z = (*z * 1.2).min(2.0))>"+"</button>
                 <button class="btn small" on:click=move |_| zoom.update(|z| *z = (*z / 1.2).max(0.3))>"−"</button>
@@ -473,40 +492,60 @@ pub fn remove_node(ed: &Editing, id: &NodeId) {
 #[component]
 fn NodeCard(
     id: NodeId,
-    node: Node,
+    flow: Memo<Option<Flow>>,
     positions: Memo<BTreeMap<NodeId, [f64; 2]>>,
     visits: Memo<(BTreeMap<NodeId, Visit>, BTreeSet<Wire>)>,
     diff: Memo<BTreeMap<NodeId, &'static str>>,
     dragging: RwSignal<Option<NodeId>>,
+    zoom: RwSignal<f64>,
 ) -> impl IntoView {
     let ed = expect_context::<Editing>();
     let home = expect_context::<Home>();
-    let text = model::sentence(&node, &home);
-    let colour = model::family(&node);
-    let label = model::label(&node);
-    let entity = model::primary_entity(&node);
-    let ports = node.ports();
-    let node_id = id.clone();
+    let node = {
+        let id = id.clone();
+        Memo::new(move |_| flow.with(|f| f.as_ref().and_then(|f| f.nodes.get(&id).cloned())))
+    };
+    // Selected while editing, the node opens up into its own form.
+    let open = {
+        let id = id.clone();
+        Memo::new(move |_| {
+            matches!(ed.view.get(), View::Edit) && ed.selected.get() == Selected::Node(id.clone())
+        })
+    };
+    // Kept a moment after it closes, so it can fold away rather than vanish.
+    let shown = RwSignal::new(open.get_untracked());
+    let closing = RwSignal::new(false);
+    Effect::new(move |_| {
+        if open.get() {
+            closing.set(false);
+            shown.set(true);
+        } else if shown.get_untracked() {
+            closing.set(true);
+            set_timeout(
+                // The node may have been deleted meanwhile.
+                move || {
+                    if open.try_get_untracked() == Some(false) {
+                        let _ = shown.try_set(false);
+                        let _ = closing.try_set(false);
+                    }
+                },
+                std::time::Duration::from_millis(170),
+            );
+        }
+    });
     let for_class = id.clone();
     let for_badge = id.clone();
     let for_status = id.clone();
-    let for_select = id.clone();
     let for_place = id.clone();
-    let is_trigger = node.is_trigger();
-    let hold_ms = match &node {
-        Node::Wait {
-            until:
-                irori_flow_types::WaitUntil::State { hold: Some(h), .. }
-                | irori_flow_types::WaitUntil::Expr { hold: Some(h), .. },
-            ..
-        } => Some(h.millis()),
-        _ => None,
-    };
+    let for_sheet = id.clone();
 
     let class = move || {
         let mut class = String::from("node");
         if ed.selected.get() == Selected::Node(for_class.clone()) {
             class.push_str(" selected");
+        }
+        if open.get() {
+            class.push_str(" open");
         }
         let problems = ed.problems_at(&for_class);
         if problems.iter().any(|p| p.is_error()) {
@@ -542,7 +581,7 @@ fn NodeCard(
     };
 
     let live_value = move || {
-        let entity = entity.clone()?;
+        let entity = node.with(|n| n.as_ref().and_then(model::primary_entity))?;
         home.states
             .with(|states| states.get(&entity).map(model::state_words))
     };
@@ -551,6 +590,15 @@ fn NodeCard(
         if !matches!(ed.view.get(), View::Edit) {
             return None;
         }
+        let hold_ms = node.with(|node| match node {
+            Some(Node::Wait {
+                until:
+                    irori_flow_types::WaitUntil::State { hold: Some(h), .. }
+                    | irori_flow_types::WaitUntil::Expr { hold: Some(h), .. },
+                ..
+            }) => Some(h.millis()),
+            _ => None,
+        });
         ed.tick.track();
         let now = time::millis(time::now());
         ed.active.with(|runs| {
@@ -590,21 +638,59 @@ fn NodeCard(
         })
     };
 
-    let height = model::height(&node);
+    // The card itself, drawn again only when its definition changes.
+    let card = {
+        let id = id.clone();
+        move || {
+            node.get().map(|node| {
+                let text = model::sentence(&node, &home);
+                let colour = model::family(&node);
+                let label = model::label(&node);
+                view! {
+                    {(!node.is_trigger()).then(|| view! { <span class="port in"></span> })}
+                    <div class="head">
+                        <span class="kind-bar" style=format!("background:{colour}")></span>
+                        {label}
+                        <span class="nid">{id.to_string()}</span>
+                    </div>
+                    <div class="text" title=text.clone()>{text.clone()}</div>
+                    {node.ports().into_iter().map(|port| {
+                        let name = model::port_label(&node, port);
+                        let node_for_port = id.to_string();
+                        let port_text = port.to_string();
+                        let taken = {
+                            let id = id.clone();
+                            move || visits.get().1.iter().any(|w| w.from.node == id && w.from.port == port)
+                        };
+                        view! {
+                            <div class="port-row">
+                                {name}
+                                <span
+                                    class="port out"
+                                    class:taken=taken
+                                    data-port=port_text
+                                    data-node-id=node_for_port
+                                    title="Drag to a node to wire it"
+                                ></span>
+                            </div>
+                        }
+                    }).collect_view()}
+                }
+            })
+        }
+    };
+
     view! {
         <div
             class=class
-            data-node=node_id.to_string()
+            data-node=id.to_string()
             style=move || {
                 let at = positions.with(|p| p.get(&for_place).copied().unwrap_or([0.0, 0.0]));
+                let height = node.with(|n| n.as_ref().map(model::height).unwrap_or(80.0));
                 format!("left:{}px; top:{}px; min-height:{}px", at[0], at[1], height)
             }
-            on:dblclick=move |_| {
-                ed.selected.set(Selected::Node(for_select.clone()));
-                ed.tab.set(Tab::Node);
-            }
         >
-            {(!is_trigger).then(|| view! { <span class="port in"></span> })}
+            {card}
             {move || match ed.view.get() {
                 View::Trace { .. } => visits.get().0.get(&for_badge).map(|visit| {
                     let class = match visit.class {
@@ -617,34 +703,22 @@ fn NodeCard(
                 _ => None,
             }}
             {move || live_value().map(|value| view! { <span class="now">{format!("now {value}")}</span> })}
-            <div class="head" data-drag=id.to_string()>
-                <span class="kind-bar" style=format!("background:{colour}")></span>
-                {label}
-                <span class="nid">{id.to_string()}</span>
-            </div>
-            <div class="text" title=text.clone()>{text.clone()}</div>
-            {move || status().map(|s| view! { <div class="status">{s}</div> })}
-            {ports.into_iter().map(|port| {
-                let name = model::port_label(&node, port);
-                let node_for_port = id.to_string();
-                let port_text = port.to_string();
-                let taken = {
-                    let id = id.clone();
-                    move || visits.get().1.iter().any(|w| w.from.node == id && w.from.port == port)
-                };
+            {move || (!shown.get()).then(|| status().map(|s| view! { <div class="status">{s}</div> })).flatten()}
+            {move || shown.get().then(|| {
+                let id = for_sheet.clone();
                 view! {
-                    <div class="port-row">
-                        {name}
-                        <span
-                            class="port out"
-                            class:taken=taken
-                            data-port=port_text
-                            data-node-id=node_for_port
-                            title="Drag to a node to wire it"
-                        ></span>
+                    // Readable at any zoom: the form is scaled back to its own size.
+                    <div
+                        class="sheet"
+                        data-sheet=""
+                        style=move || format!("transform: scale({})", 1.0 / zoom.get())
+                    >
+                        <div class="sheet-body" class:closing=move || closing.get()>
+                            <crate::inspector::NodeForm id=id />
+                        </div>
                     </div>
                 }
-            }).collect_view()}
+            })}
         </div>
     }
 }
