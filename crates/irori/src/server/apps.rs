@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use irori_core::{AppRequestError, ExtensionStatus};
 use irori_types::{ApiScope, ExtensionId, Name, PackagePath};
@@ -100,19 +100,29 @@ pub(super) async fn rpc(
 }
 
 /// The page itself: `/pages/<id>/`.
-pub(super) async fn index(state: State<AppState>, Path(id): Path<ExtensionId>) -> Response {
-    serve(state, id, String::new())
+pub(super) async fn index(
+    state: State<AppState>,
+    Path(id): Path<ExtensionId>,
+    headers: HeaderMap,
+) -> Response {
+    serve(state, id, String::new(), &headers)
 }
 
 /// One of the page's files: `/pages/<id>/<path>`.
 pub(super) async fn file(
     state: State<AppState>,
     Path((id, path)): Path<(ExtensionId, String)>,
+    headers: HeaderMap,
 ) -> Response {
-    serve(state, id, path)
+    serve(state, id, path, &headers)
 }
 
-fn serve(State(state): State<AppState>, id: ExtensionId, path: String) -> Response {
+fn serve(
+    State(state): State<AppState>,
+    id: ExtensionId,
+    path: String,
+    headers: &HeaderMap,
+) -> Response {
     let Some(entry) = state
         .0
         .core
@@ -131,6 +141,7 @@ fn serve(State(state): State<AppState>, id: ExtensionId, path: String) -> Respon
             format!("`{path}` isn't part of `{id}`'s page"),
         );
     };
+    let request_headers = headers;
     match std::fs::read(&file) {
         Ok(bytes) => {
             let mut response = bytes.into_response();
@@ -139,10 +150,9 @@ fn serve(State(state): State<AppState>, id: ExtensionId, path: String) -> Respon
                 header::CONTENT_TYPE,
                 HeaderValue::from_static(content_type(&file)),
             );
-            headers.insert(
-                header::CONTENT_SECURITY_POLICY,
-                HeaderValue::from_static(PAGE_CSP),
-            );
+            if let Ok(policy) = HeaderValue::from_str(&page_csp(request_headers)) {
+                headers.insert(header::CONTENT_SECURITY_POLICY, policy);
+            }
             headers.insert(
                 header::ACCESS_CONTROL_ALLOW_ORIGIN,
                 HeaderValue::from_static("*"),
@@ -164,9 +174,29 @@ fn serve(State(state): State<AppState>, id: ExtensionId, path: String) -> Respon
 
 /// What a page may load: its own files, and nothing from anywhere else. `wasm-unsafe-eval` is
 /// what compiling its own wasm needs, not `eval`.
-const PAGE_CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
-     style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; \
-     frame-ancestors 'self'";
+///
+/// This server's own address is named as well as `'self'`: the page runs in a sandboxed frame
+/// whose origin is opaque, and while Chrome still takes `'self'` to mean the address the page
+/// came from, Safari and Firefox take it to match nothing there — and the page can't even load
+/// its own script, a blank frame.
+fn page_csp(request: &HeaderMap) -> String {
+    let own = request
+        .get(header::HOST)
+        .and_then(|host| host.to_str().ok())
+        .filter(|host| {
+            !host.is_empty()
+                && host
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'))
+        })
+        .map(|host| format!(" http://{host}"))
+        .unwrap_or_default();
+    format!(
+        "default-src 'self'{own}; script-src 'self'{own} 'wasm-unsafe-eval'; \
+         style-src 'self'{own} 'unsafe-inline'; img-src 'self'{own} data:; \
+         connect-src 'self'{own}; frame-ancestors 'self'"
+    )
+}
 
 /// The file `path` names beside the page's `entry`, if it's a package path (no `..`, no hidden
 /// names) and exists. The empty path is the entry itself.
@@ -201,6 +231,22 @@ fn content_type(file: &std::path::Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_page_policy_names_this_server_and_nothing_a_host_header_could_smuggle_in() {
+        let mut request = HeaderMap::new();
+        request.insert(header::HOST, HeaderValue::from_static("192.168.1.20:8480"));
+        let policy = page_csp(&request);
+        assert!(
+            policy.contains("script-src 'self' http://192.168.1.20:8480 'wasm-unsafe-eval'"),
+            "{policy}"
+        );
+        request.insert(header::HOST, HeaderValue::from_static("evil; script-src *"));
+        assert!(
+            !page_csp(&request).contains("evil"),
+            "a Host that isn't a host is left out"
+        );
+    }
 
     #[test]
     fn a_page_can_only_reach_its_own_files() -> anyhow::Result<()> {

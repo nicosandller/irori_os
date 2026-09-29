@@ -194,7 +194,9 @@ For each running extension with an `app` contribution, the core:
 What the core promises about the static files:
 
 - `Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src
-  'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'`.
+  'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'`, with
+  the server's own address (from the request's `Host`) added beside each `'self'`: in the
+  sandboxed frame Safari and Firefox match `'self'` against the opaque origin, i.e. nothing.
 - `Access-Control-Allow-Origin: *` **on these files only** — the page runs in a sandboxed frame
   with an opaque origin, so its own script, wasm and stylesheet fetches are cross-origin. Never
   on `/api/…`: until auth exists (C16), a CORS-open API would be open to any web page.

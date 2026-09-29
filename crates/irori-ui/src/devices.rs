@@ -769,6 +769,9 @@ fn AddDevice() -> impl IntoView {
             // Helpers are an extension for the core's own reasons (D40), but nothing here finds
             // a helper: you make one, by naming it. That has its own button on the Helpers tab.
             .filter(|(id, _)| id.as_str() != HELPERS)
+            // Only extensions that bring devices: an automation engine or a page has none to
+            // find, so offering it here would be a door to nowhere.
+            .filter(|(_, extension)| !extension.entity_kinds.is_empty())
             .map(|(id, extension)| {
                 let here = home
                     .devices
