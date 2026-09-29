@@ -1,0 +1,29 @@
+{
+  "id": "arrive_home",
+  "name": "Arriving home",
+  "enabled": false,
+  "mode": { "type": "queued", "max": 4 },
+  "nodes": {
+    "door": { "type": "trigger", "trigger": { "type": "state", "entity": "binary_sensor.front_door", "to": true } },
+    "motion": { "type": "trigger", "trigger": { "type": "state", "entity": "binary_sensor.demo_movement_motion", "to": true, "for": "5s" } },
+    "hall": { "type": "call", "service": "light.turn_on", "entity": "light.demo_hall_light" },
+    "study": { "type": "call", "service": "light.turn_on", "entity": "light.demo_study_lamp" },
+    "both": { "type": "join", "mode": "all", "timeout": "30s" },
+    "which": { "type": "switch", "cases": [
+      { "type": "state", "entity": "switch.guests_over", "is": true },
+      { "type": "expr", "expr": "num('sensor.demo_luminosity_illuminance') > 200" }
+    ] },
+    "level": { "type": "set", "name": "level", "expr": "40" },
+    "pause": { "type": "delay", "for": "1s" },
+    "done": { "type": "stop", "reason": "guests are handled elsewhere" }
+  },
+  "wires": [
+    ["door", "hall"], ["door", "study"],
+    ["hall", "both"], ["study", "both"],
+    ["both", "which"],
+    ["which:case_1", "done"],
+    ["which:else", "level"],
+    ["level", "pause"],
+    ["motion", "hall"]
+  ]
+}

@@ -5,6 +5,8 @@ members = [
     "crates/irori-core",
     "crates/irori-protocol",
     "crates/irori-rules",
+    "crates/irori-flow-types",
+    "crates/irori-flows",
     "crates/irori-recorder",
     "crates/irori-config",
     "crates/irori-api",
@@ -37,7 +39,10 @@ repository = "https://github.com/nicosandller/irori_os"
 irori-types = { path = "crates/irori-types" }
 irori-core = { path = "crates/irori-core" }
 irori-protocol = { path = "crates/irori-protocol" }
-irori-rules = { path = "crates/irori-rules" }
+# Just the document types by default; the flow engine asks for `engine` (CEL, evaluation).
+irori-rules = { path = "crates/irori-rules", default-features = false }
+irori-flow-types = { path = "crates/irori-flow-types" }
+irori-flows = { path = "crates/irori-flows" }
 irori-recorder = { path = "crates/irori-recorder" }
 irori-config = { path = "crates/irori-config" }
 irori-api = { path = "crates/irori-api" }

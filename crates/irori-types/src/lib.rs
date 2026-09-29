@@ -25,9 +25,10 @@ mod time;
 
 pub use context::{Context, Origin};
 pub use extension::{
-    ApiScope, Contributions, CoreRequirement, ExtensionInfo, ExtensionManifest, HostPath, IotClass,
-    NetworkHost, PackagePath, Permissions, ProtocolAction, ProtocolContribution,
-    ReservedContribution, RunCommand, SerialPath, Version,
+    ApiScope, AppContribution, AppPlacement, AutomationContribution, Contributions,
+    CoreRequirement, ExtensionInfo, ExtensionManifest, HostPath, IotClass, NetworkHost,
+    PackagePath, Permissions, ProtocolAction, ProtocolContribution, ReservedContribution,
+    RunCommand, SerialPath, Version,
 };
 pub use floorplan::{
     Floorplan, Level, Opening, OpeningKind, PlacedArea, PlacedDevice, PlanError, Point, Wall,

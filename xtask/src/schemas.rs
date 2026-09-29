@@ -11,6 +11,7 @@ pub fn run(check: bool) -> anyhow::Result<()> {
     let dir = repo_root().join("schemas");
     let mut docs = irori_types::schemas();
     docs.extend(irori_rules::schemas());
+    docs.extend(irori_flow_types::schemas());
 
     let mut stale = Vec::new();
     for doc in &docs {

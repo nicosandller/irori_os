@@ -142,11 +142,11 @@ impl Default for Mode {
 }
 
 impl Mode {
-    fn is_single(&self) -> bool {
+    pub fn is_single(&self) -> bool {
         matches!(self, Self::Named(NamedMode::Single))
     }
 
-    fn validate(&self) -> Result<(), InvariantError> {
+    pub fn validate(&self) -> Result<(), InvariantError> {
         match self {
             Self::Named(_) => Ok(()),
             Self::Limited(LimitedMode::Queued { max } | LimitedMode::Parallel { max }) => {
@@ -210,7 +210,7 @@ pub enum Trigger {
 }
 
 impl Trigger {
-    fn validate(&self) -> Result<(), InvariantError> {
+    pub fn validate(&self) -> Result<(), InvariantError> {
         match self {
             Self::State { hold, .. } => {
                 if let Some(hold) = hold {
@@ -285,7 +285,7 @@ pub enum Condition {
 }
 
 impl Condition {
-    fn validate(&self, depth: u8) -> Result<(), InvariantError> {
+    pub fn validate(&self, depth: u8) -> Result<(), InvariantError> {
         if depth > MAX_DEPTH {
             return Err(inv(format!(
                 "conditions and actions can nest at most {MAX_DEPTH} levels"
@@ -499,7 +499,7 @@ pub enum WaitUntil {
 }
 
 impl WaitUntil {
-    fn validate(&self) -> Result<(), InvariantError> {
+    pub fn validate(&self) -> Result<(), InvariantError> {
         match self {
             Self::State {
                 is,
@@ -564,7 +564,7 @@ impl RuleService {
         }
     }
 
-    fn validate_data(self, data: Option<&CallData>) -> Result<(), InvariantError> {
+    pub fn validate_data(self, data: Option<&CallData>) -> Result<(), InvariantError> {
         match (self, data) {
             (Self::LightTurnOn | Self::LightToggle, Some(CallData::Light(light))) => {
                 light.validate()
@@ -775,7 +775,7 @@ impl CompactDuration {
         parse_millis(&self.0).unwrap_or(0)
     }
 
-    fn require_positive(&self, field: &str) -> Result<(), InvariantError> {
+    pub fn require_positive(&self, field: &str) -> Result<(), InvariantError> {
         let ms = parse_millis(&self.0)?;
         if ms <= 0 {
             return Err(inv(format!(
@@ -786,12 +786,20 @@ impl CompactDuration {
         Ok(())
     }
 
-    fn require_nonzero(&self, field: &str) -> Result<(), InvariantError> {
+    pub fn require_nonzero(&self, field: &str) -> Result<(), InvariantError> {
         let ms = parse_millis(&self.0)?;
         if ms == 0 {
             return Err(inv(format!("{field} must not be zero (got {:?})", self.0)));
         }
         Ok(())
+    }
+}
+
+impl TryFrom<&str> for CompactDuration {
+    type Error = InvariantError;
+    fn try_from(text: &str) -> Result<Self, InvariantError> {
+        parse_millis(text)?;
+        Ok(Self(text.to_owned()))
     }
 }
 
@@ -1090,12 +1098,21 @@ impl JsonSchema for ExprString {
     }
 }
 
+impl TryFrom<&str> for ExprString {
+    type Error = InvariantError;
+    fn try_from(text: &str) -> Result<Self, InvariantError> {
+        let expr = Self(text.to_owned());
+        expr.validate()?;
+        Ok(expr)
+    }
+}
+
 impl ExprString {
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    fn validate(&self) -> Result<(), InvariantError> {
+    pub fn validate(&self) -> Result<(), InvariantError> {
         if self.0.is_empty() {
             return Err(inv("an expression must not be empty"));
         }
@@ -1140,7 +1157,7 @@ impl StopReason {
         &self.0
     }
 
-    fn validate(&self) -> Result<(), InvariantError> {
+    pub fn validate(&self) -> Result<(), InvariantError> {
         if self.0.is_empty() {
             return Err(inv("stop reason must not be empty"));
         }
