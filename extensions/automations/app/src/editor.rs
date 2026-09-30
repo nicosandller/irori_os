@@ -181,6 +181,10 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
     });
     on_cleanup(move || alive.set_value(false));
 
+    // The side columns fold away to give the canvas the room; remembered on this browser.
+    let left_open = RwSignal::new(remembered(LEFT_KEY));
+    let right_open = RwSignal::new(remembered(RIGHT_KEY));
+
     let save = move || {
         let Some(mut flow) = ed.draft.get_untracked() else {
             return;
@@ -281,7 +285,7 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                 <p><button class="link" on:click=move |_| go(Route::List)>"Back to all flows"</button></p>
             </section>
         })}
-        {move || loaded.get().then(|| view! {
+        {move || loaded.get().then(move || view! {
             <div class="editor">
                 <header class="bar">
                     <button class="btn small" on:click=move |_| go(Route::List) title="All flows">"←"</button>
@@ -301,14 +305,24 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                     {status}
                     <span class="grow"></span>
                     {move || ed.message.get().map(|m| view! { <span class="muted" style="font-size:.85rem">{m}</span> })}
-                    <button class="btn" on:click=move |_| ed.tab.set(Tab::Test)>"Test"</button>
+                    <button class="btn" on:click=move |_| { ed.tab.set(Tab::Test); if !right_open.get_untracked() { flip(right_open, RIGHT_KEY); } }>"Test"</button>
                     <button class="btn primary" disabled=move || !ed.dirty() on:click=move |_| save()>
                         {move || if ed.dirty() { "Save" } else { "Saved" }}
                     </button>
                 </header>
-                <div class="body">
+                <div class="body" class:left-closed=move || !left_open.get() class:right-closed=move || !right_open.get()>
                     <Palette />
                     <canvas::Canvas />
+                    <button class="edge-toggle left" on:click=move |_| flip(left_open, LEFT_KEY)
+                        title=move || if left_open.get() { "Hide the steps" } else { "Show the steps" }
+                        aria-label=move || if left_open.get() { "Hide the steps" } else { "Show the steps" }>
+                        {move || if left_open.get() { "‹" } else { "›" }}
+                    </button>
+                    <button class="edge-toggle right" on:click=move |_| flip(right_open, RIGHT_KEY)
+                        title=move || if right_open.get() { "Hide the panel" } else { "Show the panel" }
+                        aria-label=move || if right_open.get() { "Hide the panel" } else { "Show the panel" }>
+                        {move || if right_open.get() { "›" } else { "‹" }}
+                    </button>
                     <aside class="panel">
                         <nav class="tabs">
                             {[(Tab::Flow, "Edit"), (Tab::Runs, "Runs"), (Tab::Test, "Test"), (Tab::Why, "Why?"), (Tab::Versions, "Versions")]
@@ -412,4 +426,37 @@ fn Palette() -> impl IntoView {
             }).collect_view()}
         </nav>
     }
+}
+
+thread_local! {
+    /// Which side columns are open, kept while the page is: going from one flow to another
+    /// leaves them as they were. (The page's sandbox has no storage to keep them longer.)
+    static OPEN: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((true, true)) };
+}
+
+const LEFT_KEY: usize = 0;
+const RIGHT_KEY: usize = 1;
+
+/// Whether a side column is open.
+fn remembered(side: usize) -> bool {
+    OPEN.with(|open| {
+        if side == LEFT_KEY {
+            open.get().0
+        } else {
+            open.get().1
+        }
+    })
+}
+
+fn flip(open: RwSignal<bool>, side: usize) {
+    let now = !open.get_untracked();
+    open.set(now);
+    OPEN.with(|kept| {
+        let (left, right) = kept.get();
+        kept.set(if side == LEFT_KEY {
+            (now, right)
+        } else {
+            (left, now)
+        });
+    });
 }

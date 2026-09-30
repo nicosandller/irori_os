@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use crate::canvas::remove_node;
 use crate::checks::{Checks, ChecksForm, TextValue};
 use crate::editor::{Editing, Selected};
-use crate::widgets::{Choice, Combo, Toggle};
+use crate::widgets::{Choice, Combo};
 use crate::{Home, model};
 
 /// Rewrites the node's JSON with `f`, and keeps it if it's still a node. `Err` says why not.
@@ -117,15 +117,6 @@ pub fn FlowForm() -> impl IntoView {
             <input type="number" min="1" max="32" prop:value=move || mode_max().to_string()
                 on:change=move |e| set_mode(mode_kind(), event_target_value(&e).parse().unwrap_or(4)) />
         })}
-        <label>"Enabled"</label>
-        <div class="row">
-            <Toggle
-                on=Signal::derive(move || flow().is_some_and(|f| f.enabled))
-                set=Callback::new(move |on: bool| ed.edit(|flow| flow.enabled = on))
-                label="Enabled"
-            />
-            <span class="muted" style="font-size:.85rem">"Off keeps the flow and its history; nothing runs."</span>
-        </div>
         <h2 style="margin-top:1.2rem">"Checked against your home"</h2>
         {move || {
             let problems = ed.problems.get();

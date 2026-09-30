@@ -191,6 +191,42 @@ impl Clause {
         }
     }
 
+    /// Whether this check holds right now, or `None` if the thing can't be read (unavailable,
+    /// unknown, not there). Reads the home's states, so a view using it follows them.
+    pub fn holds_now(&self, home: &Home) -> Option<bool> {
+        let id = self.entity.parse::<EntityId>().ok()?;
+        home.states.with(|states| {
+            let state = states.get(&id)?;
+            if state.availability != irori_types::Availability::Available {
+                return None;
+            }
+            let value = irori_rules_value(state.state.as_ref()?);
+            match (&self.test, value) {
+                (Test::Flag(on), Value::Bool(now)) => Some(*on == now),
+                (Test::Text { equal, value }, Value::String(now)) => {
+                    Some((value == &now) == *equal)
+                }
+                (Test::Num { op, value }, Value::Number(now)) => {
+                    let now = now.as_f64()?;
+                    Some(match *op {
+                        "<" => now < *value,
+                        "<=" => now <= *value,
+                        "==" => (now - value).abs() < f64::EPSILON,
+                        "!=" => (now - value).abs() >= f64::EPSILON,
+                        ">=" => now >= *value,
+                        _ => now > *value,
+                    })
+                }
+                _ => None,
+            }
+        })
+    }
+
+    /// The check as a line on its node: "Occupancy detected".
+    pub fn line(&self, home: &Home) -> String {
+        self.words(home)
+    }
+
     fn words(&self, home: &Home) -> String {
         let id = self.entity.parse::<EntityId>().ok();
         let name = id
@@ -593,5 +629,19 @@ mod tests {
         ] {
             assert_eq!(Checks::from_condition(&condition), None, "{condition}");
         }
+    }
+}
+
+/// A state's plain value, the way checks compare it: `true`, `21.5`, `"paused"`.
+fn irori_rules_value(state: &irori_types::State) -> Value {
+    use irori_types::{SensorValue, State};
+    match state {
+        State::Light(light) => json!(light.on),
+        State::Switch(switch) => json!(switch.on),
+        State::BinarySensor(sensor) => json!(sensor.on),
+        State::Sensor(sensor) => match &sensor.value {
+            SensorValue::Number(n) => json!(n),
+            SensorValue::Text(text) => json!(text),
+        },
     }
 }

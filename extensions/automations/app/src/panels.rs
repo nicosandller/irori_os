@@ -13,7 +13,6 @@ use leptos::task::spawn_local;
 use serde::{Deserialize, Serialize};
 
 use crate::editor::{Editing, Selected, Tab, View};
-use crate::widgets::{Choice, Combo};
 use crate::{Home, api, model, time};
 
 /// Shows `record` on the canvas, drawn on the definition it ran: `flow` if given (a test of a
@@ -511,76 +510,97 @@ pub fn Test() -> impl IntoView {
     }
 }
 
-/// The values a dry run pretends, each on an entity this flow uses.
+/// What a dry run pretends: every device the run from the chosen trigger looks at, listed
+/// at once, each with a value to set — or left as it is now.
 #[component]
 fn PretendList(settings: RwSignal<TestSettings>) -> impl IntoView {
     let ed = expect_context::<Editing>();
     let home = expect_context::<Home>();
-    let choices = Signal::derive(move || {
-        let used = ed
-            .draft
-            .with(|d| d.as_ref().map(model::entities_used).unwrap_or_default());
-        home.entities.with(|entities| {
-            entities
-                .iter()
-                .filter(|e| used.contains(&e.id))
-                .map(|e| {
-                    let now = home
-                        .states
-                        .with(|states| states.get(&e.id).map(|s| model::state_words(s, &home)))
-                        .map(|now| format!(" · {now}"))
-                        .unwrap_or_default();
-                    Choice::new(e.id.to_string(), e.name.to_string())
-                        .detail(format!("{}{now}", e.id))
-                })
-                .collect::<Vec<_>>()
+    // The trigger picked, or the first one.
+    let trigger = Memo::new(move |_| {
+        let picked = settings.with(|s| s.trigger.clone());
+        ed.draft.with(|d| {
+            let flow = d.as_ref()?;
+            picked.filter(|id| flow.nodes.contains_key(id)).or_else(|| {
+                flow.nodes
+                    .iter()
+                    .find(|(_, n)| n.is_trigger())
+                    .map(|(id, _)| id.clone())
+            })
+        })
+    });
+    let entities = Memo::new(move |_| {
+        let Some(trigger) = trigger.get() else {
+            return Vec::new();
+        };
+        ed.draft.with(|d| {
+            d.as_ref()
+                .map(|f| model::entities_after(f, &trigger))
+                .unwrap_or_default()
         })
     });
     view! {
         <label>"Pretend"</label>
         {move || {
-            let rows = settings.with(|s| s.pretend.clone());
-            if rows.is_empty() {
-                return view! { <p class="muted" style="font-size:.85rem;margin:.2rem 0">"Everything as it is now."</p> }.into_any();
+            let list = entities.get();
+            if list.is_empty() {
+                return view! { <p class="muted" style="font-size:.85rem;margin:.2rem 0">"Nothing after this trigger reads a device."</p> }.into_any();
             }
-            rows.into_iter().enumerate().map(|(i, row)| {
-                let entity = row.entity.clone();
-                view! {
-                    <div class="pretend">
-                        <div class="row">
-                            <div class="grow">
-                                <Combo
-                                    choices=choices
-                                    value=Signal::stored(row.entity.clone())
-                                    placeholder="One of this flow's devices…"
-                                    pick=Callback::new(move |id: String| settings.update(|s| {
-                                        if let Some(row) = s.pretend.get_mut(i) {
-                                            row.entity = id;
-                                            row.value = serde_json::Value::Null;
-                                        }
-                                    }))
-                                />
-                            </div>
-                            <button class="btn small" title="Don't pretend this" on:click=move |_| settings.update(|s| {
-                                if i < s.pretend.len() { s.pretend.remove(i); }
-                            })>"×"</button>
-                        </div>
-                        {(!entity.is_empty()).then(|| view! {
-                            <div class="pretend-value">
-                                <span class="muted">"is"</span>
-                                <div class="grow">
-                                    <crate::inspector::ValueInput entity=entity value=row.value.clone() allow_any=false
-                                        pick=move |value| settings.update(|s| {
-                                            if let Some(row) = s.pretend.get_mut(i) { row.value = value; }
-                                        }) />
+            // Keyed by the trigger, so picking another rolls the list down afresh.
+            let key = trigger.get().map(|t| t.to_string()).unwrap_or_default();
+            view! {
+                <div class="pretend-list" data-trigger=key>
+                    {list.into_iter().enumerate().map(|(i, entity)| {
+                        let id = entity.to_string();
+                        let name = home.name(&entity);
+                        let now = home.states.with_untracked(|states| states.get(&entity).map(|s| model::state_words(s, &home)));
+                        // Only the value part follows what's pretended, so the row doesn't roll in again.
+                        let value = {
+                            let id = id.clone();
+                            Memo::new(move |_| settings.with(|s| {
+                                s.pretend.iter().find(|p| p.entity == id).map(|p| p.value.clone()).unwrap_or_default()
+                            }))
+                        };
+                        view! {
+                            <div class="pretend-row" class:set=move || !value.get().is_null() style=format!("--i:{i}")>
+                                <div class="pretend-name">
+                                    <span>{name}</span>
+                                    <span class="muted">{now.map(|n| format!("now {n}")).unwrap_or_default()}</span>
                                 </div>
+                                {move || {
+                                    let (for_pick, for_clear) = (id.clone(), id.clone());
+                                    let current = value.get();
+                                    let set = !current.is_null();
+                                    view! {
+                                        <div class="pretend-value">
+                                            <div class="grow">
+                                                <crate::inspector::ValueInput entity=id.clone() value=current allow_any=false
+                                                    pick=move |value: serde_json::Value| {
+                                                        let entity = for_pick.clone();
+                                                        settings.update(|s| {
+                                                            s.pretend.retain(|p| p.entity != entity);
+                                                            if !value.is_null() {
+                                                                s.pretend.push(Pretend { entity, value });
+                                                            }
+                                                        });
+                                                    } />
+                                            </div>
+                                            {set.then(|| view! {
+                                                <button class="btn small" title="As it is now" on:click=move |_| {
+                                                    let entity = for_clear.clone();
+                                                    settings.update(|s| s.pretend.retain(|p| p.entity != entity));
+                                                }>"×"</button>
+                                            })}
+                                        </div>
+                                    }
+                                }}
                             </div>
-                        })}
-                    </div>
-                }
-            }).collect_view().into_any()
+                        }
+                    }).collect_view()}
+                </div>
+            }.into_any()
         }}
-        <button class="btn small" on:click=move |_| settings.update(|s| s.pretend.push(Pretend::default()))>"Pretend a value…"</button>
+        <p class="muted" style="font-size:.78rem;margin:.3rem 0 0">"Leave a device empty to use its value now."</p>
     }
 }
 

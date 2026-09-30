@@ -19,9 +19,28 @@ pub const HEAD_H: f64 = 30.0;
 pub const TEXT_H: f64 = 44.0;
 pub const PORT_H: f64 = 22.0;
 
+/// A check's line, on a condition with several.
+pub const CHECK_H: f64 = 20.0;
+
 /// How tall a node is: its head, its sentence, and a row per output port.
 pub fn height(node: &Node) -> f64 {
-    HEAD_H + TEXT_H + PORT_H * node.ports().len() as f64
+    HEAD_H + text_height(node) + PORT_H * node.ports().len() as f64
+}
+
+/// A condition's checks, when it has several: each gets its own line on the node.
+pub fn checks_of(node: &Node) -> Option<crate::checks::Checks> {
+    let Node::Gate { condition } = node else {
+        return None;
+    };
+    let value = serde_json::to_value(condition).ok()?;
+    crate::checks::Checks::from_condition(&value).filter(|checks| checks.clauses.len() > 1)
+}
+
+/// How tall the part between a node's head and its ports is: its sentence, or its checks.
+pub fn text_height(node: &Node) -> f64 {
+    checks_of(node).map_or(TEXT_H, |checks| {
+        (10.0 + CHECK_H * checks.clauses.len() as f64).max(TEXT_H)
+    })
 }
 
 /// Where a wire leaves: the port's circle on the node's right edge.
@@ -29,7 +48,7 @@ pub fn out_anchor(at: [f64; 2], node: &Node, port: Port) -> [f64; 2] {
     let index = node.ports().iter().position(|p| *p == port).unwrap_or(0) as f64;
     [
         at[0] + NODE_W,
-        at[1] + HEAD_H + TEXT_H + index * PORT_H + PORT_H / 2.0,
+        at[1] + HEAD_H + text_height(node) + index * PORT_H + PORT_H / 2.0,
     ]
 }
 
@@ -458,6 +477,48 @@ pub fn entities_used(flow: &Flow) -> BTreeSet<EntityId> {
             walk(&value, &mut found);
         }
     }
+    found
+}
+
+/// The devices a run from `trigger` looks at on its way: what the nodes after it read — their
+/// checks, waits and expressions — but not what they only switch. The ones worth pretending
+/// about in a dry run.
+pub fn entities_after(flow: &Flow, trigger: &NodeId) -> Vec<EntityId> {
+    let mut reached = BTreeSet::from([trigger.clone()]);
+    let mut queue = VecDeque::from([trigger.clone()]);
+    while let Some(id) = queue.pop_front() {
+        for wire in flow.wires.iter().filter(|w| w.from.node == id) {
+            if reached.insert(wire.to.clone()) {
+                queue.push_back(wire.to.clone());
+            }
+        }
+    }
+    let mut reads = flow.clone();
+    reads.nodes.retain(|id, node| {
+        reached.contains(id) && id != trigger && !matches!(node, Node::Call { .. })
+    });
+    let mut worked: BTreeSet<EntityId> = BTreeSet::new();
+    for (id, node) in &flow.nodes {
+        // A call's own light is switched, not read; what its worked-out settings read is.
+        if let Node::Call {
+            data: Some(data), ..
+        } = node
+            && reached.contains(id)
+        {
+            for (_, expr) in data.exprs() {
+                worked.extend(
+                    expr.as_str()
+                        .split(['\'', '"'])
+                        .skip(1)
+                        .step_by(2)
+                        .filter_map(|literal| literal.parse().ok()),
+                );
+            }
+        }
+    }
+    let mut found: Vec<EntityId> = entities_used(&reads).into_iter().chain(worked).collect();
+    found.sort_by_key(|id| id.to_string());
+    found.dedup();
     found
 }
 

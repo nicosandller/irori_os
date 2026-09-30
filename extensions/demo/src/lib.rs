@@ -257,7 +257,7 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
             _ = readings.tick() => {
                 let secs = tick * config.sensor_interval_secs;
                 let hour = (secs % DAY_SECS) as f64 / DAY_SECS as f64 * 24.0;
-                report_sensors(&ctx, hour, plug_on)?;
+                report_sensors(&ctx, hour, secs, plug_on)?;
                 tick += 1;
             }
         }
@@ -317,8 +317,13 @@ fn flag(unique_id: &str, on: bool) -> Result<StateReport, ProtocolError> {
     )
 }
 
-/// Every reading, `hour` hours into the day.
-fn report_sensors(ctx: &ProtocolContext, hour: f64, plug_on: bool) -> Result<(), ProtocolError> {
+/// Every reading, `hour` hours into the day and `secs` seconds since the demo started.
+fn report_sensors(
+    ctx: &ProtocolContext,
+    hour: f64,
+    secs: u64,
+    plug_on: bool,
+) -> Result<(), ProtocolError> {
     let charge = battery(hour);
     ctx.report_state(flag(SENSOR_OCCUPANCY, hallway(hour))?);
     ctx.report_state(number(SENSOR_TEMPERATURE, temperature(hour))?);
@@ -354,19 +359,22 @@ fn report_sensors(ctx: &ProtocolContext, hour: f64, plug_on: bool) -> Result<(),
     ctx.report_state(report(
         TV_STATE,
         Some(State::Sensor(SensorState {
-            value: SensorValue::Text(tv(hour).into()),
+            value: SensorValue::Text(tv(secs).into()),
         })),
         None,
     )?);
-    ctx.report_state(flag(TV_AREA_OCCUPANCY, watching(hour))?);
+    ctx.report_state(flag(TV_AREA_OCCUPANCY, watching(secs))?);
     Ok(())
 }
 
-/// Someone on the sofa by the TV: breakfast news, and the evening, a little before the TV goes
-/// on until a little after it's off.
-fn watching(hour: f64) -> bool {
-    during(hour, &[(6.8, 8.1), (18.2, 23.8)])
+/// Someone on the sofa by the TV, then not, three and a half minutes each: slower than the
+/// day, so a trigger waiting for the sofa to be empty for 3 minutes gets to fire.
+fn watching(secs: u64) -> bool {
+    (secs / SOFA_SECS).is_multiple_of(2)
 }
+
+/// How long the sofa stays taken, and then empty.
+const SOFA_SECS: u64 = 210;
 
 /// Whether `hour` falls in one of `spans`, each from one hour to (not including) another.
 fn during(hour: f64, spans: &[(f64, f64)]) -> bool {
@@ -488,18 +496,15 @@ fn open(contact: &str, hour: f64) -> bool {
     }
 }
 
-/// The TV: the news over breakfast, an evening of shows with a pause, off at night.
-fn tv(hour: f64) -> &'static str {
-    match hour {
-        h if (7.0..7.9).contains(&h) => "playing",
-        h if (18.5..19.3).contains(&h) => "idle",
-        h if (19.3..20.6).contains(&h) => "playing",
-        h if (20.6..21.4).contains(&h) => "paused",
-        h if (21.4..22.8).contains(&h) => "playing",
-        h if (22.8..23.6).contains(&h) => "idle",
-        _ => "off",
-    }
+/// The TV, a state a minute rather than following the day, so a trigger waiting for it to play
+/// for 20 seconds gets to fire: a show, a pause, more of it, the menu, then off.
+fn tv(secs: u64) -> &'static str {
+    const SHOW: [&str; 5] = ["playing", "paused", "playing", "idle", "off"];
+    SHOW[usize::try_from(secs / TV_SECS).unwrap_or(0) % SHOW.len()]
 }
+
+/// How long the TV stays in each state.
+const TV_SECS: u64 = 60;
 
 fn round2(n: f64) -> f64 {
     (n * 100.0).round() / 100.0
@@ -922,16 +927,12 @@ mod tests {
             let opened = count(&|h| open(contact, h));
             assert!(opened > 0 && opened < hours.len() / 3, "{contact}");
         }
+        // The TV changes once a minute, through every state; the sofa every 3.5 minutes.
         for state in ["off", "idle", "playing", "paused"] {
-            assert!(hours.iter().any(|h| tv(*h) == state), "{state}");
+            assert!((0..300).any(|s| tv(s) == state), "{state}");
         }
-        // Whenever something's on the TV, someone's on the sofa to see it.
-        for hour in &hours {
-            if tv(*hour) != "off" {
-                assert!(watching(*hour), "{hour}");
-            }
-        }
-        assert!(count(&watching) < hours.len() / 2);
+        assert_eq!((tv(0), tv(59), tv(60)), ("playing", "playing", "paused"));
+        assert!(watching(0) && watching(209) && !watching(210) && watching(420));
         let co2s: Vec<f64> = hours.iter().map(|h| co2(*h)).collect();
         assert!(co2s.iter().any(|c| *c > 900.0) && co2s.iter().any(|c| *c < 500.0));
         assert!(hours.iter().all(|h| (20.0..=90.0).contains(&humidity(*h))));

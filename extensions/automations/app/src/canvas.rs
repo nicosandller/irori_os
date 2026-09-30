@@ -37,6 +37,11 @@ enum Drag {
     Wire {
         from: PortRef,
     },
+    /// A branch, or a part of one, moved by its grip: every node in it, from where it was.
+    Group {
+        nodes: Vec<(NodeId, [f64; 2])>,
+        from: [f64; 2],
+    },
 }
 
 /// How a node looked in the run being shown.
@@ -143,13 +148,48 @@ pub fn Canvas() -> impl IntoView {
         let Some(target) = event.target() else {
             return;
         };
+        let client = [f64::from(event.client_x()), f64::from(event.client_y())];
+        let editing = matches!(ed.view.get_untracked(), View::Edit | View::Diff { .. });
+        // A branch's grip picks up every node in it.
+        if let Some(grip) = closest(&target, "[data-group]") {
+            let (Some(which), Some(f)) = (grip.get_attribute("data-group"), flow.get_untracked())
+            else {
+                return;
+            };
+            if !editing {
+                return;
+            }
+            let members = model::branches(&f).into_iter().find_map(|branch| {
+                if which == format!("branch:{}", branch.key) {
+                    return Some(branch.nodes);
+                }
+                branch
+                    .parts
+                    .into_iter()
+                    .find(|part| which == format!("part:{}", part.key))
+                    .map(|part| part.nodes)
+            });
+            let Some(members) = members else { return };
+            let at = positions.get_untracked();
+            let nodes = members
+                .into_iter()
+                .filter_map(|id| at.get(&id).map(|p| (id.clone(), *p)))
+                .collect();
+            drag.set_value(Some(Drag::Group {
+                nodes,
+                from: client,
+            }));
+            if let Some(el) = root.get_untracked() {
+                let _ = el.set_pointer_capture(event.pointer_id());
+            }
+            event.prevent_default();
+            return;
+        }
         // An open node's form is for typing and picking, not for dragging the canvas, and the
         // canvas's own buttons are just buttons.
         if closest(&target, "[data-sheet], button, .banner, .group-label").is_some() {
             return;
         }
-        let client = [f64::from(event.client_x()), f64::from(event.client_y())];
-        let editing = matches!(ed.view.get_untracked(), View::Edit | View::Diff { .. });
         if let Some(port) = closest(&target, "[data-port]") {
             if !editing {
                 return;
@@ -248,6 +288,19 @@ pub fn Canvas() -> impl IntoView {
                 if let Some((start, _)) = loose.get_untracked() {
                     loose.set(Some((start, world(client))));
                 }
+            }
+            Some(Drag::Group { nodes, from }) => {
+                let z = zoom.get_untracked();
+                // Moved together, on the same grid, so the branch keeps its shape.
+                let dx = ((client[0] - from[0]) / z / 8.0).round() * 8.0;
+                let dy = ((client[1] - from[1]) / z / 8.0).round() * 8.0;
+                ed.draft.update(|draft| {
+                    if let Some(flow) = draft {
+                        for (id, at) in &nodes {
+                            flow.layout.insert(id.clone(), [at[0] + dx, at[1] + dy]);
+                        }
+                    }
+                });
             }
             None => {}
         }
@@ -532,6 +585,7 @@ fn Groups(flow: Memo<Option<Flow>>, positions: Memo<BTreeMap<NodeId, [f64; 2]>>)
     const HUES: [u16; 6] = [24, 205, 145, 275, 340, 55];
 
     let label = move |key: NodeId, name: String, class: &'static str| {
+        let grip = format!("{class}:{key}");
         let editing = {
             let key = key.clone();
             move || renaming.get().as_ref() == Some(&key)
@@ -553,8 +607,10 @@ fn Groups(flow: Memo<Option<Flow>>, positions: Memo<BTreeMap<NodeId, [f64; 2]>>)
         let save_on_key = save.clone();
         let shown = name.clone();
         view! {
-            <span class=format!("group-label {class}") title="Double-click to rename"
-                on:dblclick=move |e| { e.stop_propagation(); renaming.set(Some(key_for_edit.clone())); }>
+            <span class=format!("group-label {class}")>
+                <span class="group-grip" data-group=grip title="Drag to move everything in it">"⠿"</span>
+                <span class="group-name" title="Double-click to rename"
+                    on:dblclick=move |e| { e.stop_propagation(); renaming.set(Some(key_for_edit.clone())); }>
                 {move || if editing() {
                     let save = save.clone();
                     let save_on_key = save_on_key.clone();
@@ -570,6 +626,7 @@ fn Groups(flow: Memo<Option<Flow>>, positions: Memo<BTreeMap<NodeId, [f64; 2]>>)
                 } else {
                     view! { <span>{shown.clone()}</span> }.into_any()
                 }}
+                </span>
             </span>
         }
     };
@@ -760,6 +817,10 @@ fn NodeCard(
     };
 
     let live_value = move || {
+        // A condition with several checks shows each one's state on its own line instead.
+        if node.with(|n| n.as_ref().and_then(model::checks_of).is_some()) {
+            return None;
+        }
         let entity = node.with(|n| n.as_ref().and_then(model::primary_entity))?;
         home.states
             .with(|states| states.get(&entity).map(|s| model::state_words(s, &home)))
@@ -830,9 +891,35 @@ fn NodeCard(
                     <div class="head">
                         <span class="kind-bar" style=format!("background:{colour}")></span>
                         {label}
-                        <span class="nid">{id.to_string()}</span>
+                        <span class="nid" title=id.to_string()>{id.to_string()}</span>
                     </div>
-                    <div class="text" title=text.clone()>{text.clone()}</div>
+                    {match model::checks_of(&node) {
+                        // Several checks: a line each, with whether it holds right now.
+                        Some(checks) => {
+                            let joiner = if checks.any { "or" } else { "and" };
+                            let height = model::text_height(&node);
+                            view! {
+                                <div class="text checks" title=text.clone() style=format!("height:{height}px")>
+                                    {checks.clauses.into_iter().enumerate().map(|(i, clause)| {
+                                        let line = clause.line(&home);
+                                        let dot = move || match clause.holds_now(&home) {
+                                            Some(true) => "check-dot holds",
+                                            Some(false) => "check-dot fails",
+                                            None => "check-dot unknown",
+                                        };
+                                        view! {
+                                            <div class="check-line">
+                                                <span class=dot></span>
+                                                {(i > 0).then(|| view! { <span class="check-join">{joiner}</span> })}
+                                                <span class="check-words">{line}</span>
+                                            </div>
+                                        }
+                                    }).collect_view()}
+                                </div>
+                            }.into_any()
+                        }
+                        None => view! { <div class="text" title=text.clone()>{text.clone()}</div> }.into_any(),
+                    }}
                     {node.ports().into_iter().map(|port| {
                         let name = model::port_label(&node, port);
                         let node_for_port = id.to_string();
