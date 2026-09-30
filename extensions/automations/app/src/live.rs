@@ -21,6 +21,9 @@ use crate::editor::{Editing, View};
 
 /// A beat: from one step to the next.
 const BEAT: Duration = Duration::from_millis(520);
+/// How long a step takes to travel along its wire; `.wire.glowing` and `.wire.spark` in
+/// index.html take the same time.
+const TRAVEL: Duration = Duration::from_millis(450);
 /// How long a run's lights stay on once it's played.
 const LINGER: Duration = Duration::from_millis(2600);
 /// Most runs waiting to be played; more, and the oldest are skipped to keep up.
@@ -204,7 +207,7 @@ async fn play(
                 let _ = show.flowing.try_update(|f| {
                     f.insert(via.clone(), n);
                 });
-                gloo_timers::future::sleep(BEAT / 2).await;
+                gloo_timers::future::sleep(TRAVEL).await;
             }
             let (mark, note) = mark_of(step, &run);
             let _ = show.lit.try_update(|lit| {

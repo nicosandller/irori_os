@@ -494,17 +494,20 @@ pub fn Canvas() -> impl IntoView {
                     >
                         {
                             let wire = lit.0;
+                            let d = Memo::new(move |_| {
+                                let at = positions.get();
+                                flow.with(|flow| {
+                                    let from = flow.as_ref()?.nodes.get(&wire.from.node)?;
+                                    let a = model::out_anchor(*at.get(&wire.from.node)?, from, wire.from.port);
+                                    let b = model::in_anchor(*at.get(&wire.to)?);
+                                    Some(model::curve(a, b))
+                                })
+                                .unwrap_or_default()
+                            });
+                            // The glow, and a dot riding its head from one node to the next.
                             view! {
-                                <path class="wire glowing" pathLength="1" d=move || {
-                                    let at = positions.get();
-                                    flow.with(|flow| {
-                                        let from = flow.as_ref()?.nodes.get(&wire.from.node)?;
-                                        let a = model::out_anchor(*at.get(&wire.from.node)?, from, wire.from.port);
-                                        let b = model::in_anchor(*at.get(&wire.to)?);
-                                        Some(model::curve(a, b))
-                                    })
-                                    .unwrap_or_default()
-                                }></path>
+                                <path class="wire glowing" pathLength="1" d=d></path>
+                                <path class="wire spark" pathLength="1" d=d></path>
                             }
                         }
                     </For>
