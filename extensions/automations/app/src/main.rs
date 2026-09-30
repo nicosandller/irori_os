@@ -14,6 +14,7 @@ mod list;
 mod model;
 mod panels;
 mod time;
+mod triggers;
 mod widgets;
 
 use std::cell::OnceCell;

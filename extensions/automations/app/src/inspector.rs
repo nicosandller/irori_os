@@ -222,6 +222,9 @@ fn JsonEditor(
 pub fn EntityPicker(
     value: String,
     kinds: Vec<EntityKind>,
+    /// More to pick from than entities, listed first ("Irori starts up").
+    #[prop(optional)]
+    extra: Vec<Choice>,
     pick: impl Fn(String) + Send + Sync + 'static,
 ) -> impl IntoView {
     let home = expect_context::<Home>();
@@ -243,6 +246,7 @@ pub fn EntityPicker(
                 .collect()
         });
         choices.sort_by_key(|choice| choice.label.to_lowercase());
+        choices.splice(0..0, extra.iter().cloned());
         if !current.is_empty() && !choices.iter().any(|c| c.value == current) {
             choices.insert(
                 0,
@@ -417,48 +421,15 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
         let edit = edit.clone();
         match node {
             Node::Trigger { .. } => {
-                let kind = get(&v, &["trigger", "type"]).as_str().unwrap_or("state").to_owned();
-                let entity = get(&v, &["trigger", "entity"]).as_str().unwrap_or_default().to_owned();
-                let to = get(&v, &["trigger", "to"]).clone();
-                let hold = get(&v, &["trigger", "for"]).as_str().unwrap_or_default().to_owned();
-                let edit2 = edit.clone();
-                let f1 = field.clone();
-                let f2 = field.clone();
-                let f3 = field.clone();
-                let home2 = home;
+                let trigger = get(&v, &["trigger"]).clone();
+                let edit = edit.clone();
                 view! {
-                    <label>"Starts"</label>
-                    <select on:change=move |e| {
-                        let kind = event_target_value(&e);
-                        let entity = model::TEMPLATES[0];
-                        let made = (entity.make)(&home2);
-                        edit2(Box::new(move |v: &mut Value| {
-                            v["trigger"] = if kind == "startup" { json!({ "type": "startup" }) } else { made["trigger"].clone() };
-                        }));
-                    }>
-                        <option value="state" selected=kind == "state">"when something changes"</option>
-                        <option value="startup" selected=kind == "startup">"when Irori starts"</option>
-                    </select>
-                    {(kind == "state").then(move || {
-                        let entity_for_value = entity.clone();
-                        view! {
-                            <label>"What"</label>
-                            <EntityPicker value=entity kinds=WATCHABLE.to_vec()
-                                pick=move |id| f1(&["trigger", "entity"], json!(id)) />
-                            <label>"Changes to"</label>
-                            <ValueInput entity=entity_for_value value=to allow_any=true
-                                pick=move |value| f2(&["trigger", "to"], value) />
-                            <label>"And stays that way for (optional, like 5s or 2m)"</label>
-                            <input type="text" placeholder="no need" prop:value=hold
-                                on:change=move |e| {
-                                    let text = event_target_value(&e);
-                                    f3(&["trigger", "for"], if text.trim().is_empty() { Value::Null } else { json!(text.trim()) });
-                                } />
-                        }
-                    })}
-                    {(kind != "state" && kind != "startup").then(|| view! {
-                        <p class="muted">"This kind of trigger is edited as JSON below."</p>
-                    })}
+                    <crate::triggers::TriggerForm trigger=trigger
+                        edit=move |f: Edit| edit(Box::new(move |v: &mut Value| {
+                            let mut here = v["trigger"].clone();
+                            f(&mut here);
+                            v["trigger"] = here;
+                        })) />
                 }.into_any()
             }
             Node::Gate { .. } => view! {

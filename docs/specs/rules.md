@@ -199,8 +199,10 @@ Conditions (§6) are the level checks.
 |---|---|---|---|
 | `entity` | `EntityId` | yes | Must exist at semantic check; kind must match `from`/`to` |
 | `from` | bool, number, string, or `null` | no | Previous typed value. `null` is unknown |
-| `to` | same | no | New typed value |
-| `for` | duration | no | New value must **hold** this long while **available** |
+| `to` | same, or a list of 1–16 of them | no | New typed value; with a list, any one of them (`["paused", "idle", "off"]`) |
+| `above` | number | no | Numeric sensors only, not with `from`/`to`: fires when the reading goes above this from outside the range |
+| `below` | number | no | Likewise, below. With both, the range between them (`above` < `below`) |
+| `for` | duration | no | New value must **hold** this long while **available** (with a level: stay inside the range) |
 
 At least one of `from`, `to`, `for` may be omitted:
 
@@ -220,8 +222,13 @@ At least one of `from`, `to`, `for` may be omitted:
 | `sensor` (`value_type: text`) | `value` | string |
 
 A `to: true` on a light does not fire because brightness changed. A numeric sensor trigger
-without `from`/`to` fires on any new reading; inequalities belong in an expression (`num(…) < 30`),
-not on this node. Attributes are not a state-trigger field (they're untyped; use `attr()` in an
+without `from`/`to`/`above`/`below` fires on any new reading.
+
+**Levels.** `above`/`below` fire on the **crossing** into the range, like Home Assistant's
+`numeric_state`: from a reading outside it, or from not knowing the value. A reading already inside
+the range when the flow is armed doesn't fire, and neither does a new reading that moves about
+inside it. With `for`, the reading has to stay inside the range that long; moving inside the range
+keeps the timer going, and leaving the range cancels it (a `hold_reset` near-miss). Attributes are not a state-trigger field (they're untyped; use `attr()` in an
 expr condition if you must).
 
 **Availability.** A `state` trigger does **not** fire because the entity became unavailable or

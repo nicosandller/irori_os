@@ -21,8 +21,8 @@ pub use expr::{Compiled, ExprError, Reading, StateView, compile, eval_bool};
 pub use rule::{
     Action, AvailabilityWanted, CallData, ChooseOption, CivilTime, CompactDuration, Condition,
     Cron, EventDatum, EventName, ExprString, LightCallData, LimitedMode, Mode, NamedMode, OnError,
-    OnTimeout, Rule, RuleService, StopReason, SunEvent, Target, Trigger, TypedValue, WaitUntil,
-    Weekday,
+    OnTimeout, Rule, RuleService, StopReason, SunEvent, Target, Trigger, TypedValue, Values,
+    WaitUntil, Weekday,
 };
 #[cfg(feature = "engine")]
 pub use validate::{

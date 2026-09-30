@@ -132,16 +132,31 @@ fn walk_triggers_one(
 ) {
     match trigger {
         Trigger::State {
-            entity, from, to, ..
-        } => check_state_match(
-            here,
             entity,
-            from.as_ref(),
-            to.as_ref(),
-            None,
-            registry,
-            problems,
-        ),
+            from,
+            to,
+            above,
+            below,
+            ..
+        } => {
+            check_state_match(here, entity, from.as_ref(), None, None, registry, problems);
+            for value in to.iter().flat_map(crate::Values::iter) {
+                check_state_match(here, entity, None, Some(value), None, registry, problems);
+            }
+            if (above.is_some() || below.is_some())
+                && let Some(found) = registry.entity(entity)
+                && !matches!(&found.capabilities, Capabilities::Sensor(s)
+                    if s.value_type == SensorValueType::Number)
+            {
+                problems.push(problem(
+                    here,
+                    format!(
+                        "above and below are for a sensor with numbers, and {entity} is a {}",
+                        found.capabilities.kind()
+                    ),
+                ));
+            }
+        }
         Trigger::Time { .. } => {
             if !registry.has_timezone() {
                 problems.push(problem(

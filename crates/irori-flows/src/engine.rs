@@ -15,7 +15,7 @@ use irori_flow_types::trace::{
 };
 use irori_flow_types::{
     CallData, Condition, Flow, JoinMode, LimitedMode, Mode, NamedMode, Node, NodeId, Port,
-    RuleService, Trigger, TypedValue, WaitUntil, Wire,
+    RuleService, Trigger, TypedValue, Values, WaitUntil, Wire,
 };
 use irori_rules::eval::{self, Evaluator, Snapshot};
 use irori_types::{Availability, ContextId, EntityId, EntityState, RuleId, Timestamp};
@@ -564,11 +564,14 @@ impl Engine {
             entity,
             from,
             to,
+            above,
+            below,
             hold,
         } = trigger
         else {
             return;
         };
+        let level = (above.is_some() || below.is_some()).then_some((*above, *below));
         let read = to_read(eval::Read::of(entity, &self.states));
         let old_value = old
             .and_then(|state| state.state.as_ref())
@@ -597,7 +600,7 @@ impl Engine {
             return;
         }
         if old.is_some() && old_value == new_value {
-            if was_available && to.as_ref().is_some_and(|to| eval::matches(to, &new_value)) {
+            if was_available && to.as_ref().is_some_and(|to| any_matches(to, &new_value)) {
                 self.near_miss(
                     flow,
                     node,
@@ -614,15 +617,32 @@ impl Engine {
             }
             return;
         }
-        let from_ok = from
-            .as_ref()
-            .is_none_or(|from| eval::matches(from, &old_value));
-        let to_ok = to.as_ref().is_none_or(|to| eval::matches(to, &new_value));
         let note = format!(
             "{entity} went {} → {}",
             words(&old_value),
             words(&new_value)
         );
+        let (from_ok, to_ok) = match level {
+            // A level: it has to come into the range from outside it (or from not knowing).
+            // Moving about inside the range changes nothing, so a hold keeps going.
+            Some(range) => {
+                let inside = |value: &serde_json::Value| {
+                    value.as_f64().is_some_and(|n| {
+                        range.0.is_none_or(|above| n > above)
+                            && range.1.is_none_or(|below| n < below)
+                    })
+                };
+                if inside(&new_value) && inside(&old_value) && old.is_some() {
+                    return;
+                }
+                (!inside(&old_value) || old.is_none(), inside(&new_value))
+            }
+            None => (
+                from.as_ref()
+                    .is_none_or(|from| eval::matches(from, &old_value)),
+                to.as_ref().is_none_or(|to| any_matches(to, &new_value)),
+            ),
+        };
         if from_ok && to_ok {
             match hold {
                 Some(hold) => {
@@ -1749,6 +1769,11 @@ impl Engine {
             loaded.holds.clear();
         }
     }
+}
+
+/// Whether `value` is one of `wanted`.
+fn any_matches(wanted: &Values, value: &serde_json::Value) -> bool {
+    wanted.iter().any(|want| eval::matches(want, value))
 }
 
 fn trigger_entity(trigger: &Trigger) -> Option<&EntityId> {

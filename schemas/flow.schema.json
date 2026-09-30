@@ -768,6 +768,22 @@
         {
           "type": "object",
           "properties": {
+            "above": {
+              "description": "For a sensor with numbers: fires when its reading goes above this (and below\n`below`, if that's given too) from outside that range. Not with `from`/`to`.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "below": {
+              "description": "For a sensor with numbers: fires when its reading goes below this from outside the\nrange. Not with `from`/`to`.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
             "entity": {
               "$ref": "#/$defs/EntityId"
             },
@@ -792,9 +808,10 @@
               ]
             },
             "to": {
+              "description": "The value it changes to, or any one of several.",
               "anyOf": [
                 {
-                  "$ref": "#/$defs/TypedValue"
+                  "$ref": "#/$defs/Values"
                 },
                 {
                   "type": "null"
@@ -939,6 +956,23 @@
         },
         {
           "type": "null"
+        }
+      ]
+    },
+    "Values": {
+      "description": "A typed value, or a list of 1 to 16 of them: any one matches.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TypedValue"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TypedValue"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "uniqueItems": true
         }
       ]
     },

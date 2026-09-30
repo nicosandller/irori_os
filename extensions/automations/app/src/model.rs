@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use irori_flow_types::{
     Amount, Condition, Flow, JoinMode, Node, NodeId, Port, RuleService, Trigger, TypedValue,
-    WaitUntil,
+    Values, WaitUntil,
 };
 use irori_types::{
     BinarySensorClass, Capabilities, EntityId, EntityKind, EntityState, SensorValue, State,
@@ -111,9 +111,9 @@ pub fn family(node: &Node) -> &'static str {
 /// The node's head label.
 pub fn label(node: &Node) -> &'static str {
     match node {
-        Node::Trigger { .. } => "When",
+        Node::Trigger { .. } => "Trigger",
         Node::Gate { .. } => "Condition",
-        Node::Switch { .. } => "Choose",
+        Node::Switch { .. } => "Case switch",
         Node::Call { .. } => "Do",
         Node::Set { .. } => "Calculate",
         Node::Delay { .. } => "Delay",
@@ -187,6 +187,19 @@ fn value_words(value: &TypedValue, entity: &EntityId, home: &Home) -> String {
     }
 }
 
+/// Values as a person lists them: "“paused”, “idle” or “off”".
+fn one_of(values: &[TypedValue], entity: &EntityId, home: &Home) -> String {
+    let words: Vec<String> = values
+        .iter()
+        .map(|v| value_words(v, entity, home))
+        .collect();
+    match words.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
 /// A condition as a sentence.
 pub fn condition_words(condition: &Condition, home: &Home) -> String {
     if let Some(checks) = serde_json::to_value(condition)
@@ -237,37 +250,46 @@ pub fn sentence(node: &Node, home: &Home) -> String {
                 entity,
                 from,
                 to,
+                above,
+                below,
                 hold,
             } => {
                 let name = home.name(entity);
-                let mut text = match (from, to) {
-                    (None, Some(TypedValue::Bool(on))) if home.flag_class(entity).is_some() => {
+                let values: Vec<TypedValue> = to.iter().flat_map(Values::iter).cloned().collect();
+                let flag = home.flag_class(entity).is_some();
+                let mut text = match (above, below, from, values.as_slice()) {
+                    (Some(above), Some(below), ..) => {
+                        format!("{name} goes between {above} and {below}")
+                    }
+                    (None, Some(below), ..) => format!("{name} goes below {below}"),
+                    (Some(above), None, ..) => format!("{name} goes above {above}"),
+                    (_, _, None, [TypedValue::Bool(on)]) if flag => {
                         format!(
                             "{name} becomes {}",
                             value_words(&TypedValue::Bool(*on), entity, home)
                         )
                     }
-                    (None, Some(TypedValue::Bool(true))) => format!("{name} turns on"),
-                    (None, Some(TypedValue::Bool(false))) => format!("{name} turns off"),
-                    (None, Some(to)) => format!("{name} becomes {}", value_words(to, entity, home)),
-                    (Some(from), Some(to)) => {
-                        format!(
-                            "{name} goes {} → {}",
-                            value_words(from, entity, home),
-                            value_words(to, entity, home)
-                        )
+                    (_, _, None, [TypedValue::Bool(true)]) => format!("{name} turns on"),
+                    (_, _, None, [TypedValue::Bool(false)]) => format!("{name} turns off"),
+                    (_, _, None, []) => format!("{name} changes"),
+                    (_, _, None, values) => {
+                        format!("{name} becomes {}", one_of(values, entity, home))
                     }
-                    (Some(from), None) => {
+                    (_, _, Some(from), []) => {
                         format!("{name} stops being {}", value_words(from, entity, home))
                     }
-                    (None, None) => format!("{name} changes"),
+                    (_, _, Some(from), values) => format!(
+                        "{name} goes {} → {}",
+                        value_words(from, entity, home),
+                        one_of(values, entity, home)
+                    ),
                 };
                 if let Some(hold) = hold {
                     text.push_str(&format!(" for {}", hold.as_str()));
                 }
                 text
             }
-            Trigger::Startup {} => "Irori starts".into(),
+            Trigger::Startup {} => "Irori starts up".into(),
             Trigger::Time { at, cron, .. } => at
                 .as_ref()
                 .map(|at| format!("it's {}", at.as_str()))
@@ -528,19 +550,13 @@ fn first_number_sensor(home: &Home) -> String {
 
 pub const TEMPLATES: &[Template] = &[
     Template {
-        group: "Start",
+        group: "Triggers",
         label: "When something changes",
         base: "when",
         make: |home| {
             serde_json::json!({ "type": "trigger", "trigger": {
             "type": "state", "entity": pick(home, &[EntityKind::BinarySensor, EntityKind::Switch, EntityKind::Light]), "to": true } })
         },
-    },
-    Template {
-        group: "Start",
-        label: "When Irori starts",
-        base: "startup",
-        make: |_| serde_json::json!({ "type": "trigger", "trigger": { "type": "startup" } }),
     },
     Template {
         group: "Decide",
@@ -553,7 +569,7 @@ pub const TEMPLATES: &[Template] = &[
     },
     Template {
         group: "Decide",
-        label: "Choose one of…",
+        label: "Case switch",
         base: "choose",
         make: |home| {
             let sensor = first_number_sensor(home);

@@ -836,3 +836,105 @@ fn a_no_from_several_checks_says_which_one_and_reads_them_all() {
     assert!(note.ends_with("→ no"), "{note}");
     assert_eq!(gate.reads.len(), 3, "every check's reading is kept");
 }
+
+/// A light that comes on when the hall gets dark and stays dark for 30s.
+fn got_dark() -> Flow {
+    flow(serde_json::json!({
+        "id": "got_dark", "name": "Got dark",
+        "nodes": {
+            "dark": { "type": "trigger", "trigger": { "type": "state", "entity": LUX, "below": 30, "for": "30s" } },
+            "on": { "type": "call", "service": "light.turn_on", "entity": LIGHT }
+        },
+        "wires": [["dark", "on"]]
+    }))
+}
+
+#[test]
+fn a_level_trigger_fires_once_it_has_held_below_and_not_while_it_wobbles() {
+    assert!(validate::check(&got_dark(), &registry()).is_empty());
+    let mut engine = engine_with(got_dark());
+    change(&mut engine, lux(300.0, 1));
+    // Down below 30, then about inside the range: the hold keeps going.
+    change(&mut engine, lux(25.0, 10));
+    change(&mut engine, lux(22.0, 20));
+    change(&mut engine, lux(28.0, 30));
+    let (calls, _, misses) = effects(&mut engine, at(30));
+    assert!(calls.is_empty(), "30s haven't passed yet");
+    assert!(misses.is_empty(), "{misses:?}");
+    engine.advance(at(40));
+    let (calls, done, _) = effects(&mut engine, at(40));
+    assert_eq!(calls, [(id(LIGHT), "light.turn_on".to_owned())]);
+    assert_eq!(done.len(), 1);
+    // Already below: another dark reading isn't another crossing.
+    change(&mut engine, lux(10.0, 50));
+    engine.advance(at(90));
+    let (calls, _, _) = effects(&mut engine, at(90));
+    assert!(calls.is_empty());
+}
+
+#[test]
+fn a_level_trigger_that_goes_back_up_before_its_hold_is_a_near_miss() {
+    let mut engine = engine_with(got_dark());
+    change(&mut engine, lux(300.0, 1));
+    change(&mut engine, lux(20.0, 10));
+    change(&mut engine, lux(80.0, 20));
+    engine.advance(at(60));
+    let (calls, _, misses) = effects(&mut engine, at(60));
+    assert!(calls.is_empty());
+    assert_eq!(misses.len(), 1);
+    assert_eq!(misses[0].kind, NearMissKind::HoldReset);
+}
+
+#[test]
+fn a_trigger_can_wait_for_any_of_several_values() {
+    let tv = flow(serde_json::json!({
+        "id": "stopped", "name": "Stopped",
+        "nodes": {
+            "stopped": { "type": "trigger", "trigger": { "type": "state", "entity": GUESTS, "to": [true, false] } },
+            "on": { "type": "call", "service": "light.turn_on", "entity": LIGHT }
+        },
+        "wires": [["stopped", "on"]]
+    }));
+    assert!(validate::check(&tv, &registry()).is_empty());
+    let written = serde_json::to_value(&tv).expect("serializes");
+    assert_eq!(
+        written["nodes"]["stopped"]["trigger"]["to"],
+        serde_json::json!([true, false])
+    );
+    let mut engine = engine_with(tv);
+    change(&mut engine, flag(GUESTS, true, 5));
+    let (first, _, _) = effects(&mut engine, at(5));
+    change(&mut engine, flag(GUESTS, false, 6));
+    let (second, _, _) = effects(&mut engine, at(6));
+    assert_eq!((first.len(), second.len()), (1, 1));
+}
+
+#[test]
+fn levels_and_value_lists_are_checked() {
+    let bad = |trigger: serde_json::Value| {
+        serde_json::from_value::<Flow>(serde_json::json!({
+            "id": "x", "name": "X",
+            "nodes": { "t": { "type": "trigger", "trigger": trigger } }
+        }))
+    };
+    assert!(
+        bad(serde_json::json!({ "type": "state", "entity": LUX, "below": 30, "to": 5 })).is_err()
+    );
+    assert!(
+        bad(serde_json::json!({ "type": "state", "entity": LUX, "above": 30, "below": 10 }))
+            .is_err()
+    );
+    assert!(
+        bad(serde_json::json!({ "type": "state", "entity": GUESTS, "to": [true, true] })).is_err()
+    );
+    assert!(bad(serde_json::json!({ "type": "state", "entity": GUESTS, "to": [] })).is_err());
+    let on_a_switch = bad(serde_json::json!({ "type": "state", "entity": GUESTS, "below": 3 }))
+        .expect("the file is fine");
+    let problems = validate::check(&on_a_switch, &registry());
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.message.contains("sensor with numbers")),
+        "{problems:#?}"
+    );
+}

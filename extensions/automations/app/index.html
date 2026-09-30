@@ -311,6 +311,13 @@
     .clause .row.test > input { width: 7.5rem; }
     .clause .row.test > .combo, .clause .row.test > .grow { flex: 1.3; }
     .clause .now-line { font-size: .75rem; margin-top: .35rem; }
+    .value-chips { display: flex; flex-wrap: wrap; gap: .3rem; margin-bottom: .35rem; }
+    .value-chips:empty { display: none; }
+    .value-chip { display: inline-flex; align-items: center; gap: .25rem; padding: .1rem .2rem .1rem .55rem;
+      border-radius: 999px; background: var(--mode-dry); color: var(--mode-ink); font-size: .78rem; }
+    .value-chip button { border: 0; background: none; color: inherit; cursor: pointer; font-size: .9rem;
+      line-height: 1; padding: 0 .2rem; opacity: .7; }
+    .value-chip button:hover { opacity: 1; }
     .joiner { display: flex; justify-content: center; margin: -.2rem 0; }
     .join-toggle { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 999px;
       background: var(--card); cursor: pointer; font: inherit; font-size: .72rem; color: var(--muted); }

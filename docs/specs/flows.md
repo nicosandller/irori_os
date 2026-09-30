@@ -144,9 +144,11 @@ is set with one type (bool, number or text) everywhere in the flow.
 
 Same meaning as rules.md §5, restated for what the engine watches:
 
-- `state`: fires when the entity's typed value changes and matches `from`/`to`, only while
-  available; `for` holds the match for that long before firing, resetting if the value changes or
-  the entity becomes unavailable.
+- `state`: fires when the entity's typed value changes and matches `from`/`to` (`to` may list
+  several values: any one matches), only while available; `for` holds the match for that long
+  before firing, resetting if the value changes or the entity becomes unavailable. On a numeric
+  sensor, `above`/`below` fire instead when the reading crosses into that range (rules.md §5.1);
+  with `for`, it has to stay in the range, and moving about inside it doesn't reset the timer.
 - `startup`: fires once when the flow is armed after the engine starts.
 - `time`, `sun`: need a timezone (and a location, for sun) in `irori.toml` (rules.md K13). Until
   then the flow is **unarmed** with that reason. `event`: accepted, never fires until protocols
