@@ -1,7 +1,8 @@
 //! The flow playing out on the canvas as it runs, while it's being edited: a trigger flashes,
-//! the wire it takes carries a pulse, a condition gets a ✓ or ✗ in its corner, an action lights
-//! up with what it sent — one step after another, a beat apart, so it can be followed. A
-//! near-miss makes its trigger shiver, and a trigger counting down a `for` fills a bar.
+//! the wire it takes lights up from one end to the other and stays lit until the run is over, a
+//! condition gets a ✓ or ✗ in its corner, an action lights up with what it sent — one step after
+//! another, a beat apart, so it can be followed. A near-miss makes its trigger shiver, and a
+//! trigger counting down a `for` fills a bar.
 //!
 //! Most runs are over in milliseconds, long before anything could watch them happen, so this
 //! plays each finished run back from its record, as soon as it's heard of.
@@ -76,7 +77,7 @@ pub struct Lit {
 #[derive(Debug, Clone, Copy)]
 pub struct Show {
     pub lit: RwSignal<BTreeMap<NodeId, Lit>>,
-    /// Wires carrying a pulse, and which playing sent it (a new one restarts the pulse).
+    /// Wires the run passed along, glowing until playing `n` fades.
     pub flowing: RwSignal<BTreeMap<Wire, u64>>,
     pub holding: RwSignal<Vec<Holding>>,
     /// The latest thing that happened, in words, for the strip at the bottom.

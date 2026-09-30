@@ -464,8 +464,6 @@ pub fn Canvas() -> impl IntoView {
                             let d = model::curve(a, b);
                             let class = if selected == Selected::Wire(i) {
                                 "wire selected"
-                            } else if !tracing && show.flowing.with(|f| f.contains_key(wire)) {
-                                "wire flowing"
                             } else if taken.contains(wire) {
                                 "wire taken"
                             } else if tracing {
@@ -481,6 +479,35 @@ pub fn Canvas() -> impl IntoView {
                             })
                         }).collect::<Vec<_>>()
                     }}
+                    // A wire the live run passed along glows, drawn from one node to the next, and
+                    // stays lit until the run's lights go out. Keyed, so a wire already glowing
+                    // isn't drawn again when the next one lights.
+                    <For
+                        each=move || {
+                            if matches!(ed.view.get(), View::Trace { .. }) {
+                                return Vec::new();
+                            }
+                            show.flowing.get().into_iter().collect::<Vec<_>>()
+                        }
+                        key=|lit| lit.clone()
+                        let:lit
+                    >
+                        {
+                            let wire = lit.0;
+                            view! {
+                                <path class="wire glowing" pathLength="1" d=move || {
+                                    let at = positions.get();
+                                    flow.with(|flow| {
+                                        let from = flow.as_ref()?.nodes.get(&wire.from.node)?;
+                                        let a = model::out_anchor(*at.get(&wire.from.node)?, from, wire.from.port);
+                                        let b = model::in_anchor(*at.get(&wire.to)?);
+                                        Some(model::curve(a, b))
+                                    })
+                                    .unwrap_or_default()
+                                }></path>
+                            }
+                        }
+                    </For>
                     {move || loose.get().map(|(a, b)| view! {
                         <path class="wire draft" d=model::curve(a, b)></path>
                     })}

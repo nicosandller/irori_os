@@ -133,7 +133,12 @@ pub fn Combo(
     };
 
     view! {
-        <div class="combo" class:open=move || open.get()>
+        // The hint beside the value ("now") gets room of its own, so the two never overlap.
+        <div class="combo" class:open=move || open.get()
+            style=move || {
+                let chars = if open.get() { 0 } else { current_detail().map_or(0, |d| d.chars().count()) };
+                format!("--detail-chars:{chars}")
+            }>
             <input
                 type="text"
                 node_ref=input

@@ -85,8 +85,15 @@
     .switch:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ember) 30%, transparent); }
 
     /* The combo box: a big field that searches as you type, its matches in a list below. */
-    .combo { position: relative; }
-    .combo-input { padding-right: 2.4rem !important; }
+    .combo { position: relative; container-type: inline-size; }
+    /* Room for the chevron, and for the hint beside the value when there is one. */
+    .combo-input { padding-right: min(calc(2.6rem + var(--detail-chars, 0) * .45rem), calc(45% + 2.6rem)) !important;
+      text-overflow: ellipsis; }
+    /* Too narrow for both: the value wins, the hint goes. */
+    @container (max-width: 13rem) {
+      .combo-detail { display: none; }
+      .combo-input { padding-right: 2.4rem !important; }
+    }
     .combo-detail { position: absolute; right: 2.3rem; top: 50%; translate: 0 -50%; max-width: 45%;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .75rem;
       color: var(--muted); pointer-events: none; }
@@ -363,14 +370,18 @@
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: .08rem .5rem;
       border-radius: 999px; font-size: .68rem; background: var(--card); border: 1px solid var(--line);
       color: var(--fg); animation: note-rise 360ms var(--ease-spring) backwards; z-index: 2; }
-    .wire.flowing { stroke: var(--ember); stroke-width: 2.8; opacity: 1; stroke-dasharray: 14 400;
-      stroke-linecap: round; animation: pulse-along 520ms linear forwards; }
+    /* A wire the live run passed along: lit from one node to the next as the step happens, then
+       left glowing, softly breathing, until the run's lights go out together. */
+    .wire.glowing { stroke: var(--ember); stroke-width: 2.8; opacity: 1; stroke-linecap: round;
+      pointer-events: none; stroke-dasharray: 1 1; stroke-dashoffset: 0;
+      filter: drop-shadow(0 0 3px color-mix(in srgb, var(--ember) 70%, transparent));
+      animation: wire-light 260ms var(--ease-out) backwards, wire-glow 1.6s ease-in-out 260ms infinite; }
     .hold-bar { position: absolute; left: 10px; right: 10px; bottom: 5px; height: 3px; border-radius: 3px;
       background: color-mix(in srgb, var(--ember) 18%, transparent); overflow: hidden; }
     .hold-bar span { display: block; height: 100%; width: var(--from); border-radius: inherit;
       background: var(--ember); animation: hold-fill var(--ms) linear forwards; }
-    html[data-motion="off"] .wire.flowing { stroke-dasharray: none; }
-    @media (prefers-reduced-motion: reduce) { .wire.flowing { stroke-dasharray: none; } }
+    html[data-motion="off"] .wire.glowing { animation: none; }
+    @media (prefers-reduced-motion: reduce) { .wire.glowing { animation: none; } }
     .live-strip { display: flex; align-items: center; gap: .45rem; color: var(--fg);
       padding: .2rem .6rem; border-radius: 999px; background: var(--card); border: 1px solid var(--line);
       animation: strip-rise 320ms var(--ease-spring) backwards; }
@@ -383,7 +394,8 @@
     @keyframes mark-pop { from { scale: .2; opacity: 0; } }
     @keyframes note-rise { from { translate: -50% 6px; opacity: 0; } }
     @keyframes strip-rise { from { translate: 0 6px; opacity: 0; } }
-    @keyframes pulse-along { from { stroke-dashoffset: 14; } to { stroke-dashoffset: -400; } }
+    @keyframes wire-light { from { stroke-dashoffset: 1; } }
+    @keyframes wire-glow { 50% { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--ember) 85%, transparent)); } }
     @keyframes hold-fill { from { width: var(--from); } to { width: 100%; } }
     @keyframes dot-beat { 50% { opacity: .35; } }
     .group { position: absolute; border-radius: 14px; pointer-events: none;
