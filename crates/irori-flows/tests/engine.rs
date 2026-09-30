@@ -808,3 +808,31 @@ fn a_setting_that_cant_be_worked_out_is_a_failed_call() {
         done[0].outcome
     );
 }
+
+#[test]
+fn a_no_from_several_checks_says_which_one_and_reads_them_all() {
+    let checks = flow(serde_json::json!({
+        "id": "checks", "name": "Checks",
+        "nodes": {
+            "motion": { "type": "trigger", "trigger": { "type": "state", "entity": MOTION, "to": true } },
+            "wanted": { "type": "gate", "condition": { "type": "all", "conditions": [
+                { "type": "state", "entity": OCCUPANCY, "is": true },
+                { "type": "expr", "expr": format!("num('{LUX}') < 30") },
+                { "type": "state", "entity": GUESTS, "is": false }
+            ] } },
+            "on": { "type": "call", "service": "light.turn_on", "entity": LIGHT }
+        },
+        "wires": [["motion", "wanted"], ["wanted:yes", "on"]]
+    }));
+    let mut engine = engine_with(checks);
+    change(&mut engine, flag(MOTION, true, 10));
+    let (calls, done, _) = effects(&mut engine, at(10));
+    assert!(calls.is_empty());
+    let gate = &done[0].steps[1];
+    let note = gate.note.as_deref().unwrap_or_default();
+    // Occupancy is what said no; the dark and the guests were fine.
+    assert!(note.contains(&format!("{OCCUPANCY} is on ✗")), "{note}");
+    assert!(note.contains(&format!("num('{LUX}') < 30 ✓")), "{note}");
+    assert!(note.ends_with("→ no"), "{note}");
+    assert_eq!(gate.reads.len(), 3, "every check's reading is kept");
+}

@@ -687,7 +687,7 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
                             if !hold.is_null() { v["until"]["for"] = hold; }
                         }));
                     }>
-                        <option value="state" selected=kind == "state">"something is…"</option>
+                        <option value="state" selected=kind == "state">"a device is…"</option>
                         <option value="expr" selected=kind == "expr">"an expression holds"</option>
                     </select>
                     {if kind == "expr" {
@@ -906,6 +906,19 @@ fn condition_form(
     }
 }
 
+/// Words that are functions, not the start of a device's name.
+const FUNCTION_WORDS: [&str; 9] = [
+    "num",
+    "on",
+    "text",
+    "available",
+    "var",
+    "min",
+    "max",
+    "round",
+    "clamp",
+];
+
 /// An expression to type, with the home's entities offered as you type their name or id, and
 /// the functions a click away.
 #[component]
@@ -948,7 +961,7 @@ fn ExprInput(value: String, commit: impl Fn(String) + Send + Sync + 'static) -> 
             .rposition(|c| !(c.is_alphanumeric() || *c == '_' || *c == '.'))
             .map_or(0, |i| i + 1);
         let typed: String = before[start..].iter().collect();
-        let is_function = ["num", "on", "text", "available", "var"].contains(&typed.as_str());
+        let is_function = FUNCTION_WORDS.contains(&typed.as_str());
         word.set((typed.chars().count() >= 2 && !is_function).then_some((start, typed)));
         active.set(0);
     };

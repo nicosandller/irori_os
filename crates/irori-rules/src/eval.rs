@@ -133,33 +133,31 @@ impl Evaluator {
                 reads: Vec::new(),
             },
             Condition::All { conditions } | Condition::Any { conditions } => {
+                // Every child is looked at, even once the answer is known, so the trace has
+                // each one's reading (rules.md §6.5).
                 let all = matches!(condition, Condition::All { .. });
                 let mut reads = Vec::new();
+                let mut decided = false;
+                let mut error = None;
                 for child in conditions {
                     let outcome = self.condition(child, snapshot);
                     merge(&mut reads, outcome.reads);
                     match outcome.result {
-                        Ok(holds) if holds != all => {
-                            return Outcome {
-                                result: Ok(!all),
-                                reads,
-                            };
-                        }
+                        Ok(holds) if holds != all => decided = true,
                         Ok(_) => {}
-                        Err(error) if all => {
-                            return Outcome {
-                                result: Err(error),
-                                reads,
-                            };
+                        Err(e) => {
+                            error.get_or_insert(e);
                         }
-                        // In `any`, a child that can't be read just isn't the one that holds.
-                        Err(_) => {}
                     }
                 }
-                Outcome {
-                    result: Ok(all),
-                    reads,
-                }
+                let result = match (decided, error) {
+                    (true, _) => Ok(!all),
+                    // In `all`, a child that can't be read can't be said to hold.
+                    (false, Some(error)) if all => Err(error),
+                    // In `any`, it just isn't the one that holds.
+                    _ => Ok(all),
+                };
+                Outcome { result, reads }
             }
             Condition::Not { condition } => {
                 let outcome = self.condition(condition, snapshot);

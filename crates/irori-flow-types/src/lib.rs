@@ -399,7 +399,11 @@ fn worked_out(
         return Err(format!("{field}: `{}` isn't a number", w.expr.as_str()));
     }
     let kept = value.round().clamp(low, high);
-    notes.push(format!("{field} {} → {}", trim(value), trim(kept)));
+    notes.push(if kept == value {
+        format!("{field} {}", trim(kept))
+    } else {
+        format!("{field} {} → {}", trim(value), trim(kept))
+    });
     Ok(Some(kept))
 }
 

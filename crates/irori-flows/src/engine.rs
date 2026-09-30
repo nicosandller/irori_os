@@ -1001,9 +1001,10 @@ impl Engine {
                 let snapshot = self.snapshot(run_id, now);
                 let outcome = self.eval.condition(&condition, &snapshot);
                 let holds = outcome.result == Ok(true);
+                let what = self.marked(&condition, &snapshot);
                 let note = match &outcome.result {
-                    Ok(holds) => format!("{} → {}", describe(&condition), yes_no(*holds)),
-                    Err(error) => format!("{} → no: {error}", describe(&condition)),
+                    Ok(holds) => format!("{what} → {}", yes_no(*holds)),
+                    Err(error) => format!("{what} → no: {error}"),
                 };
                 self.with_step(run_id, token_id, |step| {
                     step.reads = reads(outcome.reads);
@@ -1023,6 +1024,7 @@ impl Engine {
                 let mut notes = Vec::new();
                 for (i, case) in cases.iter().enumerate() {
                     let outcome = self.eval.condition(case, &snapshot);
+                    let what = self.marked(case, &snapshot);
                     for read in outcome.reads {
                         if !all_reads
                             .iter()
@@ -1034,10 +1036,10 @@ impl Engine {
                     match outcome.result {
                         Ok(true) => {
                             chosen = Port::Case(u8::try_from(i + 1).unwrap_or(u8::MAX));
-                            notes.push(format!("case {}: {} → yes", i + 1, describe(case)));
+                            notes.push(format!("case {}: {what} → yes", i + 1));
                             break;
                         }
-                        Ok(false) => notes.push(format!("case {}: {} → no", i + 1, describe(case))),
+                        Ok(false) => notes.push(format!("case {}: {what} → no", i + 1)),
                         Err(error) => notes.push(format!("case {}: {error}", i + 1)),
                     }
                 }
@@ -1246,6 +1248,28 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// A condition as a trace note. Several checks together are each marked with how they
+    /// came out — "… is on ✗ and … is off ✓" — so a `no` says which one it was.
+    fn marked(&mut self, condition: &Condition, snapshot: &Snapshot) -> String {
+        let (children, joiner) = match condition {
+            Condition::All { conditions } => (conditions, " and "),
+            Condition::Any { conditions } => (conditions, " or "),
+            _ => return describe(condition),
+        };
+        children
+            .iter()
+            .map(|child| {
+                let mark = match self.eval.condition(child, snapshot).result {
+                    Ok(true) => "✓".to_owned(),
+                    Ok(false) => "✗".to_owned(),
+                    Err(error) => format!("✗ ({error})"),
+                };
+                format!("{} {mark}", describe(child))
+            })
+            .collect::<Vec<_>>()
+            .join(joiner)
     }
 
     fn answer_call(
