@@ -18,6 +18,16 @@
       "description": "Off keeps the file and its history, but nothing runs. Not part of the version.",
       "type": "boolean"
     },
+    "groups": {
+      "description": "Names given to the canvas's branches, by the node each one starts at: a branch by its\nfirst trigger, a part of one by its first node. Not part of the version.",
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[a-z0-9]+(_[a-z0-9]+)*$": {
+          "$ref": "#/$defs/Name"
+        }
+      }
+    },
     "id": {
       "$ref": "#/$defs/RuleId"
     },

@@ -684,3 +684,260 @@ pub fn slug(name: &str) -> String {
         out.chars().take(60).collect()
     }
 }
+
+/// A branch of the canvas: nodes wired together, whichever way the wires go, and the parts it
+/// splits into.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Branch {
+    /// What its name is kept under: its first trigger, or its first node if it has none.
+    pub key: NodeId,
+    pub nodes: Vec<NodeId>,
+    /// The runs of nodes it splits into, each one after another with no way off in between.
+    /// Only when there are at least two: one run is just the branch.
+    pub parts: Vec<Part>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Part {
+    /// What its name is kept under: its first node.
+    pub key: NodeId,
+    pub nodes: Vec<NodeId>,
+}
+
+/// The flow's branches, with at least two nodes each, in the order their keys sort.
+pub fn branches(flow: &Flow) -> Vec<Branch> {
+    // Which branch each node is in: joined by any wire, either way.
+    let ids: Vec<&NodeId> = flow.nodes.keys().collect();
+    let index = |id: &NodeId| ids.iter().position(|i| *i == id);
+    let mut root: Vec<usize> = (0..ids.len()).collect();
+    fn find(root: &mut [usize], i: usize) -> usize {
+        let mut i = i;
+        while root[i] != i {
+            root[i] = root[root[i]];
+            i = root[i];
+        }
+        i
+    }
+    for wire in &flow.wires {
+        if let (Some(a), Some(b)) = (index(&wire.from.node), index(&wire.to)) {
+            let (a, b) = (find(&mut root, a), find(&mut root, b));
+            root[a] = b;
+        }
+    }
+    let mut groups: BTreeMap<usize, Vec<NodeId>> = BTreeMap::new();
+    for (i, id) in ids.iter().enumerate() {
+        let r = find(&mut root, i);
+        groups.entry(r).or_default().push((*id).clone());
+    }
+
+    let incoming = |id: &NodeId| {
+        flow.wires
+            .iter()
+            .filter(|w| &w.to == id)
+            .collect::<Vec<_>>()
+    };
+    let outgoing = |id: &NodeId| flow.wires.iter().filter(|w| &w.from.node == id).count();
+    let is_trigger = |id: &NodeId| flow.nodes.get(id).is_some_and(Node::is_trigger);
+
+    let mut out: Vec<Branch> = groups
+        .into_values()
+        .filter(|nodes| nodes.len() > 1)
+        .map(|nodes| {
+            let key = nodes
+                .iter()
+                .find(|id| is_trigger(id))
+                .unwrap_or(&nodes[0])
+                .clone();
+            // Runs: a node carries on its one way in's run when that comes from a node with
+            // only one way out that isn't a trigger; anything else starts a run of its own.
+            let mut part_of: BTreeMap<NodeId, NodeId> = BTreeMap::new();
+            // How far along its run each node is, to list a run in the order it goes.
+            let mut step: BTreeMap<NodeId, usize> = BTreeMap::new();
+            let mut pending: Vec<NodeId> =
+                nodes.iter().filter(|id| !is_trigger(id)).cloned().collect();
+            let mut guard = 0;
+            while !pending.is_empty() && guard <= nodes.len() {
+                guard += 1;
+                pending.retain(|id| {
+                    let into = incoming(id);
+                    let carries = match into.as_slice() {
+                        [one] if !is_trigger(&one.from.node) && outgoing(&one.from.node) == 1 => {
+                            Some(&one.from.node)
+                        }
+                        _ => None,
+                    };
+                    match carries {
+                        None => {
+                            part_of.insert(id.clone(), id.clone());
+                            step.insert(id.clone(), 0);
+                            false
+                        }
+                        Some(from) => match part_of.get(from).cloned() {
+                            Some(start) => {
+                                let at = step.get(from).copied().unwrap_or(0) + 1;
+                                part_of.insert(id.clone(), start);
+                                step.insert(id.clone(), at);
+                                false
+                            }
+                            None => true,
+                        },
+                    }
+                });
+            }
+            // Whatever's left sits in a circle; each is its own run.
+            for id in pending {
+                part_of.insert(id.clone(), id);
+            }
+            let mut parts: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+            for id in &nodes {
+                if let Some(start) = part_of.get(id) {
+                    parts.entry(start.clone()).or_default().push(id.clone());
+                }
+            }
+            let parts: Vec<Part> = if parts.len() >= 2 {
+                parts
+                    .into_iter()
+                    .map(|(key, mut nodes)| {
+                        nodes.sort_by_key(|id| step.get(id).copied().unwrap_or(0));
+                        Part { key, nodes }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            Branch { key, nodes, parts }
+        })
+        .collect();
+    out.sort_by(|a, b| a.key.cmp(&b.key));
+    out
+}
+
+/// A node id as words: `lights_off` → "Lights off".
+pub fn words_of(id: &NodeId) -> String {
+    let text = id.as_str().replace('_', " ");
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+        .unwrap_or_default()
+}
+
+/// A branch's name: the one it was given, or its triggers' names.
+pub fn branch_name(flow: &Flow, branch: &Branch) -> String {
+    if let Some(name) = flow.groups.get(&branch.key) {
+        return name.to_string();
+    }
+    let triggers: Vec<String> = branch
+        .nodes
+        .iter()
+        .filter(|id| flow.nodes.get(*id).is_some_and(Node::is_trigger))
+        .map(words_of)
+        .collect();
+    if triggers.is_empty() {
+        words_of(&branch.key)
+    } else {
+        triggers.join(" · ")
+    }
+}
+
+/// A part's name: the one it was given, or its last node's — usually what it ends up doing.
+pub fn part_name(flow: &Flow, part: &Part) -> String {
+    flow.groups
+        .get(&part.key)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| words_of(part.nodes.last().unwrap_or(&part.key)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flow(nodes: &[(&str, &str)], wires: &[[&str; 2]]) -> Flow {
+        let nodes: serde_json::Map<String, serde_json::Value> = nodes
+            .iter()
+            .map(|(id, kind)| {
+                let node = match *kind {
+                    "trigger" => serde_json::json!({ "type": "trigger", "trigger": { "type": "startup" } }),
+                    "gate" => serde_json::json!({ "type": "gate", "condition": { "type": "expr", "expr": "true" } }),
+                    _ => serde_json::json!({ "type": "delay", "for": "1s" }),
+                };
+                ((*id).to_owned(), node)
+            })
+            .collect();
+        serde_json::from_value(
+            serde_json::json!({ "id": "f", "name": "F", "nodes": nodes, "wires": wires }),
+        )
+        .expect("a flow")
+    }
+
+    #[test]
+    fn a_trigger_that_forks_three_ways_is_one_branch_of_three_parts() {
+        // The shape of the TV flow: playing forks into three checks, each with its action; the
+        // room emptying is a straight line; four triggers meet at one check.
+        let f = flow(
+            &[
+                ("playing", "trigger"),
+                ("lights_on_now", "gate"),
+                ("lights_off", "act"),
+                ("moon_is_on", "gate"),
+                ("moon_off", "act"),
+                ("dining_is_off", "gate"),
+                ("dining_dim", "act"),
+                ("area_cleared", "trigger"),
+                ("cleared_bias_on", "gate"),
+                ("cleared_bias_off", "act"),
+                ("paused", "trigger"),
+                ("idle", "trigger"),
+                ("presence", "trigger"),
+                ("light_needed", "gate"),
+                ("turn_on", "act"),
+                ("loose", "act"),
+            ],
+            &[
+                ["playing", "lights_on_now"],
+                ["playing", "moon_is_on"],
+                ["playing", "dining_is_off"],
+                ["lights_on_now:yes", "lights_off"],
+                ["moon_is_on:yes", "moon_off"],
+                ["dining_is_off:yes", "dining_dim"],
+                ["area_cleared", "cleared_bias_on"],
+                ["cleared_bias_on:yes", "cleared_bias_off"],
+                ["paused", "light_needed"],
+                ["idle", "light_needed"],
+                ["presence", "light_needed"],
+                ["light_needed:yes", "turn_on"],
+            ],
+        );
+        let found = branches(&f);
+        let keys: Vec<&str> = found.iter().map(|b| b.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["area_cleared", "idle", "playing"],
+            "a lone node isn't a branch"
+        );
+        let playing = &found[2];
+        let parts: Vec<Vec<&str>> = playing
+            .parts
+            .iter()
+            .map(|p| p.nodes.iter().map(NodeId::as_str).collect())
+            .collect();
+        assert_eq!(
+            parts,
+            [
+                vec!["dining_is_off", "dining_dim"],
+                vec!["lights_on_now", "lights_off"],
+                vec!["moon_is_on", "moon_off"]
+            ]
+        );
+        assert!(
+            found[0].parts.is_empty(),
+            "a straight line is just the branch"
+        );
+        assert!(
+            found[1].parts.is_empty(),
+            "triggers meeting at one line are just the branch"
+        );
+        assert_eq!(branch_name(&f, &found[1]), "Idle · Paused · Presence");
+        assert_eq!(part_name(&f, &playing.parts[0]), "Dining dim");
+    }
+}

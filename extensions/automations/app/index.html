@@ -311,6 +311,17 @@
     .clause .row.test > input { width: 7.5rem; }
     .clause .row.test > .combo, .clause .row.test > .grow { flex: 1.3; }
     .clause .now-line { font-size: .75rem; margin-top: .35rem; }
+    .group { position: absolute; border-radius: 14px; pointer-events: none;
+      background: hsl(var(--h) 70% 60% / .07); border: 1px solid hsl(var(--h) 55% 55% / .22); }
+    .group.part { border-radius: 10px; background: hsl(var(--h) 70% 60% / .08); border-style: dashed; }
+    .group-label { position: absolute; left: 10px; top: 4px; pointer-events: auto; cursor: text;
+      font-size: .72rem; font-weight: 600; letter-spacing: .02em; color: hsl(var(--h) 45% 42%);
+      white-space: nowrap; user-select: none; }
+    .group-label.part { top: 2px; font-weight: 500; font-size: .68rem; }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .group-label { color: hsl(var(--h) 60% 72%); } }
+    html[data-theme="dark"] .group-label { color: hsl(var(--h) 60% 72%); }
+    .group-rename { font: inherit; padding: 0 .3rem; width: 14rem; border: 1px solid var(--line);
+      border-radius: .3rem; background: var(--card); color: var(--fg); }
     .value-chips { display: flex; flex-wrap: wrap; gap: .3rem; margin-bottom: .35rem; }
     .value-chips:empty { display: none; }
     .value-chip { display: inline-flex; align-items: center; gap: .25rem; padding: .1rem .2rem .1rem .55rem;

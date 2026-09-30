@@ -141,7 +141,7 @@ pub fn Canvas() -> impl IntoView {
         };
         // An open node's form is for typing and picking, not for dragging the canvas, and the
         // canvas's own buttons are just buttons.
-        if closest(&target, "[data-sheet], button, .banner").is_some() {
+        if closest(&target, "[data-sheet], button, .banner, .group-label").is_some() {
             return;
         }
         let client = [f64::from(event.client_x()), f64::from(event.client_y())];
@@ -392,6 +392,7 @@ pub fn Canvas() -> impl IntoView {
                     format!("transform: translate({x}px, {y}px) scale({})", zoom.get())
                 }
             >
+                <Groups flow=flow positions=positions />
                 <svg class="wires" width="1" height="1">
                     {move || {
                         let Some(flow) = flow.get() else { return Vec::new() };
@@ -482,6 +483,152 @@ pub fn Canvas() -> impl IntoView {
 }
 
 /// Takes a node out, with its wires and position.
+/// Soft backgrounds behind each branch of the flow and the parts it splits into, each named.
+/// A name is changed by double-clicking it.
+#[component]
+fn Groups(flow: Memo<Option<Flow>>, positions: Memo<BTreeMap<NodeId, [f64; 2]>>) -> impl IntoView {
+    let ed = expect_context::<Editing>();
+    // Worked out again only when the wiring changes, not while a node is dragged.
+    let branches =
+        Memo::new(move |_| flow.with(|f| f.as_ref().map(model::branches).unwrap_or_default()));
+    let renaming = RwSignal::new(None::<NodeId>);
+
+    let rect = move |nodes: &[NodeId], at: &BTreeMap<NodeId, [f64; 2]>, flow: &Flow| {
+        let mut bounds: Option<[f64; 4]> = None;
+        for id in nodes {
+            let (Some(p), Some(node)) = (at.get(id), flow.nodes.get(id)) else {
+                continue;
+            };
+            let r = [p[0], p[1], p[0] + model::NODE_W, p[1] + model::height(node)];
+            bounds = Some(bounds.map_or(r, |b| {
+                [
+                    b[0].min(r[0]),
+                    b[1].min(r[1]),
+                    b[2].max(r[2]),
+                    b[3].max(r[3]),
+                ]
+            }));
+        }
+        bounds
+    };
+    const PART_PAD: f64 = 10.0;
+    const PART_LABEL: f64 = 18.0;
+    const BRANCH_PAD: f64 = 12.0;
+    const BRANCH_LABEL: f64 = 22.0;
+    const HUES: [u16; 6] = [24, 205, 145, 275, 340, 55];
+
+    let label = move |key: NodeId, name: String, class: &'static str| {
+        let editing = {
+            let key = key.clone();
+            move || renaming.get().as_ref() == Some(&key)
+        };
+        let key_for_edit = key.clone();
+        let save = move |text: String| {
+            let key = key.clone();
+            renaming.set(None);
+            let text = text.trim().to_owned();
+            ed.edit(|flow| match irori_types::Name::try_from(text.as_str()) {
+                Ok(name) if !text.is_empty() => {
+                    flow.groups.insert(key, name);
+                }
+                _ => {
+                    flow.groups.remove(&key);
+                }
+            });
+        };
+        let save_on_key = save.clone();
+        let shown = name.clone();
+        view! {
+            <span class=format!("group-label {class}") title="Double-click to rename"
+                on:dblclick=move |e| { e.stop_propagation(); renaming.set(Some(key_for_edit.clone())); }>
+                {move || if editing() {
+                    let save = save.clone();
+                    let save_on_key = save_on_key.clone();
+                    view! {
+                        <input type="text" class="group-rename" prop:value=shown.clone() autofocus=true
+                            on:blur=move |e| save(event_target_value(&e))
+                            on:keydown=move |e: web_sys::KeyboardEvent| match e.key().as_str() {
+                                "Enter" => save_on_key(event_target_value(&e)),
+                                "Escape" => { e.prevent_default(); renaming.set(None); }
+                                _ => {}
+                            } />
+                    }.into_any()
+                } else {
+                    view! { <span>{shown.clone()}</span> }.into_any()
+                }}
+            </span>
+        }
+    };
+
+    move || {
+        let Some(f) = flow.get() else {
+            return Vec::new();
+        };
+        let at = positions.get();
+        branches
+            .get()
+            .into_iter()
+            .enumerate()
+            .flat_map(|(i, branch)| {
+                let hue = HUES[i % HUES.len()];
+                let mut drawn = Vec::new();
+                let mut outer = rect(&branch.nodes, &at, &f);
+                for part in &branch.parts {
+                    let Some(r) = rect(&part.nodes, &at, &f) else {
+                        continue;
+                    };
+                    let r = [
+                        r[0] - PART_PAD,
+                        r[1] - PART_PAD - PART_LABEL,
+                        r[2] + PART_PAD,
+                        r[3] + PART_PAD,
+                    ];
+                    outer = outer.map(|o| {
+                        [
+                            o[0].min(r[0]),
+                            o[1].min(r[1]),
+                            o[2].max(r[2]),
+                            o[3].max(r[3]),
+                        ]
+                    });
+                    let name = model::part_name(&f, part);
+                    drawn.push(
+                        view! {
+                            <div class="group part" style=format!(
+                                "--h:{hue}; left:{}px; top:{}px; width:{}px; height:{}px",
+                                r[0], r[1], r[2] - r[0], r[3] - r[1])>
+                                {label(part.key.clone(), name, "part")}
+                            </div>
+                        }
+                        .into_any(),
+                    );
+                }
+                if let Some(o) = outer {
+                    let o = [
+                        o[0] - BRANCH_PAD,
+                        o[1] - BRANCH_PAD - BRANCH_LABEL,
+                        o[2] + BRANCH_PAD,
+                        o[3] + BRANCH_PAD,
+                    ];
+                    let name = model::branch_name(&f, &branch);
+                    drawn.insert(
+                        0,
+                        view! {
+                            <div class="group branch" style=format!(
+                                "--h:{hue}; left:{}px; top:{}px; width:{}px; height:{}px",
+                                o[0], o[1], o[2] - o[0], o[3] - o[1])>
+                                {label(branch.key.clone(), name, "branch")}
+                            </div>
+                        }
+                        .into_any(),
+                    );
+                }
+                drawn
+            })
+            .collect::<Vec<_>>()
+    }
+}
+
 pub fn remove_node(ed: &Editing, id: &NodeId) {
     ed.edit(|flow| {
         flow.nodes.remove(id);

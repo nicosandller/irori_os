@@ -50,6 +50,10 @@ pub struct Flow {
     /// Where each node sits on the canvas. Not part of the version.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub layout: BTreeMap<NodeId, [f64; 2]>,
+    /// Names given to the canvas's branches, by the node each one starts at: a branch by its
+    /// first trigger, a part of one by its first node. Not part of the version.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub groups: BTreeMap<NodeId, Name>,
 }
 
 fn yes() -> bool {
@@ -84,6 +88,8 @@ struct RawFlow {
     wires: Vec<Wire>,
     #[serde(default)]
     layout: BTreeMap<NodeId, [f64; 2]>,
+    #[serde(default)]
+    groups: BTreeMap<NodeId, Name>,
 }
 
 impl<'de> Deserialize<'de> for Flow {
@@ -98,6 +104,7 @@ impl<'de> Deserialize<'de> for Flow {
             nodes: raw.nodes,
             wires: raw.wires,
             layout: raw.layout,
+            groups: raw.groups,
         };
         flow.validate().map_err(serde::de::Error::custom)?;
         Ok(flow)
@@ -136,13 +143,14 @@ impl Flow {
         Ok(())
     }
 
-    /// The canonical JSON the version is the hash of: no `enabled`, no `layout`, keys sorted,
+    /// The canonical JSON the version is the hash of: no `enabled`, `layout` or `groups`, keys sorted,
     /// wires sorted, no whitespace (`docs/specs/flows.md` §5).
     pub fn canonical_json(&self) -> String {
         let mut value = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
         if let serde_json::Value::Object(map) = &mut value {
             map.remove("enabled");
             map.remove("layout");
+            map.remove("groups");
             if let Some(serde_json::Value::Array(wires)) = map.get_mut("wires") {
                 wires.sort_by_key(|wire| wire.to_string());
             }
@@ -678,6 +686,10 @@ mod tests {
         let mut moved = flow.clone();
         moved.layout.clear();
         moved.enabled = false;
+        moved.groups.insert(
+            "motion".parse().unwrap(),
+            Name::try_from("Hallway").unwrap(),
+        );
         moved.wires.reverse();
         assert_eq!(flow.version(), moved.version());
         assert_eq!(flow.version().len(), 64);

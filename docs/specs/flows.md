@@ -22,7 +22,7 @@ is a graph, not a list.
 | F3 | **Mode is per flow**: `single` (default), `restart`, `queued { max }`, `parallel { max }`, max 1–32. | Same as rules.md K7. With several triggers, a door-open firing in `restart` cancels the motion run's wait: one flow, one thing going on. |
 | F4 | **Fork is implicit, merge is explicit.** A port with several wires runs them all. Paths that forked meet again only through a `join` (`all` or `first`); the validator warns otherwise. Paths that split at *different ports of one exclusive node* (a gate's yes/no, a wait's matched/timeout, a switch's cases) never both run, so they rejoin freely. | Node-RED's "a node runs once per message that arrives" is what multiplies runs nobody meant to have. |
 | F5 | **Node ids are stable names** (`motion`, `dark`), chosen when the node is created. Traces key `(flow_id, version, node_id)`. | Adding a node doesn't renumber the others, unlike tree paths. |
-| F6 | **Layout is not the definition.** `layout` (x/y per node) and `enabled` are left out of the version hash; `nodes` keys and `wires` are sorted before hashing. | Dragging a node, or tidying the file, must not fork a flow's history (pillar 8). |
+| F6 | **Layout is not the definition.** `layout` (x/y per node), `groups` (branch names) and `enabled` are left out of the version hash; `nodes` keys and `wires` are sorted before hashing. | Dragging a node, or tidying the file, must not fork a flow's history (pillar 8). |
 | F7 | **Sans-IO engine.** The engine never awaits, sleeps or reads the clock: it's handed events and "now", and hands back calls to make and trace records. | The same code runs live, in a dry run with a virtual clock, and in a backtest over history (pillar 7), with nothing to mock. rules.md §14's async traits were for a different engine; this one chooses replay first. |
 | F8 | **Unavailable fails closed**, as rules.md K5: `num()` of an unavailable sensor is an error, a condition that errors is `no`, a `for` hold resets. | A three-hour-old lux reading must not turn lights on. |
 | F9 | **In-flight calls are not cancelled** when a run is superseded or aborted; waits, delays and joins are. | rules.md K8. |
@@ -70,6 +70,7 @@ same file the canvas saves (rules.md D18).
 | `nodes` | map of node id → node, 1–128 | yes | | Node id: `ObjectId` slug |
 | `wires` | array of `[from, to]`, 0–512 | no | `[]` | `from` is `node` or `node:port`; `to` is a node id |
 | `layout` | map of node id → `[x, y]` | no | `{}` | Canvas position, finite numbers. Not part of the version |
+| `groups` | map of node id → `Name` | no | `{}` | Names given to the canvas's branch backgrounds, by the node each starts at (a branch by its first trigger, a part of one by its first node). Not part of the version |
 
 Unknown fields are rejected everywhere.
 
