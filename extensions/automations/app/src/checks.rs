@@ -572,6 +572,20 @@ fn test_input(
     }
 }
 
+/// A state's plain value, the way checks compare it: `true`, `21.5`, `"paused"`.
+fn irori_rules_value(state: &irori_types::State) -> Value {
+    use irori_types::{SensorValue, State};
+    match state {
+        State::Light(light) => json!(light.on),
+        State::Switch(switch) => json!(switch.on),
+        State::BinarySensor(sensor) => json!(sensor.on),
+        State::Sensor(sensor) => match &sensor.value {
+            SensorValue::Number(n) => json!(n),
+            SensorValue::Text(text) => json!(text),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,7 +616,7 @@ mod tests {
     fn an_expression_of_checks_is_read_as_checks() {
         let checks = Checks::from_condition(&json!({ "type": "expr",
             "expr": "!on('binary_sensor.door') || text('sensor.washer') == 'rinse'" }))
-        .unwrap();
+        .expect("an expression of checks");
         assert!(checks.any);
         assert_eq!(checks.clauses[0].test, Test::Flag(false));
         assert_eq!(
@@ -629,19 +643,5 @@ mod tests {
         ] {
             assert_eq!(Checks::from_condition(&condition), None, "{condition}");
         }
-    }
-}
-
-/// A state's plain value, the way checks compare it: `true`, `21.5`, `"paused"`.
-fn irori_rules_value(state: &irori_types::State) -> Value {
-    use irori_types::{SensorValue, State};
-    match state {
-        State::Light(light) => json!(light.on),
-        State::Switch(switch) => json!(switch.on),
-        State::BinarySensor(sensor) => json!(sensor.on),
-        State::Sensor(sensor) => match &sensor.value {
-            SensorValue::Number(n) => json!(n),
-            SensorValue::Text(text) => json!(text),
-        },
     }
 }

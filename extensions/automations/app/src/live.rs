@@ -286,6 +286,17 @@ fn trigger_words(note: &str) -> String {
         .collect()
 }
 
+/// A run in a line, for the strip under the canvas.
+fn run_words(run: &RunRecord) -> String {
+    let summary = run.summary();
+    let how = if summary.summary.is_empty() {
+        summary.outcome
+    } else {
+        summary.summary
+    };
+    format!("{} fired · {how}", run.trigger)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,15 +313,4 @@ mod tests {
         );
         assert_eq!(trigger_words("fired by hand"), "fired by hand");
     }
-}
-
-/// A run in a line, for the strip under the canvas.
-fn run_words(run: &RunRecord) -> String {
-    let summary = run.summary();
-    let how = if summary.summary.is_empty() {
-        summary.outcome
-    } else {
-        summary.summary
-    };
-    format!("{} fired · {how}", run.trigger)
 }
