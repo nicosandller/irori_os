@@ -5,12 +5,13 @@
 //! value the engine wouldn't take can't get into the draft; the form says why instead.
 
 use irori_flow_types::api::Severity;
-use irori_flow_types::{Flow, Node, NodeId};
+use irori_flow_types::{Amount, Flow, Node, NodeId};
 use irori_types::{EntityKind, SensorValueType};
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
 use crate::canvas::remove_node;
+use crate::checks::{Checks, ChecksForm, TextValue};
 use crate::editor::{Editing, Selected};
 use crate::widgets::{Choice, Combo, Toggle};
 use crate::{Home, model};
@@ -218,7 +219,7 @@ fn JsonEditor(
 /// Entities to choose from, those of `kinds` (all when empty), searched as you type. The current
 /// one is kept even if it's gone, so the form can say so.
 #[component]
-fn EntityPicker(
+pub fn EntityPicker(
     value: String,
     kinds: Vec<EntityKind>,
     pick: impl Fn(String) + Send + Sync + 'static,
@@ -284,10 +285,17 @@ pub fn ValueInput(
             .with_untracked(|states| states.get(&id).map(|s| model::state_words(s, &home)))
     });
     match sensor_type {
-        Some(kind) => {
+        Some(SensorValueType::Text) => {
+            let shown = value.as_str().unwrap_or_default().to_owned();
+            view! {
+                <TextValue entity=entity value=shown allow_any=allow_any
+                    pick=move |text: String| pick(if text.is_empty() { Value::Null } else { json!(text) }) />
+            }
+            .into_any()
+        }
+        Some(_) => {
             let shown = match &value {
                 Value::Null => String::new(),
-                Value::String(s) => s.clone(),
                 other => other.to_string(),
             };
             let mut choices = Vec::new();
@@ -302,16 +310,10 @@ pub fn ValueInput(
                     choices=Signal::stored(choices)
                     value=Signal::stored(shown)
                     custom=true
-                    placeholder=if kind == SensorValueType::Number { "Type a number…" } else { "Type a value…" }
+                    placeholder="Type a number…"
                     pick=Callback::new(move |text: String| {
                         let text = text.trim().to_owned();
-                        pick(if text.is_empty() {
-                            Value::Null
-                        } else if kind == SensorValueType::Number {
-                            text.parse::<f64>().map(|n| json!(n)).unwrap_or(Value::Null)
-                        } else {
-                            json!(text)
-                        });
+                        pick(text.parse::<f64>().map(|n| json!(n)).unwrap_or(Value::Null));
                     })
                 />
             }
@@ -354,7 +356,7 @@ pub fn ValueInput(
     }
 }
 
-const WATCHABLE: [EntityKind; 4] = [
+pub const WATCHABLE: [EntityKind; 4] = [
     EntityKind::BinarySensor,
     EntityKind::Switch,
     EntityKind::Light,
@@ -500,8 +502,24 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
                 let entity_s = entity.to_string();
                 let dimmable = home.entities.with_untracked(|es| es.iter().any(|e| e.id == entity
                     && matches!(&e.capabilities, irori_types::Capabilities::Light(l) if l.brightness)));
-                let pct = data.as_ref().and_then(|irori_flow_types::CallData::Light(l)| l.brightness_pct).unwrap_or(100);
-                let has_pct = data.as_ref().is_some_and(|irori_flow_types::CallData::Light(l)| l.brightness_pct.is_some());
+                let level = data.as_ref().and_then(|d| d.brightness_pct.clone());
+                let has_pct = level.is_some();
+                let pct = match &level {
+                    Some(Amount::Fixed(n)) => *n,
+                    _ => 100,
+                };
+                // The flow's calculations, for a brightness worked out by one of them.
+                let calculations: Vec<String> = ed.draft.with_untracked(|d| {
+                    d.as_ref().map(|f| f.nodes.values().filter_map(|n| match n {
+                        Node::Set { name, .. } => Some(name.to_string()),
+                        _ => None,
+                    }).collect()).unwrap_or_default()
+                });
+                let worked = match &level {
+                    Some(Amount::Worked(w)) => Some(w.expr.as_str().to_owned()),
+                    _ => None,
+                };
+                let from_calculation = worked.as_deref().and_then(calculation_read);
                 let edit_entity = edit.clone();
                 let edit_action = edit.clone();
                 let edit_pct = edit.clone();
@@ -550,14 +568,74 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
                                         }));
                                     } />
                                 <span>"Set the brightness"</span>
-                                <span class="muted">{if has_pct { format!("{pct}%") } else { "otherwise it stays as it was".into() }}</span>
+                                <span class="muted">{match (has_pct, &from_calculation) {
+                                    (false, _) => "otherwise it stays as it was".to_owned(),
+                                    (true, Some(name)) => format!("from {name}"),
+                                    (true, None) if worked.is_some() => "worked out".to_owned(),
+                                    (true, None) => format!("{pct}%"),
+                                }}</span>
                             </label>
-                            {has_pct.then(|| view! {
-                                <input type="range" min="1" max="100" prop:value=pct.to_string()
-                                    on:change=move |e| {
-                                        let pct: u64 = event_target_value(&e).parse().unwrap_or(100);
-                                        edit_pct(Box::new(move |v: &mut Value| set(v, &["data", "brightness_pct"], json!(pct))));
-                                    } />
+                            {has_pct.then(move || {
+                                let how = match (&worked, &from_calculation) {
+                                    (None, _) => "fixed",
+                                    (Some(_), Some(_)) => "calculation",
+                                    (Some(_), None) => "expr",
+                                };
+                                let (edit_how, edit_fixed, edit_calc, edit_expr) =
+                                    (edit_pct.clone(), edit_pct.clone(), edit_pct.clone(), edit_pct.clone());
+                                let first_calculation = calculations.first().cloned();
+                                let calculation_list = calculations.clone();
+                                let chosen = from_calculation.clone().unwrap_or_default();
+                                view! {
+                                    <select on:change=move |e| {
+                                        let how = event_target_value(&e);
+                                        let first = first_calculation.clone();
+                                        edit_how(Box::new(move |v: &mut Value| {
+                                            let level = match (how.as_str(), first) {
+                                                ("calculation", Some(name)) => json!({ "expr": format!("var('{name}')") }),
+                                                ("expr", _) => json!({ "expr": "50" }),
+                                                _ => json!(pct),
+                                            };
+                                            set(v, &["data", "brightness_pct"], level);
+                                        }));
+                                    }>
+                                        <option value="fixed" selected=how == "fixed">"to a fixed level"</option>
+                                        <option value="calculation" selected=how == "calculation"
+                                            disabled=calculations.is_empty() && how != "calculation">
+                                            {if calculations.is_empty() { "from a calculation (add one first)" } else { "from a calculation" }}
+                                        </option>
+                                        <option value="expr" selected=how == "expr">"from an expression"</option>
+                                    </select>
+                                    {match how {
+                                        "fixed" => view! {
+                                            <input type="range" min="1" max="100" prop:value=pct.to_string()
+                                                on:change=move |e| {
+                                                    let pct: u64 = event_target_value(&e).parse().unwrap_or(100);
+                                                    edit_fixed(Box::new(move |v: &mut Value| set(v, &["data", "brightness_pct"], json!(pct))));
+                                                } />
+                                        }.into_any(),
+                                        "calculation" => view! {
+                                            <select on:change=move |e| {
+                                                let name = event_target_value(&e);
+                                                edit_calc(Box::new(move |v: &mut Value| {
+                                                    set(v, &["data", "brightness_pct"], json!({ "expr": format!("var('{name}')") }));
+                                                }));
+                                            }>
+                                                {calculation_list.iter().map(|name| view! {
+                                                    <option value=name.clone() selected=*name == chosen>{name.clone()}</option>
+                                                }).collect_view()}
+                                            </select>
+                                            <p class="muted" style="font-size:.8rem">"Rounded, and kept between 1% and 100%."</p>
+                                        }.into_any(),
+                                        _ => view! {
+                                            <ExprInput value=worked.clone().unwrap_or_default()
+                                                commit=move |text| edit_expr(Box::new(move |v: &mut Value| {
+                                                    set(v, &["data", "brightness_pct"], json!({ "expr": text }));
+                                                })) />
+                                            <p class="muted" style="font-size:.8rem">"Worked out when the light is turned on; rounded, and kept between 1% and 100%."</p>
+                                        }.into_any(),
+                                    }}
+                                }
                             })}
                         }
                     })}
@@ -568,13 +646,15 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
                 let f1 = field.clone();
                 let f2 = field.clone();
                 view! {
-                    <label>"Name"</label>
+                    <label>"Call it"</label>
                     <input type="text" prop:value=get(&v, &["name"]).as_str().unwrap_or_default().to_owned()
-                        on:change=move |e| f1(&["name"], json!(event_target_value(&e))) />
-                    <label>"Value (an expression)"</label>
+                        on:change=move |e| f1(&["name"], json!(event_target_value(&e).trim())) />
+                    <label>"Work it out"</label>
                     <ExprInput value=get(&v, &["expr"]).as_str().unwrap_or_default().to_owned()
                         commit=move |text| f2(&["expr"], json!(text)) />
-                    <p class="muted" style="font-size:.8rem">"Read it later with var('name')."</p>
+                    <p class="muted" style="font-size:.8rem">
+                        "A “Do” node further on can set a light's brightness from it; an expression reads it as var('name')."
+                    </p>
                 }.into_any()
             }
             Node::Delay { .. } => {
@@ -769,40 +849,25 @@ fn condition_form(
     key: String,
 ) -> impl IntoView {
     let home = expect_context::<Home>();
-    let kind = value["type"].as_str().unwrap_or("state").to_owned();
-    let expr = value["expr"].as_str().unwrap_or_default().to_owned();
-    let compare = (kind == "expr" && !raw.with_untracked(|r| r.contains(&key)))
-        .then(|| Compare::parse(&expr))
+    let checks = (!raw.with_untracked(|r| r.contains(&key)))
+        .then(|| Checks::from_condition(&value))
         .flatten();
-    let shown = match kind.as_str() {
-        "expr" if compare.is_some() => "compare",
-        other => other,
-    }
-    .to_owned();
+    let expr = value["expr"].as_str().map(str::to_owned);
+    let shown = match (&checks, value["type"].as_str()) {
+        (Some(_), _) => "checks",
+        (None, Some("expr")) => "expr",
+        _ => "other",
+    };
     let edit_kind = edit.clone();
-    let body = match shown.as_str() {
-        "state" => {
-            let entity = value["entity"].as_str().unwrap_or_default().to_owned();
-            let entity_for_value = entity.clone();
-            let is = value["is"].clone();
-            let (e1, e2) = (edit.clone(), edit.clone());
-            view! {
-                <EntityPicker value=entity kinds=WATCHABLE.to_vec()
-                    pick=move |id| e1(Box::new(move |v: &mut Value| v["entity"] = json!(id))) />
-                <label>"Is"</label>
-                <ValueInput entity=entity_for_value value=is allow_any=false
-                    pick=move |value| e2(Box::new(move |v: &mut Value| v["is"] = value)) />
-            }
-            .into_any()
-        }
-        "compare" => {
-            let compare = compare.unwrap_or_default();
-            view! { <CompareForm compare=compare edit=edit.clone() /> }.into_any()
+    let body = match shown {
+        "checks" => {
+            let checks = checks.unwrap_or_default();
+            view! { <ChecksForm checks=checks edit=edit.clone() /> }.into_any()
         }
         "expr" => {
             let e1 = edit.clone();
             view! {
-                <ExprInput value=expr.clone()
+                <ExprInput value=expr.clone().unwrap_or_default()
                     commit=move |text| e1(Box::new(move |v: &mut Value| v["expr"] = json!(text))) />
             }
             .into_any()
@@ -811,423 +876,33 @@ fn condition_form(
     };
     let key_for_kind = key.clone();
     view! {
-        <label>"Check"</label>
+        <label>"Holds when"</label>
         <select on:change=move |e| {
             let picked = event_target_value(&e);
             let key = key_for_kind.clone();
             raw.update(|r| {
                 if picked == "expr" { r.insert(key); } else { r.remove(&key); }
             });
-            let fresh = Compare::starter(&home).render();
+            let fresh = Checks::starter(&home).render();
             edit_kind(Box::new(move |v: &mut Value| {
-                let current = v["expr"].as_str().map(str::to_owned);
                 *v = match picked.as_str() {
-                    // The expression stays what it was; only how it's shown changes.
-                    "expr" => json!({ "type": "expr", "expr": current.unwrap_or_else(|| "true".into()) }),
-                    "compare" => {
-                        let keep = current.filter(|c| Compare::parse(c).is_some());
-                        json!({ "type": "expr", "expr": keep.unwrap_or(fresh) })
-                    }
-                    _ => json!({ "type": "state", "entity": "switch.choose_one", "is": true }),
+                    // Shown as the expression it is, when it is one; checks are written out.
+                    "expr" => match v["expr"].as_str() {
+                        Some(expr) => json!({ "type": "expr", "expr": expr }),
+                        None => json!({ "type": "expr", "expr": "true" }),
+                    },
+                    _ if Checks::from_condition(v).is_some() => v.clone(),
+                    _ => fresh,
                 };
             }));
         }>
-            <option value="state" selected=shown == "state">"something is…"</option>
-            <option value="compare" selected=shown == "compare">"a comparison"</option>
-            <option value="expr" selected=shown == "expr">"an expression"</option>
-            {(!matches!(shown.as_str(), "state" | "compare" | "expr")).then(|| view! {
-                <option value="other" selected=true>{shown.clone()}</option>
+            <option value="checks" selected=shown == "checks">"these checks hold"</option>
+            <option value="expr" selected=shown == "expr">"an expression holds"</option>
+            {(shown == "other").then(|| view! {
+                <option value="other" selected=true>"something else (JSON)"</option>
             })}
         </select>
         {body}
-    }
-}
-
-/// How one entity is checked in a comparison.
-#[derive(Debug, Clone, PartialEq)]
-enum Test {
-    /// `num('…') < 30`
-    Num { op: &'static str, value: f64 },
-    /// `on('…')`, or `!on('…')`
-    On(bool),
-    /// `text('…') == 'rinse'`, or `!=`
-    Text { equal: bool, value: String },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct Clause {
-    entity: String,
-    test: Test,
-}
-
-/// A condition simple enough to fill in rather than write: entities checked against values,
-/// all of them or any of them. It's kept as the expression it stands for, so nothing about the
-/// flow's format changes; an expression that isn't one of these is edited as text.
-#[derive(Debug, Clone, PartialEq, Default)]
-struct Compare {
-    clauses: Vec<Clause>,
-    any: bool,
-}
-
-const NUM_OPS: [(&str, &str); 6] = [
-    ("<", "is below"),
-    ("<=", "is at most"),
-    ("==", "is exactly"),
-    ("!=", "is not"),
-    (">=", "is at least"),
-    (">", "is above"),
-];
-
-/// The id inside `f('…')` at the start of `text`, and what follows it.
-fn call<'a>(text: &'a str, f: &str) -> Option<(&'a str, &'a str)> {
-    let rest = text.strip_prefix(f)?.strip_prefix('(')?.trim_start();
-    let quote = rest.chars().next().filter(|c| *c == '\'' || *c == '"')?;
-    let rest = &rest[1..];
-    let end = rest.find(quote)?;
-    let id = &rest[..end];
-    let after = rest[end + 1..].trim_start().strip_prefix(')')?;
-    id.chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
-        .then_some((id, after.trim()))
-}
-
-fn quoted(text: &str) -> Option<String> {
-    let quote = text.chars().next().filter(|c| *c == '\'' || *c == '"')?;
-    let inner = text[1..].strip_suffix(quote)?;
-    (!inner.contains(['\'', '"', '\\'])).then(|| inner.to_owned())
-}
-
-impl Clause {
-    fn parse(text: &str) -> Option<Self> {
-        let text = text.trim();
-        if let Some(rest) = text.strip_prefix('!')
-            && let Some((id, "")) = call(rest.trim_start(), "on")
-        {
-            return Some(Self {
-                entity: id.into(),
-                test: Test::On(false),
-            });
-        }
-        if let Some((id, "")) = call(text, "on") {
-            return Some(Self {
-                entity: id.into(),
-                test: Test::On(true),
-            });
-        }
-        if let Some((id, rest)) = call(text, "num") {
-            // Longest first, so `<=` isn't read as `<`.
-            let (op, _) = ["<=", ">=", "==", "!=", "<", ">"]
-                .iter()
-                .find_map(|op| rest.strip_prefix(op).map(|r| (*op, r)))?;
-            let value: f64 = rest[op.len()..].trim().parse().ok()?;
-            let op = NUM_OPS.iter().find(|(o, _)| *o == op)?.0;
-            return Some(Self {
-                entity: id.into(),
-                test: Test::Num { op, value },
-            });
-        }
-        if let Some((id, rest)) = call(text, "text") {
-            let (equal, value) = if let Some(v) = rest.strip_prefix("==") {
-                (true, v)
-            } else {
-                (false, rest.strip_prefix("!=")?)
-            };
-            return Some(Self {
-                entity: id.into(),
-                test: Test::Text {
-                    equal,
-                    value: quoted(value.trim())?,
-                },
-            });
-        }
-        None
-    }
-
-    fn render(&self) -> String {
-        let id = &self.entity;
-        match &self.test {
-            Test::On(true) => format!("on('{id}')"),
-            Test::On(false) => format!("!on('{id}')"),
-            Test::Num { op, value } => format!("num('{id}') {op} {value}"),
-            Test::Text { equal, value } => {
-                format!(
-                    "text('{id}') {} '{value}'",
-                    if *equal { "==" } else { "!=" }
-                )
-            }
-        }
-    }
-
-    /// A first check for `entity`, fitting what kind of thing it is.
-    fn fresh(entity: &str, home: &Home) -> Self {
-        let sensor = home.entities.with_untracked(|entities| {
-            entities
-                .iter()
-                .find(|e| e.id.as_str() == entity)
-                .and_then(|e| match &e.capabilities {
-                    irori_types::Capabilities::Sensor(s) => Some(s.value_type),
-                    _ => None,
-                })
-        });
-        let test = match sensor {
-            Some(SensorValueType::Number) => Test::Num {
-                op: "<",
-                value: 30.0,
-            },
-            Some(_) => Test::Text {
-                equal: true,
-                value: String::new(),
-            },
-            None => Test::On(true),
-        };
-        Self {
-            entity: entity.to_owned(),
-            test,
-        }
-    }
-}
-
-impl Compare {
-    fn parse(expr: &str) -> Option<Self> {
-        let expr = expr.trim();
-        let (any, parts): (bool, Vec<&str>) = match (expr.contains("&&"), expr.contains("||")) {
-            (true, true) => return None,
-            (false, true) => (true, expr.split("||").collect()),
-            _ => (false, expr.split("&&").collect()),
-        };
-        let clauses = parts
-            .into_iter()
-            .map(Clause::parse)
-            .collect::<Option<Vec<_>>>()?;
-        Some(Self { clauses, any })
-    }
-
-    fn render(&self) -> String {
-        if self.clauses.is_empty() {
-            return "true".into();
-        }
-        self.clauses
-            .iter()
-            .map(Clause::render)
-            .collect::<Vec<_>>()
-            .join(if self.any { " || " } else { " && " })
-    }
-
-    /// Something to start from: the first sensor with a number, if there is one.
-    fn starter(home: &Home) -> Self {
-        let entity = home.entities.with_untracked(|entities| {
-            entities
-                .iter()
-                .find(|e| {
-                    matches!(&e.capabilities, irori_types::Capabilities::Sensor(s)
-                        if s.value_type == SensorValueType::Number)
-                })
-                .or_else(|| entities.iter().find(|e| WATCHABLE.contains(&e.id.kind())))
-                .map(|e| e.id.to_string())
-        });
-        Self {
-            clauses: entity
-                .map(|e| Clause::fresh(&e, home))
-                .into_iter()
-                .collect(),
-            any: false,
-        }
-    }
-}
-
-/// A simple comparison as a sentence — "Illuminance below 30 and Motion on" — or `None` for an
-/// expression that isn't one.
-pub fn expr_words(expr: &str, home: &Home) -> Option<String> {
-    let compare = Compare::parse(expr)?;
-    let words = compare.clauses.iter().map(|clause| {
-        let name = clause
-            .entity
-            .parse::<irori_types::EntityId>()
-            .map_or_else(|_| clause.entity.clone(), |id| home.name(&id));
-        match &clause.test {
-            Test::On(on) => {
-                let (yes, no) = clause
-                    .entity
-                    .parse::<irori_types::EntityId>()
-                    .map_or(("on", "off"), |id| home.flag_words(&id));
-                format!("{name} {}", if *on { yes } else { no })
-            }
-            Test::Num { op, value } => {
-                let op = match *op {
-                    "<" => "below",
-                    "<=" => "at most",
-                    "==" => "is",
-                    "!=" => "isn't",
-                    ">=" => "at least",
-                    _ => "above",
-                };
-                format!("{name} {op} {value}")
-            }
-            Test::Text { equal, value } => {
-                format!("{name} {} “{value}”", if *equal { "is" } else { "isn't" })
-            }
-        }
-    });
-    Some(
-        words
-            .collect::<Vec<_>>()
-            .join(if compare.any { " or " } else { " and " }),
-    )
-}
-
-/// A comparison to fill in: for each entity, a test that fits it — below or above a number for
-/// a sensor with numbers, on or off for a switch — joined by "all" or "any".
-#[component]
-fn CompareForm(
-    compare: Compare,
-    edit: impl Fn(Edit) + Clone + Send + Sync + 'static,
-) -> impl IntoView {
-    let home = expect_context::<Home>();
-    let count = compare.clauses.len();
-    let put = {
-        let edit = edit.clone();
-        move |next: Compare| {
-            let text = next.render();
-            edit(Box::new(move |v: &mut Value| v["expr"] = json!(text)));
-        }
-    };
-    let join = {
-        let put = put.clone();
-        let compare = compare.clone();
-        (count > 1).then(move || {
-            view! {
-                <select class="join" on:change=move |e| {
-                    let mut next = compare.clone();
-                    next.any = event_target_value(&e) == "any";
-                    put(next);
-                }>
-                    <option value="all" selected=!compare.any>"All of these hold"</option>
-                    <option value="any" selected=compare.any>"Any of these holds"</option>
-                </select>
-            }
-        })
-    };
-    let rows = compare.clauses.iter().cloned().enumerate().map(|(i, clause)| {
-        let now = clause.entity.parse::<irori_types::EntityId>().ok().and_then(|id| {
-            home.states.with_untracked(|states| states.get(&id).map(|s| model::state_words(s, &home)))
-        });
-        let (put_entity, put_test, put_value, put_remove) = (put.clone(), put.clone(), put.clone(), put.clone());
-        let (c1, c2, c3, c4) = (compare.clone(), compare.clone(), compare.clone(), compare.clone());
-        let test = clause.test.clone();
-        let test_input = match clause.test.clone() {
-            Test::Num { op, value } => view! {
-                <select on:change=move |e| {
-                    let picked = event_target_value(&e);
-                    let mut next = c2.clone();
-                    if let Some((op, _)) = NUM_OPS.iter().find(|(o, _)| *o == picked) {
-                        next.clauses[i].test = Test::Num { op, value };
-                    }
-                    put_test(next);
-                }>
-                    {NUM_OPS.iter().map(|(o, words)| view! {
-                        <option value=*o selected=*o == op>{*words}</option>
-                    }).collect_view()}
-                </select>
-                <input type="number" step="any" prop:value=value.to_string()
-                    on:change=move |e| {
-                        let Ok(value) = event_target_value(&e).trim().parse::<f64>() else { return };
-                        let mut next = c3.clone();
-                        next.clauses[i].test = Test::Num { op, value };
-                        put_value(next);
-                    } />
-            }.into_any(),
-            Test::On(on) => {
-                let (yes, no) = clause
-                    .entity
-                    .parse::<irori_types::EntityId>()
-                    .map_or(("on", "off"), |id| home.flag_words(&id));
-                view! {
-                <select on:change=move |e| {
-                    let mut next = c2.clone();
-                    next.clauses[i].test = Test::On(event_target_value(&e) == "on");
-                    put_test(next);
-                }>
-                    <option value="on" selected=on>{format!("is {yes}")}</option>
-                    <option value="off" selected=!on>{format!("is {no}")}</option>
-                </select>
-            }.into_any()
-            }
-            Test::Text { equal, value } => {
-                let for_value = value.clone();
-                let choices: Vec<Choice> = now
-                    .clone()
-                    .filter(|n| n != "unknown" && n != "unavailable")
-                    .map(|n| Choice::new(n.clone(), n).detail("its value now"))
-                    .into_iter()
-                    .collect();
-                view! {
-                    <select on:change=move |e| {
-                        let mut next = c2.clone();
-                        next.clauses[i].test = Test::Text { equal: event_target_value(&e) == "is", value: value.clone() };
-                        put_test(next);
-                    }>
-                        <option value="is" selected=equal>"is"</option>
-                        <option value="not" selected=!equal>"is not"</option>
-                    </select>
-                    <Combo
-                        choices=Signal::stored(choices)
-                        value=Signal::stored(for_value)
-                        custom=true
-                        placeholder="Type a value…"
-                        pick=Callback::new(move |text: String| {
-                            let text: String = text.trim().chars().filter(|c| !matches!(c, '\'' | '"' | '\\')).collect();
-                            let mut next = c3.clone();
-                            next.clauses[i].test = Test::Text { equal, value: text };
-                            put_value(next);
-                        })
-                    />
-                }.into_any()
-            }
-        };
-        let home_for_pick = home;
-        view! {
-            <div class="clause">
-                <div class="row">
-                    <div class="grow">
-                        <EntityPicker value=clause.entity.clone() kinds=WATCHABLE.to_vec()
-                            pick=move |id: String| {
-                                let mut next = c1.clone();
-                                let mut fresh = Clause::fresh(&id, &home_for_pick);
-                                // Same kind of test as before, where it still fits.
-                                if std::mem::discriminant(&fresh.test) == std::mem::discriminant(&test) {
-                                    fresh.test = test.clone();
-                                }
-                                next.clauses[i] = fresh;
-                                put_entity(next);
-                            } />
-                    </div>
-                    {(count > 1).then(|| view! {
-                        <button class="btn small" title="Remove this check" on:click=move |_| {
-                            let mut next = c4.clone();
-                            next.clauses.remove(i);
-                            put_remove(next);
-                        }>"×"</button>
-                    })}
-                </div>
-                <div class="row test">{test_input}</div>
-                {now.map(|n| view! { <div class="muted now-line">{format!("now {n}")}</div> })}
-            </div>
-        }
-    }).collect_view();
-    let add = {
-        let compare = compare.clone();
-        move |_| {
-            let mut next = compare.clone();
-            if let Some(clause) = Compare::starter(&home).clauses.into_iter().next() {
-                next.clauses.push(clause);
-            }
-            put(next);
-        }
-    };
-    view! {
-        {join}
-        {rows}
-        <button class="btn small" on:click=add>"Add another check"</button>
     }
 }
 
@@ -1330,8 +1005,12 @@ fn ExprInput(value: String, commit: impl Fn(String) + Send + Sync + 'static) -> 
         let next: String = value[..at].iter().collect::<String>()
             + template
             + &value[at..].iter().collect::<String>();
-        // Inside the quotes, ready for a name.
-        let caret = at + template.find("''").map_or(template.len(), |i| i + 1);
+        // Inside the quotes, ready for a name; or inside the brackets, ready for numbers.
+        let caret = at
+            + template
+                .find("''")
+                .or_else(|| template.find('('))
+                .map_or(template.len(), |i| i + 1);
         text.set(next.clone());
         el.set_value(&next);
         let _ = el.set_selection_range(caret as u32, caret as u32);
@@ -1385,7 +1064,9 @@ fn ExprInput(value: String, commit: impl Fn(String) + Send + Sync + 'static) -> 
             </ul>
         </div>
         <div class="functions">
-            {[("num('')", "a number"), ("on('')", "is on"), ("text('')", "a text"), ("available('')", "is there"), (" && ", "and"), (" || ", "or"), ("!", "not")]
+            {[("num('')", "a number"), ("on('')", "is on"), ("text('')", "a text"), ("available('')", "is there"),
+              (" && ", "and"), (" || ", "or"), ("!", "not"),
+              ("min(, )", "smaller of"), ("max(, )", "larger of"), ("round()", "round"), ("clamp(, , )", "keep between")]
                 .into_iter()
                 .map(|(template, words)| view! {
                     <button type="button" class="chip" title=template
@@ -1396,35 +1077,12 @@ fn ExprInput(value: String, commit: impl Fn(String) + Send + Sync + 'static) -> 
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn simple_expressions_read_as_comparisons_and_write_back_the_same() {
-        for expr in [
-            "num('sensor.hall_lux') < 30",
-            "num('sensor.hall_lux') >= 12.5 && on('switch.night')",
-            "!on('binary_sensor.door') || text('sensor.washer') == 'rinse'",
-            "text('sensor.washer') != 'idle'",
-        ] {
-            let compare = Compare::parse(expr).unwrap_or_else(|| panic!("{expr}"));
-            assert_eq!(compare.render(), expr);
-        }
-        let spaced = Compare::parse("num(\"sensor.a\")<=3").map(|c| c.render());
-        assert_eq!(spaced.as_deref(), Some("num('sensor.a') <= 3"));
-    }
-
-    #[test]
-    fn anything_more_stays_an_expression() {
-        for expr in [
-            "num('sensor.a') < 3 && on('switch.b') || on('switch.c')",
-            "num('sensor.a') + 2 < 3",
-            "var('x') == 1",
-            "text('sensor.a') == 'it''s'",
-            "",
-        ] {
-            assert_eq!(Compare::parse(expr), None, "{expr}");
-        }
-    }
+/// The calculation a brightness is taken from, when it's just `var('name')`.
+fn calculation_read(expr: &str) -> Option<String> {
+    let inner = expr.trim().strip_prefix("var(")?.strip_suffix(')')?.trim();
+    let quote = inner.chars().next().filter(|c| *c == '\'' || *c == '"')?;
+    let name = inner[1..].strip_suffix(quote)?;
+    name.chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        .then(|| name.to_owned())
 }

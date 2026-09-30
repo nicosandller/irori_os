@@ -71,7 +71,8 @@ pub(crate) fn author_name(name: &str) -> &str {
     if name == VAR_FN { "var" } else { name }
 }
 
-/// `var(` outside string literals becomes `irori_var(`; everything else is kept as written.
+/// `var(` outside string literals becomes `irori_var(`, and a whole number `30` becomes `30.0`;
+/// everything else is kept as written.
 fn rename_reserved(source: &str) -> String {
     let mut out = String::with_capacity(source.len() + 8);
     let chars: Vec<char> = source.chars().collect();
@@ -99,6 +100,23 @@ fn rename_reserved(source: &str) -> String {
             continue;
         }
         let starts_word = i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
+        // A whole number is written as a decimal, so every number is the same kind: CEL won't
+        // mix `70 - 12.5`, and `10 / 4` would be 2.
+        if starts_word && c.is_ascii_digit() && (i == 0 || chars[i - 1] != '.') {
+            let mut j = i;
+            while j < chars.len() && chars[j].is_ascii_digit() {
+                j += 1;
+            }
+            let whole = chars
+                .get(j)
+                .is_none_or(|next| !(next.is_alphanumeric() || *next == '_' || *next == '.'));
+            out.extend(&chars[i..j]);
+            if whole {
+                out.push_str(".0");
+            }
+            i = j;
+            continue;
+        }
         if starts_word && chars[i..].starts_with(&['v', 'a', 'r']) {
             let mut j = i + 3;
             while j < chars.len() && chars[j].is_whitespace() {

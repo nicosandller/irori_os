@@ -70,19 +70,39 @@
     "nodes"
   ],
   "$defs": {
+    "Amount": {
+      "description": "A number in a call's settings: fixed, or worked out when the call runs.",
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        {
+          "$ref": "#/$defs/Worked"
+        }
+      ]
+    },
+    "Amount2": {
+      "description": "A number in a call's settings: fixed, or worked out when the call runs.",
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        {
+          "$ref": "#/$defs/Worked"
+        }
+      ]
+    },
     "AvailabilityWanted": {
       "type": "string",
       "enum": [
         "available",
         "unavailable"
-      ]
-    },
-    "CallData": {
-      "description": "Closed `data` object for a call. Unknown keys are rejected by the inner structs.",
-      "anyOf": [
-        {
-          "$ref": "#/$defs/LightCallData"
-        }
       ]
     },
     "CivilTime": {
@@ -354,50 +374,39 @@
       "maxLength": 512,
       "minLength": 1
     },
-    "JoinMode": {
-      "description": "How a join brings paths together.",
-      "oneOf": [
-        {
-          "description": "Wait until every incoming wire has brought a token.",
-          "type": "string",
-          "const": "all"
-        },
-        {
-          "description": "Let the first through; the rest end here.",
-          "type": "string",
-          "const": "first"
-        }
-      ]
-    },
-    "LightCallData": {
+    "FlowCallData": {
+      "description": "A light's settings in a call: each number either written down, or worked out from an\nexpression when the call runs (`{\"expr\": \"var('level')\"}`), rounded and brought into range.",
       "type": "object",
       "properties": {
         "brightness": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint8",
-          "maximum": 255,
-          "minimum": 1
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Amount"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "brightness_pct": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint8",
-          "maximum": 100,
-          "minimum": 1
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Amount"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "color_temp_kelvin": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint16",
-          "maximum": 20000,
-          "minimum": 1000
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Amount2"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "rgb": {
           "type": [
@@ -415,6 +424,21 @@
         }
       },
       "additionalProperties": false
+    },
+    "JoinMode": {
+      "description": "How a join brings paths together.",
+      "oneOf": [
+        {
+          "description": "Wait until every incoming wire has brought a token.",
+          "type": "string",
+          "const": "all"
+        },
+        {
+          "description": "Let the first through; the rest end here.",
+          "type": "string",
+          "const": "first"
+        }
+      ]
     },
     "LimitedMode": {
       "oneOf": [
@@ -554,7 +578,7 @@
             "data": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/CallData"
+                  "$ref": "#/$defs/FlowCallData"
                 },
                 {
                   "type": "null"
@@ -1023,6 +1047,19 @@
           "type": "string",
           "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
         }
+      ]
+    },
+    "Worked": {
+      "description": "An expression giving a number, e.g. `var('level')` or `round(num('sensor.lux') / 10)`.",
+      "type": "object",
+      "properties": {
+        "expr": {
+          "$ref": "#/$defs/ExprString"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "expr"
       ]
     }
   }

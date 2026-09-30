@@ -1055,7 +1055,47 @@ impl Engine {
                 let call_id = self.next_call;
                 self.next_call += 1;
                 let dry = self.dry;
+                // Settings that are worked out are worked out now, from the home as it is.
+                let mut read = Vec::new();
+                let resolved = match &data {
+                    None => Ok((None, Vec::new())),
+                    Some(data) => {
+                        let snapshot = self.snapshot(run_id, now);
+                        data.resolve(|expr| {
+                            let outcome = self.eval.value(expr.as_str(), &snapshot);
+                            read.extend(outcome.reads);
+                            match outcome.result? {
+                                serde_json::Value::Number(n) => n
+                                    .as_f64()
+                                    .ok_or_else(|| format!("`{}` isn't a number", expr.as_str())),
+                                other => {
+                                    Err(format!("`{}` gave {other}, not a number", expr.as_str()))
+                                }
+                            }
+                        })
+                        .map(|(data, notes)| (Some(data), notes))
+                    }
+                };
+                let (data, worked) = match resolved {
+                    Ok(resolved) => resolved,
+                    Err(error) => {
+                        self.with_step(run_id, token_id, |step| {
+                            step.reads = reads(read);
+                            step.note = Some(format!("couldn't work out the settings: {error}"));
+                            step.call = Some(CallDetail {
+                                service: service.to_string(),
+                                entity_id: entity.clone(),
+                                data: None,
+                                result: None,
+                                simulated: dry,
+                            });
+                        });
+                        self.answer_call(run_id, token_id, Err(error), now);
+                        return;
+                    }
+                };
                 self.with_step(run_id, token_id, |step| {
+                    step.reads = reads(read);
                     step.call = Some(CallDetail {
                         service: service.to_string(),
                         entity_id: entity.clone(),
@@ -1065,7 +1105,11 @@ impl Engine {
                         result: None,
                         simulated: dry,
                     });
-                    step.note = Some(format!("{service} {entity}"));
+                    step.note = Some(if worked.is_empty() {
+                        format!("{service} {entity}")
+                    } else {
+                        format!("{service} {entity} ({})", worked.join(", "))
+                    });
                 });
                 if let Some(token) = self
                     .runs

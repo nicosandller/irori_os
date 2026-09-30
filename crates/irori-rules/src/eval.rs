@@ -259,6 +259,8 @@ fn to_json(value: Value, source: &str) -> Result<serde_json::Value, String> {
         Value::Bool(b) => serde_json::Value::Bool(b),
         Value::Int(i) => serde_json::json!(i),
         Value::UInt(u) => serde_json::json!(u),
+        // Every number is a decimal inside (`expr::compile`); a whole one reads as `45`.
+        Value::Float(f) if f.fract() == 0.0 && f.abs() < 9e15 => serde_json::json!(f as i64),
         Value::Float(f) => serde_json::Number::from_f64(f)
             .map(serde_json::Value::Number)
             .ok_or_else(|| format!("`{source}` isn't a finite number"))?,
@@ -271,10 +273,7 @@ fn to_json(value: Value, source: &str) -> Result<serde_json::Value, String> {
 fn from_json(value: &serde_json::Value) -> Value {
     match value {
         serde_json::Value::Bool(b) => Value::Bool(*b),
-        serde_json::Value::Number(n) => n
-            .as_i64()
-            .map(Value::Int)
-            .unwrap_or_else(|| Value::Float(n.as_f64().unwrap_or(0.0))),
+        serde_json::Value::Number(n) => Value::Float(n.as_f64().unwrap_or(0.0)),
         serde_json::Value::String(s) => Value::String(Arc::new(s.clone())),
         _ => Value::Null,
     }
@@ -322,6 +321,24 @@ fn live(
 
 fn fail(ftx: &FunctionContext, message: String) -> ResolveResult {
     ftx.error(message).into()
+}
+
+/// The arguments of a maths function, as numbers.
+fn numbers(
+    ftx: &FunctionContext,
+    name: &str,
+    args: &[Value],
+) -> Result<Vec<f64>, cel::ExecutionError> {
+    args.iter()
+        .map(|arg| match arg {
+            Value::Float(f) => Ok(*f),
+            #[allow(clippy::cast_precision_loss)]
+            Value::Int(i) => Ok(*i as f64),
+            #[allow(clippy::cast_precision_loss)]
+            Value::UInt(u) => Ok(*u as f64),
+            other => Err(ftx.error(format!("{name}() takes numbers, not {other:?}"))),
+        })
+        .collect()
 }
 
 fn bind(context: &mut Context, snapshot: &Snapshot, reads: &Reads) {
@@ -376,7 +393,7 @@ fn bind(context: &mut Context, snapshot: &Snapshot, reads: &Reads) {
     let brightness = entity_fn("brightness", |state, id| match state {
         State::Light(light) => light
             .brightness
-            .map(|b| Value::Int(i64::from(b)))
+            .map(|b| Value::Float(f64::from(b)))
             .ok_or_else(|| format!("brightness({id:?}): the light hasn't said its brightness")),
         _ => Err(format!("brightness({id:?}): entity is not a light")),
     });
@@ -450,9 +467,35 @@ fn bind(context: &mut Context, snapshot: &Snapshot, reads: &Reads) {
     {
         let now = snapshot.now;
         context.add_function("now_ts", move |_ftx: &FunctionContext| {
-            Ok(Value::Int(now.as_jiff().as_second()))
+            #[allow(clippy::cast_precision_loss)] // seconds since 1970 fit a float exactly
+            Ok(Value::Float(now.as_jiff().as_second() as f64))
         });
     }
+    context.add_function("min", |ftx: &FunctionContext, a: Value, b: Value| {
+        numbers(ftx, "min", &[a, b]).map(|n| Value::Float(n[0].min(n[1])))
+    });
+    context.add_function("max", |ftx: &FunctionContext, a: Value, b: Value| {
+        numbers(ftx, "max", &[a, b]).map(|n| Value::Float(n[0].max(n[1])))
+    });
+    context.add_function("round", |ftx: &FunctionContext, a: Value| {
+        numbers(ftx, "round", &[a]).map(|n| Value::Float(n[0].round()))
+    });
+    context.add_function(
+        "clamp",
+        |ftx: &FunctionContext, a: Value, low: Value, high: Value| {
+            let n = numbers(ftx, "clamp", &[a, low, high])?;
+            if n[1] > n[2] {
+                return fail(
+                    ftx,
+                    format!(
+                        "clamp(): the low end {} is above the high end {}",
+                        n[1], n[2]
+                    ),
+                );
+            }
+            Ok(Value::Float(n[0].clamp(n[1], n[2])))
+        },
+    );
     for name in ["hour", "minute"] {
         context.add_function(name, move |ftx: &FunctionContext| {
             fail(ftx, format!("{name}() needs a timezone in irori.toml"))
@@ -578,5 +621,38 @@ mod tests {
         let outcome = eval.condition(&any, &home(8.0, false));
         assert_eq!(outcome.result, Ok(true));
         assert_eq!(outcome.reads.len(), 2);
+    }
+
+    #[test]
+    fn numbers_are_just_numbers() {
+        let mut eval = Evaluator::default();
+        let at = home(300.0, true);
+        let mut value = |source: &str| eval.value(source, &at).result;
+        // Whole and decimal numbers mix, and dividing doesn't round down.
+        assert_eq!(value("70 - 12.5"), Ok(serde_json::json!(57.5)));
+        assert_eq!(value("10 / 4"), Ok(serde_json::json!(2.5)));
+        assert_eq!(
+            value("70 - num('sensor.lux') / 600 * 25"),
+            Ok(serde_json::json!(57.5))
+        );
+        // A number inside text, or after a decimal point, stays as it was.
+        assert_eq!(value("'room 2'"), Ok(serde_json::json!("room 2")));
+        assert_eq!(value("1.25 * 2"), Ok(serde_json::json!(2.5)));
+    }
+
+    #[test]
+    fn maths_functions() {
+        let mut eval = Evaluator::default();
+        let at = home(300.0, true);
+        let mut value = |source: &str| eval.value(source, &at).result;
+        assert_eq!(value("min(3, 4.5)"), Ok(serde_json::json!(3)));
+        assert_eq!(value("max(3, 4.5)"), Ok(serde_json::json!(4.5)));
+        assert_eq!(value("round(57.5)"), Ok(serde_json::json!(58)));
+        assert_eq!(value("clamp(80, 45, 70)"), Ok(serde_json::json!(70)));
+        assert_eq!(
+            value("round(clamp(70 - num('sensor.lux') / 600 * 25, 45, 70))"),
+            Ok(serde_json::json!(58))
+        );
+        assert!(value("clamp(1, 5, 2)").unwrap_err().contains("low end"));
     }
 }

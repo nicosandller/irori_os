@@ -224,7 +224,7 @@ pub enum Node {
         service: RuleService,
         entity: EntityId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        data: Option<CallData>,
+        data: Option<FlowCallData>,
     },
     /// Sets a run variable, read with `var('name')`.
     Set { name: ObjectId, expr: ExprString },
@@ -251,6 +251,167 @@ pub enum Node {
     },
 }
 
+/// A light's settings in a call: each number either written down, or worked out from an
+/// expression when the call runs (`{"expr": "var('level')"}`), rounded and brought into range.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FlowCallData {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brightness: Option<Amount<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brightness_pct: Option<Amount<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_temp_kelvin: Option<Amount<u16>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rgb: Option<[u8; 3]>,
+}
+
+/// A number in a call's settings: fixed, or worked out when the call runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Amount<T> {
+    Fixed(T),
+    Worked(Worked),
+}
+
+/// An expression giving a number, e.g. `var('level')` or `round(num('sensor.lux') / 10)`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Worked {
+    pub expr: ExprString,
+}
+
+impl From<LightCallData> for FlowCallData {
+    fn from(light: LightCallData) -> Self {
+        Self {
+            brightness: light.brightness.map(Amount::Fixed),
+            brightness_pct: light.brightness_pct.map(Amount::Fixed),
+            color_temp_kelvin: light.color_temp_kelvin.map(Amount::Fixed),
+            rgb: light.rgb,
+        }
+    }
+}
+
+impl FlowCallData {
+    /// The worked-out settings, by field name.
+    pub fn exprs(&self) -> Vec<(&'static str, &ExprString)> {
+        fn worked<'a, T>(
+            field: &'static str,
+            amount: Option<&'a Amount<T>>,
+        ) -> Option<(&'static str, &'a ExprString)> {
+            match amount {
+                Some(Amount::Worked(w)) => Some((field, &w.expr)),
+                _ => None,
+            }
+        }
+        [
+            worked("brightness", self.brightness.as_ref()),
+            worked("brightness_pct", self.brightness_pct.as_ref()),
+            worked("color_temp_kelvin", self.color_temp_kelvin.as_ref()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
+    /// The settings as the service sees them, with any worked-out number standing in as one in
+    /// range: enough to check what's asked of the light before anything runs.
+    pub fn shape(&self) -> CallData {
+        fn fixed<T: Copy>(amount: Option<&Amount<T>>, stand_in: T) -> Option<T> {
+            amount.map(|amount| match amount {
+                Amount::Fixed(n) => *n,
+                Amount::Worked(_) => stand_in,
+            })
+        }
+        CallData::Light(LightCallData {
+            brightness: fixed(self.brightness.as_ref(), 255),
+            brightness_pct: fixed(self.brightness_pct.as_ref(), 100),
+            color_temp_kelvin: fixed(self.color_temp_kelvin.as_ref(), 2700),
+            rgb: self.rgb,
+        })
+    }
+
+    /// The settings with every expression worked out by `eval`, rounded and brought into each
+    /// field's range, and a note for each worked-out one ("brightness_pct 57.5 → 58").
+    pub fn resolve(
+        &self,
+        mut eval: impl FnMut(&ExprString) -> Result<f64, String>,
+    ) -> Result<(CallData, Vec<String>), String> {
+        let mut notes = Vec::new();
+        let mut work = |field, amount, low, high| {
+            worked_out(field, amount, (low, high), &mut eval, &mut notes)
+        };
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // rounded, in range
+        let light = LightCallData {
+            brightness: work(
+                "brightness",
+                self.brightness.as_ref().map(Amount::widen),
+                1.0,
+                255.0,
+            )?
+            .map(|n| n as u8),
+            brightness_pct: work(
+                "brightness_pct",
+                self.brightness_pct.as_ref().map(Amount::widen),
+                1.0,
+                100.0,
+            )?
+            .map(|n| n as u8),
+            color_temp_kelvin: work(
+                "color_temp_kelvin",
+                self.color_temp_kelvin.as_ref().map(Amount::widen),
+                1000.0,
+                20000.0,
+            )?
+            .map(|n| n as u16),
+            rgb: self.rgb,
+        };
+        Ok((CallData::Light(light), notes))
+    }
+}
+
+impl<T: Copy + Into<f64>> Amount<T> {
+    fn widen(&self) -> Amount<f64> {
+        match self {
+            Self::Fixed(n) => Amount::Fixed((*n).into()),
+            Self::Worked(w) => Amount::Worked(w.clone()),
+        }
+    }
+}
+
+/// One setting's number: as written, or worked out, rounded and brought into `range`.
+fn worked_out(
+    field: &str,
+    amount: Option<Amount<f64>>,
+    (low, high): (f64, f64),
+    eval: &mut impl FnMut(&ExprString) -> Result<f64, String>,
+    notes: &mut Vec<String>,
+) -> Result<Option<f64>, String> {
+    let Some(amount) = amount else {
+        return Ok(None);
+    };
+    let w = match amount {
+        Amount::Fixed(n) => return Ok(Some(n)),
+        Amount::Worked(w) => w,
+    };
+    let value = eval(&w.expr).map_err(|e| format!("{field}: {e}"))?;
+    if !value.is_finite() {
+        return Err(format!("{field}: `{}` isn't a number", w.expr.as_str()));
+    }
+    let kept = value.round().clamp(low, high);
+    notes.push(format!("{field} {} → {}", trim(value), trim(kept)));
+    Ok(Some(kept))
+}
+
+/// A number as a person writes it: `58`, `57.5`.
+fn trim(n: f64) -> String {
+    if n.fract() == 0.0 {
+        format!("{n:.0}")
+    } else {
+        format!("{}", (n * 100.0).round() / 100.0)
+    }
+}
+
 /// How a join brings paths together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -272,7 +433,12 @@ impl Node {
                 }
                 cases.iter().try_for_each(|case| case.validate(0))
             }
-            Self::Call { service, data, .. } => service.validate_data(data.as_ref()),
+            Self::Call { service, data, .. } => {
+                for (field, expr) in data.iter().flat_map(FlowCallData::exprs) {
+                    expr.validate().map_err(|e| inv(format!("{field}: {e}")))?;
+                }
+                service.validate_data(data.as_ref().map(FlowCallData::shape).as_ref())
+            }
             Self::Set { expr, .. } => expr.validate(),
             Self::Delay { hold } => hold.require_positive("for"),
             Self::Wait { until, timeout } => {
@@ -515,6 +681,41 @@ mod tests {
         let mut changed = flow.clone();
         changed.name = Name::try_from("Hall light").unwrap();
         assert_ne!(flow.version(), changed.version());
+    }
+
+    #[test]
+    fn a_fixed_number_is_written_as_it_always_was() {
+        // Settings that may be worked out came later; a flow saved before keeps its version.
+        let flow: Flow = serde_json::from_str(HALLWAY).unwrap();
+        assert_eq!(
+            flow.version(),
+            "11423d5ea455c56d54763b624d5015cb8fb6d8dfca4608eac0489aaf30d88c09"
+        );
+    }
+
+    #[test]
+    fn a_setting_can_be_worked_out_when_the_call_runs() {
+        let data: FlowCallData = serde_json::from_value(serde_json::json!({
+            "brightness_pct": { "expr": "var('level')" }
+        }))
+        .unwrap();
+        assert_eq!(data.exprs().len(), 1);
+        let (resolved, notes) = data.resolve(|_| Ok(57.5)).unwrap();
+        let CallData::Light(light) = resolved;
+        assert_eq!(light.brightness_pct, Some(58));
+        assert_eq!(notes, ["brightness_pct 57.5 → 58"]);
+        // Out of range is brought into it, and says so.
+        let (resolved, notes) = data.resolve(|_| Ok(140.0)).unwrap();
+        let CallData::Light(light) = resolved;
+        assert_eq!(light.brightness_pct, Some(100));
+        assert_eq!(notes, ["brightness_pct 140 → 100"]);
+        assert!(data.resolve(|_| Ok(f64::NAN)).is_err());
+        assert!(
+            serde_json::from_value::<FlowCallData>(serde_json::json!({
+                "brightness_pct": { "expr": "1", "extra": true }
+            }))
+            .is_err()
+        );
     }
 
     #[test]

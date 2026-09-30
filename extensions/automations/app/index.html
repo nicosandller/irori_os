@@ -309,9 +309,15 @@
     .clause .row.test { margin-top: .45rem; gap: .4rem; }
     .clause .row.test > select { flex: 1; }
     .clause .row.test > input { width: 7.5rem; }
-    .clause .row.test > .combo { flex: 1.3; }
+    .clause .row.test > .combo, .clause .row.test > .grow { flex: 1.3; }
     .clause .now-line { font-size: .75rem; margin-top: .35rem; }
-    select.join { margin-bottom: .2rem; }
+    .joiner { display: flex; justify-content: center; margin: -.2rem 0; }
+    .join-toggle { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 999px;
+      background: var(--card); cursor: pointer; font: inherit; font-size: .72rem; color: var(--muted); }
+    .join-toggle span { padding: .05rem .55rem; border-radius: 999px;
+      transition: background-color var(--dur-fast), color var(--dur-fast); }
+    .join-toggle span.on { background: var(--mode-dry); color: var(--mode-ink); font-weight: 600; }
+    .join-toggle:hover { border-color: var(--ember); }
     .functions { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .45rem; }
     .functions .chip { cursor: pointer; border: 1px solid var(--line); }
     .functions .chip:hover { border-color: var(--ember); }

@@ -1,0 +1,1 @@
+{ "id": "x", "name": "X", "nodes": { "off": { "type": "call", "service": "light.turn_off", "entity": "light.a", "data": { "brightness_pct": { "expr": "50" } } } } }

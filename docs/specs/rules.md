@@ -733,7 +733,9 @@ An expression is a single boolean or value. The grammar a person writes:
   No escapes except `\\` and the matching quote (`\'` or `\"`). Entity ids are strings, e.g.
   `'sensor.demo_luminosity_illuminance'`. Mixed int/float comparison is legal: `num('…') < 30`
   does not need `30.0`.
-- Arithmetic: `+ - * /`, unary `-`, parentheses.
+- Arithmetic: `+ - * /`, unary `-`, parentheses. **Every number is a decimal**: a whole number
+  written in an expression is read as one (`30` as `30.0`) and every function gives decimals, so
+  `70 - 12.5` works and `10 / 4` is `2.5`, not CEL's integer `2`. A whole result reads as `45`.
 - Comparisons: `== != < <= > >=` (numbers); `== !=` (bool, string).
 - Logic: `&& || !` (short-circuit *inside* an expression is allowed; it's one node for traces).
 - Ternary: `cond ? a : b` with `a` and `b` the same type.
@@ -752,6 +754,9 @@ An expression is a single boolean or value. The grammar a person writes:
 | `hour()` | int 0–23 | home timezone present (same gate as §5.2) | civil hour in that timezone |
 | `minute()` | int 0–59 | likewise | likewise |
 | `now_ts()` | number | always | Unix seconds from `Clock` (for comparisons in tests; not for display) |
+| `min(a, b)`, `max(a, b)` | number | both numbers | the smaller, the larger |
+| `round(x)` | number | a number | to the nearest whole number, halves away from zero |
+| `clamp(x, low, high)` | number | three numbers | `x` kept between `low` and `high`; an error if `low > high` |
 
 **Entity ids and `var` names are string literals**, not expressions. `num(var('id'))`,
 `on(text('sensor.x'))`, `attr(id, var('k'))` are compile errors — D8's registry check only

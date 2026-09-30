@@ -7,6 +7,7 @@
 
 mod api;
 mod canvas;
+mod checks;
 mod editor;
 mod inspector;
 mod list;
@@ -87,6 +88,8 @@ pub struct Home {
     pub entities: RwSignal<Vec<Entity>>,
     pub devices: RwSignal<Vec<Device>>,
     pub states: RwSignal<BTreeMap<EntityId, EntityState>>,
+    /// The texts each text sensor has reported over the last day, as they're asked for.
+    pub seen: RwSignal<BTreeMap<EntityId, Vec<String>>>,
 }
 
 impl Home {
@@ -99,6 +102,53 @@ impl Home {
                 .map(|entity| entity.name.to_string())
                 .unwrap_or_else(|| id.to_string())
         })
+    }
+
+    /// The texts `entity` has reported over the last day, newest first, and its text now: the
+    /// values a condition or trigger on it can usefully name. Asked for the first time it's
+    /// wanted; the answer arrives a moment later.
+    pub fn texts(&self, entity: &EntityId) -> Vec<String> {
+        let seen = self.seen;
+        let known = seen.with(|seen| seen.get(entity).cloned());
+        let mut texts = known.unwrap_or_else(|| {
+            seen.update_untracked(|seen| {
+                seen.insert(entity.clone(), Vec::new());
+            });
+            let entity = entity.clone();
+            spawn_local(async move {
+                let Ok(states) = bridge().history::<Vec<EntityState>>(entity.as_str()).await else {
+                    return;
+                };
+                let mut texts: Vec<String> = Vec::new();
+                for state in states.iter().rev() {
+                    if let Some(irori_types::State::Sensor(sensor)) = &state.state
+                        && let irori_types::SensorValue::Text(text) = &sensor.value
+                        && !texts.contains(text)
+                    {
+                        texts.push(text.clone());
+                    }
+                }
+                seen.try_update(|seen| {
+                    seen.insert(entity, texts);
+                });
+            });
+            Vec::new()
+        });
+        let now = self.states.with(|states| {
+            states.get(entity).and_then(|state| match &state.state {
+                Some(irori_types::State::Sensor(sensor)) => match &sensor.value {
+                    irori_types::SensorValue::Text(text) => Some(text.clone()),
+                    irori_types::SensorValue::Number(_) => None,
+                },
+                _ => None,
+            })
+        });
+        if let Some(now) = now
+            && !texts.contains(&now)
+        {
+            texts.insert(0, now);
+        }
+        texts
     }
 }
 
@@ -154,6 +204,7 @@ fn App() -> impl IntoView {
         entities: RwSignal::new(Vec::new()),
         devices: RwSignal::new(Vec::new()),
         states: RwSignal::new(BTreeMap::new()),
+        seen: RwSignal::new(BTreeMap::new()),
     };
     provide_context(home);
     let trouble = RwSignal::new(None::<String>);

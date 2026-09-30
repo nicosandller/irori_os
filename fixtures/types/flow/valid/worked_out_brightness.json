@@ -1,0 +1,11 @@
+{
+  "id": "evening_level",
+  "name": "Evening level",
+  "description": "Motion turns the light on at a brightness worked out from the light level.",
+  "nodes": {
+    "motion": { "type": "trigger", "trigger": { "type": "state", "entity": "binary_sensor.demo_movement_occupancy", "to": true } },
+    "level": { "type": "set", "name": "level", "expr": "round(clamp(70 - num('sensor.demo_luminosity_illuminance') / 600 * 25, 45, 70))" },
+    "on": { "type": "call", "service": "light.turn_on", "entity": "light.demo_hall_light", "data": { "brightness_pct": { "expr": "var('level')" } } }
+  },
+  "wires": [["motion", "level"], ["level", "on"]]
+}

@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use irori_flow_types::{
-    CallData, Condition, Flow, JoinMode, Node, NodeId, Port, RuleService, Trigger, TypedValue,
+    Amount, Condition, Flow, JoinMode, Node, NodeId, Port, RuleService, Trigger, TypedValue,
     WaitUntil,
 };
 use irori_types::{
@@ -112,10 +112,10 @@ pub fn family(node: &Node) -> &'static str {
 pub fn label(node: &Node) -> &'static str {
     match node {
         Node::Trigger { .. } => "When",
-        Node::Gate { .. } => "If",
+        Node::Gate { .. } => "Condition",
         Node::Switch { .. } => "Choose",
         Node::Call { .. } => "Do",
-        Node::Set { .. } => "Remember",
+        Node::Set { .. } => "Calculate",
         Node::Delay { .. } => "Delay",
         Node::Wait { .. } => "Wait until",
         Node::Join { .. } => "Join",
@@ -189,6 +189,12 @@ fn value_words(value: &TypedValue, entity: &EntityId, home: &Home) -> String {
 
 /// A condition as a sentence.
 pub fn condition_words(condition: &Condition, home: &Home) -> String {
+    if let Some(checks) = serde_json::to_value(condition)
+        .ok()
+        .and_then(|value| crate::checks::Checks::from_condition(&value))
+    {
+        return checks.words(home);
+    }
     match condition {
         Condition::State {
             entity,
@@ -205,7 +211,7 @@ pub fn condition_words(condition: &Condition, home: &Home) -> String {
             }
             (None, None) => home.name(entity),
         },
-        Condition::Expr { expr } => crate::inspector::expr_words(expr.as_str(), home)
+        Condition::Expr { expr } => crate::checks::expr_words(expr.as_str(), home)
             .unwrap_or_else(|| expr.as_str().to_owned()),
         Condition::Time { .. } => "in the time window".into(),
         Condition::Sun { .. } => "the sun is where it should be".into(),
@@ -291,21 +297,28 @@ pub fn sentence(node: &Node, home: &Home) -> String {
                 RuleService::LightTurnOff | RuleService::SwitchTurnOff => "Turn off",
                 RuleService::LightToggle | RuleService::SwitchToggle => "Toggle",
             };
-            match data {
-                Some(CallData::Light(light)) => {
-                    let mut text = format!("{verb} {name}");
-                    if let Some(pct) = light.brightness_pct {
-                        text.push_str(&format!(" at {pct}%"));
-                    } else if let Some(b) = light.brightness {
-                        text.push_str(&format!(" at {}%", u16::from(b) * 100 / 255));
-                    }
-                    if let Some(k) = light.color_temp_kelvin {
-                        text.push_str(&format!(", {k} K"));
-                    }
-                    text
+            let Some(light) = data else {
+                return format!("{verb} {name}");
+            };
+            let mut text = format!("{verb} {name}");
+            match (&light.brightness_pct, &light.brightness) {
+                (Some(Amount::Fixed(pct)), _) => text.push_str(&format!(" at {pct}%")),
+                (Some(Amount::Worked(w)), _) | (None, Some(Amount::Worked(w))) => {
+                    text.push_str(&format!(" at {}", worked_words(w.expr.as_str())));
                 }
-                None => format!("{verb} {name}"),
+                (None, Some(Amount::Fixed(b))) => {
+                    text.push_str(&format!(" at {}%", u16::from(*b) * 100 / 255));
+                }
+                (None, None) => {}
             }
+            match &light.color_temp_kelvin {
+                Some(Amount::Fixed(k)) => text.push_str(&format!(", {k} K")),
+                Some(Amount::Worked(w)) => {
+                    text.push_str(&format!(", {} K", worked_words(w.expr.as_str())));
+                }
+                None => {}
+            }
+            text
         }
         Node::Set { name, expr } => format!("{name} = {}", expr.as_str()),
         Node::Delay { hold } => format!("wait {}", hold.as_str()),
@@ -356,6 +369,19 @@ pub fn sentence(node: &Node, home: &Home) -> String {
             .as_ref()
             .map(|r| r.as_str().to_owned())
             .unwrap_or_else(|| "end the whole run".into()),
+    }
+}
+
+/// A worked-out setting as it reads on a node: the calculation's name, or the expression.
+fn worked_words(expr: &str) -> String {
+    let name = expr
+        .trim()
+        .strip_prefix("var(")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .map(|inner| inner.trim().trim_matches(['\'', '"']));
+    match name {
+        Some(name) => format!("the calculated {name}"),
+        None => format!("“{expr}”"),
     }
 }
 
@@ -518,20 +544,11 @@ pub const TEMPLATES: &[Template] = &[
     },
     Template {
         group: "Decide",
-        label: "If something is…",
+        label: "Condition",
         base: "check",
         make: |home| {
-            serde_json::json!({ "type": "gate", "condition": {
-            "type": "state", "entity": pick(home, &[EntityKind::Switch, EntityKind::BinarySensor, EntityKind::Light]), "is": true } })
-        },
-    },
-    Template {
-        group: "Decide",
-        label: "If a number…",
-        base: "compare",
-        make: |home| {
-            serde_json::json!({ "type": "gate", "condition": {
-            "type": "expr", "expr": format!("num('{}') < 30", first_number_sensor(home)) } })
+            serde_json::json!({ "type": "gate",
+                "condition": crate::checks::Checks::starter(home).render() })
         },
     },
     Template {
@@ -576,8 +593,8 @@ pub const TEMPLATES: &[Template] = &[
     },
     Template {
         group: "Do",
-        label: "Remember a value",
-        base: "remember",
+        label: "Calculate a value",
+        base: "calculate",
         make: |_| serde_json::json!({ "type": "set", "name": "level", "expr": "50" }),
     },
     Template {

@@ -23,6 +23,8 @@ const ENTITY_FNS: &[&str] = &[
     "attr",
 ];
 const CLOCK_FNS: &[&str] = &["hour", "minute", "now_ts"];
+/// Maths on numbers: `min(a, b)`, `max(a, b)`, `round(x)`, `clamp(x, low, high)`.
+const MATH_FNS: &[&str] = &["min", "max", "round", "clamp"];
 const OPS: &[&str] = &[
     "_&&_", "_||_", "!_", "_+_", "_-_", "_*_", "_/_", "_==_", "_!=_", "_>=_", "_<=_", "_>_", "_<_",
     "-_", "_?_:_",
@@ -638,7 +640,10 @@ fn walk_ast(
                         "var({var_name:?}): no set for this name in the rule"
                     ));
                 }
-            } else if !OPS.contains(&name) && !CLOCK_FNS.contains(&name) {
+            } else if !OPS.contains(&name)
+                && !CLOCK_FNS.contains(&name)
+                && !MATH_FNS.contains(&name)
+            {
                 return Err(format!("unknown function {name}()"));
             }
             for arg in &call.args {
@@ -655,7 +660,9 @@ fn walk_ast(
 fn check_arity(name: &str, n: usize) -> Result<(), String> {
     let expected = match name {
         "num" | "on" | "text" | "brightness" | "available" | "unknown" | "var" => Some(1),
-        "attr" => Some(2),
+        "attr" | "min" | "max" => Some(2),
+        "round" => Some(1),
+        "clamp" => Some(3),
         "hour" | "minute" | "now_ts" => Some(0),
         "!_" | "-_" => Some(1),
         "_&&_" | "_||_" | "_+_" | "_-_" | "_*_" | "_/_" | "_==_" | "_!=_" | "_>=_" | "_<=_"
@@ -728,6 +735,14 @@ fn infer_type(expr: &IdedExpr, sets: &BTreeMap<String, ExprKind>) -> Result<Expr
             Ok(match name {
                 "num" | "brightness" | "hour" | "minute" | "now_ts" | "_+_" | "_-_" | "_*_"
                 | "_/_" | "-_" => ExprKind::Number,
+                "min" | "max" | "round" | "clamp" => {
+                    for arg in &call.args {
+                        if !matches!(infer_type(arg, sets)?, ExprKind::Number | ExprKind::Scalar) {
+                            return Err(format!("{name}() takes numbers"));
+                        }
+                    }
+                    ExprKind::Number
+                }
                 "on" | "available" | "unknown" | "_&&_" | "_||_" | "!_" | "_==_" | "_!=_"
                 | "_>=_" | "_<=_" | "_>_" | "_<_" => ExprKind::Bool,
                 "text" => ExprKind::String,

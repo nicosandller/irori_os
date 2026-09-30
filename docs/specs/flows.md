@@ -80,14 +80,35 @@ Unknown fields are rejected everywhere.
 | `trigger` | `trigger`: a rules.md §5 trigger (`state`, `time`, `sun`, `event`, `startup`) | `out` | Starts a run. Has no inputs |
 | `gate` | `condition`: a rules.md §6 condition (incl. `all`/`any`/`not`) | `yes`, `no` | Checks once, now |
 | `switch` | `cases`: 1–16 conditions | `case_1` … `case_N`, `else` | The first case that holds |
-| `call` | `service`, `entity`, `data?` (rules.md §7.1) | `out`, `error` | Calls a service. A failure goes to `error`; if nothing is wired there, the run ends with `error` |
-| `set` | `name`, `expr` | `out` | Sets a run variable, read with `var('name')` |
+| `call` | `service`, `entity`, `data?` (rules.md §7.1, and §2.2.1) | `out`, `error` | Calls a service. A failure goes to `error`; if nothing is wired there, the run ends with `error` |
+| `set` | `name`, `expr` | `out` | Works out a run variable, read with `var('name')` or by a later `call`'s settings. The canvas calls it "Calculate" |
 | `delay` | `for`: duration | `out` | Waits |
 | `wait` | `until`: a rules.md §7.3 matcher, `timeout`: duration | `matched`, `timeout` | Waits for a level to hold (for `for`, if given) |
 | `join` | `mode`: `all` \| `first`; `timeout` (required for `all`) | `out`, and `timeout` for `all` | Merges paths of one run |
 | `stop` | `reason?` | — | Ends the whole run, `completed` |
 
 `from` without a port means `out`; naming `out` on a node that has no `out` port is an error.
+
+#### 2.2.1 Settings worked out when the call runs
+
+Each number in a light's `data` (`brightness`, `brightness_pct`, `color_temp_kelvin`) is either
+written down or an object `{ "expr": "…" }`: an expression giving a number, worked out from the
+home as it is when the call runs. Typically it reads a calculation made earlier in the run:
+
+```json
+"level": { "type": "set", "name": "level", "expr": "round(clamp(70 - num('sensor.demo_luminosity_illuminance') / 600 * 25, 45, 70))" },
+"on":    { "type": "call", "service": "light.turn_on", "entity": "light.demo_hall_light",
+           "data": { "brightness_pct": { "expr": "var('level')" } } }
+```
+
+- It's checked like any other expression (§4): it must give a number, every `var()` it reads must
+  be set on every path to the call, and what it reads is part of what the flow watches.
+- The result is rounded and brought into the field's range (1–100 for `brightness_pct`); the
+  step's note says so ("brightness_pct 57.5 → 58"), and the call detail holds the number sent.
+- If it can't be worked out (an unavailable sensor, say), nothing is sent and the call fails:
+  `error` if that's wired, the run ends with `error` if not.
+- A number written down is stored as it always was, so flows saved before this keep their
+  version.
 
 ### 2.3 How a run goes
 

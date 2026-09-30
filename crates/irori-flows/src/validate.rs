@@ -260,6 +260,9 @@ fn node_exprs(node: &Node) -> Vec<&ExprString> {
             until: WaitUntil::Expr { expr, .. },
             ..
         } => out.push(expr),
+        Node::Call {
+            data: Some(data), ..
+        } => out.extend(data.exprs().into_iter().map(|(_, expr)| expr)),
         _ => {}
     }
     out
@@ -384,7 +387,30 @@ fn check_home(
                 service,
                 entity,
                 data,
-            } => irori_rules::check_call("call", *service, entity, data.as_ref(), registry),
+            } => {
+                let shape = data.as_ref().map(irori_flow_types::FlowCallData::shape);
+                let mut found =
+                    irori_rules::check_call("call", *service, entity, shape.as_ref(), registry);
+                for (field, expr) in data.iter().flat_map(irori_flow_types::FlowCallData::exprs) {
+                    let reason = match irori_rules::inspect(expr, registry, vars) {
+                        Ok(inspected)
+                            if matches!(inspected.kind, VarKind::Number | VarKind::Scalar) =>
+                        {
+                            continue;
+                        }
+                        Ok(inspected) => format!(
+                            "{field} has to work out to a number, but this gives {}",
+                            kind_word(inspected.kind)
+                        ),
+                        Err(reason) => reason,
+                    };
+                    found.push(irori_rules::Problem {
+                        path: format!("data/{field}"),
+                        reason,
+                    });
+                }
+                found
+            }
             Node::Set { expr, .. } => match irori_rules::inspect(expr, registry, vars) {
                 Ok(_) => Vec::new(),
                 Err(reason) => vec![irori_rules::Problem {

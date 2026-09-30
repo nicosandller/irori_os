@@ -97,6 +97,34 @@ const AIR_HUMIDITY: &str = "air-monitor-humidity";
 const AIR_CO2: &str = "air-monitor-co2";
 const TV: &str = "tv";
 const TV_STATE: &str = "tv-state";
+const TV_AREA: &str = "tv-area-mmwave-sensor";
+const TV_AREA_OCCUPANCY: &str = "tv-area-mmwave-sensor-occupancy";
+
+/// The living room's lights: a device, its light, the id it asks for, its name, and whether it
+/// dims. The ceiling light is on a relay, so it's only on or off.
+const ROOM_LIGHTS: [(&str, &str, &str, &str, bool); 3] = [
+    (
+        "tv-area-lights",
+        "tv-area-lights-light",
+        "demo_tv_area_lights",
+        "Demo TV area lights",
+        true,
+    ),
+    (
+        "living-room-light",
+        "living-room-light-light",
+        "demo_living_room_light",
+        "Demo living room light",
+        false,
+    ),
+    (
+        "dining-light",
+        "dining-light-light",
+        "demo_dining_light",
+        "Demo dining light",
+        true,
+    ),
+];
 
 /// The contact sensors: a device, its contact and its battery, what it's on, and where.
 const CONTACTS: [(&str, &str, &str, &str, BinarySensorClass, &str); 3] = [
@@ -145,6 +173,21 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
         color_temp_kelvin: None,
         rgb: None,
     };
+    let mut room: BTreeMap<&'static str, LightState> = ROOM_LIGHTS
+        .iter()
+        .map(|(_, light, _, _, dims)| {
+            (
+                *light,
+                LightState {
+                    on: false,
+                    brightness: dims.then_some(150),
+                    color_mode: None,
+                    color_temp_kelvin: None,
+                    rgb: None,
+                },
+            )
+        })
+        .collect();
     let mut plug_on = false;
     ctx.report_state(report(LAMP_LIGHT, Some(State::Light(lamp.clone())), None)?);
     ctx.report_state(report(
@@ -152,6 +195,9 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
         Some(State::Light(hall.clone())),
         None,
     )?);
+    for (light, state) in &room {
+        ctx.report_state(report(light, Some(State::Light(state.clone())), None)?);
+    }
     ctx.report_state(report(
         PLUG_SWITCH,
         Some(State::Switch(SwitchState { on: plug_on })),
@@ -185,6 +231,11 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
                         apply_light(&mut hall, None);
                         Ok((HALL_LIGHT_ENTITY, State::Light(hall.clone())))
                     }
+                    (light, Service::LightTurnOn(_) | Service::LightTurnOff)
+                        if room.contains_key(light) =>
+                    {
+                        room_light(&mut room, light, &call.service)
+                    }
                     (PLUG_SWITCH, Service::SwitchTurnOn | Service::SwitchTurnOff) => {
                         plug_on = matches!(call.service, Service::SwitchTurnOn);
                         Ok((PLUG_SWITCH, State::Switch(SwitchState { on: plug_on })))
@@ -211,6 +262,27 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
             }
         }
     }
+}
+
+/// Turns one of the living room's lights on or off; a relay has no brightness to take.
+fn room_light(
+    room: &mut BTreeMap<&'static str, LightState>,
+    light: &str,
+    service: &Service,
+) -> Result<(&'static str, State), String> {
+    let (key, state) = room
+        .iter_mut()
+        .find(|(key, _)| **key == light)
+        .ok_or_else(|| format!("the demo has no light `{light}`"))?;
+    let dims = state.brightness.is_some();
+    match service {
+        Service::LightTurnOn(data) => apply_light(state, Some(data)),
+        _ => apply_light(state, None),
+    }
+    if !dims {
+        state.brightness = None;
+    }
+    Ok((*key, State::Light(state.clone())))
 }
 
 fn apply_light(light: &mut LightState, on: Option<&LightTurnOn>) {
@@ -286,7 +358,14 @@ fn report_sensors(ctx: &ProtocolContext, hour: f64, plug_on: bool) -> Result<(),
         })),
         None,
     )?);
+    ctx.report_state(flag(TV_AREA_OCCUPANCY, watching(hour))?);
     Ok(())
+}
+
+/// Someone on the sofa by the TV: breakfast news, and the evening, a little before the TV goes
+/// on until a little after it's off.
+fn watching(hour: f64) -> bool {
+    during(hour, &[(6.8, 8.1), (18.2, 23.8)])
 }
 
 /// Whether `hour` falls in one of `spans`, each from one hour to (not including) another.
@@ -586,6 +665,43 @@ async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
     .await?;
 
     ctx.describe_device(device(
+        TV_AREA,
+        "Demo TV area mmWave sensor",
+        "Virtual mmWave",
+        "Living room",
+    )?)
+    .await?;
+    ctx.describe_entity(flag_entity(
+        TV_AREA_OCCUPANCY,
+        "Occupancy",
+        TV_AREA,
+        BinarySensorClass::Occupancy,
+    )?)
+    .await?;
+
+    for (handle, light, object_id, name, dims) in ROOM_LIGHTS {
+        let model = if dims {
+            "Virtual dimmable light"
+        } else {
+            "Virtual light on a relay"
+        };
+        ctx.describe_device(device(handle, name, model, "Living room")?)
+            .await?;
+        ctx.describe_entity(EntityDescription {
+            unique_id: id(light)?,
+            name: None,
+            device_unique_id: Some(id(handle)?),
+            suggested_object_id: Some(ObjectId::try_from(object_id)?),
+            capabilities: Capabilities::Light(LightCapabilities {
+                brightness: dims,
+                color_temp_kelvin: None,
+                rgb: false,
+            }),
+        })
+        .await?;
+    }
+
+    ctx.describe_device(device(
         AIR,
         "Demo air monitor",
         "Virtual air quality monitor",
@@ -809,9 +925,56 @@ mod tests {
         for state in ["off", "idle", "playing", "paused"] {
             assert!(hours.iter().any(|h| tv(*h) == state), "{state}");
         }
+        // Whenever something's on the TV, someone's on the sofa to see it.
+        for hour in &hours {
+            if tv(*hour) != "off" {
+                assert!(watching(*hour), "{hour}");
+            }
+        }
+        assert!(count(&watching) < hours.len() / 2);
         let co2s: Vec<f64> = hours.iter().map(|h| co2(*h)).collect();
         assert!(co2s.iter().any(|c| *c > 900.0) && co2s.iter().any(|c| *c < 500.0));
         assert!(hours.iter().all(|h| (20.0..=90.0).contains(&humidity(*h))));
+    }
+
+    #[test]
+    fn the_living_room_lights_dim_except_the_one_on_a_relay() {
+        let mut room: BTreeMap<&'static str, LightState> = ROOM_LIGHTS
+            .iter()
+            .map(|(_, light, _, _, dims)| {
+                let state = LightState {
+                    on: false,
+                    brightness: dims.then_some(150),
+                    color_mode: None,
+                    color_temp_kelvin: None,
+                    rgb: None,
+                };
+                (*light, state)
+            })
+            .collect();
+        let dim = Service::LightTurnOn(LightTurnOn {
+            brightness: Some(64),
+            ..LightTurnOn::default()
+        });
+        let Ok((_, State::Light(tv_area))) = room_light(&mut room, "tv-area-lights-light", &dim)
+        else {
+            panic!("the TV area lights take a call");
+        };
+        assert!(tv_area.on);
+        assert_eq!(tv_area.brightness, Some(64));
+        let Ok((_, State::Light(ceiling))) = room_light(&mut room, "living-room-light-light", &dim)
+        else {
+            panic!("the ceiling light takes a call");
+        };
+        assert!(ceiling.on);
+        assert_eq!(ceiling.brightness, None);
+        let Ok((_, State::Light(off))) =
+            room_light(&mut room, "tv-area-lights-light", &Service::LightTurnOff)
+        else {
+            panic!("and turns off");
+        };
+        assert!(!off.on);
+        assert!(room_light(&mut room, "garage-light", &Service::LightTurnOff).is_err());
     }
 
     #[test]

@@ -711,3 +711,100 @@ fn a_resync_looks_at_every_wait_again() {
     let (calls, _, _) = effects(&mut engine, at(40));
     assert_eq!(calls, [(id(LIGHT), "light.turn_off".to_owned())]);
 }
+
+/// Motion works out a brightness from the light level, and the light takes it.
+fn worked_out(level: &str) -> Flow {
+    flow(serde_json::json!({
+        "id": "worked_out", "name": "Worked out",
+        "nodes": {
+            "motion": { "type": "trigger", "trigger": { "type": "state", "entity": MOTION, "to": true } },
+            "level": { "type": "set", "name": "level", "expr": level },
+            "on": { "type": "call", "service": "light.turn_on", "entity": LIGHT,
+                    "data": { "brightness_pct": { "expr": "var('level')" } } }
+        },
+        "wires": [["motion", "level"], ["level", "on"]]
+    }))
+}
+
+#[test]
+fn a_call_takes_a_setting_worked_out_earlier_in_the_run() {
+    let level = format!("round(clamp(70 - num('{LUX}') / 600 * 25, 45, 70))");
+    let flow = worked_out(&level);
+    assert!(validate::check(&flow, &registry()).is_empty());
+    let mut engine = engine_with(flow);
+    change(&mut engine, lux(300.0, 5));
+    change(&mut engine, flag(MOTION, true, 10));
+    let asked = engine.take_effects();
+    let Some(Effect::Call { call_id, data, .. }) = asked.first() else {
+        panic!("a call, not {asked:?}");
+    };
+    let Some(irori_flow_types::CallData::Light(light)) = data else {
+        panic!("light settings");
+    };
+    // 70 - 300 / 600 * 25 = 57.5, rounded.
+    assert_eq!(light.brightness_pct, Some(58));
+    engine.call_finished(*call_id, Ok(()), at(10));
+    let (_, done, _) = effects(&mut engine, at(10));
+    let on = done[0]
+        .steps
+        .iter()
+        .find(|s| s.node.as_str() == "on")
+        .expect("as written");
+    assert_eq!(
+        on.call.as_ref().expect("as written").data,
+        Some(serde_json::json!({ "brightness_pct": 58 }))
+    );
+}
+
+#[test]
+fn a_worked_out_setting_is_checked_like_any_expression() {
+    // Text where a number belongs.
+    let problems = validate::check(&worked_out("'bright'"), &registry());
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.node.as_ref().is_some_and(|n| n.as_str() == "on")
+                && p.message.contains("work out to a number")),
+        "{problems:#?}"
+    );
+    // A variable nothing sets before the call.
+    let mut unset = worked_out("50");
+    unset.wires.retain(|w| w.to.as_str() != "on");
+    unset
+        .wires
+        .push(serde_json::from_value(serde_json::json!(["motion", "on"])).expect("as written"));
+    let problems = validate::check(&unset, &registry());
+    assert!(
+        problems.iter().any(|p| p.message.contains("var('level')")),
+        "{problems:#?}"
+    );
+}
+
+#[test]
+fn a_setting_that_cant_be_worked_out_is_a_failed_call() {
+    let mut direct = worked_out("1");
+    direct.nodes.remove(&"level".parse().expect("as written"));
+    direct.wires =
+        vec![serde_json::from_value(serde_json::json!(["motion", "on"])).expect("as written")];
+    if let Some(irori_flow_types::Node::Call {
+        data: Some(data), ..
+    }) = direct.nodes.get_mut(&"on".parse().expect("as written"))
+    {
+        data.brightness_pct =
+            serde_json::from_value(serde_json::json!({ "expr": format!("num('{LUX}')") }))
+                .expect("as written");
+    }
+    assert!(validate::check(&direct, &registry()).is_empty());
+    let mut engine = engine_with(direct);
+    let mut offline = lux(8.0, 5);
+    offline.availability = Availability::Unavailable;
+    change(&mut engine, offline);
+    change(&mut engine, flag(MOTION, true, 10));
+    let (calls, done, _) = effects(&mut engine, at(10));
+    assert!(calls.is_empty(), "nothing is sent");
+    assert!(
+        matches!(&done[0].outcome, Some(Outcome::Error { node, message }) if node.as_str() == "on" && message.contains("unavailable")),
+        "{:?}",
+        done[0].outcome
+    );
+}
