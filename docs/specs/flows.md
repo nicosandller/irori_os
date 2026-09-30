@@ -271,6 +271,7 @@ What the page calls through the bridge's `rpc`:
 | `timeline` | `id`, `from`, `to` | Watched entities' changes, near-misses and runs in the window |
 | `test` | §7 | The run record |
 | `backtest` | §7 | Would-be runs, actual runs, covered window |
+| `live` | `id`, `after?` | What the canvas plays while the flow is open: runs finished and near-misses since `after` (none without it; at most 5 each, oldest first), the triggers holding a `for` and when they'd fire, and `now` to ask with next time |
 | `tests.get` / `tests.save` | `id`, `settings` | How the page last set up a test of this flow (up to 16 KB, kept as given), so it runs again the same way. Deleted with the flow |
 
 ---
