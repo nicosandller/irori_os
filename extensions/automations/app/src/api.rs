@@ -2,7 +2,7 @@
 
 use irori_flow_types::Flow;
 use irori_flow_types::api::{
-    ActiveRun, Backtest, FlowDetail, FlowSummary, Problem, RunSummary, Saved, TestRequest,
+    ActiveRun, Backtest, FlowDetail, FlowSummary, Live, Problem, RunSummary, Saved, TestRequest,
     Timeline, VersionEntry,
 };
 use irori_flow_types::trace::{NearMiss, RunRecord};
@@ -109,4 +109,9 @@ pub async fn save_test_settings(id: &str, settings: &Value) -> Result<Value, Str
 
 pub async fn backtest(id: &str, draft: Option<&Flow>) -> Result<Backtest, String> {
     call("backtest", json!({ "id": id, "flow": draft })).await
+}
+
+/// What happened in the flow since `after`, for the canvas to play (`None`: just start watching).
+pub async fn live(id: &str, after: Option<Timestamp>) -> Result<Live, String> {
+    call("live", json!({ "id": id, "after": after })).await
 }

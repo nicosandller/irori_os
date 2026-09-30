@@ -541,6 +541,20 @@ impl Engine {
             .collect()
     }
 
+    /// The triggers of `flow` holding a `for`: each one, and when it fires if it stays.
+    pub fn holding(&self, flow: &RuleId) -> Vec<(NodeId, Timestamp)> {
+        self.flows
+            .get(flow)
+            .map(|loaded| {
+                loaded
+                    .holds
+                    .iter()
+                    .map(|(node, until)| (node.clone(), *until))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// How many runs of `flow` are going.
     pub fn running(&self, flow: &RuleId) -> usize {
         self.runs

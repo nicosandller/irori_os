@@ -11,6 +11,7 @@ mod checks;
 mod editor;
 mod inspector;
 mod list;
+mod live;
 mod model;
 mod panels;
 mod time;

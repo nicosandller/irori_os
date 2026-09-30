@@ -134,6 +134,27 @@ pub struct TokenAt {
     pub holding_since: Option<Timestamp>,
 }
 
+/// What the canvas shows happening, live (`live`): runs that finished since it last asked,
+/// near-misses since then, and triggers counting down a `for`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Live {
+    /// The engine's clock now; ask again with this as `after`.
+    pub now: Timestamp,
+    /// Finished since `after`, oldest first; at most a handful.
+    pub runs: Vec<RunRecord>,
+    /// Since `after`, oldest first.
+    pub near_misses: Vec<crate::trace::NearMiss>,
+    /// Triggers whose value has to hold a while longer before they fire.
+    pub holding: Vec<Holding>,
+}
+
+/// A trigger holding: its value matched, and fires at `until` if it stays.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Holding {
+    pub node: NodeId,
+    pub until: Timestamp,
+}
+
 /// What `test` asks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TestRequest {

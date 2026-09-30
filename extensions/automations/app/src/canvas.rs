@@ -9,7 +9,7 @@ use leptos::prelude::*;
 use web_sys::wasm_bindgen::JsCast;
 
 use crate::editor::{Editing, Selected, View};
-use crate::{Home, model, time};
+use crate::{Home, live, model, time};
 
 /// A place for a new node: right of everything, level with the first.
 pub fn free_spot(flow: &Flow) -> [f64; 2] {
@@ -62,6 +62,10 @@ pub fn Canvas() -> impl IntoView {
     // The node being dragged, so it can lift while it moves.
     let dragging = RwSignal::new(None::<NodeId>);
     let root = NodeRef::<leptos::html::Div>::new();
+    // The flow playing out as it runs.
+    let show = live::Show::new();
+    provide_context(show);
+    live::watch(ed, show);
 
     // What's drawn: the draft, or the definition a run ran.
     let flow = Memo::new(move |_| match ed.view.get() {
@@ -407,6 +411,8 @@ pub fn Canvas() -> impl IntoView {
                             let d = model::curve(a, b);
                             let class = if selected == Selected::Wire(i) {
                                 "wire selected"
+                            } else if !tracing && show.flowing.with(|f| f.contains_key(wire)) {
+                                "wire flowing"
                             } else if taken.contains(wire) {
                                 "wire taken"
                             } else if tracing {
@@ -472,7 +478,15 @@ pub fn Canvas() -> impl IntoView {
                     _ => None,
                 },
             }}
-            <div class="hint">"Click a node to open it. Drag a port on its right to another node to wire them."</div>
+            {move || match show.latest.get() {
+                Some((n, words)) if matches!(ed.view.get(), View::Edit) => view! {
+                    // Keyed by which playing it is, so each one slides in afresh.
+                    <div class="hint live-strip" data-n=n.to_string()><span class="live-dot"></span>{words}</div>
+                }.into_any(),
+                _ => view! {
+                    <div class="hint">"Click a node to open it. Drag a port on its right to another node to wire them."</div>
+                }.into_any(),
+            }}
             <div class="zoom">
                 <button class="btn small" on:click=move |_| zoom.update(|z| *z = (*z * 1.2).min(2.0))>"+"</button>
                 <button class="btn small" on:click=move |_| zoom.update(|z| *z = (*z / 1.2).max(0.3))>"−"</button>
@@ -650,9 +664,43 @@ fn NodeCard(
 ) -> impl IntoView {
     let ed = expect_context::<Editing>();
     let home = expect_context::<Home>();
+    let show = expect_context::<live::Show>();
     let node = {
         let id = id.clone();
         Memo::new(move |_| flow.with(|f| f.as_ref().and_then(|f| f.nodes.get(&id).cloned())))
+    };
+    // How this node came out in what's playing now, if it's in it.
+    let lit = {
+        let id = id.clone();
+        Memo::new(move |_| {
+            if !matches!(ed.view.get(), View::Edit) {
+                return None;
+            }
+            show.lit.with(|lit| lit.get(&id).cloned())
+        })
+    };
+    // A trigger counting down its `for`: how far along, and how long is left.
+    let holding = {
+        let id = id.clone();
+        move || {
+            let until = show
+                .holding
+                .with(|h| h.iter().find(|h| h.node == id).map(|h| h.until))?;
+            let hold = node.with(|n| match n {
+                Some(Node::Trigger {
+                    trigger:
+                        irori_flow_types::Trigger::State {
+                            hold: Some(hold), ..
+                        },
+                }) => Some(hold.millis()),
+                _ => None,
+            })?;
+            let left = (time::millis(until) - time::millis(time::now())).max(0);
+            let hold = hold.max(1);
+            #[allow(clippy::cast_precision_loss)]
+            let done = (1.0 - left as f64 / hold as f64).clamp(0.0, 1.0) * 100.0;
+            Some((done, left))
+        }
     };
     // Selected while editing, its form is open in the panel over the canvas.
     let open = {
@@ -703,6 +751,10 @@ fn NodeCard(
         }
         if dragging.get().as_ref() == Some(&for_class) {
             class.push_str(" dragging");
+        }
+        if let Some(lit) = lit.get() {
+            class.push(' ');
+            class.push_str(lit.mark.class());
         }
         class
     };
@@ -829,6 +881,16 @@ fn NodeCard(
                 }),
                 _ => None,
             }}
+            {move || lit.get().map(|lit| view! {
+                // Keyed by the playing, so the badge pops in again for the next run.
+                <span class=format!("mark {}", lit.mark.class()) data-show=lit.show.to_string()>{lit.mark.badge()}</span>
+                {lit.note.map(|note| { let title = note.clone(); view! { <span class="live-note" title=title>{note}</span> } })}
+            })}
+            {move || holding().map(|(done, left)| view! {
+                <div class="hold-bar" title=format!("fires in {} if it stays", time::span(left))>
+                    <span style=format!("--from:{done}%; --ms:{left}ms")></span>
+                </div>
+            })}
             {move || live_value().map(|value| view! { <span class="now">{format!("now {value}")}</span> })}
             {move || status().map(|s| view! { <div class="status">{s}</div> })}
         </div>

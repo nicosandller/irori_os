@@ -264,6 +264,26 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     .expect("runs");
     assert_eq!(runs[0]["outcome"], "aborted", "{runs}");
 
+    // The canvas asks what happened since it last looked: nothing, the first time; since a
+    // moment it names, the run that just ended.
+    let first = rpc::handle(
+        &mut service,
+        "live",
+        serde_json::json!({ "id": "hallway_motion_light" }),
+    )
+    .await
+    .expect("live");
+    assert_eq!(first["runs"], serde_json::json!([]), "{first}");
+    let since = rpc::handle(
+        &mut service,
+        "live",
+        serde_json::json!({ "id": "hallway_motion_light", "after": "2000-01-01T00:00:00Z" }),
+    )
+    .await
+    .expect("live");
+    assert_eq!(since["runs"][0]["outcome"], "aborted", "{since}");
+    assert!(since["now"].is_string());
+
     let backtest = rpc::handle(
         &mut service,
         "backtest",

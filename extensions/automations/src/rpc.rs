@@ -2,7 +2,8 @@
 
 use irori_flow_types::Flow;
 use irori_flow_types::api::{
-    Armed, Backtest, FlowDetail, FlowSummary, Problem, Saved, Severity, TestRequest, Timeline,
+    Armed, Backtest, FlowDetail, FlowSummary, Holding, Live, Problem, Saved, Severity, TestRequest,
+    Timeline,
 };
 use irori_flow_types::trace::{RunRecord, TestKind};
 use irori_flows::{sim, validate};
@@ -195,6 +196,53 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
             }
             service.store.keep_test_settings(&id, &settings)?;
             answer(json!({}))
+        }
+        "live" => {
+            #[derive(Deserialize)]
+            struct Since {
+                id: RuleId,
+                #[serde(default)]
+                after: Option<Timestamp>,
+            }
+            /// Most runs one answer brings: the canvas plays them, and more would only queue up.
+            const MOST: usize = 5;
+            let Since { id, after } = params(raw)?;
+            let now = now();
+            let newer = |at: &Timestamp| after.is_none_or(|after| *at > after);
+            // With nothing to go on, what already happened is history, not news.
+            let (runs, near_misses) = if after.is_none() {
+                (Vec::new(), Vec::new())
+            } else {
+                let mut runs: Vec<RunRecord> = service
+                    .store
+                    .runs(&id)
+                    .into_iter()
+                    .filter(|run| run.finished_at.as_ref().is_some_and(newer))
+                    .take(MOST)
+                    .collect();
+                runs.reverse();
+                let mut misses: Vec<_> = service
+                    .store
+                    .near_misses(&id)
+                    .into_iter()
+                    .filter(|miss| newer(&miss.at))
+                    .take(MOST)
+                    .collect();
+                misses.reverse();
+                (runs, misses)
+            };
+            let holding = service
+                .engine
+                .holding(&id)
+                .into_iter()
+                .map(|(node, until)| Holding { node, until })
+                .collect();
+            answer(Live {
+                now,
+                runs,
+                near_misses,
+                holding,
+            })
         }
         "nearmiss.list" => {
             let ById { id } = params(raw)?;

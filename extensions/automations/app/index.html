@@ -311,6 +311,54 @@
     .clause .row.test > input { width: 7.5rem; }
     .clause .row.test > .combo, .clause .row.test > .grow { flex: 1.3; }
     .clause .now-line { font-size: .75rem; margin-top: .35rem; }
+    /* The flow playing out as it runs. */
+    .node.lit { transition: border-color var(--dur-fast), box-shadow var(--dur-base); }
+    .node.lit-fired { border-color: var(--ember); animation: lit-flash 700ms var(--ease-spring);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--ember) 28%, transparent); }
+    .node.lit-yes, .node.lit-done { border-color: var(--ok);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 24%, transparent); }
+    .node.lit-no { border-color: var(--no); opacity: .92;
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--no) 18%, transparent); }
+    .node.lit-failed { border-color: var(--error); animation: lit-shake 380ms ease;
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--error) 26%, transparent); }
+    .node.lit-waiting { border-color: var(--live); }
+    .node.lit-missed { animation: lit-shiver 420ms ease; border-color: color-mix(in srgb, var(--muted) 70%, transparent); }
+    .node .mark { position: absolute; top: -9px; left: -9px; width: 22px; height: 22px; border-radius: 50%;
+      display: grid; place-items: center; font-size: .75rem; font-weight: 700; color: #fff; z-index: 2;
+      background: var(--ok); box-shadow: 0 2px 6px rgb(0 0 0 / .25);
+      animation: mark-pop 420ms var(--ease-spring) backwards; }
+    .node .mark.lit-fired { background: var(--ember); }
+    .node .mark.lit-no { background: var(--no); }
+    .node .mark.lit-failed { background: var(--error); }
+    .node .mark.lit-waiting { background: var(--live); }
+    .node .mark.lit-missed { background: var(--muted); }
+    .node .live-note { position: absolute; left: 50%; bottom: -12px; translate: -50% 0; max-width: 200px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: .08rem .5rem;
+      border-radius: 999px; font-size: .68rem; background: var(--card); border: 1px solid var(--line);
+      color: var(--fg); animation: note-rise 360ms var(--ease-spring) backwards; z-index: 2; }
+    .wire.flowing { stroke: var(--ember); stroke-width: 2.8; opacity: 1; stroke-dasharray: 14 400;
+      stroke-linecap: round; animation: pulse-along 520ms linear forwards; }
+    .hold-bar { position: absolute; left: 10px; right: 10px; bottom: 5px; height: 3px; border-radius: 3px;
+      background: color-mix(in srgb, var(--ember) 18%, transparent); overflow: hidden; }
+    .hold-bar span { display: block; height: 100%; width: var(--from); border-radius: inherit;
+      background: var(--ember); animation: hold-fill var(--ms) linear forwards; }
+    html[data-motion="off"] .wire.flowing { stroke-dasharray: none; }
+    @media (prefers-reduced-motion: reduce) { .wire.flowing { stroke-dasharray: none; } }
+    .live-strip { display: flex; align-items: center; gap: .45rem; color: var(--fg);
+      padding: .2rem .6rem; border-radius: 999px; background: var(--card); border: 1px solid var(--line);
+      animation: strip-rise 320ms var(--ease-spring) backwards; }
+    .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ember);
+      animation: dot-beat 1s ease-in-out infinite; }
+    @keyframes lit-flash { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ember) 60%, transparent); }
+      100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--ember) 28%, transparent); } }
+    @keyframes lit-shake { 20%, 60% { translate: -3px 0; } 40%, 80% { translate: 3px 0; } }
+    @keyframes lit-shiver { 25% { translate: -2px 0; } 75% { translate: 2px 0; } }
+    @keyframes mark-pop { from { scale: .2; opacity: 0; } }
+    @keyframes note-rise { from { translate: -50% 6px; opacity: 0; } }
+    @keyframes strip-rise { from { translate: 0 6px; opacity: 0; } }
+    @keyframes pulse-along { from { stroke-dashoffset: 14; } to { stroke-dashoffset: -400; } }
+    @keyframes hold-fill { from { width: var(--from); } to { width: 100%; } }
+    @keyframes dot-beat { 50% { opacity: .35; } }
     .group { position: absolute; border-radius: 14px; pointer-events: none;
       background: hsl(var(--h) 70% 60% / .07); border: 1px solid hsl(var(--h) 55% 55% / .22); }
     .group.part { border-radius: 10px; background: hsl(var(--h) 70% 60% / .08); border-style: dashed; }
