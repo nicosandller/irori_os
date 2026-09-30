@@ -11,6 +11,7 @@ mod packages;
 mod serial;
 mod server;
 mod syslog;
+mod system_device;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -196,6 +197,8 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
 
     let db = db::open(&data)?;
     tracing::info!(path = %db.path.display(), journal_mode = %db.journal_mode, "database ready");
+    // Irori's own device reports how full this volume is.
+    let _ = system_device::DATA_DIR.set(db.path.clone());
     let storage = Arc::new(db::SqliteStorage::open(&db)?);
     let packages_dir = packages::packages_dir(&data);
     let _ = std::fs::create_dir_all(&packages_dir);
@@ -240,15 +243,21 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // so it starts empty with each server (the SQLite recorder, M1.3, keeps the rest).
             let history = history::History::default();
             tokio::spawn(history::record(history.clone(), core.subscribe()));
+            // Engines that ask for history (`history:read`) read the same shelf, and engines
+            // whose permissions name the config directory are told where it is.
+            core.use_history(Arc::new(history.clone()));
+            core.use_config_dir(config.clone());
             // Before the extensions, so a device that arrives in the first second already has
             // the name and the room its owner gave it, rather than appearing under its old name
             // and moving a moment later.
             let settings = config::Config::open(store, &problems, &core);
             tokio::spawn(settings.clone().watch(core.clone()));
-            // Helpers are core to Irori, not an installable extension: they run every time,
-            // in-process, and never appear on the Extensions page.
+            // Helpers and Irori's own device are core to Irori, not installable extensions: they
+            // run every time, in-process, and never appear on the Extensions page.
             let builtins = vec![
                 irori_protocol::builtin::<irori_helpers::Helpers>().map_err(anyhow::Error::msg)?,
+                irori_protocol::builtin::<system_device::IroriDevice>()
+                    .map_err(anyhow::Error::msg)?,
             ];
             let host = ExtensionHost::start_with_packages(
                 &core,

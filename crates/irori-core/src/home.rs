@@ -32,6 +32,9 @@ const CALL_WINDOW: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 /// forgotten. Far more than any home sends to one protocol in five minutes.
 const MAX_RECENT_CALLS: usize = 1024;
 
+/// The protocol Irori's own device comes from (`irori_hub`: its version, uptime, load).
+pub const SYSTEM_PROTOCOL: &str = "irori";
+
 #[derive(Debug, Default)]
 pub(crate) struct Home {
     devices: BTreeMap<DeviceId, Device>,
@@ -153,8 +156,12 @@ impl Home {
     /// tests — anything a person hasn't said a word about. Any `devices.toml` entry is a word
     /// about it: a name or a room is as much a decision as `added = true`, and removing a device
     /// is what takes its entry away.
-    fn is_held(&self, id: &DeviceId) -> bool {
-        self.settings.ask_before_adding && !self.settings.devices.contains_key(id)
+    /// Whether a device waits for a person to add it. Irori's own device never does: nobody
+    /// has to be asked whether Irori may be in the home.
+    fn is_held(&self, protocol: &ProtocolId, id: &DeviceId) -> bool {
+        protocol.as_str() != SYSTEM_PROTOCOL
+            && self.settings.ask_before_adding
+            && !self.settings.devices.contains_key(id)
     }
 
     /// Every device found but not in the home, in id order.
@@ -349,18 +356,18 @@ impl Home {
         // In and out of the home first, so the renames below only touch what's in it.
         let now_held: Vec<DeviceId> = self
             .devices
-            .keys()
-            .filter(|id| self.is_held(id))
-            .cloned()
+            .iter()
+            .filter(|(id, device)| self.is_held(&device.protocol, id))
+            .map(|(id, _)| id.clone())
             .collect();
         for id in now_held {
             events.extend(self.hold(&id));
         }
         let now_added: Vec<DeviceId> = self
             .found
-            .keys()
-            .filter(|id| !self.is_held(id))
-            .cloned()
+            .iter()
+            .filter(|(id, found)| !self.is_held(&found.protocol, id))
+            .map(|(id, _)| id.clone())
             .collect();
         for id in now_added {
             events.extend(self.admit(&id, stamp));
@@ -412,7 +419,7 @@ impl Home {
             .map_err(|e| Rejected(e.to_string()))?;
         let unique_id = &description.unique_id;
         let held_id = device_id_for(protocol, unique_id);
-        if self.is_held(&held_id) || self.found.contains_key(&held_id) {
+        if self.is_held(protocol, &held_id) || self.found.contains_key(&held_id) {
             match self.found.get_mut(&held_id) {
                 Some(found) => found.description = description,
                 None => {
@@ -1707,6 +1714,22 @@ mod tests {
                 .collect(),
             ..Settings::default()
         }
+    }
+
+    /// Irori's own device is in the home at once, even when every other device waits for "+ Add
+    /// device".
+    #[test]
+    fn irori_itself_is_never_held() {
+        let mut home = Home::default();
+        home.settle(asking(&[]));
+        let irori: ProtocolId = SYSTEM_PROTOCOL.parse().expect("a protocol id");
+        home.describe_device(&irori, device("hub", "Irori"))
+            .expect("Irori");
+        home.describe_device(&protocol(), device("lamp", "Desk lamp"))
+            .expect("lamp");
+        let ids: Vec<String> = home.devices().map(|d| d.id.to_string()).collect();
+        assert_eq!(ids, ["irori_hub"]);
+        assert_eq!(home.held_devices().len(), 1, "the lamp waits");
     }
 
     /// Removing a device takes it and its entities out of the home, and puts it straight back

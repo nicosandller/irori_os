@@ -754,11 +754,24 @@ dependencies = [
  "gloo-net 0.7.0",
  "gloo-timers",
  "irori-types",
+ "irori-ui-kit",
  "leptos",
  "leptos_router",
  "serde",
  "serde_json",
  "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "irori-ui-kit"
+version = "0.0.0"
+dependencies = [
+ "futures-channel",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
  "web-sys",
 ]
 

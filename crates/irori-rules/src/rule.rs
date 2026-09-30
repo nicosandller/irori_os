@@ -142,11 +142,11 @@ impl Default for Mode {
 }
 
 impl Mode {
-    fn is_single(&self) -> bool {
+    pub fn is_single(&self) -> bool {
         matches!(self, Self::Named(NamedMode::Single))
     }
 
-    fn validate(&self) -> Result<(), InvariantError> {
+    pub fn validate(&self) -> Result<(), InvariantError> {
         match self {
             Self::Named(_) => Ok(()),
             Self::Limited(LimitedMode::Queued { max } | LimitedMode::Parallel { max }) => {
@@ -183,8 +183,17 @@ pub enum Trigger {
         entity: EntityId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from: Option<TypedValue>,
+        /// The value it changes to, or any one of several.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        to: Option<TypedValue>,
+        to: Option<Values>,
+        /// For a sensor with numbers: fires when its reading goes above this (and below
+        /// `below`, if that's given too) from outside that range. Not with `from`/`to`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        above: Option<f64>,
+        /// For a sensor with numbers: fires when its reading goes below this from outside the
+        /// range. Not with `from`/`to`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        below: Option<f64>,
         #[serde(default, rename = "for", skip_serializing_if = "Option::is_none")]
         hold: Option<CompactDuration>,
     },
@@ -210,11 +219,39 @@ pub enum Trigger {
 }
 
 impl Trigger {
-    fn validate(&self) -> Result<(), InvariantError> {
+    pub fn validate(&self) -> Result<(), InvariantError> {
         match self {
-            Self::State { hold, .. } => {
+            Self::State {
+                from,
+                to,
+                above,
+                below,
+                hold,
+                ..
+            } => {
                 if let Some(hold) = hold {
                     hold.require_positive("for")?;
+                }
+                if (above.is_some() || below.is_some()) && (from.is_some() || to.is_some()) {
+                    return Err(inv(
+                        "a trigger watches for a level (`above`/`below`) or for values \
+                         (`from`/`to`), not both",
+                    ));
+                }
+                for level in [above, below].into_iter().flatten() {
+                    if !level.is_finite() {
+                        return Err(inv("`above` and `below` are finite numbers"));
+                    }
+                }
+                if let (Some(above), Some(below)) = (above, below)
+                    && above >= below
+                {
+                    return Err(inv(format!(
+                        "nothing is above {above} and below {below} at once"
+                    )));
+                }
+                if let Some(to) = to {
+                    to.validate()?;
                 }
                 Ok(())
             }
@@ -285,7 +322,7 @@ pub enum Condition {
 }
 
 impl Condition {
-    fn validate(&self, depth: u8) -> Result<(), InvariantError> {
+    pub fn validate(&self, depth: u8) -> Result<(), InvariantError> {
         if depth > MAX_DEPTH {
             return Err(inv(format!(
                 "conditions and actions can nest at most {MAX_DEPTH} levels"
@@ -499,7 +536,7 @@ pub enum WaitUntil {
 }
 
 impl WaitUntil {
-    fn validate(&self) -> Result<(), InvariantError> {
+    pub fn validate(&self) -> Result<(), InvariantError> {
         match self {
             Self::State {
                 is,
@@ -564,7 +601,7 @@ impl RuleService {
         }
     }
 
-    fn validate_data(self, data: Option<&CallData>) -> Result<(), InvariantError> {
+    pub fn validate_data(self, data: Option<&CallData>) -> Result<(), InvariantError> {
         match (self, data) {
             (Self::LightTurnOn | Self::LightToggle, Some(CallData::Light(light))) => {
                 light.validate()
@@ -693,6 +730,90 @@ pub enum TypedValue {
     Null,
 }
 
+/// Most values a trigger's `to` can list.
+pub const MAX_VALUES: usize = 16;
+
+/// A value, or any one of several: `"playing"`, or `["paused", "idle", "off"]`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Values {
+    One(TypedValue),
+    Any(Vec<TypedValue>),
+}
+
+impl Values {
+    pub fn iter(&self) -> impl Iterator<Item = &TypedValue> {
+        match self {
+            Self::One(value) => std::slice::from_ref(value).iter(),
+            Self::Any(values) => values.iter(),
+        }
+    }
+
+    fn validate(&self) -> Result<(), InvariantError> {
+        let Self::Any(values) = self else {
+            return Ok(());
+        };
+        if values.is_empty() || values.len() > MAX_VALUES {
+            return Err(inv(format!(
+                "a list of values has 1 to {MAX_VALUES} of them"
+            )));
+        }
+        for (i, value) in values.iter().enumerate() {
+            if values[..i].contains(value) {
+                return Err(inv("a list of values names each one once"));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl From<TypedValue> for Values {
+    fn from(value: TypedValue) -> Self {
+        Self::One(value)
+    }
+}
+
+impl JsonSchema for Values {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Values".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        let one = generator.subschema_for::<TypedValue>();
+        json_schema!({
+            "description": "A typed value, or a list of 1 to 16 of them: any one matches.",
+            "anyOf": [
+                one,
+                { "type": "array", "items": one, "minItems": 1, "maxItems": MAX_VALUES, "uniqueItems": true },
+            ],
+        })
+    }
+}
+
+impl Serialize for Values {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::One(value) => value.serialize(serializer),
+            Self::Any(values) => values.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Values {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::Array(items) => items
+                .into_iter()
+                .map(|item| TypedValue::deserialize(item).map_err(serde::de::Error::custom))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Self::Any),
+            other => TypedValue::deserialize(other)
+                .map(Self::One)
+                .map_err(serde::de::Error::custom),
+        }
+    }
+}
+
 impl JsonSchema for TypedValue {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "TypedValue".into()
@@ -775,7 +896,7 @@ impl CompactDuration {
         parse_millis(&self.0).unwrap_or(0)
     }
 
-    fn require_positive(&self, field: &str) -> Result<(), InvariantError> {
+    pub fn require_positive(&self, field: &str) -> Result<(), InvariantError> {
         let ms = parse_millis(&self.0)?;
         if ms <= 0 {
             return Err(inv(format!(
@@ -786,12 +907,20 @@ impl CompactDuration {
         Ok(())
     }
 
-    fn require_nonzero(&self, field: &str) -> Result<(), InvariantError> {
+    pub fn require_nonzero(&self, field: &str) -> Result<(), InvariantError> {
         let ms = parse_millis(&self.0)?;
         if ms == 0 {
             return Err(inv(format!("{field} must not be zero (got {:?})", self.0)));
         }
         Ok(())
+    }
+}
+
+impl TryFrom<&str> for CompactDuration {
+    type Error = InvariantError;
+    fn try_from(text: &str) -> Result<Self, InvariantError> {
+        parse_millis(text)?;
+        Ok(Self(text.to_owned()))
     }
 }
 
@@ -1090,12 +1219,21 @@ impl JsonSchema for ExprString {
     }
 }
 
+impl TryFrom<&str> for ExprString {
+    type Error = InvariantError;
+    fn try_from(text: &str) -> Result<Self, InvariantError> {
+        let expr = Self(text.to_owned());
+        expr.validate()?;
+        Ok(expr)
+    }
+}
+
 impl ExprString {
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    fn validate(&self) -> Result<(), InvariantError> {
+    pub fn validate(&self) -> Result<(), InvariantError> {
         if self.0.is_empty() {
             return Err(inv("an expression must not be empty"));
         }
@@ -1140,7 +1278,7 @@ impl StopReason {
         &self.0
     }
 
-    fn validate(&self) -> Result<(), InvariantError> {
+    pub fn validate(&self) -> Result<(), InvariantError> {
         if self.0.is_empty() {
             return Err(inv("stop reason must not be empty"));
         }

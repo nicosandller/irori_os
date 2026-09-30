@@ -6,7 +6,7 @@
 id = "demo"
 name = "Demo"
 category = "demo"
-description = "Virtual devices for trying Irori without hardware: a study lamp and plug, a hallway light, motion, illuminance, and an mmWave with occupancy and target distance."
+description = "Virtual devices for trying Irori without hardware, going through a whole day every minute: a lamp, a plug that measures power, a hallway light, presence, illuminance and mmWave sensors, an air monitor, door and window contacts, a living room with its own lights, and a TV and sofa sensor that change every minute or so rather than with the day."
 version = "0.3.1"
 source = "extensions/demo"
 crate = "irori-protocol-demo"
@@ -44,6 +44,16 @@ bin = "irori-ext-zigbee"
 # `host_shell` in the manifest: it downloads and runs Node.js and Zigbee2MQTT. The page has to
 # say "full access to this machine" before Install does anything (extensions.md §7).
 full_access = true
+
+[[extension]]
+id = "automations"
+name = "Automations"
+category = "automation"
+description = "Build automations as flows on a canvas, test them before trusting them, and see why one didn't run."
+version = "0.1.0"
+source = "extensions/automations"
+crate = "irori-engine-automations"
+bin = "irori-ext-automations"
 
 # Helpers aren't listed here: they're core to Irori (crates/irori-helpers), built in and always
 # running, not an installable package.

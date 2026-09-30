@@ -769,6 +769,9 @@ fn AddDevice() -> impl IntoView {
             // Helpers are an extension for the core's own reasons (D40), but nothing here finds
             // a helper: you make one, by naming it. That has its own button on the Helpers tab.
             .filter(|(id, _)| id.as_str() != HELPERS)
+            // Only extensions that bring devices: an automation engine or a page has none to
+            // find, so offering it here would be a door to nowhere.
+            .filter(|(_, extension)| !extension.entity_kinds.is_empty())
             .map(|(id, extension)| {
                 let here = home
                     .devices
@@ -2016,8 +2019,8 @@ pub(crate) fn wording(class: Option<BinarySensorClass>, on: bool) -> &'static st
     match (class, on) {
         (Some(Motion | Vibration), true) => "Motion",
         (Some(Motion | Vibration), false) => "Still",
-        (Some(Occupancy), true) => "Occupied",
-        (Some(Occupancy), false) => "Empty",
+        (Some(Occupancy), true) => "Detected",
+        (Some(Occupancy), false) => "Clear",
         (Some(Door | Window), true) => "Open",
         (Some(Door | Window), false) => "Closed",
         (Some(Moisture), true) => "Wet",

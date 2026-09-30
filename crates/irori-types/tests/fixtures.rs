@@ -197,6 +197,23 @@ fn manifest_warnings_name_ignored_contributions() -> anyhow::Result<()> {
     let terminal = terminal.map_err(anyhow::Error::msg)?;
     assert!(terminal.permissions.full_access());
     assert_eq!(terminal.protocol_id(), None);
+    assert!(terminal.warnings().is_empty());
+    assert_eq!(terminal.run_command(), None);
+
+    // An engine: no protocol, one process, and a page in the sidebar. Nothing ignored.
+    let (_, engine) = load::<ExtensionManifest>(&dir.join("automations_engine_with_app.toml"))?;
+    let engine = engine.map_err(anyhow::Error::msg)?;
+    assert!(engine.warnings().is_empty());
+    assert!(engine.is_engine());
+    assert_eq!(engine.protocol_id(), None);
+    assert_eq!(
+        engine.run_command().map(|run| run.command.as_str()),
+        Some("bin/irori-ext-automations")
+    );
+    assert_eq!(
+        engine.app().map(|app| app.entry.as_str()),
+        Some("app/index.html")
+    );
     Ok(())
 }
 

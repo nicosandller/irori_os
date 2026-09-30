@@ -24,8 +24,9 @@ use tokio::sync::{Notify, mpsc, oneshot, watch};
 
 pub use irori_types as types;
 
+pub mod engine;
 mod process;
-pub use process::{ExtProcess, FromExt, ToExt, serve, spawn};
+pub use process::{ExtProcess, FromExt, ToExt, WireCommand, serve, spawn};
 
 /// A built-in protocol.
 ///

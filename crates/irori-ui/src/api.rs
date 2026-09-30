@@ -136,6 +136,75 @@ pub struct Extension {
     /// Which of `actions` are usable right now, as the protocol itself says.
     #[serde(default)]
     pub available_actions: Vec<String>,
+    /// Its own page, with an entry in the sidebar (`docs/specs/automations.md` §B3).
+    #[serde(default)]
+    pub app: Option<AppInfo>,
+    /// Whether it's an automation engine.
+    #[serde(default)]
+    pub engine: bool,
+}
+
+/// An extension's page, as its manifest describes it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AppInfo {
+    pub label: String,
+    /// The API scopes it declared: what the bridge may hand its page.
+    #[serde(default)]
+    pub api: Vec<String>,
+}
+
+/// One entry of `/api/dev/apps`: a running extension's page and whether its files are there.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AppEntry {
+    pub extension: String,
+    pub built: bool,
+}
+
+pub async fn fetch_apps() -> Result<Vec<AppEntry>, String> {
+    let response = Request::get("/api/dev/apps")
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        return Err(format!("/api/dev/apps answered {}", response.status()));
+    }
+    response
+        .json::<Vec<AppEntry>>()
+        .await
+        .map_err(|e| format!("Irori sent something this page can't read: {e}"))
+}
+
+/// Asks an extension's engine something for its page. Answers the engine's value, or its
+/// refusal in words.
+pub async fn app_rpc(
+    extension: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let url = format!("/api/dev/apps/{extension}/rpc");
+    let response = Request::post(&url)
+        .json(&serde_json::json!({ "method": method, "params": params }))
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        let status = response.status();
+        return Err(match response.json::<Refused>().await {
+            Ok(refused) => refused.error,
+            Err(_) => format!("the extension didn't answer ({status})"),
+        });
+    }
+    #[derive(Deserialize)]
+    struct Answer {
+        #[serde(default)]
+        value: serde_json::Value,
+    }
+    response
+        .json::<Answer>()
+        .await
+        .map(|answer| answer.value)
+        .map_err(|e| format!("Irori sent something this page can't read: {e}"))
 }
 
 /// One action an extension declares (`docs/specs/protocols.md` §5).

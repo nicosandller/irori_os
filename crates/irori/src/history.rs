@@ -76,6 +76,15 @@ impl History {
     }
 }
 
+impl irori_core::HistorySource for History {
+    fn changes(&self, entity_id: &EntityId, since: irori_types::Timestamp) -> Vec<EntityState> {
+        self.for_entity(entity_id)
+            .into_iter()
+            .filter(|state| state.last_updated >= since)
+            .collect()
+    }
+}
+
 /// Drops everything recorded at or before `cutoff`. Nothing happens without a cutoff: a server
 /// that started minutes ago has nothing a day old to forget.
 fn prune(entries: &mut VecDeque<Entry>, cutoff: Option<Instant>) {

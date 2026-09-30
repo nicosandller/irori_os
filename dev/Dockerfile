@@ -56,13 +56,24 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     if [ "$FEATURES" != "--no-default-features" ]; then \
       cargo xtask ui ; \
     fi
+# The official packages, laid out as `IRORI_OFFICIAL_PACKAGES` expects. Automations also carries
+# its page, which `cargo xtask ui` built above; the barebones build has none, so the extension
+# still installs and the shell says its page wasn't built.
+#
+# `irori` is built on its own first: every release binary is linked with fat LTO, and cargo
+# links the binaries of one invocation side by side. Six of them at once can take more memory
+# than a default Colima VM (4 GB) has, and the linker is killed with nothing but "exit code 101"
+# at the end of a long log. The extensions then link two at a time (`-j 2`), whatever the VM's
+# CPU count.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/target \
     cargo build --locked --release -p irori $FEATURES \
+    && cargo build --locked --release -j 2 \
       -p irori-protocol-demo -p irori-protocol-esphome -p irori-protocol-mqtt \
-      -p irori-protocol-zigbee \
+      -p irori-protocol-zigbee -p irori-engine-automations \
     && cp /target/release/irori /irori \
     && mkdir -p /official/demo/bin /official/esphome/bin /official/mqtt/bin /official/zigbee/bin \
+      /official/automations/bin \
     && cp extensions/demo/irori-extension.toml extensions/demo/icon.svg /official/demo/ \
     && cp /target/release/irori-ext-demo /official/demo/bin/ \
     && cp extensions/protocols/esphome/irori-extension.toml extensions/protocols/esphome/icon.svg /official/esphome/ \
@@ -70,7 +81,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp extensions/protocols/mqtt/irori-extension.toml extensions/protocols/mqtt/config.schema.json /official/mqtt/ \
     && cp /target/release/irori-ext-mqtt /official/mqtt/bin/ \
     && cp extensions/protocols/zigbee/irori-extension.toml extensions/protocols/zigbee/config.schema.json /official/zigbee/ \
-    && cp /target/release/irori-ext-zigbee /official/zigbee/bin/
+    && cp /target/release/irori-ext-zigbee /official/zigbee/bin/ \
+    && cp extensions/automations/irori-extension.toml extensions/automations/icon.svg /official/automations/ \
+    && cp /target/release/irori-ext-automations /official/automations/bin/ \
+    && if [ -f extensions/automations/app/dist/index.html ]; then \
+         cp -r extensions/automations/app/dist /official/automations/app ; \
+       fi
 
 FROM debian:${DEBIAN_RELEASE}-slim AS pi
 RUN apt-get update \
@@ -99,5 +115,24 @@ ENV IRORI_DATA=/var/lib/irori \
 EXPOSE 8480
 HEALTHCHECK --interval=5s --timeout=2s --start-period=5s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8480/api/health || exit 1
-ENTRYPOINT ["irori"]
+# Installing copies a package into the data volume, which outlives the image. So an official
+# extension installed before a rebuild would keep running its old files. On start, each one
+# installed is refreshed from the image's copy first. Its data (`extension-data/`) and its
+# settings (`config/`) live elsewhere and aren't touched.
+COPY <<'EOF' /usr/local/bin/irori-dev-start
+#!/bin/sh
+set -e
+for installed in "$IRORI_DATA"/extensions/*/; do
+  id=$(basename "$installed")
+  bundled="$IRORI_OFFICIAL_PACKAGES/$id"
+  [ -d "$bundled" ] || continue
+  rm -rf "$installed"
+  cp -r "$bundled" "$IRORI_DATA/extensions/$id"
+done
+exec irori "$@"
+EOF
+USER root
+RUN chmod 755 /usr/local/bin/irori-dev-start
+USER irori
+ENTRYPOINT ["irori-dev-start"]
 CMD ["serve"]

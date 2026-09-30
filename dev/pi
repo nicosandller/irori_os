@@ -29,6 +29,10 @@ Run cargo inside Linux arm64:
   check              everything CI's check job runs (fmt, clippy, tests, dependency rules, schemas)
   cargo <args>       any cargo command, e.g. dev/pi cargo test -p irori
 
+Keep Docker's disk from filling up:
+  clean              delete the build caches and leftover images (irori's data stays)
+                     up, restart, check, and review tidy up on their own when space runs low
+
 Reach hardware the container can't see directly:
   usb-bridge <device> [port] [baud]
                      bridge a serial device on this Mac (a Zigbee dongle, say — find it with
@@ -40,7 +44,51 @@ Review a pull request:
 EOF
 }
 
+# Space Docker's disk must have before a build starts. A full build of the workspace, its tests,
+# and both wasm pages needs several GB; running out shows up only as "No space left on device"
+# deep inside a long log, or a bare "exit code 101".
+min_free_gb="${IRORI_DEV_MIN_FREE_GB:-8}"
+
+# Free space on Docker's own disk (the VM's, with Colima), in whole GB; empty if unknown.
+free_gb() {
+  docker run --rm --entrypoint df alpine -Pk / 2>/dev/null | awk 'NR == 2 { print int($4 / 1048576) }'
+}
+
+# Before every build: drop what nothing uses, and when that's not enough, the cargo build cache
+# too. It's only a cache — the next `check` rebuilds it — but it's the one thing here that grows
+# without bound, one PR at a time. irori's own data is never touched.
+tidy() {
+  docker image prune --force >/dev/null 2>&1 || true
+  docker builder prune --force --filter until=168h >/dev/null 2>&1 || true
+  local free
+  free="$(free_gb)"
+  [[ -n "$free" ]] || return 0
+  if ((free < min_free_gb)); then
+    echo "Docker's disk has ${free} GB free (want ${min_free_gb}); clearing the cargo build cache."
+    echo "The next \`dev/pi check\` rebuilds it, so it takes a few minutes longer."
+    docker volume rm irori-dev_cargo-target >/dev/null 2>&1 || true
+    docker builder prune --force >/dev/null 2>&1 || true
+    free="$(free_gb)"
+    if [[ -n "$free" ]] && ((free < min_free_gb)); then
+      echo "warning: still only ${free} GB free. See what's using it with \`docker system df -v\`;" >&2
+      echo "         with Colima, a bigger disk: colima stop && colima start --disk 40" >&2
+    fi
+  fi
+}
+
+# Everything tidy() would, whatever the free space says.
+clean() {
+  docker volume rm irori-dev_cargo-target >/dev/null 2>&1 || true
+  docker image prune --force >/dev/null
+  docker builder prune --force >/dev/null
+  echo "Cleared the cargo build cache, leftover images, and the build cache."
+  local free
+  free="$(free_gb)"
+  [[ -z "$free" ]] || echo "Docker's disk now has ${free} GB free."
+}
+
 up() {
+  tidy
   if [[ "${1:-}" == "--barebones" ]]; then
     export IRORI_FEATURES="--no-default-features"
   fi
@@ -50,6 +98,7 @@ up() {
 }
 
 check() {
+  tidy
   toolchain bash -c '
     set -euxo pipefail
     cargo fmt --all --check
@@ -150,6 +199,7 @@ case "$cmd" in
   usb-bridge) usb_bridge "$@" ;;
   shell) "${compose[@]}" exec pi bash ;;
   check) check ;;
+  clean) clean ;;
   cargo) toolchain cargo "$@" ;;
   review)
     pr="${1:?usage: dev/pi review <pr>}"

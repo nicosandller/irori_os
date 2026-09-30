@@ -5,6 +5,8 @@ members = [
     "crates/irori-core",
     "crates/irori-protocol",
     "crates/irori-rules",
+    "crates/irori-flow-types",
+    "crates/irori-flows",
     "crates/irori-recorder",
     "crates/irori-config",
     "crates/irori-api",
@@ -13,6 +15,7 @@ members = [
     "crates/irori-ha-discovery",
     "crates/irori",
     "extensions/demo",
+    "extensions/automations",
     "extensions/protocols/esphome",
     "extensions/protocols/mqtt",
     "extensions/protocols/zigbee",
@@ -22,7 +25,7 @@ members = [
 default-members = ["crates/irori"]
 # The UI is a wasm crate with its own dependency tree, built with `trunk` (`cargo xtask ui`),
 # not by workspace commands. Keeping it out means a plain `cargo build` needs no wasm toolchain.
-exclude = ["crates/irori-ui"]
+exclude = ["crates/irori-ui", "crates/irori-ui-kit", "extensions/automations/app"]
 
 [workspace.package]
 version = "0.0.0"
@@ -37,7 +40,10 @@ repository = "https://github.com/nicosandller/irori_os"
 irori-types = { path = "crates/irori-types" }
 irori-core = { path = "crates/irori-core" }
 irori-protocol = { path = "crates/irori-protocol" }
-irori-rules = { path = "crates/irori-rules" }
+# Just the document types by default; the flow engine asks for `engine` (CEL, evaluation).
+irori-rules = { path = "crates/irori-rules", default-features = false }
+irori-flow-types = { path = "crates/irori-flow-types" }
+irori-flows = { path = "crates/irori-flows" }
 irori-recorder = { path = "crates/irori-recorder" }
 irori-config = { path = "crates/irori-config" }
 irori-api = { path = "crates/irori-api" }

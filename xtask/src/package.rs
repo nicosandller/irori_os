@@ -126,6 +126,17 @@ fn package(
         }
         fs::copy(&from, &to)?;
     }
+    if let Some(page) = page_dir(&manifest)? {
+        let dist = source.join(page.as_str()).join("dist");
+        if !dist.join("index.html").is_file() {
+            bail!(
+                "{} brings a page, but {} isn't built; run `cargo xtask ui` first",
+                item.bin,
+                dist.display()
+            );
+        }
+        copy_dir(&dist, &stage.join(page.as_str()))?;
+    }
     let exe = stage.join("bin").join(&item.bin);
     fs::copy(&binary, &exe)?;
     fs::set_permissions(&exe, PermissionsExt::from_mode(0o755))?;
@@ -159,6 +170,69 @@ fn package(
         )
     };
     println!("  {}: {size} bytes, {also}", archive.display());
+    Ok(())
+}
+
+/// The folder of an extension's page (`[[contributes.app]]`'s `entry`, less its file name): the
+/// page's own crate in the source, and where its built files go in the package.
+fn page_dir(manifest: &Path) -> anyhow::Result<Option<PackagePath>> {
+    #[derive(Debug, Deserialize)]
+    struct Declared {
+        #[serde(default)]
+        contributes: Contributes,
+    }
+    #[derive(Debug, Default, Deserialize)]
+    struct Contributes {
+        #[serde(default)]
+        app: Vec<App>,
+    }
+    #[derive(Debug, Deserialize)]
+    struct App {
+        entry: String,
+    }
+    let text = fs::read_to_string(manifest)
+        .with_context(|| format!("can't read {}", manifest.display()))?;
+    let declared: Declared = toml::from_str(&text)
+        .with_context(|| format!("{} isn't a valid manifest", manifest.display()))?;
+    let Some(app) = declared.contributes.app.first() else {
+        return Ok(None);
+    };
+    let Some((dir, _)) = app.entry.rsplit_once('/') else {
+        bail!(
+            "{}: a page's entry has to be in a folder of its own, like app/index.html",
+            manifest.display()
+        );
+    };
+    Ok(Some(PackagePath::try_from(dir.to_owned())?))
+}
+
+/// The page crates of every official extension that brings one, for `cargo xtask ui`.
+pub fn page_dirs(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let text = fs::read_to_string(root.join("extensions/official.toml"))
+        .context("extensions/official.toml is missing")?;
+    let catalog: CatalogFile =
+        toml::from_str(&text).context("extensions/official.toml is invalid")?;
+    let mut dirs = Vec::new();
+    for item in &catalog.extension {
+        let source = root.join(&item.source);
+        if let Some(page) = page_dir(&source.join("irori-extension.toml"))? {
+            dirs.push(source.join(page.as_str()));
+        }
+    }
+    Ok(dirs)
+}
+
+fn copy_dir(from: &Path, to: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target)?;
+        }
+    }
     Ok(())
 }
 

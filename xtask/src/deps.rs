@@ -14,7 +14,12 @@ use anyhow::{Context as _, bail};
 use serde::Deserialize;
 
 /// Crates whose whole dependency tree must stay protocol-free.
-const PROTOCOL_FREE: &[&str] = &["irori-core", "irori-rules"];
+const PROTOCOL_FREE: &[&str] = &[
+    "irori-core",
+    "irori-rules",
+    "irori-flow-types",
+    "irori-flows",
+];
 
 /// Never allowed in a protocol-free crate's tree. Prefix match with a trailing `*`.
 /// `irori-protocol` (the SDK, not a protocol) is deliberately absent.
@@ -36,6 +41,25 @@ const ALLOWED_WORKSPACE_DEPS: &[(&str, &[&str])] = &[
     ("irori-types", &[]),
     ("irori-protocol", &["irori-types"]),
     ("irori-rules", &["irori-types"]),
+    // The flow engine's documents: shared with its wasm page, so no CEL (`irori-rules` without
+    // its `engine` feature).
+    ("irori-flow-types", &["irori-types", "irori-rules"]),
+    // The flow engine itself: sans-IO, no host, no protocol SDK.
+    (
+        "irori-flows",
+        &["irori-types", "irori-rules", "irori-flow-types"],
+    ),
+    // The Automations extension: an engine process, speaking the extension wire.
+    (
+        "irori-engine-*",
+        &[
+            "irori-types",
+            "irori-protocol",
+            "irori-rules",
+            "irori-flow-types",
+            "irori-flows",
+        ],
+    ),
     ("irori-client", &["irori-types"]),
     (
         "irori-protocol-*",

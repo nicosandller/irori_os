@@ -311,7 +311,41 @@ fn build_from_checkout(item: &Official, root: &Path, dest: &Path) -> Result<(), 
     if !binary.is_file() {
         return Err(format!("built binary missing at {}", binary.display()));
     }
+    // Its page, if it brings one and it isn't built yet. Best effort: without a wasm toolchain
+    // the extension still installs, and the shell says the page wasn't built rather than
+    // showing an empty frame (`docs/specs/automations.md` §B3).
+    if let Some(page) = page_dir(&source)? {
+        let dir = source.join(page.as_str());
+        if !dir.join("dist/index.html").is_file() {
+            match Command::new("trunk")
+                .arg("build")
+                .current_dir(&dir)
+                .status()
+            {
+                Ok(status) if status.success() => {}
+                Ok(status) => {
+                    tracing::warn!(dir = %dir.display(), %status, "couldn't build the extension's page")
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "no `trunk` to build the extension's page with; `cargo xtask ui` builds it")
+                }
+            }
+        }
+    }
     stage_package(&source, &binary, dest, &item.bin)
+}
+
+/// The folder an extension's page lives in, from its manifest's `[[contributes.app]]`.
+fn page_dir(source: &Path) -> Result<Option<irori_types::PackagePath>, String> {
+    let text = fs::read_to_string(source.join("irori-extension.toml"))
+        .map_err(|e| format!("can't read the manifest in {}: {e}", source.display()))?;
+    let manifest = irori_protocol::parse_manifest(&text)?;
+    Ok(manifest.app().and_then(|app| {
+        app.entry
+            .as_str()
+            .rsplit_once('/')
+            .and_then(|(dir, _)| irori_types::PackagePath::try_from(dir.to_owned()).ok())
+    }))
 }
 
 /// `hint` explains, for this call, why a source build wasn't tried (or that one was and isn't
@@ -381,6 +415,13 @@ fn stage_package(source: &Path, binary: &Path, dest: &Path, bin_name: &str) -> R
         fs::copy(&from, &to).map_err(|e| e.to_string())?;
     }
     fs::copy(binary, dest.join("bin").join(bin_name)).map_err(|e| e.to_string())?;
+    // A page built in the source (`<page>/dist/`) goes where its entry says, `<page>/`.
+    if let Some(page) = page_dir(source)? {
+        let dist = source.join(page.as_str()).join("dist");
+        if dist.join("index.html").is_file() {
+            copy_dir(&dist, &dest.join(page.as_str()))?;
+        }
+    }
     Ok(())
 }
 

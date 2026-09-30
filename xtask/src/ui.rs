@@ -55,6 +55,25 @@ pub fn run() -> anyhow::Result<()> {
         total / 1024,
         embedded.display()
     );
+    pages(&root)
+}
+
+/// Builds the pages official extensions bring (`[[contributes.app]]`), each into its own
+/// `dist/`, where packaging picks it up (`cargo xtask package`, and Install from a checkout).
+fn pages(root: &Path) -> anyhow::Result<()> {
+    for dir in crate::package::page_dirs(root)? {
+        let status = Command::new("trunk")
+            .arg("build")
+            .current_dir(&dir)
+            .status();
+        match status {
+            Ok(status) if status.success() => {
+                println!("page built: {}", dir.join("dist").display())
+            }
+            Ok(status) => bail!("`trunk build` failed in {} ({status})", dir.display()),
+            Err(e) => return Err(e).context("failed to run `trunk`"),
+        }
+    }
     Ok(())
 }
 

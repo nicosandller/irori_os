@@ -7,6 +7,7 @@
 //! moving between pages doesn't refetch and the two can't disagree.
 
 mod api;
+mod app_frame;
 mod chart;
 mod count;
 mod device;
@@ -198,6 +199,7 @@ fn App() -> impl IntoView {
                                 </A>
                             })
                             .collect_view()}
+                        <AppLinks />
                     </nav>
                     <div class="sidebar-bottom">
                         <A href="/settings" attr:class="settings-link" attr:title="Settings">
@@ -235,7 +237,10 @@ fn Page(live: Live) -> impl IntoView {
     let location = use_location();
     transition::watch(location.pathname);
     view! {
-        <main class:full=move || location.pathname.get() == "/floorplan">
+        <main class:full=move || {
+            let path = location.pathname.get();
+            path == "/floorplan" || path.starts_with("/apps/")
+        }>
             {move || live.trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
             <Routes fallback=NotFound transition=true>
                 <Route path=path!("/") view=start::Start />
@@ -244,6 +249,8 @@ fn Page(live: Live) -> impl IntoView {
                 <Route path=path!("/devices/:id") view=device::DevicePage />
                 <Route path=path!("/extensions") view=extensions::Extensions />
                 <Route path=path!("/settings") view=settings::Settings />
+                <Route path=path!("/apps/:id") view=app_frame::AppPage />
+                <Route path=path!("/apps/:id/*rest") view=app_frame::AppPage />
             </Routes>
         </main>
     }
@@ -275,6 +282,55 @@ const SECTIONS: [(&str, &str, &str); 3] = [
         r#"<rect x="4" y="4" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="4" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="4" y="13" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="13" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/>"#,
     ),
 ];
+
+/// Extensions' own pages (`docs/specs/automations.md` §B3), after Irori's: each running
+/// extension with an app gets an entry, with its own icon as an image — never inlined, so an
+/// extension's SVG can't run script in the shell.
+#[component]
+fn AppLinks() -> impl IntoView {
+    let live = expect_context::<Live>();
+    let apps = Memo::new(move |_| {
+        live.home.with(|home| {
+            home.extensions
+                .iter()
+                .filter(|(_, extension)| matches!(extension.state.as_str(), "running" | "degraded"))
+                .filter_map(|(id, extension)| {
+                    extension
+                        .app
+                        .as_ref()
+                        .map(|app| (id.to_string(), app.label.clone(), extension.has_icon))
+                })
+                .collect::<Vec<_>>()
+        })
+    });
+    view! {
+        <For each=move || apps.get() key=|app| app.clone() let:app>
+            {
+                let (id, label, has_icon) = app;
+                let title = label.clone();
+                view! {
+                    <A href=format!("/apps/{id}/") attr:title=title>
+                        {if has_icon {
+                            view! {
+                                <img src=format!("/api/dev/extensions/{id}/icon.svg") alt="" />
+                            }
+                            .into_any()
+                        } else {
+                            view! {
+                                <svg viewBox="0 0 24 24" aria-hidden="true">
+                                    <rect x="4" y="4" width="16" height="16" rx="2" fill="none"
+                                        stroke="currentColor" stroke-width="1.8" />
+                                </svg>
+                            }
+                            .into_any()
+                        }}
+                        <span class="label">{label}</span>
+                    </A>
+                }
+            }
+        </For>
+    }
+}
 
 /// The sidebar's highlight, gliding to the page being shown. Its own component because it asks
 /// the router where the page is, which only works inside `<Router>`.

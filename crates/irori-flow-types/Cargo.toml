@@ -1,0 +1,24 @@
+[package]
+name = "irori-flow-types"
+description = "The flow engine's documents: nodes, wires, versions. No CEL, so a wasm page can share them."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+irori-types.workspace = true
+# The trigger, condition, wait and service shapes, without the `engine` feature (no CEL).
+irori-rules.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+jsonschema.workspace = true
+
+[lints]
+workspace = true

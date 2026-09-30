@@ -1,5 +1,10 @@
 # Spec: sequential automation engine
 
+> **Note (X19).** The first engine shipped as an extension is the **flow** engine
+> ([flows.md](flows.md)), a freeform graph on a canvas. It reuses this spec's trigger, condition,
+> wait and service shapes, durations, CEL surface and registry type-check (`irori-rules`), but
+> not the rule document. The sequential engine below stays a specified library, not shipped.
+
 Status: **draft for Phase 0** (M0.3). This document is the **first-party sequential engine**, not
 the Irori OS. The core does not ship an engine, does not load `rules/*.json`, and does not run
 automations. This engine will be **downloadable and installable** as an extension
@@ -194,8 +199,10 @@ Conditions (§6) are the level checks.
 |---|---|---|---|
 | `entity` | `EntityId` | yes | Must exist at semantic check; kind must match `from`/`to` |
 | `from` | bool, number, string, or `null` | no | Previous typed value. `null` is unknown |
-| `to` | same | no | New typed value |
-| `for` | duration | no | New value must **hold** this long while **available** |
+| `to` | same, or a list of 1–16 of them | no | New typed value; with a list, any one of them (`["paused", "idle", "off"]`) |
+| `above` | number | no | Numeric sensors only, not with `from`/`to`: fires when the reading goes above this from outside the range |
+| `below` | number | no | Likewise, below. With both, the range between them (`above` < `below`) |
+| `for` | duration | no | New value must **hold** this long while **available** (with a level: stay inside the range) |
 
 At least one of `from`, `to`, `for` may be omitted:
 
@@ -215,8 +222,13 @@ At least one of `from`, `to`, `for` may be omitted:
 | `sensor` (`value_type: text`) | `value` | string |
 
 A `to: true` on a light does not fire because brightness changed. A numeric sensor trigger
-without `from`/`to` fires on any new reading; inequalities belong in an expression (`num(…) < 30`),
-not on this node. Attributes are not a state-trigger field (they're untyped; use `attr()` in an
+without `from`/`to`/`above`/`below` fires on any new reading.
+
+**Levels.** `above`/`below` fire on the **crossing** into the range, like Home Assistant's
+`numeric_state`: from a reading outside it, or from not knowing the value. A reading already inside
+the range when the flow is armed doesn't fire, and neither does a new reading that moves about
+inside it. With `for`, the reading has to stay inside the range that long; moving inside the range
+keeps the timer going, and leaving the range cancels it (a `hold_reset` near-miss). Attributes are not a state-trigger field (they're untyped; use `attr()` in an
 expr condition if you must).
 
 **Availability.** A `state` trigger does **not** fire because the entity became unavailable or
@@ -728,7 +740,9 @@ An expression is a single boolean or value. The grammar a person writes:
   No escapes except `\\` and the matching quote (`\'` or `\"`). Entity ids are strings, e.g.
   `'sensor.demo_luminosity_illuminance'`. Mixed int/float comparison is legal: `num('…') < 30`
   does not need `30.0`.
-- Arithmetic: `+ - * /`, unary `-`, parentheses.
+- Arithmetic: `+ - * /`, unary `-`, parentheses. **Every number is a decimal**: a whole number
+  written in an expression is read as one (`30` as `30.0`) and every function gives decimals, so
+  `70 - 12.5` works and `10 / 4` is `2.5`, not CEL's integer `2`. A whole result reads as `45`.
 - Comparisons: `== != < <= > >=` (numbers); `== !=` (bool, string).
 - Logic: `&& || !` (short-circuit *inside* an expression is allowed; it's one node for traces).
 - Ternary: `cond ? a : b` with `a` and `b` the same type.
@@ -747,6 +761,9 @@ An expression is a single boolean or value. The grammar a person writes:
 | `hour()` | int 0–23 | home timezone present (same gate as §5.2) | civil hour in that timezone |
 | `minute()` | int 0–59 | likewise | likewise |
 | `now_ts()` | number | always | Unix seconds from `Clock` (for comparisons in tests; not for display) |
+| `min(a, b)`, `max(a, b)` | number | both numbers | the smaller, the larger |
+| `round(x)` | number | a number | to the nearest whole number, halves away from zero |
+| `clamp(x, low, high)` | number | three numbers | `x` kept between `low` and `high`; an error if `low > high` |
 
 **Entity ids and `var` names are string literals**, not expressions. `num(var('id'))`,
 `on(text('sensor.x'))`, `attr(id, var('k'))` are compile errors — D8's registry check only

@@ -23,6 +23,8 @@ const ENTITY_FNS: &[&str] = &[
     "attr",
 ];
 const CLOCK_FNS: &[&str] = &["hour", "minute", "now_ts"];
+/// Maths on numbers: `min(a, b)`, `max(a, b)`, `round(x)`, `clamp(x, low, high)`.
+const MATH_FNS: &[&str] = &["min", "max", "round", "clamp"];
 const OPS: &[&str] = &[
     "_&&_", "_||_", "!_", "_+_", "_-_", "_*_", "_/_", "_==_", "_!=_", "_>=_", "_<=_", "_>_", "_<_",
     "-_", "_?_:_",
@@ -82,13 +84,17 @@ impl RegistryView for MapRegistry {
     }
 }
 
+/// The type of an expression or a run variable.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum ExprKind {
+pub enum VarKind {
     Bool,
     Number,
     String,
+    /// `attr()`: whatever the protocol put there.
     Scalar,
 }
+
+type ExprKind = VarKind;
 
 /// Type-check a rule against the registry. Does not arm it.
 pub fn validate(rule: &Rule, registry: &impl RegistryView) -> Vec<Problem> {
@@ -114,30 +120,53 @@ fn walk_triggers(
     problems: &mut Vec<Problem>,
 ) {
     for (i, trigger) in triggers.iter().enumerate() {
-        let here = format!("{path}/{i}");
-        match trigger {
-            Trigger::State {
-                entity, from, to, ..
-            } => check_state_match(
-                &here,
-                entity,
-                from.as_ref(),
-                to.as_ref(),
-                None,
-                registry,
-                problems,
-            ),
-            Trigger::Time { .. } => {
-                if !registry.has_timezone() {
-                    problems.push(problem(
-                        here,
-                        "time triggers need a timezone; it isn't in irori.toml yet",
-                    ));
-                }
+        walk_triggers_one(&format!("{path}/{i}"), trigger, registry, problems);
+    }
+}
+
+fn walk_triggers_one(
+    here: &str,
+    trigger: &Trigger,
+    registry: &impl RegistryView,
+    problems: &mut Vec<Problem>,
+) {
+    match trigger {
+        Trigger::State {
+            entity,
+            from,
+            to,
+            above,
+            below,
+            ..
+        } => {
+            check_state_match(here, entity, from.as_ref(), None, None, registry, problems);
+            for value in to.iter().flat_map(crate::Values::iter) {
+                check_state_match(here, entity, None, Some(value), None, registry, problems);
             }
-            Trigger::Sun { .. } => check_sun_gate(&here, registry, problems),
-            Trigger::Event { .. } | Trigger::Startup {} => {}
+            if (above.is_some() || below.is_some())
+                && let Some(found) = registry.entity(entity)
+                && !matches!(&found.capabilities, Capabilities::Sensor(s)
+                    if s.value_type == SensorValueType::Number)
+            {
+                problems.push(problem(
+                    here,
+                    format!(
+                        "above and below are for a sensor with numbers, and {entity} is a {}",
+                        found.capabilities.kind()
+                    ),
+                ));
+            }
         }
+        Trigger::Time { .. } => {
+            if !registry.has_timezone() {
+                problems.push(problem(
+                    here,
+                    "time triggers need a timezone; it isn't in irori.toml yet",
+                ));
+            }
+        }
+        Trigger::Sun { .. } => check_sun_gate(here, registry, problems),
+        Trigger::Event { .. } | Trigger::Startup {} => {}
     }
 }
 
@@ -233,7 +262,7 @@ fn walk_actions(
                 target,
                 data,
                 ..
-            } => check_call(
+            } => check_call_inner(
                 &here,
                 *service,
                 &target.entity,
@@ -429,10 +458,105 @@ fn check_expr(
     }
 }
 
-struct Inspected {
-    ids: BTreeSet<EntityId>,
-    uses_clock: bool,
-    kind: ExprKind,
+/// What an expression is, found at save time: the entities it reads, whether it reads the clock,
+/// and its type.
+#[derive(Debug, Clone)]
+pub struct Inspected {
+    pub ids: BTreeSet<EntityId>,
+    pub uses_clock: bool,
+    pub kind: VarKind,
+}
+
+/// Parses an expression inside the allowed surface and type-checks it against the registry,
+/// with `vars` the run variables it may read.
+pub fn inspect(
+    expr: &ExprString,
+    registry: &impl RegistryView,
+    vars: &BTreeMap<String, VarKind>,
+) -> Result<Inspected, String> {
+    inspect_expr(expr, registry, vars)
+}
+
+/// Checks one trigger against the home; problems are reported at `path`.
+pub fn check_trigger(path: &str, trigger: &Trigger, registry: &impl RegistryView) -> Vec<Problem> {
+    let mut problems = Vec::new();
+    walk_triggers_one(path, trigger, registry, &mut problems);
+    problems
+}
+
+/// Checks one condition (and its children) against the home.
+pub fn check_condition(
+    path: &str,
+    condition: &Condition,
+    registry: &impl RegistryView,
+    vars: &BTreeMap<String, VarKind>,
+) -> Vec<Problem> {
+    let mut problems = Vec::new();
+    walk_condition(path, condition, registry, vars, &mut problems);
+    problems
+}
+
+/// Checks a wait matcher against the home.
+pub fn check_wait(
+    path: &str,
+    until: &WaitUntil,
+    registry: &impl RegistryView,
+    vars: &BTreeMap<String, VarKind>,
+) -> Vec<Problem> {
+    let mut problems = Vec::new();
+    match until {
+        WaitUntil::State { entity, is, .. } => check_state_match(
+            path,
+            entity,
+            None,
+            is.as_ref(),
+            Some("is"),
+            registry,
+            &mut problems,
+        ),
+        WaitUntil::Expr { expr, .. } => {
+            check_expr(path, expr, ExprRole::Wait, registry, vars, &mut problems);
+        }
+    }
+    problems
+}
+
+/// Checks a service call against the entity it names.
+pub fn check_call(
+    path: &str,
+    service: RuleService,
+    entity: &EntityId,
+    data: Option<&CallData>,
+    registry: &impl RegistryView,
+) -> Vec<Problem> {
+    let mut problems = Vec::new();
+    check_call_inner(path, service, entity, data, registry, &mut problems);
+    problems
+}
+
+/// The run variables an expression reads (`var('name')`). Empty if it doesn't parse — that's
+/// [`inspect`]'s to report.
+pub fn vars_read(expr: &ExprString) -> BTreeSet<String> {
+    fn walk(expr: &IdedExpr, names: &mut BTreeSet<String>) {
+        if let Expr::Call(call) = &expr.expr {
+            if crate::expr::author_name(call.func_name.as_str()) == "var"
+                && let Some(name) = call.args.first().and_then(string_literal)
+            {
+                names.insert(name.to_owned());
+            }
+            for arg in &call.args {
+                walk(arg, names);
+            }
+            if let Some(target) = &call.target {
+                walk(target, names);
+            }
+        }
+    }
+    let mut names = BTreeSet::new();
+    if let Ok(compiled) = compile(expr.as_str()) {
+        walk(compiled.program().expression(), &mut names);
+    }
+    names
 }
 
 fn inspect_expr(
@@ -471,7 +595,7 @@ fn walk_ast(
         Expr::Select(_) => Err("field access isn't allowed; use num/on/text/…".into()),
         Expr::Comprehension(_) => Err("macros like map/filter/exists aren't allowed".into()),
         Expr::Call(call) => {
-            let name = call.func_name.as_str();
+            let name = crate::expr::author_name(call.func_name.as_str());
             if name == "has" || name == "duration" || name == "timestamp" {
                 return Err(format!("{name}() isn't allowed in rule expressions"));
             }
@@ -531,7 +655,10 @@ fn walk_ast(
                         "var({var_name:?}): no set for this name in the rule"
                     ));
                 }
-            } else if !OPS.contains(&name) && !CLOCK_FNS.contains(&name) {
+            } else if !OPS.contains(&name)
+                && !CLOCK_FNS.contains(&name)
+                && !MATH_FNS.contains(&name)
+            {
                 return Err(format!("unknown function {name}()"));
             }
             for arg in &call.args {
@@ -548,7 +675,9 @@ fn walk_ast(
 fn check_arity(name: &str, n: usize) -> Result<(), String> {
     let expected = match name {
         "num" | "on" | "text" | "brightness" | "available" | "unknown" | "var" => Some(1),
-        "attr" => Some(2),
+        "attr" | "min" | "max" => Some(2),
+        "round" => Some(1),
+        "clamp" => Some(3),
         "hour" | "minute" | "now_ts" => Some(0),
         "!_" | "-_" => Some(1),
         "_&&_" | "_||_" | "_+_" | "_-_" | "_*_" | "_/_" | "_==_" | "_!=_" | "_>=_" | "_<=_"
@@ -617,10 +746,18 @@ fn infer_type(expr: &IdedExpr, sets: &BTreeMap<String, ExprKind>) -> Result<Expr
             Err("null and bytes literals aren't allowed in rule expressions".into())
         }
         Expr::Call(call) => {
-            let name = call.func_name.as_str();
+            let name = crate::expr::author_name(call.func_name.as_str());
             Ok(match name {
                 "num" | "brightness" | "hour" | "minute" | "now_ts" | "_+_" | "_-_" | "_*_"
                 | "_/_" | "-_" => ExprKind::Number,
+                "min" | "max" | "round" | "clamp" => {
+                    for arg in &call.args {
+                        if !matches!(infer_type(arg, sets)?, ExprKind::Number | ExprKind::Scalar) {
+                            return Err(format!("{name}() takes numbers"));
+                        }
+                    }
+                    ExprKind::Number
+                }
                 "on" | "available" | "unknown" | "_&&_" | "_||_" | "!_" | "_==_" | "_!=_"
                 | "_>=_" | "_<=_" | "_>_" | "_<_" => ExprKind::Bool,
                 "text" => ExprKind::String,
@@ -673,7 +810,7 @@ fn check_state_match(
     let Some(entity) = registry.entity(id) else {
         problems.push(problem(
             path,
-            format!("no such entity {id:?} — check the entity id"),
+            format!("no such entity {id} — check the entity id"),
         ));
         return;
     };
@@ -723,7 +860,7 @@ fn typed_value_fits(value: &TypedValue, entity: &Entity) -> Result<(), String> {
     }
 }
 
-fn check_call(
+fn check_call_inner(
     path: &str,
     service: RuleService,
     target: &EntityId,
@@ -734,7 +871,7 @@ fn check_call(
     let Some(entity) = registry.entity(target) else {
         problems.push(problem(
             path,
-            format!("no such entity {target:?} — check the entity id"),
+            format!("no such entity {target} — check the entity id"),
         ));
         return;
     };

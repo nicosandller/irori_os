@@ -1,0 +1,27 @@
+{
+  "id": "hallway_motion_light",
+  "name": "Hallway motion light",
+  "description": "Motion in the dark hallway turns the light on until nobody's there.",
+  "mode": "restart",
+  "nodes": {
+    "motion": { "type": "trigger", "trigger": { "type": "state", "entity": "binary_sensor.demo_movement_motion", "to": true } },
+    "dark": { "type": "gate", "condition": { "type": "expr", "expr": "num('sensor.demo_luminosity_illuminance') < 30" } },
+    "on": { "type": "call", "service": "light.turn_on", "entity": "light.demo_hall_light", "data": { "brightness_pct": 60 } },
+    "clear": { "type": "wait", "until": { "type": "state", "entity": "binary_sensor.demo_mmwave_occupancy", "is": false, "for": "2m" }, "timeout": "10m" },
+    "off": { "type": "call", "service": "light.turn_off", "entity": "light.demo_hall_light" }
+  },
+  "wires": [
+    ["motion", "dark"],
+    ["dark:yes", "on"],
+    ["on", "clear"],
+    ["clear:matched", "off"],
+    ["clear:timeout", "off"]
+  ],
+  "layout": {
+    "motion": [0, 0],
+    "dark": [280, 0],
+    "on": [560, 0],
+    "clear": [840, 0],
+    "off": [1120, 0]
+  }
+}

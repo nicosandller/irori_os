@@ -1,0 +1,16 @@
+[build]
+target = "index.html"
+release = true
+# Served from the extension's package under /pages/automations/, so every link is relative.
+public_url = "./"
+# Stable names: the page's own boot script (boot.js) imports them, because the page's policy
+# allows no inline script. The core serves these files with `no-cache`, so a reinstall is seen.
+filehash = false
+inject_scripts = false
+dist = "dist"
+
+[tools]
+wasm_opt = "version_123"
+
+[watch]
+watch = ["index.html", "boot.js", "src", "../../../crates/irori-flow-types/src", "../../../crates/irori-ui-kit/src"]
