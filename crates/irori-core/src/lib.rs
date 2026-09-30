@@ -31,7 +31,7 @@ pub use events::Event;
 pub use host::{ExtensionHost, Timing};
 pub use services::{CallError, Command};
 
-pub use home::{device_id_for, new_area_id, new_floor_id};
+pub use home::{SYSTEM_PROTOCOL, device_id_for, new_area_id, new_floor_id};
 
 pub use home::HeldDevice;
 
