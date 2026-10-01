@@ -62,6 +62,9 @@ ARG FEATURES=""
 ENV IRORI_TRUNK_RELEASE=0 \
     SOURCE_DATE_EPOCH=0
 COPY Cargo.toml Cargo.lock ./
+# `cargo xtask` is an alias. The full source copy used to bring this in; this
+# stage has to name it or cargo reports there is no such command.
+COPY .cargo/config.toml .cargo/config.toml
 COPY xtask xtask
 COPY crates/irori-types crates/irori-types
 COPY crates/irori-rules crates/irori-rules
