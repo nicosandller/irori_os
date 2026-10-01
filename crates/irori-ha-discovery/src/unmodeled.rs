@@ -125,9 +125,9 @@ mod tests {
     #[test]
     fn a_config_without_a_device_is_still_listed() {
         let mut tracker = Tracker::default();
-        assert!(tracker.apply("homeassistant/cover/blind/config", "cover", b"not json"));
+        assert!(tracker.apply("homeassistant/vacuum/robot/config", "vacuum", b"not json"));
         let listed = tracker.list();
-        assert_eq!(listed[0].platform.as_str(), "cover");
+        assert_eq!(listed[0].platform.as_str(), "vacuum");
         assert_eq!(listed[0].device_unique_id, None);
     }
 }

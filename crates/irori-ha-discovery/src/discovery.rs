@@ -9,13 +9,13 @@
 
 use irori_types::{
     BinarySensorCapabilities, BinarySensorClass, ButtonCapabilities, ButtonClass, Capabilities,
-    ColorTempRange, EntityCategory, EventCapabilities, EventClass, LightCapabilities, Name,
-    NumberCapabilities, NumberMode, SelectCapabilities, SensorCapabilities, SensorClass,
-    SensorValueType, StateClass, SwitchCapabilities, SwitchClass, TextCapabilities, TextMode,
-    UniqueId,
+    ColorTempRange, CoverCapabilities, CoverClass, EntityCategory, EventCapabilities, EventClass,
+    LightCapabilities, Name, NumberCapabilities, NumberMode, SelectCapabilities,
+    SensorCapabilities, SensorClass, SensorValueType, StateClass, SwitchCapabilities, SwitchClass,
+    TextCapabilities, TextMode, UniqueId,
 };
 
-use crate::template::ValueTemplate;
+use crate::template::{CommandTemplate, ValueTemplate};
 use crate::topic::Component;
 
 /// A device as HA discovery describes it. `unique_id` is the first of `device.identifiers`,
@@ -70,7 +70,7 @@ pub fn resolve(listeners: &[Listener], payload: &str) -> (Vec<UniqueId>, Vec<Uni
 }
 
 /// The topics and wire schema for one entity, once its kind is known.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EntityTopics {
     /// Z2M's `schema: "json"`: one topic each way, JSON body
     /// `{state, brightness, color_temp, color: {r,g,b}}`.
@@ -110,6 +110,7 @@ pub enum EntityTopics {
     Number {
         state_topic: Option<String>,
         command_topic: String,
+        command_template: CommandTemplate,
         value_template: ValueTemplate,
     },
     /// One choice out of a list: the option itself is published to `command_topic`, and read back
@@ -117,12 +118,14 @@ pub enum EntityTopics {
     Select {
         state_topic: Option<String>,
         command_topic: String,
+        command_template: CommandTemplate,
         value_template: ValueTemplate,
     },
     /// A piece of text: published as it is, read back through `value_template`.
     Text {
         state_topic: Option<String>,
         command_topic: String,
+        command_template: CommandTemplate,
         value_template: ValueTemplate,
     },
     /// Something to press: `payload_press` is published, and nothing is ever read back.
@@ -136,6 +139,41 @@ pub enum EntityTopics {
         state_topic: String,
         source: EventSource,
     },
+    /// Something that opens and closes. Boxed: Home Assistant lets nearly every part of it vary.
+    Cover(Box<CoverTopics>),
+}
+
+/// How a cover is told what to do and says where it is, all as Home Assistant's MQTT cover lets
+/// it vary. A state can come in on any of its topics, which are often the same one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoverTopics {
+    pub command_topic: Option<String>,
+    pub payload_open: String,
+    pub payload_close: String,
+    /// `None` when it can't be stopped.
+    pub payload_stop: Option<String>,
+    pub state_topic: Option<String>,
+    /// `None` when its template needs Jinja: the state is then worked out from the position.
+    pub value_template: Option<ValueTemplate>,
+    pub state_open: String,
+    pub state_opening: String,
+    pub state_closed: String,
+    pub state_closing: String,
+    /// Stopped somewhere: open, unless the position says it's at the closed end.
+    pub state_stopped: String,
+    pub position_topic: Option<String>,
+    pub position_template: ValueTemplate,
+    /// The device's own numbers for fully open and fully closed; Irori's are 100 and 0.
+    pub position_open: f64,
+    pub position_closed: f64,
+    pub set_position_topic: Option<String>,
+    pub set_position_template: CommandTemplate,
+    pub tilt_command_topic: Option<String>,
+    pub tilt_command_template: CommandTemplate,
+    pub tilt_status_topic: Option<String>,
+    pub tilt_status_template: ValueTemplate,
+    pub tilt_min: f64,
+    pub tilt_max: f64,
 }
 
 /// Where in a message an event's type is.
@@ -199,6 +237,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::Text => parse_text(&root)?,
         Component::Button => parse_button(&root)?,
         Component::Event => parse_event(&root)?,
+        Component::Cover => parse_cover(&root)?,
     };
 
     Ok(ParsedConfig {
@@ -406,7 +445,7 @@ fn color_temp_range(root: &serde_json::Value) -> Result<ColorTempRange, String> 
 }
 
 fn parse_number(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
-    let command_topic = plain_command(root, "a number")?;
+    let (command_topic, command_template) = plain_command(root, "a number")?;
     let number = |key: &str, default: f64| {
         root.get(key)
             .and_then(serde_json::Value::as_f64)
@@ -431,32 +470,31 @@ fn parse_number(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics)
         EntityTopics::Number {
             state_topic: str_field(root, "state_topic").map(str::to_owned),
             command_topic,
+            command_template,
             value_template: ValueTemplate::parse(str_field(root, "value_template")),
         },
     ))
 }
 
-/// The `command_topic` of an entity whose command is its value, as it is.
+/// The `command_topic` of an entity whose command is its value, and how to put the value in.
 ///
-/// A `command_template` that does more than pass the value through would need Jinja, which Irori
-/// doesn't run (`docs/specs/protocols.md`): an entity that needs one is better left out than sent
-/// the wrong thing.
-fn plain_command(root: &serde_json::Value, what: &str) -> Result<String, String> {
+/// A `command_template` that does more than place the value would need Jinja, which Irori doesn't
+/// run (`docs/specs/protocols.md`): an entity that needs one is better refused than sent the
+/// wrong thing.
+fn plain_command(
+    root: &serde_json::Value,
+    what: &str,
+) -> Result<(String, CommandTemplate), String> {
     let command_topic = str_field(root, "command_topic")
         .ok_or_else(|| format!("{what} needs a `command_topic`"))?
         .to_owned();
-    if let Some(template) = str_field(root, "command_template")
-        && template.split_whitespace().collect::<String>() != "{{value}}"
-    {
-        return Err(format!(
-            "its `command_template` {template:?} is more than the value, which Irori can't render"
-        ));
-    }
-    Ok(command_topic)
+    let template = CommandTemplate::parse(str_field(root, "command_template"), "value")
+        .map_err(|why| format!("`command_template`: {why}"))?;
+    Ok((command_topic, template))
 }
 
 fn parse_select(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
-    let command_topic = plain_command(root, "a select")?;
+    let (command_topic, command_template) = plain_command(root, "a select")?;
     let options = root
         .get("options")
         .and_then(serde_json::Value::as_array)
@@ -474,8 +512,75 @@ fn parse_select(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics)
         EntityTopics::Select {
             state_topic: str_field(root, "state_topic").map(str::to_owned),
             command_topic,
+            command_template,
             value_template: ValueTemplate::parse(str_field(root, "value_template")),
         },
+    ))
+}
+
+fn parse_cover(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
+    let owned = |key: &str| str_field(root, key).map(str::to_owned);
+    let number = |key: &str, default: f64| {
+        root.get(key)
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(default)
+    };
+    let template = |key: &str, variable: &str| {
+        CommandTemplate::parse(str_field(root, key), variable)
+            .map_err(|why| format!("`{key}`: {why}"))
+    };
+    let state_topic = owned("state_topic");
+    // A state template that needs Jinja (Zigbee2MQTT's for covers that report their motor) isn't
+    // run: the state is worked out from the position instead, if it has one.
+    let value_template = match ValueTemplate::parse(str_field(root, "value_template")) {
+        ValueTemplate::Unsupported(_) => None,
+        template => Some(template),
+    };
+    let position_topic = owned("position_topic");
+    if state_topic.is_some() && value_template.is_none() && position_topic.is_none() {
+        return Err("its state template needs Jinja, and it has no position to go by".to_owned());
+    }
+    // `payload_stop: null` says it can't be stopped.
+    let payload_stop = match root.get("payload_stop") {
+        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(stop)) => Some(stop.clone()),
+        _ => Some("STOP".to_owned()),
+    };
+    let command_topic = owned("command_topic");
+    let topics = CoverTopics {
+        payload_open: owned("payload_open").unwrap_or_else(|| "OPEN".to_owned()),
+        payload_close: owned("payload_close").unwrap_or_else(|| "CLOSE".to_owned()),
+        payload_stop: payload_stop.filter(|_| command_topic.is_some()),
+        command_topic,
+        state_topic,
+        value_template,
+        state_open: owned("state_open").unwrap_or_else(|| "open".to_owned()),
+        state_opening: owned("state_opening").unwrap_or_else(|| "opening".to_owned()),
+        state_closed: owned("state_closed").unwrap_or_else(|| "closed".to_owned()),
+        state_closing: owned("state_closing").unwrap_or_else(|| "closing".to_owned()),
+        state_stopped: owned("state_stopped").unwrap_or_else(|| "stopped".to_owned()),
+        position_template: ValueTemplate::parse(str_field(root, "position_template")),
+        position_topic,
+        position_open: number("position_open", 100.0),
+        position_closed: number("position_closed", 0.0),
+        set_position_topic: owned("set_position_topic"),
+        set_position_template: template("set_position_template", "position")?,
+        tilt_command_topic: owned("tilt_command_topic"),
+        tilt_command_template: template("tilt_command_template", "tilt_position")?,
+        tilt_status_topic: owned("tilt_status_topic"),
+        tilt_status_template: ValueTemplate::parse(str_field(root, "tilt_status_template")),
+        tilt_min: number("tilt_min", 0.0),
+        tilt_max: number("tilt_max", 100.0),
+    };
+    let capabilities = CoverCapabilities {
+        device_class: str_field(root, "device_class").and_then(CoverClass::from_ha),
+        position: topics.set_position_topic.is_some(),
+        tilt: topics.tilt_command_topic.is_some(),
+        stop: topics.payload_stop.is_some(),
+    };
+    Ok((
+        Capabilities::Cover(capabilities),
+        EntityTopics::Cover(Box::new(topics)),
     ))
 }
 
@@ -522,7 +627,8 @@ fn parse_event(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics),
 }
 
 fn parse_button(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
-    let command_topic = plain_command(root, "a button")?;
+    // A button's payload is `payload_press`; there's no value to template.
+    let (command_topic, _) = plain_command(root, "a button")?;
     Ok((
         Capabilities::Button(ButtonCapabilities {
             device_class: str_field(root, "device_class").and_then(ButtonClass::from_ha),
@@ -536,7 +642,7 @@ fn parse_button(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics)
 }
 
 fn parse_text(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
-    let command_topic = plain_command(root, "a text")?;
+    let (command_topic, command_template) = plain_command(root, "a text")?;
     let length = |key: &str, default: u32| {
         root.get(key)
             .and_then(serde_json::Value::as_u64)
@@ -558,6 +664,7 @@ fn parse_text(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), 
         EntityTopics::Text {
             state_topic: str_field(root, "state_topic").map(str::to_owned),
             command_topic,
+            command_template,
             value_template: ValueTemplate::parse(str_field(root, "value_template")),
         },
     ))
@@ -877,6 +984,100 @@ mod tests {
 
         let no_options = br#"{"unique_id": "s", "name": "Mode", "command_topic": "x/set"}"#;
         assert!(parse(Component::Select, no_options).is_err());
+    }
+
+    /// What Zigbee2MQTT publishes for a blind with a position (`case "cover"`, no motor state).
+    const Z2M_COVER: &[u8] = br#"{
+        "unique_id": "0x0211000000000010_cover_zigbee2mqtt", "name": null,
+        "device": {"identifiers": ["zigbee2mqtt_0x0211000000000010"], "name": "Office blind"},
+        "command_topic": "zigbee2mqtt/Office blind/set",
+        "state_topic": "zigbee2mqtt/Office blind",
+        "value_template": "{{ value_json[\"state\"] }}",
+        "state_open": "OPEN", "state_closed": "CLOSE", "state_stopped": "STOP",
+        "position_template": "{{ value_json[\"position\"] }}",
+        "set_position_template": "{ \"position\": {{ position }} }",
+        "set_position_topic": "zigbee2mqtt/Office blind/set",
+        "position_topic": "zigbee2mqtt/Office blind"
+    }"#;
+
+    #[test]
+    fn a_z2m_cover_is_read_and_sent_to_a_position() {
+        let parsed = parse(Component::Cover, Z2M_COVER).expect("valid");
+        assert_eq!(
+            parsed.capabilities,
+            Capabilities::Cover(CoverCapabilities {
+                device_class: None,
+                position: true,
+                tilt: false,
+                stop: true,
+            })
+        );
+        let unique_id = UniqueId::try_from("0x0211000000000010_cover_zigbee2mqtt").expect("valid");
+        assert_eq!(
+            crate::state::topics_of(&unique_id, &parsed.topics).len(),
+            1,
+            "state and position share one topic, listened to once"
+        );
+        let decoded = crate::state::decode(
+            &parsed.topics,
+            "zigbee2mqtt/Office blind",
+            br#"{"state": "OPEN", "position": 40}"#,
+            None,
+        );
+        assert_eq!(
+            decoded,
+            Some(Ok(irori_types::State::Cover(irori_types::CoverState {
+                state: irori_types::OpenState::Open,
+                position: Some(40),
+                tilt: None,
+            })))
+        );
+        // Stopped at the bottom is closed.
+        let stopped = crate::state::decode(
+            &parsed.topics,
+            "zigbee2mqtt/Office blind",
+            br#"{"state": "STOP", "position": 0}"#,
+            None,
+        );
+        assert!(matches!(
+            stopped,
+            Some(Ok(irori_types::State::Cover(irori_types::CoverState {
+                state: irori_types::OpenState::Closed,
+                ..
+            })))
+        ));
+        let sent = crate::state::encode(
+            &parsed.topics,
+            &irori_types::Service::CoverSetPosition(irori_types::SetPosition { position: 75 }),
+        )
+        .expect("a position");
+        assert_eq!(sent[0].topic, "zigbee2mqtt/Office blind/set");
+        assert_eq!(sent[0].payload, br#"{ "position": 75 }"#);
+        let sent =
+            crate::state::encode(&parsed.topics, &irori_types::Service::CoverClose).expect("close");
+        assert_eq!(sent[0].payload, b"CLOSE");
+    }
+
+    #[test]
+    fn a_cover_whose_state_needs_jinja_goes_by_its_position() {
+        let payload = br#"{"unique_id": "c", "name": "Curtain", "command_topic": "c/set",
+            "state_topic": "c", "position_topic": "c",
+            "value_template": "{% if value_json.motor_state == 'opening' %}opening{% endif %}",
+            "position_template": "{{ value_json.position }}", "set_position_topic": "c/set"}"#;
+        let parsed = parse(Component::Cover, payload).expect("valid");
+        let decoded = crate::state::decode(&parsed.topics, "c", br#"{"position": 0}"#, None);
+        assert!(matches!(
+            decoded,
+            Some(Ok(irori_types::State::Cover(irori_types::CoverState {
+                state: irori_types::OpenState::Closed,
+                position: Some(0),
+                ..
+            })))
+        ));
+        // With nothing else to go by, it's refused, and listed with why.
+        let blind = br#"{"unique_id": "d", "name": "Blind", "command_topic": "d/set",
+            "state_topic": "d", "value_template": "{% if x %}open{% endif %}"}"#;
+        assert!(parse(Component::Cover, blind).is_err_and(|e| e.contains("Jinja")));
     }
 
     #[test]

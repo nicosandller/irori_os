@@ -210,6 +210,11 @@
           "description": "Something that happens, e.g. a remote's button pressed twice. Every report counts.",
           "type": "string",
           "const": "event"
+        },
+        {
+          "description": "Something that opens and closes, e.g. a blind or a garage door.",
+          "type": "string",
+          "const": "cover"
         }
       ]
     },

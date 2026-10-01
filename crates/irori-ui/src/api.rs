@@ -376,7 +376,7 @@ pub async fn fetch_home() -> Result<Home, String> {
 #[derive(Debug, Serialize)]
 struct CommandRequest<'a> {
     entity_id: &'a EntityId,
-    command: &'static str,
+    command: &'a str,
     /// The action's data: a light's brightness or color for `turn_on`, a number's value.
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<serde_json::Value>,
@@ -391,7 +391,7 @@ struct Refused {
 /// if it vanished meanwhile).
 async fn command(
     entity_id: &EntityId,
-    command: &'static str,
+    command: &str,
     data: Option<serde_json::Value>,
 ) -> Result<Option<EntityState>, String> {
     let body = CommandRequest {
@@ -433,42 +433,14 @@ pub async fn set_light(
     command(entity_id, "turn_on", serde_json::to_value(data).ok()).await
 }
 
-/// Presses a button.
-pub async fn press(entity_id: &EntityId) -> Result<Option<EntityState>, String> {
-    command(entity_id, "press", None).await
-}
-
-/// Sets a text entity to `value`.
-pub async fn set_text(entity_id: &EntityId, value: String) -> Result<Option<EntityState>, String> {
-    command(
-        entity_id,
-        "set_value",
-        Some(serde_json::json!({ "value": value })),
-    )
-    .await
-}
-
-/// Puts a select on `option`, one of its choices.
-pub async fn select_option(
+/// Asks an entity for one of its kind's actions, with that action's data: a button's `press`, a
+/// number's `set_value {value}`, a cover's `set_position {position}`.
+pub async fn act(
     entity_id: &EntityId,
-    option: String,
+    action: &str,
+    data: Option<serde_json::Value>,
 ) -> Result<Option<EntityState>, String> {
-    command(
-        entity_id,
-        "select_option",
-        Some(serde_json::json!({ "option": option })),
-    )
-    .await
-}
-
-/// Sets a number to `value`, within its range.
-pub async fn set_value(entity_id: &EntityId, value: f64) -> Result<Option<EntityState>, String> {
-    command(
-        entity_id,
-        "set_value",
-        Some(serde_json::json!({ "value": value })),
-    )
-    .await
+    command(entity_id, action, data).await
 }
 
 // --- Areas, names, and where things live ------------------------------------------------

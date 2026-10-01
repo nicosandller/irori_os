@@ -1,0 +1,12 @@
+{
+  "id": "cover.office_blind",
+  "protocol": "zigbee",
+  "unique_id": "0x0211000000000010_cover",
+  "name": "Office blind",
+  "capabilities": {
+    "kind": "cover",
+    "device_class": "blind",
+    "position": true,
+    "stop": true
+  }
+}

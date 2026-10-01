@@ -7,6 +7,7 @@
 
 pub(crate) mod binary_sensor;
 pub(crate) mod button;
+pub(crate) mod cover;
 pub(crate) mod event;
 pub(crate) mod light;
 pub(crate) mod number;
@@ -17,6 +18,7 @@ pub(crate) mod text;
 
 use crate::{Capabilities, EntityKind, InvariantError, Service, ServiceName, State};
 
+use self::cover::{CoverState, OPEN_STATES, OpenState, SetPosition, SetTilt};
 use self::event::EventState;
 use self::light::LightTurnOn;
 use self::number::{NumberSetValue, NumberState};
@@ -105,6 +107,13 @@ impl EntityKind {
             | Self::Text
             | Self::Button
             | Self::Event => None,
+            Self::Cover => match current.and_then(|current| match current {
+                Typed::Text(text) => OpenState::parse(text),
+                _ => None,
+            }) {
+                Some(state) if state.is_open_or_opening() => Some(ServiceName::CoverClose),
+                _ => Some(ServiceName::CoverOpen),
+            },
         }
     }
 }
@@ -115,7 +124,7 @@ impl Capabilities {
         Some(match self {
             Self::Light(_) | Self::Switch(_) | Self::BinarySensor(_) => ValueShape::Bool,
             Self::Number(_) => ValueShape::Number,
-            Self::Select(_) | Self::Text(_) | Self::Event(_) => ValueShape::Text,
+            Self::Select(_) | Self::Text(_) | Self::Event(_) | Self::Cover(_) => ValueShape::Text,
             Self::Sensor(sensor) => match sensor.value_type {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
@@ -131,6 +140,7 @@ impl Capabilities {
             Self::Sensor(sensor) if !sensor.options.is_empty() => Some(&sensor.options),
             Self::Select(select) => Some(&select.options),
             Self::Event(event) => Some(&event.event_types),
+            Self::Cover(_) => Some(&OPEN_STATES),
             _ => None,
         }
     }
@@ -150,6 +160,7 @@ impl Capabilities {
             (Self::Select(caps), State::Select(state)) => select::fits(caps, state),
             (Self::Text(caps), State::Text(state)) => text::fits(caps, state),
             (Self::Event(caps), State::Event(state)) => event::fits(caps, state),
+            (Self::Cover(caps), State::Cover(state)) => cover::fits(caps, state),
             _ => Ok(()),
         }
     }
@@ -170,6 +181,11 @@ impl Capabilities {
             (Self::Number(caps), Service::NumberSetValue(data)) => number::supports(caps, data),
             (Self::Select(caps), Service::SelectSelectOption(data)) => select::supports(caps, data),
             (Self::Text(caps), Service::TextSetValue(data)) => text::supports(caps, data),
+            (Self::Cover(caps), Service::CoverSetPosition(data)) => {
+                cover::supports_position(caps, data)
+            }
+            (Self::Cover(caps), Service::CoverSetTilt(data)) => cover::supports_tilt(caps, data),
+            (Self::Cover(caps), Service::CoverStop) => cover::supports_stop(caps),
             _ => Ok(()),
         }
     }
@@ -186,6 +202,7 @@ impl State {
             Self::Select(select) => Typed::Text(select.option.clone()),
             Self::Text(text) => Typed::Text(text.value.clone()),
             Self::Event(event) => Typed::Text(event.event_type.clone()),
+            Self::Cover(cover) => Typed::Text(cover.state.as_str().to_owned()),
             Self::Sensor(sensor) => match &sensor.value {
                 SensorValue::Number(n) => Typed::Number(*n),
                 SensorValue::Text(text) => Typed::Text(text.clone()),
@@ -224,6 +241,20 @@ impl State {
             (EntityKind::Event, _, Typed::Text(event_type)) => State::Event(EventState {
                 event_type: event_type.clone(),
             }),
+            (EntityKind::Cover, previous, Typed::Text(text)) => {
+                let state = OpenState::parse(text)?;
+                match previous {
+                    Some(State::Cover(cover)) => State::Cover(CoverState {
+                        state,
+                        ..cover.clone()
+                    }),
+                    _ => State::Cover(CoverState {
+                        state,
+                        position: None,
+                        tilt: None,
+                    }),
+                }
+            }
             (EntityKind::Sensor, _, Typed::Text(text)) => State::Sensor(SensorState {
                 value: SensorValue::Text(text.clone()),
             }),
@@ -252,6 +283,17 @@ impl Service {
             ServiceName::SwitchTurnOn => Service::SwitchTurnOn,
             ServiceName::SwitchTurnOff => Service::SwitchTurnOff,
             ServiceName::ButtonPress => Service::ButtonPress,
+            ServiceName::CoverOpen => Service::CoverOpen,
+            ServiceName::CoverClose => Service::CoverClose,
+            ServiceName::CoverStop => Service::CoverStop,
+            ServiceName::CoverSetPosition => Service::CoverSetPosition(
+                SetPosition::deserialize(serde_json::Value::Object(data))
+                    .map_err(|e| InvariantError(format!("`{name}` data: {e}")))?,
+            ),
+            ServiceName::CoverSetTilt => Service::CoverSetTilt(
+                SetTilt::deserialize(serde_json::Value::Object(data))
+                    .map_err(|e| InvariantError(format!("`{name}` data: {e}")))?,
+            ),
             ServiceName::NumberSetValue => Service::NumberSetValue(
                 NumberSetValue::deserialize(serde_json::Value::Object(data))
                     .map_err(|e| InvariantError(format!("`{name}` data: {e}")))?,
@@ -278,6 +320,8 @@ impl Service {
             Self::NumberSetValue(data) => serde_json::to_value(data).ok()?,
             Self::SelectSelectOption(data) => serde_json::to_value(data).ok()?,
             Self::TextSetValue(data) => serde_json::to_value(data).ok()?,
+            Self::CoverSetPosition(data) => serde_json::to_value(data).ok()?,
+            Self::CoverSetTilt(data) => serde_json::to_value(data).ok()?,
             _ => return None,
         };
         match value {
@@ -305,8 +349,19 @@ impl Service {
             Self::NumberSetValue(data) => Some(Typed::Number(data.value)),
             Self::SelectSelectOption(data) => Some(Typed::Text(data.option.clone())),
             Self::TextSetValue(data) => Some(Typed::Text(data.value.clone())),
-            // A press leaves nothing to remember.
-            Self::ButtonPress => None,
+            Self::CoverOpen => Some(Typed::Text(OpenState::Open.as_str().to_owned())),
+            Self::CoverClose => Some(Typed::Text(OpenState::Closed.as_str().to_owned())),
+            Self::CoverSetPosition(data) => Some(Typed::Text(
+                if data.position == 0 {
+                    OpenState::Closed
+                } else {
+                    OpenState::Open
+                }
+                .as_str()
+                .to_owned(),
+            )),
+            // A press, a stop or a tilt leaves nothing for a toggle to go by.
+            Self::ButtonPress | Self::CoverStop | Self::CoverSetTilt(_) => None,
         }
     }
 }
@@ -328,7 +383,11 @@ impl ServiceName {
     pub fn requires_data(self) -> bool {
         matches!(
             self,
-            Self::NumberSetValue | Self::SelectSelectOption | Self::TextSetValue
+            Self::NumberSetValue
+                | Self::SelectSelectOption
+                | Self::TextSetValue
+                | Self::CoverSetPosition
+                | Self::CoverSetTilt
         )
     }
 
@@ -340,6 +399,8 @@ impl ServiceName {
                 | Self::NumberSetValue
                 | Self::SelectSelectOption
                 | Self::TextSetValue
+                | Self::CoverSetPosition
+                | Self::CoverSetTilt
         )
     }
 }

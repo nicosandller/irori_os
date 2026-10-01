@@ -26,6 +26,8 @@ pub enum EntityKind {
     Button,
     /// Something that happens, e.g. a remote's button pressed twice. Every report counts.
     Event,
+    /// Something that opens and closes, e.g. a blind or a garage door.
+    Cover,
 }
 
 impl EntityKind {
@@ -39,6 +41,7 @@ impl EntityKind {
         Self::Text,
         Self::Button,
         Self::Event,
+        Self::Cover,
     ];
 
     /// The domain string used in entity ids and service names.
@@ -53,6 +56,7 @@ impl EntityKind {
             Self::Text => "text",
             Self::Button => "button",
             Self::Event => "event",
+            Self::Cover => "cover",
         }
     }
 

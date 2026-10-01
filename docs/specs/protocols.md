@@ -264,6 +264,10 @@ manifest's `entity_kinds`.
 | `select.select_option` | `option`, one of the select's `options` | |
 | `text.set_value` | `value`, a string within the text's lengths | |
 | `button.press` | none | |
+| `cover.open`, `cover.close` | none | `cover.toggle` resolves to one of them: an open or opening cover closes |
+| `cover.stop` | none | Needs `stop` |
+| `cover.set_position` | `position` 0–100 | Needs `position` |
+| `cover.set_tilt` | `tilt` 0–100 | Needs `tilt` |
 
 `sensor` and `binary_sensor` have no services.
 

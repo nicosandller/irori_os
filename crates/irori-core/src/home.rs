@@ -1910,6 +1910,56 @@ mod tests {
     }
 
     #[test]
+    fn a_cover_toggles_the_way_it_is_going_and_two_toggles_cancel_out() {
+        let mut home = home_with_lamp();
+        home.describe_entity(
+            &protocol(),
+            ALL,
+            entity(
+                "lamp-blind",
+                Some("Blind"),
+                Some("lamp"),
+                Capabilities::Cover(irori_types::CoverCapabilities::default()),
+            ),
+            &stamp(0),
+        )
+        .expect("entity");
+        let id = EntityId::try_from("cover.demo_lamp_blind").expect("valid");
+        let report = StateReport {
+            unique_id: uid("lamp-blind"),
+            state: Some(State::Cover(irori_types::CoverState {
+                state: irori_types::OpenState::Open,
+                position: None,
+                tilt: None,
+            })),
+            attributes: Default::default(),
+            caused_by: None,
+            replayed: false,
+        };
+        home.report_state(&protocol(), report, &stamp(1))
+            .expect("fits");
+        let first = home.resolve(&id, Command::toggle()).expect("toggles");
+        assert_eq!(first.service, Service::CoverClose);
+        home.record_command(&id, &first.service);
+        assert_eq!(
+            home.resolve(&id, Command::toggle())
+                .expect("toggles")
+                .service,
+            Service::CoverOpen,
+            "the second toggle undoes the first, not repeats it"
+        );
+        assert_eq!(
+            home.resolve(
+                &id,
+                Command::with("set_position", &irori_types::SetPosition { position: 50 })
+            )
+            .expect_err("no position")
+            .to_string(),
+            "`cover.demo_lamp_blind` can only open and close, not go to a position"
+        );
+    }
+
+    #[test]
     fn every_press_of_a_remote_happens_but_a_replay_does_not() {
         let mut home = home_with_lamp();
         home.describe_entity(

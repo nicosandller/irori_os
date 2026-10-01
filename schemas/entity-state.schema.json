@@ -255,6 +255,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^cover\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "cover"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -360,6 +383,10 @@
         {
           "maxLength": 70,
           "pattern": "^event\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^cover\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -369,6 +396,16 @@
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "OpenState": {
+      "description": "Where something that opens and closes is: a cover's or a valve's.",
+      "type": "string",
+      "enum": [
+        "open",
+        "opening",
+        "closed",
+        "closing"
+      ]
     },
     "Origin": {
       "description": "Where a context started.",
@@ -670,6 +707,43 @@
           "required": [
             "kind",
             "event_type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "cover"
+            },
+            "position": {
+              "description": "0 (closed) to 100 (open), when it can say.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            },
+            "state": {
+              "$ref": "#/$defs/OpenState"
+            },
+            "tilt": {
+              "description": "0 (closed) to 100 (open), for one whose slats tilt.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
           ]
         }
       ]

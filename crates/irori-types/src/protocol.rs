@@ -10,6 +10,7 @@ use std::fmt;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
+use crate::kinds::cover::{SetPosition, SetTilt};
 use crate::kinds::light::LightTurnOn;
 use crate::kinds::number::NumberSetValue;
 use crate::kinds::select::SelectOption;
@@ -379,6 +380,11 @@ pub enum Service {
     SelectSelectOption(SelectOption),
     TextSetValue(TextSetValue),
     ButtonPress,
+    CoverOpen,
+    CoverClose,
+    CoverStop,
+    CoverSetPosition(SetPosition),
+    CoverSetTilt(SetTilt),
 }
 
 impl Service {
@@ -392,6 +398,11 @@ impl Service {
             Self::SelectSelectOption(_) => ServiceName::SelectSelectOption,
             Self::TextSetValue(_) => ServiceName::TextSetValue,
             Self::ButtonPress => ServiceName::ButtonPress,
+            Self::CoverOpen => ServiceName::CoverOpen,
+            Self::CoverClose => ServiceName::CoverClose,
+            Self::CoverStop => ServiceName::CoverStop,
+            Self::CoverSetPosition(_) => ServiceName::CoverSetPosition,
+            Self::CoverSetTilt(_) => ServiceName::CoverSetTilt,
         }
     }
 }
@@ -415,6 +426,16 @@ pub enum ServiceName {
     TextSetValue,
     #[serde(rename = "button.press")]
     ButtonPress,
+    #[serde(rename = "cover.open")]
+    CoverOpen,
+    #[serde(rename = "cover.close")]
+    CoverClose,
+    #[serde(rename = "cover.stop")]
+    CoverStop,
+    #[serde(rename = "cover.set_position")]
+    CoverSetPosition,
+    #[serde(rename = "cover.set_tilt")]
+    CoverSetTilt,
 }
 
 impl ServiceName {
@@ -427,6 +448,11 @@ impl ServiceName {
         Self::SelectSelectOption,
         Self::TextSetValue,
         Self::ButtonPress,
+        Self::CoverOpen,
+        Self::CoverClose,
+        Self::CoverStop,
+        Self::CoverSetPosition,
+        Self::CoverSetTilt,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -439,6 +465,11 @@ impl ServiceName {
             Self::SelectSelectOption => "select.select_option",
             Self::TextSetValue => "text.set_value",
             Self::ButtonPress => "button.press",
+            Self::CoverOpen => "cover.open",
+            Self::CoverClose => "cover.close",
+            Self::CoverStop => "cover.stop",
+            Self::CoverSetPosition => "cover.set_position",
+            Self::CoverSetTilt => "cover.set_tilt",
         }
     }
 
@@ -451,6 +482,11 @@ impl ServiceName {
             Self::SelectSelectOption => EntityKind::Select,
             Self::TextSetValue => EntityKind::Text,
             Self::ButtonPress => EntityKind::Button,
+            Self::CoverOpen
+            | Self::CoverClose
+            | Self::CoverStop
+            | Self::CoverSetPosition
+            | Self::CoverSetTilt => EntityKind::Cover,
         }
     }
 }
@@ -546,6 +582,8 @@ impl JsonSchema for ServiceCall {
         let number_set_value = generator.subschema_for::<NumberSetValue>();
         let select_option = generator.subschema_for::<SelectOption>();
         let text_set_value = generator.subschema_for::<TextSetValue>();
+        let set_position = generator.subschema_for::<SetPosition>();
+        let set_tilt = generator.subschema_for::<SetTilt>();
         // Per service: the shape of `data`.
         let rules: Vec<_> = ServiceName::ALL
             .iter()
@@ -555,6 +593,8 @@ impl JsonSchema for ServiceCall {
                     ServiceName::NumberSetValue => number_set_value.clone(),
                     ServiceName::SelectSelectOption => select_option.clone(),
                     ServiceName::TextSetValue => text_set_value.clone(),
+                    ServiceName::CoverSetPosition => set_position.clone(),
+                    ServiceName::CoverSetTilt => set_tilt.clone(),
                     _ => no_data.clone(),
                 };
                 json_schema!({

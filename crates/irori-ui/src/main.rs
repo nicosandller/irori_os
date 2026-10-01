@@ -91,30 +91,18 @@ fn App() -> impl IntoView {
                 api::set_light(&entity_id, &data).await
             })
         }),
-        set_number: Callback::new(move |(entity_id, value): (EntityId, f64)| {
-            let (home, busy, failures) = (live.home, busy, failures);
-            send_command(entity_id.clone(), home, busy, failures, async move {
-                api::set_value(&entity_id, value).await
-            })
-        }),
-        press: Callback::new(move |entity_id: EntityId| {
-            let (home, busy, failures) = (live.home, busy, failures);
-            send_command(entity_id.clone(), home, busy, failures, async move {
-                api::press(&entity_id).await
-            })
-        }),
-        set_text: Callback::new(move |(entity_id, value): (EntityId, String)| {
-            let (home, busy, failures) = (live.home, busy, failures);
-            send_command(entity_id.clone(), home, busy, failures, async move {
-                api::set_text(&entity_id, value).await
-            })
-        }),
-        set_option: Callback::new(move |(entity_id, option): (EntityId, String)| {
-            let (home, busy, failures) = (live.home, busy, failures);
-            send_command(entity_id.clone(), home, busy, failures, async move {
-                api::select_option(&entity_id, option).await
-            })
-        }),
+        act: Callback::new(
+            move |(entity_id, action, data): (
+                EntityId,
+                &'static str,
+                Option<serde_json::Value>,
+            )| {
+                let (home, busy, failures) = (live.home, busy, failures);
+                send_command(entity_id.clone(), home, busy, failures, async move {
+                    api::act(&entity_id, action, data).await
+                })
+            },
+        ),
     };
     provide_context(controls);
 

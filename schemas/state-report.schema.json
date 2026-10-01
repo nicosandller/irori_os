@@ -66,6 +66,16 @@
       "type": "string",
       "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
     },
+    "OpenState": {
+      "description": "Where something that opens and closes is: a cover's or a valve's.",
+      "type": "string",
+      "enum": [
+        "open",
+        "opening",
+        "closed",
+        "closing"
+      ]
+    },
     "SensorValue": {
       "description": "A sensor reading: a finite number or text, matching the sensor's `value_type`.",
       "anyOf": [
@@ -264,6 +274,43 @@
           "required": [
             "kind",
             "event_type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "cover"
+            },
+            "position": {
+              "description": "0 (closed) to 100 (open), when it can say.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            },
+            "state": {
+              "$ref": "#/$defs/OpenState"
+            },
+            "tilt": {
+              "description": "0 (closed) to 100 (open), for one whose slats tilt.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
           ]
         }
       ]

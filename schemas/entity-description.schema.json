@@ -449,6 +449,44 @@
             "kind",
             "event_types"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "device_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CoverClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "cover"
+            },
+            "position": {
+              "description": "Can be sent to a position between open and closed, and says where it is.",
+              "type": "boolean",
+              "default": false
+            },
+            "stop": {
+              "description": "Can be stopped while it's moving.",
+              "type": "boolean",
+              "default": false
+            },
+            "tilt": {
+              "description": "Has slats that tilt, and says how far.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
@@ -473,6 +511,22 @@
       "required": [
         "min",
         "max"
+      ]
+    },
+    "CoverClass": {
+      "description": "What it covers, when that's one of Home Assistant's.",
+      "type": "string",
+      "enum": [
+        "awning",
+        "blind",
+        "curtain",
+        "damper",
+        "door",
+        "garage",
+        "gate",
+        "shade",
+        "shutter",
+        "window"
       ]
     },
     "EntityCategory": {

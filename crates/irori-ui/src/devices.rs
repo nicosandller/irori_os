@@ -5,9 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use irori_types::{
     AreaId, Availability, BinarySensorCapabilities, BinarySensorClass, ButtonClass, Capabilities,
-    Device, DeviceId, Entity, EntityId, EntityState, ExtensionId, LightCapabilities, LightState,
-    LightTurnOn, NumberCapabilities, NumberMode, SelectCapabilities, SensorCapabilities,
-    SensorClass, SensorValue, State, TextCapabilities, TextMode,
+    CoverCapabilities, CoverState, Device, DeviceId, Entity, EntityId, EntityState, ExtensionId,
+    LightCapabilities, LightState, LightTurnOn, NumberCapabilities, NumberMode, OpenState,
+    SelectCapabilities, SensorCapabilities, SensorClass, SensorValue, State, TextCapabilities,
+    TextMode,
 };
 use leptos::ev;
 use leptos::prelude::*;
@@ -27,14 +28,9 @@ pub struct Controls {
     pub set_on: Callback<(EntityId, bool)>,
     /// Ask a light to come on with this brightness, color temperature or color.
     pub set_light: Callback<(EntityId, LightTurnOn)>,
-    /// Ask a number to take this value.
-    pub set_number: Callback<(EntityId, f64)>,
-    /// Ask a select to take this option.
-    pub set_option: Callback<(EntityId, String)>,
-    /// Ask a text entity to hold this.
-    pub set_text: Callback<(EntityId, String)>,
-    /// Press a button.
-    pub press: Callback<EntityId>,
+    /// Ask an entity for one of its kind's actions, with that action's data: a button's
+    /// `press`, a number's `set_value`, a cover's `set_position`.
+    pub act: Callback<(EntityId, &'static str, Option<serde_json::Value>)>,
 }
 
 /// One device and the entities it provides. `device` is `None` for entities that belong to no
@@ -1618,7 +1614,8 @@ fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyVi
         | Capabilities::Number(_)
         | Capabilities::Select(_)
         | Capabilities::Text(_)
-        | Capabilities::Button(_) => view! {
+        | Capabilities::Button(_)
+        | Capabilities::Cover(_) => view! {
             {control}
             <button
                 type="button"
@@ -1678,7 +1675,115 @@ fn control(
             button_control(entity, capabilities.device_class, offline, controls)
         }
         Capabilities::Event(_) => happened(state),
+        Capabilities::Cover(capabilities) => {
+            cover_control(entity, capabilities, value, offline, controls)
+        }
     }
+}
+
+/// Where a cover is, in words: "Open · 40%", "Closing".
+pub(crate) fn cover_words(cover: &CoverState) -> String {
+    let state = match cover.state {
+        OpenState::Open => "Open",
+        OpenState::Opening => "Opening",
+        OpenState::Closed => "Closed",
+        OpenState::Closing => "Closing",
+    };
+    match cover.position {
+        Some(position) if cover.state == OpenState::Open => format!("{state} · {position}%"),
+        _ => state.to_owned(),
+    }
+}
+
+/// A cover: where it is, buttons to open, stop and close it, and sliders for its position and
+/// tilt when it has them. Like a light's sliders, only letting go sends anything.
+fn cover_control(
+    entity: &Entity,
+    capabilities: &CoverCapabilities,
+    value: Option<&State>,
+    offline: bool,
+    controls: Controls,
+) -> AnyView {
+    let current = match value {
+        Some(State::Cover(cover)) => Some(cover.clone()),
+        _ => None,
+    };
+    let entity_id = entity.id.clone();
+    let disable = {
+        let entity_id = entity_id.clone();
+        move || offline || controls.busy.get().contains(&entity_id)
+    };
+    let button = |label: &'static str, action: &'static str| {
+        let entity_id = entity_id.clone();
+        let disable = disable.clone();
+        view! {
+            <button
+                type="button"
+                class="press"
+                disabled=disable
+                on:click=move |_| controls.act.run((entity_id.clone(), action, None))
+            >
+                {label}
+            </button>
+        }
+    };
+    let slider = |label: &'static str, action: &'static str, field: &'static str, at: u8| {
+        let entity_id = entity_id.clone();
+        let disable = disable.clone();
+        let dragged = RwSignal::new(at);
+        view! {
+            <label class="dim" title=label>
+                <span class="lv">{move || format!("{}%", dragged.get())}</span>
+                <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    aria-label=format!("{label} for {}", entity.name)
+                    prop:value=at.to_string()
+                    style:--fill=move || format!("{}%", fill(dragged.get(), 0, 100))
+                    disabled=disable
+                    on:input:target=move |ev| {
+                        if let Ok(value) = ev.target().value().parse::<u8>() {
+                            dragged.set(value);
+                        }
+                    }
+                    on:change:target=move |ev| {
+                        if let Ok(value) = ev.target().value().parse::<u8>() {
+                            controls.act.run((
+                                entity_id.clone(),
+                                action,
+                                Some(serde_json::json!({ field: value })),
+                            ));
+                        }
+                    }
+                />
+            </label>
+        }
+    };
+    let position = capabilities.position.then(|| {
+        let at = current.as_ref().and_then(|c| c.position).unwrap_or(0);
+        slider("Position", "set_position", "position", at)
+    });
+    let tilt = capabilities.tilt.then(|| {
+        let at = current.as_ref().and_then(|c| c.tilt).unwrap_or(0);
+        slider("Tilt", "set_tilt", "tilt", at)
+    });
+    view! {
+        <>
+            <span class="reading">
+                {current.as_ref().map_or_else(|| UNKNOWN.to_owned(), cover_words)}
+            </span>
+            <span class="cover-buttons">
+                {button("Open", "open")}
+                {capabilities.stop.then(|| button("Stop", "stop"))}
+                {button("Close", "close")}
+            </span>
+            {(position.is_some() || tilt.is_some())
+                .then(|| view! { <span class="light-controls">{position}{tilt}</span> })}
+        </>
+    }
+    .into_any()
 }
 
 /// An event: what happened last, and when. The time is what says it's news: "double" from a
@@ -1721,7 +1826,7 @@ fn button_control(
             class="press"
             aria-label=format!("{label}: {}", entity.name)
             disabled=disable
-            on:click=move |_| controls.press.run(entity_id.clone())
+            on:click=move |_| controls.act.run((entity_id.clone(), "press", None))
         >
             {label}
         </button>
@@ -1761,7 +1866,11 @@ fn text_control(
             prop:value=current
             disabled=disable
             on:change:target=move |ev| {
-                controls.set_text.run((entity_id.clone(), ev.target().value()));
+                controls.act.run((
+                    entity_id.clone(),
+                    "set_value",
+                    Some(serde_json::json!({ "value": ev.target().value() })),
+                ));
             }
         />
     }
@@ -1799,7 +1908,11 @@ fn select_control(
             aria-label=entity.name.to_string()
             disabled=disable
             on:change:target=move |ev| {
-                controls.set_option.run((entity_id.clone(), ev.target().value()));
+                controls.act.run((
+                    entity_id.clone(),
+                    "select_option",
+                    Some(serde_json::json!({ "option": ev.target().value() })),
+                ));
             }
         >
             // Until it says, nothing is chosen rather than its first option.
@@ -1858,7 +1971,11 @@ fn number_control(
         if let Ok(value) = text.trim().parse::<f64>()
             && (min..=max).contains(&value)
         {
-            controls.set_number.run((entity_id.clone(), value));
+            controls.act.run((
+                entity_id.clone(),
+                "set_value",
+                Some(serde_json::json!({ "value": value })),
+            ));
         }
     };
     if slider {

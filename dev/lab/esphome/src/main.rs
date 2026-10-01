@@ -11,11 +11,12 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 
 use esphome_client::API_VERSION;
 use esphome_client::types::{
-    BinarySensorStateResponse, DeviceInfoResponse, EspHomeMessage, HelloResponse,
-    ListEntitiesBinarySensorResponse, ListEntitiesButtonResponse, ListEntitiesDoneResponse,
-    ListEntitiesFanResponse, ListEntitiesNumberResponse, ListEntitiesSelectResponse,
-    ListEntitiesSensorResponse, ListEntitiesTextResponse, NumberStateResponse, SelectStateResponse,
-    SensorStateResponse, TextStateResponse,
+    BinarySensorStateResponse, CoverStateResponse, DeviceInfoResponse, EspHomeMessage,
+    HelloResponse, ListEntitiesBinarySensorResponse, ListEntitiesButtonResponse,
+    ListEntitiesCoverResponse, ListEntitiesDoneResponse, ListEntitiesFanResponse,
+    ListEntitiesNumberResponse, ListEntitiesSelectResponse, ListEntitiesSensorResponse,
+    ListEntitiesTextResponse, NumberStateResponse, SelectStateResponse, SensorStateResponse,
+    TextStateResponse,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -31,6 +32,7 @@ const FAN_KEY: u32 = 5;
 const LED_MODE_KEY: u32 = 6;
 const MESSAGE_KEY: u32 = 7;
 const RESTART_KEY: u32 = 8;
+const BLIND_KEY: u32 = 9;
 /// 32 bytes. Printed at startup as base64 so the waiting-for-a-key panel has something to paste.
 const LAB_KEY: [u8; 32] = *b"irori-lab-esphome-key-32bytes!!!";
 
@@ -195,6 +197,14 @@ fn answers(message: EspHomeMessage, board: &Board) -> Vec<EspHomeMessage> {
         }
         EspHomeMessage::ListEntitiesRequest(_) => entities(board),
         EspHomeMessage::SubscribeStatesRequest(_) => states(board),
+        // The blind gets wherever it's sent at once, and says so; a stop leaves it where it is.
+        EspHomeMessage::CoverCommandRequest(request) if request.has_position => {
+            vec![EspHomeMessage::CoverStateResponse(CoverStateResponse {
+                key: request.key,
+                position: request.position,
+                ..Default::default()
+            })]
+        }
         // A real board would restart; this one just says so. A button reports nothing.
         EspHomeMessage::ButtonCommandRequest(request) => {
             println!("{}: button {} pressed", board.name, request.key);
@@ -308,6 +318,14 @@ fn entities(_board: &Board) -> Vec<EspHomeMessage> {
             entity_category: 1, // config
             ..Default::default()
         }),
+        EspHomeMessage::ListEntitiesCoverResponse(ListEntitiesCoverResponse {
+            key: BLIND_KEY,
+            name: "Window blind".to_owned(),
+            device_class: "blind".to_owned(),
+            supports_position: true,
+            supports_stop: true,
+            ..Default::default()
+        }),
         EspHomeMessage::ListEntitiesFanResponse(ListEntitiesFanResponse {
             key: FAN_KEY,
             name: "Cooling fan".to_owned(),
@@ -333,6 +351,11 @@ fn states(board: &Board) -> Vec<EspHomeMessage> {
         EspHomeMessage::NumberStateResponse(NumberStateResponse {
             key: LED_KEY,
             state: 40.0,
+            ..Default::default()
+        }),
+        EspHomeMessage::CoverStateResponse(CoverStateResponse {
+            key: BLIND_KEY,
+            position: 0.6,
             ..Default::default()
         }),
         EspHomeMessage::TextStateResponse(TextStateResponse {

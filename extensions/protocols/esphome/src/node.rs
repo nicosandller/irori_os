@@ -17,8 +17,8 @@ use esphome_client::types::{
     SwitchCommandRequest, TextCommandRequest,
 };
 use irori_protocol::types::{
-    Capabilities, ContextId, DeviceDescription, EntityDescription, LightCapabilities, Service,
-    StateReport, UniqueId, Unmodeled,
+    Capabilities, ContextId, DeviceDescription, EntityDescription, Service, StateReport, UniqueId,
+    Unmodeled,
 };
 use irori_protocol::{IncomingCall, ServiceError};
 use tokio::sync::mpsc;
@@ -291,12 +291,11 @@ async fn session(
                 ));
             }
         };
-    let lights: HashMap<u32, LightCapabilities> = entities
+    // What each entity said it can do, so its reports are trimmed to that and its commands
+    // checked against it: a light's colours, a cover's position.
+    let capabilities: HashMap<u32, Capabilities> = entities
         .iter()
-        .filter_map(|(key, entity)| match &entity.capabilities {
-            Capabilities::Light(light) => Some((*key, light.clone())),
-            _ => None,
-        })
+        .map(|(key, entity)| (*key, entity.capabilities.clone()))
         .collect();
     let by_key: HashMap<u32, UniqueId> = entities
         .iter()
@@ -372,7 +371,7 @@ async fn session(
                         return Ok(Ended::Disconnected(format!("{address} said goodbye")));
                     }
                     message => {
-                        if let Some(report) = report(&message, &by_key, &lights, &mut commanded) {
+                        if let Some(report) = report(&message, &by_key, &capabilities, &mut commanded) {
                             let event = Event::Reported {
                                 connection,
                                 device: device_unique_id.clone(),
@@ -388,7 +387,7 @@ async fn session(
             call = calls.recv() => {
                 let Some(incoming) = call else { return Ok(Ended::Stopping) };
                 let key = by_unique_id.get(&incoming.call.unique_id).copied();
-                command(&mut client, incoming, key, &lights, &mut commanded).await;
+                command(&mut client, incoming, key, &capabilities, &mut commanded).await;
             }
             _ = quiet.tick() => {
                 if asked {
@@ -490,6 +489,9 @@ async fn list_entities(
             EspHomeMessage::ListEntitiesEventResponse(e) => {
                 (e.key, "event", e.name.clone(), map::event(device, e))
             }
+            EspHomeMessage::ListEntitiesCoverResponse(e) => {
+                (e.key, "cover", e.name.clone(), map::cover(device, e))
+            }
             EspHomeMessage::ListEntitiesTextSensorResponse(e) => (
                 e.key,
                 "text_sensor",
@@ -543,13 +545,21 @@ async fn list_entities(
 fn report(
     message: &EspHomeMessage,
     by_key: &HashMap<u32, UniqueId>,
-    lights: &HashMap<u32, LightCapabilities>,
+    capabilities: &HashMap<u32, Capabilities>,
     commanded: &mut HashMap<u32, VecDeque<(ContextId, Instant)>>,
 ) -> Option<StateReport> {
     let (key, state) = match message {
         EspHomeMessage::LightStateResponse(s) => {
-            let known = lights.get(&s.key)?;
+            let Some(Capabilities::Light(known)) = capabilities.get(&s.key) else {
+                return None;
+            };
             (s.key, Some(map::light_state(s, known)))
+        }
+        EspHomeMessage::CoverStateResponse(s) => {
+            let Some(Capabilities::Cover(known)) = capabilities.get(&s.key) else {
+                return None;
+            };
+            (s.key, Some(map::cover_state(s, known)))
         }
         EspHomeMessage::SwitchStateResponse(s) => (s.key, Some(map::switch_state(s))),
         EspHomeMessage::BinarySensorStateResponse(s) => (s.key, Some(map::binary_sensor_state(s))),
@@ -595,7 +605,7 @@ async fn command(
     client: &mut EspHomeClient,
     incoming: IncomingCall,
     key: Option<u32>,
-    lights: &HashMap<u32, LightCapabilities>,
+    capabilities: &HashMap<u32, Capabilities>,
     commanded: &mut HashMap<u32, VecDeque<(ContextId, Instant)>>,
 ) {
     let Some(key) = key else {
@@ -611,7 +621,10 @@ async fn command(
     let context = incoming.call.context.id.clone();
     let written = match &incoming.call.service {
         Service::LightTurnOn(data) => {
-            let known = lights.get(&key);
+            let known = match capabilities.get(&key) {
+                Some(Capabilities::Light(light)) => Some(light),
+                _ => None,
+            };
             let mut request = LightCommandRequest {
                 key,
                 has_state: true,
@@ -681,6 +694,14 @@ async fn command(
                 key,
                 ..Default::default()
             })
+            .await
+            .map_err(|e| e.to_string()),
+        Service::CoverOpen
+        | Service::CoverClose
+        | Service::CoverStop
+        | Service::CoverSetPosition(_)
+        | Service::CoverSetTilt(_) => client
+            .try_write(map::cover_command(key, &incoming.call.service))
             .await
             .map_err(|e| e.to_string()),
         Service::SwitchTurnOn | Service::SwitchTurnOff => client

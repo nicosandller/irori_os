@@ -126,9 +126,8 @@ motion sensor are three entities.
 | `entity_category` | `config` \| `diagnostic` | no | One of the device's settings (a motion sensor's timeout) or diagnostics (its signal strength) rather than what it's for. Pages list these after the device's other entities. Home Assistant's names; set by the protocol |
 
 **Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`,
-`event`.
-**Next, in likely order:** `cover`, `lock`,
-`fan`, `valve`, `siren`, then `climate`, `water_heater`, `humidifier`. Adding a kind is an
+`event`, `cover`.
+**Next, in likely order:** `lock`, `fan`, `valve`, `siren`, then `climate`, `water_heater`, `humidifier`. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
 
@@ -162,6 +161,8 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | `button` | `device_class` | `identify` \| `restart` \| `update` | absent | What pressing it does |
 | `event` | `event_types` | 1–256 distinct, non-blank strings | **required** | Everything it can report happening, e.g. `single`, `double`, `hold` |
 | | `device_class` | `button` \| `doorbell` \| `motion` | absent | |
+| `cover` | `device_class` | `awning` \| `blind` \| `curtain` \| `damper` \| `door` \| `garage` \| `gate` \| `shade` \| `shutter` \| `window` | absent | |
+| | `position`, `tilt`, `stop` | bool | `false` | Can go to a position, has slats that tilt, can be stopped while moving |
 
 Device classes are closed lists, matching Home Assistant's: a protocol maps what it knows (with
 `SensorClass::from_ha` and friends) and leaves the rest absent. New classes are additive.
@@ -237,6 +238,8 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | `select` | `option` | string | yes | One of its `options` (checked by the core) |
 | `text` | `value` | string | yes | Within its `min_length`–`max_length` characters (checked by the core) |
 | `event` | `event_type` | string | yes | What happened last: one of its `event_types` (checked by the core) |
+| `cover` | `state` | `open` \| `opening` \| `closed` \| `closing` | yes | Its typed value, for rules (`text()`) |
+| | `position`, `tilt` | integer 0 (closed) – 100 (open) | no | Only when it said it has them |
 
 **An `event`'s every report is something happening.** Two `double` presses of a remote in a row
 are two changes: each moves `last_changed` and is a change for anything watching, even though the

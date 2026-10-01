@@ -92,6 +92,56 @@ impl ValueTemplate {
     }
 }
 
+/// A `command_template` (or `set_position_template`, …) Irori can render: one value put into
+/// fixed text, like Zigbee2MQTT's `{ "position": {{ position }} }`. Anything more — filters,
+/// arithmetic, `{% %}` — is Jinja, which Irori doesn't run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandTemplate {
+    /// No template, or one that is only the value: the value is sent as it is.
+    Value,
+    /// The value between fixed text.
+    Around { before: String, after: String },
+}
+
+impl CommandTemplate {
+    /// `template` with its one placeholder named `variable` (`value`, `position`). `Err` quotes
+    /// what Irori can't render.
+    pub fn parse(template: Option<&str>, variable: &str) -> Result<Self, String> {
+        let Some(template) = template else {
+            return Ok(Self::Value);
+        };
+        let refuse = || {
+            format!(
+                "its template {template:?} is more than the {variable}, which Irori can't render"
+            )
+        };
+        if template.contains("{%") || template.matches("{{").count() != 1 {
+            return Err(refuse());
+        }
+        let (before, rest) = template.split_once("{{").ok_or_else(refuse)?;
+        let (inside, after) = rest.split_once("}}").ok_or_else(refuse)?;
+        if inside.trim() != variable || after.contains("}}") {
+            return Err(refuse());
+        }
+        if before.trim().is_empty() && after.trim().is_empty() {
+            Ok(Self::Value)
+        } else {
+            Ok(Self::Around {
+                before: before.to_owned(),
+                after: after.to_owned(),
+            })
+        }
+    }
+
+    /// The payload for `value`.
+    pub fn render(&self, value: &str) -> String {
+        match self {
+            Self::Value => value.to_owned(),
+            Self::Around { before, after } => format!("{before}{value}{after}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +161,33 @@ mod tests {
             ValueTemplate::JsonPath(vec!["battery".to_owned()])
         );
         assert_eq!(ValueTemplate::parse(None), ValueTemplate::None);
+    }
+
+    #[test]
+    fn a_command_template_that_only_places_the_value_is_rendered() {
+        let position =
+            CommandTemplate::parse(Some(r#"{ "position": {{ position }} }"#), "position")
+                .expect("renderable");
+        assert_eq!(position.render("40"), r#"{ "position": 40 }"#);
+        assert_eq!(
+            CommandTemplate::parse(Some("{{value}}"), "value"),
+            Ok(CommandTemplate::Value)
+        );
+        assert_eq!(
+            CommandTemplate::parse(None, "value"),
+            Ok(CommandTemplate::Value)
+        );
+        for jinja in [
+            "{{ value * 10 }}",
+            "{% if value %}ON{% endif %}",
+            "{{ value }}{{ value }}",
+            "{{ position }}",
+        ] {
+            assert!(
+                CommandTemplate::parse(Some(jinja), "value").is_err(),
+                "{jinja}"
+            );
+        }
     }
 
     #[test]

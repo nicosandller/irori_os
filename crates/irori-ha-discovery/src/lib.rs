@@ -17,5 +17,5 @@ pub mod unmodeled;
 
 pub use discovery::{AvailabilityTopic, EntityTopics, ParsedConfig, ParsedDevice};
 pub use state::Publish;
-pub use template::ValueTemplate;
+pub use template::{CommandTemplate, ValueTemplate};
 pub use topic::{Component, DiscoveryTopic};

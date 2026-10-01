@@ -184,6 +184,110 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "cover.open"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "cover.close"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "cover.stop"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "cover.set_position"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/SetPosition"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "cover.set_tilt"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/SetTilt"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
     }
   ],
   "required": [
@@ -430,7 +534,46 @@
         "number.set_value",
         "select.select_option",
         "text.set_value",
-        "button.press"
+        "button.press",
+        "cover.open",
+        "cover.close",
+        "cover.stop",
+        "cover.set_position",
+        "cover.set_tilt"
+      ]
+    },
+    "SetPosition": {
+      "description": "Data for `cover.set_position` and `valve.set_position`.",
+      "type": "object",
+      "properties": {
+        "position": {
+          "description": "0 (closed) to 100 (open).",
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "position"
+      ]
+    },
+    "SetTilt": {
+      "description": "Data for `cover.set_tilt`.",
+      "type": "object",
+      "properties": {
+        "tilt": {
+          "description": "0 (closed) to 100 (open).",
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "tilt"
       ]
     },
     "TextSetValue": {

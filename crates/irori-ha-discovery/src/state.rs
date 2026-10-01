@@ -2,8 +2,8 @@
 //! (`docs/specs/entities.md` §5.3, `docs/specs/protocols.md` §7).
 
 use irori_types::{
-    BinarySensorState, ColorMode, EventState, LightState, NumberState, SelectState, SensorState,
-    SensorValue, Service, State, SwitchState, TextState, UniqueId,
+    BinarySensorState, ColorMode, CoverState, EventState, LightState, NumberState, OpenState,
+    SelectState, SensorState, SensorValue, Service, State, SwitchState, TextState, UniqueId,
 };
 
 use crate::discovery::EntityTopics;
@@ -90,6 +90,7 @@ pub fn decode(
             value_template,
             ..
         } if state_topic.as_deref() == Some(topic) => Some(decode_number(payload, value_template)),
+        EntityTopics::Cover(cover) => decode_cover(cover, topic, payload, previous),
         // A message with no event in it (a remote's battery level, on the same topic as its
         // presses) isn't for the event at all.
         EntityTopics::Event {
@@ -284,6 +285,85 @@ fn decode_number(
     Ok(state)
 }
 
+/// A cover's state from a message on any of its topics, merged with what it last said: the
+/// position and the state often arrive on different topics, or in one body.
+fn decode_cover(
+    cover: &crate::discovery::CoverTopics,
+    topic: &str,
+    payload: &[u8],
+    previous: Option<&State>,
+) -> Option<Result<State, String>> {
+    let for_state = cover.state_topic.as_deref() == Some(topic);
+    let for_position = cover.position_topic.as_deref() == Some(topic);
+    let for_tilt = cover.tilt_status_topic.as_deref() == Some(topic);
+    if !(for_state || for_position || for_tilt) {
+        return None;
+    }
+    Some((|| {
+        let mut position = match previous {
+            Some(State::Cover(old)) => old.position,
+            _ => None,
+        };
+        let mut tilt = match previous {
+            Some(State::Cover(old)) => old.tilt,
+            _ => None,
+        };
+        let percent = |raw: f64, closed: f64, open: f64| {
+            let span = open - closed;
+            if span == 0.0 {
+                return None;
+            }
+            let share = ((raw - closed) / span * 100.0).round().clamp(0.0, 100.0);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Some(share as u8)
+        };
+        let number = |template: &crate::template::ValueTemplate| -> Result<Option<f64>, String> {
+            Ok(match template.extract(payload)? {
+                serde_json::Value::Number(n) => n.as_f64(),
+                serde_json::Value::String(s) => s.trim().parse().ok(),
+                _ => None,
+            })
+        };
+        if for_position && let Some(raw) = number(&cover.position_template)? {
+            position = percent(raw, cover.position_closed, cover.position_open);
+        }
+        if for_tilt && let Some(raw) = number(&cover.tilt_status_template)? {
+            tilt = percent(raw, cover.tilt_min, cover.tilt_max);
+        }
+        let from_position = || match position {
+            Some(0) => OpenState::Closed,
+            _ => OpenState::Open,
+        };
+        let said = match (&cover.value_template, for_state) {
+            (Some(template), true) => match template.extract(payload)? {
+                serde_json::Value::String(text) => Some(text.trim().to_owned()),
+                serde_json::Value::Null => None,
+                other => Some(other.to_string()),
+            },
+            _ => None,
+        };
+        let state = match said {
+            Some(text) if text == cover.state_open => OpenState::Open,
+            Some(text) if text == cover.state_opening => OpenState::Opening,
+            Some(text) if text == cover.state_closed => OpenState::Closed,
+            Some(text) if text == cover.state_closing => OpenState::Closing,
+            Some(text) if text == cover.state_stopped => from_position(),
+            Some(text) => return Err(format!("{text:?} isn't a state this cover says")),
+            // Nothing said about where it is: its position says, else what it said last.
+            None => match (position, previous) {
+                (Some(_), _) => from_position(),
+                (None, Some(State::Cover(old))) => old.state,
+                (None, _) => return Err("the cover hasn't said where it is".to_owned()),
+            },
+        };
+        Ok(State::Cover(CoverState {
+            state,
+            position,
+            tilt,
+        }))
+    })())
+}
+
 /// The event type a message names, `None` if it names none.
 fn decode_event(
     payload: &[u8],
@@ -388,18 +468,44 @@ pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, 
             },
             Service::SwitchTurnOff,
         ) => Ok(vec![text_publish(command_topic, payload_off)]),
-        (EntityTopics::Number { command_topic, .. }, Service::NumberSetValue(data)) => {
+        (
+            EntityTopics::Number {
+                command_topic,
+                command_template,
+                ..
+            },
+            Service::NumberSetValue(data),
+        ) => {
             // `120`, not `120.0`: the plain value, as a person would type it.
             let value = data.value.to_string();
             let value = value.strip_suffix(".0").unwrap_or(&value);
-            Ok(vec![text_publish(command_topic, value)])
+            Ok(vec![text_publish(
+                command_topic,
+                &command_template.render(value),
+            )])
         }
-        (EntityTopics::Select { command_topic, .. }, Service::SelectSelectOption(data)) => {
-            Ok(vec![text_publish(command_topic, &data.option)])
-        }
-        (EntityTopics::Text { command_topic, .. }, Service::TextSetValue(data)) => {
-            Ok(vec![text_publish(command_topic, &data.value)])
-        }
+        (
+            EntityTopics::Select {
+                command_topic,
+                command_template,
+                ..
+            },
+            Service::SelectSelectOption(data),
+        ) => Ok(vec![text_publish(
+            command_topic,
+            &command_template.render(&data.option),
+        )]),
+        (
+            EntityTopics::Text {
+                command_topic,
+                command_template,
+                ..
+            },
+            Service::TextSetValue(data),
+        ) => Ok(vec![text_publish(
+            command_topic,
+            &command_template.render(&data.value),
+        )]),
         (
             EntityTopics::Button {
                 command_topic,
@@ -407,7 +513,54 @@ pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, 
             },
             Service::ButtonPress,
         ) => Ok(vec![text_publish(command_topic, payload_press)]),
+        (EntityTopics::Cover(cover), service) => encode_cover(cover, service),
         _ => Err(format!("this entity has no `{}` service", service.name())),
+    }
+}
+
+fn encode_cover(
+    cover: &crate::discovery::CoverTopics,
+    service: &Service,
+) -> Result<Vec<Publish>, String> {
+    let scale = |percent: u8, closed: f64, open: f64| {
+        let raw = closed + f64::from(percent) / 100.0 * (open - closed);
+        let raw = raw.round().to_string();
+        raw.strip_suffix(".0").map_or(raw.clone(), str::to_owned)
+    };
+    let command = |payload: &str| match &cover.command_topic {
+        Some(topic) => Ok(vec![text_publish(topic, payload)]),
+        None => Err("this cover takes no commands".to_owned()),
+    };
+    match service {
+        Service::CoverOpen => command(&cover.payload_open),
+        Service::CoverClose => command(&cover.payload_close),
+        Service::CoverStop => match &cover.payload_stop {
+            Some(stop) => command(stop),
+            None => Err("this cover can't be stopped".to_owned()),
+        },
+        Service::CoverSetPosition(data) => match &cover.set_position_topic {
+            Some(topic) => Ok(vec![text_publish(
+                topic,
+                &cover.set_position_template.render(&scale(
+                    data.position,
+                    cover.position_closed,
+                    cover.position_open,
+                )),
+            )]),
+            None => Err("this cover can't go to a position".to_owned()),
+        },
+        Service::CoverSetTilt(data) => match &cover.tilt_command_topic {
+            Some(topic) => Ok(vec![text_publish(
+                topic,
+                &cover.tilt_command_template.render(&scale(
+                    data.tilt,
+                    cover.tilt_min,
+                    cover.tilt_max,
+                )),
+            )]),
+            None => Err("this cover has nothing to tilt".to_owned()),
+        },
+        other => Err(format!("a cover has no `{}` service", other.name())),
     }
 }
 
@@ -450,7 +603,15 @@ pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, Un
         // Nothing to listen to: a press leaves no state.
         EntityTopics::Button { .. } => {}
         EntityTopics::Event { state_topic, .. } => list.push(state_topic.clone()),
+        EntityTopics::Cover(cover) => {
+            list.extend(cover.state_topic.clone());
+            list.extend(cover.position_topic.clone());
+            list.extend(cover.tilt_status_topic.clone());
+        }
     }
+    // A cover's state and position usually share one topic; it's listened to once.
+    list.sort();
+    list.dedup();
     list.into_iter().map(|t| (t, unique_id.clone())).collect()
 }
 

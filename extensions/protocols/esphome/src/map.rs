@@ -6,23 +6,24 @@
 //! keeps its name, which is the same promise ESPHome makes to Home Assistant.
 
 use esphome_client::types::{
-    BinarySensorStateResponse, DeviceInfoResponse, EspHomeMessage, EventResponse,
-    LightStateResponse, ListEntitiesBinarySensorResponse, ListEntitiesButtonResponse,
-    ListEntitiesEventResponse, ListEntitiesLightResponse, ListEntitiesNumberResponse,
-    ListEntitiesSelectResponse, ListEntitiesSensorResponse, ListEntitiesSwitchResponse,
-    ListEntitiesTextResponse, ListEntitiesTextSensorResponse, NumberStateResponse,
-    SelectStateResponse, SensorStateResponse, SwitchStateResponse, TextSensorStateResponse,
-    TextStateResponse,
+    BinarySensorStateResponse, CoverCommandRequest, CoverStateResponse, DeviceInfoResponse,
+    EspHomeMessage, EventResponse, LightStateResponse, ListEntitiesBinarySensorResponse,
+    ListEntitiesButtonResponse, ListEntitiesCoverResponse, ListEntitiesEventResponse,
+    ListEntitiesLightResponse, ListEntitiesNumberResponse, ListEntitiesSelectResponse,
+    ListEntitiesSensorResponse, ListEntitiesSwitchResponse, ListEntitiesTextResponse,
+    ListEntitiesTextSensorResponse, NumberStateResponse, SelectStateResponse, SensorStateResponse,
+    SwitchStateResponse, TextSensorStateResponse, TextStateResponse,
 };
 use irori_protocol::ProtocolError;
 use irori_protocol::types::{
     BinarySensorCapabilities, BinarySensorClass, BinarySensorState, ButtonCapabilities,
-    ButtonClass, Capabilities, ColorMode, ColorTempRange, DeviceDescription, EntityCategory,
-    EntityDescription, EntityKind, EventCapabilities, EventClass, EventState, LightCapabilities,
-    LightState, Name, NumberCapabilities, NumberMode, NumberState, ObjectId, SelectCapabilities,
-    SelectState, SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType, State,
-    StateClass, SwitchCapabilities, SwitchClass, SwitchState, TextCapabilities, TextMode,
-    TextState, UniqueId, Unmodeled,
+    ButtonClass, Capabilities, ColorMode, ColorTempRange, CoverCapabilities, CoverClass,
+    CoverState, DeviceDescription, EntityCategory, EntityDescription, EntityKind,
+    EventCapabilities, EventClass, EventState, LightCapabilities, LightState, Name,
+    NumberCapabilities, NumberMode, NumberState, ObjectId, OpenState, SelectCapabilities,
+    SelectState, SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType,
+    Service, State, StateClass, SwitchCapabilities, SwitchClass, SwitchState, TextCapabilities,
+    TextMode, TextState, UniqueId, Unmodeled,
 };
 
 /// ESPHome's `ColorMode` enum (api.proto). The values are a bit mask of what a mode carries.
@@ -249,6 +250,71 @@ pub fn select_state(state: &SelectStateResponse) -> Option<State> {
     })
 }
 
+/// ESPHome's `cover`. It opens and closes, and may also go to a position and tilt.
+pub fn cover(
+    device: &UniqueId,
+    entity: &ListEntitiesCoverResponse,
+) -> Result<EntityDescription, ProtocolError> {
+    Ok(EntityDescription {
+        unique_id: entity_id(device, EntityKind::Cover, entity.key)?,
+        name: Some(Name::try_from(entity.name.as_str())?),
+        device_unique_id: Some(device.clone()),
+        suggested_object_id: None,
+        capabilities: Capabilities::Cover(CoverCapabilities {
+            device_class: CoverClass::from_ha(&entity.device_class),
+            position: entity.supports_position,
+            tilt: entity.supports_tilt,
+            stop: entity.supports_stop,
+        }),
+        entity_category: category(entity.entity_category),
+    })
+}
+
+/// 0.0-1.0 to 0-100.
+fn to_percent(fraction: f32) -> u8 {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        (fraction.clamp(0.0, 1.0) * 100.0).round() as u8
+    }
+}
+
+/// A cover's state, trimmed to what it said it can do. ESPHome says closed is position 0, also
+/// for a cover that can only open and close, and whether it's moving (`CoverOperation`: 1
+/// opening, 2 closing).
+pub fn cover_state(state: &CoverStateResponse, known: &CoverCapabilities) -> State {
+    State::Cover(CoverState {
+        state: match state.current_operation {
+            1 => OpenState::Opening,
+            2 => OpenState::Closing,
+            _ if state.position > 0.0 => OpenState::Open,
+            _ => OpenState::Closed,
+        },
+        position: known.position.then(|| to_percent(state.position)),
+        tilt: known.tilt.then(|| to_percent(state.tilt)),
+    })
+}
+
+/// A cover command: open and close are positions 1.0 and 0.0 to ESPHome, as Home Assistant sends.
+pub fn cover_command(key: u32, service: &Service) -> CoverCommandRequest {
+    let mut request = CoverCommandRequest {
+        key,
+        ..Default::default()
+    };
+    match service {
+        Service::CoverOpen => (request.has_position, request.position) = (true, 1.0),
+        Service::CoverClose => (request.has_position, request.position) = (true, 0.0),
+        Service::CoverStop => request.stop = true,
+        Service::CoverSetPosition(data) => {
+            (request.has_position, request.position) = (true, f32::from(data.position) / 100.0);
+        }
+        Service::CoverSetTilt(data) => {
+            (request.has_tilt, request.tilt) = (true, f32::from(data.tilt) / 100.0);
+        }
+        _ => {}
+    }
+    request
+}
+
 /// ESPHome's `event`: something that happens, e.g. a button's single or double press.
 pub fn event(
     device: &UniqueId,
@@ -407,7 +473,6 @@ pub fn unmodeled(device: &UniqueId, message: &EspHomeMessage) -> Option<Unmodele
         M::ListEntitiesAlarmControlPanelResponse(e) => ("alarm_control_panel", &e.name),
         M::ListEntitiesCameraResponse(e) => ("camera", &e.name),
         M::ListEntitiesClimateResponse(e) => ("climate", &e.name),
-        M::ListEntitiesCoverResponse(e) => ("cover", &e.name),
         M::ListEntitiesDateResponse(e) => ("date", &e.name),
         M::ListEntitiesDateTimeResponse(e) => ("datetime", &e.name),
         M::ListEntitiesFanResponse(e) => ("fan", &e.name),
@@ -685,6 +750,47 @@ mod tests {
                 option: "previous".into()
             }))
         );
+    }
+
+    #[test]
+    fn a_cover_reports_where_it_is_and_is_sent_by_position() {
+        let blind = CoverCapabilities {
+            device_class: Some(CoverClass::Blind),
+            position: true,
+            tilt: false,
+            stop: true,
+        };
+        let moving = CoverStateResponse {
+            key: 3,
+            position: 0.4,
+            tilt: 0.9,
+            current_operation: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            cover_state(&moving, &blind),
+            State::Cover(CoverState {
+                state: OpenState::Closing,
+                position: Some(40),
+                tilt: None,
+            })
+        );
+        let garage = CoverCapabilities::default();
+        let shut = CoverStateResponse {
+            key: 3,
+            ..Default::default()
+        };
+        assert_eq!(
+            cover_state(&shut, &garage),
+            State::Cover(CoverState {
+                state: OpenState::Closed,
+                position: None,
+                tilt: None,
+            })
+        );
+        let open = cover_command(3, &Service::CoverOpen);
+        assert!(open.has_position && (open.position - 1.0).abs() < f32::EPSILON);
+        assert!(cover_command(3, &Service::CoverStop).stop);
     }
 
     #[test]

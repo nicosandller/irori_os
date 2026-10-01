@@ -42,6 +42,9 @@ pub use id::{
 pub use kind::EntityKind;
 pub use kinds::binary_sensor::{BinarySensorCapabilities, BinarySensorClass, BinarySensorState};
 pub use kinds::button::{ButtonCapabilities, ButtonClass};
+pub use kinds::cover::{
+    CoverCapabilities, CoverClass, CoverState, OpenState, SetPosition, SetTilt,
+};
 pub use kinds::event::{EventCapabilities, EventClass, EventState};
 pub use kinds::light::{ColorMode, ColorTempRange, LightCapabilities, LightState, LightTurnOn};
 pub use kinds::number::{NumberCapabilities, NumberMode, NumberSetValue, NumberState};
