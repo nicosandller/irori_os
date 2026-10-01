@@ -95,6 +95,24 @@ pub struct Entity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub area_id: Option<AreaId>,
     pub capabilities: Capabilities,
+    /// Whether it's one of the device's settings or diagnostics rather than something it's for.
+    /// Pages list these after the device's main entities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_category: Option<EntityCategory>,
+}
+
+/// What an entity is to its device, when it isn't what the device is for: a light's power-on
+/// behaviour is a setting, its signal strength a diagnostic. Home Assistant's names.
+/// Ordered as pages list them: settings before diagnostics, and both after an entity with none.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum EntityCategory {
+    /// Changes how the device behaves, e.g. a motion sensor's timeout.
+    Config,
+    /// Tells how the device is doing, e.g. its signal strength or firmware version.
+    Diagnostic,
 }
 
 #[derive(Deserialize)]
@@ -109,6 +127,8 @@ struct RawEntity {
     #[serde(default)]
     area_id: Option<AreaId>,
     capabilities: Capabilities,
+    #[serde(default)]
+    entity_category: Option<EntityCategory>,
 }
 
 impl<'de> Deserialize<'de> for Entity {
@@ -129,6 +149,7 @@ impl TryFrom<RawEntity> for Entity {
             device_id: raw.device_id,
             area_id: raw.area_id,
             capabilities: raw.capabilities,
+            entity_category: raw.entity_category,
         };
         entity.validate()?;
         Ok(entity)

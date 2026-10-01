@@ -14,9 +14,9 @@ use esphome_client::types::{
 use irori_protocol::ProtocolError;
 use irori_protocol::types::{
     BinarySensorCapabilities, BinarySensorClass, BinarySensorState, Capabilities, ColorMode,
-    ColorTempRange, DeviceDescription, EntityDescription, EntityKind, LightCapabilities,
-    LightState, Name, SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType,
-    State, StateClass, SwitchCapabilities, SwitchClass, SwitchState, UniqueId,
+    ColorTempRange, DeviceDescription, EntityCategory, EntityDescription, EntityKind,
+    LightCapabilities, LightState, Name, SensorCapabilities, SensorClass, SensorState, SensorValue,
+    SensorValueType, State, StateClass, SwitchCapabilities, SwitchClass, SwitchState, UniqueId,
 };
 
 /// ESPHome's `ColorMode` enum (api.proto). The values are a bit mask of what a mode carries.
@@ -118,6 +118,7 @@ pub fn light(
                 .flatten(),
             rgb: modes.iter().any(|m| color_mode::has_rgb(*m)),
         }),
+        entity_category: category(entity.entity_category),
     })
 }
 
@@ -137,6 +138,7 @@ pub fn switch(
                 _ => None,
             },
         }),
+        entity_category: category(entity.entity_category),
     })
 }
 
@@ -164,6 +166,7 @@ pub fn sensor(
             },
             options: Vec::new(),
         }),
+        entity_category: category(entity.entity_category),
     })
 }
 
@@ -186,6 +189,7 @@ pub fn text_sensor(
             state_class: None,
             options: Vec::new(),
         }),
+        entity_category: category(entity.entity_category),
     })
 }
 
@@ -201,6 +205,7 @@ pub fn binary_sensor(
         capabilities: Capabilities::BinarySensor(BinarySensorCapabilities {
             device_class: BinarySensorClass::from_ha(&entity.device_class),
         }),
+        entity_category: category(entity.entity_category),
     })
 }
 
@@ -233,6 +238,15 @@ pub fn light_state(state: &LightStateResponse, known: &LightCapabilities) -> Sta
             ]
         }),
     })
+}
+
+/// ESPHome's `EntityCategory` (api.proto): 0 is none, 1 config, 2 diagnostic.
+fn category(category: i32) -> Option<EntityCategory> {
+    match category {
+        1 => Some(EntityCategory::Config),
+        2 => Some(EntityCategory::Diagnostic),
+        _ => None,
+    }
 }
 
 /// `None` when the device says it has no text right now.
@@ -377,9 +391,11 @@ mod tests {
             key: 7,
             name: "Wifi network".into(),
             device_class: "timestamp".into(),
+            entity_category: 2,
             ..Default::default()
         };
         let described = text_sensor(&device, &listed).expect("valid");
+        assert_eq!(described.entity_category, Some(EntityCategory::Diagnostic));
         assert_eq!(
             described.unique_id.as_str(),
             "00:11:22:33:44:55-text_sensor-7"

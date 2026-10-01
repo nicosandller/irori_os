@@ -636,6 +636,7 @@ impl Home {
             let entity = self.entities.get_mut(&id).expect("keys and entities agree");
             entity.name = name;
             entity.capabilities = description.capabilities;
+            entity.entity_category = description.entity_category;
             entity.device_id = device_id;
             let mut events = if *entity == before {
                 vec![]
@@ -726,6 +727,7 @@ impl Home {
             device_id,
             area_id: None,
             capabilities: description.capabilities,
+            entity_category: description.entity_category,
         };
         let state = EntityState {
             entity_id: id.clone(),
@@ -1393,6 +1395,7 @@ mod tests {
             device_unique_id: device.map(uid),
             suggested_object_id: None,
             capabilities: caps,
+            entity_category: None,
         }
     }
 
@@ -1853,6 +1856,41 @@ mod tests {
 
     /// An entity named by its protocol, or by a person, has a name of its own and keeps it
     /// when the device is renamed.
+    #[test]
+    fn an_entity_keeps_the_category_its_protocol_gives_it() {
+        let mut home = home_with_lamp();
+        let signal = || {
+            entity(
+                "lamp-signal",
+                Some("Signal"),
+                Some("lamp"),
+                Capabilities::Sensor(SensorCapabilities {
+                    value_type: SensorValueType::Number,
+                    device_class: None,
+                    unit: None,
+                    state_class: None,
+                    options: Vec::new(),
+                }),
+            )
+        };
+        let id = EntityId::try_from("sensor.demo_lamp_signal").expect("valid");
+        let described = EntityDescription {
+            entity_category: Some(irori_types::EntityCategory::Diagnostic),
+            ..signal()
+        };
+        home.describe_entity(&protocol(), ALL, described, &stamp(0))
+            .expect("entity");
+        assert_eq!(
+            home.entities[&id].entity_category,
+            Some(irori_types::EntityCategory::Diagnostic)
+        );
+
+        // Described again without one, it's an ordinary entity again.
+        home.describe_entity(&protocol(), ALL, signal(), &stamp(1))
+            .expect("entity");
+        assert_eq!(home.entities[&id].entity_category, None);
+    }
+
     #[test]
     fn only_entities_without_a_name_of_their_own_follow_the_device() {
         let mut home = home_with_lamp();

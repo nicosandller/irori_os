@@ -123,6 +123,7 @@ motion sensor are three entities.
 | `device_id` | `DeviceId` | no | Entities without a device are allowed (e.g. a computed value) |
 | `area_id` | `AreaId` | no | **Overrides** the device's area. Effective area = `entity.area_id` ?? `device.area_id` |
 | `capabilities` | object tagged by `kind` | yes | What it can do; see below |
+| `entity_category` | `config` \| `diagnostic` | no | One of the device's settings (a motion sensor's timeout) or diagnostics (its signal strength) rather than what it's for. Pages list these after the device's other entities. Home Assistant's names; set by the protocol |
 
 **Kinds in v1:** `light`, `switch`, `sensor`, `binary_sensor`.
 **Next, in likely order:** `number`, `select`, `button`, `event`, `text`, then `cover`, `lock`,
@@ -288,7 +289,7 @@ consumers; API versioning is part of the API spec (M0.5).
 | How protocol extensions create and update entries | [Protocol contract](protocols.md) §5–§6 |
 | How users rename entities or assign areas in files | Config spec (M0.7) |
 | Renaming an entity `id` and rewriting rules that use it | Open question 1 |
-| Hidden/disabled entities, icons, entity categories | Later, when the UI needs them |
+| Hidden/disabled entities, icons | Later, when the UI needs them. (Entity categories are in §4.4) |
 | Unit conversion and preferred units | Later; `unit` is informational for now |
 
 ## 9. Changes from the roadmap draft

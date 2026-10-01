@@ -147,6 +147,7 @@ Schemas: `schemas/device-description.schema.json`, `entity-description`, `state-
 | `device_unique_id` | `UniqueId` | if no name | The device it belongs to |
 | `suggested_object_id` | slug | no | The part after `.` in its entity id, when it's new. Otherwise derived from the names |
 | `capabilities` | `Capabilities` ([entities.md](entities.md) §4.4) | yes | `capabilities.kind` is the entity's kind, and must be one of the manifest's `entity_kinds` |
+| `entity_category` | `config` \| `diagnostic` | no | When it's one of the device's settings or diagnostics ([entities.md](entities.md) §4.4). Updated each time it's described |
 
 Describing an existing entity again updates its name and capabilities (a nameless entity follows
 its device's name); it never changes its kind or its id. A different kind needs a different

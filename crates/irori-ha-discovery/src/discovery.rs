@@ -8,9 +8,9 @@
 //! being unusable does that, and always with a reason a person could act on.
 
 use irori_types::{
-    BinarySensorCapabilities, BinarySensorClass, Capabilities, ColorTempRange, LightCapabilities,
-    Name, SensorCapabilities, SensorClass, SensorValueType, StateClass, SwitchCapabilities,
-    SwitchClass, UniqueId,
+    BinarySensorCapabilities, BinarySensorClass, Capabilities, ColorTempRange, EntityCategory,
+    LightCapabilities, Name, SensorCapabilities, SensorClass, SensorValueType, StateClass,
+    SwitchCapabilities, SwitchClass, UniqueId,
 };
 
 use crate::template::ValueTemplate;
@@ -116,6 +116,8 @@ pub struct ParsedConfig {
     pub name: Option<Name>,
     pub device: Option<ParsedDevice>,
     pub capabilities: Capabilities,
+    /// HA's `entity_category`: one of the device's settings or diagnostics.
+    pub entity_category: Option<EntityCategory>,
     pub topics: EntityTopics,
     pub availability: Vec<AvailabilityTopic>,
 }
@@ -153,6 +155,12 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         name,
         device,
         capabilities,
+        // Same names as Irori's; anything else is left out.
+        entity_category: str_field(&root, "entity_category").and_then(|c| match c {
+            "config" => Some(EntityCategory::Config),
+            "diagnostic" => Some(EntityCategory::Diagnostic),
+            _ => None,
+        }),
         topics,
         availability,
     })
@@ -586,7 +594,7 @@ mod tests {
         let last_seen = parse(
             Component::Sensor,
             br#"{"unique_id": "plug_last_seen", "name": "Last seen", "state_topic": "plug/state",
-                "device_class": "timestamp"}"#,
+                "device_class": "timestamp", "entity_category": "diagnostic"}"#,
         )
         .expect("valid");
         let Capabilities::Sensor(caps) = &last_seen.capabilities else {
@@ -594,6 +602,8 @@ mod tests {
         };
         assert_eq!(caps.value_type, SensorValueType::Text);
         assert_eq!(caps.device_class, Some(SensorClass::Timestamp));
+        assert_eq!(last_seen.entity_category, Some(EntityCategory::Diagnostic));
+        assert_eq!(program.entity_category, None);
     }
 
     #[test]

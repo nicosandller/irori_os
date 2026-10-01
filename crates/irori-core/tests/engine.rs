@@ -67,6 +67,7 @@ impl Protocol for Lamp {
                 color_temp_kelvin: None,
                 rgb: false,
             }),
+            entity_category: None,
         })
         .await?;
         ctx.report_state(report(true, None));

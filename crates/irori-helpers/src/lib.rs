@@ -101,6 +101,7 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
             // `switch.guests_over`: a helper's id is chosen by a person, so it reads well in rules.
             suggested_object_id: Some(id.clone()),
             capabilities: Capabilities::Switch(SwitchCapabilities { device_class: None }),
+            entity_category: None,
         })
         .await?;
         let on = ctx

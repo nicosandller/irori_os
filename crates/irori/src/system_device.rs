@@ -123,6 +123,7 @@ async fn describe(ctx: &ProtocolContext, reading: &Reading) -> Result<(), Protoc
             state_class: (!reading.text).then_some(StateClass::Measurement),
             options: Vec::new(),
         }),
+        entity_category: None,
     })
     .await?;
     Ok(())

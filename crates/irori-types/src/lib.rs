@@ -50,7 +50,7 @@ pub use protocol::{
     DeviceDescription, EntityDescription, SecretRequest, Service, ServiceCall, ServiceName,
     StateReport, Waiting,
 };
-pub use registry::{Area, Capabilities, Device, Entity, Floor};
+pub use registry::{Area, Capabilities, Device, Entity, EntityCategory, Floor};
 pub use schema::{SchemaDoc, schemas};
 pub use settings::{
     DeviceSettings, EntitySettings, ExtensionSettings, Placement, SecretError, Settings,

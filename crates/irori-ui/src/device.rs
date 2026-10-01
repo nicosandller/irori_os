@@ -6,8 +6,8 @@
 //! entities belong to it.
 
 use irori_types::{
-    Area, AreaId, Availability, Capabilities, Device, Entity, EntityId, EntityState, Name,
-    SensorValue, State,
+    Area, AreaId, Availability, Capabilities, Device, Entity, EntityCategory, EntityId,
+    EntityState, Name, SensorValue, State,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -540,21 +540,38 @@ fn page(
                 }
                 .into_any()
             } else {
-                entities
+                // What the device is for, then its settings and diagnostics under their own
+                // headings, as the protocol marked them.
+                let row = move |entity: Entity| {
+                    view! {
+                        <EntityRow
+                            entity=entity
+                            controls=controls
+                            trouble=trouble
+                            editing=editing
+                            draft=entity_draft
+                        />
+                    }
+                };
+                let (main, rest): (Vec<_>, Vec<_>) =
+                    entities.into_iter().partition(|e| e.entity_category.is_none());
+                let (settings, diagnostics): (Vec<_>, Vec<_>) = rest
                     .into_iter()
-                    .map(|entity| {
+                    .partition(|e| e.entity_category == Some(EntityCategory::Config));
+                let section = move |title: &'static str, group: Vec<Entity>| {
+                    (!group.is_empty()).then(|| {
                         view! {
-                            <EntityRow
-                                entity=entity
-                                controls=controls
-                                trouble=trouble
-                                editing=editing
-                                draft=entity_draft
-                            />
+                            <h3 class="entity-group">{title}</h3>
+                            {group.into_iter().map(row).collect_view()}
                         }
                     })
-                    .collect_view()
-                    .into_any()
+                };
+                view! {
+                    {main.into_iter().map(row).collect_view()}
+                    {section("Settings", settings)}
+                    {section("Diagnostics", diagnostics)}
+                }
+                .into_any()
             }}
         </section>
     }
@@ -992,6 +1009,7 @@ mod tests {
             capabilities: Capabilities::BinarySensor(BinarySensorCapabilities {
                 device_class: None,
             }),
+            entity_category: None,
         }
     }
 
@@ -1084,6 +1102,7 @@ mod tests {
                 state_class: None,
                 options: Vec::new(),
             }),
+            entity_category: None,
         };
         let mut state = reading("2026-09-16T10:00:00Z", true);
         state.state = Some(State::Sensor(SensorState {

@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::kinds::light::LightTurnOn;
 use crate::{
-    Attributes, Capabilities, Context, ContextId, EntityKind, InvariantError, Name, ObjectId,
-    State, UniqueId,
+    Attributes, Capabilities, Context, ContextId, EntityCategory, EntityKind, InvariantError, Name,
+    ObjectId, State, UniqueId,
 };
 
 /// Something a protocol found but can't use yet, because it needs a person first: a device
@@ -190,6 +190,9 @@ pub struct EntityDescription {
     pub suggested_object_id: Option<ObjectId>,
     /// What it can do. `capabilities.kind` is the entity's kind.
     pub capabilities: Capabilities,
+    /// Whether it's one of the device's settings or diagnostics rather than something it's for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_category: Option<EntityCategory>,
 }
 
 #[derive(Deserialize)]
@@ -203,6 +206,8 @@ struct RawEntityDescription {
     #[serde(default)]
     suggested_object_id: Option<ObjectId>,
     capabilities: Capabilities,
+    #[serde(default)]
+    entity_category: Option<EntityCategory>,
 }
 
 impl<'de> Deserialize<'de> for EntityDescription {
@@ -214,6 +219,7 @@ impl<'de> Deserialize<'de> for EntityDescription {
             device_unique_id: raw.device_unique_id,
             suggested_object_id: raw.suggested_object_id,
             capabilities: raw.capabilities,
+            entity_category: raw.entity_category,
         };
         entity.validate().map_err(serde::de::Error::custom)?;
         Ok(entity)

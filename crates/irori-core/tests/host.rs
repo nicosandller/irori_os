@@ -48,6 +48,7 @@ async fn describe_lamp(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
             color_temp_kelvin: None,
             rgb: false,
         }),
+        entity_category: None,
     })
     .await?;
     Ok(())

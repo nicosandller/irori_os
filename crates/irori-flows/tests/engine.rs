@@ -83,6 +83,7 @@ fn entity(entity: &str, capabilities: Capabilities) -> Entity {
         device_id: None,
         area_id: None,
         capabilities,
+        entity_category: None,
     }
 }
 

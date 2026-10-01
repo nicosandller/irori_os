@@ -19,6 +19,17 @@
         }
       ]
     },
+    "entity_category": {
+      "description": "Whether it's one of the device's settings or diagnostics rather than something it's for.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EntityCategory"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "name": {
       "description": "Leave out for a device's main feature (e.g. the relay of a smart plug): the entity then\nuses its device's name, and must have `device_unique_id`.",
       "anyOf": [
@@ -269,6 +280,21 @@
       "required": [
         "min",
         "max"
+      ]
+    },
+    "EntityCategory": {
+      "description": "What an entity is to its device, when it isn't what the device is for: a light's power-on\nbehaviour is a setting, its signal strength a diagnostic. Home Assistant's names.\nOrdered as pages list them: settings before diagnostics, and both after an entity with none.",
+      "oneOf": [
+        {
+          "description": "Changes how the device behaves, e.g. a motion sensor's timeout.",
+          "type": "string",
+          "const": "config"
+        },
+        {
+          "description": "Tells how the device is doing, e.g. its signal strength or firmware version.",
+          "type": "string",
+          "const": "diagnostic"
+        }
       ]
     },
     "Name": {

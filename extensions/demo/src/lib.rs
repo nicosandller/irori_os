@@ -530,6 +530,7 @@ async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
             }),
             rgb: false,
         }),
+        entity_category: None,
     })
     .await?;
 
@@ -543,6 +544,7 @@ async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
         capabilities: Capabilities::Switch(SwitchCapabilities {
             device_class: Some(SwitchClass::Outlet),
         }),
+        entity_category: None,
     })
     .await?;
     for (unique_id, name, class, unit) in [
@@ -580,6 +582,7 @@ async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
             state_class: Some(StateClass::Measurement),
             options: Vec::new(),
         }),
+        entity_category: None,
     })
     .await?;
 
@@ -600,6 +603,7 @@ async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
             color_temp_kelvin: None,
             rgb: false,
         }),
+        entity_category: None,
     })
     .await?;
 
@@ -637,6 +641,7 @@ async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
             state_class: Some(StateClass::Measurement),
             options: Vec::new(),
         }),
+        entity_category: None,
     })
     .await?;
 
@@ -655,6 +660,7 @@ async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
         capabilities: Capabilities::BinarySensor(BinarySensorCapabilities {
             device_class: Some(BinarySensorClass::Occupancy),
         }),
+        entity_category: None,
     })
     .await?;
     ctx.describe_entity(EntityDescription {
@@ -669,6 +675,7 @@ async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
             state_class: Some(StateClass::Measurement),
             options: Vec::new(),
         }),
+        entity_category: None,
     })
     .await?;
 
@@ -705,6 +712,7 @@ async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
                 color_temp_kelvin: None,
                 rgb: false,
             }),
+            entity_category: None,
         })
         .await?;
     }
@@ -761,6 +769,7 @@ async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
             state_class: None,
             options: Vec::new(),
         }),
+        entity_category: None,
     })
     .await?;
     Ok(())
@@ -786,6 +795,7 @@ fn measurement(
             state_class: Some(StateClass::Measurement),
             options: Vec::new(),
         }),
+        entity_category: None,
     })
 }
 
@@ -804,6 +814,7 @@ fn flag_entity(
         capabilities: Capabilities::BinarySensor(BinarySensorCapabilities {
             device_class: Some(class),
         }),
+        entity_category: None,
     })
 }
 

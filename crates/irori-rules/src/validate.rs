@@ -985,6 +985,7 @@ mod tests {
             device_id: None,
             area_id: None,
             capabilities,
+            entity_category: None,
         }
     }
 

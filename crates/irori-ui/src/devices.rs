@@ -109,9 +109,10 @@ pub fn groups(home: &Home, needle: &str) -> Vec<Group> {
     by_device
         .into_values()
         .map(|mut group| {
-            group
-                .entities
-                .sort_by(|(a, _), (b, _)| (&a.name, &a.id).cmp(&(&b.name, &b.id)));
+            group.entities.sort_by(|(a, _), (b, _)| {
+                // What the device is for first, then its settings and diagnostics.
+                (a.entity_category, &a.name, &a.id).cmp(&(b.entity_category, &b.name, &b.id))
+            });
             group
         })
         .collect()
@@ -2099,6 +2100,7 @@ mod tests {
             capabilities: Capabilities::BinarySensor(BinarySensorCapabilities {
                 device_class: None,
             }),
+            entity_category: None,
         };
         Home {
             devices: vec![device],
