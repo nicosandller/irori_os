@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use rumqttd::{Broker as EmbeddedBroker, Config, ConnectionSettings, RouterConfig, ServerSettings};
-use tokio::sync::mpsc::{self, error::TrySendError};
+use tokio::sync::mpsc;
 
 /// Zigbee2MQTT 2.14 retains `bridge/info` (~48KB, its settings schema included)
 /// and `bridge/definitions` (~228KB, the ZCL cluster list). A 20KB cap closed
@@ -144,19 +144,11 @@ impl Publisher for Client {
     }
 }
 
-/// Hands one event to the run loop without waiting. Waiting here stops `poll`, so a publish or
-/// subscribe queued by the run loop is never written to the broker.
-fn forward(tx: &mpsc::Sender<BrokerEvent>, event: BrokerEvent) -> bool {
-    match tx.try_send(event) {
-        Ok(()) => true,
-        Err(TrySendError::Full(_)) => {
-            tracing::warn!(
-                "mqtt client fell behind; dropping one message so the connection keeps moving"
-            );
-            true
-        }
-        Err(TrySendError::Closed(_)) => false,
-    }
+/// Hands one event to the run loop. A full queue waits, which stops `poll` and lets the broker's
+/// TCP window close. Dropping instead loses retained discovery, and nothing asks for it again.
+/// Outbound `try_publish` does not wait on this task, so the wait cannot stall permit-join.
+async fn forward(tx: &mpsc::Sender<BrokerEvent>, event: BrokerEvent) -> bool {
+    tx.send(event).await.is_ok()
 }
 
 const EVENT_QUEUE: usize = 1024;
@@ -185,14 +177,14 @@ pub fn connect(
                         topic: publish.topic,
                         payload: publish.payload.to_vec(),
                     });
-                    if !forward(&tx, message) {
+                    if !forward(&tx, message).await {
                         return;
                     }
                 }
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     if !was_connected {
                         was_connected = true;
-                        if !forward(&tx, BrokerEvent::Connectivity(Connectivity::Connected)) {
+                        if !forward(&tx, BrokerEvent::Connectivity(Connectivity::Connected)).await {
                             return;
                         }
                     }
@@ -202,7 +194,9 @@ pub fn connect(
                     tracing::warn!(%error, "lost the connection to our own embedded broker; reconnecting");
                     if was_connected {
                         was_connected = false;
-                        if !forward(&tx, BrokerEvent::Connectivity(Connectivity::Disconnected)) {
+                        if !forward(&tx, BrokerEvent::Connectivity(Connectivity::Disconnected))
+                            .await
+                        {
                             return;
                         }
                     }
@@ -231,5 +225,22 @@ mod tests {
         );
 
         drop(listener);
+    }
+
+    #[tokio::test]
+    async fn a_full_event_queue_waits_instead_of_dropping_the_publish() {
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.try_send(BrokerEvent::Connectivity(Connectivity::Connected))
+            .expect("the only slot");
+        let waiting = tokio::spawn(async move {
+            forward(&tx, BrokerEvent::Connectivity(Connectivity::Disconnected)).await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !waiting.is_finished(),
+            "a full queue must wait, not drop the event"
+        );
+        assert!(rx.recv().await.is_some());
+        assert!(waiting.await.expect("forward task"));
     }
 }

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::host::{Op, Reply, Reports};
 use crate::{
@@ -231,7 +231,9 @@ pub async fn serve<I: Protocol>() -> Result<(), ProtocolError> {
     // and the host's 10 second call timed out. A thread blocked in `read` does not depend on
     // the runtime noticing the pipe. The writer is a thread for the same reason — a full stdout
     // pipe must not park the runtime that has to keep handling the lines this thread reads.
-    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    // The queue between them is bounded. State reports that do not fit stay in `ReportQueue`,
+    // where a newer value for the same entity still replaces the one waiting.
+    let (out_tx, out_rx) = mpsc::channel(STDOUT_QUEUE);
     std::thread::Builder::new()
         .name("protocol-stdout".into())
         .spawn(move || write_stdout(out_rx))
@@ -277,31 +279,94 @@ pub async fn serve<I: Protocol>() -> Result<(), ProtocolError> {
     result
 }
 
+/// How many encoded lines may sit ahead of the stdout thread. Past this, state reports stay
+/// in `ReportQueue` (one per entity) instead of becoming another retained `String`.
+const STDOUT_QUEUE: usize = 64;
+
 async fn pump_outgoing(
     mut ops: tokio::sync::mpsc::Receiver<Op>,
     reports: Reports,
-    out: std::sync::mpsc::Sender<String>,
+    out: mpsc::Sender<String>,
     pending: Arc<Pending>,
 ) {
     loop {
         tokio::select! {
+            biased;
             Some(op) = ops.recv() => {
                 if let Some(msg) = pending.encode_op(op) {
-                    enqueue_json(&out, &msg);
+                    if send_line(&out, &msg).await.is_err() {
+                        return;
+                    }
                 }
             }
             () = reports.ready() => {
-                for report in reports.drain() {
-                    enqueue_json(&out, &FromExt::StateReport { report });
+                // A drop with an empty queue also wakes `ready`. Take the count so this
+                // branch does not spin; the external host never sees that counter.
+                let _ = reports.take_dropped();
+                while let Some(report) = reports.pop() {
+                    match offer_report(&out, &reports, report) {
+                        Offer::Queued => {}
+                        Offer::Full => {
+                            // Room comes back when the stdout thread writes a line. An op
+                            // that arrives meanwhile goes out first.
+                            tokio::select! {
+                                biased;
+                                Some(op) = ops.recv() => {
+                                    if let Some(msg) = pending.encode_op(op)
+                                        && send_line(&out, &msg).await.is_err()
+                                    {
+                                        return;
+                                    }
+                                }
+                                permit = out.reserve() => {
+                                    // The slot is for whatever is pending now, which may be a
+                                    // newer report than the one that did not fit.
+                                    drop(permit);
+                                }
+                            }
+                            break;
+                        }
+                        Offer::Closed => return,
+                    }
                 }
             }
         }
     }
 }
 
-fn write_stdout(rx: std::sync::mpsc::Receiver<String>) {
+enum Offer {
+    Queued,
+    Full,
+    Closed,
+}
+
+/// Queues one report. On a full queue the report goes back unless a newer one arrived.
+fn offer_report(out: &mpsc::Sender<String>, reports: &Reports, report: StateReport) -> Offer {
+    let Some(line) = encode_line(&FromExt::StateReport {
+        report: report.clone(),
+    }) else {
+        return Offer::Queued;
+    };
+    match out.try_send(line) {
+        Ok(()) => Offer::Queued,
+        Err(TrySendError::Full(_)) => {
+            reports.restore_if_absent(report);
+            Offer::Full
+        }
+        Err(TrySendError::Closed(_)) => Offer::Closed,
+    }
+}
+
+async fn send_line(out: &mpsc::Sender<String>, value: &impl Serialize) -> Result<(), ()> {
+    let Some(line) = encode_line(value) else {
+        return Ok(());
+    };
+    out.send(line).await.map_err(|_| ())
+}
+
+fn write_stdout(mut rx: mpsc::Receiver<String>) {
     let mut out = std::io::stdout().lock();
-    while let Ok(line) = rx.recv() {
+    while let Some(line) = rx.blocking_recv() {
         if out.write_all(line.as_bytes()).is_err() || out.flush().is_err() {
             return;
         }
@@ -314,7 +379,7 @@ fn read_stdin(
     calls: tokio::sync::mpsc::Sender<IncomingCall>,
     actions: tokio::sync::mpsc::Sender<IncomingAction>,
     stop: tokio::sync::watch::Sender<bool>,
-    out: std::sync::mpsc::Sender<String>,
+    out: mpsc::Sender<String>,
     runtime: tokio::runtime::Handle,
 ) {
     // This pipe arrived nonblocking. `read` then returns `WouldBlock` instead of waiting,
@@ -384,7 +449,7 @@ fn handle_host_line(
     pending: &Pending,
     calls: &tokio::sync::mpsc::Sender<IncomingCall>,
     actions: &tokio::sync::mpsc::Sender<IncomingAction>,
-    out: &std::sync::mpsc::Sender<String>,
+    out: &mpsc::Sender<String>,
     runtime: &tokio::runtime::Handle,
 ) -> ReadControl {
     let msg: ToExt = match serde_json::from_str(line) {
@@ -472,12 +537,26 @@ fn handle_host_line(
     ReadControl::Continue
 }
 
-fn enqueue_json(tx: &std::sync::mpsc::Sender<String>, value: &impl Serialize) {
-    let Ok(mut line) = serde_json::to_string(value) else {
+fn encode_line(value: &impl Serialize) -> Option<String> {
+    let mut line = serde_json::to_string(value).ok()?;
+    line.push('\n');
+    Some(line)
+}
+
+fn enqueue_json(tx: &mpsc::Sender<String>, value: &impl Serialize) {
+    let Some(line) = encode_line(value) else {
         return;
     };
-    line.push('\n');
-    let _ = tx.send(line);
+    // The stdin thread is not on the runtime, so a full queue waits here instead of dropping
+    // the action result the host is reading for. Reports use `try_send` and never take the
+    // last slot this way from the run loop.
+    match tx.try_send(line) {
+        Ok(()) => {}
+        Err(TrySendError::Full(line)) => {
+            let _ = tx.blocking_send(line);
+        }
+        Err(TrySendError::Closed(_)) => {}
+    }
 }
 
 type LoadReply = oneshot::Sender<Result<Option<serde_json::Value>, Rejected>>;
@@ -765,7 +844,7 @@ mod tests {
             .insert(5, reply_tx);
         let (calls, _calls_rx) = tokio::sync::mpsc::channel(1);
         let (actions, mut actions_rx) = tokio::sync::mpsc::channel(1);
-        let (out_tx, out_rx) = std::sync::mpsc::channel();
+        let (out_tx, mut out_rx) = mpsc::channel(STDOUT_QUEUE);
         let runtime = tokio::runtime::Handle::current();
 
         let control = handle_host_line(
@@ -809,6 +888,35 @@ mod tests {
         assert_eq!(control, ReadControl::Continue);
         let busy = out_rx.try_recv().expect("a full queue answers immediately");
         assert!(busy.contains("can't take this action yet"));
+    }
+
+    #[tokio::test]
+    async fn a_full_stdout_queue_keeps_the_newer_report() {
+        use irori_types::{State, SwitchState};
+
+        fn report(on: bool) -> StateReport {
+            StateReport {
+                unique_id: UniqueId::try_from("lamp").expect("valid"),
+                state: Some(State::Switch(SwitchState { on })),
+                attributes: Default::default(),
+                caused_by: None,
+            }
+        }
+
+        let (ctx, host) = host::connect();
+        let (tx, _rx) = mpsc::channel(1);
+        tx.try_send("held\n".into()).expect("the only slot");
+        ctx.report_state(report(false));
+        let pending = host.reports.pop().expect("the report is waiting");
+        assert!(matches!(
+            offer_report(&tx, &host.reports, pending),
+            Offer::Full
+        ));
+        ctx.report_state(report(true));
+        assert_eq!(
+            host.reports.pop().expect("the report is still waiting"),
+            report(true)
+        );
     }
 
     /// Restores the process's cwd on drop, so a failed assertion below can't leave every test

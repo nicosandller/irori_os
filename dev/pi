@@ -21,7 +21,10 @@ Run irori like a Pi would:
                      build the image and start irori at http://127.0.0.1:$port
                      --lab adds the Zigbee dongle, ESPHome boards, and Matter nodes
   down [--wipe]      stop it; --wipe also deletes its data volume
-  restart            rebuild from the current checkout and restart
+  restart [--barebones] [--lab]
+                     rebuild from the current checkout and restart. With no
+                     flags, a container that was started with --lab stays in
+                     lab mode. `up` without --lab leaves it.
   status             container state and /api/health
   logs               follow the server logs
   smoke              smoke-test the running server
@@ -199,6 +202,14 @@ require_docker() {
   fi
 }
 
+# True when the existing pi container was started with IRORI_LAB=1.
+previous_lab() {
+  local id
+  id="$("${compose[@]}" ps --all --quiet pi 2>/dev/null | head -n 1 || true)"
+  [[ -n "$id" ]] || return 1
+  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$id" 2>/dev/null | grep -qx 'IRORI_LAB=1'
+}
+
 cmd="${1:-help}"
 shift || true
 case "$cmd" in
@@ -215,7 +226,16 @@ case "$cmd" in
       echo "Deleted irori's data volume"
     fi
     ;;
-  restart) up "$@" ;;
+  restart)
+    # `--lab` is only an environment variable of the command that started the
+    # container. A bare restart would recreate it without the emulators and
+    # with the 1 GB default, while Zigbee2MQTT is still installed in the volume.
+    if [[ $# -eq 0 ]] && previous_lab; then
+      echo "Keeping lab mode. \`dev/pi up\` without --lab leaves it."
+      set -- --lab
+    fi
+    up "$@"
+    ;;
   status)
     "${compose[@]}" ps pi
     curl -fsS "http://127.0.0.1:$port/api/health" && echo

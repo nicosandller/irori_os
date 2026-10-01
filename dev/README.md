@@ -38,7 +38,7 @@ dev/pi status          # container state and /api/health
 dev/pi smoke           # automated smoke test against the running server
 dev/pi logs            # follow logs
 dev/pi shell           # shell inside the container (try: irori version)
-dev/pi restart         # rebuild from your current checkout and restart
+dev/pi restart         # rebuild and restart. A lab container stays a lab container.
 dev/pi down            # stop (data is kept)
 dev/pi down --wipe     # stop and delete the data volume, like a fresh SD card
 ```
@@ -144,6 +144,7 @@ Colima's default VM has 2 CPUs and 2–4 GB. Limits above that fail to start; ra
 
 `dev/pi up --lab` is the same Pi, plus stand-ins for the hardware the container cannot see.
 It raises the memory limit to 2 GB (Zigbee2MQTT needs it) unless `IRORI_PI_MEMORY` is already set.
+`dev/pi restart` with no flags keeps that mode. `dev/pi up` without `--lab` leaves it.
 
 | | Where it shows up |
 |---|---|

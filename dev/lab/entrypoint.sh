@@ -43,8 +43,8 @@ if [ "${IRORI_LAB:-}" = "1" ]; then
   chown -R irori:irori /var/lib/irori
   echo "irori lab: Zigbee dongle at /dev/zigbee0"
   echo "irori lab: in the Zigbee settings, set serial port /dev/zigbee0 and zigbee2mqtt_version 2.14.1"
-  # The coordinator stays root only long enough to create /dev/zigbee0. The two
-  # emulators that accept network connections do not need that, so they drop first.
+  # ncp.py drops to irori once /dev/zigbee0 exists. ESPHome and Matter never need
+  # root, so they drop before they start.
   IRORI_LAB_UID="$(id -u irori)" IRORI_LAB_GID="$(id -g irori)" \
     python3 /usr/share/irori/lab/zigbee/ncp.py /dev/zigbee0 /var/lib/irori/lab/zigbee.json &
   setpriv --reuid=irori --regid=irori --init-groups --inh-caps=-all \

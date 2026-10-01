@@ -22,6 +22,7 @@ from ncp import (
     VALUE_VERSION_INFO,
     LabDevice,
     answer,
+    drop_privileges,
     load_devices,
     outgoing,
     trust_center_join,
@@ -72,6 +73,11 @@ class EzspAnswers(unittest.TestCase):
         body, callback = answer(0x0EEE, b"")
         self.assertIsNone(callback)
         self.assertEqual(body, u32(SL_NOT_SUPPORTED))
+
+    def test_drop_privileges_without_a_lab_uid_stays_put(self) -> None:
+        os.environ.pop("IRORI_LAB_UID", None)
+        os.environ.pop("IRORI_LAB_GID", None)
+        drop_privileges()
 
     def test_permit_joining_is_acknowledged(self) -> None:
         body, callback = answer(0x0022, bytes((60,)))

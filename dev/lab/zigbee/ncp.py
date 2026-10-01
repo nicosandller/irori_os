@@ -648,6 +648,17 @@ class Ncp:
         os.write(self.master, frame)
 
 
+def drop_privileges() -> None:
+    """The device node exists. Parsing Zigbee2MQTT's bytes does not need root."""
+    uid = int(os.environ.get("IRORI_LAB_UID", "0") or "0")
+    gid = int(os.environ.get("IRORI_LAB_GID", "0") or "0")
+    if uid == 0:
+        return
+    os.setgid(gid)
+    os.setuid(uid)
+    print(f"lab zigbee: dropped to uid {uid}", flush=True)
+
+
 def open_link(path: str) -> int:
     master, slave = pty.openpty()
     slave_name = os.ttyname(slave)
@@ -667,15 +678,18 @@ def open_link(path: str) -> int:
 def main() -> None:
     link = sys.argv[1] if len(sys.argv) > 1 else "/dev/zigbee0"
     state = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("/var/lib/irori/lab/zigbee.json")
-    state.parent.mkdir(parents=True, exist_ok=True)
-    if not state.exists():
-        state.write_text(json.dumps({"joined": [], "formed": None}))
     catalog = Path(__file__).resolve().parents[1] / "home" / "catalog.toml"
     devices = load_devices(catalog)
     print("lab zigbee: set the extension serial port to", link, flush=True)
     print("lab zigbee: zigbee2mqtt_version = 2.14.1", flush=True)
     print(f"lab zigbee: {len(devices)} catalog devices from {catalog}", flush=True)
     master = open_link(link)
+    # After the symlink. The state file is created as the user Zigbee2MQTT runs as,
+    # so a later run that is not root can still rewrite it.
+    drop_privileges()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    if not state.exists():
+        state.write_text(json.dumps({"joined": [], "formed": None}))
     # Give udev-less /dev a moment so the symlink is visible before we block.
     time.sleep(0.05)
     try:
