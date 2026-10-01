@@ -293,10 +293,10 @@ async fn pump_outgoing(
         tokio::select! {
             biased;
             Some(op) = ops.recv() => {
-                if let Some(msg) = pending.encode_op(op) {
-                    if send_line(&out, &msg).await.is_err() {
-                        return;
-                    }
+                if let Some(msg) = pending.encode_op(op)
+                    && send_line(&out, &msg).await.is_err()
+                {
+                    return;
                 }
             }
             () = reports.ready() => {
