@@ -5,8 +5,15 @@
 #
 # Stages:
 #   toolchain  Rust on Alpine (musl): runs cargo inside Linux arm64
-#   build      compiles the static irori binary, the same kind of artifact a Pi runs
+#   wasmtools  trunk and wasm-bindgen, cached independently of the source tree
+#   ui         the wasm pages, from only the inputs those pages compile
+#   build      the static irori binary, the same kind of artifact a Pi runs
 #   pi         Debian slim (what Raspberry Pi OS is based on) with only the binary
+#
+# This image is not the release artifact. CI keeps fat LTO. Here the release
+# profile is overridden so a one-line change does not pay a full-program link,
+# and the wasm pages are dev builds. `dev/pi check` uses the toolchain stage,
+# which does not carry those overrides.
 
 ARG DEBIAN_RELEASE=trixie
 
@@ -18,10 +25,10 @@ COPY rust-toolchain.toml .
 RUN rustup toolchain install && rustup show active-toolchain
 ENV CARGO_TARGET_DIR=/target
 
-FROM toolchain AS build
+FROM toolchain AS wasmtools
 # Extra cargo flags, e.g. "--no-default-features" for the barebones build.
 ARG FEATURES=""
-# The wasm build tools, installed *before* `COPY . .` below on purpose: nothing here reads the
+# The wasm build tools, installed *before* any source copy on purpose: nothing here reads the
 # source tree, so keeping them above the copy makes this ~570 MB layer a function of the pinned
 # toolchain alone. Run after the copy, every source change invalidated it and left a fresh copy
 # of the layer behind in the build cache — a new PR under `dev/pi review` is a source change, and
@@ -46,65 +53,147 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       | tar xz -C /usr/local/bin trunk \
       && cargo install wasm-bindgen-cli --version 0.2.128 --locked --profile dev ; \
     fi
-COPY . .
-# The default build's `ui` feature only embeds whatever `cargo xtask ui` has already put in
-# `crates/irori/ui/` (`crates/irori/src/server.rs`'s own doc comment on this) — a plain `cargo
-# build` does not build it, so without this the server always falls back to the placeholder
-# page. Skipped for the barebones build, which doesn't compile the `ui` feature in at all.
+
+# Pages only. A change under crates/irori/src does not rebuild this stage.
+# `cargo xtask` still has to load the whole workspace, so every member's manifest
+# is here. Only the crates xtask and the two wasm pages actually compile have sources.
+FROM wasmtools AS ui
+ARG FEATURES=""
+ENV IRORI_TRUNK_RELEASE=0 \
+    SOURCE_DATE_EPOCH=0
+COPY Cargo.toml Cargo.lock ./
+# `cargo xtask` is an alias. The full source copy used to bring this in; this
+# stage has to name it or cargo reports there is no such command.
+COPY .cargo/config.toml .cargo/config.toml
+COPY xtask xtask
+COPY crates/irori-types crates/irori-types
+COPY crates/irori-rules crates/irori-rules
+COPY crates/irori-flow-types crates/irori-flow-types
+COPY crates/irori-protocol crates/irori-protocol
+COPY crates/irori-ha-discovery crates/irori-ha-discovery
+COPY extensions/protocols/mqtt extensions/protocols/mqtt
+COPY extensions/protocols/zigbee extensions/protocols/zigbee
+COPY crates/irori-ui crates/irori-ui
+COPY crates/irori-ui-kit crates/irori-ui-kit
+COPY extensions/automations/app extensions/automations/app
+COPY extensions/official.toml extensions/official.toml
+COPY extensions/automations/irori-extension.toml extensions/automations/irori-extension.toml
+COPY extensions/demo/irori-extension.toml extensions/demo/irori-extension.toml
+COPY extensions/protocols/esphome/irori-extension.toml extensions/protocols/esphome/irori-extension.toml
+# Manifests for members this stage does not compile. Without them cargo refuses to load the workspace.
+COPY crates/irori/Cargo.toml crates/irori/Cargo.toml
+# index.html copies this into the page. Trunk canonicalizes the path and
+# fails the build when the file is not there.
+COPY crates/irori/assets/favicon.svg crates/irori/assets/favicon.svg
+COPY crates/irori-core/Cargo.toml crates/irori-core/Cargo.toml
+COPY crates/irori-flows/Cargo.toml crates/irori-flows/Cargo.toml
+COPY crates/irori-recorder/Cargo.toml crates/irori-recorder/Cargo.toml
+COPY crates/irori-config/Cargo.toml crates/irori-config/Cargo.toml
+COPY crates/irori-api/Cargo.toml crates/irori-api/Cargo.toml
+COPY crates/irori-client/Cargo.toml crates/irori-client/Cargo.toml
+COPY crates/irori-helpers/Cargo.toml crates/irori-helpers/Cargo.toml
+COPY extensions/demo/Cargo.toml extensions/demo/Cargo.toml
+COPY extensions/automations/Cargo.toml extensions/automations/Cargo.toml
+COPY extensions/protocols/esphome/Cargo.toml extensions/protocols/esphome/Cargo.toml
+COPY extras/irori-assist/Cargo.toml extras/irori-assist/Cargo.toml
+# Cargo will not load a workspace member that has no target. These crates are not
+# compiled here; the stub only lets `cargo xtask` parse the workspace.
+RUN for dir in \
+      crates/irori crates/irori-core crates/irori-flows crates/irori-recorder \
+      crates/irori-config crates/irori-api crates/irori-client crates/irori-helpers \
+      extensions/demo extensions/automations extensions/protocols/esphome \
+      extras/irori-assist ; do \
+      mkdir -p "$dir/src" ; \
+      if [ ! -f "$dir/src/lib.rs" ] && [ ! -f "$dir/src/main.rs" ]; then \
+        echo '// Not compiled in this stage.' > "$dir/src/lib.rs" ; \
+      fi ; \
+      if grep -q 'path = "src/main.rs"' "$dir/Cargo.toml" && [ ! -f "$dir/src/main.rs" ]; then \
+        echo 'fn main() {}' > "$dir/src/main.rs" ; \
+      fi ; \
+    done
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/target \
-    if [ "$FEATURES" != "--no-default-features" ]; then \
-      cargo xtask ui ; \
-    fi
-# The official packages, laid out as `IRORI_OFFICIAL_PACKAGES` expects. Automations also carries
-# its page, which `cargo xtask ui` built above; the barebones build has none, so the extension
-# still installs and the shell says its page wasn't built.
-#
-# `irori` is built on its own first: every release binary is linked with fat LTO, and cargo
-# links the binaries of one invocation side by side. Six of them at once can take more memory
-# than a default Colima VM (4 GB) has, and the linker is killed with nothing but "exit code 101"
-# at the end of a long log. The extensions then link two at a time (`-j 2`), whatever the VM's
-# CPU count.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/target \
-    cargo build --locked --release -p irori $FEATURES \
-    && cargo build --locked --release -j 2 \
-      -p irori-protocol-demo -p irori-protocol-esphome -p irori-protocol-mqtt \
-      -p irori-protocol-zigbee -p irori-engine-automations \
-    && cp /target/release/irori /irori \
-    && mkdir -p /official/demo/bin /official/esphome/bin /official/mqtt/bin /official/zigbee/bin \
-      /official/automations/bin \
-    && cp extensions/demo/irori-extension.toml extensions/demo/icon.svg /official/demo/ \
-    && cp /target/release/irori-ext-demo /official/demo/bin/ \
-    && cp extensions/protocols/esphome/irori-extension.toml extensions/protocols/esphome/icon.svg /official/esphome/ \
-    && cp /target/release/irori-ext-esphome /official/esphome/bin/ \
-    && cp extensions/protocols/mqtt/irori-extension.toml extensions/protocols/mqtt/config.schema.json /official/mqtt/ \
-    && cp /target/release/irori-ext-mqtt /official/mqtt/bin/ \
-    && cp extensions/protocols/zigbee/irori-extension.toml extensions/protocols/zigbee/config.schema.json /official/zigbee/ \
-    && cp /target/release/irori-ext-zigbee /official/zigbee/bin/ \
-    && cp extensions/automations/irori-extension.toml extensions/automations/icon.svg /official/automations/ \
-    && cp /target/release/irori-ext-automations /official/automations/bin/ \
-    && if [ -f extensions/automations/app/dist/index.html ]; then \
-         cp -r extensions/automations/app/dist /official/automations/app ; \
+    mkdir -p /ui-out/embedded /ui-out/automations \
+    && if [ "$FEATURES" != "--no-default-features" ]; then \
+         cargo xtask ui \
+         && cp -a crates/irori/ui/. /ui-out/embedded/ \
+         && cp -a extensions/automations/app/dist/. /ui-out/automations/ ; \
+       else \
+         touch /ui-out/embedded/.gitkeep /ui-out/automations/.gitkeep ; \
        fi
-# Lab emulators are not part of the Irori workspace. The musl target already
-# links the finished binary statically, same as irori above. Forcing that
-# through RUSTFLAGS also forces it onto proc-macro crates (prost-derive),
-# which musl cannot build.
+
+FROM wasmtools AS build
+ARG FEATURES=""
+ARG LAB=0
+# Fat LTO and one codegen unit are for the binaries CI ships. This image is a
+# dev stand-in: opt-level and strip stay, the link does not. The split that
+# linked `irori` alone existed because six fat-LTO links OOM a 4 GB VM.
+ENV CARGO_PROFILE_RELEASE_LTO=off \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+    SOURCE_DATE_EPOCH=0
+COPY . .
+# The host's crates/irori/ui is dockerignored. These are the pages from the ui stage.
+COPY --from=ui /ui-out/embedded/ crates/irori/ui/
+COPY --from=ui /ui-out/automations/ extensions/automations/app/dist/
+# Barebones is irori without the ui feature and without extension binaries. The
+# catalog the smoke test reads is compiled into the binary from official.toml.
+# The lab emulator is its own workspace and is not part of a plain or barebones image.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/target \
     --mount=type=cache,target=/target-lab \
-    CARGO_TARGET_DIR=/target-lab \
-    cargo build --locked --release --manifest-path dev/lab/esphome/Cargo.toml \
-    && cp /target-lab/release/irori-lab-esphome /irori-lab-esphome
+    mkdir -p /official /lab-out \
+    && if [ "$FEATURES" = "--no-default-features" ]; then \
+         cargo build --locked --release -p irori --no-default-features \
+         && cp /target/release/irori /irori \
+         && touch /official/.keep /lab-out/.keep ; \
+       else \
+         cargo build --locked --release \
+           -p irori \
+           -p irori-protocol-demo -p irori-protocol-esphome -p irori-protocol-mqtt \
+           -p irori-protocol-zigbee -p irori-engine-automations \
+         && cp /target/release/irori /irori \
+         && mkdir -p /official/demo/bin /official/esphome/bin /official/mqtt/bin /official/zigbee/bin \
+           /official/automations/bin \
+         && cp extensions/demo/irori-extension.toml extensions/demo/icon.svg /official/demo/ \
+         && cp /target/release/irori-ext-demo /official/demo/bin/ \
+         && cp extensions/protocols/esphome/irori-extension.toml extensions/protocols/esphome/icon.svg /official/esphome/ \
+         && cp /target/release/irori-ext-esphome /official/esphome/bin/ \
+         && cp extensions/protocols/mqtt/irori-extension.toml extensions/protocols/mqtt/config.schema.json /official/mqtt/ \
+         && cp /target/release/irori-ext-mqtt /official/mqtt/bin/ \
+         && cp extensions/protocols/zigbee/irori-extension.toml extensions/protocols/zigbee/config.schema.json /official/zigbee/ \
+         && cp /target/release/irori-ext-zigbee /official/zigbee/bin/ \
+         && cp extensions/automations/irori-extension.toml extensions/automations/icon.svg /official/automations/ \
+         && cp /target/release/irori-ext-automations /official/automations/bin/ \
+         && if [ -f extensions/automations/app/dist/index.html ]; then \
+              cp -r extensions/automations/app/dist /official/automations/app ; \
+            fi \
+         && if [ "$LAB" = "1" ]; then \
+              CARGO_TARGET_DIR=/target-lab \
+                cargo build --locked --manifest-path dev/lab/esphome/Cargo.toml \
+              && cp /target-lab/debug/irori-lab-esphome /lab-out/irori-lab-esphome ; \
+            else \
+              touch /lab-out/.keep ; \
+            fi ; \
+       fi
 
 FROM debian:${DEBIAN_RELEASE}-slim AS pi
+ARG LAB=0
+# python3 is only there for the lab coordinator. setpriv (util-linux) drops to the
+# irori user in every mode.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates python3 util-linux \
+    && packages="curl ca-certificates util-linux" \
+    && if [ "$LAB" = "1" ]; then packages="$packages python3"; fi \
+    && apt-get install -y --no-install-recommends $packages \
     && rm -rf /var/lib/apt/lists/*
 # Run unprivileged, the way the systemd unit will (M1.7).
 RUN useradd --system --home-dir /var/lib/irori --create-home --shell /usr/sbin/nologin irori
 COPY --from=build /irori /usr/local/bin/irori
-COPY --from=build /irori-lab-esphome /usr/local/bin/irori-lab-esphome
+COPY --from=build /lab-out/ /tmp/lab-out/
+RUN if [ -f /tmp/lab-out/irori-lab-esphome ]; then \
+      mv /tmp/lab-out/irori-lab-esphome /usr/local/bin/irori-lab-esphome \
+      && chmod 755 /usr/local/bin/irori-lab-esphome ; \
+    fi \
+    && rm -rf /tmp/lab-out
 COPY --from=build /official /usr/share/irori/extensions
 COPY dev/lab /usr/share/irori/lab
 COPY dev/lab/entrypoint.sh /usr/local/bin/irori-lab-entrypoint

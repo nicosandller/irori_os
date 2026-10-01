@@ -12,12 +12,20 @@ fn main() {
     println!("cargo:rustc-env=IRORI_TARGET={target}");
     println!("cargo:rustc-env=IRORI_COMMIT={}", commit());
     println!("cargo:rustc-env=IRORI_BUILT_AT={}", built_at());
-    // Run on every build. Naming any real path here would opt out of Cargo's own change
-    // tracking and pin this to those paths alone — and then editing a file in another crate,
-    // or committing, would leave `IRORI_COMMIT` and `IRORI_BUILT_AT` describing an older build
-    // than the one being run. A path that never exists is always "changed", which is what
-    // makes this honest; two `git` calls per build is the price.
-    println!("cargo:rerun-if-changed=.irori-always-rerun");
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    // A reproducible build sets SOURCE_DATE_EPOCH. The dev image does, because `.git`
+    // is not in the build context: the commit cannot change between compiles, and forcing
+    // a rerun here would relink `irori` on every image build even when only an extension
+    // crate changed. `built_at()` already honours the epoch.
+    //
+    // Without that env, run on every build. Naming any real path here would opt out of
+    // Cargo's own change tracking and pin this to those paths alone — and then editing a
+    // file in another crate, or committing, would leave `IRORI_COMMIT` and `IRORI_BUILT_AT`
+    // describing an older build than the one being run. A path that never exists is always
+    // "changed", which is what makes this honest; two `git` calls per build is the price.
+    if std::env::var_os("SOURCE_DATE_EPOCH").is_none() {
+        println!("cargo:rerun-if-changed=.irori-always-rerun");
+    }
 }
 
 /// The short commit, with `-modified` when the working tree has uncommitted changes. `unknown`
