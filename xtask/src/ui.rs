@@ -18,7 +18,7 @@ pub fn run() -> anyhow::Result<()> {
     let dist = ui.join("dist");
     let embedded = root.join("crates/irori/ui");
 
-    let status = Command::new("trunk").arg("build").current_dir(&ui).status();
+    let status = trunk_command(&ui).status();
     match status {
         Ok(status) if status.success() => {}
         Ok(status) => bail!("`trunk build` failed ({status})"),
@@ -62,10 +62,7 @@ pub fn run() -> anyhow::Result<()> {
 /// `dist/`, where packaging picks it up (`cargo xtask package`, and Install from a checkout).
 fn pages(root: &Path) -> anyhow::Result<()> {
     for dir in crate::package::page_dirs(root)? {
-        let status = Command::new("trunk")
-            .arg("build")
-            .current_dir(&dir)
-            .status();
+        let status = trunk_command(&dir).status();
         match status {
             Ok(status) if status.success() => {
                 println!("page built: {}", dir.join("dist").display())
@@ -75,6 +72,23 @@ fn pages(root: &Path) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Trunk.toml asks for a release build. The dev image sets `IRORI_TRUNK_RELEASE=0`
+/// so a container rebuild skips wasm-opt and LTO. CI leaves the variable unset
+/// and still gets the release page. `--release false` is trunk's own override
+/// (`num_args = 0..=1`); a bare `--release` would turn release on.
+fn trunk_command(dir: &Path) -> Command {
+    trunk_command_with(std::env::var("IRORI_TRUNK_RELEASE").ok().as_deref(), dir)
+}
+
+fn trunk_command_with(release_mode: Option<&str>, dir: &Path) -> Command {
+    let mut command = Command::new("trunk");
+    command.arg("build").current_dir(dir);
+    if release_mode == Some("0") {
+        command.args(["--release", "false"]);
+    }
+    command
 }
 
 /// Empties the embed folder, keeping the note that holds it in the repository.
@@ -121,4 +135,30 @@ fn workspace_root() -> PathBuf {
         .parent()
         .expect("xtask/ has a parent")
         .to_path_buf()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trunk_command_with;
+    use std::path::Path;
+
+    #[test]
+    fn dev_image_builds_the_pages_without_release() {
+        let command = trunk_command_with(Some("0"), Path::new("."));
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["build", "--release", "false"]);
+    }
+
+    #[test]
+    fn ci_keeps_the_trunk_toml_release_default() {
+        let command = trunk_command_with(None, Path::new("."));
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["build"]);
+    }
 }

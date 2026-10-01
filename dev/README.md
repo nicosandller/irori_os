@@ -49,9 +49,12 @@ The barebones build (no extensions, no UI) must always work too:
 dev/pi up --barebones
 ```
 
-The first build takes a couple of minutes. After that, dependencies and build artifacts
-are cached, and a rebuild after a code change takes about half a minute (most of that is
-link-time optimization, which the release build uses on purpose).
+The first build compiles the dependencies and takes a while. Later builds reuse the cargo
+cache. A code change relinks the binary without fat LTO, and a change that does not touch
+the pages does not rebuild them. `--barebones` builds only `irori`, with no UI and no
+extension binaries. The wasm pages in this image are dev builds. CI still ships the
+release pages and the fat-LTO binaries; this container is not that artifact, and not a
+benchmark (see below).
 
 ## Run the checks on Linux arm64
 
@@ -110,18 +113,26 @@ Claude's, and collaborators'. Don't use it for code from strangers.
 
 Builds fill Docker's disk over time: every PR you check adds to the cargo build cache, and a
 full workspace build with its tests runs to several GB. So `up`, `restart`, `check`, and
-`review` tidy up first. They always drop leftover images and build cache older than a week. When
-Docker's disk still has less than 8 GB free (`IRORI_DEV_MIN_FREE_GB`), they also clear the cargo
-build cache, which the next `check` rebuilds. irori's data volume is never touched.
+`review` tidy up first. They drop leftover images and build cache older than a week, and they
+leave the cargo cache in place. That cache is what makes the next build incremental. Wiping it
+whenever free space dropped under 8 GB made every build a cold one on a 20 GB disk, which
+cannot hold the cache and 8 GB free at the same time.
 
-To clear it all by hand:
+If free space is under 2 GB (`IRORI_DEV_MIN_FREE_GB`), the build stops instead of deleting the
+cache. irori's data volume is never touched.
+
+To clear the caches by hand:
 
 ```sh
 dev/pi clean
 ```
 
-With Colima, the default 20 GB disk is tight for this repository. A disk can grow but not shrink:
-`colima stop && colima start --disk 40`.
+With Colima, the default 20 GB disk and 2 CPUs are tight for this repository. A disk can grow
+but not shrink:
+
+```sh
+colima stop && colima start --disk 40 --cpu 4 --memory 8
+```
 
 ## Tuning the "Pi"
 
@@ -143,8 +154,14 @@ Colima's default VM has 2 CPUs and 2–4 GB. Limits above that fail to start; ra
 ## Lab devices
 
 `dev/pi up --lab` is the same Pi, plus stand-ins for the hardware the container cannot see.
-It raises the memory limit to 2 GB (Zigbee2MQTT needs it) unless `IRORI_PI_MEMORY` is already set.
+The emulator binary is built only into that image. It raises the memory limit to 2 GB
+(Zigbee2MQTT needs it) unless `IRORI_PI_MEMORY` is already set.
 `dev/pi restart` with no flags keeps that mode. `dev/pi up` without `--lab` leaves it.
+
+The first time the Zigbee extension starts, it downloads Node and installs Zigbee2MQTT into
+its package directory. A later start of any mode keeps `runtime/` and `z2m/` when it refreshes
+the binary from the image, so that install does not run again. The network key lives in
+`extension-data/` either way. Changing `zigbee2mqtt_version` still reinstalls.
 
 | | Where it shows up |
 |---|---|
@@ -199,7 +216,7 @@ of a device path, for exactly this: a network-attached coordinator. `dev/pi usb-
 | File | Purpose |
 |---|---|
 | `pi` | The helper script described above |
-| `Dockerfile` | `toolchain` (Rust on Alpine/musl), `build` (static binary), `pi` (Debian slim runtime) |
+| `Dockerfile` | `toolchain` (Rust on Alpine/musl), `ui` (wasm pages), `build` (static binary), `pi` (Debian slim runtime) |
 | `compose.yaml` | The `pi` service and the on-demand `toolchain` service |
 | `smoke-test.sh` | Smoke test shared with CI: health, WAL mode, UI present or absent per build, and the demo extension's devices when it's compiled in |
 | `lab/` | Opt-in emulators for `dev/pi up --lab`: Zigbee dongle, ESPHome boards, Matter nodes, and the house seed |

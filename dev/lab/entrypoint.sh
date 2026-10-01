@@ -12,7 +12,15 @@ export LOGNAME=irori
 
 # Installing copies a package into the data volume, which outlives the image, so an
 # official extension installed before a rebuild would keep running its old files.
-# Refresh each one from the image. Its data and its settings live elsewhere.
+# Refresh each one from the image. Its settings, and Zigbee's network key, live
+# under extension-data/ and are not touched.
+#
+# Node and Zigbee2MQTT do not. The extension installs them inside its package
+# directory (`runtime/` and `z2m/`). Deleting that directory on every start made
+# the next start download Node and run pnpm again, on one CPU. Park those two
+# directories beside the package — same volume, so the move is a rename — and
+# put them back after the new binary is in place. A settings change still
+# reinstalls: the extension compares the version itself.
 data="${IRORI_DATA:-/var/lib/irori}"
 packages="${IRORI_OFFICIAL_PACKAGES:-/usr/share/irori/extensions}"
 if [ -d "$data/extensions" ]; then
@@ -21,10 +29,28 @@ if [ -d "$data/extensions" ]; then
     id=$(basename "$installed")
     bundled="$packages/$id"
     [ -d "$bundled" ] || continue
+    # A previous start can have died after the park and before the move back.
+    # Keep whatever is already parked; do not delete it first.
+    hold="$data/.package-refresh/$id"
+    mkdir -p "$hold"
+    for keep in runtime z2m; do
+      if [ -d "$installed/$keep" ]; then
+        rm -rf "$hold/$keep"
+        mv "$installed/$keep" "$hold/$keep"
+      fi
+    done
     rm -rf "$installed"
     cp -r "$bundled" "$data/extensions/$id"
+    for keep in runtime z2m; do
+      if [ -d "$hold/$keep" ]; then
+        rm -rf "$data/extensions/$id/$keep"
+        mv "$hold/$keep" "$data/extensions/$id/$keep"
+      fi
+    done
+    rm -rf "$hold"
     chown -R irori:irori "$data/extensions/$id"
   done
+  rmdir "$data/.package-refresh" 2>/dev/null || true
 fi
 
 if [ "${IRORI_LAB:-}" = "1" ]; then
@@ -43,6 +69,12 @@ if [ "${IRORI_LAB:-}" = "1" ]; then
   chown -R irori:irori /var/lib/irori
   echo "irori lab: Zigbee dongle at /dev/zigbee0"
   echo "irori lab: in the Zigbee settings, set serial port /dev/zigbee0 and zigbee2mqtt_version 2.14.1"
+  # Plain `dev/pi up` builds an image without the emulator or python3. Starting
+  # that image with IRORI_LAB=1 would fail further down, less clearly.
+  if [ ! -x /usr/local/bin/irori-lab-esphome ]; then
+    echo "irori lab: this image has no emulators. Rebuild with \`dev/pi up --lab\`." >&2
+    exit 1
+  fi
   # ncp.py drops to irori once /dev/zigbee0 exists. ESPHome and Matter never need
   # root, so they drop before they start.
   IRORI_LAB_UID="$(id -u irori)" IRORI_LAB_GID="$(id -g irori)" \

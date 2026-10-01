@@ -49,19 +49,20 @@ Review a pull request:
 EOF
 }
 
-# Space Docker's disk must have before a build starts. A full build of the workspace, its tests,
-# and both wasm pages needs several GB; running out shows up only as "No space left on device"
-# deep inside a long log, or a bare "exit code 101".
-min_free_gb="${IRORI_DEV_MIN_FREE_GB:-8}"
+# Below this, a build is more likely to die with "no space left on device" than to finish.
+# It used to be 8 GB, and falling short deleted the cargo cache. A 20 GB Colima disk cannot
+# hold that cache and 8 GB free at once, so every `up` compiled from scratch. `dev/pi clean`
+# is the explicit wipe. Override with IRORI_DEV_MIN_FREE_GB.
+min_free_gb="${IRORI_DEV_MIN_FREE_GB:-2}"
 
 # Free space on Docker's own disk (the VM's, with Colima), in whole GB; empty if unknown.
 free_gb() {
   docker run --rm --entrypoint df alpine -Pk / 2>/dev/null | awk 'NR == 2 { print int($4 / 1048576) }'
 }
 
-# Before every build: drop what nothing uses, and when that's not enough, the cargo build cache
-# too. It's only a cache — the next `check` rebuilds it — but it's the one thing here that grows
-# without bound, one PR at a time. irori's own data is never touched.
+# Before every build: drop dangling images and build cache nothing has used for a week.
+# The cargo cache mounts are what make the next compile incremental, so this does not
+# delete them to get under a watermark. irori's data volume is never touched.
 tidy() {
   docker image prune --force >/dev/null 2>&1 || true
   docker builder prune --force --filter until=168h >/dev/null 2>&1 || true
@@ -69,15 +70,13 @@ tidy() {
   free="$(free_gb)"
   [[ -n "$free" ]] || return 0
   if ((free < min_free_gb)); then
-    echo "Docker's disk has ${free} GB free (want ${min_free_gb}); clearing the cargo build cache."
-    echo "The next \`dev/pi check\` rebuilds it, so it takes a few minutes longer."
-    docker volume rm irori-dev_cargo-target >/dev/null 2>&1 || true
-    docker builder prune --force >/dev/null 2>&1 || true
-    free="$(free_gb)"
-    if [[ -n "$free" ]] && ((free < min_free_gb)); then
-      echo "warning: still only ${free} GB free. See what's using it with \`docker system df -v\`;" >&2
-      echo "         with Colima, a bigger disk: colima stop && colima start --disk 40" >&2
-    fi
+    echo "error: Docker's disk has ${free} GB free (want at least ${min_free_gb})." >&2
+    echo "A build needs room for the cargo cache. Deleting that cache is what makes the next one slow." >&2
+    echo "Free space with \`dev/pi clean\`, or give the VM a larger disk:" >&2
+    echo "  colima stop && colima start --disk 40 --cpu 4 --memory 8" >&2
+    echo >&2
+    docker system df >&2 || true
+    exit 1
   fi
 }
 
@@ -106,12 +105,24 @@ up() {
     esac
     shift
   done
+  # Barebones ships no emulator binary. Lab mode starts that binary.
+  if [[ "$lab" -eq 1 && "${IRORI_FEATURES:-}" == "--no-default-features" ]]; then
+    echo "error: --barebones and --lab cannot be used together" >&2
+    exit 1
+  fi
+  # The image builds the lab emulator only when this build is a lab build. The
+  # runtime flag is separate: `up` without `--lab` leaves lab mode, even if the
+  # shell exported IRORI_LAB.
   if [[ "$lab" -eq 1 ]]; then
     export IRORI_LAB=1
+    export IRORI_LAB_BUILD=1
     # Zigbee2MQTT's Node runtime does not fit in the default 1 GB.
     if [[ -z "${IRORI_PI_MEMORY:-}" ]]; then
       export IRORI_PI_MEMORY=2g
     fi
+  else
+    unset IRORI_LAB
+    export IRORI_LAB_BUILD=0
   fi
   "${compose[@]}" up --build --detach --wait pi
   echo

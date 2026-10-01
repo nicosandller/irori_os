@@ -11,6 +11,8 @@ services:
       target: pi
       args:
         FEATURES: ${IRORI_FEATURES:-}
+        # 1 only for `dev/pi up --lab`. Plain and barebones images skip the emulator.
+        LAB: ${IRORI_LAB_BUILD:-0}
     image: irori-dev/pi
     platform: linux/arm64
     ports:
