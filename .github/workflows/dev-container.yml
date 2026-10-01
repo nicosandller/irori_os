@@ -69,8 +69,13 @@ jobs:
           restore-keys: |
             irori-dev-container-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
             irori-dev-container-${{ runner.os }}-${{ runner.arch }}-
+      # A cache that fit when it was saved can still be too big to copy into
+      # this runner. That is a cache miss, not a failed build.
       - name: Inject cargo cache
-        run: dev/ci-cargo-cache.sh inject "${{ runner.temp }}/irori-dev-cargo"
+        run: |
+          if ! dev/ci-cargo-cache.sh inject "${{ runner.temp }}/irori-dev-cargo"; then
+            echo "::warning::Cargo cache inject failed. Building without the restored cache."
+          fi
       - name: Build and start (native platform)
         run: |
           # compose.yaml pins linux/arm64; override it for the amd64 runner.

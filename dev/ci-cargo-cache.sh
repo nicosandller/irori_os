@@ -52,23 +52,27 @@ inject_one() {
     echo "no cargo cache to inject at $host"
     return 0
   fi
-  stamp
+  # The restored directory is a named build context, so the host does not
+  # copy it once more before BuildKit reads it. STAMP is referenced so a
+  # builder that already ran this step does not skip the copy into the mount.
+  local when
+  when=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  mkdir -p "$tmp/empty"
   cat > "$tmp/Dancefile" <<EOF
 # syntax=docker/dockerfile:1
 FROM busybox:1.36.1
-COPY stamp /stamp
-COPY payload /incoming
-RUN --mount=type=cache,target=${mount} \\
-    cp -a /incoming/. ${mount}/
+ARG STAMP
+RUN --mount=type=bind,from=cargocache,source=.,target=/incoming \\
+    --mount=type=cache,target=${mount} \\
+    echo "\$STAMP" >/dev/null \\
+    && cp -a /incoming/. ${mount}/
 EOF
-  mkdir -p "$tmp/context"
-  rm -rf "$tmp/context"
-  mkdir -p "$tmp/context"
-  cp "$tmp/stamp" "$tmp/context/stamp"
-  # The cache directory is the context's payload. A symlink would point outside
-  # the context, which BuildKit refuses, so this is a real copy.
-  cp -a "$host" "$tmp/context/payload"
-  docker buildx build --output type=cacheonly -f "$tmp/Dancefile" "$tmp/context"
+  docker buildx build \
+    --build-context "cargocache=${host}" \
+    --build-arg "STAMP=${when}" \
+    --output type=cacheonly \
+    -f "$tmp/Dancefile" \
+    "$tmp/empty"
   echo "injected $host into $mount"
 }
 

@@ -118,6 +118,11 @@ leave the cargo cache in place. That cache is what makes the next build incremen
 whenever free space dropped under 8 GB made every build a cold one on a 20 GB disk, which
 cannot hold the cache and 8 GB free at the same time.
 
+BuildKit still deletes cache mounts that have not been used for 48 hours, once that
+part of the build cache is past its cap (512MB in the default policy). Two days
+without a build can make the next one compile from scratch. That is BuildKit's own
+collection, not `dev/pi clean`.
+
 If free space is under 2 GB (`IRORI_DEV_MIN_FREE_GB`), the build stops instead of deleting the
 cache. irori's data volume is never touched.
 
