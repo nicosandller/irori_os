@@ -993,6 +993,31 @@ mod tests {
     }
 
     #[test]
+    fn a_text_sensor_is_pointed_at_text() {
+        let washer = entity(
+            "sensor.washer_program",
+            Capabilities::Sensor(SensorCapabilities {
+                value_type: SensorValueType::Text,
+                device_class: None,
+                unit: None,
+                state_class: None,
+            }),
+        );
+        let mut registry = hallway_registry();
+        registry.entities.insert(washer.id.clone(), washer.clone());
+        let check = |name| check_fn_against_registry(name, &washer.id, &registry);
+        assert_eq!(
+            check("num"),
+            Err(r#"num("sensor.washer_program"): entity is sensor, not a numeric sensor — use text("sensor.washer_program")"#.to_owned())
+        );
+        assert_eq!(
+            check("on"),
+            Err(r#"on("sensor.washer_program"): entity is text, not on/off — use text("sensor.washer_program")"#.to_owned())
+        );
+        assert_eq!(check("text"), Ok(()));
+    }
+
+    #[test]
     fn num_on_a_pir_is_rejected() {
         let mut rule = hallway_rule();
         if let Condition::Expr { expr } = &mut rule.conditions[0] {

@@ -583,6 +583,29 @@ mod tests {
     }
 
     #[test]
+    fn a_function_of_the_wrong_kind_says_which_one_fits() {
+        let mut snapshot = home(8.0, true);
+        let (id, washer) = state(
+            "sensor.washer_program",
+            State::Sensor(SensorState {
+                value: SensorValue::Text("rinse".into()),
+            }),
+            Availability::Available,
+        );
+        Arc::make_mut(&mut snapshot.states).insert(id, washer);
+        let mut eval = Evaluator::default();
+        let mut error = |expr| eval.boolean(expr, &snapshot).result.unwrap_err();
+        assert!(
+            error("on('sensor.washer_program')").contains(
+                r#"on("sensor.washer_program"): entity is text, not on/off — use text("sensor.washer_program")"#
+            )
+        );
+        assert!(error("num('binary_sensor.motion') < 1").contains(
+            r#"num("binary_sensor.motion"): entity is on/off, not a number — use on("binary_sensor.motion")"#
+        ));
+    }
+
+    #[test]
     fn variables_and_combinators() {
         let mut eval = Evaluator::default();
         assert_eq!(

@@ -817,6 +817,28 @@ mod tests {
     use super::*;
     use irori_types::PackagePath;
 
+    /// What an automations package built before kinds could take any action sends, byte for
+    /// byte: a core that reads any action must still read it, and write it back the same way.
+    #[test]
+    fn call_service_reads_and_writes_what_older_engines_send() {
+        for old in [
+            serde_json::json!({
+                "type": "call_service", "id": 1, "entity_id": "light.hall",
+                "command": "turn_on", "data": {"brightness": 153},
+                "run_id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+            }),
+            serde_json::json!({
+                "type": "call_service", "id": 2, "entity_id": "switch.plug",
+                "command": "toggle", "run_id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+                "parent_id": "01K5B2Q9A1B2C3D4E5F6G7H8JA",
+            }),
+        ] {
+            let msg: FromExt = serde_json::from_value(old.clone()).expect("an old engine's call");
+            assert!(matches!(msg, FromExt::CallService { .. }));
+            assert_eq!(serde_json::to_value(&msg).expect("ser"), old);
+        }
+    }
+
     #[test]
     fn hello_round_trips() {
         let msg = ToExt::Hello {
