@@ -1055,6 +1055,7 @@ impl Protocol for Partial {
             device_unique_id: Some(uid("fan-box")),
             platform: "fan".parse()?,
             name: Some(Name::try_from("Ceiling fan")?),
+            reason: None,
         }])
         .await;
         ctx.stopped().await;

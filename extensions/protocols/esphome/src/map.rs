@@ -426,6 +426,7 @@ pub fn unmodeled(device: &UniqueId, message: &EspHomeMessage) -> Option<Unmodele
         device_unique_id: Some(device.clone()),
         platform: ObjectId::try_from(platform).ok()?,
         name: Name::try_from(name.trim()).ok(),
+        reason: None,
     })
 }
 

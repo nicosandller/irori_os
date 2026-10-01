@@ -362,6 +362,9 @@ async fn describe(
     ctx: &ProtocolContext,
 ) {
     if message.payload.is_empty() {
+        if registry.unmodeled.forget(&message.topic) {
+            ctx.set_unmodeled(registry.unmodeled.list()).await;
+        }
         if let Some(unique_id) = registry.config_topics.remove(&message.topic) {
             if let Some(old) = registry.entities.remove(&unique_id) {
                 deindex(&unique_id, &old.topics, registry);
@@ -372,10 +375,18 @@ async fn describe(
         }
         return;
     }
+    let component = discovered.component.to_string();
     let parsed = match discovery::parse(discovered.component, &message.payload) {
         Ok(parsed) => parsed,
         Err(why) => {
             tracing::warn!(topic = %message.topic, %why, "skipping a discovery config Irori can't use");
+            // Listed on its device with why, rather than gone without a word.
+            if registry
+                .unmodeled
+                .refuse(&message.topic, &component, &message.payload, &why)
+            {
+                ctx.set_unmodeled(registry.unmodeled.list()).await;
+            }
             return;
         }
     };
@@ -390,7 +401,17 @@ async fn describe(
     let entity_description = map::entity(&parsed, &discovered.object_id);
     if let Err(e) = ctx.describe_entity(entity_description).await {
         tracing::warn!(%unique_id, error = %e, "the core refused an entity");
+        if registry
+            .unmodeled
+            .refuse(&message.topic, &component, &message.payload, &e.to_string())
+        {
+            ctx.set_unmodeled(registry.unmodeled.list()).await;
+        }
         return;
+    }
+    // Used now: if it was listed as refused, it isn't any more.
+    if registry.unmodeled.forget(&message.topic) {
+        ctx.set_unmodeled(registry.unmodeled.list()).await;
     }
 
     // A redescribe (the same entity's discovery config firing again, e.g. Zigbee2MQTT

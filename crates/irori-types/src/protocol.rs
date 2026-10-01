@@ -38,6 +38,10 @@ pub struct Unmodeled {
     /// Its name, when the protocol knows one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<Name>,
+    /// Why Irori can't use it, when it's a kind Irori has but this one couldn't be read: its
+    /// command needs a template Irori doesn't run, say. Absent for a kind Irori doesn't have.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Something a protocol found but can't use yet, because it needs a person first: a device

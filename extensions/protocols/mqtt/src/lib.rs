@@ -195,6 +195,9 @@ async fn describe(
     ctx: &ProtocolContext,
 ) {
     if message.payload.is_empty() {
+        if registry.unmodeled.forget(&message.topic) {
+            ctx.set_unmodeled(registry.unmodeled.list()).await;
+        }
         if let Some(unique_id) = registry.config_topics.remove(&message.topic) {
             if let Some(old) = registry.entities.remove(&unique_id) {
                 deindex(&unique_id, &old.topics, registry);
@@ -205,10 +208,18 @@ async fn describe(
         }
         return;
     }
+    let component = discovered.component.to_string();
     let parsed = match discovery::parse(discovered.component, &message.payload) {
         Ok(parsed) => parsed,
         Err(why) => {
             tracing::warn!(topic = %message.topic, %why, "skipping a discovery config Irori can't use");
+            // Listed on its device with why, rather than gone without a word.
+            if registry
+                .unmodeled
+                .refuse(&message.topic, &component, &message.payload, &why)
+            {
+                ctx.set_unmodeled(registry.unmodeled.list()).await;
+            }
             return;
         }
     };
@@ -223,7 +234,17 @@ async fn describe(
     let entity_description = map::entity(&parsed, &discovered.object_id);
     if let Err(e) = ctx.describe_entity(entity_description).await {
         tracing::warn!(%unique_id, error = %e, "the core refused an entity");
+        if registry
+            .unmodeled
+            .refuse(&message.topic, &component, &message.payload, &e.to_string())
+        {
+            ctx.set_unmodeled(registry.unmodeled.list()).await;
+        }
         return;
+    }
+    // Used now: if it was listed as refused, it isn't any more.
+    if registry.unmodeled.forget(&message.topic) {
+        ctx.set_unmodeled(registry.unmodeled.list()).await;
     }
 
     // A redescribe (the same entity's discovery config firing again, e.g. Z2M republishing on
@@ -587,6 +608,47 @@ mod tests {
         );
 
         // Removed from the broker, it's off the list.
+        apply(
+            message(topic, b""),
+            &settings(),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        let Some(host::Op::SetUnmodeled(listed)) = host.ops.recv().await else {
+            panic!("the list should be sent again");
+        };
+        assert!(listed.is_empty());
+    }
+
+    /// A config of a kind Irori has that it can't use is listed with why, not dropped.
+    #[tokio::test]
+    async fn a_config_irori_cannot_use_is_listed_with_why() {
+        let (ctx, mut host) = host::connect();
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+        let topic = "homeassistant/number/panel/level/config";
+        let jinja = br#"{"unique_id": "level", "name": "Level", "command_topic": "panel/set",
+            "command_template": "{\"level\": {{ value * 10 }}}"}"#;
+        apply(
+            message(topic, jinja),
+            &settings(),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        let Some(host::Op::SetUnmodeled(listed)) = host.ops.recv().await else {
+            panic!("the number should be listed");
+        };
+        assert_eq!(listed[0].platform.as_str(), "number");
+        assert!(
+            listed[0]
+                .reason
+                .as_deref()
+                .is_some_and(|why| why.contains("command_template"))
+        );
         apply(
             message(topic, b""),
             &settings(),

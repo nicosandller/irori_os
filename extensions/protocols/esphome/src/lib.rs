@@ -20,7 +20,9 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use irori_protocol::types::{Availability, Name, SecretRequest, UniqueId, Unmodeled, Waiting};
+use irori_protocol::types::{
+    Availability, Name, ObjectId, SecretRequest, UniqueId, Unmodeled, Waiting,
+};
 use irori_protocol::{
     AvailabilityTarget, Health, IncomingCall, Protocol, ProtocolContext, ProtocolError,
     ServiceError,
@@ -371,13 +373,26 @@ async fn apply(
             }
             ctx.describe_device(*device).await?;
             let mut described = Vec::new();
+            let mut unmodeled = unmodeled;
             for entity in entities {
                 let id = entity.unique_id.clone();
+                let (kind, name) = (entity.capabilities.kind(), entity.name.clone());
                 match ctx.describe_entity(entity).await {
                     Ok(()) => described.push(id),
-                    // One entity the core won't accept shouldn't cost us the whole device.
-                    Err(e) => tracing::warn!(device = %device_id, entity = %id, error = %e,
-                        "the core refused an entity"),
+                    // One entity the core won't accept shouldn't cost us the whole device, and
+                    // is listed on it with why rather than dropped.
+                    Err(e) => {
+                        tracing::warn!(device = %device_id, entity = %id, error = %e,
+                            "the core refused an entity");
+                        if let Ok(platform) = ObjectId::try_from(kind.domain()) {
+                            unmodeled.push(Unmodeled {
+                                device_unique_id: Some(device_id.clone()),
+                                platform,
+                                name,
+                                reason: Some(e.to_string()),
+                            });
+                        }
+                    }
                 }
             }
             // An entity that was there before and isn't now (the device was reflashed) goes.

@@ -235,6 +235,10 @@ its own topic).
 | `device_unique_id` | `UniqueId` | no | The device it's on. Left out when it isn't on one |
 | `platform` | slug | yes | What the protocol calls this kind of thing (`fan`, `infrared`). Deliberately not an entity kind |
 | `name` | `Name` | no | |
+| `reason` | string | no | Why Irori can't use it, when it's a kind Irori has but this one couldn't be read or was refused: a command template that needs Jinja, a value the core turned down. Left out for a kind Irori doesn't have |
+
+A thing of a kind Irori has that it can't use is listed the same way, with its `reason`, rather
+than dropped with only a log line.
 
 These are **not entities**: no id, no state, nothing to call. The device's page lists them ("Also
 has Ceiling fan (fan), which Irori doesn't support yet"), and the extension's card lists those

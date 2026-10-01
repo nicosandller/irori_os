@@ -594,18 +594,24 @@ fn page(
 }
 
 /// What a device has that Irori has no entity kind for yet, in a sentence: "Also has a ceiling
-/// fan (fan) and 2 settings (number), which Irori doesn't support yet." `None` when there's
-/// nothing.
+/// fan (fan) and 2 settings (number), which Irori doesn't support yet." Then, one by one, those
+/// of a kind it has that it couldn't use, and why. `None` when there's nothing.
 fn also_has(unmodeled: &[irori_types::Unmodeled]) -> Option<String> {
     if unmodeled.is_empty() {
         return None;
     }
     let mut by_platform: std::collections::BTreeMap<&str, Vec<&str>> = Default::default();
+    let mut refused = Vec::new();
     for entry in unmodeled {
-        by_platform
-            .entry(entry.platform.as_str())
-            .or_default()
-            .extend(entry.name.as_ref().map(irori_types::Name::as_str));
+        let platform = entry.platform.as_str();
+        let name = entry.name.as_ref().map(irori_types::Name::as_str);
+        match &entry.reason {
+            Some(why) => refused.push(match name {
+                Some(name) => format!("{name} ({}): {why}", platform.replace('_', " ")),
+                None => format!("a {}: {why}", platform.replace('_', " ")),
+            }),
+            None => by_platform.entry(platform).or_default().extend(name),
+        }
     }
     let items: Vec<String> = by_platform
         .into_iter()
@@ -614,10 +620,17 @@ fn also_has(unmodeled: &[irori_types::Unmodeled]) -> Option<String> {
             names => format!("{} ({})", names.join(", "), platform.replace('_', " ")),
         })
         .collect();
-    Some(format!(
-        "Also has {}, which Irori doesn't support yet.",
-        items.join("; ")
-    ))
+    let mut said = Vec::new();
+    if !items.is_empty() {
+        said.push(format!(
+            "Also has {}, which Irori doesn't support yet.",
+            items.join("; ")
+        ));
+    }
+    if !refused.is_empty() {
+        said.push(format!("Couldn't use {}.", refused.join("; ")));
+    }
+    Some(said.join(" "))
 }
 
 /// One entity: its reading, and the name it can be given.
@@ -1041,8 +1054,20 @@ mod tests {
             device_unique_id: None,
             platform: platform.parse().expect("slug"),
             name: name.map(|n| n.parse().expect("name")),
+            reason: None,
         };
         assert_eq!(also_has(&[]), None);
+        let refused = irori_types::Unmodeled {
+            reason: Some("its command_template needs Jinja".into()),
+            ..entry("number", Some("Level"))
+        };
+        assert_eq!(
+            also_has(&[refused, entry("fan", None)]).as_deref(),
+            Some(
+                "Also has fan, which Irori doesn't support yet. \
+                 Couldn't use Level (number): its command_template needs Jinja."
+            )
+        );
         assert_eq!(
             also_has(&[
                 entry("number", Some("Timeout")),

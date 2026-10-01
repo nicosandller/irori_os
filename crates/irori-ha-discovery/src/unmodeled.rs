@@ -20,9 +20,28 @@ impl Tracker {
     /// Takes in a config for `component` (one `topic::unsupported_component` named) at `topic`.
     /// Returns whether the list changed, i.e. whether it's worth sending again.
     pub fn apply(&mut self, topic: &str, component: &str, payload: &[u8]) -> bool {
+        self.set(topic, component, payload, None)
+    }
+
+    /// Lists a config of a kind Irori has that it couldn't use, with why: a template it can't
+    /// run, a value the core refused. It isn't dropped, any more than an unknown kind is.
+    pub fn refuse(&mut self, topic: &str, component: &str, payload: &[u8], why: &str) -> bool {
+        self.set(topic, component, payload, Some(why))
+    }
+
+    /// Takes `topic` off the list: its config is used now, or gone. Returns whether it was on it.
+    pub fn forget(&mut self, topic: &str) -> bool {
+        self.by_topic.remove(topic).is_some()
+    }
+
+    fn set(&mut self, topic: &str, component: &str, payload: &[u8], why: Option<&str>) -> bool {
         let entry = (!payload.is_empty())
             .then(|| entry(component, payload))
-            .flatten();
+            .flatten()
+            .map(|entry| Unmodeled {
+                reason: why.map(str::to_owned),
+                ..entry
+            });
         let before = self.by_topic.get(topic).cloned();
         match entry {
             Some(entry) => self.by_topic.insert(topic.to_owned(), entry),
@@ -54,6 +73,7 @@ fn entry(component: &str, payload: &[u8]) -> Option<Unmodeled> {
         device_unique_id,
         platform,
         name,
+        reason: None,
     })
 }
 
@@ -86,6 +106,20 @@ mod tests {
         // An empty payload is the component going away.
         assert!(tracker.apply(topic, "fan", b""));
         assert!(tracker.list().is_empty());
+    }
+
+    #[test]
+    fn a_config_irori_refuses_is_listed_with_why_until_it_is_used() {
+        let mut tracker = Tracker::default();
+        let topic = "homeassistant/number/0x1234/level/config";
+        assert!(tracker.refuse(topic, "number", FAN, "its command_template needs Jinja"));
+        assert_eq!(
+            tracker.list()[0].reason.as_deref(),
+            Some("its command_template needs Jinja")
+        );
+        assert!(tracker.forget(topic));
+        assert!(tracker.list().is_empty());
+        assert!(!tracker.forget(topic));
     }
 
     #[test]

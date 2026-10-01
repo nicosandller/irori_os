@@ -466,20 +466,42 @@ async fn list_entities(
                 }
                 return Ok((entities, unmodeled));
             }
-            EspHomeMessage::ListEntitiesLightResponse(e) => (e.key, map::light(device, e)),
-            EspHomeMessage::ListEntitiesSwitchResponse(e) => (e.key, map::switch(device, e)),
-            EspHomeMessage::ListEntitiesSensorResponse(e) => (e.key, map::sensor(device, e)),
-            EspHomeMessage::ListEntitiesNumberResponse(e) => (e.key, map::number(device, e)),
-            EspHomeMessage::ListEntitiesSelectResponse(e) => (e.key, map::select(device, e)),
-            EspHomeMessage::ListEntitiesTextResponse(e) => (e.key, map::text(device, e)),
-            EspHomeMessage::ListEntitiesButtonResponse(e) => (e.key, map::button(device, e)),
-            EspHomeMessage::ListEntitiesEventResponse(e) => (e.key, map::event(device, e)),
-            EspHomeMessage::ListEntitiesTextSensorResponse(e) => {
-                (e.key, map::text_sensor(device, e))
+            EspHomeMessage::ListEntitiesLightResponse(e) => {
+                (e.key, "light", e.name.clone(), map::light(device, e))
             }
-            EspHomeMessage::ListEntitiesBinarySensorResponse(e) => {
-                (e.key, map::binary_sensor(device, e))
+            EspHomeMessage::ListEntitiesSwitchResponse(e) => {
+                (e.key, "switch", e.name.clone(), map::switch(device, e))
             }
+            EspHomeMessage::ListEntitiesSensorResponse(e) => {
+                (e.key, "sensor", e.name.clone(), map::sensor(device, e))
+            }
+            EspHomeMessage::ListEntitiesNumberResponse(e) => {
+                (e.key, "number", e.name.clone(), map::number(device, e))
+            }
+            EspHomeMessage::ListEntitiesSelectResponse(e) => {
+                (e.key, "select", e.name.clone(), map::select(device, e))
+            }
+            EspHomeMessage::ListEntitiesTextResponse(e) => {
+                (e.key, "text", e.name.clone(), map::text(device, e))
+            }
+            EspHomeMessage::ListEntitiesButtonResponse(e) => {
+                (e.key, "button", e.name.clone(), map::button(device, e))
+            }
+            EspHomeMessage::ListEntitiesEventResponse(e) => {
+                (e.key, "event", e.name.clone(), map::event(device, e))
+            }
+            EspHomeMessage::ListEntitiesTextSensorResponse(e) => (
+                e.key,
+                "text_sensor",
+                e.name.clone(),
+                map::text_sensor(device, e),
+            ),
+            EspHomeMessage::ListEntitiesBinarySensorResponse(e) => (
+                e.key,
+                "binary_sensor",
+                e.name.clone(),
+                map::binary_sensor(device, e),
+            ),
             EspHomeMessage::PingRequest(_) => {
                 client
                     .try_write(PingResponse {})
@@ -499,9 +521,20 @@ async fn list_entities(
             }
         };
         match described {
-            (key, Ok(entity)) => entities.push((key, entity)),
-            // One unusable entity (an empty name, say) shouldn't cost us the whole device.
-            (_, Err(e)) => tracing::warn!(device = %device, error = %e, "skipping an entity"),
+            (key, _, _, Ok(entity)) => entities.push((key, entity)),
+            // One unusable entity (an empty name, say) shouldn't cost us the whole device, and
+            // shouldn't vanish either: it's listed on the device with why.
+            (_, platform, name, Err(e)) => {
+                tracing::warn!(device = %device, error = %e, "couldn't use an entity");
+                if let Ok(platform) = irori_protocol::types::ObjectId::try_from(platform) {
+                    unmodeled.push(Unmodeled {
+                        device_unique_id: Some(device.clone()),
+                        platform,
+                        name: irori_protocol::types::Name::try_from(name.trim()).ok(),
+                        reason: Some(e.to_string()),
+                    });
+                }
+            }
         }
     }
 }

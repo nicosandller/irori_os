@@ -231,6 +231,69 @@ mod tests {
         drop(listener);
     }
 
+    /// A message published while a client is subscribed reaches it with retain cleared; only one
+    /// delivered because of a (new) subscription is marked retained. Events depend on it: a
+    /// retained message is reported as a replay, which isn't a press (`StateReport::replayed`).
+    #[tokio::test]
+    async fn the_embedded_broker_marks_only_a_subscriptions_backlog_as_retained() {
+        use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
+
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .expect("a free port")
+            .port();
+        start_embedded(port).expect("starts");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        async fn next(rx: &mut tokio::sync::mpsc::UnboundedReceiver<bool>) -> bool {
+            tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .expect("a message in time")
+                .expect("a message")
+        }
+        async fn client(
+            id: &str,
+            port: u16,
+        ) -> (AsyncClient, tokio::sync::mpsc::UnboundedReceiver<bool>) {
+            let (client, mut events) =
+                AsyncClient::new(MqttOptions::new(id, "127.0.0.1", port), 10);
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            tokio::spawn(async move {
+                while let Ok(event) = events.poll().await {
+                    if let Event::Incoming(Packet::Publish(publish)) = event {
+                        let _ = tx.send(publish.retain);
+                    }
+                }
+            });
+            (client, rx)
+        }
+
+        let (listening, mut heard) = client("listening", port).await;
+        listening
+            .subscribe("remote/action", QoS::AtLeastOnce)
+            .await
+            .expect("subscribe");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let (publishing, _) = client("publishing", port).await;
+        publishing
+            .publish("remote/action", QoS::AtLeastOnce, true, "double")
+            .await
+            .expect("publish");
+        assert!(
+            !next(&mut heard).await,
+            "a live message isn't marked retained"
+        );
+
+        let (late, mut backlog) = client("late", port).await;
+        late.subscribe("remote/action", QoS::AtLeastOnce)
+            .await
+            .expect("subscribe");
+        assert!(
+            next(&mut backlog).await,
+            "what a subscription brings is marked retained"
+        );
+    }
+
     #[tokio::test]
     async fn a_full_event_queue_waits_instead_of_dropping_the_publish() {
         let (tx, mut rx) = mpsc::channel(1);
