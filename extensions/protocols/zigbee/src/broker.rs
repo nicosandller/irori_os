@@ -11,6 +11,11 @@ use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use rumqttd::{Broker as EmbeddedBroker, Config, ConnectionSettings, RouterConfig, ServerSettings};
 use tokio::sync::mpsc;
 
+/// Zigbee2MQTT 2.14 retains `bridge/info` (~48KB, its settings schema included)
+/// and `bridge/definitions` (~228KB, the ZCL cluster list). A 20KB cap closed
+/// the connection while Home Assistant discovery was still starting.
+const MAX_MQTT_PACKET: usize = 1024 * 1024;
+
 /// Starts the embedded broker on its own OS thread (`rumqttd::Broker::start` is a blocking
 /// call, not an async one). No return value to join on: when this whole process exits — the
 /// normal way a protocol stops — the thread goes with it, the same as any other thread still
@@ -46,7 +51,7 @@ pub fn start_embedded(port: u16) -> Result<(), String> {
             next_connection_delay_ms: 1,
             connections: ConnectionSettings {
                 connection_timeout_ms: 60_000,
-                max_payload_size: 20_480,
+                max_payload_size: MAX_MQTT_PACKET,
                 max_inflight_count: 100,
                 auth: None,
                 external_auth: None,
@@ -124,18 +129,26 @@ pub struct Client(AsyncClient);
 
 impl Publisher for Client {
     async fn publish(&self, topic: &str, payload: Vec<u8>, retain: bool) -> Result<(), String> {
+        // Queue only. `publish().await` waits until the event loop accepts the request, and that
+        // loop is the same task that delivers incoming messages to `run`. Waiting here while `run`
+        // is the one supposed to drain those messages stalls both, and permit-join never answers.
         self.0
-            .publish(topic, QoS::AtLeastOnce, retain, payload)
-            .await
+            .try_publish(topic, QoS::AtLeastOnce, retain, payload)
             .map_err(|e| e.to_string())
     }
 
     async fn subscribe(&self, topic: &str) -> Result<(), String> {
         self.0
-            .subscribe(topic, QoS::AtLeastOnce)
-            .await
+            .try_subscribe(topic, QoS::AtLeastOnce)
             .map_err(|e| e.to_string())
     }
+}
+
+/// Hands one event to the run loop. A full queue waits, which stops `poll` and lets the broker's
+/// TCP window close. Dropping instead loses retained discovery, and nothing asks for it again.
+/// Outbound `try_publish` does not wait on this task, so the wait cannot stall permit-join.
+async fn forward(tx: &mpsc::Sender<BrokerEvent>, event: BrokerEvent) -> bool {
+    tx.send(event).await.is_ok()
 }
 
 const EVENT_QUEUE: usize = 1024;
@@ -151,6 +164,8 @@ pub fn connect(
 ) {
     let mut options = MqttOptions::new("irori-zigbee", "127.0.0.1", port);
     options.set_keep_alive(Duration::from_secs(30));
+    // `bridge/info` is larger than rumqttc's 10KB default, and this client subscribes to it.
+    options.set_max_packet_size(MAX_MQTT_PACKET, MAX_MQTT_PACKET);
     let (client, mut event_loop) = AsyncClient::new(options, EVENT_QUEUE);
     let (tx, rx) = mpsc::channel(EVENT_QUEUE);
     let handle = tokio::spawn(async move {
@@ -162,18 +177,14 @@ pub fn connect(
                         topic: publish.topic,
                         payload: publish.payload.to_vec(),
                     });
-                    if tx.send(message).await.is_err() {
+                    if !forward(&tx, message).await {
                         return;
                     }
                 }
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     if !was_connected {
                         was_connected = true;
-                        if tx
-                            .send(BrokerEvent::Connectivity(Connectivity::Connected))
-                            .await
-                            .is_err()
-                        {
+                        if !forward(&tx, BrokerEvent::Connectivity(Connectivity::Connected)).await {
                             return;
                         }
                     }
@@ -183,10 +194,8 @@ pub fn connect(
                     tracing::warn!(%error, "lost the connection to our own embedded broker; reconnecting");
                     if was_connected {
                         was_connected = false;
-                        if tx
-                            .send(BrokerEvent::Connectivity(Connectivity::Disconnected))
+                        if !forward(&tx, BrokerEvent::Connectivity(Connectivity::Disconnected))
                             .await
-                            .is_err()
                         {
                             return;
                         }
@@ -216,5 +225,22 @@ mod tests {
         );
 
         drop(listener);
+    }
+
+    #[tokio::test]
+    async fn a_full_event_queue_waits_instead_of_dropping_the_publish() {
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.try_send(BrokerEvent::Connectivity(Connectivity::Connected))
+            .expect("the only slot");
+        let waiting = tokio::spawn(async move {
+            forward(&tx, BrokerEvent::Connectivity(Connectivity::Disconnected)).await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !waiting.is_finished(),
+            "a full queue must wait, not drop the event"
+        );
+        assert!(rx.recv().await.is_some());
+        assert!(waiting.await.expect("forward task"));
     }
 }

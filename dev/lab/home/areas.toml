@@ -1,0 +1,38 @@
+# Rooms for the lab house. Copied into an empty data volume by `dev/pi up --lab`.
+# Irori does not create a room because a device suggested one, so these exist first.
+
+[floors.ground]
+name = "Ground"
+level = 0
+
+[areas.living_room]
+name = "Living room"
+floor = "ground"
+
+[areas.office_room]
+name = "Office"
+floor = "ground"
+
+[areas.second_bedroom]
+name = "Second bedroom"
+floor = "ground"
+
+[areas.shoe_closet]
+name = "Shoe closet"
+floor = "ground"
+
+[areas.approach]
+name = "Approach"
+floor = "ground"
+
+[areas.kitchen]
+name = "Kitchen"
+floor = "ground"
+
+[areas.nook_room]
+name = "Nook"
+floor = "ground"
+
+[areas.bedroom]
+name = "Bedroom"
+floor = "ground"

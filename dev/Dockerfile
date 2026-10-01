@@ -87,18 +87,33 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && if [ -f extensions/automations/app/dist/index.html ]; then \
          cp -r extensions/automations/app/dist /official/automations/app ; \
        fi
+# Lab emulators are not part of the Irori workspace. The musl target already
+# links the finished binary statically, same as irori above. Forcing that
+# through RUSTFLAGS also forces it onto proc-macro crates (prost-derive),
+# which musl cannot build.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/target-lab \
+    CARGO_TARGET_DIR=/target-lab \
+    cargo build --locked --release --manifest-path dev/lab/esphome/Cargo.toml \
+    && cp /target-lab/release/irori-lab-esphome /irori-lab-esphome
 
 FROM debian:${DEBIAN_RELEASE}-slim AS pi
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && apt-get install -y --no-install-recommends curl ca-certificates python3 util-linux \
     && rm -rf /var/lib/apt/lists/*
 # Run unprivileged, the way the systemd unit will (M1.7).
 RUN useradd --system --home-dir /var/lib/irori --create-home --shell /usr/sbin/nologin irori
 COPY --from=build /irori /usr/local/bin/irori
+COPY --from=build /irori-lab-esphome /usr/local/bin/irori-lab-esphome
 COPY --from=build /official /usr/share/irori/extensions
+COPY dev/lab /usr/share/irori/lab
+COPY dev/lab/entrypoint.sh /usr/local/bin/irori-lab-entrypoint
+RUN chmod 755 /usr/local/bin/irori-lab-entrypoint /usr/share/irori/lab/matter/run.sh
 # Fails the build if the binary isn't really static (it was built against musl, this is glibc).
 RUN irori version
-USER irori
+# Root only so the lab entrypoint can create /dev/zigbee0 and refresh installed
+# official packages, then it drops to irori. With IRORI_LAB unset that drop and
+# the refresh are all it does.
 # Listening on all interfaces is needed inside a container. It stays private: compose publishes
 # the port on the host's 127.0.0.1 only. The flag goes away when auth lands (ROADMAP D12, M1.5).
 # Both absolute: the container has no WORKDIR, so the relative defaults would land in `/`, which
@@ -115,24 +130,5 @@ ENV IRORI_DATA=/var/lib/irori \
 EXPOSE 8480
 HEALTHCHECK --interval=5s --timeout=2s --start-period=5s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8480/api/health || exit 1
-# Installing copies a package into the data volume, which outlives the image. So an official
-# extension installed before a rebuild would keep running its old files. On start, each one
-# installed is refreshed from the image's copy first. Its data (`extension-data/`) and its
-# settings (`config/`) live elsewhere and aren't touched.
-COPY <<'EOF' /usr/local/bin/irori-dev-start
-#!/bin/sh
-set -e
-for installed in "$IRORI_DATA"/extensions/*/; do
-  id=$(basename "$installed")
-  bundled="$IRORI_OFFICIAL_PACKAGES/$id"
-  [ -d "$bundled" ] || continue
-  rm -rf "$installed"
-  cp -r "$bundled" "$IRORI_DATA/extensions/$id"
-done
-exec irori "$@"
-EOF
-USER root
-RUN chmod 755 /usr/local/bin/irori-dev-start
-USER irori
-ENTRYPOINT ["irori-dev-start"]
+ENTRYPOINT ["/usr/local/bin/irori-lab-entrypoint"]
 CMD ["serve"]

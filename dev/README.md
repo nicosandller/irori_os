@@ -38,7 +38,7 @@ dev/pi status          # container state and /api/health
 dev/pi smoke           # automated smoke test against the running server
 dev/pi logs            # follow logs
 dev/pi shell           # shell inside the container (try: irori version)
-dev/pi restart         # rebuild from your current checkout and restart
+dev/pi restart         # rebuild and restart. A lab container stays a lab container.
 dev/pi down            # stop (data is kept)
 dev/pi down --wipe     # stop and delete the data volume, like a fresh SD card
 ```
@@ -140,6 +140,23 @@ IRORI_PI_MEMORY=512m IRORI_PORT=9000 dev/pi up
 Colima's default VM has 2 CPUs and 2–4 GB. Limits above that fail to start; raise them with
 `colima start --cpu 4 --memory 8`.
 
+## Lab devices
+
+`dev/pi up --lab` is the same Pi, plus stand-ins for the hardware the container cannot see.
+It raises the memory limit to 2 GB (Zigbee2MQTT needs it) unless `IRORI_PI_MEMORY` is already set.
+`dev/pi restart` with no flags keeps that mode. `dev/pi up` without `--lab` leaves it.
+
+| | Where it shows up |
+|---|---|
+| Zigbee dongle | `/dev/zigbee0`, an Ember coordinator. In the Zigbee extension's settings set the serial port to that path and `zigbee2mqtt_version` to `2.14.1`. |
+| Zigbee devices | Named and placed from `dev/lab/home/devices.toml`. Permit joining announces the catalog devices; Zigbee2MQTT interviews them and they show up in the add-device flow. |
+| ESPHome | Four boards announce `_esphomelib._tcp` inside the container. One extra encrypted board prints its key in `dev/pi logs`. |
+| Matter | Three nodes, once their binaries are pinned in `dev/lab/matter/`. Until then the log names each one's discriminator and passcode. |
+
+`areas.toml` and `devices.toml` from `dev/lab/home/` are each copied only when that file is missing. A file already in the volume is left alone, so lab mode does not replace device names that were saved without a rooms file. `dev/pi down --wipe` starts the house over.
+
+The emulators live under `dev/lab/` and are not linked into `irori` or any extension. The coordinator speaks the ASH framing Zigbee2MQTT 2.14.1's ember driver uses. It answers the startup sequence that driver sends and the interview of the catalog devices. An EZSP command that is not implemented is logged as `not handled yet` and answered with not-supported, rather than reported as success.
+
 ## What this does *not* emulate
 
 The container is a close functional stand-in, not a benchmark rig. Before trusting a
@@ -150,12 +167,11 @@ performance number (ROADMAP §4.3), measure it on real hardware:
 - **Storage.** SD card write speed and wear aren't simulated; the Docker volume is fast.
 - **GPIO and Bluetooth.** Nothing bridges these into the container.
 - **USB, directly.** Docker Desktop has no host to pass a USB device through *from* — it's a VM,
-  not this Mac. A Zigbee dongle still reaches the container, over TCP rather than a device node:
-  see "Reach a Zigbee dongle" below.
-- **mDNS discovery.** ESPHome devices announce themselves over multicast, which doesn't cross
-  the container's network boundary either way — nothing here relays it. A device already known
-  by IP is unaffected: `dev/pi`'s default network forwards ordinary outbound TCP to your LAN
-  fine, only the multicast announcement itself doesn't arrive.
+  not this Mac. A real Zigbee dongle still reaches the container over TCP: see "Reach a Zigbee
+  dongle" below. `dev/pi up --lab` instead presents `/dev/zigbee0` inside the container.
+- **mDNS from this Mac.** Announcements on the desk don't cross into the container. `dev/pi up
+  --lab` publishes ESPHome boards on the container's own network, which is the one the extension
+  listens on. A device already known by IP is unaffected: ordinary outbound TCP to your LAN works.
 - **armv7 / 32-bit Pi OS.** Only 64-bit is covered.
 - **Intel Macs.** `linux/arm64` still works, but through QEMU emulation, so builds are slow.
 
@@ -186,3 +202,4 @@ of a device path, for exactly this: a network-attached coordinator. `dev/pi usb-
 | `Dockerfile` | `toolchain` (Rust on Alpine/musl), `build` (static binary), `pi` (Debian slim runtime) |
 | `compose.yaml` | The `pi` service and the on-demand `toolchain` service |
 | `smoke-test.sh` | Smoke test shared with CI: health, WAL mode, UI present or absent per build, and the demo extension's devices when it's compiled in |
+| `lab/` | Opt-in emulators for `dev/pi up --lab`: Zigbee dongle, ESPHome boards, Matter nodes, and the house seed |

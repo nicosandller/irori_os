@@ -1442,6 +1442,7 @@ name = "irori-protocol"
 version = "0.0.0"
 dependencies = [
  "irori-types",
+ "rustix",
  "schemars",
  "serde",
  "serde_json",

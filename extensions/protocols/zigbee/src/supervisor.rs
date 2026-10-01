@@ -101,9 +101,12 @@ async fn log_lines(
                 *last_error
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tidy(&line));
-                tracing::error!(target: "zigbee2mqtt", "{line}");
+                tracing::error!(target: "zigbee2mqtt", "{}", shorten(&line));
             }
-            Ok(Some(line)) => tracing::info!(target: "zigbee2mqtt", "{line}"),
+            // Discovery configs are tens of kilobytes. Writing one of those through to stderr
+            // in full fills the pipe and blocks this task, which is the same runtime that has
+            // to keep reading Zigbee2MQTT and answering permit-join.
+            Ok(Some(line)) => tracing::info!(target: "zigbee2mqtt", "{}", shorten(&line)),
             Ok(None) | Err(_) => return,
         }
     }
@@ -136,6 +139,19 @@ fn says_error(line: &str) -> bool {
     line.contains("error:") || line.contains("Error:")
 }
 
+/// Keeps a log line short enough that forwarding it can't fill the stderr pipe.
+fn shorten(line: &str) -> &str {
+    const MAX: usize = 400;
+    if line.len() <= MAX {
+        return line;
+    }
+    let mut end = MAX;
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    &line[..end]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +169,16 @@ mod tests {
             tidy(line),
             "Failed to start EZSP layer with status=HOST_FATAL_ERROR."
         );
+    }
+
+    #[test]
+    fn a_discovery_payload_is_shortened_before_it_is_forwarded() {
+        let line = format!(
+            "[2026-10-01 01:37:58] info: z2m:mqtt: {}",
+            "x".repeat(2_000)
+        );
+        assert!(shorten(&line).len() <= 400);
+        assert!(shorten("short").len() < 400);
     }
 
     #[test]

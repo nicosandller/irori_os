@@ -458,6 +458,19 @@ impl ReportQueue {
             .into_values()
             .collect()
     }
+
+    fn pop(&self) -> Option<StateReport> {
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop_first()
+            .map(|(_, report)| report)
+    }
+
+    fn restore_if_absent(&self, report: StateReport) {
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        pending.entry(report.unique_id.clone()).or_insert(report);
+    }
 }
 
 /// A built-in protocol, ready for the core to start.
@@ -700,6 +713,17 @@ pub mod host {
         /// Takes whatever is pending, without waiting.
         pub fn drain(&self) -> Vec<StateReport> {
             self.0.take()
+        }
+
+        /// One pending report, oldest id first. The external runner uses this so a report that
+        /// does not fit on the stdout queue can be put back and still be replaced.
+        pub fn pop(&self) -> Option<StateReport> {
+            self.0.pop()
+        }
+
+        /// Puts `report` back unless a newer one for the same entity arrived while it was out.
+        pub fn restore_if_absent(&self, report: StateReport) {
+            self.0.restore_if_absent(report);
         }
 
         /// How many reports were dropped because too many entities were waiting, since the last

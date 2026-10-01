@@ -164,6 +164,9 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
     let mut zigbee_exit = None;
     let outcome = loop {
         tokio::select! {
+            // An action has to be answered even when discovery messages are waiting. Otherwise
+            // permit-join sits behind the bridge's own configs until the 10 second call times out.
+            biased;
             incoming = ctx.next() => {
                 match incoming {
                     Some(irori_protocol::Incoming::Call(incoming)) => {

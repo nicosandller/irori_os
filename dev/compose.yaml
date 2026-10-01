@@ -15,6 +15,8 @@ services:
     platform: linux/arm64
     ports:
       - "127.0.0.1:${IRORI_PORT:-8480}:8480"
+    environment:
+      IRORI_LAB: ${IRORI_LAB:-}
     volumes:
       - pi-data:/var/lib/irori
     # One Apple Silicon core is roughly a whole Pi 4's CPU throughput; 1 GB is the smallest Pi 4.
