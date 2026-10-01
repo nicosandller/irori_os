@@ -127,6 +127,13 @@ To clear the caches by hand:
 dev/pi clean
 ```
 
+GitHub's dev-container job keeps those same cargo directories between runs. Only a
+push to main writes the cache. A pull request reads it and does not write one, so
+what a pull request compiles cannot become the next build's starting point. The
+run that fills the cache is still a full build. GitHub drops the cache if the
+repository's caches together pass 10 GB, and the job still counts as passed when
+that save does not fit.
+
 With Colima, the default 20 GB disk and 2 CPUs are tight for this repository. A disk can grow
 but not shrink:
 
