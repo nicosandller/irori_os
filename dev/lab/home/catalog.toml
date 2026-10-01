@@ -1,161 +1,163 @@
 # What the emulators are. Irori never reads this file.
-# `irori_id` is the devices.toml key: protocol, then the handle, slugged.
+# `irori_id` is the devices.toml key. Zigbee2MQTT 2.14.1 publishes the Home
+# Assistant identifier `zigbee2mqtt_` plus the IEEE, and Irori slugs the
+# protocol plus that identifier.
 # Zigbee `model` / `vendor` are the Home Assistant display strings. `zigbee_model`
-# and `manufacturer_name` are what the Basic cluster must answer so Zigbee2MQTT
-# 2.14.1's converters pick that display model. Empty until that lookup is filled in.
+# and `manufacturer_name` are what the Basic cluster answers so Zigbee2MQTT
+# 2.14.1's converters pick a definition that exposes entities.
 
 zigbee2mqtt_version = "2.14.1"
 
 [[zigbee]]
-irori_id = "zigbee_0x0211000000000001"
+irori_id = "zigbee_zigbee2mqtt_0x0211000000000001"
 ieee = "0x0211000000000001"
 name = "Main living room switch"
 vendor = "SONOFF"
 model = "Zigbee Smart three-channel wall switch (type 120)"
-zigbee_model = ""
-manufacturer_name = ""
+zigbee_model = "ZBMINIL2"
+manufacturer_name = "SONOFF"
 kind = "switch"
 area = "living_room"
 
 [[zigbee]]
-irori_id = "zigbee_0x0211000000000002"
+irori_id = "zigbee_zigbee2mqtt_0x0211000000000002"
 ieee = "0x0211000000000002"
 name = "Presence sensor"
 vendor = "Wenzhi"
 model = "Human presence sensor"
-zigbee_model = ""
-manufacturer_name = ""
+zigbee_model = "SNZB-03"
+manufacturer_name = "SONOFF"
 kind = "presence"
 area = "living_room"
 
 [[zigbee]]
-irori_id = "zigbee_0x0211000000000003"
+irori_id = "zigbee_zigbee2mqtt_0x0211000000000003"
 ieee = "0x0211000000000003"
 name = "Office window contact"
 vendor = "Moes"
 model = "Door/window alarm sensor"
-zigbee_model = ""
-manufacturer_name = ""
+zigbee_model = "SNZB-04"
+manufacturer_name = "SONOFF"
 kind = "contact"
 area = "office_room"
 
 [[zigbee]]
-irori_id = "zigbee_0x0211000000000004"
+irori_id = "zigbee_zigbee2mqtt_0x0211000000000004"
 ieee = "0x0211000000000004"
 name = "Second bedroom window"
 vendor = "Moes"
 model = "Door/window alarm sensor"
-zigbee_model = ""
-manufacturer_name = ""
+zigbee_model = "SNZB-04"
+manufacturer_name = "SONOFF"
 kind = "contact"
 area = "second_bedroom"
 
 [[zigbee]]
-irori_id = "zigbee_0x0211000000000005"
+irori_id = "zigbee_zigbee2mqtt_0x0211000000000005"
 ieee = "0x0211000000000005"
 name = "Second bedroom window 2"
 vendor = "Moes"
 model = "Door/window alarm sensor"
-zigbee_model = ""
-manufacturer_name = ""
+zigbee_model = "SNZB-04"
+manufacturer_name = "SONOFF"
 kind = "contact"
 area = "second_bedroom"
 
 [[zigbee]]
-irori_id = "zigbee_0x0211000000000006"
+irori_id = "zigbee_zigbee2mqtt_0x0211000000000006"
 ieee = "0x0211000000000006"
 name = "temperature sensor -1"
 vendor = "SONOFF"
 model = "Temperature and humidity sensor"
-zigbee_model = ""
-manufacturer_name = ""
+zigbee_model = "SNZB-02"
+manufacturer_name = "SONOFF"
 kind = "climate"
 area = "office_room"
 
 [[zigbee]]
-irori_id = "zigbee_0x0211000000000007"
+irori_id = "zigbee_zigbee2mqtt_0x0211000000000007"
 ieee = "0x0211000000000007"
 name = "Temperature sensor - 2"
 vendor = "SONOFF"
 model = "Temperature and humidity sensor"
-zigbee_model = ""
-manufacturer_name = ""
+zigbee_model = "SNZB-02"
+manufacturer_name = "SONOFF"
 kind = "climate"
 area = "shoe_closet"
 
 [[zigbee]]
-irori_id = "zigbee_0x0211000000000008"
+irori_id = "zigbee_zigbee2mqtt_0x0211000000000008"
 ieee = "0x0211000000000008"
 name = "Temperature sensor - Outdoor 1"
 vendor = "Tuya"
 model = "Temperature and humidity sensor"
-zigbee_model = ""
-manufacturer_name = ""
+zigbee_model = "SNZB-02"
+manufacturer_name = "SONOFF"
 kind = "climate"
 
 [[zigbee]]
-irori_id = "zigbee_0x0211000000000009"
+irori_id = "zigbee_zigbee2mqtt_0x0211000000000009"
 ieee = "0x0211000000000009"
 name = "Vibration sensor - 1"
 vendor = "iHseno"
 model = "Vibration sensor"
-zigbee_model = ""
-manufacturer_name = ""
+zigbee_model = "lumi.vibration.aq1"
+manufacturer_name = "LUMI"
 kind = "vibration"
 area = "living_room"
 
 [[zigbee]]
-irori_id = "zigbee_0x021100000000000a"
+irori_id = "zigbee_zigbee2mqtt_0x021100000000000a"
 ieee = "0x021100000000000a"
 name = "Vibration sensor - 2"
 vendor = "iHseno"
 model = "Vibration sensor"
-zigbee_model = ""
-manufacturer_name = ""
+zigbee_model = "lumi.vibration.aq1"
+manufacturer_name = "LUMI"
 kind = "vibration"
 area = "approach"
 
 [[zigbee]]
-irori_id = "zigbee_0x021100000000000b"
+irori_id = "zigbee_zigbee2mqtt_0x021100000000000b"
 ieee = "0x021100000000000b"
 name = "Kitchen smoke alarm"
 vendor = "Heiman"
 model = "Smart smoke alarm"
-zigbee_model = ""
-manufacturer_name = ""
+zigbee_model = "TS0205"
+manufacturer_name = "Tuya"
 kind = "smoke"
 area = "kitchen"
 
 [[zigbee]]
-irori_id = "zigbee_0x021100000000000c"
+irori_id = "zigbee_zigbee2mqtt_0x021100000000000c"
 ieee = "0x021100000000000c"
 name = "Water sensor - 1"
 vendor = "HOBEIAN"
 model = "Water leak sensor"
-zigbee_model = ""
-manufacturer_name = ""
+zigbee_model = "TS0207"
+manufacturer_name = "Tuya"
 kind = "leak"
 area = "nook_room"
 
 [[zigbee]]
-irori_id = "zigbee_0x021100000000000d"
+irori_id = "zigbee_zigbee2mqtt_0x021100000000000d"
 ieee = "0x021100000000000d"
 name = "Water sensor - 2"
 vendor = "HOBEIAN"
 model = "Water leak sensor"
-zigbee_model = ""
-manufacturer_name = ""
+zigbee_model = "TS0207"
+manufacturer_name = "Tuya"
 kind = "leak"
 area = "shoe_closet"
 
 [[zigbee]]
-irori_id = "zigbee_0x021100000000000e"
+irori_id = "zigbee_zigbee2mqtt_0x021100000000000e"
 ieee = "0x021100000000000e"
 name = "Repeater 1"
 vendor = "HOBEIAN"
 model = "USB signal repeater"
-zigbee_model = ""
-manufacturer_name = ""
+zigbee_model = "S26R2ZB"
+manufacturer_name = "SONOFF"
 kind = "repeater"
 
 [[esphome]]

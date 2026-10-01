@@ -2,9 +2,11 @@
 
 Speaks ASH the way zigbee-herdsman 10.9.2 does, answers the EZSP `version`
 command with protocol 0x13, and replies to the coordinator's own ZDO queries
-so Zigbee2MQTT 2.14.1 can finish starting. Device interviews come later.
-Nothing here is linked into Irori or the Zigbee extension: Zigbee2MQTT opens
-`/dev/zigbee0` and this process is what's on the other end.
+so Zigbee2MQTT 2.14.1 can finish starting. Opening the network
+(`PERMIT_JOINING`) announces the devices in `catalog.toml`; their interviews
+are answered here too. Nothing here is linked into Irori or the Zigbee
+extension: Zigbee2MQTT opens `/dev/zigbee0` and this process is what's on the
+other end.
 """
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ import select
 import struct
 import sys
 import time
+import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 from ash import CANCEL, DATA, RST, crc_bytes, encode_frame, randomize, rstack
@@ -45,6 +49,8 @@ STACK_STATUS_HANDLER = 0x0019
 SEND_UNICAST = 0x0034
 SEND_BROADCAST = 0x0036
 INCOMING_MESSAGE_HANDLER = 0x0045
+PERMIT_JOINING = 0x0022
+TRUST_CENTER_JOIN_HANDLER = 0x0024
 
 # ZDO clusters Zigbee2MQTT asks the coordinator while herdsman is starting.
 # The response id is the request id with the high bit set.
@@ -70,6 +76,30 @@ COORDINATOR_ENDPOINT = 1
 SL_OK = 0x0000
 SL_NOT_JOINED = 0x0017
 SL_NETWORK_UP = 0x0015
+# EmberDeviceUpdate.STANDARD_SECURITY_UNSECURED_JOIN, EmberJoinDecision.USE_PRECONFIGURED_KEY.
+UNSECURED_JOIN = 1
+USE_PRECONFIGURED_KEY = 0
+# A router manufacturer that is not 0 or 4098 (the Tuya fast path) and not an end device,
+# so interview does not sleep for 10 seconds before reading Basic.
+DEVICE_MANUFACTURER = 0x1286
+COORDINATOR_MANUFACTURER = 0x0211
+# ZCL global commands. A response uses direction server-to-client and disables the default response.
+ZCL_READ = 0x00
+ZCL_READ_RSP = 0x01
+ZCL_DEFAULT_RSP = 0x0B
+ZCL_FRAME_RESPONSE = 0x18
+ZCL_SUCCESS = 0x00
+ZCL_UNSUPPORTED_ATTRIBUTE = 0x86
+ZCL_UINT8 = 0x20
+ZCL_ENUM8 = 0x30
+ZCL_STRING = 0x42
+GEN_BASIC = 0x0000
+# STACK_STATUS has to wait until the host has registered for it. ZDO and ZCL waiters are
+# registered as soon as the send returns, so those callbacks can follow immediately.
+STATUS_DELAY = 0.4
+MESSAGE_DELAY = 0.05
+# EZSP permit-joining and the ZDO broadcast that follows it must not announce twice.
+ANNOUNCE_GAP = 2.0
 # EmberVersionType.GA. Anything else is logged as a pre-release.
 VERSION_TYPE_GA = 0xAA
 NODE_COORDINATOR = 1
@@ -100,13 +130,106 @@ def version_struct() -> bytes:
     return struct.pack("<HBBBBB", 0, 8, 2, 0, 0, VERSION_TYPE_GA)
 
 
-def _aps(params: bytes, offset: int) -> tuple[int, int, int]:
-    """Return (profile, cluster, offset after the frame). The rest of the APS frame is unused."""
-    profile, cluster = struct.unpack_from("<HH", params, offset)
-    return profile, cluster, offset + 11
+@dataclass(frozen=True)
+class LabDevice:
+    nwk: int
+    wire: bytes
+    model: str
+    manufacturer: str
 
 
-def _zdo_body(cluster: int, payload: bytes, dest: int) -> bytes | None:
+def wire_eui(ieee: str) -> bytes | None:
+    """Little-endian EUI64. Display `0x0211000000000001` is wire `01 00 00 00 00 00 11 02`."""
+    text = ieee.strip().lower().removeprefix("0x")
+    if len(text) != 16:
+        return None
+    try:
+        return bytes.fromhex(text)[::-1]
+    except ValueError:
+        return None
+
+
+def load_devices(path: Path) -> list[LabDevice]:
+    """Catalog rows become network addresses 1, 2, ... The coordinator keeps address 0."""
+    if not path.is_file():
+        return []
+    rows = tomllib.loads(path.read_text()).get("zigbee", [])
+    devices: list[LabDevice] = []
+    for row in rows:
+        wire = wire_eui(str(row.get("ieee", "")))
+        if wire is None:
+            continue
+        model = str(row.get("zigbee_model") or "ZBMINIL2")
+        manufacturer = str(row.get("manufacturer_name") or "SONOFF")
+        devices.append(LabDevice(len(devices) + 1, wire, model, manufacturer))
+    return devices
+
+
+def trust_center_join(device: LabDevice) -> bytes:
+    """TRUST_CENTER_JOIN_HANDLER: nwk, EUI64, unsecured join, preconfigured key, parent 0."""
+    return (
+        struct.pack("<H", device.nwk)
+        + device.wire
+        + bytes((UNSECURED_JOIN, USE_PRECONFIGURED_KEY))
+        + struct.pack("<H", 0)
+    )
+
+
+def scheduled_joins(devices: list[LabDevice], now: float) -> list[tuple[float, int, bytes]]:
+    """Stagger joins so they are not one frame. Interviews keep going after the permit window."""
+    return [
+        (now + 0.3 + index * 0.25, TRUST_CENTER_JOIN_HANDLER, trust_center_join(device))
+        for index, device in enumerate(devices)
+    ]
+
+
+def _by_nwk(devices: list[LabDevice] | None, nwk: int) -> LabDevice | None:
+    if not devices:
+        return None
+    for device in devices:
+        if device.nwk == nwk:
+            return device
+    return None
+
+
+def _by_wire(devices: list[LabDevice] | None, wire: bytes) -> LabDevice | None:
+    if not devices:
+        return None
+    for device in devices:
+        if device.wire == wire:
+            return device
+    return None
+
+
+def _aps(params: bytes, offset: int) -> tuple[int, int, int, int, int]:
+    """Return (profile, cluster, source endpoint, destination endpoint, offset after the frame)."""
+    profile, cluster, src_ep, dst_ep = struct.unpack_from("<HHBB", params, offset)
+    return profile, cluster, src_ep, dst_ep, offset + 11
+
+
+def _node_descriptor(nwk: int, logical_type: int, manufacturer: int, seq: int) -> bytes:
+    # logical type in the low 3 bits, 2.4 GHz, mains-powered, no TLVs.
+    body = (
+        bytes((ZDO_SUCCESS,))
+        + struct.pack("<H", nwk)
+        + bytes((logical_type & 0x07, 0x40, 0x8E))
+        + struct.pack("<H", manufacturer)
+        + bytes((82,))
+        + struct.pack("<HHH", 82, 0, 82)
+        + bytes((0,))
+    )
+    return bytes((seq,)) + body
+
+
+def _simple_descriptor(nwk: int, endpoint: int, in_clusters: tuple[int, ...], seq: int) -> bytes:
+    descriptor = struct.pack("<BHHBB", endpoint, HA_PROFILE, 0, 1, len(in_clusters))
+    for cluster_id in in_clusters:
+        descriptor += struct.pack("<H", cluster_id)
+    descriptor += bytes((0,))  # no output clusters
+    return bytes((seq, ZDO_SUCCESS)) + struct.pack("<HB", nwk, len(descriptor)) + descriptor
+
+
+def _zdo_body(cluster: int, payload: bytes, dest: int, devices: list[LabDevice] | None = None) -> bytes | None:
     """Response parameters for a ZDO request, or None when this cluster is not answered yet.
 
     herdsman skips the first byte (the transaction sequence) and then reads the
@@ -120,44 +243,49 @@ def _zdo_body(cluster: int, payload: bytes, dest: int) -> bytes | None:
         return bytes((seq,)) + body
 
     if cluster == ZDO_ACTIVE_EP:
-        if nwk != 0:
+        if nwk != 0 and _by_nwk(devices, nwk) is None:
             return framed(bytes((ZDO_NOT_FOUND,)))
         return framed(bytes((ZDO_SUCCESS,)) + struct.pack("<H", nwk) + bytes((1, COORDINATOR_ENDPOINT)))
     if cluster == ZDO_NODE_DESC:
-        if nwk != 0:
+        if nwk == 0:
+            return _node_descriptor(0, 0, COORDINATOR_MANUFACTURER, seq)
+        if _by_nwk(devices, nwk) is None:
             return framed(bytes((ZDO_NOT_FOUND,)))
-        # Coordinator, 2.4 GHz, mains-powered full function device. No TLVs.
-        return framed(
-            bytes((ZDO_SUCCESS,))
-            + struct.pack("<H", nwk)
-            + bytes((0x00, 0x40, 0x8E))
-            + struct.pack("<H", 0x0211)
-            + bytes((82,))
-            + struct.pack("<HHH", 82, 0, 82)
-            + bytes((0,))
-        )
+        # Router, so interview does not take the end-device paths.
+        return _node_descriptor(nwk, 1, DEVICE_MANUFACTURER, seq)
     if cluster == ZDO_POWER_DESC:
-        if nwk != 0:
+        if nwk != 0 and _by_nwk(devices, nwk) is None:
             return framed(bytes((ZDO_NOT_FOUND,)))
         return framed(bytes((ZDO_SUCCESS,)) + struct.pack("<H", nwk) + bytes((0x10, 0x10)))
     if cluster == ZDO_SIMPLE_DESC:
         endpoint = payload[3] if len(payload) > 3 else 0
-        if nwk != 0:
+        if nwk == 0:
+            if endpoint != COORDINATOR_ENDPOINT:
+                return framed(bytes((ZDO_NOT_ACTIVE,)))
+            # endpoint, HA profile, device id, version, no clusters in or out.
+            descriptor = struct.pack("<BHHBB", COORDINATOR_ENDPOINT, HA_PROFILE, 0x0065, 1, 0) + bytes((0,))
+            return framed(bytes((ZDO_SUCCESS,)) + struct.pack("<HB", nwk, len(descriptor)) + descriptor)
+        if _by_nwk(devices, nwk) is None:
             return framed(bytes((ZDO_NOT_FOUND,)))
         if endpoint != COORDINATOR_ENDPOINT:
             return framed(bytes((ZDO_NOT_ACTIVE,)))
-        # endpoint, HA profile, device id, version, no clusters in or out.
-        descriptor = struct.pack("<BHHBB", COORDINATOR_ENDPOINT, HA_PROFILE, 0x0065, 1, 0) + bytes((0,))
-        return framed(bytes((ZDO_SUCCESS,)) + struct.pack("<HB", nwk, len(descriptor)) + descriptor)
+        # genBasic only. IAS Zone and Poll Control make interview try to enroll or bind.
+        return _simple_descriptor(nwk, COORDINATOR_ENDPOINT, (GEN_BASIC,), seq)
     if cluster == ZDO_IEEE_ADDR:
-        if nwk != 0:
+        if nwk == 0:
+            return framed(bytes((ZDO_SUCCESS,)) + COORDINATOR_EUI + struct.pack("<H", 0))
+        device = _by_nwk(devices, nwk)
+        if device is None:
             return framed(bytes((ZDO_NOT_FOUND,)))
-        return framed(bytes((ZDO_SUCCESS,)) + COORDINATOR_EUI + struct.pack("<H", 0))
+        return framed(bytes((ZDO_SUCCESS,)) + device.wire + struct.pack("<H", device.nwk))
     if cluster == ZDO_NWK_ADDR:
         eui = payload[1:9]
-        if eui != COORDINATOR_EUI:
+        if eui == COORDINATOR_EUI:
+            return framed(bytes((ZDO_SUCCESS,)) + COORDINATOR_EUI + struct.pack("<H", 0))
+        device = _by_wire(devices, eui)
+        if device is None:
             return framed(bytes((ZDO_NOT_FOUND,)))
-        return framed(bytes((ZDO_SUCCESS,)) + COORDINATOR_EUI + struct.pack("<H", 0))
+        return framed(bytes((ZDO_SUCCESS,)) + device.wire + struct.pack("<H", device.nwk))
     if cluster == ZDO_MATCH_DESC:
         return framed(bytes((ZDO_NO_MATCH,)))
     if cluster in (ZDO_BIND, ZDO_UNBIND, ZDO_LEAVE, ZDO_PERMIT_JOIN):
@@ -165,19 +293,75 @@ def _zdo_body(cluster: int, payload: bytes, dest: int) -> bytes | None:
     return None
 
 
-def _incoming(cluster: int, sender: int, aps_sequence: int, payload: bytes) -> bytes:
+def _zcl_string(text: str) -> bytes:
+    raw = text.encode("utf-8")[:32]
+    return bytes((ZCL_STRING, len(raw))) + raw
+
+
+def _zcl_reply(cluster: int, payload: bytes, device: LabDevice) -> bytes | None:
+    """Answer a Basic read. Anything else gets a default response so the waiter does not time out."""
+    if len(payload) < 3:
+        return None
+    frame_control = payload[0]
+    if frame_control & 0x04:
+        if len(payload) < 5:
+            return None
+        seq = payload[3]
+        command = payload[4]
+        body = payload[5:]
+    else:
+        seq = payload[1]
+        command = payload[2]
+        body = payload[3:]
+    header = bytes((ZCL_FRAME_RESPONSE, seq))
+    if cluster == GEN_BASIC and command == ZCL_READ:
+        parts = bytearray()
+        values = {0x0000: 8, 0x0001: 1, 0x0002: 1, 0x0003: 1}
+        for index in range(0, len(body) - 1, 2):
+            attr = struct.unpack_from("<H", body, index)[0]
+            parts += struct.pack("<H", attr)
+            if attr == 0x0004:
+                parts += bytes((ZCL_SUCCESS,)) + _zcl_string(device.manufacturer)
+            elif attr == 0x0005:
+                parts += bytes((ZCL_SUCCESS,)) + _zcl_string(device.model)
+            elif attr == 0x0006:
+                parts += bytes((ZCL_SUCCESS,)) + _zcl_string("20260101")
+            elif attr == 0x4000:
+                parts += bytes((ZCL_SUCCESS,)) + _zcl_string("1.0.0")
+            elif attr in values:
+                parts += bytes((ZCL_SUCCESS, ZCL_UINT8, values[attr]))
+            elif attr == 0x0007:
+                parts += bytes((ZCL_SUCCESS, ZCL_ENUM8, 1))
+            else:
+                parts += bytes((ZCL_UNSUPPORTED_ATTRIBUTE,))
+        return header + bytes((ZCL_READ_RSP,)) + bytes(parts)
+    return header + bytes((ZCL_DEFAULT_RSP, command, ZCL_SUCCESS))
+
+
+def _incoming(
+    cluster: int,
+    sender: int,
+    aps_sequence: int,
+    payload: bytes,
+    *,
+    profile: int = ZDO_PROFILE,
+    src_ep: int = 0,
+    dst_ep: int = 0,
+    sender_eui: bytes | None = None,
+) -> bytes:
     """INCOMING_MESSAGE_HANDLER parameters for EZSP protocol 0x13."""
-    aps = struct.pack("<HHBBHHB", ZDO_PROFILE, cluster, 0, 0, 0, 0, aps_sequence & 0xFF)
-    packet = (
-        struct.pack("<H", sender)
-        + COORDINATOR_EUI
-        + bytes((0xFF, 0xFF, 0xFF, 0))
-        + struct.pack("<I", 0)
-    )
+    eui = COORDINATOR_EUI if sender_eui is None else sender_eui
+    aps = struct.pack("<HHBBHHB", profile, cluster, src_ep, dst_ep, 0, 0, aps_sequence & 0xFF)
+    packet = struct.pack("<H", sender) + eui + bytes((0xFF, 0xFF, 0xFF, 0)) + struct.pack("<I", 0)
     return bytes((0,)) + aps + packet + bytes((len(payload),)) + payload
 
 
-def outgoing(frame_id: int, params: bytes, aps_sequence: int) -> tuple[bytes, list[tuple[int, bytes]]] | None:
+def outgoing(
+    frame_id: int,
+    params: bytes,
+    aps_sequence: int,
+    devices: list[LabDevice] | None = None,
+) -> tuple[bytes, list[tuple[int, bytes]]] | None:
     """SEND_UNICAST / SEND_BROADCAST response, plus a ZDO callback when we can build one.
 
     Returns None for every other frame id. The response is a status and the APS
@@ -187,14 +371,14 @@ def outgoing(frame_id: int, params: bytes, aps_sequence: int) -> tuple[bytes, li
         if len(params) < 17:
             return u32(SL_OK) + bytes((aps_sequence & 0xFF,)), []
         dest = struct.unpack_from("<H", params, 1)[0]
-        profile, cluster, offset = _aps(params, 3)
+        profile, cluster, src_ep, dst_ep, offset = _aps(params, 3)
         # message tag is a uint16 at `offset`, then a length byte and the ZDO payload.
         length_at = offset + 2
     elif frame_id == SEND_BROADCAST:
         if len(params) < 20:
             return u32(SL_OK) + bytes((aps_sequence & 0xFF,)), []
         dest = struct.unpack_from("<H", params, 2)[0]
-        profile, cluster, offset = _aps(params, 5)
+        profile, cluster, src_ep, dst_ep, offset = _aps(params, 5)
         # radius byte, then the uint16 message tag.
         length_at = offset + 1 + 2
     else:
@@ -203,11 +387,32 @@ def outgoing(frame_id: int, params: bytes, aps_sequence: int) -> tuple[bytes, li
     payload = params[length_at + 1 : length_at + 1 + length]
     callbacks: list[tuple[int, bytes]] = []
     if profile == ZDO_PROFILE and cluster < 0x8000:
-        body = _zdo_body(cluster, payload, dest)
+        body = _zdo_body(cluster, payload, dest, devices)
         if body is not None:
             callbacks.append(
                 (INCOMING_MESSAGE_HANDLER, _incoming(cluster | 0x8000, dest, aps_sequence, body))
             )
+    elif profile == HA_PROFILE:
+        device = _by_nwk(devices, dest)
+        if device is not None:
+            reply = _zcl_reply(cluster, payload, device)
+            if reply is not None:
+                # The waiter matches the request's destination endpoint against this source endpoint.
+                callbacks.append(
+                    (
+                        INCOMING_MESSAGE_HANDLER,
+                        _incoming(
+                            cluster,
+                            dest,
+                            aps_sequence,
+                            reply,
+                            profile=HA_PROFILE,
+                            src_ep=dst_ep,
+                            dst_ep=src_ep,
+                            sender_eui=device.wire,
+                        ),
+                    )
+                )
     return u32(SL_OK) + bytes((aps_sequence & 0xFF,)), callbacks
 
 
@@ -250,15 +455,31 @@ def answer(frame_id: int, params: bytes) -> tuple[bytes, int | None]:
 
 
 class Ncp:
-    def __init__(self, master: int) -> None:
+    def __init__(self, master: int, devices: list[LabDevice] | tuple[LabDevice, ...] = ()) -> None:
         self.master = master
+        self.devices = list(devices)
         self.frm_rx = 0
         self.frm_tx = 0
         self.connected = False
         self.pending = bytearray()
         self.aps_sequence = 0
+        self.last_announce = 0.0
         # (when, frame id, body) callbacks, sent after the host has registered its waiter.
         self.later: list[tuple[float, int, bytes]] = []
+
+    def _open_network(self, duration: int) -> None:
+        if duration == 0 or not self.devices:
+            return
+        now = time.monotonic()
+        if now - self.last_announce < ANNOUNCE_GAP:
+            print("lab zigbee: permit joining already announced", flush=True)
+            return
+        self.last_announce = now
+        self.later.extend(scheduled_joins(self.devices, now))
+        print(
+            f"lab zigbee: permit joining for {duration}s, announcing {len(self.devices)} devices",
+            flush=True,
+        )
 
     def serve(self) -> None:
         while True:
@@ -367,7 +588,9 @@ class Ncp:
             frame_id = frame[2]
             params = frame[3:]
         self.aps_sequence = (self.aps_sequence + 1) & 0xFF
-        sent = outgoing(frame_id, params, self.aps_sequence)
+        if frame_id == PERMIT_JOINING:
+            self._open_network(params[0] if params else 0)
+        sent = outgoing(frame_id, params, self.aps_sequence, self.devices)
         if sent is None:
             body, status = answer(frame_id, params)
             callbacks = [(STACK_STATUS_HANDLER, u32(status))] if status is not None else []
@@ -380,7 +603,8 @@ class Ncp:
         print(f"lab zigbee: EZSP {frame_id:#06x} -> {len(body)} bytes", flush=True)
         self._send(bytes((sequence, RESPONSE, EXTENDED_FORMAT, frame_id & 0xFF, (frame_id >> 8) & 0xFF)) + body)
         for callback_id, callback_body in callbacks:
-            self.later.append((time.monotonic() + 0.4, callback_id, callback_body))
+            delay = STATUS_DELAY if callback_id == STACK_STATUS_HANDLER else MESSAGE_DELAY
+            self.later.append((time.monotonic() + delay, callback_id, callback_body))
 
     def _callback(self, frame_id: int, body: bytes) -> bytes:
         return bytes((0, ASYNC_CALLBACK, EXTENDED_FORMAT, frame_id & 0xFF, (frame_id >> 8) & 0xFF)) + body
@@ -416,13 +640,16 @@ def main() -> None:
     state.parent.mkdir(parents=True, exist_ok=True)
     if not state.exists():
         state.write_text(json.dumps({"joined": [], "formed": None}))
+    catalog = Path(__file__).resolve().parents[1] / "home" / "catalog.toml"
+    devices = load_devices(catalog)
     print("lab zigbee: set the extension serial port to", link, flush=True)
     print("lab zigbee: zigbee2mqtt_version = 2.14.1", flush=True)
+    print(f"lab zigbee: {len(devices)} catalog devices from {catalog}", flush=True)
     master = open_link(link)
     # Give udev-less /dev a moment so the symlink is visible before we block.
     time.sleep(0.05)
     try:
-        Ncp(master).serve()
+        Ncp(master, devices).serve()
     except KeyboardInterrupt:
         return
 

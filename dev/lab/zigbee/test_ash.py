@@ -3,21 +3,27 @@
 import os
 import pty
 import select
+import struct
 import threading
 import tty
 import unittest
+from pathlib import Path
 
 from ash import CANCEL, RST, crc_bytes, encode_frame, randomize, rstack, unescape
-import struct
 
 from ncp import (
     GET_VALUE,
+    HA_PROFILE,
     INCOMING_MESSAGE_HANDLER,
     Ncp,
     SEND_UNICAST,
+    TRUST_CENTER_JOIN_HANDLER,
     VALUE_VERSION_INFO,
+    LabDevice,
     answer,
+    load_devices,
     outgoing,
+    trust_center_join,
     u32,
 )
 
@@ -81,6 +87,42 @@ class EzspAnswers(unittest.TestCase):
         self.assertEqual(incoming[length_at], 6)
         # sequence, success, nwk 0, one endpoint, endpoint 1
         self.assertEqual(incoming[length_at + 1 :], bytes((1, 0, 0, 0, 1, 1)))
+
+    def test_permit_join_names_the_catalog_device(self) -> None:
+        devices = load_devices(Path(__file__).resolve().parents[1] / "home" / "catalog.toml")
+        self.assertEqual(len(devices), 14)
+        self.assertEqual(devices[0].nwk, 1)
+        self.assertEqual(devices[0].model, "ZBMINIL2")
+        self.assertEqual(devices[0].wire, bytes.fromhex("0100000000001102"))
+        body = trust_center_join(devices[0])
+        self.assertEqual(struct.unpack_from("<H", body, 0)[0], 1)
+        self.assertEqual(body[2:10], devices[0].wire)
+        self.assertEqual(body[10:12], bytes((1, 0)))
+        ncp = Ncp(0, devices)
+        ncp._open_network(60)
+        self.assertEqual(len(ncp.later), 14)
+        self.assertEqual(ncp.later[0][1], TRUST_CENTER_JOIN_HANDLER)
+        ncp._open_network(60)
+        self.assertEqual(len(ncp.later), 14)
+        closed = Ncp(0, devices)
+        closed._open_network(0)
+        self.assertEqual(closed.later, [])
+
+    def test_basic_model_read_names_the_switch(self) -> None:
+        device = LabDevice(1, bytes.fromhex("0100000000001102"), "ZBMINIL2", "SONOFF")
+        zcl = bytes((0x00, 3, 0x00)) + struct.pack("<H", 0x0005)
+        params = bytes((0,)) + struct.pack("<H", 1)
+        params += struct.pack("<HHBBHHB", HA_PROFILE, 0, 1, 1, 0, 0, 0)
+        params += struct.pack("<H", 1) + bytes((len(zcl),)) + zcl
+        _body, callbacks = outgoing(SEND_UNICAST, params, 1, [device])
+        self.assertEqual(len(callbacks), 1)
+        _frame_id, incoming = callbacks[0]
+        profile, cluster, src_ep, dst_ep = struct.unpack_from("<HHBB", incoming, 1)
+        self.assertEqual((profile, cluster, src_ep, dst_ep), (HA_PROFILE, 0, 1, 1))
+        length_at = 1 + 11 + 18
+        payload = incoming[length_at + 1 :]
+        self.assertEqual(payload[:3], bytes((0x18, 3, 0x01)))
+        self.assertIn(b"ZBMINIL2", payload)
 
 
 class NcpReset(unittest.TestCase):

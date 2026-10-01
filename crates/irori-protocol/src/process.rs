@@ -4,6 +4,7 @@
 //! stdin/stdout speak these messages (`docs/specs/extensions.md`).
 
 use std::collections::HashMap;
+use std::io::{BufRead, Write};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -17,6 +18,7 @@ use irori_types::{
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::oneshot;
 
 use crate::host::{Op, Reply, Reports};
@@ -145,10 +147,40 @@ impl From<WireServiceError> for ServiceError {
 /// Runs this protocol as an external process: read `ToExt` from stdin, write `FromExt` to
 /// stdout. The first message must be `hello` with its settings.
 pub async fn serve<I: Protocol>() -> Result<(), ProtocolError> {
-    let mut stdin = BufReader::new(tokio::io::stdin());
-    let stdout = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
+    // Stdin and stdout each get their own thread. `tokio::io::stdin` reads by parking a
+    // blocking-pool task, and that read was simply never issued while a reply sat in the pipe:
+    // discovery's `describe_*` waits on that reply, so the run loop never reached permit-join
+    // and the host's 10 second call timed out. A thread blocked in `read` does not depend on
+    // the runtime noticing the pipe. The writer is a thread for the same reason — a full stdout
+    // pipe must not park the runtime that has to keep handling the lines this thread reads.
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("protocol-stdout".into())
+        .spawn(move || write_stdout(out_rx))
+        .map_err(|e| {
+            ProtocolError::new(format!("couldn't start the protocol stdout thread: {e}"))
+        })?;
 
-    let hello = read_json(&mut stdin).await.map_err(ProtocolError::new)?;
+    let (ctx, host_end) = host::connect();
+    let pending = Arc::new(Pending::default());
+    let (hello_tx, hello_rx) = std::sync::mpsc::sync_channel(1);
+    let pending_in = Arc::clone(&pending);
+    let calls = host_end.calls;
+    let actions = host_end.actions;
+    let stop = host_end.stop;
+    let out_in = out_tx.clone();
+    let runtime = tokio::runtime::Handle::current();
+    std::thread::Builder::new()
+        .name("protocol-stdin".into())
+        .spawn(move || read_stdin(hello_tx, pending_in, calls, actions, stop, out_in, runtime))
+        .map_err(|e| {
+            ProtocolError::new(format!("couldn't start the protocol stdin thread: {e}"))
+        })?;
+
+    let hello = tokio::task::spawn_blocking(move || hello_rx.recv())
+        .await
+        .map_err(|e| ProtocolError::new(format!("reading hello failed: {e}")))?
+        .map_err(|_| ProtocolError::new("the host closed the connection before hello"))?;
     let ToExt::Hello { settings } = hello else {
         return Err(ProtocolError::new(
             "first message from the host must be hello",
@@ -157,108 +189,210 @@ pub async fn serve<I: Protocol>() -> Result<(), ProtocolError> {
     let config: I::Config = serde_json::from_value(settings)
         .map_err(|e| ProtocolError::new(crate::invalid_settings(e)))?;
 
-    let (ctx, host_end) = host::connect();
-    let pending = Arc::new(Pending::default());
-
-    let out = stdout.clone();
     let pending_out = Arc::clone(&pending);
     let outgoing = tokio::spawn(async move {
-        pump_outgoing(host_end.ops, host_end.reports, out, pending_out).await;
+        pump_outgoing(host_end.ops, host_end.reports, out_tx, pending_out).await;
     });
-
-    let incoming = tokio::spawn(pump_incoming(
-        stdin,
-        stdout,
-        host_end.stop,
-        host_end.calls,
-        host_end.actions,
-        Arc::clone(&pending),
-    ));
 
     let result = I::run(config, ctx).await;
     outgoing.abort();
-    incoming.abort();
     result
 }
 
 async fn pump_outgoing(
     mut ops: tokio::sync::mpsc::Receiver<Op>,
     reports: Reports,
-    stdout: Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
+    out: std::sync::mpsc::Sender<String>,
     pending: Arc<Pending>,
 ) {
     loop {
         tokio::select! {
             Some(op) = ops.recv() => {
                 if let Some(msg) = pending.encode_op(op) {
-                    let _ = write_json(&stdout, &msg).await;
+                    enqueue_json(&out, &msg);
                 }
             }
             () = reports.ready() => {
                 for report in reports.drain() {
-                    let _ = write_json(&stdout, &FromExt::StateReport { report }).await;
+                    enqueue_json(&out, &FromExt::StateReport { report });
                 }
             }
         }
     }
 }
 
-async fn pump_incoming(
-    mut stdin: BufReader<tokio::io::Stdin>,
-    stdout: Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
-    stop: tokio::sync::watch::Sender<bool>,
+fn write_stdout(rx: std::sync::mpsc::Receiver<String>) {
+    let mut out = std::io::stdout().lock();
+    while let Ok(line) = rx.recv() {
+        if out.write_all(line.as_bytes()).is_err() || out.flush().is_err() {
+            return;
+        }
+    }
+}
+
+fn read_stdin(
+    hello: std::sync::mpsc::SyncSender<ToExt>,
+    pending: Arc<Pending>,
     calls: tokio::sync::mpsc::Sender<IncomingCall>,
     actions: tokio::sync::mpsc::Sender<IncomingAction>,
-    pending: Arc<Pending>,
+    stop: tokio::sync::watch::Sender<bool>,
+    out: std::sync::mpsc::Sender<String>,
+    runtime: tokio::runtime::Handle,
 ) {
-    loop {
-        match read_json::<ToExt>(&mut stdin).await {
-            Ok(ToExt::Reply { id, error }) => pending.complete_reply(id, error),
-            Ok(ToExt::Loaded { id, value, error }) => pending.complete_load(id, value, error),
-            Ok(ToExt::ServiceCall { id, call }) => {
-                let (incoming, result) = host::incoming_call(call);
-                if calls.send(incoming).await.is_err() {
-                    return;
-                }
-                let stdout = Arc::clone(&stdout);
-                tokio::spawn(async move {
-                    let error = match result.await {
-                        Ok(Ok(())) => None,
-                        Ok(Err(error)) => Some(WireServiceError::from(error)),
-                        Err(_) => Some(WireServiceError {
-                            code: "failed".into(),
-                            message: "the protocol dropped the call".into(),
-                        }),
-                    };
-                    let _ = write_json(&stdout, &FromExt::ServiceResult { id, error }).await;
-                });
-            }
-            Ok(ToExt::ActionCall { id, action_id }) => {
-                let (incoming, result) = host::incoming_action(action_id);
-                if actions.send(incoming).await.is_err() {
-                    return;
-                }
-                let stdout = Arc::clone(&stdout);
-                tokio::spawn(async move {
-                    let error = match result.await {
-                        Ok(Ok(())) => None,
-                        Ok(Err(error)) => Some(error),
-                        Err(_) => Some("the protocol dropped the action call".to_owned()),
-                    };
-                    let _ = write_json(&stdout, &FromExt::ActionResult { id, error }).await;
-                });
-            }
-            Ok(ToExt::Stop) => {
-                let _ = stop.send(true);
-                return;
-            }
-            Ok(ToExt::Hello { .. }) => {}
-            Err(_) => {
-                let _ = stop.send(true);
+    // This pipe arrived nonblocking. `read` then returns `WouldBlock` instead of waiting,
+    // which this loop would treat as "the host hung up" and stop reading while a `describe_*`
+    // reply is still on its way.
+    #[cfg(unix)]
+    make_blocking(std::io::stdin());
+    let mut reader = std::io::BufReader::new(std::io::stdin());
+    let mut line = String::new();
+    if read_one(&mut reader, &mut line).is_err() {
+        return;
+    }
+    match serde_json::from_str::<ToExt>(line.trim()) {
+        Ok(msg) => {
+            if hello.send(msg).is_err() {
                 return;
             }
         }
+        Err(_) => return,
     }
+    loop {
+        if read_one(&mut reader, &mut line).is_err()
+            || handle_host_line(line.trim(), &pending, &calls, &actions, &out, &runtime)
+                == ReadControl::Stop
+        {
+            let _ = stop.send(true);
+            return;
+        }
+    }
+}
+
+#[cfg(unix)]
+fn make_blocking(fd: impl rustix::fd::AsFd) {
+    let Ok(flags) = rustix::fs::fcntl_getfl(&fd) else {
+        return;
+    };
+    let _ = rustix::fs::fcntl_setfl(&fd, flags.difference(rustix::fs::OFlags::NONBLOCK));
+}
+
+fn read_one(reader: &mut impl BufRead, line: &mut String) -> Result<(), ()> {
+    loop {
+        line.clear();
+        match reader.read_line(line) {
+            Ok(0) => return Err(()),
+            Ok(_) => return Ok(()),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::Interrupted =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(_) => return Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ReadControl {
+    Continue,
+    Stop,
+}
+
+/// Applies one host line. Replies are completed here, on the stdin thread, so a `describe_*`
+/// waiting on that reply does not depend on the runtime polling stdin.
+fn handle_host_line(
+    line: &str,
+    pending: &Pending,
+    calls: &tokio::sync::mpsc::Sender<IncomingCall>,
+    actions: &tokio::sync::mpsc::Sender<IncomingAction>,
+    out: &std::sync::mpsc::Sender<String>,
+    runtime: &tokio::runtime::Handle,
+) -> ReadControl {
+    let msg: ToExt = match serde_json::from_str(line) {
+        Ok(msg) => msg,
+        Err(_) => return ReadControl::Stop,
+    };
+    match msg {
+        ToExt::Reply { id, error } => pending.complete_reply(id, error),
+        ToExt::Loaded { id, value, error } => pending.complete_load(id, value, error),
+        ToExt::ServiceCall { id, call } => {
+            // `send().await` would wait while the run loop is busy inside `describe_*`. The
+            // reply that unblocks that wait is a later line on this same stdin, so the reader
+            // has to keep going. A full queue gets an immediate error instead of a 10 second
+            // silence.
+            let (incoming, result) = host::incoming_call(call);
+            match calls.try_send(incoming) {
+                Ok(()) => {
+                    let out = out.clone();
+                    runtime.spawn(async move {
+                        let error = match result.await {
+                            Ok(Ok(())) => None,
+                            Ok(Err(error)) => Some(WireServiceError::from(error)),
+                            Err(_) => Some(WireServiceError {
+                                code: "failed".into(),
+                                message: "the protocol dropped the call".into(),
+                            }),
+                        };
+                        enqueue_json(&out, &FromExt::ServiceResult { id, error });
+                    });
+                }
+                Err(TrySendError::Closed(_)) => return ReadControl::Stop,
+                Err(TrySendError::Full(_)) => {
+                    enqueue_json(
+                        out,
+                        &FromExt::ServiceResult {
+                            id,
+                            error: Some(WireServiceError {
+                                code: "unavailable".into(),
+                                message: "the extension is busy and can't take this call yet"
+                                    .into(),
+                            }),
+                        },
+                    );
+                }
+            }
+        }
+        ToExt::ActionCall { id, action_id } => {
+            let (incoming, result) = host::incoming_action(action_id);
+            match actions.try_send(incoming) {
+                Ok(()) => {
+                    let out = out.clone();
+                    runtime.spawn(async move {
+                        let error = match result.await {
+                            Ok(Ok(())) => None,
+                            Ok(Err(error)) => Some(error),
+                            Err(_) => Some("the protocol dropped the action call".to_owned()),
+                        };
+                        enqueue_json(&out, &FromExt::ActionResult { id, error });
+                    });
+                }
+                Err(TrySendError::Closed(_)) => return ReadControl::Stop,
+                Err(TrySendError::Full(_)) => {
+                    enqueue_json(
+                        out,
+                        &FromExt::ActionResult {
+                            id,
+                            error: Some(
+                                "the extension is busy and can't take this action yet".into(),
+                            ),
+                        },
+                    );
+                }
+            }
+        }
+        ToExt::Stop => return ReadControl::Stop,
+        ToExt::Hello { .. } => {}
+    }
+    ReadControl::Continue
+}
+
+fn enqueue_json(tx: &std::sync::mpsc::Sender<String>, value: &impl Serialize) {
+    let Ok(mut line) = serde_json::to_string(value) else {
+        return;
+    };
+    line.push('\n');
+    let _ = tx.send(line);
 }
 
 type LoadReply = oneshot::Sender<Result<Option<serde_json::Value>, Rejected>>;
@@ -376,19 +510,6 @@ async fn read_json<T: for<'de> Deserialize<'de>>(
         return Err("the host closed the connection".into());
     }
     serde_json::from_str(line.trim()).map_err(|e| format!("invalid message: {e}"))
-}
-
-async fn write_json<T: Serialize>(
-    stdout: &tokio::sync::Mutex<impl AsyncWriteExt + Unpin>,
-    value: &T,
-) -> Result<(), String> {
-    let mut line = serde_json::to_string(value).map_err(|e| e.to_string())?;
-    line.push('\n');
-    let mut out = stdout.lock().await;
-    out.write_all(line.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
-    out.flush().await.map_err(|e| e.to_string())
 }
 
 /// Creates `dir` if it isn't there and, on Unix, restricts it to its owner.
@@ -527,6 +648,67 @@ mod tests {
         let back: ToExt = serde_json::from_str(&json).expect("de");
         assert!(matches!(back, ToExt::Hello { .. }));
         assert!(json.contains("\"type\":\"hello\""));
+    }
+
+    /// The failure this guards: a `reply` was sitting unread in stdin while `describe_*` waited
+    /// on it, because the async stdin read was never polled. Applying the line has to complete
+    /// that reply on its own, and a permit-join behind it has to be queued rather than block
+    /// the reader.
+    #[tokio::test]
+    async fn a_reply_is_applied_without_waiting_on_the_runtime() {
+        let pending = Pending::default();
+        let (reply_tx, mut reply_rx) = oneshot::channel();
+        pending
+            .replies
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(5, reply_tx);
+        let (calls, _calls_rx) = tokio::sync::mpsc::channel(1);
+        let (actions, mut actions_rx) = tokio::sync::mpsc::channel(1);
+        let (out_tx, out_rx) = std::sync::mpsc::channel();
+        let runtime = tokio::runtime::Handle::current();
+
+        let control = handle_host_line(
+            r#"{"type":"reply","id":5,"error":null}"#,
+            &pending,
+            &calls,
+            &actions,
+            &out_tx,
+            &runtime,
+        );
+        assert_eq!(control, ReadControl::Continue);
+        assert!(
+            reply_rx
+                .try_recv()
+                .expect("the reply was delivered")
+                .is_ok()
+        );
+
+        let control = handle_host_line(
+            r#"{"type":"action_call","id":0,"action_id":"permit_join"}"#,
+            &pending,
+            &calls,
+            &actions,
+            &out_tx,
+            &runtime,
+        );
+        assert_eq!(control, ReadControl::Continue);
+        let incoming = actions_rx.try_recv().expect("permit-join was queued");
+        assert_eq!(incoming.action_id, "permit_join");
+
+        let (incoming, _result) = host::incoming_action("sitting".into());
+        actions.try_send(incoming).expect("the only slot is taken");
+        let control = handle_host_line(
+            r#"{"type":"action_call","id":1,"action_id":"permit_join"}"#,
+            &pending,
+            &calls,
+            &actions,
+            &out_tx,
+            &runtime,
+        );
+        assert_eq!(control, ReadControl::Continue);
+        let busy = out_rx.try_recv().expect("a full queue answers immediately");
+        assert!(busy.contains("can't take this action yet"));
     }
 
     /// Restores the process's cwd on drop, so a failed assertion below can't leave every test

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use rumqttd::{Broker as EmbeddedBroker, Config, ConnectionSettings, RouterConfig, ServerSettings};
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, error::TrySendError};
 
 /// Zigbee2MQTT 2.14 retains `bridge/info` (~48KB, its settings schema included)
 /// and `bridge/definitions` (~228KB, the ZCL cluster list). A 20KB cap closed
@@ -129,17 +129,33 @@ pub struct Client(AsyncClient);
 
 impl Publisher for Client {
     async fn publish(&self, topic: &str, payload: Vec<u8>, retain: bool) -> Result<(), String> {
+        // Queue only. `publish().await` waits until the event loop accepts the request, and that
+        // loop is the same task that delivers incoming messages to `run`. Waiting here while `run`
+        // is the one supposed to drain those messages stalls both, and permit-join never answers.
         self.0
-            .publish(topic, QoS::AtLeastOnce, retain, payload)
-            .await
+            .try_publish(topic, QoS::AtLeastOnce, retain, payload)
             .map_err(|e| e.to_string())
     }
 
     async fn subscribe(&self, topic: &str) -> Result<(), String> {
         self.0
-            .subscribe(topic, QoS::AtLeastOnce)
-            .await
+            .try_subscribe(topic, QoS::AtLeastOnce)
             .map_err(|e| e.to_string())
+    }
+}
+
+/// Hands one event to the run loop without waiting. Waiting here stops `poll`, so a publish or
+/// subscribe queued by the run loop is never written to the broker.
+fn forward(tx: &mpsc::Sender<BrokerEvent>, event: BrokerEvent) -> bool {
+    match tx.try_send(event) {
+        Ok(()) => true,
+        Err(TrySendError::Full(_)) => {
+            tracing::warn!(
+                "mqtt client fell behind; dropping one message so the connection keeps moving"
+            );
+            true
+        }
+        Err(TrySendError::Closed(_)) => false,
     }
 }
 
@@ -169,18 +185,14 @@ pub fn connect(
                         topic: publish.topic,
                         payload: publish.payload.to_vec(),
                     });
-                    if tx.send(message).await.is_err() {
+                    if !forward(&tx, message) {
                         return;
                     }
                 }
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     if !was_connected {
                         was_connected = true;
-                        if tx
-                            .send(BrokerEvent::Connectivity(Connectivity::Connected))
-                            .await
-                            .is_err()
-                        {
+                        if !forward(&tx, BrokerEvent::Connectivity(Connectivity::Connected)) {
                             return;
                         }
                     }
@@ -190,11 +202,7 @@ pub fn connect(
                     tracing::warn!(%error, "lost the connection to our own embedded broker; reconnecting");
                     if was_connected {
                         was_connected = false;
-                        if tx
-                            .send(BrokerEvent::Connectivity(Connectivity::Disconnected))
-                            .await
-                            .is_err()
-                        {
+                        if !forward(&tx, BrokerEvent::Connectivity(Connectivity::Disconnected)) {
                             return;
                         }
                     }

@@ -131,7 +131,7 @@ It raises the memory limit to 2 GB (Zigbee2MQTT needs it) unless `IRORI_PI_MEMOR
 | | Where it shows up |
 |---|---|
 | Zigbee dongle | `/dev/zigbee0`, an Ember coordinator. In the Zigbee extension's settings set the serial port to that path and `zigbee2mqtt_version` to `2.14.1`. |
-| Zigbee devices | Named and placed from `dev/lab/home/devices.toml`. They pair on Permit joining once the coordinator answers the rest of the ember startup commands; until then those commands are logged and Zigbee2MQTT will not stay up. |
+| Zigbee devices | Named and placed from `dev/lab/home/devices.toml`. Permit joining announces the catalog devices; Zigbee2MQTT interviews them and they show up in the add-device flow. |
 | ESPHome | Four boards announce `_esphomelib._tcp` inside the container. One extra encrypted board prints its key in `dev/pi logs`. |
 | Matter | Three nodes, once their binaries are pinned in `dev/lab/matter/`. Until then the log names each one's discriminator and passcode. |
 
