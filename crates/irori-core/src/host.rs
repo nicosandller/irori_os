@@ -657,6 +657,7 @@ async fn supervise(
                 core.unlink_action(&extension);
                 core.mark_unavailable(&protocol);
                 core.set_waiting(&extension, Vec::new());
+                core.set_unmodeled(&extension, Vec::new());
                 core.set_available_actions(&extension, Vec::new());
                 match outcome {
                     Outcome::Stopped => {
@@ -1162,6 +1163,7 @@ async fn supervise_package(
             core.mark_unavailable(&protocol);
         }
         core.set_waiting(&extension, Vec::new());
+        core.set_unmodeled(&extension, Vec::new());
         core.set_available_actions(&extension, Vec::new());
         let _ = child.send(&ToExt::Stop).await;
         let _ = child.child.start_kill();
@@ -1425,6 +1427,10 @@ async fn apply_from_ext(
         }
         FromExt::SetWaiting { waiting } => {
             core.apply_op(extension, protocol, kinds, Op::SetWaiting(waiting));
+            Ok(())
+        }
+        FromExt::SetUnmodeled { unmodeled } => {
+            core.apply_op(extension, protocol, kinds, Op::SetUnmodeled(unmodeled));
             Ok(())
         }
         FromExt::SetAvailableActions { actions } => {

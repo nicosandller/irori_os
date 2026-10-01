@@ -178,7 +178,7 @@ fn owned_str(value: &serde_json::Value, key: &str, default: &str) -> String {
     str_field(value, key).unwrap_or(default).to_owned()
 }
 
-fn parse_device(root: &serde_json::Value) -> Result<Option<ParsedDevice>, String> {
+pub(crate) fn parse_device(root: &serde_json::Value) -> Result<Option<ParsedDevice>, String> {
     let Some(device) = root.get("device") else {
         return Ok(None);
     };

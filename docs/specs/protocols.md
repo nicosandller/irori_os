@@ -106,6 +106,7 @@ core's process.
 | Set availability | entity `unique_id`s, or a device `unique_id` for all its entities; `available` \| `unavailable` | §6.4 |
 | Set health | `running`, or `degraded` with a reason | §6.5 |
 | Set waiting | what it found but can't use until a person helps, replacing the last list | §6.6 |
+| Set unmodeled | what it found that Irori has no entity kind for yet, replacing the last list | §6.7 |
 | Handle service calls | receives `ServiceCall` (§7), replies with a result | For its own entities only |
 | Store small data | key (1–128 characters) → JSON value, up to 64 KB each; load, store, forget | Private to the protocol, kept across restarts of it and of Irori, in the data directory's database. E.g. pairing keys, a cloud token refresh, the value a helper was left at. Not for settings (a person's decisions go in the config directory) and not for history |
 | Log | leveled, structured log lines | Tagged with the protocol id |
@@ -188,7 +189,7 @@ What the protocol says about itself, shown on the Extensions page:
 
 - `running`: everything's fine.
 - `degraded` + reason: working, with a problem worth showing. For example `2 of 5 devices
-  unreachable`, or `3 entities skipped: kinds not supported yet (select, number)`.
+  unreachable`. (What it found and has no kind for goes in its unmodeled list, §6.7, not here.)
 
 `starting`, `failed`, and `disabled` are set by the core ([extensions.md](extensions.md) §8).
 
@@ -218,6 +219,28 @@ core accepts a secret **only at a path the protocol is currently asking for**: u
 sign-in (ROADMAP D12), an endpoint that wrote anything anywhere would let anyone on the network
 rewrite anyone's settings. A secret, once given, is never sent back, and the protocol receives
 it on its next start (§3, step 6).
+
+### 6.7 Unmodeled
+
+What a protocol found that Irori has no entity kind for yet: a device's fan, its infrared
+blaster, a setting it exposes as a `number`. Like waiting (§6.6), the protocol sends the **whole
+list** whenever it changes, across all its devices, and the core clears it when the protocol
+stops. A separate operation rather than a field on `DeviceDescription`, because some protocols
+learn about a device's parts one message at a time (MQTT discovery publishes each component on
+its own topic).
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `device_unique_id` | `UniqueId` | no | The device it's on. Left out when it isn't on one |
+| `platform` | slug | yes | What the protocol calls this kind of thing (`fan`, `infrared`). Deliberately not an entity kind |
+| `name` | `Name` | no | |
+
+These are **not entities**: no id, no state, nothing to call. The device's page lists them ("Also
+has Ceiling fan (fan), which Irori doesn't support yet"), and the extension's card lists those
+that aren't on a device in the home. Nothing is made up for them, because a kind is part of an
+entity's id ([entities.md](entities.md) §3) and a placeholder kind would have to change, breaking
+every rule that named it. When Irori gains the kind, the protocol describes the thing as an
+entity and leaves it off this list.
 
 ## 7. Service calls
 

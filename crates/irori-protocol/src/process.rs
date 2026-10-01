@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use irori_types::{
     Availability, ContextId, DeviceDescription, EntityDescription, EntityId, EntityState,
-    RunCommand, ServiceCall, StateReport, Timestamp, UniqueId, Waiting,
+    RunCommand, ServiceCall, StateReport, Timestamp, UniqueId, Unmodeled, Waiting,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -57,6 +57,9 @@ pub enum FromExt {
     },
     SetWaiting {
         waiting: Vec<Waiting>,
+    },
+    SetUnmodeled {
+        unmodeled: Vec<Unmodeled>,
     },
     SetAvailableActions {
         actions: Vec<String>,
@@ -612,6 +615,7 @@ impl Pending {
             }
             Op::SetHealth(health) => Some(FromExt::SetHealth { health }),
             Op::SetWaiting(waiting) => Some(FromExt::SetWaiting { waiting }),
+            Op::SetUnmodeled(unmodeled) => Some(FromExt::SetUnmodeled { unmodeled }),
             Op::SetAvailableActions(actions) => Some(FromExt::SetAvailableActions { actions }),
             Op::Load(key, reply) => {
                 self.loads

@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use irori_types::{
     Availability, DeviceDescription, EntityDescription, ExtensionManifest, ServiceCall,
-    StateReport, UniqueId, Waiting,
+    StateReport, UniqueId, Unmodeled, Waiting,
 };
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
@@ -356,6 +356,14 @@ impl ProtocolContext {
         let _ = self.ops.send(host::Op::SetWaiting(waiting)).await;
     }
 
+    /// Says what it found that Irori has no entity kind for yet (spec §6.7): the whole list,
+    /// across all its devices, replacing the last one. Send an empty list when there's nothing.
+    ///
+    /// Like waiting, send it when it changes.
+    pub async fn set_unmodeled(&self, unmodeled: Vec<Unmodeled>) {
+        let _ = self.ops.send(host::Op::SetUnmodeled(unmodeled)).await;
+    }
+
     /// Says which of its manifest-declared actions are usable right now, replacing the last
     /// list — an empty list when none are (the default, until a protocol calls this). E.g. the
     /// `zigbee` protocol only offers `permit_join` once it's actually found a Z2M bridge.
@@ -671,6 +679,7 @@ pub mod host {
         SetAvailability(AvailabilityTarget, Availability, Reply),
         SetHealth(Health),
         SetWaiting(Vec<Waiting>),
+        SetUnmodeled(Vec<Unmodeled>),
         SetAvailableActions(Vec<String>),
         Load(
             String,

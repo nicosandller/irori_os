@@ -48,6 +48,9 @@ struct Entity {
 
 #[derive(Debug, Default)]
 struct Registry {
+    /// What the broker's discovery configs offer that Irori has no entity kind for yet, listed
+    /// on their devices (`docs/specs/protocols.md` §6.7).
+    unmodeled: irori_ha_discovery::unmodeled::Tracker,
     entities: BTreeMap<UniqueId, Entity>,
     /// Which entity a discovery config topic described, so a later empty (retained-removed)
     /// payload on the same topic knows what to remove.
@@ -113,6 +116,17 @@ async fn apply(
     broker: &impl Publisher,
     ctx: &ProtocolContext,
 ) {
+    if let Some(component) =
+        topic::unsupported_component(&message.topic, &settings.discovery_prefix)
+    {
+        if registry
+            .unmodeled
+            .apply(&message.topic, component, &message.payload)
+        {
+            ctx.set_unmodeled(registry.unmodeled.list()).await;
+        }
+        return;
+    }
     if let Some(discovered) = topic::parse(&message.topic, &settings.discovery_prefix) {
         describe(discovered, &message, registry, broker, ctx).await;
         return;
@@ -376,6 +390,7 @@ mod tests {
                     }
                     host::Op::SetHealth(_)
                     | host::Op::SetWaiting(_)
+                    | host::Op::SetUnmodeled(_)
                     | host::Op::SetAvailableActions(_) => {}
                     host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));
@@ -544,6 +559,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_component_irori_has_no_kind_for_is_listed_on_its_device() {
+        let (ctx, mut host) = host::connect();
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+        let topic = "homeassistant/fan/0x1234/fan/config";
+        let fan = br#"{"unique_id": "0x1234_fan", "name": "Ceiling fan",
+            "device": {"identifiers": ["0x1234"], "name": "Bedroom fan"}}"#;
+        apply(
+            message(topic, fan),
+            &settings(),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        let Some(host::Op::SetUnmodeled(listed)) = host.ops.recv().await else {
+            panic!("the fan should be listed");
+        };
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].platform.as_str(), "fan");
+        assert!(
+            registry.entities.is_empty(),
+            "and not described as an entity"
+        );
+
+        // Removed from the broker, it's off the list.
+        apply(
+            message(topic, b""),
+            &settings(),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        let Some(host::Op::SetUnmodeled(listed)) = host.ops.recv().await else {
+            panic!("the list should be sent again");
+        };
+        assert!(listed.is_empty());
+    }
+
+    #[tokio::test]
     async fn a_state_message_reports_to_the_core() {
         let (ctx, host) = host::connect();
         let _drain = drain_ops(host.ops);
@@ -696,6 +752,7 @@ mod tests {
                     }
                     host::Op::SetHealth(_)
                     | host::Op::SetWaiting(_)
+                    | host::Op::SetUnmodeled(_)
                     | host::Op::SetAvailableActions(_) => {}
                     host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));

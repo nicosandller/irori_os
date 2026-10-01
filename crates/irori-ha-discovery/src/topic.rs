@@ -67,6 +67,20 @@ pub fn parse(topic: &str, discovery_prefix: &str) -> Option<DiscoveryTopic> {
     })
 }
 
+/// The component of a discovery config topic Irori has no entity kind for (`fan`, `cover`),
+/// when `topic` is one. `parse` returns `None` for these; this says which they are, so they can
+/// be listed on their device instead of disappearing (`docs/specs/protocols.md` §6.7).
+pub fn unsupported_component<'a>(topic: &'a str, discovery_prefix: &str) -> Option<&'a str> {
+    let rest = topic.strip_prefix(discovery_prefix)?.strip_prefix('/')?;
+    let rest = rest.strip_suffix("/config")?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    let component = match parts.as_slice() {
+        [component, object_id] | [component, _, object_id] if !object_id.is_empty() => *component,
+        _ => return None,
+    };
+    Component::parse(component).is_none().then_some(component)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,6 +100,16 @@ mod tests {
         assert_eq!(b.component, Component::Sensor);
         assert_eq!(b.node_id.as_deref(), Some("0x1234"));
         assert_eq!(b.object_id, "temperature");
+    }
+
+    #[test]
+    fn an_unsupported_component_is_named() {
+        let named = |t| unsupported_component(t, "homeassistant");
+        assert_eq!(named("homeassistant/fan/0x1234/fan/config"), Some("fan"));
+        assert_eq!(named("homeassistant/cover/blind/config"), Some("cover"));
+        assert_eq!(named("homeassistant/light/0x1234/light/config"), None);
+        assert_eq!(named("homeassistant/fan/0x1234/state"), None);
+        assert_eq!(named("other/fan/x/config"), None);
     }
 
     #[test]

@@ -48,7 +48,7 @@ pub use kinds::switch::{SwitchCapabilities, SwitchClass, SwitchState};
 pub use kinds::{Typed, ValueShape};
 pub use protocol::{
     DeviceDescription, EntityDescription, SecretRequest, Service, ServiceCall, ServiceName,
-    StateReport, Waiting,
+    StateReport, Unmodeled, Waiting,
 };
 pub use registry::{Area, Capabilities, Device, Entity, EntityCategory, Floor};
 pub use schema::{SchemaDoc, schemas};

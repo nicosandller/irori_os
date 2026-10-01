@@ -235,6 +235,7 @@ fn card(
     let id_gear = id.clone();
     let id_log = id.clone();
     let id_log_btn = id.clone();
+    let id_unmodeled = id.clone();
     let installed = entry.installed;
     let full_access = entry.full_access;
     let running = entry.state.as_deref() == Some("running");
@@ -287,6 +288,7 @@ fn card(
                     </p>
                 }
             })}
+            {move || unplaced_unmodeled(&id_unmodeled).map(|text| view! { <p class="muted small">{text}</p> })}
             <div class="ext-actions">
                 {if installed {
                     view! {
@@ -432,4 +434,38 @@ async fn settle(id: &str, catalog: RwSignal<Vec<CatalogEntry>>, trouble: RwSigna
         gloo_timers::future::sleep(SETTLE_POLL).await;
         waited += SETTLE_POLL;
     }
+}
+
+/// What a protocol found that Irori has no entity kind for, and that isn't on a device in the
+/// home (those are listed on their device's page): "Also found a cover and a fan, which Irori
+/// doesn't support yet."
+fn unplaced_unmodeled(id: &str) -> Option<String> {
+    let live = expect_context::<crate::Live>();
+    live.home.with(|home| {
+        let extension = home
+            .extensions
+            .iter()
+            .find(|(extension, _)| extension.as_str() == id)
+            .map(|(_, extension)| extension)?;
+        // A protocol extension's devices carry its id as their protocol.
+        let in_home = |device: &irori_types::UniqueId| {
+            home.devices
+                .iter()
+                .any(|d| &d.unique_id == device && d.protocol.as_str() == id)
+        };
+        let mut platforms: Vec<String> = extension
+            .unmodeled
+            .iter()
+            .filter(|entry| !entry.device_unique_id.as_ref().is_some_and(in_home))
+            .map(|entry| entry.platform.as_str().replace('_', " "))
+            .collect();
+        platforms.sort();
+        platforms.dedup();
+        (!platforms.is_empty()).then(|| {
+            format!(
+                "Also found {}, which Irori doesn't support yet.",
+                platforms.join(", ")
+            )
+        })
+    })
 }

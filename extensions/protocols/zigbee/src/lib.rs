@@ -83,6 +83,9 @@ struct Entity {
 
 #[derive(Debug, Default)]
 struct Registry {
+    /// What the broker's discovery configs offer that Irori has no entity kind for yet, listed
+    /// on their devices (`docs/specs/protocols.md` §6.7).
+    unmodeled: irori_ha_discovery::unmodeled::Tracker,
     entities: BTreeMap<UniqueId, Entity>,
     config_topics: BTreeMap<String, UniqueId>,
     state_topics: BTreeMap<String, Vec<UniqueId>>,
@@ -282,6 +285,15 @@ async fn apply(
             ctx.set_health(Health::Running).await;
             ctx.set_available_actions(vec![PERMIT_JOIN.to_owned()])
                 .await;
+        }
+        return;
+    }
+    if let Some(component) = topic::unsupported_component(&message.topic, DISCOVERY_PREFIX) {
+        if registry
+            .unmodeled
+            .apply(&message.topic, component, &message.payload)
+        {
+            ctx.set_unmodeled(registry.unmodeled.list()).await;
         }
         return;
     }
@@ -534,6 +546,7 @@ mod tests {
                     }
                     host::Op::SetHealth(_)
                     | host::Op::SetWaiting(_)
+                    | host::Op::SetUnmodeled(_)
                     | host::Op::SetAvailableActions(_) => {}
                     host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));

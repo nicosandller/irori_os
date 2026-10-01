@@ -16,6 +16,27 @@ use crate::{
     ObjectId, State, UniqueId,
 };
 
+/// Something a protocol found that Irori has no entity kind for yet: a device's fan, its
+/// infrared blaster. See `docs/specs/protocols.md` §6.7.
+///
+/// Not an entity: it has no id, no state, and nothing can be asked of it. It's listed on its
+/// device (or its extension, without one) so a person can see what's there and isn't supported,
+/// rather than a device that looks like it has less than it does. When Irori gains the kind, the
+/// protocol describes it as an entity instead, and it drops off this list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Unmodeled {
+    /// The device it's on, when it's on one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_unique_id: Option<UniqueId>,
+    /// What the protocol calls this kind of thing, e.g. `fan`, `infrared`. Deliberately not an
+    /// entity kind: it's one Irori doesn't have.
+    pub platform: ObjectId,
+    /// Its name, when the protocol knows one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<Name>,
+}
+
 /// Something a protocol found but can't use yet, because it needs a person first: a device
 /// that wants an encryption key, one that has to be paired, an account that has to be signed in
 /// to. See `docs/specs/protocols.md` §6.6.

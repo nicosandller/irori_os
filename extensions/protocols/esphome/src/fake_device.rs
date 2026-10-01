@@ -291,7 +291,7 @@ fn entities() -> Vec<EspHomeMessage> {
             device_class: "motion".to_owned(),
             ..Default::default()
         }),
-        // Irori has no fan kind yet; the protocol should skip it and keep the rest.
+        // Irori has no fan kind yet; the protocol should list it as unmodeled and keep the rest.
         EspHomeMessage::ListEntitiesFanResponse(esphome_client::types::ListEntitiesFanResponse {
             key: FAN_KEY,
             name: "Ceiling fan".to_owned(),

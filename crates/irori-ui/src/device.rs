@@ -36,6 +36,8 @@ struct Shape {
     device: Option<Device>,
     areas: Vec<Area>,
     entities: Vec<Entity>,
+    /// What it has that Irori has no entity kind for yet, as its protocol says.
+    unmodeled: Vec<irori_types::Unmodeled>,
     /// Whether any device is known at all, for telling "no such device" from "nothing yet".
     any_devices: bool,
 }
@@ -111,10 +113,23 @@ fn shape_of(home: &Home, id: &str) -> Shape {
         .as_ref()
         .map(|device| of_device(home, device))
         .unwrap_or_default();
+    let unmodeled = device
+        .as_ref()
+        .map(|device| {
+            home.extensions
+                .iter()
+                .filter(|(id, _)| id.as_str() == device.protocol.as_str())
+                .flat_map(|(_, extension)| &extension.unmodeled)
+                .filter(|entry| entry.device_unique_id.as_ref() == Some(&device.unique_id))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
     Shape {
         device,
         areas: home.areas.clone(),
         entities,
+        unmodeled,
         any_devices: !home.devices.is_empty(),
     }
 }
@@ -157,6 +172,7 @@ fn page(
     let live = expect_context::<crate::Live>();
     let areas = shape.areas.clone();
     let entities = shape.entities.clone();
+    let also_has = also_has(&shape.unmodeled);
     let battery = battery_of(live, &entities);
     let subtitle = [device.manufacturer.clone(), device.model.clone()]
         .into_iter()
@@ -534,8 +550,7 @@ fn page(
             {if entities.is_empty() {
                 view! {
                     <p class="muted">
-                        "Nothing Irori can model yet. The device may provide kinds it doesn't "
-                        "know about, which are left out rather than guessed at."
+                        "Nothing Irori can model yet."
                     </p>
                 }
                 .into_any()
@@ -573,8 +588,36 @@ fn page(
                 }
                 .into_any()
             }}
+            {also_has.map(|text| view! { <p class="muted small">{text}</p> })}
         </section>
     }
+}
+
+/// What a device has that Irori has no entity kind for yet, in a sentence: "Also has a ceiling
+/// fan (fan) and 2 settings (number), which Irori doesn't support yet." `None` when there's
+/// nothing.
+fn also_has(unmodeled: &[irori_types::Unmodeled]) -> Option<String> {
+    if unmodeled.is_empty() {
+        return None;
+    }
+    let mut by_platform: std::collections::BTreeMap<&str, Vec<&str>> = Default::default();
+    for entry in unmodeled {
+        by_platform
+            .entry(entry.platform.as_str())
+            .or_default()
+            .extend(entry.name.as_ref().map(irori_types::Name::as_str));
+    }
+    let items: Vec<String> = by_platform
+        .into_iter()
+        .map(|(platform, names)| match names.as_slice() {
+            [] => platform.replace('_', " "),
+            names => format!("{} ({})", names.join(", "), platform.replace('_', " ")),
+        })
+        .collect();
+    Some(format!(
+        "Also has {}, which Irori doesn't support yet.",
+        items.join("; ")
+    ))
 }
 
 /// One entity: its reading, and the name it can be given.
@@ -976,6 +1019,29 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn what_a_device_has_that_irori_cant_model_is_said_once() {
+        let entry = |platform: &str, name: Option<&str>| irori_types::Unmodeled {
+            device_unique_id: None,
+            platform: platform.parse().expect("slug"),
+            name: name.map(|n| n.parse().expect("name")),
+        };
+        assert_eq!(also_has(&[]), None);
+        assert_eq!(
+            also_has(&[
+                entry("number", Some("Timeout")),
+                entry("fan", Some("Ceiling fan")),
+                entry("number", Some("Sensitivity")),
+                entry("water_heater", None),
+            ])
+            .as_deref(),
+            Some(
+                "Also has Ceiling fan (fan); Timeout, Sensitivity (number); water heater, \
+                 which Irori doesn't support yet."
+            )
+        );
+    }
 
     fn device() -> Device {
         Device {

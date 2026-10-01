@@ -126,6 +126,9 @@ pub struct Extension {
     /// What it found but can't use until someone helps, e.g. a device that needs its key.
     #[serde(default)]
     pub waiting: Vec<Waiting>,
+    /// What it found that Irori has no entity kind for yet, listed on its devices.
+    #[serde(default)]
+    pub unmodeled: Vec<irori_types::Unmodeled>,
     /// Whether it has an icon, at `/api/dev/extensions/<id>/icon.svg`.
     #[serde(default)]
     pub has_icon: bool,

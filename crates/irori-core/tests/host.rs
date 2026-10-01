@@ -1043,6 +1043,57 @@ async fn new_settings_restart_only_their_own_extension_and_what_was_waiting_clea
     assert_eq!(waiting(&core), 0);
 }
 
+/// Has something Irori has no entity kind for, and says so.
+struct Partial;
+
+impl Protocol for Partial {
+    type Config = NoSettings;
+    const MANIFEST: &'static str = PARTIAL_MANIFEST;
+    async fn run(_: NoSettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
+        ctx.set_unmodeled(vec![irori_protocol::types::Unmodeled {
+            device_unique_id: Some(uid("fan-box")),
+            platform: "fan".parse()?,
+            name: Some(Name::try_from("Ceiling fan")?),
+        }])
+        .await;
+        ctx.stopped().await;
+        Ok(())
+    }
+}
+const PARTIAL_MANIFEST: &str = r#"
+    [extension]
+    id = "partial"
+    name = "Partial"
+    version = "0.1.0"
+    irori = ">=0.0.0"
+
+    [[contributes.protocol]]
+    iot_class = "local_push"
+    entity_kinds = ["switch"]
+"#;
+
+/// What a protocol can't model is shown on it while it runs, and goes when it stops: a list from
+/// a stopped protocol is out of date, like what it was waiting for.
+#[tokio::test(start_paused = true)]
+async fn what_a_protocol_cant_model_is_listed_while_it_runs() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = start(&core, builtin::<Partial>().expect("valid"));
+    let unmodeled = |core: &Core| {
+        core.extensions()
+            .get(&ExtensionId::try_from("partial").expect("valid"))
+            .map(|overview| overview.unmodeled.clone())
+            .unwrap_or_default()
+    };
+    eventually("the fan is listed", || {
+        unmodeled(&core)
+            .first()
+            .is_some_and(|entry| entry.platform.as_str() == "fan")
+    })
+    .await;
+    host.shutdown().await;
+    assert!(unmodeled(&core).is_empty());
+}
+
 /// Needs a setting to exist at all: its `Config` has a field with no default, so its own
 /// deserialization would fail if it were ever started without one.
 struct Needy;

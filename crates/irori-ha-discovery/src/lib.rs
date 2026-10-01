@@ -13,6 +13,7 @@ pub mod map;
 pub mod state;
 pub mod template;
 pub mod topic;
+pub mod unmodeled;
 
 pub use discovery::{AvailabilityTopic, EntityTopics, ParsedConfig, ParsedDevice};
 pub use state::Publish;

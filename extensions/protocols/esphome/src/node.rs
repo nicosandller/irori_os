@@ -17,7 +17,7 @@ use esphome_client::types::{
 };
 use irori_protocol::types::{
     Capabilities, ContextId, DeviceDescription, EntityDescription, LightCapabilities, Service,
-    StateReport, UniqueId,
+    StateReport, UniqueId, Unmodeled,
 };
 use irori_protocol::{IncomingCall, ServiceError};
 use tokio::sync::mpsc;
@@ -52,6 +52,8 @@ pub enum Event {
         connection: Connection,
         device: Box<DeviceDescription>,
         entities: Vec<EntityDescription>,
+        /// What it has that Irori has no kind for yet, to be listed on it.
+        unmodeled: Vec<Unmodeled>,
     },
     /// A new value for one of the device's entities. Carries the connection that heard it, so
     /// a report queued by a connection that has since been replaced can't overwrite the state
@@ -266,10 +268,17 @@ async fn session(
         let device = handshake(&mut client).await?;
         let device_unique_id = map::device_id(&device).map_err(|e| e.to_string())?;
         let description = map::device(&device).map_err(|e| e.to_string())?;
-        let entities = list_entities(&mut client, &device_unique_id).await?;
-        Ok::<_, Opening>((client, device, device_unique_id, description, entities))
+        let (entities, unmodeled) = list_entities(&mut client, &device_unique_id).await?;
+        Ok::<_, Opening>((
+            client,
+            device,
+            device_unique_id,
+            description,
+            entities,
+            unmodeled,
+        ))
     };
-    let (mut client, device, device_unique_id, description, entities) =
+    let (mut client, device, device_unique_id, description, entities, unmodeled) =
         match tokio::time::timeout(SETUP_TIMEOUT, opening).await {
             Ok(Ok(opened)) => opened,
             Ok(Err(Opening::Locked(why))) => return Ok(Ended::Locked(why)),
@@ -322,6 +331,7 @@ async fn session(
             connection,
             device: Box::new(description),
             entities: entities.into_iter().map(|(_, entity)| entity).collect(),
+            unmodeled,
         })
         .await;
     if sent.is_err() {
@@ -429,13 +439,14 @@ async fn handshake(
 async fn list_entities(
     client: &mut EspHomeClient,
     device: &UniqueId,
-) -> Result<Vec<(u32, EntityDescription)>, String> {
+) -> Result<(Vec<(u32, EntityDescription)>, Vec<Unmodeled>), String> {
     client
         .try_write(ListEntitiesRequest {})
         .await
         .map_err(|e| format!("can't ask the device what it has: {e}"))?;
 
     let mut entities = Vec::new();
+    let mut unmodeled = Vec::new();
     let mut skipped = 0_usize;
     loop {
         let message = client
@@ -444,15 +455,15 @@ async fn list_entities(
             .map_err(|e| format!("the device stopped listing what it has: {e}"))?;
         let described = match &message {
             EspHomeMessage::ListEntitiesDoneResponse(_) => {
-                if skipped > 0 {
+                if !unmodeled.is_empty() || skipped > 0 {
                     tracing::info!(
                         device = %device,
+                        unmodeled = unmodeled.len(),
                         skipped,
-                        "left out entities of kinds Irori doesn't model yet \
-                         (fan, cover, climate, and the rest)"
+                        "listed what Irori has no entity kind for yet on the device"
                     );
                 }
-                return Ok(entities);
+                return Ok((entities, unmodeled));
             }
             EspHomeMessage::ListEntitiesLightResponse(e) => (e.key, map::light(device, e)),
             EspHomeMessage::ListEntitiesSwitchResponse(e) => (e.key, map::switch(device, e)),
@@ -471,9 +482,13 @@ async fn list_entities(
                 continue;
             }
             // Between the request and `Done` a device sends nothing but entity listings, so
-            // anything else here is a kind this build doesn't model.
-            _ => {
-                skipped += 1;
+            // anything else here is a kind this build doesn't model: listed on the device, or
+            // only counted when it isn't an entity this build can name.
+            other => {
+                match map::unmodeled(device, other) {
+                    Some(entry) => unmodeled.push(entry),
+                    None => skipped += 1,
+                }
                 continue;
             }
         };
@@ -728,7 +743,10 @@ mod tests {
 
         // What it has. The fake device also offers a fan, which Irori doesn't model yet.
         let Some(Event::Arrived {
-            device, entities, ..
+            device,
+            entities,
+            unmodeled,
+            ..
         }) = events.recv().await
         else {
             panic!("the device never introduced itself");
@@ -740,6 +758,17 @@ mod tests {
             entities.len(),
             4,
             "the fan should be left out: {entities:?}"
+        );
+        // ...and listed on the device instead, so it isn't simply gone.
+        assert_eq!(unmodeled.len(), 1, "{unmodeled:?}");
+        assert_eq!(unmodeled[0].platform.as_str(), "fan");
+        assert_eq!(
+            unmodeled[0].name.as_ref().map(|n| n.as_str()),
+            Some("Ceiling fan")
+        );
+        assert_eq!(
+            unmodeled[0].device_unique_id.as_ref().map(|d| d.as_str()),
+            Some(fake_device::MAC)
         );
 
         let lamp = entities

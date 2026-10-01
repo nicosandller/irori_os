@@ -6,7 +6,7 @@
 //! keeps its name, which is the same promise ESPHome makes to Home Assistant.
 
 use esphome_client::types::{
-    BinarySensorStateResponse, DeviceInfoResponse, LightStateResponse,
+    BinarySensorStateResponse, DeviceInfoResponse, EspHomeMessage, LightStateResponse,
     ListEntitiesBinarySensorResponse, ListEntitiesLightResponse, ListEntitiesSensorResponse,
     ListEntitiesSwitchResponse, ListEntitiesTextSensorResponse, SensorStateResponse,
     SwitchStateResponse, TextSensorStateResponse,
@@ -15,8 +15,9 @@ use irori_protocol::ProtocolError;
 use irori_protocol::types::{
     BinarySensorCapabilities, BinarySensorClass, BinarySensorState, Capabilities, ColorMode,
     ColorTempRange, DeviceDescription, EntityCategory, EntityDescription, EntityKind,
-    LightCapabilities, LightState, Name, SensorCapabilities, SensorClass, SensorState, SensorValue,
-    SensorValueType, State, StateClass, SwitchCapabilities, SwitchClass, SwitchState, UniqueId,
+    LightCapabilities, LightState, Name, ObjectId, SensorCapabilities, SensorClass, SensorState,
+    SensorValue, SensorValueType, State, StateClass, SwitchCapabilities, SwitchClass, SwitchState,
+    UniqueId, Unmodeled,
 };
 
 /// ESPHome's `ColorMode` enum (api.proto). The values are a bit mask of what a mode carries.
@@ -237,6 +238,42 @@ pub fn light_state(state: &LightStateResponse, known: &LightCapabilities) -> Sta
                 scale_to_byte(state.blue).unwrap_or(0),
             ]
         }),
+    })
+}
+
+/// An entity of a kind Irori doesn't model yet, as listed on its device
+/// (`docs/specs/protocols.md` §6.7). `None` for listings that aren't entities at all (the
+/// device's user-defined actions) and for ones too new for this build to name.
+pub fn unmodeled(device: &UniqueId, message: &EspHomeMessage) -> Option<Unmodeled> {
+    use EspHomeMessage as M;
+    let (platform, name) = match message {
+        M::ListEntitiesAlarmControlPanelResponse(e) => ("alarm_control_panel", &e.name),
+        M::ListEntitiesButtonResponse(e) => ("button", &e.name),
+        M::ListEntitiesCameraResponse(e) => ("camera", &e.name),
+        M::ListEntitiesClimateResponse(e) => ("climate", &e.name),
+        M::ListEntitiesCoverResponse(e) => ("cover", &e.name),
+        M::ListEntitiesDateResponse(e) => ("date", &e.name),
+        M::ListEntitiesDateTimeResponse(e) => ("datetime", &e.name),
+        M::ListEntitiesEventResponse(e) => ("event", &e.name),
+        M::ListEntitiesFanResponse(e) => ("fan", &e.name),
+        M::ListEntitiesInfraredResponse(e) => ("infrared", &e.name),
+        M::ListEntitiesLockResponse(e) => ("lock", &e.name),
+        M::ListEntitiesMediaPlayerResponse(e) => ("media_player", &e.name),
+        M::ListEntitiesNumberResponse(e) => ("number", &e.name),
+        M::ListEntitiesRadioFrequencyResponse(e) => ("radio_frequency", &e.name),
+        M::ListEntitiesSelectResponse(e) => ("select", &e.name),
+        M::ListEntitiesSirenResponse(e) => ("siren", &e.name),
+        M::ListEntitiesTextResponse(e) => ("text", &e.name),
+        M::ListEntitiesTimeResponse(e) => ("time", &e.name),
+        M::ListEntitiesUpdateResponse(e) => ("update", &e.name),
+        M::ListEntitiesValveResponse(e) => ("valve", &e.name),
+        M::ListEntitiesWaterHeaterResponse(e) => ("water_heater", &e.name),
+        _ => return None,
+    };
+    Some(Unmodeled {
+        device_unique_id: Some(device.clone()),
+        platform: ObjectId::try_from(platform).ok()?,
+        name: Name::try_from(name.trim()).ok(),
     })
 }
 
