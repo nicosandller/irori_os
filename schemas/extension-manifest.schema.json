@@ -215,6 +215,11 @@
           "description": "Something that opens and closes, e.g. a blind or a garage door.",
           "type": "string",
           "const": "cover"
+        },
+        {
+          "description": "A lock, e.g. a front door's.",
+          "type": "string",
+          "const": "lock"
         }
       ]
     },

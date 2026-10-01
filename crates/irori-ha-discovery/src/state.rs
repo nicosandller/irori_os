@@ -2,8 +2,9 @@
 //! (`docs/specs/entities.md` §5.3, `docs/specs/protocols.md` §7).
 
 use irori_types::{
-    BinarySensorState, ColorMode, CoverState, EventState, LightState, NumberState, OpenState,
-    SelectState, SensorState, SensorValue, Service, State, SwitchState, TextState, UniqueId,
+    BinarySensorState, ColorMode, CoverState, EventState, LightState, LockState, NumberState,
+    OpenState, SelectState, SensorState, SensorValue, Service, State, SwitchState, TextState,
+    UniqueId,
 };
 
 use crate::discovery::EntityTopics;
@@ -91,6 +92,15 @@ pub fn decode(
             ..
         } if state_topic.as_deref() == Some(topic) => Some(decode_number(payload, value_template)),
         EntityTopics::Cover(cover) => decode_cover(cover, topic, payload, previous),
+        EntityTopics::Lock(lock) if lock.state_topic.as_deref() == Some(topic) => {
+            Some(decode_text(payload, &lock.value_template).and_then(|said| {
+                lock.said
+                    .iter()
+                    .find(|(word, _)| *word == said.trim())
+                    .map(|(_, state)| State::Lock(LockState { state: *state }))
+                    .ok_or_else(|| format!("{said:?} isn't a state this lock says"))
+            }))
+        }
         // A message with no event in it (a remote's battery level, on the same topic as its
         // presses) isn't for the event at all.
         EntityTopics::Event {
@@ -514,6 +524,21 @@ pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, 
             Service::ButtonPress,
         ) => Ok(vec![text_publish(command_topic, payload_press)]),
         (EntityTopics::Cover(cover), service) => encode_cover(cover, service),
+        (EntityTopics::Lock(lock), service) => {
+            let payload = match service {
+                Service::LockLock(_) => &lock.payload_lock,
+                Service::LockUnlock(_) => &lock.payload_unlock,
+                Service::LockOpen(_) => lock
+                    .payload_open
+                    .as_ref()
+                    .ok_or("this lock can't open the door")?,
+                other => return Err(format!("a lock has no `{}` service", other.name())),
+            };
+            Ok(vec![text_publish(
+                &lock.command_topic,
+                &lock.command_template.render(payload),
+            )])
+        }
         _ => Err(format!("this entity has no `{}` service", service.name())),
     }
 }
@@ -603,6 +628,7 @@ pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, Un
         // Nothing to listen to: a press leaves no state.
         EntityTopics::Button { .. } => {}
         EntityTopics::Event { state_topic, .. } => list.push(state_topic.clone()),
+        EntityTopics::Lock(lock) => list.extend(lock.state_topic.clone()),
         EntityTopics::Cover(cover) => {
             list.extend(cover.state_topic.clone());
             list.extend(cover.position_topic.clone());

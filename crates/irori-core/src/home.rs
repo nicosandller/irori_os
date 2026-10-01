@@ -1910,6 +1910,59 @@ mod tests {
     }
 
     #[test]
+    fn a_lock_toggles_and_asks_for_the_code_it_needs() {
+        let mut home = home_with_lamp();
+        home.describe_entity(
+            &protocol(),
+            ALL,
+            entity(
+                "lamp-lock",
+                Some("Door"),
+                Some("lamp"),
+                Capabilities::Lock(irori_types::LockCapabilities {
+                    open: false,
+                    requires_code: true,
+                    code_format: None,
+                }),
+            ),
+            &stamp(0),
+        )
+        .expect("entity");
+        let id = EntityId::try_from("lock.demo_lamp_door").expect("valid");
+        let locked = StateReport {
+            unique_id: uid("lamp-lock"),
+            state: Some(State::Lock(irori_types::LockState {
+                state: irori_types::LockStatus::Locked,
+            })),
+            attributes: Default::default(),
+            caused_by: None,
+            replayed: false,
+        };
+        home.report_state(&protocol(), locked, &stamp(1))
+            .expect("fits");
+        assert_eq!(
+            home.resolve(&id, Command::toggle())
+                .expect_err("no code")
+                .to_string(),
+            "`lock.demo_lamp_door` needs a code"
+        );
+        let with_code = Command::with(
+            "unlock",
+            &irori_types::LockCode {
+                code: Some("1234".into()),
+            },
+        );
+        assert!(matches!(
+            home.resolve(&id, with_code).expect("unlocks").service,
+            Service::LockUnlock(_)
+        ));
+        assert!(
+            home.resolve(&id, Command::new("open")).is_err(),
+            "it can't open the door"
+        );
+    }
+
+    #[test]
     fn a_cover_toggles_the_way_it_is_going_and_two_toggles_cancel_out() {
         let mut home = home_with_lamp();
         home.describe_entity(

@@ -298,7 +298,10 @@ with.
    shape and action list, value inputs by shape (a dropdown for options, a slider for a range),
    and the hand-kept lists noted in the plan (`WATCHABLE`, the call node's fixed action list,
    the templates' kind lists).
-7. **Skip what it doesn't understand** instead of failing. With 1–6 done, its `entity_format` can
+7. **Keep secrets out of what it writes.** A lock's or an alarm's code travels with the call
+   (`lock.unlock {code}`). It must come from `secrets.toml` rather than sit in a flow file, and
+   it must not be copied into traces.
+8. **Skip what it doesn't understand** instead of failing. With 1–7 done, its `entity_format` can
    follow Irori's own.
 
 ### B7. Not in this spec

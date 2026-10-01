@@ -577,6 +577,7 @@ pub fn state_words(state: &EntityState, home: &Home) -> String {
         Some(State::Select(s)) => s.option.clone(),
         Some(State::Text(t)) => t.value.clone(),
         Some(State::Event(e)) => e.event_type.clone(),
+        Some(State::Lock(l)) => l.state.as_str().to_owned(),
         Some(State::Cover(c)) => match c.position {
             Some(position) => format!("{} {position}%", c.state.as_str()),
             None => c.state.as_str().to_owned(),

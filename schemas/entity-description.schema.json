@@ -487,6 +487,36 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code_format": {
+              "description": "A regular expression the code matches, as the device says. The device checks it; pages\nshow it to whoever is typing.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "lock"
+            },
+            "open": {
+              "description": "Can open the door as well as unlock it, e.g. by pulling the latch.",
+              "type": "boolean",
+              "default": false
+            },
+            "requires_code": {
+              "description": "Needs a code to lock, unlock or open.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },

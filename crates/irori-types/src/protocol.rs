@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::kinds::cover::{SetPosition, SetTilt};
 use crate::kinds::light::LightTurnOn;
+use crate::kinds::lock::LockCode;
 use crate::kinds::number::NumberSetValue;
 use crate::kinds::select::SelectOption;
 use crate::kinds::text::TextSetValue;
@@ -385,6 +386,9 @@ pub enum Service {
     CoverStop,
     CoverSetPosition(SetPosition),
     CoverSetTilt(SetTilt),
+    LockLock(LockCode),
+    LockUnlock(LockCode),
+    LockOpen(LockCode),
 }
 
 impl Service {
@@ -403,6 +407,9 @@ impl Service {
             Self::CoverStop => ServiceName::CoverStop,
             Self::CoverSetPosition(_) => ServiceName::CoverSetPosition,
             Self::CoverSetTilt(_) => ServiceName::CoverSetTilt,
+            Self::LockLock(_) => ServiceName::LockLock,
+            Self::LockUnlock(_) => ServiceName::LockUnlock,
+            Self::LockOpen(_) => ServiceName::LockOpen,
         }
     }
 }
@@ -436,6 +443,12 @@ pub enum ServiceName {
     CoverSetPosition,
     #[serde(rename = "cover.set_tilt")]
     CoverSetTilt,
+    #[serde(rename = "lock.lock")]
+    LockLock,
+    #[serde(rename = "lock.unlock")]
+    LockUnlock,
+    #[serde(rename = "lock.open")]
+    LockOpen,
 }
 
 impl ServiceName {
@@ -453,6 +466,9 @@ impl ServiceName {
         Self::CoverStop,
         Self::CoverSetPosition,
         Self::CoverSetTilt,
+        Self::LockLock,
+        Self::LockUnlock,
+        Self::LockOpen,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -470,6 +486,9 @@ impl ServiceName {
             Self::CoverStop => "cover.stop",
             Self::CoverSetPosition => "cover.set_position",
             Self::CoverSetTilt => "cover.set_tilt",
+            Self::LockLock => "lock.lock",
+            Self::LockUnlock => "lock.unlock",
+            Self::LockOpen => "lock.open",
         }
     }
 
@@ -487,6 +506,7 @@ impl ServiceName {
             | Self::CoverStop
             | Self::CoverSetPosition
             | Self::CoverSetTilt => EntityKind::Cover,
+            Self::LockLock | Self::LockUnlock | Self::LockOpen => EntityKind::Lock,
         }
     }
 }
@@ -584,6 +604,7 @@ impl JsonSchema for ServiceCall {
         let text_set_value = generator.subschema_for::<TextSetValue>();
         let set_position = generator.subschema_for::<SetPosition>();
         let set_tilt = generator.subschema_for::<SetTilt>();
+        let lock_code = generator.subschema_for::<LockCode>();
         // Per service: the shape of `data`.
         let rules: Vec<_> = ServiceName::ALL
             .iter()
@@ -595,6 +616,9 @@ impl JsonSchema for ServiceCall {
                     ServiceName::TextSetValue => text_set_value.clone(),
                     ServiceName::CoverSetPosition => set_position.clone(),
                     ServiceName::CoverSetTilt => set_tilt.clone(),
+                    ServiceName::LockLock | ServiceName::LockUnlock | ServiceName::LockOpen => {
+                        lock_code.clone()
+                    }
                     _ => no_data.clone(),
                 };
                 json_schema!({

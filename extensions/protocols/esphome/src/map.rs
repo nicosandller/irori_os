@@ -9,9 +9,10 @@ use esphome_client::types::{
     BinarySensorStateResponse, CoverCommandRequest, CoverStateResponse, DeviceInfoResponse,
     EspHomeMessage, EventResponse, LightStateResponse, ListEntitiesBinarySensorResponse,
     ListEntitiesButtonResponse, ListEntitiesCoverResponse, ListEntitiesEventResponse,
-    ListEntitiesLightResponse, ListEntitiesNumberResponse, ListEntitiesSelectResponse,
-    ListEntitiesSensorResponse, ListEntitiesSwitchResponse, ListEntitiesTextResponse,
-    ListEntitiesTextSensorResponse, NumberStateResponse, SelectStateResponse, SensorStateResponse,
+    ListEntitiesLightResponse, ListEntitiesLockResponse, ListEntitiesNumberResponse,
+    ListEntitiesSelectResponse, ListEntitiesSensorResponse, ListEntitiesSwitchResponse,
+    ListEntitiesTextResponse, ListEntitiesTextSensorResponse, LockCommandRequest,
+    LockStateResponse, NumberStateResponse, SelectStateResponse, SensorStateResponse,
     SwitchStateResponse, TextSensorStateResponse, TextStateResponse,
 };
 use irori_protocol::ProtocolError;
@@ -19,11 +20,11 @@ use irori_protocol::types::{
     BinarySensorCapabilities, BinarySensorClass, BinarySensorState, ButtonCapabilities,
     ButtonClass, Capabilities, ColorMode, ColorTempRange, CoverCapabilities, CoverClass,
     CoverState, DeviceDescription, EntityCategory, EntityDescription, EntityKind,
-    EventCapabilities, EventClass, EventState, LightCapabilities, LightState, Name,
-    NumberCapabilities, NumberMode, NumberState, ObjectId, OpenState, SelectCapabilities,
-    SelectState, SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType,
-    Service, State, StateClass, SwitchCapabilities, SwitchClass, SwitchState, TextCapabilities,
-    TextMode, TextState, UniqueId, Unmodeled,
+    EventCapabilities, EventClass, EventState, LightCapabilities, LightState, LockCapabilities,
+    LockCode, LockState, LockStatus, Name, NumberCapabilities, NumberMode, NumberState, ObjectId,
+    OpenState, SelectCapabilities, SelectState, SensorCapabilities, SensorClass, SensorState,
+    SensorValue, SensorValueType, Service, State, StateClass, SwitchCapabilities, SwitchClass,
+    SwitchState, TextCapabilities, TextMode, TextState, UniqueId, Unmodeled,
 };
 
 /// ESPHome's `ColorMode` enum (api.proto). The values are a bit mask of what a mode carries.
@@ -315,6 +316,57 @@ pub fn cover_command(key: u32, service: &Service) -> CoverCommandRequest {
     request
 }
 
+/// ESPHome's `lock`.
+pub fn lock(
+    device: &UniqueId,
+    entity: &ListEntitiesLockResponse,
+) -> Result<EntityDescription, ProtocolError> {
+    Ok(EntityDescription {
+        unique_id: entity_id(device, EntityKind::Lock, entity.key)?,
+        name: Some(Name::try_from(entity.name.as_str())?),
+        device_unique_id: Some(device.clone()),
+        suggested_object_id: None,
+        capabilities: Capabilities::Lock(LockCapabilities {
+            open: entity.supports_open,
+            requires_code: entity.requires_code,
+            code_format: optional(&entity.code_format),
+        }),
+        entity_category: category(entity.entity_category),
+    })
+}
+
+/// ESPHome's `LockState` (api.proto); 0 is "none", which says nothing.
+pub fn lock_state(state: &LockStateResponse) -> Option<State> {
+    let state = match state.state {
+        1 => LockStatus::Locked,
+        2 => LockStatus::Unlocked,
+        3 => LockStatus::Jammed,
+        4 => LockStatus::Locking,
+        5 => LockStatus::Unlocking,
+        6 => LockStatus::Opening,
+        7 => LockStatus::Open,
+        _ => return None,
+    };
+    Some(State::Lock(LockState { state }))
+}
+
+/// A lock command (`LockCommand`: 0 unlock, 1 lock, 2 open), with its code when one was given.
+pub fn lock_command(key: u32, service: &Service) -> LockCommandRequest {
+    let (command, code) = match service {
+        Service::LockUnlock(code) => (0, code),
+        Service::LockOpen(code) => (2, code),
+        Service::LockLock(code) => (1, code),
+        _ => (1, &LockCode::default()),
+    };
+    LockCommandRequest {
+        key,
+        command,
+        has_code: code.code.is_some(),
+        code: code.code.clone().unwrap_or_default(),
+        ..Default::default()
+    }
+}
+
 /// ESPHome's `event`: something that happens, e.g. a button's single or double press.
 pub fn event(
     device: &UniqueId,
@@ -477,7 +529,6 @@ pub fn unmodeled(device: &UniqueId, message: &EspHomeMessage) -> Option<Unmodele
         M::ListEntitiesDateTimeResponse(e) => ("datetime", &e.name),
         M::ListEntitiesFanResponse(e) => ("fan", &e.name),
         M::ListEntitiesInfraredResponse(e) => ("infrared", &e.name),
-        M::ListEntitiesLockResponse(e) => ("lock", &e.name),
         M::ListEntitiesMediaPlayerResponse(e) => ("media_player", &e.name),
         M::ListEntitiesRadioFrequencyResponse(e) => ("radio_frequency", &e.name),
         M::ListEntitiesSirenResponse(e) => ("siren", &e.name),
@@ -750,6 +801,35 @@ mod tests {
                 option: "previous".into()
             }))
         );
+    }
+
+    #[test]
+    fn a_lock_reports_its_state_and_takes_its_code() {
+        let jammed = LockStateResponse {
+            key: 4,
+            state: 3,
+            ..Default::default()
+        };
+        assert_eq!(
+            lock_state(&jammed),
+            Some(State::Lock(LockState {
+                state: LockStatus::Jammed
+            }))
+        );
+        let nothing = LockStateResponse {
+            key: 4,
+            state: 0,
+            ..Default::default()
+        };
+        assert_eq!(lock_state(&nothing), None);
+        let unlock = lock_command(
+            4,
+            &Service::LockUnlock(LockCode {
+                code: Some("1234".into()),
+            }),
+        );
+        assert_eq!((unlock.command, unlock.has_code), (0, true));
+        assert_eq!(unlock.code, "1234");
     }
 
     #[test]

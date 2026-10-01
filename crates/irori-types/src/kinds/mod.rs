@@ -10,6 +10,7 @@ pub(crate) mod button;
 pub(crate) mod cover;
 pub(crate) mod event;
 pub(crate) mod light;
+pub(crate) mod lock;
 pub(crate) mod number;
 pub(crate) mod select;
 pub(crate) mod sensor;
@@ -21,6 +22,7 @@ use crate::{Capabilities, EntityKind, InvariantError, Service, ServiceName, Stat
 use self::cover::{CoverState, OPEN_STATES, OpenState, SetPosition, SetTilt};
 use self::event::EventState;
 use self::light::LightTurnOn;
+use self::lock::{LOCK_STATES, LockCode, LockState, LockStatus};
 use self::number::{NumberSetValue, NumberState};
 use self::select::{SelectOption, SelectState};
 use self::sensor::{SensorState, SensorValue, SensorValueType};
@@ -114,6 +116,17 @@ impl EntityKind {
                 Some(state) if state.is_open_or_opening() => Some(ServiceName::CoverClose),
                 _ => Some(ServiceName::CoverOpen),
             },
+            Self::Lock => match current {
+                Some(Typed::Text(text))
+                    if matches!(
+                        LockStatus::parse(text),
+                        Some(LockStatus::Locked | LockStatus::Locking)
+                    ) =>
+                {
+                    Some(ServiceName::LockUnlock)
+                }
+                _ => Some(ServiceName::LockLock),
+            },
         }
     }
 }
@@ -124,7 +137,9 @@ impl Capabilities {
         Some(match self {
             Self::Light(_) | Self::Switch(_) | Self::BinarySensor(_) => ValueShape::Bool,
             Self::Number(_) => ValueShape::Number,
-            Self::Select(_) | Self::Text(_) | Self::Event(_) | Self::Cover(_) => ValueShape::Text,
+            Self::Select(_) | Self::Text(_) | Self::Event(_) | Self::Cover(_) | Self::Lock(_) => {
+                ValueShape::Text
+            }
             Self::Sensor(sensor) => match sensor.value_type {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
@@ -141,6 +156,7 @@ impl Capabilities {
             Self::Select(select) => Some(&select.options),
             Self::Event(event) => Some(&event.event_types),
             Self::Cover(_) => Some(&OPEN_STATES),
+            Self::Lock(_) => Some(&LOCK_STATES),
             _ => None,
         }
     }
@@ -186,6 +202,10 @@ impl Capabilities {
             }
             (Self::Cover(caps), Service::CoverSetTilt(data)) => cover::supports_tilt(caps, data),
             (Self::Cover(caps), Service::CoverStop) => cover::supports_stop(caps),
+            (Self::Lock(caps), Service::LockLock(data) | Service::LockUnlock(data)) => {
+                lock::supports(caps, data, false)
+            }
+            (Self::Lock(caps), Service::LockOpen(data)) => lock::supports(caps, data, true),
             _ => Ok(()),
         }
     }
@@ -203,6 +223,7 @@ impl State {
             Self::Text(text) => Typed::Text(text.value.clone()),
             Self::Event(event) => Typed::Text(event.event_type.clone()),
             Self::Cover(cover) => Typed::Text(cover.state.as_str().to_owned()),
+            Self::Lock(lock) => Typed::Text(lock.state.as_str().to_owned()),
             Self::Sensor(sensor) => match &sensor.value {
                 SensorValue::Number(n) => Typed::Number(*n),
                 SensorValue::Text(text) => Typed::Text(text.clone()),
@@ -240,6 +261,9 @@ impl State {
             }),
             (EntityKind::Event, _, Typed::Text(event_type)) => State::Event(EventState {
                 event_type: event_type.clone(),
+            }),
+            (EntityKind::Lock, _, Typed::Text(text)) => State::Lock(LockState {
+                state: LockStatus::parse(text)?,
             }),
             (EntityKind::Cover, previous, Typed::Text(text)) => {
                 let state = OpenState::parse(text)?;
@@ -283,6 +307,15 @@ impl Service {
             ServiceName::SwitchTurnOn => Service::SwitchTurnOn,
             ServiceName::SwitchTurnOff => Service::SwitchTurnOff,
             ServiceName::ButtonPress => Service::ButtonPress,
+            ServiceName::LockLock | ServiceName::LockUnlock | ServiceName::LockOpen => {
+                let code = LockCode::deserialize(serde_json::Value::Object(data))
+                    .map_err(|e| InvariantError(format!("`{name}` data: {e}")))?;
+                match name {
+                    ServiceName::LockLock => Service::LockLock(code),
+                    ServiceName::LockUnlock => Service::LockUnlock(code),
+                    _ => Service::LockOpen(code),
+                }
+            }
             ServiceName::CoverOpen => Service::CoverOpen,
             ServiceName::CoverClose => Service::CoverClose,
             ServiceName::CoverStop => Service::CoverStop,
@@ -322,6 +355,11 @@ impl Service {
             Self::TextSetValue(data) => serde_json::to_value(data).ok()?,
             Self::CoverSetPosition(data) => serde_json::to_value(data).ok()?,
             Self::CoverSetTilt(data) => serde_json::to_value(data).ok()?,
+            Self::LockLock(code) | Self::LockUnlock(code) | Self::LockOpen(code)
+                if code.code.is_some() =>
+            {
+                serde_json::to_value(code).ok()?
+            }
             _ => return None,
         };
         match value {
@@ -349,6 +387,9 @@ impl Service {
             Self::NumberSetValue(data) => Some(Typed::Number(data.value)),
             Self::SelectSelectOption(data) => Some(Typed::Text(data.option.clone())),
             Self::TextSetValue(data) => Some(Typed::Text(data.value.clone())),
+            Self::LockLock(_) => Some(Typed::Text(LockStatus::Locked.as_str().to_owned())),
+            Self::LockUnlock(_) => Some(Typed::Text(LockStatus::Unlocked.as_str().to_owned())),
+            Self::LockOpen(_) => Some(Typed::Text(LockStatus::Open.as_str().to_owned())),
             Self::CoverOpen => Some(Typed::Text(OpenState::Open.as_str().to_owned())),
             Self::CoverClose => Some(Typed::Text(OpenState::Closed.as_str().to_owned())),
             Self::CoverSetPosition(data) => Some(Typed::Text(
@@ -401,6 +442,9 @@ impl ServiceName {
                 | Self::TextSetValue
                 | Self::CoverSetPosition
                 | Self::CoverSetTilt
+                | Self::LockLock
+                | Self::LockUnlock
+                | Self::LockOpen
         )
     }
 }

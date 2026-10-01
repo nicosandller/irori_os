@@ -268,6 +268,8 @@ manifest's `entity_kinds`.
 | `cover.stop` | none | Needs `stop` |
 | `cover.set_position` | `position` 0–100 | Needs `position` |
 | `cover.set_tilt` | `tilt` 0–100 | Needs `tilt` |
+| `lock.lock`, `lock.unlock` | `code`, optional | The code is required when the lock `requires_code`. `lock.toggle` unlocks a locked or locking lock and locks anything else |
+| `lock.open` | `code`, optional | Needs `open` |
 
 `sensor` and `binary_sensor` have no services.
 

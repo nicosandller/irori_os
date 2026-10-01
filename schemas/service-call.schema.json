@@ -288,6 +288,63 @@
           "data"
         ]
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "lock.lock"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/LockCode"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "lock.unlock"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/LockCode"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "lock.open"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/LockCode"
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -391,6 +448,19 @@
           "rgb"
         ]
       }
+    },
+    "LockCode": {
+      "description": "Data for `lock.lock`, `lock.unlock` and `lock.open`: the code, for a lock that needs one.\n\nIts `Debug` never shows the code, so a call that ends up in a log or an error message doesn't\ntake the code with it.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "NumberSetValue": {
       "description": "Data for `number.set_value`.",
@@ -539,7 +609,10 @@
         "cover.close",
         "cover.stop",
         "cover.set_position",
-        "cover.set_tilt"
+        "cover.set_tilt",
+        "lock.lock",
+        "lock.unlock",
+        "lock.open"
       ]
     },
     "SetPosition": {

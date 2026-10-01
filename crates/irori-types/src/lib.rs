@@ -47,6 +47,7 @@ pub use kinds::cover::{
 };
 pub use kinds::event::{EventCapabilities, EventClass, EventState};
 pub use kinds::light::{ColorMode, ColorTempRange, LightCapabilities, LightState, LightTurnOn};
+pub use kinds::lock::{LockCapabilities, LockCode, LockState, LockStatus};
 pub use kinds::number::{NumberCapabilities, NumberMode, NumberSetValue, NumberState};
 pub use kinds::select::{SelectCapabilities, SelectOption, SelectState};
 pub use kinds::sensor::{

@@ -17,6 +17,7 @@ pub enum Component {
     Button,
     Event,
     Cover,
+    Lock,
 }
 
 impl Component {
@@ -32,6 +33,7 @@ impl Component {
             "button" => Some(Self::Button),
             "event" => Some(Self::Event),
             "cover" => Some(Self::Cover),
+            "lock" => Some(Self::Lock),
             _ => None,
         }
     }
@@ -50,6 +52,7 @@ impl fmt::Display for Component {
             Self::Button => "button",
             Self::Event => "event",
             Self::Cover => "cover",
+            Self::Lock => "lock",
         })
     }
 }

@@ -66,6 +66,26 @@
       "type": "string",
       "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
     },
+    "LockStatus": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "locked",
+            "unlocked",
+            "locking",
+            "unlocking",
+            "open",
+            "opening"
+          ]
+        },
+        {
+          "description": "Stuck: it tried and couldn't finish.",
+          "type": "string",
+          "const": "jammed"
+        }
+      ]
+    },
     "OpenState": {
       "description": "Where something that opens and closes is: a cover's or a valve's.",
       "type": "string",
@@ -305,6 +325,23 @@
               "format": "uint8",
               "maximum": 100,
               "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "lock"
+            },
+            "state": {
+              "$ref": "#/$defs/LockStatus"
             }
           },
           "additionalProperties": false,

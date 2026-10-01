@@ -14,9 +14,9 @@ use esphome_client::types::{
     BinarySensorStateResponse, CoverStateResponse, DeviceInfoResponse, EspHomeMessage,
     HelloResponse, ListEntitiesBinarySensorResponse, ListEntitiesButtonResponse,
     ListEntitiesCoverResponse, ListEntitiesDoneResponse, ListEntitiesFanResponse,
-    ListEntitiesNumberResponse, ListEntitiesSelectResponse, ListEntitiesSensorResponse,
-    ListEntitiesTextResponse, NumberStateResponse, SelectStateResponse, SensorStateResponse,
-    TextStateResponse,
+    ListEntitiesLockResponse, ListEntitiesNumberResponse, ListEntitiesSelectResponse,
+    ListEntitiesSensorResponse, ListEntitiesTextResponse, LockStateResponse, NumberStateResponse,
+    SelectStateResponse, SensorStateResponse, TextStateResponse,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -33,6 +33,7 @@ const LED_MODE_KEY: u32 = 6;
 const MESSAGE_KEY: u32 = 7;
 const RESTART_KEY: u32 = 8;
 const BLIND_KEY: u32 = 9;
+const DOOR_KEY: u32 = 10;
 /// 32 bytes. Printed at startup as base64 so the waiting-for-a-key panel has something to paste.
 const LAB_KEY: [u8; 32] = *b"irori-lab-esphome-key-32bytes!!!";
 
@@ -205,6 +206,19 @@ fn answers(message: EspHomeMessage, board: &Board) -> Vec<EspHomeMessage> {
                 ..Default::default()
             })]
         }
+        // The lock does what it's told: `LockCommand` 0 unlock, 1 lock, 2 open, answered with
+        // `LockState` 2 unlocked, 1 locked, 7 open.
+        EspHomeMessage::LockCommandRequest(request) => {
+            vec![EspHomeMessage::LockStateResponse(LockStateResponse {
+                key: request.key,
+                state: match request.command {
+                    0 => 2,
+                    2 => 7,
+                    _ => 1,
+                },
+                ..Default::default()
+            })]
+        }
         // A real board would restart; this one just says so. A button reports nothing.
         EspHomeMessage::ButtonCommandRequest(request) => {
             println!("{}: button {} pressed", board.name, request.key);
@@ -326,6 +340,12 @@ fn entities(_board: &Board) -> Vec<EspHomeMessage> {
             supports_stop: true,
             ..Default::default()
         }),
+        EspHomeMessage::ListEntitiesLockResponse(ListEntitiesLockResponse {
+            key: DOOR_KEY,
+            name: "Door lock".to_owned(),
+            supports_open: true,
+            ..Default::default()
+        }),
         EspHomeMessage::ListEntitiesFanResponse(ListEntitiesFanResponse {
             key: FAN_KEY,
             name: "Cooling fan".to_owned(),
@@ -351,6 +371,11 @@ fn states(board: &Board) -> Vec<EspHomeMessage> {
         EspHomeMessage::NumberStateResponse(NumberStateResponse {
             key: LED_KEY,
             state: 40.0,
+            ..Default::default()
+        }),
+        EspHomeMessage::LockStateResponse(LockStateResponse {
+            key: DOOR_KEY,
+            state: 1,
             ..Default::default()
         }),
         EspHomeMessage::CoverStateResponse(CoverStateResponse {

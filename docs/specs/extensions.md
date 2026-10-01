@@ -124,6 +124,7 @@ which format it reads, and Irori converts down (`irori_types::format`):
 | 6 | `button` |
 | 7 | `event` |
 | 8 | `cover` |
+| 9 | `lock` |
 
 A reader of an older format isn't sent entities of newer kinds at all (nor their states, history
 or changes), and is sent the others without the newer fields or values. Every change to what an

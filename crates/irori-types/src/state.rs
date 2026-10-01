@@ -10,6 +10,7 @@ use crate::kinds::binary_sensor::BinarySensorState;
 use crate::kinds::cover::CoverState;
 use crate::kinds::event::EventState;
 use crate::kinds::light::LightState;
+use crate::kinds::lock::LockState;
 use crate::kinds::number::NumberState;
 use crate::kinds::select::SelectState;
 use crate::kinds::sensor::SensorState;
@@ -138,6 +139,7 @@ pub enum State {
     Text(TextState),
     Event(EventState),
     Cover(CoverState),
+    Lock(LockState),
 }
 
 impl State {
@@ -153,7 +155,8 @@ impl State {
             | Self::BinarySensor(_)
             | Self::Select(_)
             | Self::Text(_)
-            | Self::Event(_) => Ok(()),
+            | Self::Event(_)
+            | Self::Lock(_) => Ok(()),
         }
     }
 
@@ -168,6 +171,7 @@ impl State {
             Self::Text(_) => EntityKind::Text,
             Self::Event(_) => EntityKind::Event,
             Self::Cover(_) => EntityKind::Cover,
+            Self::Lock(_) => EntityKind::Lock,
         }
     }
 }

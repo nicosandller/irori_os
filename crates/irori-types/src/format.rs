@@ -24,7 +24,8 @@ use crate::{Entity, EntityKind, EntityState};
 /// 6. Adds `button`.
 /// 7. Adds `event`.
 /// 8. Adds `cover`.
-pub const ENTITY_FORMAT: u32 = 8;
+/// 9. Adds `lock`.
+pub const ENTITY_FORMAT: u32 = 9;
 
 pub(crate) fn first() -> u32 {
     1
@@ -46,6 +47,7 @@ impl EntityKind {
             Self::Button => 6,
             Self::Event => 7,
             Self::Cover => 8,
+            Self::Lock => 9,
         }
     }
 }
@@ -241,6 +243,13 @@ mod tests {
         .expect("valid");
         assert_eq!(entity_for(7, &blind), None);
         assert!(entity_for(8, &blind).is_some());
+        let door: Entity = serde_json::from_str(
+            r#"{"id": "lock.door", "protocol": "esphome", "unique_id": "d",
+                "name": "Door", "capabilities": {"kind": "lock"}}"#,
+        )
+        .expect("valid");
+        assert_eq!(entity_for(8, &door), None);
+        assert!(entity_for(9, &door).is_some());
     }
 
     /// Every `const` and `enum` string in a schema: an enum's names however schemars lays them out.

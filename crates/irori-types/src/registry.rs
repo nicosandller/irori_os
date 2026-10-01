@@ -9,6 +9,7 @@ use crate::kinds::button::ButtonCapabilities;
 use crate::kinds::cover::CoverCapabilities;
 use crate::kinds::event::EventCapabilities;
 use crate::kinds::light::LightCapabilities;
+use crate::kinds::lock::LockCapabilities;
 use crate::kinds::number::NumberCapabilities;
 use crate::kinds::select::SelectCapabilities;
 use crate::kinds::sensor::SensorCapabilities;
@@ -191,6 +192,7 @@ pub enum Capabilities {
     Button(ButtonCapabilities),
     Event(EventCapabilities),
     Cover(CoverCapabilities),
+    Lock(LockCapabilities),
 }
 
 impl Capabilities {
@@ -206,6 +208,7 @@ impl Capabilities {
             Self::Button(_) => EntityKind::Button,
             Self::Event(_) => EntityKind::Event,
             Self::Cover(_) => EntityKind::Cover,
+            Self::Lock(_) => EntityKind::Lock,
         }
     }
 

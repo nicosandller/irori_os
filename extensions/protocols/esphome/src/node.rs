@@ -492,6 +492,9 @@ async fn list_entities(
             EspHomeMessage::ListEntitiesCoverResponse(e) => {
                 (e.key, "cover", e.name.clone(), map::cover(device, e))
             }
+            EspHomeMessage::ListEntitiesLockResponse(e) => {
+                (e.key, "lock", e.name.clone(), map::lock(device, e))
+            }
             EspHomeMessage::ListEntitiesTextSensorResponse(e) => (
                 e.key,
                 "text_sensor",
@@ -555,6 +558,7 @@ fn report(
             };
             (s.key, Some(map::light_state(s, known)))
         }
+        EspHomeMessage::LockStateResponse(s) => (s.key, map::lock_state(s)),
         EspHomeMessage::CoverStateResponse(s) => {
             let Some(Capabilities::Cover(known)) = capabilities.get(&s.key) else {
                 return None;
@@ -702,6 +706,10 @@ async fn command(
         | Service::CoverSetPosition(_)
         | Service::CoverSetTilt(_) => client
             .try_write(map::cover_command(key, &incoming.call.service))
+            .await
+            .map_err(|e| e.to_string()),
+        Service::LockLock(_) | Service::LockUnlock(_) | Service::LockOpen(_) => client
+            .try_write(map::lock_command(key, &incoming.call.service))
             .await
             .map_err(|e| e.to_string()),
         Service::SwitchTurnOn | Service::SwitchTurnOff => client

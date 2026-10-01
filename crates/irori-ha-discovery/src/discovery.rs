@@ -10,9 +10,9 @@
 use irori_types::{
     BinarySensorCapabilities, BinarySensorClass, ButtonCapabilities, ButtonClass, Capabilities,
     ColorTempRange, CoverCapabilities, CoverClass, EntityCategory, EventCapabilities, EventClass,
-    LightCapabilities, Name, NumberCapabilities, NumberMode, SelectCapabilities,
-    SensorCapabilities, SensorClass, SensorValueType, StateClass, SwitchCapabilities, SwitchClass,
-    TextCapabilities, TextMode, UniqueId,
+    LightCapabilities, LockCapabilities, LockStatus, Name, NumberCapabilities, NumberMode,
+    SelectCapabilities, SensorCapabilities, SensorClass, SensorValueType, StateClass,
+    SwitchCapabilities, SwitchClass, TextCapabilities, TextMode, UniqueId,
 };
 
 use crate::template::{CommandTemplate, ValueTemplate};
@@ -141,6 +141,23 @@ pub enum EntityTopics {
     },
     /// Something that opens and closes. Boxed: Home Assistant lets nearly every part of it vary.
     Cover(Box<CoverTopics>),
+    /// A lock, as Home Assistant's MQTT lock lets it vary.
+    Lock(Box<LockTopics>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockTopics {
+    pub command_topic: String,
+    pub command_template: CommandTemplate,
+    pub payload_lock: String,
+    pub payload_unlock: String,
+    /// `None` when it can't open the door.
+    pub payload_open: Option<String>,
+    pub state_topic: Option<String>,
+    pub value_template: ValueTemplate,
+    /// What it says for each state, in Irori's order: locked, unlocked, locking, unlocking,
+    /// jammed, open, opening.
+    pub said: [(String, LockStatus); 7],
 }
 
 /// How a cover is told what to do and says where it is, all as Home Assistant's MQTT cover lets
@@ -238,6 +255,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::Button => parse_button(&root)?,
         Component::Event => parse_event(&root)?,
         Component::Cover => parse_cover(&root)?,
+        Component::Lock => parse_lock(&root)?,
     };
 
     Ok(ParsedConfig {
@@ -515,6 +533,42 @@ fn parse_select(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics)
             command_template,
             value_template: ValueTemplate::parse(str_field(root, "value_template")),
         },
+    ))
+}
+
+fn parse_lock(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
+    let (command_topic, command_template) = plain_command(root, "a lock")?;
+    let word = |key: &str, default: &str| owned_str(root, key, default);
+    let payload_open = str_field(root, "payload_open").map(str::to_owned);
+    let topics = LockTopics {
+        command_topic,
+        command_template,
+        payload_lock: word("payload_lock", "LOCK"),
+        payload_unlock: word("payload_unlock", "UNLOCK"),
+        payload_open: payload_open.clone(),
+        state_topic: str_field(root, "state_topic").map(str::to_owned),
+        value_template: ValueTemplate::parse(str_field(root, "value_template")),
+        said: [
+            (word("state_locked", "LOCKED"), LockStatus::Locked),
+            (word("state_unlocked", "UNLOCKED"), LockStatus::Unlocked),
+            (word("state_locking", "LOCKING"), LockStatus::Locking),
+            (word("state_unlocking", "UNLOCKING"), LockStatus::Unlocking),
+            (word("state_jammed", "JAMMED"), LockStatus::Jammed),
+            (word("state_open", "OPEN"), LockStatus::Open),
+            (word("state_opening", "OPENING"), LockStatus::Opening),
+        ],
+    };
+    // Home Assistant checks an MQTT lock's `code_format` itself and never sends the code to the
+    // device. Irori has no regular expressions to check it with, so it's kept for pages to show
+    // and not demanded; the page asks before unlocking either way.
+    let capabilities = LockCapabilities {
+        open: payload_open.is_some(),
+        requires_code: false,
+        code_format: str_field(root, "code_format").map(str::to_owned),
+    };
+    Ok((
+        Capabilities::Lock(capabilities),
+        EntityTopics::Lock(Box::new(topics)),
     ))
 }
 
@@ -999,6 +1053,47 @@ mod tests {
         "set_position_topic": "zigbee2mqtt/Office blind/set",
         "position_topic": "zigbee2mqtt/Office blind"
     }"#;
+
+    #[test]
+    fn a_z2m_lock_says_lock_and_unlock() {
+        // Zigbee2MQTT's `case "lock"`: its own words for the two states.
+        let payload = br#"{"unique_id": "0x02_lock", "name": null,
+            "device": {"identifiers": ["zigbee2mqtt_0x02"], "name": "Front door"},
+            "command_topic": "zigbee2mqtt/Front door/set", "state_topic": "zigbee2mqtt/Front door",
+            "value_template": "{{ value_json[\"state\"] }}",
+            "state_locked": "LOCK", "state_unlocked": "UNLOCK"}"#;
+        let parsed = parse(Component::Lock, payload).expect("valid");
+        assert_eq!(
+            parsed.capabilities,
+            Capabilities::Lock(LockCapabilities::default()),
+            "no open, no code"
+        );
+        assert_eq!(
+            crate::state::decode(
+                &parsed.topics,
+                "zigbee2mqtt/Front door",
+                br#"{"state": "UNLOCK", "battery": 80}"#,
+                None
+            ),
+            Some(Ok(irori_types::State::Lock(irori_types::LockState {
+                state: LockStatus::Unlocked
+            })))
+        );
+        let sent = crate::state::encode(
+            &parsed.topics,
+            &irori_types::Service::LockLock(irori_types::LockCode::default()),
+        )
+        .expect("lock");
+        assert_eq!(sent[0].topic, "zigbee2mqtt/Front door/set");
+        assert_eq!(sent[0].payload, b"LOCK");
+        assert!(
+            crate::state::encode(
+                &parsed.topics,
+                &irori_types::Service::LockOpen(irori_types::LockCode::default())
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn a_z2m_cover_is_read_and_sent_to_a_position() {
