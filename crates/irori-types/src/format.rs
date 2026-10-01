@@ -16,7 +16,8 @@ use crate::{Entity, EntityKind, EntityState};
 /// The format this build writes.
 ///
 /// 1. The first: `light`, `switch`, `sensor`, `binary_sensor`.
-/// 2. Adds `entity_category` on entities and `options` on text sensors.
+/// 2. Adds `entity_category` on entities, `options` on text sensors, and Home Assistant's full
+///    lists of sensor and binary sensor classes.
 /// 3. Adds `number`.
 /// 4. Adds `select`.
 /// 5. Adds `text`.
@@ -52,6 +53,71 @@ pub fn readable(format: u32, kind: EntityKind) -> bool {
     kind.since_format() <= format
 }
 
+/// The sensor classes the first format had, by name. A reader of it fails on any other.
+const FIRST_SENSOR_CLASSES: &[&str] = &[
+    "temperature",
+    "humidity",
+    "illuminance",
+    "pressure",
+    "power",
+    "energy",
+    "voltage",
+    "current",
+    "battery",
+    "co2",
+    "pm25",
+    "signal_strength",
+    "distance",
+];
+
+/// The binary sensor classes the first format had.
+const FIRST_BINARY_SENSOR_CLASSES: &[&str] = &[
+    "motion",
+    "occupancy",
+    "door",
+    "window",
+    "moisture",
+    "smoke",
+    "gas",
+    "vibration",
+    "plug",
+    "connectivity",
+    "problem",
+    "battery",
+];
+
+/// A class as a first-format reader knows it: the same, the older one a newer class was split
+/// out of (`presence` was `occupancy`), or none.
+fn first_format_class(kind: &str, class: &str) -> Option<&'static str> {
+    let (known, folded): (&[&str], &[(&str, &str)]) = match kind {
+        "sensor" => (
+            FIRST_SENSOR_CLASSES,
+            &[("atmospheric_pressure", "pressure")],
+        ),
+        "binary_sensor" => (
+            FIRST_BINARY_SENSOR_CLASSES,
+            &[
+                ("presence", "occupancy"),
+                ("garage_door", "door"),
+                ("opening", "window"),
+                ("safety", "problem"),
+            ],
+        ),
+        // Switch classes haven't changed.
+        _ => return None,
+    };
+    known
+        .iter()
+        .find(|known| **known == class)
+        .copied()
+        .or_else(|| {
+            folded
+                .iter()
+                .find(|(new, _)| *new == class)
+                .map(|(_, old)| *old)
+        })
+}
+
 /// `entity` as a reader of `format` can parse it, or `None` if its kind is newer than that.
 pub fn entity_for(format: u32, entity: &Entity) -> Option<serde_json::Value> {
     if !readable(format, entity.id.kind()) {
@@ -67,6 +133,26 @@ pub fn entity_for(format: u32, entity: &Entity) -> Option<serde_json::Value> {
             .and_then(serde_json::Value::as_object_mut)
         {
             capabilities.remove("options");
+            let kind = capabilities
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if kind != "switch"
+                && let Some(class) = capabilities
+                    .get("device_class")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            {
+                match first_format_class(&kind, &class) {
+                    Some(old) => {
+                        capabilities.insert("device_class".into(), old.into());
+                    }
+                    None => {
+                        capabilities.remove("device_class");
+                    }
+                }
+            }
         }
     }
     Some(value)
@@ -146,6 +232,75 @@ mod tests {
         .expect("valid");
         assert_eq!(entity_for(6, &remote), None);
         assert!(entity_for(7, &remote).is_some());
+    }
+
+    /// Every `const` and `enum` string in a schema: an enum's names however schemars lays them out.
+    fn names<'a>(schema: &'a serde_json::Value, into: &mut Vec<&'a str>) {
+        match schema {
+            serde_json::Value::Object(object) => {
+                for (key, value) in object {
+                    match (key.as_str(), value) {
+                        ("const", serde_json::Value::String(name)) => into.push(name),
+                        ("enum", serde_json::Value::Array(list)) => {
+                            into.extend(list.iter().filter_map(serde_json::Value::as_str));
+                        }
+                        _ => names(value, into),
+                    }
+                }
+            }
+            serde_json::Value::Array(list) => list.iter().for_each(|v| names(v, into)),
+            _ => {}
+        }
+    }
+
+    /// Every class there is now reaches a first-format reader as one of its own, or not at all.
+    #[test]
+    fn a_first_format_reader_only_ever_sees_its_own_classes() {
+        let schemas = crate::schemas();
+        let entity_schema = schemas
+            .iter()
+            .find(|doc| doc.name == "entity")
+            .expect("an entity schema");
+        let defs = &entity_schema.schema.as_value()["$defs"];
+        for (kind, enum_name, first) in [
+            ("sensor", "SensorClass", FIRST_SENSOR_CLASSES),
+            (
+                "binary_sensor",
+                "BinarySensorClass",
+                FIRST_BINARY_SENSOR_CLASSES,
+            ),
+        ] {
+            let mut all = Vec::new();
+            names(&defs[enum_name], &mut all);
+            assert!(all.len() > first.len(), "{enum_name}");
+            for class in all {
+                let capabilities = if kind == "sensor" {
+                    serde_json::json!({"kind": "sensor", "value_type": "number", "device_class": class})
+                } else {
+                    serde_json::json!({"kind": "binary_sensor", "device_class": class})
+                };
+                let entity: Entity = serde_json::from_value(serde_json::json!({
+                    "id": format!("{kind}.x"), "protocol": "p", "unique_id": "u", "name": "X",
+                    "capabilities": capabilities,
+                }))
+                .expect("valid");
+                let old = entity_for(1, &entity).expect("in the first format");
+                match old["capabilities"]["device_class"].as_str() {
+                    Some(sent) => assert!(first.contains(&sent), "{class} sent as {sent}"),
+                    None => assert!(!first.contains(&class), "{class} dropped"),
+                }
+            }
+        }
+        // A split-out class goes back to what it was part of.
+        let presence: Entity = serde_json::from_value(serde_json::json!({
+            "id": "binary_sensor.desk", "protocol": "p", "unique_id": "u", "name": "Desk",
+            "capabilities": {"kind": "binary_sensor", "device_class": "presence"},
+        }))
+        .expect("valid");
+        assert_eq!(
+            entity_for(1, &presence).expect("sent")["capabilities"]["device_class"],
+            "occupancy"
+        );
     }
 
     #[test]

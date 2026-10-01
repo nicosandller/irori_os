@@ -117,7 +117,7 @@ which format it reads, and Irori converts down (`irori_types::format`):
 | Format | Adds |
 |---|---|
 | 1 | `light`, `switch`, `sensor`, `binary_sensor` |
-| 2 | `entity_category` on entities, `options` on text sensors |
+| 2 | `entity_category` on entities, `options` on text sensors, Home Assistant's full sensor and binary sensor class lists (a first-format reader gets the classes it had: `presence` as `occupancy`, a class it never had left out) |
 | 3 | `number` |
 | 4 | `select` |
 | 5 | `text` |
@@ -125,8 +125,9 @@ which format it reads, and Irori converts down (`irori_types::format`):
 | 7 | `event` |
 
 A reader of an older format isn't sent entities of newer kinds at all (nor their states, history
-or changes), and is sent the others without the newer fields. Every change to what an entity or
-state looks like on the wire adds a format. An extension raises its `entity_format` once it has
+or changes), and is sent the others without the newer fields or values. Every change to what an
+entity or state looks like on the wire adds a format: a new kind or field, and also a new value
+in a list that already exists (a class, a mode), since a strict reader fails on that too. An extension raises its `entity_format` once it has
 learned what the new one adds.
 
 **Package paths** (`config_schema`, `run.command`) are relative to the package root: `/`-separated
