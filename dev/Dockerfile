@@ -82,6 +82,9 @@ COPY extensions/demo/irori-extension.toml extensions/demo/irori-extension.toml
 COPY extensions/protocols/esphome/irori-extension.toml extensions/protocols/esphome/irori-extension.toml
 # Manifests for members this stage does not compile. Without them cargo refuses to load the workspace.
 COPY crates/irori/Cargo.toml crates/irori/Cargo.toml
+# index.html copies this into the page. Trunk canonicalizes the path and
+# fails the build when the file is not there.
+COPY crates/irori/assets/favicon.svg crates/irori/assets/favicon.svg
 COPY crates/irori-core/Cargo.toml crates/irori-core/Cargo.toml
 COPY crates/irori-flows/Cargo.toml crates/irori-flows/Cargo.toml
 COPY crates/irori-recorder/Cargo.toml crates/irori-recorder/Cargo.toml
