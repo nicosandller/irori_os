@@ -954,6 +954,13 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
             if switch.on { "On" } else { "Off" }.to_owned()
         }
         (Capabilities::Select(_), Some(State::Select(select))) => select.option.clone(),
+        (Capabilities::Text(text), Some(State::Text(state))) => {
+            if text.mode == irori_types::TextMode::Password {
+                "Hidden".to_owned()
+            } else {
+                state.value.clone()
+            }
+        }
         (Capabilities::Number(capabilities), Some(State::Number(number))) => {
             let unit = capabilities
                 .unit

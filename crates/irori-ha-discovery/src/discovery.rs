@@ -11,7 +11,7 @@ use irori_types::{
     BinarySensorCapabilities, BinarySensorClass, Capabilities, ColorTempRange, EntityCategory,
     LightCapabilities, Name, NumberCapabilities, NumberMode, SelectCapabilities,
     SensorCapabilities, SensorClass, SensorValueType, StateClass, SwitchCapabilities, SwitchClass,
-    UniqueId,
+    TextCapabilities, TextMode, UniqueId,
 };
 
 use crate::template::ValueTemplate;
@@ -118,6 +118,12 @@ pub enum EntityTopics {
         command_topic: String,
         value_template: ValueTemplate,
     },
+    /// A piece of text: published as it is, read back through `value_template`.
+    Text {
+        state_topic: Option<String>,
+        command_topic: String,
+        value_template: ValueTemplate,
+    },
 }
 
 /// Everything Irori needs from one discovery config payload.
@@ -165,6 +171,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::BinarySensor => parse_binary_sensor(&root)?,
         Component::Number => parse_number(&root)?,
         Component::Select => parse_select(&root)?,
+        Component::Text => parse_text(&root)?,
     };
 
     Ok(ParsedConfig {
@@ -438,6 +445,34 @@ fn parse_select(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics)
     Ok((
         Capabilities::Select(capabilities),
         EntityTopics::Select {
+            state_topic: str_field(root, "state_topic").map(str::to_owned),
+            command_topic,
+            value_template: ValueTemplate::parse(str_field(root, "value_template")),
+        },
+    ))
+}
+
+fn parse_text(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
+    let command_topic = plain_command(root, "a text")?;
+    let length = |key: &str, default: u32| {
+        root.get(key)
+            .and_then(serde_json::Value::as_u64)
+            .map_or(default, |n| u32::try_from(n).unwrap_or(u32::MAX))
+    };
+    // Home Assistant's own defaults, and its 255-character cap.
+    let max_length = length("max", 255).min(255);
+    let capabilities = TextCapabilities {
+        min_length: length("min", 0).min(max_length),
+        max_length,
+        pattern: str_field(root, "pattern").map(str::to_owned),
+        mode: match str_field(root, "mode") {
+            Some("password") => TextMode::Password,
+            _ => TextMode::Text,
+        },
+    };
+    Ok((
+        Capabilities::Text(capabilities),
+        EntityTopics::Text {
             state_topic: str_field(root, "state_topic").map(str::to_owned),
             command_topic,
             value_template: ValueTemplate::parse(str_field(root, "value_template")),
@@ -759,6 +794,36 @@ mod tests {
 
         let no_options = br#"{"unique_id": "s", "name": "Mode", "command_topic": "x/set"}"#;
         assert!(parse(Component::Select, no_options).is_err());
+    }
+
+    #[test]
+    fn parses_a_text_with_home_assistants_defaults() {
+        let payload = br#"{"unique_id": "msg", "name": "Message", "command_topic": "panel/msg/set",
+            "state_topic": "panel/msg", "max": 1000, "mode": "password"}"#;
+        let parsed = parse(Component::Text, payload).expect("valid");
+        let Capabilities::Text(caps) = &parsed.capabilities else {
+            panic!("a text");
+        };
+        assert_eq!(
+            (caps.min_length, caps.max_length),
+            (0, 255),
+            "capped at 255"
+        );
+        assert_eq!(caps.mode, TextMode::Password);
+        assert_eq!(
+            crate::state::decode(&parsed.topics, "panel/msg", b"hello", None),
+            Some(Ok(irori_types::State::Text(irori_types::TextState {
+                value: "hello".into()
+            })))
+        );
+        let sent = crate::state::encode(
+            &parsed.topics,
+            &irori_types::Service::TextSetValue(irori_types::TextSetValue {
+                value: "Dinner at 7".into(),
+            }),
+        )
+        .expect("a text takes set_value");
+        assert_eq!(sent[0].payload, b"Dinner at 7");
     }
 
     #[test]

@@ -10,6 +10,7 @@ use crate::kinds::number::NumberCapabilities;
 use crate::kinds::select::SelectCapabilities;
 use crate::kinds::sensor::SensorCapabilities;
 use crate::kinds::switch::SwitchCapabilities;
+use crate::kinds::text::TextCapabilities;
 use crate::{
     AreaId, Description, DeviceId, EntityId, EntityKind, FloorId, InvariantError, Name, ProtocolId,
     UniqueId,
@@ -183,6 +184,7 @@ pub enum Capabilities {
     BinarySensor(BinarySensorCapabilities),
     Number(NumberCapabilities),
     Select(SelectCapabilities),
+    Text(TextCapabilities),
 }
 
 impl Capabilities {
@@ -194,6 +196,7 @@ impl Capabilities {
             Self::BinarySensor(_) => EntityKind::BinarySensor,
             Self::Number(_) => EntityKind::Number,
             Self::Select(_) => EntityKind::Select,
+            Self::Text(_) => EntityKind::Text,
         }
     }
 
@@ -207,6 +210,7 @@ impl Capabilities {
             Self::Sensor(sensor) => sensor.validate(),
             Self::Number(number) => number.validate(),
             Self::Select(select) => select.validate(),
+            Self::Text(text) => text.validate(),
             _ => Ok(()),
         }
     }

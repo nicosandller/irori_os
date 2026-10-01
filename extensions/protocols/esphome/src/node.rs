@@ -13,7 +13,7 @@ use esphome_client::EspHomeClient;
 use esphome_client::error::ClientError;
 use esphome_client::types::{
     EspHomeMessage, LightCommandRequest, ListEntitiesRequest, NumberCommandRequest, PingResponse,
-    SelectCommandRequest, SubscribeStatesRequest, SwitchCommandRequest,
+    SelectCommandRequest, SubscribeStatesRequest, SwitchCommandRequest, TextCommandRequest,
 };
 use irori_protocol::types::{
     Capabilities, ContextId, DeviceDescription, EntityDescription, LightCapabilities, Service,
@@ -470,6 +470,7 @@ async fn list_entities(
             EspHomeMessage::ListEntitiesSensorResponse(e) => (e.key, map::sensor(device, e)),
             EspHomeMessage::ListEntitiesNumberResponse(e) => (e.key, map::number(device, e)),
             EspHomeMessage::ListEntitiesSelectResponse(e) => (e.key, map::select(device, e)),
+            EspHomeMessage::ListEntitiesTextResponse(e) => (e.key, map::text(device, e)),
             EspHomeMessage::ListEntitiesTextSensorResponse(e) => {
                 (e.key, map::text_sensor(device, e))
             }
@@ -520,6 +521,7 @@ fn report(
         EspHomeMessage::TextSensorStateResponse(s) => (s.key, map::text_sensor_state(s)),
         EspHomeMessage::NumberStateResponse(s) => (s.key, map::number_state(s)),
         EspHomeMessage::SelectStateResponse(s) => (s.key, map::select_state(s)),
+        EspHomeMessage::TextStateResponse(s) => (s.key, map::text_state(s)),
         _ => return None,
     };
     let unique_id = by_key.get(&key)?.clone();
@@ -624,6 +626,14 @@ async fn command(
             .try_write(SelectCommandRequest {
                 key,
                 state: data.option.clone(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| e.to_string()),
+        Service::TextSetValue(data) => client
+            .try_write(TextCommandRequest {
+                key,
+                state: data.value.clone(),
                 ..Default::default()
             })
             .await

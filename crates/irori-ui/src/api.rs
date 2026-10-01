@@ -433,6 +433,16 @@ pub async fn set_light(
     command(entity_id, "turn_on", serde_json::to_value(data).ok()).await
 }
 
+/// Sets a text entity to `value`.
+pub async fn set_text(entity_id: &EntityId, value: String) -> Result<Option<EntityState>, String> {
+    command(
+        entity_id,
+        "set_value",
+        Some(serde_json::json!({ "value": value })),
+    )
+    .await
+}
+
 /// Puts a select on `option`, one of its choices.
 pub async fn select_option(
     entity_id: &EntityId,

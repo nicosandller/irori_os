@@ -193,6 +193,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^text\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "text"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -457,6 +480,46 @@
             "kind",
             "options"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "text"
+            },
+            "max_length": {
+              "description": "The most characters it takes, at most 255.",
+              "type": "integer",
+              "format": "uint32",
+              "default": 255,
+              "maximum": 255,
+              "minimum": 0
+            },
+            "min_length": {
+              "description": "The fewest characters it takes.",
+              "type": "integer",
+              "format": "uint32",
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0
+            },
+            "mode": {
+              "description": "Whether it's a secret, which pages don't show.",
+              "$ref": "#/$defs/TextMode"
+            },
+            "pattern": {
+              "description": "A regular expression the text has to match, as the device says. The device checks it;\nIrori shows it to whoever is typing.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
@@ -532,6 +595,10 @@
         {
           "maxLength": 71,
           "pattern": "^select\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^text\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -664,6 +731,13 @@
       "enum": [
         "outlet",
         "switch"
+      ]
+    },
+    "TextMode": {
+      "type": "string",
+      "enum": [
+        "text",
+        "password"
       ]
     },
     "UniqueId": {

@@ -195,6 +195,11 @@
           "description": "One choice out of a fixed list, e.g. a sensor's sensitivity or a heater's mode.",
           "type": "string",
           "const": "select"
+        },
+        {
+          "description": "A piece of text set by a person, e.g. a message for a display.",
+          "type": "string",
+          "const": "text"
         }
       ]
     },

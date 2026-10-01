@@ -11,6 +11,7 @@ pub(crate) mod number;
 pub(crate) mod select;
 pub(crate) mod sensor;
 pub(crate) mod switch;
+pub(crate) mod text;
 
 use crate::{Capabilities, EntityKind, InvariantError, Service, ServiceName, State};
 
@@ -18,6 +19,7 @@ use self::light::LightTurnOn;
 use self::number::{NumberSetValue, NumberState};
 use self::select::{SelectOption, SelectState};
 use self::sensor::{SensorState, SensorValue, SensorValueType};
+use self::text::{TextSetValue, TextState};
 
 /// Reads a device class (or another name-only enum) by its Home Assistant name, which is also
 /// Irori's spelling. `None` for a name Irori doesn't have, which a protocol leaves absent rather
@@ -71,7 +73,7 @@ impl EntityKind {
         match self {
             Self::Light | Self::Switch | Self::BinarySensor => Some(ValueShape::Bool),
             Self::Number => Some(ValueShape::Number),
-            Self::Select => Some(ValueShape::Text),
+            Self::Select | Self::Text => Some(ValueShape::Text),
             Self::Sensor => None,
         }
     }
@@ -98,7 +100,7 @@ impl EntityKind {
             Self::Light => Some(ServiceName::LightTurnOn),
             Self::Switch if on => Some(ServiceName::SwitchTurnOff),
             Self::Switch => Some(ServiceName::SwitchTurnOn),
-            Self::Sensor | Self::BinarySensor | Self::Number | Self::Select => None,
+            Self::Sensor | Self::BinarySensor | Self::Number | Self::Select | Self::Text => None,
         }
     }
 }
@@ -109,7 +111,7 @@ impl Capabilities {
         match self {
             Self::Light(_) | Self::Switch(_) | Self::BinarySensor(_) => ValueShape::Bool,
             Self::Number(_) => ValueShape::Number,
-            Self::Select(_) => ValueShape::Text,
+            Self::Select(_) | Self::Text(_) => ValueShape::Text,
             Self::Sensor(sensor) => match sensor.value_type {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
@@ -140,6 +142,7 @@ impl Capabilities {
             (Self::Sensor(caps), State::Sensor(sensor)) => sensor::fits(caps, sensor),
             (Self::Number(caps), State::Number(state)) => number::fits(caps, state),
             (Self::Select(caps), State::Select(state)) => select::fits(caps, state),
+            (Self::Text(caps), State::Text(state)) => text::fits(caps, state),
             _ => Ok(()),
         }
     }
@@ -159,6 +162,7 @@ impl Capabilities {
             (Self::Light(caps), Service::LightTurnOn(data)) => light::supports(caps, data),
             (Self::Number(caps), Service::NumberSetValue(data)) => number::supports(caps, data),
             (Self::Select(caps), Service::SelectSelectOption(data)) => select::supports(caps, data),
+            (Self::Text(caps), Service::TextSetValue(data)) => text::supports(caps, data),
             _ => Ok(()),
         }
     }
@@ -173,6 +177,7 @@ impl State {
             Self::BinarySensor(sensor) => Typed::Bool(sensor.on),
             Self::Number(number) => Typed::Number(number.value),
             Self::Select(select) => Typed::Text(select.option.clone()),
+            Self::Text(text) => Typed::Text(text.value.clone()),
             Self::Sensor(sensor) => match &sensor.value {
                 SensorValue::Number(n) => Typed::Number(*n),
                 SensorValue::Text(text) => Typed::Text(text.clone()),
@@ -204,6 +209,9 @@ impl State {
             }
             (EntityKind::Select, _, Typed::Text(option)) => State::Select(SelectState {
                 option: option.clone(),
+            }),
+            (EntityKind::Text, _, Typed::Text(value)) => State::Text(TextState {
+                value: value.clone(),
             }),
             (EntityKind::Sensor, _, Typed::Text(text)) => State::Sensor(SensorState {
                 value: SensorValue::Text(text.clone()),
@@ -240,6 +248,10 @@ impl Service {
                 SelectOption::deserialize(serde_json::Value::Object(data))
                     .map_err(|e| InvariantError(format!("`{name}` data: {e}")))?,
             ),
+            ServiceName::TextSetValue => Service::TextSetValue(
+                TextSetValue::deserialize(serde_json::Value::Object(data))
+                    .map_err(|e| InvariantError(format!("`{name}` data: {e}")))?,
+            ),
         };
         service.validate()?;
         Ok(service)
@@ -253,6 +265,7 @@ impl Service {
             }
             Self::NumberSetValue(data) => serde_json::to_value(data).ok()?,
             Self::SelectSelectOption(data) => serde_json::to_value(data).ok()?,
+            Self::TextSetValue(data) => serde_json::to_value(data).ok()?,
             _ => return None,
         };
         match value {
@@ -279,6 +292,7 @@ impl Service {
             Self::LightTurnOff | Self::SwitchTurnOff => Some(Typed::Bool(false)),
             Self::NumberSetValue(data) => Some(Typed::Number(data.value)),
             Self::SelectSelectOption(data) => Some(Typed::Text(data.option.clone())),
+            Self::TextSetValue(data) => Some(Typed::Text(data.value.clone())),
         }
     }
 }
@@ -295,11 +309,23 @@ impl ServiceName {
         name.split_once('.').map_or(name, |(_, action)| action)
     }
 
+    /// Whether it can't do without `data`: its data has a field that has to be there (a
+    /// number's `value`), where a light's `turn_on` has none.
+    pub fn requires_data(self) -> bool {
+        matches!(
+            self,
+            Self::NumberSetValue | Self::SelectSelectOption | Self::TextSetValue
+        )
+    }
+
     /// Whether it takes `data`.
     pub fn takes_data(self) -> bool {
         matches!(
             self,
-            Self::LightTurnOn | Self::NumberSetValue | Self::SelectSelectOption
+            Self::LightTurnOn
+                | Self::NumberSetValue
+                | Self::SelectSelectOption
+                | Self::TextSetValue
         )
     }
 }
@@ -315,6 +341,15 @@ mod tests {
         }
         assert_eq!(ServiceName::of(EntityKind::Sensor, "turn_on"), None);
         assert!(!EntityKind::BinarySensor.has_services());
+    }
+
+    /// The schema requires `data` exactly where Rust can't do without it.
+    #[test]
+    fn a_service_requires_data_only_when_it_has_a_field_that_must_be_there() {
+        for name in ServiceName::ALL {
+            let without = Service::from_data(*name, serde_json::Map::new());
+            assert_eq!(without.is_err(), name.requires_data(), "{name}");
+        }
     }
 
     #[test]

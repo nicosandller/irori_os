@@ -115,7 +115,10 @@
           "data": {
             "$ref": "#/$defs/NumberSetValue"
           }
-        }
+        },
+        "required": [
+          "data"
+        ]
       }
     },
     {
@@ -134,7 +137,32 @@
           "data": {
             "$ref": "#/$defs/SelectOption"
           }
-        }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "text.set_value"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/TextSetValue"
+          }
+        },
+        "required": [
+          "data"
+        ]
       }
     }
   ],
@@ -380,7 +408,22 @@
         "switch.turn_on",
         "switch.turn_off",
         "number.set_value",
-        "select.select_option"
+        "select.select_option",
+        "text.set_value"
+      ]
+    },
+    "TextSetValue": {
+      "description": "Data for `text.set_value`.",
+      "type": "object",
+      "properties": {
+        "value": {
+          "description": "Within the text's `min_length` and `max_length`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "value"
       ]
     },
     "TokenId": {

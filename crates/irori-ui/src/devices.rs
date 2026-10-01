@@ -7,7 +7,7 @@ use irori_types::{
     AreaId, Availability, BinarySensorCapabilities, BinarySensorClass, Capabilities, Device,
     DeviceId, Entity, EntityId, EntityState, ExtensionId, LightCapabilities, LightState,
     LightTurnOn, NumberCapabilities, NumberMode, SelectCapabilities, SensorCapabilities,
-    SensorClass, SensorValue, State,
+    SensorClass, SensorValue, State, TextCapabilities, TextMode,
 };
 use leptos::ev;
 use leptos::prelude::*;
@@ -31,6 +31,8 @@ pub struct Controls {
     pub set_number: Callback<(EntityId, f64)>,
     /// Ask a select to take this option.
     pub set_option: Callback<(EntityId, String)>,
+    /// Ask a text entity to hold this.
+    pub set_text: Callback<(EntityId, String)>,
 }
 
 /// One device and the entities it provides. `device` is `None` for entities that belong to no
@@ -1608,7 +1610,8 @@ fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyVi
         Capabilities::Light(_)
         | Capabilities::Switch(_)
         | Capabilities::Number(_)
-        | Capabilities::Select(_) => view! {
+        | Capabilities::Select(_)
+        | Capabilities::Text(_) => view! {
             {control}
             <button
                 type="button"
@@ -1661,7 +1664,49 @@ fn control(
         Capabilities::Select(capabilities) => {
             select_control(entity, capabilities, value, offline, controls)
         }
+        Capabilities::Text(capabilities) => {
+            text_control(entity, capabilities, value, offline, controls)
+        }
     }
+}
+
+/// A text: a box holding what the device last reported, sent when the box is left. A secret
+/// (`password` mode) is never shown: the box starts empty, and typing replaces it.
+fn text_control(
+    entity: &Entity,
+    capabilities: &TextCapabilities,
+    value: Option<&State>,
+    offline: bool,
+    controls: Controls,
+) -> AnyView {
+    let secret = capabilities.mode == TextMode::Password;
+    let current = match value {
+        Some(State::Text(text)) if !secret => text.value.clone(),
+        _ => String::new(),
+    };
+    let entity_id = entity.id.clone();
+    let disable = {
+        let entity_id = entity_id.clone();
+        move || offline || controls.busy.get().contains(&entity_id)
+    };
+    let (min, max) = (capabilities.min_length, capabilities.max_length);
+    view! {
+        <input
+            class="text-control"
+            type=if secret { "password" } else { "text" }
+            aria-label=entity.name.to_string()
+            minlength=min.to_string()
+            maxlength=max.to_string()
+            pattern=capabilities.pattern.clone()
+            placeholder=if secret { "Hidden" } else { "" }
+            prop:value=current
+            disabled=disable
+            on:change:target=move |ev| {
+                controls.set_text.run((entity_id.clone(), ev.target().value()));
+            }
+        />
+    }
+    .into_any()
 }
 
 /// A select: its choices in a dropdown, on the one the device last reported. Choosing sends it.

@@ -20,6 +20,8 @@ pub enum EntityKind {
     Number,
     /// One choice out of a fixed list, e.g. a sensor's sensitivity or a heater's mode.
     Select,
+    /// A piece of text set by a person, e.g. a message for a display.
+    Text,
 }
 
 impl EntityKind {
@@ -30,6 +32,7 @@ impl EntityKind {
         Self::BinarySensor,
         Self::Number,
         Self::Select,
+        Self::Text,
     ];
 
     /// The domain string used in entity ids and service names.
@@ -41,6 +44,7 @@ impl EntityKind {
             Self::BinarySensor => "binary_sensor",
             Self::Number => "number",
             Self::Select => "select",
+            Self::Text => "text",
         }
     }
 

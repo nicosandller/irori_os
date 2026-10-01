@@ -97,6 +97,12 @@ fn App() -> impl IntoView {
                 api::set_value(&entity_id, value).await
             })
         }),
+        set_text: Callback::new(move |(entity_id, value): (EntityId, String)| {
+            let (home, busy, failures) = (live.home, busy, failures);
+            send_command(entity_id.clone(), home, busy, failures, async move {
+                api::set_text(&entity_id, value).await
+            })
+        }),
         set_option: Callback::new(move |(entity_id, option): (EntityId, String)| {
             let (home, busy, failures) = (live.home, busy, failures);
             send_command(entity_id.clone(), home, busy, failures, async move {

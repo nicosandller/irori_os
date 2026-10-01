@@ -125,8 +125,8 @@ motion sensor are three entities.
 | `capabilities` | object tagged by `kind` | yes | What it can do; see below |
 | `entity_category` | `config` \| `diagnostic` | no | One of the device's settings (a motion sensor's timeout) or diagnostics (its signal strength) rather than what it's for. Pages list these after the device's other entities. Home Assistant's names; set by the protocol |
 
-**Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`.
-**Next, in likely order:** `button`, `event`, `text`, then `cover`, `lock`,
+**Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`.
+**Next, in likely order:** `button`, `event`, then `cover`, `lock`,
 `fan`, `valve`, `siren`, then `climate`, `water_heater`, `humidifier`. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
@@ -155,6 +155,9 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | | `device_class` | as a sensor's | absent | What it measures |
 | | `mode` | `auto` \| `slider` \| `box` | `auto` | How a page offers it; `auto` is a slider for at most 256 steps, a box otherwise |
 | `select` | `options` | 1–256 distinct, non-blank strings | **required** | Every choice it has. Anything else is refused, reported or asked for, and rules are checked against it like a text sensor's options |
+| `text` | `min_length`, `max_length` | 0–255, `min ≤ max` | `0`, `255` | Characters, not bytes |
+| | `pattern` | regular expression | absent | The device's; it checks it, pages show it |
+| | `mode` | `text` \| `password` | `text` | A `password` is never shown by pages |
 
 Device classes are closed lists, matching Home Assistant's: a protocol maps what it knows (with
 `SensorClass::from_ha` and friends) and leaves the rest absent. New classes are additive.
@@ -228,6 +231,7 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | `binary_sensor` | `on` | bool | yes | Meaning depends on `device_class`: motion detected, door open, … |
 | `number` | `value` | finite number | yes | Within its `min`–`max` (checked by the core) |
 | `select` | `option` | string | yes | One of its `options` (checked by the core) |
+| `text` | `value` | string | yes | Within its `min_length`–`max_length` characters (checked by the core) |
 
 **Brightness is 1–255**, not a percentage: that's what Zigbee and Home Assistant use, so no
 precision is lost converting. Services will accept `brightness_pct` for people (M0.3).

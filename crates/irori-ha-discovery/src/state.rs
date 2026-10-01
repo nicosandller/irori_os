@@ -3,7 +3,7 @@
 
 use irori_types::{
     BinarySensorState, ColorMode, LightState, NumberState, SelectState, SensorState, SensorValue,
-    Service, State, SwitchState, UniqueId,
+    Service, State, SwitchState, TextState, UniqueId,
 };
 
 use crate::discovery::EntityTopics;
@@ -94,7 +94,17 @@ pub fn decode(
             state_topic,
             value_template,
             ..
-        } if state_topic.as_deref() == Some(topic) => Some(decode_select(payload, value_template)),
+        } if state_topic.as_deref() == Some(topic) => Some(
+            decode_text(payload, value_template)
+                .map(|option| State::Select(SelectState { option })),
+        ),
+        EntityTopics::Text {
+            state_topic,
+            value_template,
+            ..
+        } if state_topic.as_deref() == Some(topic) => {
+            Some(decode_text(payload, value_template).map(|value| State::Text(TextState { value })))
+        }
         _ => None,
     }
 }
@@ -267,16 +277,16 @@ fn decode_number(
     Ok(state)
 }
 
-fn decode_select(
+/// The text a select or a text entity reported, through its value template.
+fn decode_text(
     payload: &[u8],
     value_template: &crate::template::ValueTemplate,
-) -> Result<State, String> {
-    let option = match value_template.extract(payload)? {
-        serde_json::Value::String(s) => s,
-        serde_json::Value::Null => return Err("the select reported no option".to_owned()),
-        other => other.to_string(),
-    };
-    Ok(State::Select(SelectState { option }))
+) -> Result<String, String> {
+    match value_template.extract(payload)? {
+        serde_json::Value::String(s) => Ok(s),
+        serde_json::Value::Null => Err("it reported nothing".to_owned()),
+        other => Ok(other.to_string()),
+    }
 }
 
 /// Everything needed to publish a service call: the messages to send, in order (usually one;
@@ -355,6 +365,9 @@ pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, 
         (EntityTopics::Select { command_topic, .. }, Service::SelectSelectOption(data)) => {
             Ok(vec![text_publish(command_topic, &data.option)])
         }
+        (EntityTopics::Text { command_topic, .. }, Service::TextSetValue(data)) => {
+            Ok(vec![text_publish(command_topic, &data.value)])
+        }
         _ => Err(format!("this entity has no `{}` service", service.name())),
     }
 }
@@ -390,7 +403,9 @@ pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, Un
         EntityTopics::Switch { state_topic, .. } => list.extend(state_topic.clone()),
         EntityTopics::Sensor { state_topic, .. } => list.push(state_topic.clone()),
         EntityTopics::BinarySensor { state_topic, .. } => list.push(state_topic.clone()),
-        EntityTopics::Number { state_topic, .. } | EntityTopics::Select { state_topic, .. } => {
+        EntityTopics::Number { state_topic, .. }
+        | EntityTopics::Select { state_topic, .. }
+        | EntityTopics::Text { state_topic, .. } => {
             list.extend(state_topic.clone());
         }
     }

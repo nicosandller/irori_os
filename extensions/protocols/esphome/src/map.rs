@@ -9,8 +9,9 @@ use esphome_client::types::{
     BinarySensorStateResponse, DeviceInfoResponse, EspHomeMessage, LightStateResponse,
     ListEntitiesBinarySensorResponse, ListEntitiesLightResponse, ListEntitiesNumberResponse,
     ListEntitiesSelectResponse, ListEntitiesSensorResponse, ListEntitiesSwitchResponse,
-    ListEntitiesTextSensorResponse, NumberStateResponse, SelectStateResponse, SensorStateResponse,
-    SwitchStateResponse, TextSensorStateResponse,
+    ListEntitiesTextResponse, ListEntitiesTextSensorResponse, NumberStateResponse,
+    SelectStateResponse, SensorStateResponse, SwitchStateResponse, TextSensorStateResponse,
+    TextStateResponse,
 };
 use irori_protocol::ProtocolError;
 use irori_protocol::types::{
@@ -18,8 +19,8 @@ use irori_protocol::types::{
     ColorTempRange, DeviceDescription, EntityCategory, EntityDescription, EntityKind,
     LightCapabilities, LightState, Name, NumberCapabilities, NumberMode, NumberState, ObjectId,
     SelectCapabilities, SelectState, SensorCapabilities, SensorClass, SensorState, SensorValue,
-    SensorValueType, State, StateClass, SwitchCapabilities, SwitchClass, SwitchState, UniqueId,
-    Unmodeled,
+    SensorValueType, State, StateClass, SwitchCapabilities, SwitchClass, SwitchState,
+    TextCapabilities, TextMode, TextState, UniqueId, Unmodeled,
 };
 
 /// ESPHome's `ColorMode` enum (api.proto). The values are a bit mask of what a mode carries.
@@ -246,6 +247,42 @@ pub fn select_state(state: &SelectStateResponse) -> Option<State> {
     })
 }
 
+/// ESPHome's `text`: a piece of text set from outside, unlike a `text_sensor`.
+pub fn text(
+    device: &UniqueId,
+    entity: &ListEntitiesTextResponse,
+) -> Result<EntityDescription, ProtocolError> {
+    // Irori holds at most 255 characters, as Home Assistant does.
+    let max_length = entity.max_length.min(255);
+    Ok(EntityDescription {
+        unique_id: entity_id(device, EntityKind::Text, entity.key)?,
+        name: Some(Name::try_from(entity.name.as_str())?),
+        device_unique_id: Some(device.clone()),
+        suggested_object_id: None,
+        capabilities: Capabilities::Text(TextCapabilities {
+            min_length: entity.min_length.min(max_length),
+            max_length,
+            pattern: optional(&entity.pattern),
+            // ESPHome's `TextMode` (api.proto): 0 text, 1 password.
+            mode: if entity.mode == 1 {
+                TextMode::Password
+            } else {
+                TextMode::Text
+            },
+        }),
+        entity_category: category(entity.entity_category),
+    })
+}
+
+/// `None` when the device has no text right now.
+pub fn text_state(state: &TextStateResponse) -> Option<State> {
+    (!state.missing_state).then(|| {
+        State::Text(TextState {
+            value: state.state.clone(),
+        })
+    })
+}
+
 /// ESPHome's `text_sensor`: an Irori `sensor` that reports text. Its id says `text_sensor`
 /// rather than `sensor`, so it never shares one with a numeric sensor of the same key.
 pub fn text_sensor(
@@ -336,7 +373,6 @@ pub fn unmodeled(device: &UniqueId, message: &EspHomeMessage) -> Option<Unmodele
         M::ListEntitiesMediaPlayerResponse(e) => ("media_player", &e.name),
         M::ListEntitiesRadioFrequencyResponse(e) => ("radio_frequency", &e.name),
         M::ListEntitiesSirenResponse(e) => ("siren", &e.name),
-        M::ListEntitiesTextResponse(e) => ("text", &e.name),
         M::ListEntitiesTimeResponse(e) => ("time", &e.name),
         M::ListEntitiesUpdateResponse(e) => ("update", &e.name),
         M::ListEntitiesValveResponse(e) => ("valve", &e.name),
@@ -605,6 +641,32 @@ mod tests {
                 option: "previous".into()
             }))
         );
+    }
+
+    #[test]
+    fn a_text_keeps_its_lengths_and_hides_a_password() {
+        let device = UniqueId::try_from("00:11:22:33:44:55").expect("valid");
+        let listed = ListEntitiesTextResponse {
+            key: 7,
+            name: "Wi-Fi password".into(),
+            min_length: 8,
+            max_length: 64,
+            mode: 1,
+            ..Default::default()
+        };
+        let Capabilities::Text(caps) = text(&device, &listed).expect("valid").capabilities else {
+            panic!("a text");
+        };
+        assert_eq!((caps.min_length, caps.max_length), (8, 64));
+        assert_eq!(caps.mode, TextMode::Password);
+        let long = ListEntitiesTextResponse {
+            max_length: 1000,
+            ..listed
+        };
+        let Capabilities::Text(caps) = text(&device, &long).expect("valid").capabilities else {
+            panic!("a text");
+        };
+        assert_eq!(caps.max_length, 255, "Irori holds at most 255 characters");
     }
 
     #[test]

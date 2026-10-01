@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::kinds::light::LightTurnOn;
 use crate::kinds::number::NumberSetValue;
 use crate::kinds::select::SelectOption;
+use crate::kinds::text::TextSetValue;
 use crate::{
     Attributes, Capabilities, Context, ContextId, EntityCategory, EntityKind, InvariantError, Name,
     ObjectId, State, UniqueId,
@@ -356,6 +357,7 @@ pub enum Service {
     SwitchTurnOff,
     NumberSetValue(NumberSetValue),
     SelectSelectOption(SelectOption),
+    TextSetValue(TextSetValue),
 }
 
 impl Service {
@@ -367,6 +369,7 @@ impl Service {
             Self::SwitchTurnOff => ServiceName::SwitchTurnOff,
             Self::NumberSetValue(_) => ServiceName::NumberSetValue,
             Self::SelectSelectOption(_) => ServiceName::SelectSelectOption,
+            Self::TextSetValue(_) => ServiceName::TextSetValue,
         }
     }
 }
@@ -386,6 +389,8 @@ pub enum ServiceName {
     NumberSetValue,
     #[serde(rename = "select.select_option")]
     SelectSelectOption,
+    #[serde(rename = "text.set_value")]
+    TextSetValue,
 }
 
 impl ServiceName {
@@ -396,6 +401,7 @@ impl ServiceName {
         Self::SwitchTurnOff,
         Self::NumberSetValue,
         Self::SelectSelectOption,
+        Self::TextSetValue,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -406,6 +412,7 @@ impl ServiceName {
             Self::SwitchTurnOff => "switch.turn_off",
             Self::NumberSetValue => "number.set_value",
             Self::SelectSelectOption => "select.select_option",
+            Self::TextSetValue => "text.set_value",
         }
     }
 
@@ -416,6 +423,7 @@ impl ServiceName {
             Self::SwitchTurnOn | Self::SwitchTurnOff => EntityKind::Switch,
             Self::NumberSetValue => EntityKind::Number,
             Self::SelectSelectOption => EntityKind::Select,
+            Self::TextSetValue => EntityKind::Text,
         }
     }
 }
@@ -510,6 +518,7 @@ impl JsonSchema for ServiceCall {
         let light_turn_on = generator.subschema_for::<LightTurnOn>();
         let number_set_value = generator.subschema_for::<NumberSetValue>();
         let select_option = generator.subschema_for::<SelectOption>();
+        let text_set_value = generator.subschema_for::<TextSetValue>();
         // Per service: the shape of `data`.
         let rules: Vec<_> = ServiceName::ALL
             .iter()
@@ -518,6 +527,7 @@ impl JsonSchema for ServiceCall {
                     ServiceName::LightTurnOn => light_turn_on.clone(),
                     ServiceName::NumberSetValue => number_set_value.clone(),
                     ServiceName::SelectSelectOption => select_option.clone(),
+                    ServiceName::TextSetValue => text_set_value.clone(),
                     _ => no_data.clone(),
                 };
                 json_schema!({
@@ -525,7 +535,11 @@ impl JsonSchema for ServiceCall {
                         "properties": { "service": { "const": name.as_str() } },
                         "required": ["service"],
                     },
-                    "then": { "properties": { "data": data } },
+                    "then": if name.requires_data() {
+                        json_schema!({ "properties": { "data": data }, "required": ["data"] })
+                    } else {
+                        json_schema!({ "properties": { "data": data } })
+                    },
                 })
             })
             .collect();

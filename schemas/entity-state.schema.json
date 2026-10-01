@@ -186,6 +186,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^text\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "text"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -279,6 +302,10 @@
         {
           "maxLength": 71,
           "pattern": "^select\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^text\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -554,6 +581,23 @@
           "required": [
             "kind",
             "option"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "text"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
           ]
         }
       ]

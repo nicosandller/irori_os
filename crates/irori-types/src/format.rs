@@ -19,7 +19,8 @@ use crate::{Entity, EntityKind, EntityState};
 /// 2. Adds `entity_category` on entities and `options` on text sensors.
 /// 3. Adds `number`.
 /// 4. Adds `select`.
-pub const ENTITY_FORMAT: u32 = 4;
+/// 5. Adds `text`.
+pub const ENTITY_FORMAT: u32 = 5;
 
 pub(crate) fn first() -> u32 {
     1
@@ -37,6 +38,7 @@ impl EntityKind {
             Self::Light | Self::Switch | Self::Sensor | Self::BinarySensor => 1,
             Self::Number => 3,
             Self::Select => 4,
+            Self::Text => 5,
         }
     }
 }
@@ -119,6 +121,13 @@ mod tests {
         .expect("valid");
         assert_eq!(entity_for(3, &mode), None);
         assert!(entity_for(4, &mode).is_some());
+        let message: Entity = serde_json::from_str(
+            r#"{"id": "text.display", "protocol": "esphome", "unique_id": "d",
+                "name": "Display", "capabilities": {"kind": "text"}}"#,
+        )
+        .expect("valid");
+        assert_eq!(entity_for(4, &message), None);
+        assert!(entity_for(5, &message).is_some());
     }
 
     #[test]

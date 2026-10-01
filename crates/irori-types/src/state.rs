@@ -12,6 +12,7 @@ use crate::kinds::number::NumberState;
 use crate::kinds::select::SelectState;
 use crate::kinds::sensor::SensorState;
 use crate::kinds::switch::SwitchState;
+use crate::kinds::text::TextState;
 use crate::{AttributeKey, Context, EntityId, EntityKind, InvariantError, Timestamp};
 
 /// Free-form extra data from the protocol, e.g. Zigbee link quality. Readable by rules, but
@@ -132,6 +133,7 @@ pub enum State {
     BinarySensor(BinarySensorState),
     Number(NumberState),
     Select(SelectState),
+    Text(TextState),
 }
 
 impl State {
@@ -142,7 +144,7 @@ impl State {
             Self::Light(light) => light.validate(),
             Self::Sensor(sensor) => sensor.validate(),
             Self::Number(number) => number.validate(),
-            Self::Switch(_) | Self::BinarySensor(_) | Self::Select(_) => Ok(()),
+            Self::Switch(_) | Self::BinarySensor(_) | Self::Select(_) | Self::Text(_) => Ok(()),
         }
     }
 
@@ -154,6 +156,7 @@ impl State {
             Self::BinarySensor(_) => EntityKind::BinarySensor,
             Self::Number(_) => EntityKind::Number,
             Self::Select(_) => EntityKind::Select,
+            Self::Text(_) => EntityKind::Text,
         }
     }
 }
