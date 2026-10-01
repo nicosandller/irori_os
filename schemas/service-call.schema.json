@@ -98,6 +98,25 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "number.set_value"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/NumberSetValue"
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -201,6 +220,21 @@
           "rgb"
         ]
       }
+    },
+    "NumberSetValue": {
+      "description": "Data for `number.set_value`.",
+      "type": "object",
+      "properties": {
+        "value": {
+          "description": "Within the number's `min` and `max`.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "value"
+      ]
     },
     "Origin": {
       "description": "Where a context started.",
@@ -311,7 +345,8 @@
         "light.turn_on",
         "light.turn_off",
         "switch.turn_on",
-        "switch.turn_off"
+        "switch.turn_off",
+        "number.set_value"
       ]
     },
     "TokenId": {

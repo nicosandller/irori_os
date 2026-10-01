@@ -125,8 +125,8 @@ motion sensor are three entities.
 | `capabilities` | object tagged by `kind` | yes | What it can do; see below |
 | `entity_category` | `config` \| `diagnostic` | no | One of the device's settings (a motion sensor's timeout) or diagnostics (its signal strength) rather than what it's for. Pages list these after the device's other entities. Home Assistant's names; set by the protocol |
 
-**Kinds in v1:** `light`, `switch`, `sensor`, `binary_sensor`.
-**Next, in likely order:** `number`, `select`, `button`, `event`, `text`, then `cover`, `lock`,
+**Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`.
+**Next, in likely order:** `select`, `button`, `event`, `text`, then `cover`, `lock`,
 `fan`, `valve`, `siren`, then `climate`, `water_heater`, `humidifier`. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
@@ -149,6 +149,11 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | | `state_class` | `measurement` \| `total` \| `total_increasing` | absent | How values accumulate, for statistics |
 | | `options` | list of up to 256 distinct, non-blank strings | absent | Only with `value_type: text`: every text it can report (HA's `enum` sensors). A reading outside it is refused, and rules comparing it with text it can never have are refused when saved |
 | `binary_sensor` | `device_class` | Home Assistant's binary sensor device classes, by the same names (`motion`, `occupancy`, `presence`, `door`, `garage_door`, `window`, `opening`, `lock`, …; 29 in all, see the schema) | absent | Says what `on` means, as in Home Assistant: a `lock` that's on is **unlocked**, a `battery` that's on is low |
+| `number` | `min`, `max` | finite numbers, `min ≤ max` | **required** | The range it takes. Values outside it are refused, reported or asked for |
+| | `step` | finite number above 0 | **required** | The smallest change that means anything; a hint for pages, not a rule |
+| | `unit` | string | absent | E.g. `s`, `°C`, `%` |
+| | `device_class` | as a sensor's | absent | What it measures |
+| | `mode` | `auto` \| `slider` \| `box` | `auto` | How a page offers it; `auto` is a slider for at most 256 steps, a box otherwise |
 
 Device classes are closed lists, matching Home Assistant's: a protocol maps what it knows (with
 `SensorClass::from_ha` and friends) and leaves the rest absent. New classes are additive.
@@ -220,6 +225,7 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | `switch` | `on` | bool | yes | |
 | `sensor` | `value` | finite number or string | yes | Must match the entity's `value_type` (checked by the core, which has both) |
 | `binary_sensor` | `on` | bool | yes | Meaning depends on `device_class`: motion detected, door open, … |
+| `number` | `value` | finite number | yes | Within its `min`–`max` (checked by the core) |
 
 **Brightness is 1–255**, not a percentage: that's what Zigbee and Home Assistant use, so no
 precision is lost converting. Services will accept `brightness_pct` for people (M0.3).

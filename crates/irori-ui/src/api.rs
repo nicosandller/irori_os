@@ -377,9 +377,9 @@ pub async fn fetch_home() -> Result<Home, String> {
 struct CommandRequest<'a> {
     entity_id: &'a EntityId,
     command: &'static str,
-    /// Brightness or color, for `turn_on` on a light that supports them.
+    /// The action's data: a light's brightness or color for `turn_on`, a number's value.
     #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<&'a LightTurnOn>,
+    data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -392,7 +392,7 @@ struct Refused {
 async fn command(
     entity_id: &EntityId,
     command: &'static str,
-    data: Option<&LightTurnOn>,
+    data: Option<serde_json::Value>,
 ) -> Result<Option<EntityState>, String> {
     let body = CommandRequest {
         entity_id,
@@ -430,7 +430,17 @@ pub async fn set_light(
     entity_id: &EntityId,
     data: &LightTurnOn,
 ) -> Result<Option<EntityState>, String> {
-    command(entity_id, "turn_on", Some(data)).await
+    command(entity_id, "turn_on", serde_json::to_value(data).ok()).await
+}
+
+/// Sets a number to `value`, within its range.
+pub async fn set_value(entity_id: &EntityId, value: f64) -> Result<Option<EntityState>, String> {
+    command(
+        entity_id,
+        "set_value",
+        Some(serde_json::json!({ "value": value })),
+    )
+    .await
 }
 
 // --- Areas, names, and where things live ------------------------------------------------

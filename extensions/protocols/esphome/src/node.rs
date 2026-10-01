@@ -12,8 +12,8 @@ use std::time::Duration;
 use esphome_client::EspHomeClient;
 use esphome_client::error::ClientError;
 use esphome_client::types::{
-    EspHomeMessage, LightCommandRequest, ListEntitiesRequest, PingResponse, SubscribeStatesRequest,
-    SwitchCommandRequest,
+    EspHomeMessage, LightCommandRequest, ListEntitiesRequest, NumberCommandRequest, PingResponse,
+    SubscribeStatesRequest, SwitchCommandRequest,
 };
 use irori_protocol::types::{
     Capabilities, ContextId, DeviceDescription, EntityDescription, LightCapabilities, Service,
@@ -468,6 +468,7 @@ async fn list_entities(
             EspHomeMessage::ListEntitiesLightResponse(e) => (e.key, map::light(device, e)),
             EspHomeMessage::ListEntitiesSwitchResponse(e) => (e.key, map::switch(device, e)),
             EspHomeMessage::ListEntitiesSensorResponse(e) => (e.key, map::sensor(device, e)),
+            EspHomeMessage::ListEntitiesNumberResponse(e) => (e.key, map::number(device, e)),
             EspHomeMessage::ListEntitiesTextSensorResponse(e) => {
                 (e.key, map::text_sensor(device, e))
             }
@@ -516,6 +517,7 @@ fn report(
         EspHomeMessage::BinarySensorStateResponse(s) => (s.key, Some(map::binary_sensor_state(s))),
         EspHomeMessage::SensorStateResponse(s) => (s.key, map::sensor_state(s)),
         EspHomeMessage::TextSensorStateResponse(s) => (s.key, map::text_sensor_state(s)),
+        EspHomeMessage::NumberStateResponse(s) => (s.key, map::number_state(s)),
         _ => return None,
     };
     let unique_id = by_key.get(&key)?.clone();
@@ -602,6 +604,16 @@ async fn command(
                 key,
                 has_state: true,
                 state: false,
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| e.to_string()),
+        Service::NumberSetValue(data) => client
+            .try_write(NumberCommandRequest {
+                key,
+                // The core checked it's within the number's range, which came from the device.
+                #[allow(clippy::cast_possible_truncation)]
+                state: data.value as f32,
                 ..Default::default()
             })
             .await
@@ -713,7 +725,7 @@ mod tests {
             panic!("expected the device to arrive, got {event:?}");
         };
         assert_eq!(device.unique_id.as_str(), fake_device::MAC);
-        assert_eq!(entities.len(), 4);
+        assert_eq!(entities.len(), 5);
     }
 
     /// The wrong key isn't "unreachable": the device answered, and retrying with the same key
@@ -756,7 +768,7 @@ mod tests {
         assert_eq!(device.sw_version.as_deref(), Some("2026.8.2"));
         assert_eq!(
             entities.len(),
-            4,
+            5,
             "the fan should be left out: {entities:?}"
         );
         // ...and listed on the device instead, so it isn't simply gone.
@@ -799,7 +811,7 @@ mod tests {
 
         // What it's doing.
         let mut reports = Vec::new();
-        while reports.len() < 4 {
+        while reports.len() < 5 {
             match events.recv().await {
                 Some(Event::Reported { report, .. }) => reports.push(*report),
                 other => panic!("expected a state report, got {other:?}"),
@@ -862,6 +874,49 @@ mod tests {
                 "255 of 255"
             );
         }
+
+        // A setting: the number is set, and its new value comes back as the answer.
+        let timeout = entities
+            .iter()
+            .find(|e| matches!(e.capabilities, Capabilities::Number(_)))
+            .expect("the timeout is described");
+        assert_eq!(
+            reports
+                .iter()
+                .find(|r| r.unique_id == timeout.unique_id)
+                .and_then(|r| r.state.clone()),
+            Some(State::Number(irori_protocol::types::NumberState {
+                value: 60.0
+            }))
+        );
+        let (incoming, context, _answer) = call(
+            timeout.unique_id.as_str(),
+            Service::NumberSetValue(irori_protocol::types::NumberSetValue { value: 120.0 }),
+        );
+        calls_tx.send(incoming).await.expect("the task is running");
+        let mut answered = None;
+        for _ in 0..10 {
+            match events.recv().await {
+                Some(Event::Reported { report, .. }) if report.unique_id == timeout.unique_id => {
+                    answered = Some(*report);
+                    break;
+                }
+                Some(_) => continue,
+                None => break,
+            }
+        }
+        let answered = answered.expect("the timeout reported its new value");
+        assert_eq!(answered.caused_by, Some(context));
+        assert_eq!(
+            answered.state,
+            Some(State::Number(irori_protocol::types::NumberState {
+                value: 120.0
+            }))
+        );
+        assert_eq!(
+            commanded.lock().expect("not poisoned").numbers[0].state,
+            120.0
+        );
 
         // Stopping: dropping the command channel ends the task.
         drop(calls_tx);

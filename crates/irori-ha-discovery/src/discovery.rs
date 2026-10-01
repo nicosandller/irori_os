@@ -9,8 +9,8 @@
 
 use irori_types::{
     BinarySensorCapabilities, BinarySensorClass, Capabilities, ColorTempRange, EntityCategory,
-    LightCapabilities, Name, SensorCapabilities, SensorClass, SensorValueType, StateClass,
-    SwitchCapabilities, SwitchClass, UniqueId,
+    LightCapabilities, Name, NumberCapabilities, NumberMode, SensorCapabilities, SensorClass,
+    SensorValueType, StateClass, SwitchCapabilities, SwitchClass, UniqueId,
 };
 
 use crate::template::ValueTemplate;
@@ -103,6 +103,13 @@ pub enum EntityTopics {
         payload_on: String,
         payload_off: String,
     },
+    /// A value set within a range: the plain value is published to `command_topic` (what
+    /// Zigbee2MQTT's `<device>/set/<property>` takes), and read back through `value_template`.
+    Number {
+        state_topic: Option<String>,
+        command_topic: String,
+        value_template: ValueTemplate,
+    },
 }
 
 /// Everything Irori needs from one discovery config payload.
@@ -148,6 +155,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::Switch => parse_switch(&root)?,
         Component::Sensor => parse_sensor(&root)?,
         Component::BinarySensor => parse_binary_sensor(&root)?,
+        Component::Number => parse_number(&root)?,
     };
 
     Ok(ParsedConfig {
@@ -352,6 +360,48 @@ fn color_temp_range(root: &serde_json::Value) -> Result<ColorTempRange, String> 
         ColorTempRange { min: max, max: min }
     };
     range.validate().map(|()| range).map_err(|e| e.to_string())
+}
+
+fn parse_number(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
+    let command_topic = str_field(root, "command_topic")
+        .ok_or("a number needs a `command_topic`")?
+        .to_owned();
+    // The value is published as it is. A template that does more than pass it through would need
+    // Jinja, which Irori doesn't run (`docs/specs/protocols.md`): better left out than sent wrong.
+    if let Some(template) = str_field(root, "command_template")
+        && template.split_whitespace().collect::<String>() != "{{value}}"
+    {
+        return Err(format!(
+            "its `command_template` {template:?} is more than the value, which Irori can't render"
+        ));
+    }
+    let number = |key: &str, default: f64| {
+        root.get(key)
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(default)
+    };
+    // Home Assistant's own defaults.
+    let capabilities = NumberCapabilities {
+        min: number("min", 1.0),
+        max: number("max", 100.0),
+        step: number("step", 1.0),
+        unit: str_field(root, "unit_of_measurement").map(str::to_owned),
+        device_class: str_field(root, "device_class").and_then(SensorClass::from_ha),
+        mode: match str_field(root, "mode") {
+            Some("box") => NumberMode::Box,
+            Some("slider") => NumberMode::Slider,
+            _ => NumberMode::Auto,
+        },
+    };
+    capabilities.validate().map_err(|e| e.to_string())?;
+    Ok((
+        Capabilities::Number(capabilities),
+        EntityTopics::Number {
+            state_topic: str_field(root, "state_topic").map(str::to_owned),
+            command_topic,
+            value_template: ValueTemplate::parse(str_field(root, "value_template")),
+        },
+    ))
 }
 
 fn parse_switch(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
@@ -574,6 +624,66 @@ mod tests {
         let error = parse(Component::Switch, br#"{"name": "x", "command_topic": "t"}"#)
             .expect_err("no unique_id");
         assert!(error.contains("unique_id"));
+    }
+
+    /// What Zigbee2MQTT 2.x publishes for a numeric expose it can set
+    /// (`lib/extension/homeassistant.ts`, `case "numeric"`), after it fills in its topics.
+    const Z2M_NUMBER: &[u8] = br#"{
+        "unique_id": "0x0211000000000002_occupancy_timeout_zigbee2mqtt",
+        "name": "Occupancy timeout",
+        "device": {"identifiers": ["zigbee2mqtt_0x0211000000000002"], "name": "Presence sensor"},
+        "state_topic": "zigbee2mqtt/Presence sensor",
+        "value_template": "{{ value_json[\"occupancy_timeout\"] }}",
+        "command_topic": "zigbee2mqtt/Presence sensor/set/occupancy_timeout",
+        "unit_of_measurement": "s", "step": 1, "min": 0, "max": 65535,
+        "entity_category": "config"
+    }"#;
+
+    #[test]
+    fn parses_a_z2m_number_and_sends_it_the_plain_value() {
+        let parsed = parse(Component::Number, Z2M_NUMBER).expect("valid");
+        let Capabilities::Number(caps) = &parsed.capabilities else {
+            panic!("a number");
+        };
+        assert_eq!((caps.min, caps.max, caps.step), (0.0, 65535.0, 1.0));
+        assert_eq!(caps.unit.as_deref(), Some("s"));
+        assert_eq!(parsed.entity_category, Some(EntityCategory::Config));
+
+        let state = crate::state::decode(
+            &parsed.topics,
+            "zigbee2mqtt/Presence sensor",
+            br#"{"occupancy": true, "occupancy_timeout": 90}"#,
+            None,
+        );
+        assert_eq!(
+            state,
+            Some(Ok(irori_types::State::Number(irori_types::NumberState {
+                value: 90.0
+            })))
+        );
+        let sent = crate::state::encode(
+            &parsed.topics,
+            &irori_types::Service::NumberSetValue(irori_types::NumberSetValue { value: 120.0 }),
+        )
+        .expect("a number takes set_value");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            sent[0].topic,
+            "zigbee2mqtt/Presence sensor/set/occupancy_timeout"
+        );
+        assert_eq!(sent[0].payload, b"120");
+    }
+
+    #[test]
+    fn a_number_whose_command_needs_jinja_is_left_out_with_a_reason() {
+        let payload = br#"{"unique_id": "n", "name": "Level", "command_topic": "x/set",
+            "command_template": "{\"level\": {{ value * 10 }}}"}"#;
+        let error = parse(Component::Number, payload).expect_err("can't render it");
+        assert!(error.contains("command_template"), "{error}");
+        // A template that only passes the value through is fine.
+        let plain = br#"{"unique_id": "n", "name": "Level", "command_topic": "x/set",
+            "command_template": "{{ value }}"}"#;
+        assert!(parse(Component::Number, plain).is_ok());
     }
 
     #[test]

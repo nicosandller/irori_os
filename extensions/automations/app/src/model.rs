@@ -573,6 +573,14 @@ pub fn state_words(state: &EntityState, home: &Home) -> String {
             let (on, off) = home.flag_words(&state.entity_id);
             if s.on { on } else { off }.into()
         }
+        // Not sent to this engine yet (it reads entity format 2), but a number reads as one.
+        Some(State::Number(n)) => {
+            if n.value.fract() == 0.0 {
+                format!("{:.0}", n.value)
+            } else {
+                format!("{:.1}", n.value)
+            }
+        }
         Some(State::Sensor(s)) => match &s.value {
             SensorValue::Number(n) => {
                 if n.fract() == 0.0 {

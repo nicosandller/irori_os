@@ -11,6 +11,7 @@ pub enum Component {
     Switch,
     Sensor,
     BinarySensor,
+    Number,
 }
 
 impl Component {
@@ -20,6 +21,7 @@ impl Component {
             "switch" => Some(Self::Switch),
             "sensor" => Some(Self::Sensor),
             "binary_sensor" => Some(Self::BinarySensor),
+            "number" => Some(Self::Number),
             _ => None,
         }
     }
@@ -32,6 +34,7 @@ impl fmt::Display for Component {
             Self::Switch => "switch",
             Self::Sensor => "sensor",
             Self::BinarySensor => "binary_sensor",
+            Self::Number => "number",
         })
     }
 }

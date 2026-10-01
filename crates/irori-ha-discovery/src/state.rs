@@ -2,8 +2,8 @@
 //! (`docs/specs/entities.md` §5.3, `docs/specs/protocols.md` §7).
 
 use irori_types::{
-    BinarySensorState, ColorMode, LightState, SensorState, SensorValue, Service, State,
-    SwitchState, UniqueId,
+    BinarySensorState, ColorMode, LightState, NumberState, SensorState, SensorValue, Service,
+    State, SwitchState, UniqueId,
 };
 
 use crate::discovery::EntityTopics;
@@ -85,6 +85,11 @@ pub fn decode(
             decode_on_off(payload, payload_on, payload_off)
                 .map(|on| State::BinarySensor(BinarySensorState { on })),
         ),
+        EntityTopics::Number {
+            state_topic,
+            value_template,
+            ..
+        } if state_topic.as_deref() == Some(topic) => Some(decode_number(payload, value_template)),
         _ => None,
     }
 }
@@ -242,6 +247,21 @@ fn decode_sensor(
     Ok(state)
 }
 
+fn decode_number(
+    payload: &[u8],
+    value_template: &crate::template::ValueTemplate,
+) -> Result<State, String> {
+    let value = match value_template.extract(payload)? {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => s.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+    .ok_or("number value isn't a number")?;
+    let state = State::Number(NumberState { value });
+    state.validate().map_err(|e| e.to_string())?;
+    Ok(state)
+}
+
 /// Everything needed to publish a service call: the messages to send, in order (usually one;
 /// the default light schema sometimes needs two).
 pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, String> {
@@ -309,6 +329,12 @@ pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, 
             },
             Service::SwitchTurnOff,
         ) => Ok(vec![text_publish(command_topic, payload_off)]),
+        (EntityTopics::Number { command_topic, .. }, Service::NumberSetValue(data)) => {
+            // `120`, not `120.0`: the plain value, as a person would type it.
+            let value = data.value.to_string();
+            let value = value.strip_suffix(".0").unwrap_or(&value);
+            Ok(vec![text_publish(command_topic, value)])
+        }
         _ => Err(format!("this entity has no `{}` service", service.name())),
     }
 }
@@ -344,6 +370,7 @@ pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, Un
         EntityTopics::Switch { state_topic, .. } => list.extend(state_topic.clone()),
         EntityTopics::Sensor { state_topic, .. } => list.push(state_topic.clone()),
         EntityTopics::BinarySensor { state_topic, .. } => list.push(state_topic.clone()),
+        EntityTopics::Number { state_topic, .. } => list.extend(state_topic.clone()),
     }
     list.into_iter().map(|t| (t, unique_id.clone())).collect()
 }

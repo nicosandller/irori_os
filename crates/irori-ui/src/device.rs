@@ -771,7 +771,7 @@ fn history_panel(
     // The row's reading as it is now, so a chart can grow with it.
     live: Memo<Option<EntityState>>,
 ) -> AnyView {
-    let numeric = matches!(entity.capabilities, Capabilities::Sensor(_));
+    let numeric = entity.capabilities.primary_shape() == irori_types::ValueShape::Number;
     view! {
         <div class="history">
             {move || match history.get() {
@@ -828,11 +828,11 @@ fn readings(states: &[EntityState]) -> Option<Vec<chart::Reading>> {
 fn as_reading(state: &EntityState) -> Option<chart::Reading> {
     let value = match (state.availability, state.state.as_ref()) {
         (Availability::Unavailable, _) | (_, None) => f64::NAN,
-        (_, Some(State::Sensor(sensor))) => match sensor.value {
-            SensorValue::Number(value) => value,
-            SensorValue::Text(_) => return None,
+        // Whatever its kind, a number is a point on the chart.
+        (_, Some(state)) => match state.primary() {
+            irori_types::Typed::Number(value) => value,
+            _ => return None,
         },
-        (_, Some(_)) => return None,
     };
     Some(chart::Reading {
         at_ms: state.last_changed.as_jiff().as_millisecond() as f64,
@@ -850,10 +850,7 @@ fn charted(
     live: Memo<Option<EntityState>>,
 ) -> AnyView {
     let as_table = RwSignal::new(false);
-    let unit = match &entity.capabilities {
-        Capabilities::Sensor(capabilities) => capabilities.unit.clone().unwrap_or_default(),
-        _ => String::new(),
-    };
+    let unit = devices::unit_of(&entity.capabilities);
     let name = entity.name.to_string();
     let chart = view! {
         <chart::StepChart
@@ -955,6 +952,14 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
         }
         (Capabilities::Switch(_), Some(State::Switch(switch))) => {
             if switch.on { "On" } else { "Off" }.to_owned()
+        }
+        (Capabilities::Number(capabilities), Some(State::Number(number))) => {
+            let unit = capabilities
+                .unit
+                .as_ref()
+                .map(|u| format!(" {u}"))
+                .unwrap_or_default();
+            format!("{}{unit}", devices::number(number.value))
         }
         _ => "unknown".to_owned(),
     }

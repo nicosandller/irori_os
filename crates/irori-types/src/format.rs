@@ -17,7 +17,8 @@ use crate::{Entity, EntityKind, EntityState};
 ///
 /// 1. The first: `light`, `switch`, `sensor`, `binary_sensor`.
 /// 2. Adds `entity_category` on entities and `options` on text sensors.
-pub const ENTITY_FORMAT: u32 = 2;
+/// 3. Adds `number`.
+pub const ENTITY_FORMAT: u32 = 3;
 
 pub(crate) fn first() -> u32 {
     1
@@ -33,6 +34,7 @@ impl EntityKind {
     pub fn since_format(self) -> u32 {
         match self {
             Self::Light | Self::Switch | Self::Sensor | Self::BinarySensor => 1,
+            Self::Number => 3,
         }
     }
 }
@@ -96,6 +98,18 @@ mod tests {
         );
         let now = entity_for(ENTITY_FORMAT, &entity).expect("current");
         assert_eq!(now, serde_json::to_value(&entity).expect("ser"));
+    }
+
+    #[test]
+    fn a_reader_is_never_sent_a_kind_newer_than_its_format() {
+        let timeout: Entity = serde_json::from_str(
+            r#"{"id": "number.hallway_timeout", "protocol": "esphome", "unique_id": "t",
+                "name": "Timeout", "capabilities": {"kind": "number", "min": 5, "max": 600, "step": 5}}"#,
+        )
+        .expect("valid");
+        assert_eq!(entity_for(2, &timeout), None);
+        assert_eq!(entity_for(1, &timeout), None);
+        assert!(entity_for(3, &timeout).is_some());
     }
 
     #[test]

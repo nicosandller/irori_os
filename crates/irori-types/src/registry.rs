@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::kinds::binary_sensor::BinarySensorCapabilities;
 use crate::kinds::light::LightCapabilities;
+use crate::kinds::number::NumberCapabilities;
 use crate::kinds::sensor::SensorCapabilities;
 use crate::kinds::switch::SwitchCapabilities;
 use crate::{
@@ -179,6 +180,7 @@ pub enum Capabilities {
     Switch(SwitchCapabilities),
     Sensor(SensorCapabilities),
     BinarySensor(BinarySensorCapabilities),
+    Number(NumberCapabilities),
 }
 
 impl Capabilities {
@@ -188,6 +190,7 @@ impl Capabilities {
             Self::Switch(_) => EntityKind::Switch,
             Self::Sensor(_) => EntityKind::Sensor,
             Self::BinarySensor(_) => EntityKind::BinarySensor,
+            Self::Number(_) => EntityKind::Number,
         }
     }
 
@@ -199,6 +202,7 @@ impl Capabilities {
                 ..
             }) => range.validate(),
             Self::Sensor(sensor) => sensor.validate(),
+            Self::Number(number) => number.validate(),
             _ => Ok(()),
         }
     }

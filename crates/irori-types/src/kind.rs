@@ -16,11 +16,18 @@ pub enum EntityKind {
     Sensor,
     /// A two-state reading, e.g. motion or a door contact.
     BinarySensor,
+    /// A value set within a range, e.g. a timeout or a calibration offset.
+    Number,
 }
 
 impl EntityKind {
-    pub const ALL: &'static [EntityKind] =
-        &[Self::Light, Self::Switch, Self::Sensor, Self::BinarySensor];
+    pub const ALL: &'static [EntityKind] = &[
+        Self::Light,
+        Self::Switch,
+        Self::Sensor,
+        Self::BinarySensor,
+        Self::Number,
+    ];
 
     /// The domain string used in entity ids and service names.
     pub fn domain(self) -> &'static str {
@@ -29,6 +36,7 @@ impl EntityKind {
             Self::Switch => "switch",
             Self::Sensor => "sensor",
             Self::BinarySensor => "binary_sensor",
+            Self::Number => "number",
         }
     }
 

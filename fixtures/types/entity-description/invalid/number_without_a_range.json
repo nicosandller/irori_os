@@ -1,0 +1,8 @@
+{
+  "unique_id": "n",
+  "name": "No range",
+  "capabilities": {
+    "kind": "number",
+    "step": 1
+  }
+}

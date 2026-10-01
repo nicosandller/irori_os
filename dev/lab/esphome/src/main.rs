@@ -12,7 +12,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use esphome_client::API_VERSION;
 use esphome_client::types::{
     BinarySensorStateResponse, DeviceInfoResponse, EspHomeMessage, HelloResponse,
-    ListEntitiesBinarySensorResponse, ListEntitiesDoneResponse, ListEntitiesSensorResponse,
+    ListEntitiesBinarySensorResponse, ListEntitiesDoneResponse, ListEntitiesFanResponse,
+    ListEntitiesNumberResponse, ListEntitiesSensorResponse, NumberStateResponse,
     SensorStateResponse,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
@@ -21,6 +22,11 @@ use tokio::net::{TcpListener, TcpStream};
 
 const STATUS_KEY: u32 = 1;
 const SIGNAL_KEY: u32 = 2;
+/// Two settings and a part Irori can't model yet, so a board shows all three ways a device's
+/// entities appear: a slider, a box to type into, and "Also has…".
+const LED_KEY: u32 = 3;
+const INTERVAL_KEY: u32 = 4;
+const FAN_KEY: u32 = 5;
 /// 32 bytes. Printed at startup as base64 so the waiting-for-a-key panel has something to paste.
 const LAB_KEY: [u8; 32] = *b"irori-lab-esphome-key-32bytes!!!";
 
@@ -185,6 +191,14 @@ fn answers(message: EspHomeMessage, board: &Board) -> Vec<EspHomeMessage> {
         }
         EspHomeMessage::ListEntitiesRequest(_) => entities(board),
         EspHomeMessage::SubscribeStatesRequest(_) => states(board),
+        // A real board answers by reporting the value it now has.
+        EspHomeMessage::NumberCommandRequest(request) => {
+            vec![EspHomeMessage::NumberStateResponse(NumberStateResponse {
+                key: request.key,
+                state: request.state,
+                ..Default::default()
+            })]
+        }
         EspHomeMessage::PingRequest(_) => {
             vec![EspHomeMessage::PingResponse(
                 esphome_client::types::PingResponse {},
@@ -221,6 +235,35 @@ fn entities(_board: &Board) -> Vec<EspHomeMessage> {
             unit_of_measurement: "dBm".to_owned(),
             device_class: "signal_strength".to_owned(),
             state_class: 1,
+            entity_category: 2, // diagnostic
+            ..Default::default()
+        }),
+        EspHomeMessage::ListEntitiesNumberResponse(ListEntitiesNumberResponse {
+            key: LED_KEY,
+            name: "LED brightness".to_owned(),
+            min_value: 0.0,
+            max_value: 100.0,
+            step: 1.0,
+            unit_of_measurement: "%".to_owned(),
+            mode: 2,            // slider
+            entity_category: 1, // config
+            ..Default::default()
+        }),
+        EspHomeMessage::ListEntitiesNumberResponse(ListEntitiesNumberResponse {
+            key: INTERVAL_KEY,
+            name: "Update interval".to_owned(),
+            min_value: 10.0,
+            max_value: 3600.0,
+            step: 10.0,
+            unit_of_measurement: "s".to_owned(),
+            device_class: "duration".to_owned(),
+            mode: 1,            // box
+            entity_category: 1, // config
+            ..Default::default()
+        }),
+        EspHomeMessage::ListEntitiesFanResponse(ListEntitiesFanResponse {
+            key: FAN_KEY,
+            name: "Cooling fan".to_owned(),
             ..Default::default()
         }),
         EspHomeMessage::ListEntitiesDoneResponse(ListEntitiesDoneResponse {}),
@@ -238,6 +281,16 @@ fn states(board: &Board) -> Vec<EspHomeMessage> {
             key: SIGNAL_KEY,
             state: board.signal_dbm,
             missing_state: false,
+            ..Default::default()
+        }),
+        EspHomeMessage::NumberStateResponse(NumberStateResponse {
+            key: LED_KEY,
+            state: 40.0,
+            ..Default::default()
+        }),
+        EspHomeMessage::NumberStateResponse(NumberStateResponse {
+            key: INTERVAL_KEY,
+            state: 60.0,
             ..Default::default()
         }),
     ]

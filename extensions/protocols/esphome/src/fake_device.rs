@@ -28,12 +28,14 @@ pub const SENSOR_KEY: u32 = 33;
 pub const MOTION_KEY: u32 = 44;
 /// An entity of a kind Irori doesn't model yet, to check it's left out rather than mangled.
 pub const FAN_KEY: u32 = 55;
+pub const NUMBER_KEY: u32 = 66;
 
 /// What the fake device was asked to do, for the test to check.
 #[derive(Debug, Default)]
 pub struct Commands {
     pub lights: Vec<LightCommandRequest>,
     pub switches: Vec<SwitchCommandRequest>,
+    pub numbers: Vec<esphome_client::types::NumberCommandRequest>,
 }
 
 /// Starts the device on a port of the operating system's choosing.
@@ -239,6 +241,21 @@ fn answer(message: EspHomeMessage, commands: &Mutex<Commands>) -> Vec<EspHomeMes
                     ..Default::default()
                 })]
             }
+            EspHomeMessage::NumberCommandRequest(request) => {
+                let value = request.state;
+                commands
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .numbers
+                    .push(request);
+                vec![EspHomeMessage::NumberStateResponse(
+                    esphome_client::types::NumberStateResponse {
+                        key: NUMBER_KEY,
+                        state: value,
+                        ..Default::default()
+                    },
+                )]
+            }
             EspHomeMessage::PingRequest(_) => vec![EspHomeMessage::PingResponse(
                 esphome_client::types::PingResponse {},
             )],
@@ -291,6 +308,18 @@ fn entities() -> Vec<EspHomeMessage> {
             device_class: "motion".to_owned(),
             ..Default::default()
         }),
+        EspHomeMessage::ListEntitiesNumberResponse(
+            esphome_client::types::ListEntitiesNumberResponse {
+                key: NUMBER_KEY,
+                name: "Motion timeout".to_owned(),
+                min_value: 5.0,
+                max_value: 600.0,
+                step: 5.0,
+                unit_of_measurement: "s".to_owned(),
+                entity_category: 1,
+                ..Default::default()
+            },
+        ),
         // Irori has no fan kind yet; the protocol should list it as unmodeled and keep the rest.
         EspHomeMessage::ListEntitiesFanResponse(esphome_client::types::ListEntitiesFanResponse {
             key: FAN_KEY,
@@ -325,6 +354,11 @@ fn states() -> Vec<EspHomeMessage> {
         EspHomeMessage::BinarySensorStateResponse(BinarySensorStateResponse {
             key: MOTION_KEY,
             state: true,
+            ..Default::default()
+        }),
+        EspHomeMessage::NumberStateResponse(esphome_client::types::NumberStateResponse {
+            key: NUMBER_KEY,
+            state: 60.0,
             ..Default::default()
         }),
     ]

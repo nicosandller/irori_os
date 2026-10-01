@@ -91,6 +91,12 @@ fn App() -> impl IntoView {
                 api::set_light(&entity_id, &data).await
             })
         }),
+        set_number: Callback::new(move |(entity_id, value): (EntityId, f64)| {
+            let (home, busy, failures) = (live.home, busy, failures);
+            send_command(entity_id.clone(), home, busy, failures, async move {
+                api::set_value(&entity_id, value).await
+            })
+        }),
     };
     provide_context(controls);
 

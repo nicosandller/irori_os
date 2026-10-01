@@ -185,6 +185,11 @@
           "description": "A two-state reading, e.g. motion or a door contact.",
           "type": "string",
           "const": "binary_sensor"
+        },
+        {
+          "description": "A value set within a range, e.g. a timeout or a calibration offset.",
+          "type": "string",
+          "const": "number"
         }
       ]
     },

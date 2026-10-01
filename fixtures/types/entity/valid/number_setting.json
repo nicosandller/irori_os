@@ -1,0 +1,16 @@
+{
+  "id": "number.hallway_motion_timeout",
+  "protocol": "esphome",
+  "unique_id": "a4:cf:12:34:56:80-number-timeout",
+  "name": "Motion timeout",
+  "capabilities": {
+    "kind": "number",
+    "min": 5,
+    "max": 600,
+    "step": 5,
+    "unit": "s",
+    "device_class": "duration",
+    "mode": "box"
+  },
+  "entity_category": "config"
+}

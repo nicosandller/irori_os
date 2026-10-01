@@ -147,6 +147,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^number\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "number"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -335,6 +358,59 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "device_class": {
+              "description": "What it measures, from the same list as a sensor's.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SensorClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "number"
+            },
+            "max": {
+              "description": "The highest value it takes. Not below `min`.",
+              "type": "number",
+              "format": "double"
+            },
+            "min": {
+              "description": "The lowest value it takes.",
+              "type": "number",
+              "format": "double"
+            },
+            "mode": {
+              "description": "How a page should offer it.",
+              "$ref": "#/$defs/NumberMode"
+            },
+            "step": {
+              "description": "The smallest change that means anything, e.g. `0.5`. Above zero.",
+              "type": "number",
+              "format": "double"
+            },
+            "unit": {
+              "description": "Unit of the value, e.g. `s`, `°C`, `%`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "min",
+            "max",
+            "step"
+          ]
         }
       ]
     },
@@ -402,6 +478,10 @@
         {
           "maxLength": 78,
           "pattern": "^binary_sensor\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^number\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -411,6 +491,15 @@
       "maxLength": 100,
       "minLength": 1,
       "pattern": "^[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F]([^\\u0000-\\u001F\\u007F-\\u009F]*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F])?$"
+    },
+    "NumberMode": {
+      "description": "How a page offers a number: a slider, a box to type in, or whichever suits the range.",
+      "type": "string",
+      "enum": [
+        "auto",
+        "slider",
+        "box"
+      ]
     },
     "ProtocolId": {
       "description": "Format of a slug (protocol id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",

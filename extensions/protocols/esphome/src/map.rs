@@ -7,17 +7,17 @@
 
 use esphome_client::types::{
     BinarySensorStateResponse, DeviceInfoResponse, EspHomeMessage, LightStateResponse,
-    ListEntitiesBinarySensorResponse, ListEntitiesLightResponse, ListEntitiesSensorResponse,
-    ListEntitiesSwitchResponse, ListEntitiesTextSensorResponse, SensorStateResponse,
-    SwitchStateResponse, TextSensorStateResponse,
+    ListEntitiesBinarySensorResponse, ListEntitiesLightResponse, ListEntitiesNumberResponse,
+    ListEntitiesSensorResponse, ListEntitiesSwitchResponse, ListEntitiesTextSensorResponse,
+    NumberStateResponse, SensorStateResponse, SwitchStateResponse, TextSensorStateResponse,
 };
 use irori_protocol::ProtocolError;
 use irori_protocol::types::{
     BinarySensorCapabilities, BinarySensorClass, BinarySensorState, Capabilities, ColorMode,
     ColorTempRange, DeviceDescription, EntityCategory, EntityDescription, EntityKind,
-    LightCapabilities, LightState, Name, ObjectId, SensorCapabilities, SensorClass, SensorState,
-    SensorValue, SensorValueType, State, StateClass, SwitchCapabilities, SwitchClass, SwitchState,
-    UniqueId, Unmodeled,
+    LightCapabilities, LightState, Name, NumberCapabilities, NumberMode, NumberState, ObjectId,
+    SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType, State, StateClass,
+    SwitchCapabilities, SwitchClass, SwitchState, UniqueId, Unmodeled,
 };
 
 /// ESPHome's `ColorMode` enum (api.proto). The values are a bit mask of what a mode carries.
@@ -171,6 +171,53 @@ pub fn sensor(
     })
 }
 
+/// ESPHome's `number`: a value set within a range, usually one of the device's settings.
+pub fn number(
+    device: &UniqueId,
+    entity: &ListEntitiesNumberResponse,
+) -> Result<EntityDescription, ProtocolError> {
+    let (min, max) = (decimal(entity.min_value), decimal(entity.max_value));
+    Ok(EntityDescription {
+        unique_id: entity_id(device, EntityKind::Number, entity.key)?,
+        name: Some(Name::try_from(entity.name.as_str())?),
+        device_unique_id: Some(device.clone()),
+        suggested_object_id: None,
+        capabilities: Capabilities::Number(NumberCapabilities {
+            min,
+            max,
+            // A device that leaves the step out still has one; a hundredth of the range is what a
+            // slider would do anyway.
+            step: Some(decimal(entity.step))
+                .filter(|step| *step > 0.0)
+                .unwrap_or_else(|| ((max - min) / 100.0).max(f64::MIN_POSITIVE)),
+            unit: optional(&entity.unit_of_measurement),
+            device_class: SensorClass::from_ha(&entity.device_class),
+            // ESPHome's `NumberMode` (api.proto): 0 auto, 1 box, 2 slider.
+            mode: match entity.mode {
+                1 => NumberMode::Box,
+                2 => NumberMode::Slider,
+                _ => NumberMode::Auto,
+            },
+        }),
+        entity_category: category(entity.entity_category),
+    })
+}
+
+/// The value as written: ESPHome sends 32-bit floats, and `0.1_f32` widened is
+/// `0.10000000149011612`. Its shortest decimal form is the number the device was configured with.
+pub fn decimal(value: f32) -> f64 {
+    value.to_string().parse().unwrap_or(f64::from(value))
+}
+
+/// `None` when the device has no value right now.
+pub fn number_state(state: &NumberStateResponse) -> Option<State> {
+    (!state.missing_state && state.state.is_finite()).then(|| {
+        State::Number(NumberState {
+            value: decimal(state.state),
+        })
+    })
+}
+
 /// ESPHome's `text_sensor`: an Irori `sensor` that reports text. Its id says `text_sensor`
 /// rather than `sensor`, so it never shares one with a numeric sensor of the same key.
 pub fn text_sensor(
@@ -259,7 +306,6 @@ pub fn unmodeled(device: &UniqueId, message: &EspHomeMessage) -> Option<Unmodele
         M::ListEntitiesInfraredResponse(e) => ("infrared", &e.name),
         M::ListEntitiesLockResponse(e) => ("lock", &e.name),
         M::ListEntitiesMediaPlayerResponse(e) => ("media_player", &e.name),
-        M::ListEntitiesNumberResponse(e) => ("number", &e.name),
         M::ListEntitiesRadioFrequencyResponse(e) => ("radio_frequency", &e.name),
         M::ListEntitiesSelectResponse(e) => ("select", &e.name),
         M::ListEntitiesSirenResponse(e) => ("siren", &e.name),
@@ -461,6 +507,46 @@ mod tests {
             ..state
         };
         assert_eq!(text_sensor_state(&missing), None);
+    }
+
+    #[test]
+    fn a_number_keeps_the_values_it_was_configured_with() {
+        let device = UniqueId::try_from("00:11:22:33:44:55").expect("valid");
+        let listed = ListEntitiesNumberResponse {
+            key: 9,
+            name: "Calibration".into(),
+            min_value: -2.5,
+            max_value: 2.5,
+            step: 0.1,
+            unit_of_measurement: "°C".into(),
+            mode: 1,
+            entity_category: 1,
+            ..Default::default()
+        };
+        let described = number(&device, &listed).expect("valid");
+        assert_eq!(described.unique_id.as_str(), "00:11:22:33:44:55-number-9");
+        assert_eq!(described.entity_category, Some(EntityCategory::Config));
+        let Capabilities::Number(caps) = described.capabilities else {
+            panic!("a number");
+        };
+        assert_eq!((caps.min, caps.max, caps.step), (-2.5, 2.5, 0.1));
+        assert_eq!(caps.mode, NumberMode::Box);
+        assert!(caps.validate().is_ok());
+
+        let reported = NumberStateResponse {
+            key: 9,
+            state: 0.3,
+            ..Default::default()
+        };
+        assert_eq!(
+            number_state(&reported),
+            Some(State::Number(NumberState { value: 0.3 }))
+        );
+        let missing = NumberStateResponse {
+            missing_state: true,
+            ..reported
+        };
+        assert_eq!(number_state(&missing), None);
     }
 
     #[test]

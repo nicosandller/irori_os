@@ -1,0 +1,10 @@
+{
+  "unique_id": "n",
+  "name": "Backwards",
+  "capabilities": {
+    "kind": "number",
+    "min": 10,
+    "max": 1,
+    "step": 1
+  }
+}

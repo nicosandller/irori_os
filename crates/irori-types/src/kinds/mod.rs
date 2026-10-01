@@ -7,12 +7,14 @@
 
 pub(crate) mod binary_sensor;
 pub(crate) mod light;
+pub(crate) mod number;
 pub(crate) mod sensor;
 pub(crate) mod switch;
 
 use crate::{Capabilities, EntityKind, InvariantError, Service, ServiceName, State};
 
 use self::light::LightTurnOn;
+use self::number::{NumberSetValue, NumberState};
 use self::sensor::{SensorState, SensorValue, SensorValueType};
 
 /// Reads a device class (or another name-only enum) by its Home Assistant name, which is also
@@ -66,6 +68,7 @@ impl EntityKind {
     pub fn primary_shape(self) -> Option<ValueShape> {
         match self {
             Self::Light | Self::Switch | Self::BinarySensor => Some(ValueShape::Bool),
+            Self::Number => Some(ValueShape::Number),
             Self::Sensor => None,
         }
     }
@@ -92,7 +95,7 @@ impl EntityKind {
             Self::Light => Some(ServiceName::LightTurnOn),
             Self::Switch if on => Some(ServiceName::SwitchTurnOff),
             Self::Switch => Some(ServiceName::SwitchTurnOn),
-            Self::Sensor | Self::BinarySensor => None,
+            Self::Sensor | Self::BinarySensor | Self::Number => None,
         }
     }
 }
@@ -102,6 +105,7 @@ impl Capabilities {
     pub fn primary_shape(&self) -> ValueShape {
         match self {
             Self::Light(_) | Self::Switch(_) | Self::BinarySensor(_) => ValueShape::Bool,
+            Self::Number(_) => ValueShape::Number,
             Self::Sensor(sensor) => match sensor.value_type {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
@@ -129,6 +133,7 @@ impl Capabilities {
             )),
             (Self::Light(caps), State::Light(light)) => light::fits(caps, light),
             (Self::Sensor(caps), State::Sensor(sensor)) => sensor::fits(caps, sensor),
+            (Self::Number(caps), State::Number(state)) => number::fits(caps, state),
             _ => Ok(()),
         }
     }
@@ -146,6 +151,7 @@ impl Capabilities {
         }
         match (self, service) {
             (Self::Light(caps), Service::LightTurnOn(data)) => light::supports(caps, data),
+            (Self::Number(caps), Service::NumberSetValue(data)) => number::supports(caps, data),
             _ => Ok(()),
         }
     }
@@ -158,6 +164,7 @@ impl State {
             Self::Light(light) => Typed::Bool(light.on),
             Self::Switch(switch) => Typed::Bool(switch.on),
             Self::BinarySensor(sensor) => Typed::Bool(sensor.on),
+            Self::Number(number) => Typed::Number(number.value),
             Self::Sensor(sensor) => match &sensor.value {
                 SensorValue::Number(n) => Typed::Number(*n),
                 SensorValue::Text(text) => Typed::Text(text.clone()),
@@ -184,6 +191,9 @@ impl State {
             (EntityKind::Sensor, _, Typed::Number(n)) => State::Sensor(SensorState {
                 value: SensorValue::Number(*n),
             }),
+            (EntityKind::Number, _, Typed::Number(value)) => {
+                State::Number(NumberState { value: *value })
+            }
             (EntityKind::Sensor, _, Typed::Text(text)) => State::Sensor(SensorState {
                 value: SensorValue::Text(text.clone()),
             }),
@@ -211,6 +221,10 @@ impl Service {
             ServiceName::LightTurnOff => Service::LightTurnOff,
             ServiceName::SwitchTurnOn => Service::SwitchTurnOn,
             ServiceName::SwitchTurnOff => Service::SwitchTurnOff,
+            ServiceName::NumberSetValue => Service::NumberSetValue(
+                NumberSetValue::deserialize(serde_json::Value::Object(data))
+                    .map_err(|e| InvariantError(format!("`{name}` data: {e}")))?,
+            ),
         };
         service.validate()?;
         Ok(service)
@@ -222,6 +236,7 @@ impl Service {
             Self::LightTurnOn(data) if *data != LightTurnOn::default() => {
                 serde_json::to_value(data).ok()?
             }
+            Self::NumberSetValue(data) => serde_json::to_value(data).ok()?,
             _ => return None,
         };
         match value {
@@ -234,6 +249,7 @@ impl Service {
     pub fn validate(&self) -> Result<(), InvariantError> {
         match self {
             Self::LightTurnOn(data) => data.validate(),
+            Self::NumberSetValue(data) => data.validate(),
             _ => Ok(()),
         }
     }
@@ -245,6 +261,7 @@ impl Service {
         match self {
             Self::LightTurnOn(_) | Self::SwitchTurnOn => Some(Typed::Bool(true)),
             Self::LightTurnOff | Self::SwitchTurnOff => Some(Typed::Bool(false)),
+            Self::NumberSetValue(data) => Some(Typed::Number(data.value)),
         }
     }
 }
@@ -263,7 +280,7 @@ impl ServiceName {
 
     /// Whether it takes `data`.
     pub fn takes_data(self) -> bool {
-        matches!(self, Self::LightTurnOn)
+        matches!(self, Self::LightTurnOn | Self::NumberSetValue)
     }
 }
 

@@ -102,7 +102,7 @@ pub struct HeldDevice {
 }
 
 /// A service call resolved to the protocol that handles it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Resolved {
     pub protocol: ProtocolId,
     pub unique_id: UniqueId,
@@ -1889,6 +1889,59 @@ mod tests {
         home.describe_entity(&protocol(), ALL, signal(), &stamp(1))
             .expect("entity");
         assert_eq!(home.entities[&id].entity_category, None);
+    }
+
+    #[test]
+    fn a_number_is_set_only_within_its_range() {
+        let mut home = home_with_lamp();
+        home.describe_entity(
+            &protocol(),
+            ALL,
+            entity(
+                "lamp-timeout",
+                Some("Timeout"),
+                Some("lamp"),
+                Capabilities::Number(irori_types::NumberCapabilities {
+                    min: 5.0,
+                    max: 600.0,
+                    step: 5.0,
+                    unit: Some("s".into()),
+                    device_class: None,
+                    mode: irori_types::NumberMode::Auto,
+                }),
+            ),
+            &stamp(0),
+        )
+        .expect("entity");
+        let id = EntityId::try_from("number.demo_lamp_timeout").expect("valid");
+        let set = |value: f64| {
+            home.resolve(
+                &id,
+                Command::with("set_value", &irori_types::NumberSetValue { value }),
+            )
+        };
+        assert_eq!(
+            set(120.0).expect("in range").service,
+            Service::NumberSetValue(irori_types::NumberSetValue { value: 120.0 })
+        );
+        assert_eq!(
+            set(900.0).expect_err("out of range").to_string(),
+            "`number.demo_lamp_timeout` goes from 5 to 600, not 900"
+        );
+        assert_eq!(
+            home.resolve(&id, Command::toggle())
+                .expect_err("not a toggle")
+                .to_string(),
+            "`number.demo_lamp_timeout` is a number; it can't be toggled"
+        );
+        // A report outside the range is refused too.
+        let report = StateReport {
+            unique_id: uid("lamp-timeout"),
+            state: Some(State::Number(irori_types::NumberState { value: 1.0 })),
+            attributes: Default::default(),
+            caused_by: None,
+        };
+        assert!(home.report_state(&protocol(), report, &stamp(1)).is_err());
     }
 
     #[test]

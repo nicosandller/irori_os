@@ -255,6 +255,7 @@ manifest's `entity_kinds`.
 | `light.turn_off` | none | |
 | `switch.turn_on` | none | |
 | `switch.turn_off` | none | |
+| `number.set_value` | `value`, a finite number within the number's `min`–`max` | |
 
 `sensor` and `binary_sensor` have no services.
 
