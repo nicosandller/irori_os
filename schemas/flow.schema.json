@@ -373,6 +373,10 @@
         {
           "maxLength": 71,
           "pattern": "^button\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^event\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

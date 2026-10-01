@@ -854,6 +854,7 @@ fn report(
         state,
         attributes: BTreeMap::new(),
         caused_by,
+        replayed: false,
     })
 }
 

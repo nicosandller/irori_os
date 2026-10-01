@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::kinds::binary_sensor::BinarySensorCapabilities;
 use crate::kinds::button::ButtonCapabilities;
+use crate::kinds::event::EventCapabilities;
 use crate::kinds::light::LightCapabilities;
 use crate::kinds::number::NumberCapabilities;
 use crate::kinds::select::SelectCapabilities;
@@ -187,6 +188,7 @@ pub enum Capabilities {
     Select(SelectCapabilities),
     Text(TextCapabilities),
     Button(ButtonCapabilities),
+    Event(EventCapabilities),
 }
 
 impl Capabilities {
@@ -200,6 +202,7 @@ impl Capabilities {
             Self::Select(_) => EntityKind::Select,
             Self::Text(_) => EntityKind::Text,
             Self::Button(_) => EntityKind::Button,
+            Self::Event(_) => EntityKind::Event,
         }
     }
 
@@ -214,6 +217,7 @@ impl Capabilities {
             Self::Number(number) => number.validate(),
             Self::Select(select) => select.validate(),
             Self::Text(text) => text.validate(),
+            Self::Event(event) => event.validate(),
             _ => Ok(()),
         }
     }

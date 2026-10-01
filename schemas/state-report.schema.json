@@ -22,6 +22,10 @@
         }
       ]
     },
+    "replayed": {
+      "description": "The protocol is repeating what it last heard rather than hearing something new, e.g. a\nretained MQTT message delivered on (re)subscribing. For an `event`, whose every report is\nan occurrence, a replayed one sets the value without counting as something happening.",
+      "type": "boolean"
+    },
     "state": {
       "description": "The typed value, or `null` if the device doesn't know it (e.g. it just restarted). Must be\npresent even when `null`.",
       "anyOf": [
@@ -242,6 +246,24 @@
           "required": [
             "kind",
             "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event_type": {
+              "description": "What happened last: one of its `event_types`.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "event"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "event_type"
           ]
         }
       ]

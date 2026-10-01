@@ -198,6 +198,7 @@ fn report(id: &str, value: SensorValue) -> Result<StateReport, ProtocolError> {
         state: Some(State::Sensor(SensorState { value })),
         attributes: Default::default(),
         caused_by: None,
+        replayed: false,
     })
 }
 

@@ -125,8 +125,9 @@ motion sensor are three entities.
 | `capabilities` | object tagged by `kind` | yes | What it can do; see below |
 | `entity_category` | `config` \| `diagnostic` | no | One of the device's settings (a motion sensor's timeout) or diagnostics (its signal strength) rather than what it's for. Pages list these after the device's other entities. Home Assistant's names; set by the protocol |
 
-**Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`.
-**Next, in likely order:** `event`, then `cover`, `lock`,
+**Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`,
+`event`.
+**Next, in likely order:** `cover`, `lock`,
 `fan`, `valve`, `siren`, then `climate`, `water_heater`, `humidifier`. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
@@ -159,6 +160,8 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | | `pattern` | regular expression | absent | The device's; it checks it, pages show it |
 | | `mode` | `text` \| `password` | `text` | A `password` is never shown by pages |
 | `button` | `device_class` | `identify` \| `restart` \| `update` | absent | What pressing it does |
+| `event` | `event_types` | 1–256 distinct, non-blank strings | **required** | Everything it can report happening, e.g. `single`, `double`, `hold` |
+| | `device_class` | `button` \| `doorbell` \| `motion` | absent | |
 
 Device classes are closed lists, matching Home Assistant's: a protocol maps what it knows (with
 `SensorClass::from_ha` and friends) and leaves the rest absent. New classes are additive.
@@ -233,6 +236,13 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | `number` | `value` | finite number | yes | Within its `min`–`max` (checked by the core) |
 | `select` | `option` | string | yes | One of its `options` (checked by the core) |
 | `text` | `value` | string | yes | Within its `min_length`–`max_length` characters (checked by the core) |
+| `event` | `event_type` | string | yes | What happened last: one of its `event_types` (checked by the core) |
+
+**An `event`'s every report is something happening.** Two `double` presses of a remote in a row
+are two changes: each moves `last_changed` and is a change for anything watching, even though the
+value is the same. A report the protocol marks `replayed` ([protocols.md](protocols.md) §6.3), only
+repeating what it last heard, sets the value and is not a change. Protocols keep every press
+waiting for the core in order, rather than only the latest as for values.
 
 A `button` has **no state**: there is no `button` tag, and its `EntityState.state` is always
 `null`. For a button that means "has no value", not "unknown" (§5.2): pressing it is something it

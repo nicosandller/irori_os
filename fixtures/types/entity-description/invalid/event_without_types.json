@@ -1,0 +1,8 @@
+{
+  "unique_id": "e",
+  "name": "Doorbell",
+  "capabilities": {
+    "kind": "event",
+    "event_types": []
+  }
+}

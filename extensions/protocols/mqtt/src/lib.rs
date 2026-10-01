@@ -172,6 +172,7 @@ async fn apply(
                         state: Some(new_state),
                         attributes: BTreeMap::default(),
                         caused_by: None,
+                        replayed: message.retained,
                     });
                 }
                 Some(Err(why)) => {
@@ -372,6 +373,7 @@ mod tests {
         Message {
             topic: topic.to_owned(),
             payload: payload.to_vec(),
+            retained: false,
         }
     }
 
@@ -597,6 +599,48 @@ mod tests {
             panic!("the list should be sent again");
         };
         assert!(listed.is_empty());
+    }
+
+    /// A retained message delivered on subscribing is what was last said, not news: an event's
+    /// report says so, so a remote's last press isn't pressed again on every reconnect.
+    #[tokio::test]
+    async fn a_retained_message_is_reported_as_a_replay() {
+        let (ctx, host) = host::connect();
+        let _drain = drain_ops(host.ops);
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+        let config_topic = "homeassistant/event/remote/config";
+        describe(
+            topic::parse(config_topic, "homeassistant").expect("valid"),
+            &message(
+                config_topic,
+                br#"{"unique_id": "remote_action", "name": "Remote", "state_topic": "remote/state",
+                    "event_types": ["single", "double"]}"#,
+            ),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        for retained in [true, false] {
+            apply(
+                Message {
+                    retained,
+                    ..message("remote/state", br#"{"event_type": "double"}"#)
+                },
+                &settings(),
+                &mut registry,
+                &publisher,
+                &ctx,
+            )
+            .await;
+        }
+        host.reports.ready().await;
+        let reports = host.reports.drain();
+        assert_eq!(
+            reports.iter().map(|r| r.replayed).collect::<Vec<_>>(),
+            [true, false]
+        );
     }
 
     #[tokio::test]

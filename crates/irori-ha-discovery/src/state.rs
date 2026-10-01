@@ -2,8 +2,8 @@
 //! (`docs/specs/entities.md` §5.3, `docs/specs/protocols.md` §7).
 
 use irori_types::{
-    BinarySensorState, ColorMode, LightState, NumberState, SelectState, SensorState, SensorValue,
-    Service, State, SwitchState, TextState, UniqueId,
+    BinarySensorState, ColorMode, EventState, LightState, NumberState, SelectState, SensorState,
+    SensorValue, Service, State, SwitchState, TextState, UniqueId,
 };
 
 use crate::discovery::EntityTopics;
@@ -90,6 +90,13 @@ pub fn decode(
             value_template,
             ..
         } if state_topic.as_deref() == Some(topic) => Some(decode_number(payload, value_template)),
+        // A message with no event in it (a remote's battery level, on the same topic as its
+        // presses) isn't for the event at all.
+        EntityTopics::Event {
+            state_topic,
+            source,
+        } if state_topic == topic => decode_event(payload, source)
+            .map(|event| event.map(|event_type| State::Event(EventState { event_type }))),
         EntityTopics::Select {
             state_topic,
             value_template,
@@ -277,6 +284,31 @@ fn decode_number(
     Ok(state)
 }
 
+/// The event type a message names, `None` if it names none.
+fn decode_event(
+    payload: &[u8],
+    source: &crate::discovery::EventSource,
+) -> Option<Result<String, String>> {
+    use crate::discovery::EventSource;
+    let body = || serde_json::from_slice::<serde_json::Value>(payload).ok();
+    let named = |value: Option<&serde_json::Value>| {
+        value
+            .and_then(serde_json::Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(|text| Ok(text.to_owned()))
+    };
+    match source {
+        EventSource::EventType => named(body()?.get("event_type")),
+        EventSource::Z2mAction => named(body()?.get("action")),
+        EventSource::Template(template) => match template.extract(payload) {
+            Ok(serde_json::Value::Object(object)) => named(object.get("event_type")),
+            Ok(serde_json::Value::String(text)) if !text.is_empty() => Some(Ok(text)),
+            Ok(_) => None,
+            Err(why) => Some(Err(why)),
+        },
+    }
+}
+
 /// The text a select or a text entity reported, through its value template.
 fn decode_text(
     payload: &[u8],
@@ -417,6 +449,7 @@ pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, Un
         }
         // Nothing to listen to: a press leaves no state.
         EntityTopics::Button { .. } => {}
+        EntityTopics::Event { state_topic, .. } => list.push(state_topic.clone()),
     }
     list.into_iter().map(|t| (t, unique_id.clone())).collect()
 }

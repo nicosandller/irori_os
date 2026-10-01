@@ -28,6 +28,7 @@ fn report(on: bool, caused_by: Option<ContextId>) -> StateReport {
         })),
         attributes: Default::default(),
         caused_by,
+        replayed: false,
     }
 }
 

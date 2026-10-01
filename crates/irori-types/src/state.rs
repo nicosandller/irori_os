@@ -7,6 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::kinds::binary_sensor::BinarySensorState;
+use crate::kinds::event::EventState;
 use crate::kinds::light::LightState;
 use crate::kinds::number::NumberState;
 use crate::kinds::select::SelectState;
@@ -134,6 +135,7 @@ pub enum State {
     Number(NumberState),
     Select(SelectState),
     Text(TextState),
+    Event(EventState),
 }
 
 impl State {
@@ -144,7 +146,11 @@ impl State {
             Self::Light(light) => light.validate(),
             Self::Sensor(sensor) => sensor.validate(),
             Self::Number(number) => number.validate(),
-            Self::Switch(_) | Self::BinarySensor(_) | Self::Select(_) | Self::Text(_) => Ok(()),
+            Self::Switch(_)
+            | Self::BinarySensor(_)
+            | Self::Select(_)
+            | Self::Text(_)
+            | Self::Event(_) => Ok(()),
         }
     }
 
@@ -157,6 +163,7 @@ impl State {
             Self::Number(_) => EntityKind::Number,
             Self::Select(_) => EntityKind::Select,
             Self::Text(_) => EntityKind::Text,
+            Self::Event(_) => EntityKind::Event,
         }
     }
 }

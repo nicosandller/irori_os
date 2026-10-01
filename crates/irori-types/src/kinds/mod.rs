@@ -7,6 +7,7 @@
 
 pub(crate) mod binary_sensor;
 pub(crate) mod button;
+pub(crate) mod event;
 pub(crate) mod light;
 pub(crate) mod number;
 pub(crate) mod select;
@@ -16,6 +17,7 @@ pub(crate) mod text;
 
 use crate::{Capabilities, EntityKind, InvariantError, Service, ServiceName, State};
 
+use self::event::EventState;
 use self::light::LightTurnOn;
 use self::number::{NumberSetValue, NumberState};
 use self::select::{SelectOption, SelectState};
@@ -68,6 +70,12 @@ pub enum ValueShape {
 }
 
 impl EntityKind {
+    /// Whether every report is something happening, even one identical to the last: two
+    /// `double` presses of a remote are two presses (`docs/specs/entities.md` §5.3).
+    pub fn counts_every_report(self) -> bool {
+        matches!(self, Self::Event)
+    }
+
     /// The standard services for this kind (`docs/specs/protocols.md` §7.1).
     pub fn services(self) -> impl Iterator<Item = ServiceName> {
         ServiceName::ALL
@@ -95,7 +103,8 @@ impl EntityKind {
             | Self::Number
             | Self::Select
             | Self::Text
-            | Self::Button => None,
+            | Self::Button
+            | Self::Event => None,
         }
     }
 }
@@ -106,7 +115,7 @@ impl Capabilities {
         Some(match self {
             Self::Light(_) | Self::Switch(_) | Self::BinarySensor(_) => ValueShape::Bool,
             Self::Number(_) => ValueShape::Number,
-            Self::Select(_) | Self::Text(_) => ValueShape::Text,
+            Self::Select(_) | Self::Text(_) | Self::Event(_) => ValueShape::Text,
             Self::Sensor(sensor) => match sensor.value_type {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
@@ -121,6 +130,7 @@ impl Capabilities {
         match self {
             Self::Sensor(sensor) if !sensor.options.is_empty() => Some(&sensor.options),
             Self::Select(select) => Some(&select.options),
+            Self::Event(event) => Some(&event.event_types),
             _ => None,
         }
     }
@@ -139,6 +149,7 @@ impl Capabilities {
             (Self::Number(caps), State::Number(state)) => number::fits(caps, state),
             (Self::Select(caps), State::Select(state)) => select::fits(caps, state),
             (Self::Text(caps), State::Text(state)) => text::fits(caps, state),
+            (Self::Event(caps), State::Event(state)) => event::fits(caps, state),
             _ => Ok(()),
         }
     }
@@ -174,6 +185,7 @@ impl State {
             Self::Number(number) => Typed::Number(number.value),
             Self::Select(select) => Typed::Text(select.option.clone()),
             Self::Text(text) => Typed::Text(text.value.clone()),
+            Self::Event(event) => Typed::Text(event.event_type.clone()),
             Self::Sensor(sensor) => match &sensor.value {
                 SensorValue::Number(n) => Typed::Number(*n),
                 SensorValue::Text(text) => Typed::Text(text.clone()),
@@ -208,6 +220,9 @@ impl State {
             }),
             (EntityKind::Text, _, Typed::Text(value)) => State::Text(TextState {
                 value: value.clone(),
+            }),
+            (EntityKind::Event, _, Typed::Text(event_type)) => State::Event(EventState {
+                event_type: event_type.clone(),
             }),
             (EntityKind::Sensor, _, Typed::Text(text)) => State::Sensor(SensorState {
                 value: SensorValue::Text(text.clone()),

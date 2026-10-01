@@ -1,0 +1,8 @@
+{
+  "unique_id": "0x0211000000000009_action",
+  "state": {
+    "kind": "event",
+    "event_type": "double"
+  },
+  "replayed": true
+}

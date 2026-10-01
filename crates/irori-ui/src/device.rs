@@ -954,6 +954,7 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
             if switch.on { "On" } else { "Off" }.to_owned()
         }
         (Capabilities::Button(_), _) => "—".to_owned(),
+        (Capabilities::Event(_), Some(State::Event(event))) => event.event_type.clone(),
         (Capabilities::Select(_), Some(State::Select(select))) => select.option.clone(),
         (Capabilities::Text(text), Some(State::Text(state))) => {
             if text.mode == irori_types::TextMode::Password {

@@ -416,6 +416,39 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "device_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EventClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "event_types": {
+              "description": "Everything it can report happening, at least one, e.g. `single`, `double`, `long`.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256,
+              "minItems": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "event"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "event_types"
+          ]
         }
       ]
     },
@@ -454,6 +487,23 @@
           "description": "Tells how the device is doing, e.g. its signal strength or firmware version.",
           "type": "string",
           "const": "diagnostic"
+        }
+      ]
+    },
+    "EventClass": {
+      "description": "What kind of thing it reports happening, when that's one of Home Assistant's.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "doorbell",
+            "motion"
+          ]
+        },
+        {
+          "description": "A button being pressed: a remote's, a wall switch's.",
+          "type": "string",
+          "const": "button"
         }
       ]
     },

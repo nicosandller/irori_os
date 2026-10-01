@@ -473,6 +473,7 @@ async fn list_entities(
             EspHomeMessage::ListEntitiesSelectResponse(e) => (e.key, map::select(device, e)),
             EspHomeMessage::ListEntitiesTextResponse(e) => (e.key, map::text(device, e)),
             EspHomeMessage::ListEntitiesButtonResponse(e) => (e.key, map::button(device, e)),
+            EspHomeMessage::ListEntitiesEventResponse(e) => (e.key, map::event(device, e)),
             EspHomeMessage::ListEntitiesTextSensorResponse(e) => {
                 (e.key, map::text_sensor(device, e))
             }
@@ -524,6 +525,7 @@ fn report(
         EspHomeMessage::NumberStateResponse(s) => (s.key, map::number_state(s)),
         EspHomeMessage::SelectStateResponse(s) => (s.key, map::select_state(s)),
         EspHomeMessage::TextStateResponse(s) => (s.key, map::text_state(s)),
+        EspHomeMessage::EventResponse(e) => (e.key, Some(map::event_state(e))),
         _ => return None,
     };
     let unique_id = by_key.get(&key)?.clone();
@@ -532,6 +534,7 @@ fn report(
         state,
         attributes: std::collections::BTreeMap::new(),
         caused_by: caused_by(key, commanded),
+        replayed: false,
     })
 }
 

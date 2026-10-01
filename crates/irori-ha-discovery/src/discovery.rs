@@ -9,9 +9,10 @@
 
 use irori_types::{
     BinarySensorCapabilities, BinarySensorClass, ButtonCapabilities, ButtonClass, Capabilities,
-    ColorTempRange, EntityCategory, LightCapabilities, Name, NumberCapabilities, NumberMode,
-    SelectCapabilities, SensorCapabilities, SensorClass, SensorValueType, StateClass,
-    SwitchCapabilities, SwitchClass, TextCapabilities, TextMode, UniqueId,
+    ColorTempRange, EntityCategory, EventCapabilities, EventClass, LightCapabilities, Name,
+    NumberCapabilities, NumberMode, SelectCapabilities, SensorCapabilities, SensorClass,
+    SensorValueType, StateClass, SwitchCapabilities, SwitchClass, TextCapabilities, TextMode,
+    UniqueId,
 };
 
 use crate::template::ValueTemplate;
@@ -129,6 +130,25 @@ pub enum EntityTopics {
         command_topic: String,
         payload_press: String,
     },
+    /// Something that happens: each message on `state_topic` that names an event type is one
+    /// happening.
+    Event {
+        state_topic: String,
+        source: EventSource,
+    },
+}
+
+/// Where in a message an event's type is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventSource {
+    /// Home Assistant's own shape: a JSON body with `event_type`.
+    EventType,
+    /// What a simple `value_template` picks out: the type itself, or an object with `event_type`.
+    Template(ValueTemplate),
+    /// Zigbee2MQTT's `action`. Its template is a Jinja program that splits a prefix off some
+    /// actions; Irori reads the action as it is, so a plain remote's `single`, `double` and
+    /// `hold` arrive, and a prefixed one (`1_single`) is refused for not being one of its types.
+    Z2mAction,
 }
 
 /// Everything Irori needs from one discovery config payload.
@@ -178,6 +198,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::Select => parse_select(&root)?,
         Component::Text => parse_text(&root)?,
         Component::Button => parse_button(&root)?,
+        Component::Event => parse_event(&root)?,
     };
 
     Ok(ParsedConfig {
@@ -454,6 +475,48 @@ fn parse_select(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics)
             state_topic: str_field(root, "state_topic").map(str::to_owned),
             command_topic,
             value_template: ValueTemplate::parse(str_field(root, "value_template")),
+        },
+    ))
+}
+
+fn parse_event(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
+    let state_topic = str_field(root, "state_topic")
+        .ok_or("an event needs a `state_topic`")?
+        .to_owned();
+    let event_types = root
+        .get("event_types")
+        .and_then(serde_json::Value::as_array)
+        .map(|types| {
+            types
+                .iter()
+                .filter_map(|t| t.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let capabilities = EventCapabilities {
+        event_types,
+        device_class: str_field(root, "device_class").and_then(EventClass::from_ha),
+    };
+    capabilities.validate().map_err(|e| e.to_string())?;
+    let source = match str_field(root, "value_template") {
+        None => EventSource::EventType,
+        Some(template) => match ValueTemplate::parse(Some(template)) {
+            ValueTemplate::Unsupported(_) if template.contains("value_json.action") => {
+                EventSource::Z2mAction
+            }
+            ValueTemplate::Unsupported(_) => {
+                return Err(format!(
+                    "its `value_template` {template:?} needs Jinja, which Irori doesn't run"
+                ));
+            }
+            simple => EventSource::Template(simple),
+        },
+    };
+    Ok((
+        Capabilities::Event(capabilities),
+        EntityTopics::Event {
+            state_topic,
+            source,
         },
     ))
 }
@@ -814,6 +877,56 @@ mod tests {
 
         let no_options = br#"{"unique_id": "s", "name": "Mode", "command_topic": "x/set"}"#;
         assert!(parse(Component::Select, no_options).is_err());
+    }
+
+    #[test]
+    fn an_event_reads_home_assistants_shape_and_zigbee2mqtts_action() {
+        let decode = |parsed: &ParsedConfig, payload: &[u8]| {
+            crate::state::decode(&parsed.topics, "remote/state", payload, None)
+        };
+        let pressed = |t: &str| {
+            Some(Ok(irori_types::State::Event(irori_types::EventState {
+                event_type: t.into(),
+            })))
+        };
+        // Home Assistant's own: a JSON body naming the event type.
+        let plain = parse(
+            Component::Event,
+            br#"{"unique_id": "r", "name": "Remote", "state_topic": "remote/state",
+                "event_types": ["press", "hold"], "device_class": "button"}"#,
+        )
+        .expect("valid");
+        assert_eq!(
+            decode(&plain, br#"{"event_type": "hold"}"#),
+            pressed("hold")
+        );
+        assert_eq!(
+            decode(&plain, br#"{"battery": 90}"#),
+            None,
+            "no event in it"
+        );
+
+        // Zigbee2MQTT's: its Jinja template is read as the action it picks out.
+        let z2m = parse(
+            Component::Event,
+            br#"{"unique_id": "r2", "name": "Action", "state_topic": "remote/state",
+                "event_types": ["single", "double", "hold"],
+                "value_template": "{% set action_value = value_json.action|default('') %}{{ ... }}"}"#,
+        )
+        .expect("valid");
+        assert_eq!(
+            decode(&z2m, br#"{"action": "double", "battery": 90}"#),
+            pressed("double")
+        );
+        assert_eq!(decode(&z2m, br#"{"action": "", "battery": 90}"#), None);
+
+        // Any other Jinja is left out with a reason.
+        let jinja = parse(
+            Component::Event,
+            br#"{"unique_id": "r3", "name": "X", "state_topic": "x",
+                "event_types": ["a"], "value_template": "{{ value_json.k | upper }}"}"#,
+        );
+        assert!(jinja.is_err_and(|e| e.contains("Jinja")));
     }
 
     #[test]

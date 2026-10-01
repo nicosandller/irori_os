@@ -163,6 +163,7 @@ its device's name); it never changes its kind or its id. A different kind needs 
 | `state` | `State` ([entities.md](entities.md) §5.3), or `null` | yes, even when `null` | `null` when the device doesn't know (e.g. it just rebooted) |
 | `attributes` | map of `AttributeKey` → any JSON | no | Replaces all attributes; leave out to clear them |
 | `caused_by` | `ContextId` | no | The context of the service call this change answers |
+| `replayed` | bool | no, default `false` | The protocol is repeating what it last heard rather than hearing something new, e.g. a retained MQTT message delivered on (re)subscribing. For an `event` it means "not a press" ([entities.md](entities.md) §5.3); for anything else it changes nothing |
 
 The core turns a report into the entity's `EntityState`: it sets `last_reported`, updates
 `last_changed` and `last_updated` if something changed, and sets the context:

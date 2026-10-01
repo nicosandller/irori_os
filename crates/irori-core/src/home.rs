@@ -223,6 +223,7 @@ impl Home {
                         state: state.state.clone(),
                         attributes: state.attributes.clone(),
                         caused_by: None,
+                        replayed: false,
                     },
                 );
             }
@@ -265,7 +266,9 @@ impl Home {
                     .unwrap_or_default(),
             );
         }
-        for report in found.reports.into_values() {
+        // What it last said, said again: not something happening now (an event's last press).
+        for mut report in found.reports.into_values() {
+            report.replayed = true;
             events.extend(
                 self.report_state(&protocol, report, stamp)
                     .unwrap_or_default(),
@@ -939,7 +942,21 @@ impl Home {
         let old = self.states[&id].clone();
         // A clock that steps backwards never moves a timestamp back.
         let now = stamp.now.max(old.last_updated).max(old.last_reported);
-        let state_changed = old.state != report.state;
+        // An event's every report is something happening, even the same thing again. One the
+        // protocol is only repeating isn't: it sets the value and says nothing happened.
+        let occurrence = id.kind().counts_every_report();
+        if occurrence && report.replayed {
+            let mut new = old;
+            new.last_reported = now;
+            if new.state != report.state || new.attributes != report.attributes {
+                new.state = report.state;
+                new.attributes = report.attributes;
+                new.last_updated = now;
+            }
+            self.states.insert(id, new);
+            return Ok(vec![]);
+        }
+        let state_changed = old.state != report.state || (occurrence && report.state.is_some());
         let changed = state_changed || old.attributes != report.attributes;
         let mut new = old.clone();
         new.last_reported = now;
@@ -1416,6 +1433,7 @@ mod tests {
             state,
             attributes: BTreeMap::new(),
             caused_by: None,
+            replayed: false,
         }
     }
 
@@ -1892,6 +1910,69 @@ mod tests {
     }
 
     #[test]
+    fn every_press_of_a_remote_happens_but_a_replay_does_not() {
+        let mut home = home_with_lamp();
+        home.describe_entity(
+            &protocol(),
+            ALL,
+            entity(
+                "lamp-remote",
+                Some("Remote"),
+                Some("lamp"),
+                Capabilities::Event(irori_types::EventCapabilities {
+                    event_types: vec!["single".into(), "double".into()],
+                    device_class: Some(irori_types::EventClass::Button),
+                }),
+            ),
+            &stamp(0),
+        )
+        .expect("entity");
+        let press = |event_type: &str, replayed: bool| StateReport {
+            unique_id: uid("lamp-remote"),
+            state: Some(State::Event(irori_types::EventState {
+                event_type: event_type.into(),
+            })),
+            attributes: Default::default(),
+            caused_by: None,
+            replayed,
+        };
+        let changes = |events: Vec<Event>| {
+            events
+                .iter()
+                .filter(|e| matches!(e, Event::StateChanged { .. }))
+                .count()
+        };
+        // Two double presses in a row are two presses.
+        let first = home
+            .report_state(&protocol(), press("double", false), &stamp(1))
+            .expect("fits");
+        let second = home
+            .report_state(&protocol(), press("double", false), &stamp(2))
+            .expect("fits");
+        assert_eq!((changes(first), changes(second)), (1, 1));
+
+        // The protocol repeating what it last heard (a reconnect) isn't a press: the value is
+        // taken, and nothing is said to have happened.
+        let replayed = home
+            .report_state(&protocol(), press("single", true), &stamp(3))
+            .expect("fits");
+        assert_eq!(changes(replayed), 0);
+        let id = EntityId::try_from("event.demo_lamp_remote").expect("valid");
+        assert_eq!(
+            home.state(&id).and_then(|s| s.state.clone()),
+            Some(State::Event(irori_types::EventState {
+                event_type: "single".into()
+            }))
+        );
+
+        // An event type it doesn't have is refused like any value that doesn't fit.
+        assert!(
+            home.report_state(&protocol(), press("triple", false), &stamp(4))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn a_button_is_pressed_and_never_has_a_value() {
         let mut home = home_with_lamp();
         home.describe_entity(
@@ -1923,6 +2004,7 @@ mod tests {
             state: Some(light(true, None)),
             attributes: Default::default(),
             caused_by: None,
+            replayed: false,
         };
         assert!(home.report_state(&protocol(), report, &stamp(1)).is_err());
     }
@@ -1976,6 +2058,7 @@ mod tests {
             state: Some(State::Number(irori_types::NumberState { value: 1.0 })),
             attributes: Default::default(),
             caused_by: None,
+            replayed: false,
         };
         assert!(home.report_state(&protocol(), report, &stamp(1)).is_err());
     }

@@ -576,6 +576,7 @@ pub fn state_words(state: &EntityState, home: &Home) -> String {
         }
         Some(State::Select(s)) => s.option.clone(),
         Some(State::Text(t)) => t.value.clone(),
+        Some(State::Event(e)) => e.event_type.clone(),
         // Not sent to this engine yet (it reads entity format 2), but a number reads as one.
         Some(State::Number(n)) => {
             if n.value.fract() == 0.0 {

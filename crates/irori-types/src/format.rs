@@ -21,7 +21,8 @@ use crate::{Entity, EntityKind, EntityState};
 /// 4. Adds `select`.
 /// 5. Adds `text`.
 /// 6. Adds `button`.
-pub const ENTITY_FORMAT: u32 = 6;
+/// 7. Adds `event`.
+pub const ENTITY_FORMAT: u32 = 7;
 
 pub(crate) fn first() -> u32 {
     1
@@ -41,6 +42,7 @@ impl EntityKind {
             Self::Select => 4,
             Self::Text => 5,
             Self::Button => 6,
+            Self::Event => 7,
         }
     }
 }
@@ -137,6 +139,13 @@ mod tests {
         .expect("valid");
         assert_eq!(entity_for(5, &restart), None);
         assert!(entity_for(6, &restart).is_some());
+        let remote: Entity = serde_json::from_str(
+            r#"{"id": "event.remote", "protocol": "zigbee", "unique_id": "e",
+                "name": "Remote", "capabilities": {"kind": "event", "event_types": ["single"]}}"#,
+        )
+        .expect("valid");
+        assert_eq!(entity_for(6, &remote), None);
+        assert!(entity_for(7, &remote).is_some());
     }
 
     #[test]

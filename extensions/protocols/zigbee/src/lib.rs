@@ -342,6 +342,7 @@ async fn apply(
                         state: Some(new_state),
                         attributes: BTreeMap::default(),
                         caused_by: None,
+                        replayed: message.retained,
                     });
                 }
                 Some(Err(why)) => {
@@ -530,6 +531,7 @@ mod tests {
         Message {
             topic: topic.to_owned(),
             payload: payload.to_vec(),
+            retained: false,
         }
     }
 

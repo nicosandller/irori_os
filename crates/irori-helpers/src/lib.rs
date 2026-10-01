@@ -154,5 +154,6 @@ fn report(
         state: Some(State::Switch(SwitchState { on })),
         attributes: BTreeMap::new(),
         caused_by,
+        replayed: false,
     }
 }

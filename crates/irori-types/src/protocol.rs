@@ -289,6 +289,11 @@ pub struct StateReport {
     /// (e.g. the device confirmed a command). Otherwise the change is attributed to the device.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caused_by: Option<ContextId>,
+    /// The protocol is repeating what it last heard rather than hearing something new, e.g. a
+    /// retained MQTT message delivered on (re)subscribing. For an `event`, whose every report is
+    /// an occurrence, a replayed one sets the value without counting as something happening.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replayed: bool,
 }
 
 #[derive(Deserialize)]
@@ -302,6 +307,8 @@ struct RawStateReport {
     attributes: Attributes,
     #[serde(default)]
     caused_by: Option<ContextId>,
+    #[serde(default)]
+    replayed: bool,
 }
 
 impl<'de> Deserialize<'de> for StateReport {
@@ -312,6 +319,7 @@ impl<'de> Deserialize<'de> for StateReport {
             state: raw.state,
             attributes: raw.attributes,
             caused_by: raw.caused_by,
+            replayed: raw.replayed,
         };
         report.validate().map_err(serde::de::Error::custom)?;
         Ok(report)
@@ -319,6 +327,14 @@ impl<'de> Deserialize<'de> for StateReport {
 }
 
 impl StateReport {
+    /// Whether it reports something happening (an event's press) rather than a value: each one
+    /// counts, so none may stand in for another (`EntityKind::counts_every_report`).
+    pub fn is_occurrence(&self) -> bool {
+        self.state
+            .as_ref()
+            .is_some_and(|state| state.kind().counts_every_report())
+    }
+
     /// Deserialization runs this; call it yourself when building a report in code.
     pub fn validate(&self) -> Result<(), InvariantError> {
         match &self.state {

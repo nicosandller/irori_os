@@ -6,21 +6,23 @@
 //! keeps its name, which is the same promise ESPHome makes to Home Assistant.
 
 use esphome_client::types::{
-    BinarySensorStateResponse, DeviceInfoResponse, EspHomeMessage, LightStateResponse,
-    ListEntitiesBinarySensorResponse, ListEntitiesButtonResponse, ListEntitiesLightResponse,
-    ListEntitiesNumberResponse, ListEntitiesSelectResponse, ListEntitiesSensorResponse,
-    ListEntitiesSwitchResponse, ListEntitiesTextResponse, ListEntitiesTextSensorResponse,
-    NumberStateResponse, SelectStateResponse, SensorStateResponse, SwitchStateResponse,
-    TextSensorStateResponse, TextStateResponse,
+    BinarySensorStateResponse, DeviceInfoResponse, EspHomeMessage, EventResponse,
+    LightStateResponse, ListEntitiesBinarySensorResponse, ListEntitiesButtonResponse,
+    ListEntitiesEventResponse, ListEntitiesLightResponse, ListEntitiesNumberResponse,
+    ListEntitiesSelectResponse, ListEntitiesSensorResponse, ListEntitiesSwitchResponse,
+    ListEntitiesTextResponse, ListEntitiesTextSensorResponse, NumberStateResponse,
+    SelectStateResponse, SensorStateResponse, SwitchStateResponse, TextSensorStateResponse,
+    TextStateResponse,
 };
 use irori_protocol::ProtocolError;
 use irori_protocol::types::{
     BinarySensorCapabilities, BinarySensorClass, BinarySensorState, ButtonCapabilities,
     ButtonClass, Capabilities, ColorMode, ColorTempRange, DeviceDescription, EntityCategory,
-    EntityDescription, EntityKind, LightCapabilities, LightState, Name, NumberCapabilities,
-    NumberMode, NumberState, ObjectId, SelectCapabilities, SelectState, SensorCapabilities,
-    SensorClass, SensorState, SensorValue, SensorValueType, State, StateClass, SwitchCapabilities,
-    SwitchClass, SwitchState, TextCapabilities, TextMode, TextState, UniqueId, Unmodeled,
+    EntityDescription, EntityKind, EventCapabilities, EventClass, EventState, LightCapabilities,
+    LightState, Name, NumberCapabilities, NumberMode, NumberState, ObjectId, SelectCapabilities,
+    SelectState, SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType, State,
+    StateClass, SwitchCapabilities, SwitchClass, SwitchState, TextCapabilities, TextMode,
+    TextState, UniqueId, Unmodeled,
 };
 
 /// ESPHome's `ColorMode` enum (api.proto). The values are a bit mask of what a mode carries.
@@ -247,6 +249,32 @@ pub fn select_state(state: &SelectStateResponse) -> Option<State> {
     })
 }
 
+/// ESPHome's `event`: something that happens, e.g. a button's single or double press.
+pub fn event(
+    device: &UniqueId,
+    entity: &ListEntitiesEventResponse,
+) -> Result<EntityDescription, ProtocolError> {
+    Ok(EntityDescription {
+        unique_id: entity_id(device, EntityKind::Event, entity.key)?,
+        name: Some(Name::try_from(entity.name.as_str())?),
+        device_unique_id: Some(device.clone()),
+        suggested_object_id: None,
+        capabilities: Capabilities::Event(EventCapabilities {
+            event_types: entity.event_types.clone(),
+            device_class: EventClass::from_ha(&entity.device_class),
+        }),
+        entity_category: category(entity.entity_category),
+    })
+}
+
+/// A fired event. ESPHome sends these only as they happen, never again on reconnect, so none is
+/// a replay.
+pub fn event_state(event: &EventResponse) -> State {
+    State::Event(EventState {
+        event_type: event.event_type.clone(),
+    })
+}
+
 /// ESPHome's `button`: something to press. It has no state, so nothing is ever reported for it.
 pub fn button(
     device: &UniqueId,
@@ -382,7 +410,6 @@ pub fn unmodeled(device: &UniqueId, message: &EspHomeMessage) -> Option<Unmodele
         M::ListEntitiesCoverResponse(e) => ("cover", &e.name),
         M::ListEntitiesDateResponse(e) => ("date", &e.name),
         M::ListEntitiesDateTimeResponse(e) => ("datetime", &e.name),
-        M::ListEntitiesEventResponse(e) => ("event", &e.name),
         M::ListEntitiesFanResponse(e) => ("fan", &e.name),
         M::ListEntitiesInfraredResponse(e) => ("infrared", &e.name),
         M::ListEntitiesLockResponse(e) => ("lock", &e.name),
@@ -656,6 +683,37 @@ mod tests {
             Some(State::Select(SelectState {
                 option: "previous".into()
             }))
+        );
+    }
+
+    #[test]
+    fn an_event_lists_what_can_happen() {
+        let device = UniqueId::try_from("00:11:22:33:44:55").expect("valid");
+        let listed = ListEntitiesEventResponse {
+            key: 9,
+            name: "Doorbell".into(),
+            event_types: vec!["ring".into()],
+            device_class: "doorbell".into(),
+            ..Default::default()
+        };
+        let described = event(&device, &listed).expect("valid");
+        assert_eq!(
+            described.capabilities,
+            Capabilities::Event(EventCapabilities {
+                event_types: vec!["ring".into()],
+                device_class: Some(EventClass::Doorbell),
+            })
+        );
+        let rang = EventResponse {
+            key: 9,
+            event_type: "ring".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            event_state(&rang),
+            State::Event(EventState {
+                event_type: "ring".into()
+            })
         );
     }
 

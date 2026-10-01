@@ -925,6 +925,7 @@ mod tests {
                 state: Some(State::Switch(SwitchState { on })),
                 attributes: Default::default(),
                 caused_by: None,
+                replayed: false,
             }
         }
 

@@ -66,6 +66,7 @@ fn light(on: bool, brightness: Option<u8>, caused_by: Option<ContextId>) -> Stat
         })),
         attributes: BTreeMap::new(),
         caused_by,
+        replayed: false,
     }
 }
 

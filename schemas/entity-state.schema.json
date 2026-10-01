@@ -232,6 +232,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^event\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "event"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -333,6 +356,10 @@
         {
           "maxLength": 71,
           "pattern": "^button\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^event\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -625,6 +652,24 @@
           "required": [
             "kind",
             "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event_type": {
+              "description": "What happened last: one of its `event_types`.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "event"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "event_type"
           ]
         }
       ]

@@ -122,6 +122,7 @@ which format it reads, and Irori converts down (`irori_types::format`):
 | 4 | `select` |
 | 5 | `text` |
 | 6 | `button` |
+| 7 | `event` |
 
 A reader of an older format isn't sent entities of newer kinds at all (nor their states, history
 or changes), and is sent the others without the newer fields. Every change to what an entity or

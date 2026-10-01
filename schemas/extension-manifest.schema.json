@@ -205,6 +205,11 @@
           "description": "Something to press, e.g. a restart button. It has no value.",
           "type": "string",
           "const": "button"
+        },
+        {
+          "description": "Something that happens, e.g. a remote's button pressed twice. Every report counts.",
+          "type": "string",
+          "const": "event"
         }
       ]
     },

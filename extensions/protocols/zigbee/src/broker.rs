@@ -96,6 +96,9 @@ pub fn start_embedded(port: u16) -> Result<(), String> {
 pub struct Message {
     pub topic: String,
     pub payload: Vec<u8>,
+    /// Delivered because it was retained, on subscribing, rather than published just now: what
+    /// was last said, not something happening (`StateReport::replayed`).
+    pub retained: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +177,7 @@ pub fn connect(
             match event_loop.poll().await {
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
                     let message = BrokerEvent::Message(Message {
+                        retained: publish.retain,
                         topic: publish.topic,
                         payload: publish.payload.to_vec(),
                     });

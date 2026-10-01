@@ -14,6 +14,9 @@ use crate::settings::Settings;
 pub struct Message {
     pub topic: String,
     pub payload: Vec<u8>,
+    /// Delivered because it was retained, on subscribing, rather than published just now: what
+    /// was last said, not something happening (`StateReport::replayed`).
+    pub retained: bool,
 }
 
 /// What changed about the connection itself, not about any one topic.
@@ -102,6 +105,7 @@ pub fn connect(
             match event_loop.poll().await {
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
                     let message = BrokerEvent::Message(Message {
+                        retained: publish.retain,
                         topic: publish.topic,
                         payload: publish.payload.to_vec(),
                     });
