@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::kinds::binary_sensor::BinarySensorState;
 use crate::kinds::light::LightState;
 use crate::kinds::number::NumberState;
+use crate::kinds::select::SelectState;
 use crate::kinds::sensor::SensorState;
 use crate::kinds::switch::SwitchState;
 use crate::{AttributeKey, Context, EntityId, EntityKind, InvariantError, Timestamp};
@@ -130,6 +131,7 @@ pub enum State {
     Sensor(SensorState),
     BinarySensor(BinarySensorState),
     Number(NumberState),
+    Select(SelectState),
 }
 
 impl State {
@@ -140,7 +142,7 @@ impl State {
             Self::Light(light) => light.validate(),
             Self::Sensor(sensor) => sensor.validate(),
             Self::Number(number) => number.validate(),
-            Self::Switch(_) | Self::BinarySensor(_) => Ok(()),
+            Self::Switch(_) | Self::BinarySensor(_) | Self::Select(_) => Ok(()),
         }
     }
 
@@ -151,6 +153,7 @@ impl State {
             Self::Sensor(_) => EntityKind::Sensor,
             Self::BinarySensor(_) => EntityKind::BinarySensor,
             Self::Number(_) => EntityKind::Number,
+            Self::Select(_) => EntityKind::Select,
         }
     }
 }

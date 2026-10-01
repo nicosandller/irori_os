@@ -18,6 +18,8 @@ pub enum EntityKind {
     BinarySensor,
     /// A value set within a range, e.g. a timeout or a calibration offset.
     Number,
+    /// One choice out of a fixed list, e.g. a sensor's sensitivity or a heater's mode.
+    Select,
 }
 
 impl EntityKind {
@@ -27,6 +29,7 @@ impl EntityKind {
         Self::Sensor,
         Self::BinarySensor,
         Self::Number,
+        Self::Select,
     ];
 
     /// The domain string used in entity ids and service names.
@@ -37,6 +40,7 @@ impl EntityKind {
             Self::Sensor => "sensor",
             Self::BinarySensor => "binary_sensor",
             Self::Number => "number",
+            Self::Select => "select",
         }
     }
 

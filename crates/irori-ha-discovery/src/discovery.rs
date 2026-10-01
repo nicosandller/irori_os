@@ -9,8 +9,9 @@
 
 use irori_types::{
     BinarySensorCapabilities, BinarySensorClass, Capabilities, ColorTempRange, EntityCategory,
-    LightCapabilities, Name, NumberCapabilities, NumberMode, SensorCapabilities, SensorClass,
-    SensorValueType, StateClass, SwitchCapabilities, SwitchClass, UniqueId,
+    LightCapabilities, Name, NumberCapabilities, NumberMode, SelectCapabilities,
+    SensorCapabilities, SensorClass, SensorValueType, StateClass, SwitchCapabilities, SwitchClass,
+    UniqueId,
 };
 
 use crate::template::ValueTemplate;
@@ -110,6 +111,13 @@ pub enum EntityTopics {
         command_topic: String,
         value_template: ValueTemplate,
     },
+    /// One choice out of a list: the option itself is published to `command_topic`, and read back
+    /// through `value_template`.
+    Select {
+        state_topic: Option<String>,
+        command_topic: String,
+        value_template: ValueTemplate,
+    },
 }
 
 /// Everything Irori needs from one discovery config payload.
@@ -156,6 +164,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::Sensor => parse_sensor(&root)?,
         Component::BinarySensor => parse_binary_sensor(&root)?,
         Component::Number => parse_number(&root)?,
+        Component::Select => parse_select(&root)?,
     };
 
     Ok(ParsedConfig {
@@ -363,18 +372,7 @@ fn color_temp_range(root: &serde_json::Value) -> Result<ColorTempRange, String> 
 }
 
 fn parse_number(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
-    let command_topic = str_field(root, "command_topic")
-        .ok_or("a number needs a `command_topic`")?
-        .to_owned();
-    // The value is published as it is. A template that does more than pass it through would need
-    // Jinja, which Irori doesn't run (`docs/specs/protocols.md`): better left out than sent wrong.
-    if let Some(template) = str_field(root, "command_template")
-        && template.split_whitespace().collect::<String>() != "{{value}}"
-    {
-        return Err(format!(
-            "its `command_template` {template:?} is more than the value, which Irori can't render"
-        ));
-    }
+    let command_topic = plain_command(root, "a number")?;
     let number = |key: &str, default: f64| {
         root.get(key)
             .and_then(serde_json::Value::as_f64)
@@ -397,6 +395,49 @@ fn parse_number(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics)
     Ok((
         Capabilities::Number(capabilities),
         EntityTopics::Number {
+            state_topic: str_field(root, "state_topic").map(str::to_owned),
+            command_topic,
+            value_template: ValueTemplate::parse(str_field(root, "value_template")),
+        },
+    ))
+}
+
+/// The `command_topic` of an entity whose command is its value, as it is.
+///
+/// A `command_template` that does more than pass the value through would need Jinja, which Irori
+/// doesn't run (`docs/specs/protocols.md`): an entity that needs one is better left out than sent
+/// the wrong thing.
+fn plain_command(root: &serde_json::Value, what: &str) -> Result<String, String> {
+    let command_topic = str_field(root, "command_topic")
+        .ok_or_else(|| format!("{what} needs a `command_topic`"))?
+        .to_owned();
+    if let Some(template) = str_field(root, "command_template")
+        && template.split_whitespace().collect::<String>() != "{{value}}"
+    {
+        return Err(format!(
+            "its `command_template` {template:?} is more than the value, which Irori can't render"
+        ));
+    }
+    Ok(command_topic)
+}
+
+fn parse_select(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
+    let command_topic = plain_command(root, "a select")?;
+    let options = root
+        .get("options")
+        .and_then(serde_json::Value::as_array)
+        .map(|options| {
+            options
+                .iter()
+                .filter_map(|o| o.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let capabilities = SelectCapabilities { options };
+    capabilities.validate().map_err(|e| e.to_string())?;
+    Ok((
+        Capabilities::Select(capabilities),
+        EntityTopics::Select {
             state_topic: str_field(root, "state_topic").map(str::to_owned),
             command_topic,
             value_template: ValueTemplate::parse(str_field(root, "value_template")),
@@ -672,6 +713,52 @@ mod tests {
             "zigbee2mqtt/Presence sensor/set/occupancy_timeout"
         );
         assert_eq!(sent[0].payload, b"120");
+    }
+
+    #[test]
+    fn parses_a_z2m_select_and_sends_it_the_option() {
+        // Zigbee2MQTT's `case "enum"` with set access.
+        let payload = br#"{
+            "unique_id": "0x0211000000000002_sensitivity_zigbee2mqtt",
+            "name": "Sensitivity",
+            "device": {"identifiers": ["zigbee2mqtt_0x0211000000000002"], "name": "Presence sensor"},
+            "state_topic": "zigbee2mqtt/Presence sensor",
+            "value_template": "{{ value_json[\"sensitivity\"] }}",
+            "command_topic": "zigbee2mqtt/Presence sensor/set/sensitivity",
+            "options": ["low", "medium", "high"],
+            "entity_category": "config"
+        }"#;
+        let parsed = parse(Component::Select, payload).expect("valid");
+        assert_eq!(
+            parsed.capabilities,
+            Capabilities::Select(SelectCapabilities {
+                options: vec!["low".into(), "medium".into(), "high".into()]
+            })
+        );
+        let state = crate::state::decode(
+            &parsed.topics,
+            "zigbee2mqtt/Presence sensor",
+            br#"{"occupancy": false, "sensitivity": "medium"}"#,
+            None,
+        );
+        assert_eq!(
+            state,
+            Some(Ok(irori_types::State::Select(irori_types::SelectState {
+                option: "medium".into()
+            })))
+        );
+        let sent = crate::state::encode(
+            &parsed.topics,
+            &irori_types::Service::SelectSelectOption(irori_types::SelectOption {
+                option: "high".into(),
+            }),
+        )
+        .expect("a select takes select_option");
+        assert_eq!(sent[0].topic, "zigbee2mqtt/Presence sensor/set/sensitivity");
+        assert_eq!(sent[0].payload, b"high");
+
+        let no_options = br#"{"unique_id": "s", "name": "Mode", "command_topic": "x/set"}"#;
+        assert!(parse(Component::Select, no_options).is_err());
     }
 
     #[test]

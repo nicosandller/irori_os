@@ -256,6 +256,7 @@ manifest's `entity_kinds`.
 | `switch.turn_on` | none | |
 | `switch.turn_off` | none | |
 | `number.set_value` | `value`, a finite number within the number's `min`–`max` | |
+| `select.select_option` | `option`, one of the select's `options` | |
 
 `sensor` and `binary_sensor` have no services.
 

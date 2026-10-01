@@ -8,16 +8,18 @@
 use esphome_client::types::{
     BinarySensorStateResponse, DeviceInfoResponse, EspHomeMessage, LightStateResponse,
     ListEntitiesBinarySensorResponse, ListEntitiesLightResponse, ListEntitiesNumberResponse,
-    ListEntitiesSensorResponse, ListEntitiesSwitchResponse, ListEntitiesTextSensorResponse,
-    NumberStateResponse, SensorStateResponse, SwitchStateResponse, TextSensorStateResponse,
+    ListEntitiesSelectResponse, ListEntitiesSensorResponse, ListEntitiesSwitchResponse,
+    ListEntitiesTextSensorResponse, NumberStateResponse, SelectStateResponse, SensorStateResponse,
+    SwitchStateResponse, TextSensorStateResponse,
 };
 use irori_protocol::ProtocolError;
 use irori_protocol::types::{
     BinarySensorCapabilities, BinarySensorClass, BinarySensorState, Capabilities, ColorMode,
     ColorTempRange, DeviceDescription, EntityCategory, EntityDescription, EntityKind,
     LightCapabilities, LightState, Name, NumberCapabilities, NumberMode, NumberState, ObjectId,
-    SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType, State, StateClass,
-    SwitchCapabilities, SwitchClass, SwitchState, UniqueId, Unmodeled,
+    SelectCapabilities, SelectState, SensorCapabilities, SensorClass, SensorState, SensorValue,
+    SensorValueType, State, StateClass, SwitchCapabilities, SwitchClass, SwitchState, UniqueId,
+    Unmodeled,
 };
 
 /// ESPHome's `ColorMode` enum (api.proto). The values are a bit mask of what a mode carries.
@@ -218,6 +220,32 @@ pub fn number_state(state: &NumberStateResponse) -> Option<State> {
     })
 }
 
+/// ESPHome's `select`: one choice out of a fixed list.
+pub fn select(
+    device: &UniqueId,
+    entity: &ListEntitiesSelectResponse,
+) -> Result<EntityDescription, ProtocolError> {
+    Ok(EntityDescription {
+        unique_id: entity_id(device, EntityKind::Select, entity.key)?,
+        name: Some(Name::try_from(entity.name.as_str())?),
+        device_unique_id: Some(device.clone()),
+        suggested_object_id: None,
+        capabilities: Capabilities::Select(SelectCapabilities {
+            options: entity.options.clone(),
+        }),
+        entity_category: category(entity.entity_category),
+    })
+}
+
+/// `None` when the device has no choice to report right now.
+pub fn select_state(state: &SelectStateResponse) -> Option<State> {
+    (!state.missing_state).then(|| {
+        State::Select(SelectState {
+            option: state.state.clone(),
+        })
+    })
+}
+
 /// ESPHome's `text_sensor`: an Irori `sensor` that reports text. Its id says `text_sensor`
 /// rather than `sensor`, so it never shares one with a numeric sensor of the same key.
 pub fn text_sensor(
@@ -307,7 +335,6 @@ pub fn unmodeled(device: &UniqueId, message: &EspHomeMessage) -> Option<Unmodele
         M::ListEntitiesLockResponse(e) => ("lock", &e.name),
         M::ListEntitiesMediaPlayerResponse(e) => ("media_player", &e.name),
         M::ListEntitiesRadioFrequencyResponse(e) => ("radio_frequency", &e.name),
-        M::ListEntitiesSelectResponse(e) => ("select", &e.name),
         M::ListEntitiesSirenResponse(e) => ("siren", &e.name),
         M::ListEntitiesTextResponse(e) => ("text", &e.name),
         M::ListEntitiesTimeResponse(e) => ("time", &e.name),
@@ -547,6 +574,37 @@ mod tests {
             ..reported
         };
         assert_eq!(number_state(&missing), None);
+    }
+
+    #[test]
+    fn a_select_offers_the_devices_options() {
+        let device = UniqueId::try_from("00:11:22:33:44:55").expect("valid");
+        let listed = ListEntitiesSelectResponse {
+            key: 4,
+            name: "Power-on behaviour".into(),
+            options: vec!["off".into(), "on".into(), "previous".into()],
+            entity_category: 1,
+            ..Default::default()
+        };
+        let described = select(&device, &listed).expect("valid");
+        assert_eq!(described.unique_id.as_str(), "00:11:22:33:44:55-select-4");
+        assert_eq!(
+            described.capabilities,
+            Capabilities::Select(SelectCapabilities {
+                options: vec!["off".into(), "on".into(), "previous".into()]
+            })
+        );
+        let reported = SelectStateResponse {
+            key: 4,
+            state: "previous".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            select_state(&reported),
+            Some(State::Select(SelectState {
+                option: "previous".into()
+            }))
+        );
     }
 
     #[test]

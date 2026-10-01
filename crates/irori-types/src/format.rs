@@ -18,7 +18,8 @@ use crate::{Entity, EntityKind, EntityState};
 /// 1. The first: `light`, `switch`, `sensor`, `binary_sensor`.
 /// 2. Adds `entity_category` on entities and `options` on text sensors.
 /// 3. Adds `number`.
-pub const ENTITY_FORMAT: u32 = 3;
+/// 4. Adds `select`.
+pub const ENTITY_FORMAT: u32 = 4;
 
 pub(crate) fn first() -> u32 {
     1
@@ -35,6 +36,7 @@ impl EntityKind {
         match self {
             Self::Light | Self::Switch | Self::Sensor | Self::BinarySensor => 1,
             Self::Number => 3,
+            Self::Select => 4,
         }
     }
 }
@@ -110,6 +112,13 @@ mod tests {
         assert_eq!(entity_for(2, &timeout), None);
         assert_eq!(entity_for(1, &timeout), None);
         assert!(entity_for(3, &timeout).is_some());
+        let mode: Entity = serde_json::from_str(
+            r#"{"id": "select.heater_mode", "protocol": "esphome", "unique_id": "m",
+                "name": "Mode", "capabilities": {"kind": "select", "options": ["eco", "comfort"]}}"#,
+        )
+        .expect("valid");
+        assert_eq!(entity_for(3, &mode), None);
+        assert!(entity_for(4, &mode).is_some());
     }
 
     #[test]

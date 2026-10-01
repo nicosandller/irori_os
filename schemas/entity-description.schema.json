@@ -309,6 +309,29 @@
             "max",
             "step"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "select"
+            },
+            "options": {
+              "description": "Every choice it has, at least one.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256,
+              "minItems": 1
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "options"
+          ]
         }
       ]
     },

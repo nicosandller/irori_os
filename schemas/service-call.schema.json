@@ -117,6 +117,25 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "select.select_option"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/SelectOption"
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -338,6 +357,20 @@
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
+    "SelectOption": {
+      "description": "Data for `select.select_option`.",
+      "type": "object",
+      "properties": {
+        "option": {
+          "description": "One of the select's options.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "option"
+      ]
+    },
     "ServiceName": {
       "description": "The name of a standard service: `<kind>.<action>`.",
       "type": "string",
@@ -346,7 +379,8 @@
         "light.turn_off",
         "switch.turn_on",
         "switch.turn_off",
-        "number.set_value"
+        "number.set_value",
+        "select.select_option"
       ]
     },
     "TokenId": {

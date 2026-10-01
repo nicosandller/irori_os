@@ -43,6 +43,7 @@ pub use kind::EntityKind;
 pub use kinds::binary_sensor::{BinarySensorCapabilities, BinarySensorClass, BinarySensorState};
 pub use kinds::light::{ColorMode, ColorTempRange, LightCapabilities, LightState, LightTurnOn};
 pub use kinds::number::{NumberCapabilities, NumberMode, NumberSetValue, NumberState};
+pub use kinds::select::{SelectCapabilities, SelectOption, SelectState};
 pub use kinds::sensor::{
     SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType, StateClass,
 };

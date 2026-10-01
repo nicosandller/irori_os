@@ -170,6 +170,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^select\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "select"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -411,6 +434,29 @@
             "max",
             "step"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "select"
+            },
+            "options": {
+              "description": "Every choice it has, at least one.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256,
+              "minItems": 1
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "options"
+          ]
         }
       ]
     },
@@ -482,6 +528,10 @@
         {
           "maxLength": 71,
           "pattern": "^number\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^select\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

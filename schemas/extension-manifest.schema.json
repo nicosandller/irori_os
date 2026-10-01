@@ -190,6 +190,11 @@
           "description": "A value set within a range, e.g. a timeout or a calibration offset.",
           "type": "string",
           "const": "number"
+        },
+        {
+          "description": "One choice out of a fixed list, e.g. a sensor's sensitivity or a heater's mode.",
+          "type": "string",
+          "const": "select"
         }
       ]
     },

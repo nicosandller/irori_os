@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use irori_types::{
     AreaId, Availability, BinarySensorCapabilities, BinarySensorClass, Capabilities, Device,
     DeviceId, Entity, EntityId, EntityState, ExtensionId, LightCapabilities, LightState,
-    LightTurnOn, NumberCapabilities, NumberMode, SensorCapabilities, SensorClass, SensorValue,
-    State,
+    LightTurnOn, NumberCapabilities, NumberMode, SelectCapabilities, SensorCapabilities,
+    SensorClass, SensorValue, State,
 };
 use leptos::ev;
 use leptos::prelude::*;
@@ -29,6 +29,8 @@ pub struct Controls {
     pub set_light: Callback<(EntityId, LightTurnOn)>,
     /// Ask a number to take this value.
     pub set_number: Callback<(EntityId, f64)>,
+    /// Ask a select to take this option.
+    pub set_option: Callback<(EntityId, String)>,
 }
 
 /// One device and the entities it provides. `device` is `None` for entities that belong to no
@@ -1603,7 +1605,10 @@ fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyVi
             </button>
         }
         .into_any(),
-        Capabilities::Light(_) | Capabilities::Switch(_) | Capabilities::Number(_) => view! {
+        Capabilities::Light(_)
+        | Capabilities::Switch(_)
+        | Capabilities::Number(_)
+        | Capabilities::Select(_) => view! {
             {control}
             <button
                 type="button"
@@ -1653,7 +1658,52 @@ fn control(
         Capabilities::Number(capabilities) => {
             number_control(entity, capabilities, value, offline, controls)
         }
+        Capabilities::Select(capabilities) => {
+            select_control(entity, capabilities, value, offline, controls)
+        }
     }
+}
+
+/// A select: its choices in a dropdown, on the one the device last reported. Choosing sends it.
+fn select_control(
+    entity: &Entity,
+    capabilities: &SelectCapabilities,
+    value: Option<&State>,
+    offline: bool,
+    controls: Controls,
+) -> AnyView {
+    let current = match value {
+        Some(State::Select(select)) => Some(select.option.clone()),
+        _ => None,
+    };
+    let entity_id = entity.id.clone();
+    let disable = {
+        let entity_id = entity_id.clone();
+        move || offline || controls.busy.get().contains(&entity_id)
+    };
+    let options = capabilities
+        .options
+        .iter()
+        .map(|option| {
+            let chosen = current.as_deref() == Some(option.as_str());
+            view! { <option value=option.clone() selected=chosen>{option.clone()}</option> }
+        })
+        .collect_view();
+    view! {
+        <select
+            class="select-control"
+            aria-label=entity.name.to_string()
+            disabled=disable
+            on:change:target=move |ev| {
+                controls.set_option.run((entity_id.clone(), ev.target().value()));
+            }
+        >
+            // Until it says, nothing is chosen rather than its first option.
+            {current.is_none().then(|| view! { <option value="" selected=true disabled=true>{UNKNOWN}</option> })}
+            {options}
+        </select>
+    }
+    .into_any()
 }
 
 /// The unit a reading or a setting is in, for labels: `°C`, `s`. Empty when it has none.

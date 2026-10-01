@@ -119,6 +119,7 @@ which format it reads, and Irori converts down (`irori_types::format`):
 | 1 | `light`, `switch`, `sensor`, `binary_sensor` |
 | 2 | `entity_category` on entities, `options` on text sensors |
 | 3 | `number` |
+| 4 | `select` |
 
 A reader of an older format isn't sent entities of newer kinds at all (nor their states, history
 or changes), and is sent the others without the newer fields. Every change to what an entity or

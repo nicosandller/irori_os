@@ -163,6 +163,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^select\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "select"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -252,6 +275,10 @@
         {
           "maxLength": 71,
           "pattern": "^number\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^select\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -509,6 +536,24 @@
           "required": [
             "kind",
             "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "select"
+            },
+            "option": {
+              "description": "The choice it's on: one of its options.",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "option"
           ]
         }
       ]

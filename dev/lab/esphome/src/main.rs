@@ -13,8 +13,8 @@ use esphome_client::API_VERSION;
 use esphome_client::types::{
     BinarySensorStateResponse, DeviceInfoResponse, EspHomeMessage, HelloResponse,
     ListEntitiesBinarySensorResponse, ListEntitiesDoneResponse, ListEntitiesFanResponse,
-    ListEntitiesNumberResponse, ListEntitiesSensorResponse, NumberStateResponse,
-    SensorStateResponse,
+    ListEntitiesNumberResponse, ListEntitiesSelectResponse, ListEntitiesSensorResponse,
+    NumberStateResponse, SelectStateResponse, SensorStateResponse,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -27,6 +27,7 @@ const SIGNAL_KEY: u32 = 2;
 const LED_KEY: u32 = 3;
 const INTERVAL_KEY: u32 = 4;
 const FAN_KEY: u32 = 5;
+const LED_MODE_KEY: u32 = 6;
 /// 32 bytes. Printed at startup as base64 so the waiting-for-a-key panel has something to paste.
 const LAB_KEY: [u8; 32] = *b"irori-lab-esphome-key-32bytes!!!";
 
@@ -191,6 +192,13 @@ fn answers(message: EspHomeMessage, board: &Board) -> Vec<EspHomeMessage> {
         }
         EspHomeMessage::ListEntitiesRequest(_) => entities(board),
         EspHomeMessage::SubscribeStatesRequest(_) => states(board),
+        EspHomeMessage::SelectCommandRequest(request) => {
+            vec![EspHomeMessage::SelectStateResponse(SelectStateResponse {
+                key: request.key,
+                state: request.state,
+                ..Default::default()
+            })]
+        }
         // A real board answers by reporting the value it now has.
         EspHomeMessage::NumberCommandRequest(request) => {
             vec![EspHomeMessage::NumberStateResponse(NumberStateResponse {
@@ -261,6 +269,17 @@ fn entities(_board: &Board) -> Vec<EspHomeMessage> {
             entity_category: 1, // config
             ..Default::default()
         }),
+        EspHomeMessage::ListEntitiesSelectResponse(ListEntitiesSelectResponse {
+            key: LED_MODE_KEY,
+            name: "LED mode".to_owned(),
+            options: vec![
+                "off".to_owned(),
+                "status".to_owned(),
+                "always on".to_owned(),
+            ],
+            entity_category: 1, // config
+            ..Default::default()
+        }),
         EspHomeMessage::ListEntitiesFanResponse(ListEntitiesFanResponse {
             key: FAN_KEY,
             name: "Cooling fan".to_owned(),
@@ -286,6 +305,11 @@ fn states(board: &Board) -> Vec<EspHomeMessage> {
         EspHomeMessage::NumberStateResponse(NumberStateResponse {
             key: LED_KEY,
             state: 40.0,
+            ..Default::default()
+        }),
+        EspHomeMessage::SelectStateResponse(SelectStateResponse {
+            key: LED_MODE_KEY,
+            state: "status".to_owned(),
             ..Default::default()
         }),
         EspHomeMessage::NumberStateResponse(NumberStateResponse {

@@ -953,6 +953,7 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
         (Capabilities::Switch(_), Some(State::Switch(switch))) => {
             if switch.on { "On" } else { "Off" }.to_owned()
         }
+        (Capabilities::Select(_), Some(State::Select(select))) => select.option.clone(),
         (Capabilities::Number(capabilities), Some(State::Number(number))) => {
             let unit = capabilities
                 .unit

@@ -12,6 +12,7 @@ pub enum Component {
     Sensor,
     BinarySensor,
     Number,
+    Select,
 }
 
 impl Component {
@@ -22,6 +23,7 @@ impl Component {
             "sensor" => Some(Self::Sensor),
             "binary_sensor" => Some(Self::BinarySensor),
             "number" => Some(Self::Number),
+            "select" => Some(Self::Select),
             _ => None,
         }
     }
@@ -35,6 +37,7 @@ impl fmt::Display for Component {
             Self::Sensor => "sensor",
             Self::BinarySensor => "binary_sensor",
             Self::Number => "number",
+            Self::Select => "select",
         })
     }
 }
