@@ -102,7 +102,9 @@ always spelled the same. Each number has at most 9 digits; at most 64 characters
 **The `irori` requirement** is `>=A.B.C`, or `>=A.B.C, <X.Y.Z` with the upper bound above the
 lower. That's all: one way to write each range, and nothing to misread. Before 1.0, minor
 versions may break extensions, so extensions should cap the next minor (`>=0.1.0, <0.2.0`). A
-pre-release of Irori counts as its release: `0.2.0-dev` satisfies `>=0.2.0`.
+pre-release of Irori counts as its release: `0.2.0-dev` satisfies `>=0.2.0`. A build that isn't a release is
+always a development build of the next one (`crates/irori-types/next-release`, e.g. `0.7.0-dev`),
+so extensions built beside it can require the version they'll ship with.
 
 An extension whose requirement doesn't match the running Irori isn't started; it shows as
 `failed` with the reason, e.g. `requires Irori >=0.2.0, this is 0.1.0`.

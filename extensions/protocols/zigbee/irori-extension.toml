@@ -1,8 +1,9 @@
 [extension]
 id = "zigbee"
 name = "Zigbee"
-version = "0.1.0"
-irori = ">=0.0.0"
+version = "0.2.0"
+irori = ">=0.7.0"
+# 0.7.0 reads entity categories, text sensor options, the unmodeled list and entity formats.
 description = "Zigbee devices through a USB dongle. Brings its own Zigbee2MQTT and broker: the MQTT extension isn't needed."
 config_schema = "config.schema.json"
 

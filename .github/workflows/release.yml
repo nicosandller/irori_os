@@ -38,6 +38,9 @@ jobs:
     name: validate the tag
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          sparse-checkout: crates/irori-types/next-release
       - name: Require a MAJOR.MINOR.PATCH tag
         run: |
           set -euo pipefail
@@ -64,6 +67,20 @@ jobs:
                 fail "has a numeric prerelease identifier with a leading zero"
               fi
             done
+          fi
+          # `-dev` is what every untagged build calls itself (`irori-types/build.rs`), and a build
+          # that says `-dev` builds its extensions instead of downloading them (`packages.rs`).
+          [[ "$version" != *-dev* ]] || fail "is a development version; tag the release itself"
+          # Development builds report `next-release` as `-dev`, and extensions require versions by
+          # it: a release past it would leave every later development build reporting a version
+          # older than one already released. Raise next-release first.
+          next="$(tr -d '[:space:]' < crates/irori-types/next-release)"
+          core="${version%%-*}"
+          if [[ "$(printf '%s\n%s\n' "$core" "$next" | sort -V | tail -1)" != "$next" ]]; then
+            fail "is past crates/irori-types/next-release ($next); raise that file first"
+          fi
+          if [[ "$core" == "$next" ]]; then
+            echo "::notice::this releases $next; raise crates/irori-types/next-release for the next one"
           fi
           echo "release tag $GITHUB_REF_NAME is valid"
 

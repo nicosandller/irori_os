@@ -1,8 +1,9 @@
 [extension]
 id = "esphome"
 name = "ESPHome"
-version = "0.3.1"
-irori = ">=0.0.0"
+version = "0.4.0"
+irori = ">=0.7.0"
+# 0.7.0 reads entity categories, text sensor options, the unmodeled list and entity formats.
 description = "Devices running ESPHome firmware, over ESPHome's native API."
 icon = "icon.svg"
 

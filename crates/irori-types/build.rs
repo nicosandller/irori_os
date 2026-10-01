@@ -1,5 +1,6 @@
 //! Resolves the version this build reports: `IRORI_VERSION` when the release job sets it, else an
-//! exact tag on `HEAD`, else the workspace's `0.0.0`. It lives in the crate both the binary and
+//! exact tag on `HEAD`, else the next release as a development build (`0.7.0-dev`, from the
+//! `next-release` file beside this one). It lives in the crate both the binary and
 //! the core depend on, so `irori version` and the extension-compatibility check can't disagree.
 
 use std::process::Command;
@@ -15,12 +16,19 @@ fn main() {
     // Run on every build: a new tag on `HEAD` changes the version without changing a file, and a
     // path that never exists always counts as changed (the same trick as `crates/irori/build.rs`).
     println!("cargo:rerun-if-changed=.irori-always-rerun");
+    println!("cargo:rerun-if-changed=next-release");
     println!("cargo:rustc-env=IRORI_VERSION={}", version());
 }
 
 /// A release sets `IRORI_VERSION` from the tag; a build made at an exact tag (a person running
-/// `cargo build` after `git tag`) picks it up on its own; anything else falls back to the
-/// workspace's `0.0.0`. A leading `v` is dropped, so the tag `v0.2.0` prints as `0.2.0`.
+/// `cargo build` after `git tag`) picks it up on its own; anything else is a development build of
+/// the next release, `<next-release>-dev`. A leading `v` is dropped, so the tag `v0.2.0` prints as
+/// `0.2.0`.
+///
+/// Why the next release rather than `0.0.0`: extensions say which Irori they need (`irori =
+/// ">=0.7.0"`), and a pre-release counts as its release (`docs/specs/extensions.md` §5). A
+/// development build that called itself `0.0.0` couldn't run the extensions built beside it. It
+/// can't come from git: the dev container and CI build without the tags.
 fn version() -> String {
     if let Ok(version) = std::env::var("IRORI_VERSION") {
         let version = version.trim();
@@ -41,7 +49,13 @@ fn version() -> String {
             return version.to_owned();
         }
     }
-    std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_owned())
+    let next = std::fs::read_to_string("next-release").expect("crates/irori-types/next-release");
+    let next = next.trim();
+    assert!(
+        release_version::is_release_version(next) && !next.contains('-'),
+        "next-release holds {next:?}; it must be the next MAJOR.MINOR.PATCH, e.g. 0.7.0"
+    );
+    format!("{next}-dev")
 }
 
 fn git(args: &[&str]) -> Option<String> {

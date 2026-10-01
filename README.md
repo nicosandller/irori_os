@@ -59,10 +59,10 @@ irori run                                  # http://127.0.0.1:8480
 changing anything, run it again** — the running `irori` is whatever was installed last. Which
 build that is isn't a guess: `irori version` and the Settings page show the commit it was built from,
 with `-modified` when the tree had uncommitted changes. A build made at a release tag reports
-that version instead of `0.0.0`.
+that version; any other build is the next release's development build, e.g. `0.7.0-dev`.
 
 ```sh
-irori version                              # irori 0.0.0 (359d176), built 2026-09-16 07:30 UTC
+irori version                              # irori 0.7.0-dev (359d176), built 2026-09-16 07:30 UTC
 ```
 
 Everything the installed binary does:

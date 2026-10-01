@@ -100,11 +100,12 @@ pub fn install_official(item: &Official, dest: &Path) -> Result<(), String> {
     )
 }
 
-/// Whether this reports a real version rather than the workspace's own `0.0.0`: the release
-/// workflow sets `IRORI_VERSION`, and a build made with `HEAD` sitting on an exact release tag
-/// picks the same version up on its own (see `irori_types`'s `build.rs`) — both cases where
+/// Whether this reports a released version rather than a development build (`0.7.0-dev`): the
+/// release workflow sets `IRORI_VERSION`, and a build made with `HEAD` sitting on an exact release
+/// tag picks the same version up on its own (see `irori_types`'s `build.rs`) — both cases where
 /// downloading is the right call even for a checkout with a perfectly good cargo in it. A plain
-/// `cargo build`, `cargo build --release`, and `cargo xtask install` all still report `0.0.0`.
+/// `cargo build`, `cargo build --release`, and `cargo xtask install` all report a `-dev` version,
+/// which the release workflow never tags.
 ///
 /// A tagged `HEAD` alone isn't enough, though: it says nothing about the working tree, so
 /// building at a tag with local edits still reports that tag's version. `COMMIT` (`build.rs` in
@@ -116,7 +117,7 @@ fn is_distributed_release() -> bool {
 }
 
 fn release_build(version: &str, commit: &str) -> bool {
-    version != "0.0.0" && !commit.ends_with("-modified")
+    !version.ends_with("-dev") && !commit.ends_with("-modified")
 }
 
 fn cargo_runnable() -> bool {
@@ -705,8 +706,14 @@ mod tests {
     }
 
     #[test]
-    fn the_workspaces_own_version_is_not_a_release() {
-        assert!(!release_build("0.0.0", "abc1234"));
+    fn a_development_build_is_not_a_release() {
+        assert!(!release_build("0.7.0-dev", "abc1234"));
+        assert!(!release_build(irori_types::VERSION, "abc1234-modified"));
+    }
+
+    #[test]
+    fn a_tagged_pre_release_is_a_release() {
+        assert!(release_build("0.7.0-beta.1", "abc1234"));
     }
 
     #[test]
