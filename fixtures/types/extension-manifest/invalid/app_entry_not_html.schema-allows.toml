@@ -1,0 +1,9 @@
+[extension]
+id = "pages"
+name = "Pages"
+version = "0.1.0"
+irori = ">=0.1.0, <0.2.0"
+
+[[contributes.app]]
+label = "Pages"
+entry = "app/main.js"

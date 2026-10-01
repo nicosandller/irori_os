@@ -26,6 +26,9 @@ use crate::build_info::{BuildInfo, VERSION};
 use crate::config::{Config, EditError, Refused};
 use crate::db::Database;
 use crate::history::History;
+use crate::syslog;
+
+mod apps;
 
 /// Who commands are attributed to until there are accounts to attribute them to (M1.5).
 static UNAUTHENTICATED: LazyLock<UserId> =
@@ -49,6 +52,10 @@ struct Inner {
     config: Config,
     host: ExtensionHost,
     history: History,
+    /// What this process has said lately, kept by the log subscriber's writer (`syslog`) and
+    /// served to the Settings page. Held here rather than reached for globally so a test can put
+    /// lines in it without standing up a subscriber.
+    log: Arc<syslog::Log>,
     /// Waking this asks `serve` (crates/irori/src/main.rs) to shut down and start this binary
     /// again. The atomic records that the shutdown was a requested restart: `serve` reads it
     /// once the server has stopped and re-execs itself instead of just stopping.
@@ -68,6 +75,7 @@ impl AppState {
         config: Config,
         host: ExtensionHost,
         history: History,
+        log: Arc<syslog::Log>,
         restart: Arc<tokio::sync::Notify>,
         restarting: Arc<AtomicBool>,
     ) -> Self {
@@ -80,6 +88,7 @@ impl AppState {
             config,
             host,
             history,
+            log,
             restart,
             restarting,
             last_restart: Mutex::new(None),
@@ -124,6 +133,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/dev/history/{entity_id}", get(entity_history))
         .route("/api/dev/system", get(host_info))
+        .route("/api/dev/system/log", get(system_log))
         .route("/api/dev/serial-ports", get(serial_ports))
         .route("/api/dev/restart", post(restart))
         .route(
@@ -139,7 +149,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/dev/areas/{id}", patch(edit_area).delete(remove_area))
         .route("/api/dev/floorplan", get(floorplan).put(save_floorplan))
-        .route("/api/dev/devices/{id}", patch(edit_device))
+        .route(
+            "/api/dev/devices/{id}",
+            patch(edit_device).delete(remove_device),
+        )
         .route("/api/dev/entities/{id}", patch(edit_entity))
         .route("/api/dev/extensions/{id}/secrets", put(give_secret))
         .route(
@@ -161,6 +174,13 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/dev/extensions/{id}/icon.svg", get(extension_icon))
         .route("/api/dev/extensions/{id}/log", get(extension_log))
+        // Extensions' own pages and their engines (`docs/specs/automations.md` §B3).
+        .route("/api/dev/apps", get(apps::list))
+        .route("/api/dev/apps/{id}/rpc", post(apps::rpc))
+        // Their files. Not under `/apps/`: those addresses are the shell's own pages that show
+        // them, and must reach the shell when reloaded.
+        .route("/pages/{id}/", get(apps::index))
+        .route("/pages/{id}/{*path}", get(apps::file))
         .fallback(get(ui::serve))
         .with_state(state)
 }
@@ -659,10 +679,7 @@ struct DeviceEdit {
     description: Patch<Description>,
     #[serde(default, deserialize_with = "patched")]
     area: Patch<WhereTo>,
-    /// `true` takes the device out of the home; `false` lets it back in.
-    #[serde(default)]
-    ignored: Option<bool>,
-    /// `true` adds a new device while Irori asks before adding.
+    /// `true` adds a found device to the home ("+ Add device"). Taking one out is `DELETE`.
     #[serde(default)]
     added: Option<bool>,
 }
@@ -673,7 +690,7 @@ async fn edit_device(
     Json(request): Json<DeviceEdit>,
 ) -> Response {
     let core = &state.0.core;
-    // An ignored device isn't in the registry, but it's still one a person can let back in.
+    // A found device isn't in the registry, but it's still one a person can add.
     let known = core.devices().iter().any(|device| device.id == id)
         || core.held_devices().iter().any(|device| device.id == id);
     if !known {
@@ -701,15 +718,6 @@ async fn edit_device(
             if let Some(description) = request.description.clone() {
                 device.description = description;
             }
-            if let Some(ignored) = request.ignored {
-                device.ignored = ignored;
-                // Letting it back in is adding it. With ask mode on, clearing ignored alone
-                // would leave `added = false` and put it on the waiting list instead of in
-                // the home.
-                if !ignored {
-                    device.added = true;
-                }
-            }
             if let Some(added) = request.added {
                 device.added = added;
             }
@@ -722,6 +730,21 @@ async fn edit_device(
     match edited {
         // The device as it now is, so the page doesn't have to guess what the change produced.
         Ok(()) => Json(core.devices().into_iter().find(|device| device.id == id)).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+/// Removes a device from the home: its name, room, entities, floorplan spot and history go, and
+/// it's back among what its protocol has found, to be added again from "+ Add device" if wanted
+/// (`docs/specs/config.md` §3.2). Only a device in the home can be removed.
+async fn remove_device(State(state): State<AppState>, Path(id): Path<DeviceId>) -> Response {
+    let core = &state.0.core;
+    let known = core.devices().iter().any(|device| device.id == id);
+    if !known {
+        return refused(StatusCode::NOT_FOUND, format!("there's no device `{id}`"));
+    }
+    match state.0.config.forget_device(core, &id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => edit_failed(e),
     }
 }
@@ -899,6 +922,25 @@ async fn extension_icon(State(state): State<AppState>, Path(id): Path<ExtensionI
 /// error. A built-in has no process of its own and so never has anything here.
 async fn extension_log(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {
     axum::Json(serde_json::json!({ "lines": state.0.core.log(&id) })).into_response()
+}
+
+/// What Irori itself has said lately: the tail of this process's own log, oldest line first.
+///
+/// The same window an extension gets (`extension_log`), for the words Irori writes rather than
+/// the ones it forwards — which is where a refused write, a taken port, an unauthenticated bind,
+/// or a config edit that can't apply ends up. Extension output is in here too, tagged with the
+/// extension it came from, because the core logs a line for each (`irori_core`'s `log_line`).
+///
+/// Deliberately a window and not an archive: the last [`syslog::LINES_KEPT`] lines of this
+/// process, in memory, gone on restart. Irori normally writes the whole log to stdout as well —
+/// `journalctl -u irori`, `docker logs`, or the terminal it was started from — and this is what
+/// makes the same lines reachable from the page when nothing is watching that.
+///
+/// Always a 200, and the same `{"lines": …}` shape as an extension's, so one window component
+/// reads both. "Nothing to show" is an answer: it means nothing has been logged yet, which is
+/// what a `log_level` above `info` looks like.
+async fn system_log(State(state): State<AppState>) -> Response {
+    axum::Json(serde_json::json!({ "lines": state.0.log.lines() })).into_response()
 }
 
 /// An extension's own settings, given as one JSON object matching its `config_schema` — the
@@ -1439,10 +1481,23 @@ async fn install_url(State(state): State<AppState>, Json(body): Json<InstallUrl>
     }
 }
 
+/// Uninstalls an extension, and removes every device it brought in with it: installing it again
+/// starts from nothing in the home, with everything it finds listed under "+ Add device".
 async fn uninstall(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {
-    match state.0.host.uninstall(&id).await {
+    if let Err(why) = state.0.host.uninstall(&id).await {
+        return refused(StatusCode::BAD_REQUEST, why);
+    }
+    let Ok(protocol) = irori_types::ProtocolId::try_from(id.as_str()) else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    match state
+        .0
+        .config
+        .forget_protocol(&state.0.core, &protocol)
+        .await
+    {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(why) => refused(StatusCode::BAD_REQUEST, why),
+        Err(e) => edit_failed(e),
     }
 }
 
@@ -1699,6 +1754,9 @@ mod tests {
         core: Core,
         config: Config,
         history: History,
+        // The log this instance is serving, so a test can put lines in it. The real one is filled
+        // by the log subscriber's writer (`syslog::Tee`), which a test has no reason to stand up.
+        log: Arc<syslog::Log>,
         // The restart handle, held back so a test can check that POST /api/dev/restart woke the
         // shutdown and told it to restart, not just that it answered 202.
         restart: Arc<tokio::sync::Notify>,
@@ -1708,18 +1766,28 @@ mod tests {
     impl Server {
         fn new(core: Core) -> anyhow::Result<Self> {
             let dir = tempfile::tempdir()?;
-            // Asking before adding is the default (`irori.toml`, `[devices] new`), so without
-            // this every test below would have to add the demo's devices before it could look at
-            // one. The tests that are *about* asking turn it back on for themselves.
+            // A device joins the home only once a person adds it, so without this every test
+            // below would have to add the demo's devices before it could look at one. Whatever
+            // the core has already been told about is written down as added, as if someone had
+            // pressed Add on each; the tests that are *about* adding start from a core with
+            // nothing in it.
             let config_dir = dir.path().join("config");
             std::fs::create_dir_all(&config_dir)?;
-            std::fs::write(config_dir.join("irori.toml"), "[devices]\nnew = \"add\"\n")?;
+            let added: String = core
+                .devices()
+                .into_iter()
+                .map(|device| device.id)
+                .chain(core.held_devices().into_iter().map(|device| device.id))
+                .map(|id| format!("[devices.{id}]\nadded = true\n\n"))
+                .collect();
+            std::fs::write(config_dir.join("devices.toml"), added)?;
             let config = Config::open_dir(config_dir, &core);
             Ok(Self {
                 dir,
                 core,
                 config,
                 history: History::default(),
+                log: Arc::new(syslog::Log::default()),
                 restart: Arc::new(tokio::sync::Notify::new()),
                 restarting: Arc::new(AtomicBool::new(false)),
             })
@@ -1738,6 +1806,7 @@ mod tests {
                 self.config.clone(),
                 host,
                 self.history.clone(),
+                Arc::clone(&self.log),
                 self.restart.clone(),
                 self.restarting.clone(),
             )))
@@ -2477,6 +2546,72 @@ mod tests {
         Ok(())
     }
 
+    /// Removing a device answers 204 and takes it out of the core and the config files —
+    /// device, entities and all — while its neighbours stay, and it's listed as found at once.
+    #[tokio::test]
+    async fn forgetting_a_device_removes_it_and_writes_it_down() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+        let before = core.devices().len();
+        assert!(
+            core.entities().iter().any(|entity| entity
+                .device_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == "demo_lamp")),
+            "the demo lamp has entities"
+        );
+
+        let (status, _) = server
+            .json(
+                "DELETE",
+                "/api/dev/devices/demo_lamp",
+                serde_json::Value::Null,
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(
+            !core
+                .devices()
+                .iter()
+                .any(|device| device.id.as_str() == "demo_lamp"),
+            "out of the core"
+        );
+        assert_eq!(core.devices().len(), before - 1, "its neighbours stayed");
+        assert!(
+            !core.entities().iter().any(|entity| entity
+                .device_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == "demo_lamp")),
+            "its entities went with it"
+        );
+
+        // The files agree, so a restart couldn't bring a stale row back.
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(!devices.contains("demo_lamp"), "{devices}");
+
+        // Found again straight away, for "+ Add device" to offer back.
+        let home = server.read("/api/dev/home").await?;
+        assert!(
+            home["held"]
+                .as_array()
+                .is_some_and(|all| all.iter().any(|item| item["id"] == "demo_lamp")),
+            "{home}"
+        );
+
+        // Removing a device that isn't in the home is a 404, found or not.
+        let (status, _) = server
+            .json(
+                "DELETE",
+                "/api/dev/devices/demo_lamp",
+                serde_json::Value::Null,
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        host.shutdown().await;
+        Ok(())
+    }
+
     /// "Not in a room" is an answer. The demo lamp's firmware asks for the Study; once that room
     /// exists the lamp is in it, and `area: false` must take it out and keep it out, while
     /// `area: null` hands the decision back to the device.
@@ -2784,6 +2919,7 @@ mod tests {
     async fn refused_edits_explain_themselves() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
         let server = Server::new(core.clone())?;
+        let written = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
 
         let (status, body) = server
             .json(
@@ -2819,8 +2955,9 @@ mod tests {
             .await?;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 
-        assert!(
-            !server.config_dir().join("devices.toml").exists(),
+        assert_eq!(
+            std::fs::read_to_string(server.config_dir().join("devices.toml"))?,
+            written,
             "nothing was written"
         );
 
@@ -3268,38 +3405,40 @@ mod tests {
         Ok(())
     }
 
-    /// Ignoring a device takes it out of everything the page shows, writes it down, and letting
-    /// it back in restores it with its entities.
+    /// A found device joins the home when "+ Add device" adds it, with its entities, and it's
+    /// written down so a restart keeps it. There's no ignoring any more: taking a device out is
+    /// removing it, so a request that still asks to ignore one is refused rather than
+    /// half-understood.
     #[tokio::test]
-    async fn a_device_can_be_ignored_and_let_back_in() -> anyhow::Result<()> {
+    async fn a_found_device_is_added_and_ignoring_is_no_longer_a_thing() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
+        // Nothing added: an empty `devices.toml` over the harness's.
         let server = Server::new(core.clone())?;
-
-        let (status, body) = server
-            .json(
-                "PATCH",
-                "/api/dev/devices/demo_lamp",
-                serde_json::json!({"ignored": true}),
-            )
-            .await?;
-        assert_eq!(status, StatusCode::OK, "{body}");
+        std::fs::write(server.config_dir().join("devices.toml"), "")?;
+        server
+            .config
+            .edit(&core, |_| Ok(()))
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
         let home = server.read("/api/dev/home").await?;
-        let listed = |key: &str, id: &str| {
-            home[key]
-                .as_array()
-                .is_some_and(|all| all.iter().any(|item| item["id"] == id))
-        };
-        assert!(!listed("devices", "demo_lamp"));
-        assert!(!listed("entities", "light.demo_lamp"));
-        assert!(listed("held", "demo_lamp"));
-        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
-        assert!(devices.contains("ignored = true"), "{devices}");
+        assert!(
+            home["devices"].as_array().is_some_and(Vec::is_empty),
+            "nothing joins on its own: {home}"
+        );
+        assert!(
+            home["held"].as_array().is_some_and(|all| all
+                .iter()
+                .any(|item| item["id"] == "demo_lamp"
+                    && item["provides"]["light"] == 1
+                    && item["model"] == "Virtual lamp")),
+            "{home}"
+        );
 
         let (status, body) = server
             .json(
                 "PATCH",
                 "/api/dev/devices/demo_lamp",
-                serde_json::json!({"ignored": false}),
+                serde_json::json!({"added": true}),
             )
             .await?;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -3307,50 +3446,20 @@ mod tests {
         assert!(
             home["entities"]
                 .as_array()
-                .is_some_and(|all| all.iter().any(|e| e["id"] == "light.demo_lamp"))
+                .is_some_and(|all| all.iter().any(|e| e["id"] == "light.demo_lamp")),
+            "{home}"
         );
-        assert!(home.get("held").is_none(), "{home}");
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(devices.contains("[devices.demo_lamp]"), "{devices}");
 
-        host.shutdown().await;
-        Ok(())
-    }
-
-    /// "Let back in" restores the device to the home, even when Irori is asking before adding
-    /// new ones. Clearing `ignored` alone would put a never-added device on the waiting list.
-    #[tokio::test]
-    async fn letting_a_device_back_in_adds_it_even_when_asking() -> anyhow::Result<()> {
-        let (core, host) = demo().await?;
-        let server = Server::new(core.clone())?;
-
-        let (status, body) = server
+        let (status, _) = server
             .json(
                 "PATCH",
-                "/api/dev/devices/demo_lamp",
+                "/api/dev/devices/demo_plug",
                 serde_json::json!({"ignored": true}),
             )
             .await?;
-        assert_eq!(status, StatusCode::OK, "{body}");
-
-        let mut settings = core.settings();
-        settings.ask_before_adding = true;
-        core.apply_settings(settings);
-
-        let (status, body) = server
-            .json(
-                "PATCH",
-                "/api/dev/devices/demo_lamp",
-                serde_json::json!({"ignored": false}),
-            )
-            .await?;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let home = server.read("/api/dev/home").await?;
-        assert!(
-            home["devices"]
-                .as_array()
-                .is_some_and(|all| all.iter().any(|item| item["id"] == "demo_lamp")),
-            "{home}"
-        );
-        assert!(home.get("held").is_none(), "{home}");
+        assert!(status.is_client_error(), "{status}");
 
         host.shutdown().await;
         Ok(())
@@ -3516,6 +3625,35 @@ mod tests {
             .await?;
         assert_eq!(status, StatusCode::NOT_FOUND);
         host.shutdown().await;
+        Ok(())
+    }
+
+    /// Irori's own log is served the way an extension's is: a 200 with `lines`, oldest first,
+    /// and empty rather than an error when there is nothing to show.
+    #[tokio::test]
+    async fn the_system_log_is_whatever_this_process_has_said() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+
+        let empty = server.read("/api/dev/system/log").await?;
+        assert_eq!(
+            empty["lines"],
+            serde_json::json!([]),
+            "nothing logged yet is an answer"
+        );
+
+        server.log.keep("2026-09-26T10:00:00Z  INFO irori is ready");
+        server
+            .log
+            .keep("2026-09-26T10:00:01Z  WARN listening beyond this machine");
+
+        let log = server.read("/api/dev/system/log").await?;
+        assert_eq!(
+            log["lines"],
+            serde_json::json!([
+                "2026-09-26T10:00:00Z  INFO irori is ready",
+                "2026-09-26T10:00:01Z  WARN listening beyond this machine",
+            ])
+        );
         Ok(())
     }
 

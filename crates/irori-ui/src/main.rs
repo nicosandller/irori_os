@@ -7,15 +7,21 @@
 //! moving between pages doesn't refetch and the two can't disagree.
 
 mod api;
+mod app_frame;
+mod chart;
+mod count;
 mod device;
 mod devices;
 mod extensions;
 mod floorplan;
+mod gesture;
+mod glide;
 mod log_window;
 mod modal;
 mod settings;
 mod settings_form;
 mod start;
+mod transition;
 mod waiting;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -47,6 +53,12 @@ pub struct Live {
     /// Why the last refresh failed, if it did.
     pub trouble: RwSignal<Option<String>>,
 }
+
+/// Whether the page animates: switches that spring, sliders that swell, the Live dot breathing.
+/// On unless Settings turned it off. The system's own "reduce motion" wins over this either way —
+/// that's CSS, and needs nothing from here.
+#[derive(Debug, Clone, Copy)]
+pub struct Motion(pub RwSignal<bool>);
 
 fn main() {
     console_error_panic_hook::set_once();
@@ -125,10 +137,34 @@ fn App() -> impl IntoView {
         devices::remember(SIDEBAR_KEY, if folded.get() { "folded" } else { "open" })
     });
 
+    // Remembered the same way, and for the same reason: it's about this screen, not the home.
+    let motion = RwSignal::new(devices::stored(MOTION_KEY).as_deref() != Some("off"));
+    Effect::new(move |_| {
+        let on = if motion.get() { "on" } else { "off" };
+        devices::remember(MOTION_KEY, on);
+        // Page changes are drawn by the browser over the whole document, outside `.shell`, so
+        // the switch has to reach `<html>` as well.
+        if let Some(root) = document().document_element() {
+            let _ = root.set_attribute("data-motion", on);
+        }
+    });
+    provide_context(Motion(motion));
+
+    provide_context(transition::Travelling(RwSignal::new(None)));
+    // Every new reading: numbers on the page count to where they're going.
+    count::watch(move || live.home.track());
+
+    let sidebar = NodeRef::<leptos::html::Aside>::new();
+
     view! {
         <Router>
-            <div class="shell" class:folded=move || folded.get()>
-                <aside class="sidebar">
+            <div
+                class="shell"
+                class:folded=move || folded.get()
+                data-motion=move || if motion.get() { "on" } else { "off" }
+            >
+                <aside class="sidebar" node_ref=sidebar>
+                    <SidebarGlide sidebar=sidebar />
                     <div class="sidebar-top">
                         <A href="/" attr:class="mark" attr:title="IroriOS">
                             // Mark A (assets/irori-mark-a-mono.svg): frame follows the text,
@@ -163,6 +199,7 @@ fn App() -> impl IntoView {
                                 </A>
                             })
                             .collect_view()}
+                        <AppLinks />
                     </nav>
                     <div class="sidebar-bottom">
                         <A href="/settings" attr:class="settings-link" attr:title="Settings">
@@ -198,16 +235,22 @@ fn App() -> impl IntoView {
 #[component]
 fn Page(live: Live) -> impl IntoView {
     let location = use_location();
+    transition::watch(location.pathname);
     view! {
-        <main class:full=move || location.pathname.get() == "/floorplan">
+        <main class:full=move || {
+            let path = location.pathname.get();
+            path == "/floorplan" || path.starts_with("/apps/")
+        }>
             {move || live.trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
-            <Routes fallback=NotFound>
+            <Routes fallback=NotFound transition=true>
                 <Route path=path!("/") view=start::Start />
                 <Route path=path!("/floorplan") view=floorplan::Floorplan />
                 <Route path=path!("/devices") view=devices::Devices />
                 <Route path=path!("/devices/:id") view=device::DevicePage />
                 <Route path=path!("/extensions") view=extensions::Extensions />
                 <Route path=path!("/settings") view=settings::Settings />
+                <Route path=path!("/apps/:id") view=app_frame::AppPage />
+                <Route path=path!("/apps/:id/*rest") view=app_frame::AppPage />
             </Routes>
         </main>
     }
@@ -215,6 +258,9 @@ fn Page(live: Live) -> impl IntoView {
 
 /// Where the sidebar's folded-or-open state is remembered.
 const SIDEBAR_KEY: &str = "irori.sidebar";
+
+/// Where turning motion off in Settings is remembered.
+const MOTION_KEY: &str = "irori.motion";
 
 /// The pages the sidebar links to, besides Settings: address, name, and an icon drawn in 24×24
 /// strokes. Written here, not taken from any extension, so `inner_html` only ever holds these
@@ -236,6 +282,69 @@ const SECTIONS: [(&str, &str, &str); 3] = [
         r#"<rect x="4" y="4" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="4" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="4" y="13" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="13" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/>"#,
     ),
 ];
+
+/// Extensions' own pages (`docs/specs/automations.md` §B3), after Irori's: each running
+/// extension with an app gets an entry, with its own icon as an image — never inlined, so an
+/// extension's SVG can't run script in the shell.
+#[component]
+fn AppLinks() -> impl IntoView {
+    let live = expect_context::<Live>();
+    let apps = Memo::new(move |_| {
+        live.home.with(|home| {
+            home.extensions
+                .iter()
+                .filter(|(_, extension)| matches!(extension.state.as_str(), "running" | "degraded"))
+                .filter_map(|(id, extension)| {
+                    extension
+                        .app
+                        .as_ref()
+                        .map(|app| (id.to_string(), app.label.clone(), extension.has_icon))
+                })
+                .collect::<Vec<_>>()
+        })
+    });
+    view! {
+        <For each=move || apps.get() key=|app| app.clone() let:app>
+            {
+                let (id, label, has_icon) = app;
+                let title = label.clone();
+                view! {
+                    <A href=format!("/apps/{id}/") attr:title=title>
+                        {if has_icon {
+                            view! {
+                                <img src=format!("/api/dev/extensions/{id}/icon.svg") alt="" />
+                            }
+                            .into_any()
+                        } else {
+                            view! {
+                                <svg viewBox="0 0 24 24" aria-hidden="true">
+                                    <rect x="4" y="4" width="16" height="16" rx="2" fill="none"
+                                        stroke="currentColor" stroke-width="1.8" />
+                                </svg>
+                            }
+                            .into_any()
+                        }}
+                        <span class="label">{label}</span>
+                    </A>
+                }
+            }
+        </For>
+    }
+}
+
+/// The sidebar's highlight, gliding to the page being shown. Its own component because it asks
+/// the router where the page is, which only works inside `<Router>`.
+#[component]
+fn SidebarGlide(sidebar: NodeRef<leptos::html::Aside>) -> impl IntoView {
+    let location = use_location();
+    // Not the wordmark, though it's a link to Start too: Start has no entry here to glide to.
+    glide::glide(
+        sidebar,
+        r#"nav a[aria-current="page"], .settings-link[aria-current="page"]"#,
+        move || location.pathname.track(),
+    );
+    view! { <span class="glide" aria-hidden="true"></span> }
+}
 
 #[component]
 fn NotFound() -> impl IntoView {

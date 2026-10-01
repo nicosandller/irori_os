@@ -1,21 +1,40 @@
 //! The Settings page: the instance itself, the home's arrangement, and the machine running it.
 //!
-//! Four sections, in the order someone setting a home up is likely to want them: is the instance
+//! Five sections, in the order someone setting a home up is likely to want them: is the instance
 //! I mean to run? the floors and areas that say what's where (a card that folds away until
-//! wanted)? the people allowed in (none yet); and the machine it all runs on. The last of these
-//! is asked for on demand rather than kept — a Settings check that cached could shrug at a disk
-//! that filled since the last look.
+//! wanted)? the people allowed in (none yet); what it has been saying (the log, a window away);
+//! and the machine it all runs on. The last of these is asked for on demand rather than kept — a
+//! Settings check that cached could shrug at a disk that filled since the last look.
 
 use irori_types::{Area, AreaId, Device, DeviceId, Name};
+use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
 
 use crate::api;
 
+/// Jumps to a section of Settings: scrolls there — smoothly, with motion on — and has it flash
+/// once, so the eye lands where the page went. The link still names the section, for anything
+/// that reads links rather than clicking them.
+fn jump(id: &'static str) -> impl Fn(ev::MouseEvent) {
+    move |event| {
+        let Some(section) = document().get_element_by_id(id) else {
+            return;
+        };
+        event.prevent_default();
+        section.scroll_into_view();
+        // Two names for the same flash, alternated, so a second jump to the same section plays
+        // it again rather than finding it already applied.
+        let again = section.get_attribute("data-flash").as_deref() == Some("a");
+        let _ = section.set_attribute("data-flash", if again { "b" } else { "a" });
+    }
+}
+
 #[component]
 pub fn Settings() -> impl IntoView {
     let live = expect_context::<crate::Live>();
+    let crate::Motion(motion) = expect_context::<crate::Motion>();
     let trouble = RwSignal::new(None::<String>);
     let adding = RwSignal::new(String::new());
     // Where an area is going: the floor whose + is open, if any. An area is made straight onto
@@ -116,6 +135,10 @@ pub fn Settings() -> impl IntoView {
     let floor_draft_name = RwSignal::new(String::new());
     let floor_draft_level = RwSignal::new(String::new());
 
+    // Whether Irori's own log window is open. A flag rather than the lines themselves: the
+    // window fetches and keeps itself up to date, and this only decides whether it exists.
+    let log_open = RwSignal::new(false);
+
     // The machine under the instance. Asked once when the page opens, and again when "Ask again"
     // is clicked: nothing here is worth polling, and the values are only any use if they're the
     // machine's, now.
@@ -181,13 +204,15 @@ pub fn Settings() -> impl IntoView {
         {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
 
         <nav class="settings-menu" aria-label="Sections of Settings">
-            <a href="#instance">"Instance"</a>
-            <a href="#floors-and-areas">"Floors & areas"</a>
-            <a href="#users">"Users"</a>
-            <a href="#system">"System"</a>
+            <a href="#instance" on:click=jump("instance")>"Instance"</a>
+            <a href="#appearance" on:click=jump("appearance")>"Appearance"</a>
+            <a href="#floors-and-areas" on:click=jump("floors-and-areas")>"Floors & areas"</a>
+            <a href="#users" on:click=jump("users")>"Users"</a>
+            <a href="#logs" on:click=jump("logs")>"Logs"</a>
+            <a href="#system" on:click=jump("system")>"System"</a>
         </nav>
 
-        <section class="card settings-section" id="instance">
+        <section class="card settings-section" id="instance" style="--i: 0">
             <h2>"Instance"</h2>
             {move || match live.health.get() {
                 None => view! { <p class="muted">"Asking…"</p> }.into_any(),
@@ -224,9 +249,31 @@ pub fn Settings() -> impl IntoView {
             }}
         </section>
 
+        <section class="card settings-section" id="appearance" style="--i: 1">
+            <div class="room-head">
+                <h2>"Motion"</h2>
+                <span class="room-actions">
+                    <button
+                        type="button"
+                        class="toggle"
+                        aria-label="Motion"
+                        aria-pressed=move || motion.get().to_string()
+                        on:click=move |_| motion.update(|on| *on = !*on)
+                    >
+                        <span class="knob"></span>
+                    </button>
+                </span>
+            </div>
+            <p class="muted small">
+                "Switches that spring across, sliders that swell under a finger, and the Live dot \
+                 breathing while Irori answers. Remembered by this browser, and always off when \
+                 the system is set to reduce motion."
+            </p>
+        </section>
+
         // It folds, but starts open: this is where the home's arrangement is managed, so the
         // floors, the areas on them, and the unassigned devices are useful to see at once.
-        <details class="card settings-section floors" id="floors-and-areas" open>
+        <details class="card settings-section floors" id="floors-and-areas" style="--i: 2" open>
             <summary>"Floors and areas"</summary>
             <p class="muted small">
                 "Floors are the levels of the home, lowest first, and the areas are the places on "
@@ -385,7 +432,7 @@ pub fn Settings() -> impl IntoView {
             </form>
         </details>
 
-        <section class="card settings-section" id="users">
+        <section class="card settings-section" id="users" style="--i: 3">
             <h2>"Users"</h2>
             <p class="muted">
                 "No users yet — and nothing to sign in with. IroriOS is for the person in the "
@@ -394,7 +441,26 @@ pub fn Settings() -> impl IntoView {
             </p>
         </section>
 
-        <section class="card settings-section" id="system">
+        <section class="card settings-section" id="logs" style="--i: 4">
+            <div class="room-head">
+                <h2>"Logs"</h2>
+                <span class="room-actions">
+                    <button type="button" on:click=move |_| log_open.set(true)>
+                        "Show log"
+                    </button>
+                </span>
+            </div>
+            <p class="muted small">
+                "What Irori has said since it started. The window keeps up as new lines arrive, \
+                 and an extension's own output is in there too, tagged with the extension it came \
+                 from — the same words its View log button shows on the Extensions page. How much \
+                 there is depends on the level set by --log-level or [server] log_level in \
+                 irori.toml, and only the most recent lines are kept, in memory: the whole log \
+                 also goes to the terminal or the service log Irori was started with."
+            </p>
+        </section>
+
+        <section class="card settings-section" id="system" style="--i: 5">
             <div class="room-head">
                 <h2>"System"</h2>
                 <span class="room-actions">
@@ -465,6 +531,19 @@ pub fn Settings() -> impl IntoView {
                 .into_any(),
             }}
         </section>
+
+        // The log window, drawn last so it lands over the page rather than under anything in it:
+        // it's a way out of the page for a moment, not another part of it.
+        {move || {
+            log_open.get().then(|| {
+                view! {
+                    <crate::log_window::LogWindow
+                        source=crate::log_window::Source::System
+                        on_close=move || log_open.set(false)
+                    />
+                }
+            })
+        }}
     }
 }
 

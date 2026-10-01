@@ -4,8 +4,9 @@
 #   dev/smoke-test.sh [BASE_URL] [TIMEOUT_SECONDS]
 #
 # Waits for /api/health, checks the database is in WAL mode, checks `/` serves the UI when the
-# `ui` feature is compiled in (and a 404 when it isn't), and that the official extensions
-# catalog lists Demo and ESPHome even when none are installed.
+# `ui` feature is compiled in (and a 404 when it isn't), that the official extensions catalog
+# lists Demo and ESPHome even when none are installed, and that the instance's own log carries
+# the lines this boot logged.
 #
 # It also makes a room called "Smoke test room" and removes it again, which is the only way to
 # prove the server can actually write its config directory (a permissions problem shows up
@@ -52,6 +53,14 @@ catalog="$(curl -fsS --max-time 2 "$base_url/api/dev/catalog" 2>/dev/null)" || \
 grep -q '"id":"demo"' <<<"$catalog" || fail "catalog is missing demo: $catalog"
 grep -q '"id":"esphome"' <<<"$catalog" || fail "catalog is missing esphome: $catalog"
 echo "extensions: official catalog lists demo and esphome"
+
+# The instance's own log, read the way the Settings page reads it. The only check that the log
+# writer really keeps what `tracing` writes: the unit tests put lines in that buffer by hand, so
+# nothing else would notice if the tee stopped being wired up.
+log="$(curl -fsS --max-time 2 "$base_url/api/dev/system/log" 2>/dev/null)" || \
+  fail "can't read the system log"
+grep -q 'irori is ready' <<<"$log" || fail "the system log doesn't carry what Irori logged: $log"
+echo "log: the system log carries this boot's own lines"
 
 # The config directory: a room can be made, is listed, and can be removed again. Writing is the
 # part worth testing — a read-only or missing directory fails here and nowhere else.

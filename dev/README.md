@@ -106,6 +106,23 @@ It is not a full sandbox: the containers have network access, and they share the
 caches with your normal `dev/pi` runs. Use it for PRs you'd reasonably run, like your own,
 Claude's, and collaborators'. Don't use it for code from strangers.
 
+## Disk space
+
+Builds fill Docker's disk over time: every PR you check adds to the cargo build cache, and a
+full workspace build with its tests runs to several GB. So `up`, `restart`, `check`, and
+`review` tidy up first. They always drop leftover images and build cache older than a week. When
+Docker's disk still has less than 8 GB free (`IRORI_DEV_MIN_FREE_GB`), they also clear the cargo
+build cache, which the next `check` rebuilds. irori's data volume is never touched.
+
+To clear it all by hand:
+
+```sh
+dev/pi clean
+```
+
+With Colima, the default 20 GB disk is tight for this repository. A disk can grow but not shrink:
+`colima stop && colima start --disk 40`.
+
 ## Tuning the "Pi"
 
 Set these environment variables when running `dev/pi up`:

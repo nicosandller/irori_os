@@ -11,6 +11,8 @@ use std::time::Duration;
 use irori_protocol::Builtin;
 use irori_protocol::host::{HostEnd, Op, Reports, connect};
 use irori_protocol::{ExtProcess, FromExt, IncomingAction, IncomingCall, ToExt, spawn};
+
+use crate::engine::EngineLink;
 use std::collections::BTreeSet;
 
 use irori_types::{
@@ -419,9 +421,51 @@ fn remember_stderr(core: &Core, extension: &ExtensionId, bytes: &[u8]) {
     }
     let line = String::from_utf8_lossy(&bytes[..end]);
     core.log_line(extension, &line);
-    // At info, not error: most of what comes through here is an extension's ordinary
-    // chatter, and a subprocess's own log level isn't Irori's to judge.
-    tracing::info!(%extension, "{line}");
+    // Into Irori's own log, at the level the extension gave the line when it says one — so a
+    // warning reads as a warning there too — and without the colour codes and the timestamp of
+    // its own, which Irori's line already has. A line that doesn't say is logged at info: most
+    // of what comes through here is ordinary chatter, and a subprocess's level isn't Irori's to
+    // judge.
+    let line = crate::without_colour(&line);
+    let (level, said) = said_at(&line);
+    match level {
+        Some(tracing::Level::ERROR) => tracing::error!(%extension, "{said}"),
+        Some(tracing::Level::WARN) => tracing::warn!(%extension, "{said}"),
+        Some(tracing::Level::DEBUG) => tracing::debug!(%extension, "{said}"),
+        Some(tracing::Level::TRACE) => tracing::trace!(%extension, "{said}"),
+        _ => tracing::info!(%extension, "{said}"),
+    }
+}
+
+/// The level an extension's line says it was written at, and what it said: `tracing`'s own
+/// shape, `2026-09-28T13:38:35.043301Z  WARN connected without authentication`, or the same
+/// without the timestamp. Anything else is all message, with no level.
+fn said_at(line: &str) -> (Option<tracing::Level>, &str) {
+    let rest = line.trim_start();
+    let rest = match rest.split_once(char::is_whitespace) {
+        // A timestamp is digits and dashes up to its `T`; it's said again by Irori's own line.
+        Some((first, after))
+            if first.len() >= 19
+                && first.as_bytes()[..4].iter().all(u8::is_ascii_digit)
+                && first.as_bytes()[4] == b'-'
+                && first.contains('T') =>
+        {
+            after.trim_start()
+        }
+        _ => rest,
+    };
+    let Some((word, message)) = rest.split_once(char::is_whitespace) else {
+        return (None, line);
+    };
+    let level = match word {
+        "ERROR" => tracing::Level::ERROR,
+        "WARN" => tracing::Level::WARN,
+        "INFO" => tracing::Level::INFO,
+        "DEBUG" => tracing::Level::DEBUG,
+        "TRACE" => tracing::Level::TRACE,
+        _ => return (None, line),
+    };
+    (Some(level), message.trim_start())
 }
 
 /// Waits until the stderr reader finishes, which is when the child closes the pipe.
@@ -509,6 +553,8 @@ async fn supervise(
             icon: builtin.icon.map(str::to_owned),
             config_schema: Some(builtin.config_schema.clone()),
             actions: contribution.actions.clone(),
+            app: None,
+            engine: false,
         },
     );
 
@@ -877,14 +923,41 @@ async fn supervise_package(
     for warning in manifest.warnings() {
         tracing::warn!(%extension, "{warning}");
     }
-    let (Some(protocol), Some(contribution)) = (
-        manifest.protocol_id(),
-        manifest.contributes.protocol.first(),
-    ) else {
+    let contribution = manifest.contributes.protocol.first();
+    // A protocol's id is its extension's (D25); an engine has no protocol, but the same id keys
+    // its stored values, which is all the core uses it for there.
+    let is_protocol = contribution.is_some();
+    let protocol = ProtocolId::try_from(extension.as_str())
+        .expect("extension ids and protocol ids share the slug format");
+    let app = crate::engine::app_info(&manifest);
+    if !is_protocol && !manifest.is_engine() {
+        // Nothing to run: a page on its own, or only kinds this version ignores.
+        let has_app = app.is_some();
+        core.describe_extension(
+            &extension,
+            crate::ExtensionInfo {
+                name: manifest.extension.name.clone(),
+                description: manifest.extension.description.clone(),
+                version: manifest.extension.version.clone(),
+                entity_kinds: Vec::new(),
+                iot_class: None,
+                icon: read_icon(&dir, &manifest),
+                config_schema: None,
+                actions: Vec::new(),
+                app,
+                engine: false,
+            },
+        );
+        if !has_app {
+            core.set_status(&extension, crate::ExtensionStatus::Disabled);
+            return;
+        }
+        core.set_status(&extension, crate::ExtensionStatus::Running);
+        let _ = stop.wait_for(|stop| *stop).await;
         core.set_status(&extension, crate::ExtensionStatus::Disabled);
         return;
-    };
-    let Some(run) = contribution.run.clone() else {
+    }
+    let Some(run) = manifest.run_command().cloned() else {
         let reason = "external packages need `run.command` in the manifest".to_owned();
         tracing::error!(%extension, "{reason}");
         core.set_status(
@@ -896,12 +969,10 @@ async fn supervise_package(
         );
         return;
     };
-    let kinds = contribution.entity_kinds.clone();
-    let icon = manifest.extension.icon.as_ref().and_then(|path| {
-        std::fs::read_to_string(dir.join(path.as_str()))
-            .ok()
-            .filter(|svg| svg.trim_start().starts_with("<svg"))
-    });
+    let kinds = contribution
+        .map(|contribution| contribution.entity_kinds.clone())
+        .unwrap_or_default();
+    let icon = read_icon(&dir, &manifest);
     let config_schema = match manifest
         .extension
         .config_schema
@@ -936,10 +1007,14 @@ async fn supervise_package(
             description: manifest.extension.description.clone(),
             version: manifest.extension.version.clone(),
             entity_kinds: kinds.clone(),
-            iot_class: Some(contribution.iot_class),
+            iot_class: contribution.map(|contribution| contribution.iot_class),
             icon,
             config_schema,
-            actions: contribution.actions.clone(),
+            actions: contribution
+                .map(|contribution| contribution.actions.clone())
+                .unwrap_or_default(),
+            app: app.clone(),
+            engine: manifest.is_engine(),
         },
     );
 
@@ -1001,7 +1076,8 @@ async fn supervise_package(
             }
         }
         core.set_status(&extension, crate::ExtensionStatus::Starting);
-        let (mut child, stderr) = match spawn(&dir, &state_dir(&dir), &run) {
+        let env = crate::engine::process_env(&core, &manifest);
+        let (mut child, stderr) = match spawn(&dir, &state_dir(&dir), &run, &env) {
             Ok(started) => started,
             Err(reason) => {
                 tracing::error!(%extension, %reason, "can't start extension");
@@ -1051,8 +1127,14 @@ async fn supervise_package(
 
         let (calls_tx, calls_rx) = mpsc::channel(64);
         let (actions_tx, actions_rx) = mpsc::channel(64);
-        core.link(&protocol, calls_tx);
-        core.link_action(&extension, actions_tx);
+        if is_protocol {
+            core.link(&protocol, calls_tx);
+            core.link_action(&extension, actions_tx);
+        }
+        let mut engine = EngineLink::new(&manifest);
+        if manifest.is_engine() && app.is_some() {
+            core.link_app(&extension, engine.app_sender());
+        }
         core.set_status(&extension, crate::ExtensionStatus::Running);
         tracing::info!(%extension, "extension started");
         let outcome = pump_process(
@@ -1063,6 +1145,7 @@ async fn supervise_package(
             &mut child,
             calls_rx,
             actions_rx,
+            &mut engine,
             Watching {
                 stop: &mut stop,
                 settings: &mut settings,
@@ -1072,9 +1155,12 @@ async fn supervise_package(
             timing,
         )
         .await;
-        core.unlink(&protocol);
-        core.unlink_action(&extension);
-        core.mark_unavailable(&protocol);
+        core.unlink_app(&extension);
+        if is_protocol {
+            core.unlink(&protocol);
+            core.unlink_action(&extension);
+            core.mark_unavailable(&protocol);
+        }
         core.set_waiting(&extension, Vec::new());
         core.set_available_actions(&extension, Vec::new());
         let _ = child.send(&ToExt::Stop).await;
@@ -1141,6 +1227,7 @@ async fn pump_process(
     proc: &mut ExtProcess,
     mut calls: mpsc::Receiver<IncomingCall>,
     mut actions: mpsc::Receiver<IncomingAction>,
+    engine: &mut EngineLink,
     watching: Watching<'_>,
     timing: Timing,
 ) -> Outcome {
@@ -1199,9 +1286,20 @@ async fn pump_process(
                     return Outcome::Ended(reason);
                 }
             }
+            message = engine.next_outgoing(core) => {
+                if let Some(message) = message
+                    && let Err(reason) = ExtProcess::send_on(stdin, &message).await
+                {
+                    return Outcome::Ended(reason);
+                }
+            }
             msg = ExtProcess::recv_on(stdout) => {
                 match msg {
                     Ok(from) => {
+                        let from = match engine.handle(core, extension, from) {
+                            Some(from) => from,
+                            None => continue,
+                        };
                         if let Err(reason) = apply_from_ext(
                             core, extension, protocol, kinds, stdin, from, &mut pending_calls,
                             &mut pending_actions,
@@ -1231,7 +1329,9 @@ async fn pump_process(
                 return why;
             }
             msg = ExtProcess::recv_on(stdout) => {
-                if let Ok(from) = msg {
+                if let Ok(from) = msg
+                    && let Some(from) = engine.handle(core, extension, from)
+                {
                     let _ = apply_from_ext(
                         core, extension, protocol, kinds, stdin, from, &mut pending_calls,
                         &mut pending_actions,
@@ -1378,7 +1478,23 @@ async fn apply_from_ext(
             }
             Ok(())
         }
+        // Answered by `EngineLink::handle` before they get here.
+        FromExt::GetRegistry { .. }
+        | FromExt::GetStates { .. }
+        | FromExt::GetHistory { .. }
+        | FromExt::Subscribe { .. }
+        | FromExt::CallService { .. }
+        | FromExt::AppAnswer { .. } => Ok(()),
     }
+}
+
+/// The extension's icon, if its manifest names one and the file is an SVG.
+fn read_icon(dir: &Path, manifest: &ExtensionManifest) -> Option<String> {
+    manifest.extension.icon.as_ref().and_then(|path| {
+        std::fs::read_to_string(dir.join(path.as_str()))
+            .ok()
+            .filter(|svg| svg.trim_start().starts_with("<svg"))
+    })
 }
 
 async fn send_reply(
@@ -1404,6 +1520,29 @@ async fn send_reply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_extension_line_keeps_its_own_level_and_loses_its_own_timestamp() {
+        assert_eq!(
+            said_at("2026-09-28T13:38:35.043301Z  WARN connected without authentication"),
+            (
+                Some(tracing::Level::WARN),
+                "connected without authentication"
+            )
+        );
+        assert_eq!(
+            said_at("ERROR couldn't open /dev/ttyUSB0"),
+            (Some(tracing::Level::ERROR), "couldn't open /dev/ttyUSB0")
+        );
+        // Anything else is all message, with no level to go by.
+        assert_eq!(said_at("ser: opening port"), (None, "ser: opening port"));
+        assert_eq!(said_at("ready"), (None, "ready"));
+        assert_eq!(
+            said_at("Warning: it is odd"),
+            (None, "Warning: it is odd"),
+            "a word in a sentence is not a level"
+        );
+    }
 
     /// `BufRead::lines` stops at the first byte sequence that isn't UTF-8. An extension's
     /// stderr is arbitrary bytes; one bad line must not end the read, or the lines after it

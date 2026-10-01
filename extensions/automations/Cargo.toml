@@ -1,0 +1,34 @@
+[package]
+name = "irori-engine-automations"
+description = "Automations: a freeform flow engine with a canvas to build, test and debug flows."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+irori-types.workspace = true
+irori-protocol.workspace = true
+irori-rules = { workspace = true, features = ["engine"] }
+irori-flow-types.workspace = true
+irori-flows.workspace = true
+
+getrandom.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+jiff.workspace = true
+
+[[bin]]
+name = "irori-ext-automations"
+path = "src/main.rs"
+
+[lints]
+workspace = true

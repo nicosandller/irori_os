@@ -5,9 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use irori_types::{
     AreaId, Availability, BinarySensorCapabilities, BinarySensorClass, Capabilities, Device,
-    Entity, EntityId, EntityState, ExtensionId, LightCapabilities, LightState, LightTurnOn,
-    SensorCapabilities, SensorClass, SensorValue, State,
+    DeviceId, Entity, EntityId, EntityState, ExtensionId, LightCapabilities, LightState,
+    LightTurnOn, SensorCapabilities, SensorClass, SensorValue, State,
 };
+use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
@@ -166,6 +167,15 @@ pub fn Devices() -> impl IntoView {
     let folded = RwSignal::new(remembered_folded());
     provide_context(HelperTrouble(RwSignal::new(None)));
     let waiting = crate::waiting::everything_waiting(live);
+    // How many devices extensions have found that aren't in the home, key-waiting ones included.
+    let found = Memo::new(move |_| {
+        live.home.with(|home| {
+            home.held
+                .iter()
+                .filter(|device| device.protocol != HELPERS)
+                .count()
+        }) + crate::waiting::count(&waiting.get())
+    });
 
     Effect::new(move |_| remember(VIEW_KEY, showing.get().key()));
     Effect::new(move |_| {
@@ -208,9 +218,23 @@ pub fn Devices() -> impl IntoView {
                 }
                     .into_any()
             } else {
+                // What extensions have found is only ever listed under "+ Add device": nothing
+                // joins the home on its own, so the page shows the home and the button says how
+                // much is waiting to be looked at.
                 view! {
                     <button type="button" class="add" on:click=move |_| adding.set(true)>
                         "+ Add device"
+                        {move || {
+                            let found = found.get();
+                            (found > 0).then(|| view! {
+                                <span
+                                    class="count-badge"
+                                    aria-label=format!("{found} found")
+                                >
+                                    {found}
+                                </span>
+                            })
+                        }}
                     </button>
                 }
                     .into_any()
@@ -238,7 +262,6 @@ pub fn Devices() -> impl IntoView {
                 <AddDevice />
             </crate::modal::Modal>
         })}
-        <NewDevices />
 
         {move || (showing.get() != Showing::Helpers).then(|| view! {
             <input
@@ -260,9 +283,6 @@ pub fn Devices() -> impl IntoView {
                 Showing::Helpers => helpers(&home, controls),
             }
         }}
-        // Outside the block above, which redraws on every reading: an opened list mustn't snap
-        // shut two seconds later (ROADMAP D33).
-        {move || (showing.get() == Showing::Devices).then(|| view! { <Ignored /> })}
         {move || adding_helper.get().then(|| view! {
             <crate::modal::Modal
                 title="Add a helper".to_owned()
@@ -406,7 +426,16 @@ fn group(
                 <tr>
                     <td class="icon-col">{icon(&protocol, has_icon)}</td>
                     <th scope="row">
-                        <A href=format!("/devices/{id}")>{device.name.to_string()}</A>
+                        <A
+                            href=format!("/devices/{id}")
+                            attr:style=crate::transition::list_name(&id)
+                            on:click={
+                                let (id, travelling) = (id.clone(), expect_context::<crate::transition::Travelling>().0);
+                                move |_| travelling.set(Some(id.clone()))
+                            }
+                        >
+                            {device.name.to_string()}
+                        </A>
                         {device.description.as_ref().map(|description| view! {
                             <span class="description">{description.to_string()}</span>
                         })}
@@ -471,164 +500,6 @@ pub fn icon(protocol: &str, has_icon: bool) -> AnyView {
             .unwrap_or_default();
         view! { <span class="protocol-icon letter" aria-hidden="true">{initial}</span> }.into_any()
     }
-}
-
-/// Devices a person keeps out of the home, each with a way back in. Only shown when there are some.
-#[component]
-fn Ignored() -> impl IntoView {
-    let live = expect_context::<crate::Live>();
-    let ignored = Memo::new(move |_| {
-        live.home
-            .get()
-            .held
-            .into_iter()
-            .filter(|held| held.why == "ignored")
-            .collect::<Vec<_>>()
-    });
-    let trouble = RwSignal::new(None::<String>);
-    move || {
-        let all = ignored.get();
-        (!all.is_empty()).then(|| {
-            let count = all.len();
-            view! {
-                <details class="card ignored">
-                    <summary>
-                        {format!("{count} ignored device{}", if count == 1 { "" } else { "s" })}
-                    </summary>
-                    <p class="muted small">
-                        "Kept out of Irori. Their protocols may still talk to them; nothing "
-                        "they say reaches the home."
-                    </p>
-                    {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
-                    <ul class="room-devices">
-                        {all
-                            .into_iter()
-                            .map(|device| {
-                                let id = device.id.clone();
-                                let let_back = move |_| {
-                                    let id = id.clone();
-                                    spawn_local(async move {
-                                        let edit = crate::api::DeviceEdit {
-                                            ignored: Some(false),
-                                            added: Some(true),
-                                            ..Default::default()
-                                        };
-                                        match crate::api::edit_device(&id, &edit).await {
-                                            Ok(()) => crate::refresh(live),
-                                            Err(why) => trouble.set(Some(why)),
-                                        }
-                                    });
-                                };
-                                view! {
-                                    <li>
-                                        <span class="name">{device.name.to_string()}</span>
-                                        <span class="muted small">{device.protocol.clone()}</span>
-                                        <button type="button" class="link" on:click=let_back>
-                                            "Let back in"
-                                        </button>
-                                    </li>
-                                }
-                            })
-                            .collect_view()}
-                    </ul>
-                </details>
-            }
-        })
-    }
-}
-
-/// Devices found while Irori asks before adding them (`irori.toml`, `[devices] new = "ask"`),
-/// each waiting for a person to add or ignore it. Nothing shows when nothing waits.
-#[component]
-fn NewDevices() -> impl IntoView {
-    let live = expect_context::<crate::Live>();
-    let waiting = Memo::new(move |_| {
-        live.home
-            .get()
-            .held
-            .into_iter()
-            .filter(|held| held.why == "new")
-            .collect::<Vec<_>>()
-    });
-    let trouble = RwSignal::new(None::<String>);
-    let decide = move |ids: Vec<irori_types::DeviceId>, add: bool| {
-        spawn_local(async move {
-            for id in ids {
-                let edit = crate::api::DeviceEdit {
-                    added: add.then_some(true),
-                    ignored: (!add).then_some(true),
-                    ..Default::default()
-                };
-                if let Err(why) = crate::api::edit_device(&id, &edit).await {
-                    trouble.set(Some(why));
-                    break;
-                }
-            }
-            crate::refresh(live);
-        });
-    };
-    move || {
-        let all = waiting.get();
-        (!all.is_empty()).then(|| {
-            let count = all.len();
-            let every: Vec<_> = all.iter().map(|device| device.id.clone()).collect();
-            view! {
-                <section class="card waiting new-devices">
-                    <div class="room-head">
-                        <h2>
-                            {format!("{count} new device{} found", if count == 1 { "" } else { "s" })}
-                        </h2>
-                        {(count > 1).then(|| {
-                            let every = every.clone();
-                            view! {
-                                <span class="room-actions">
-                                    <button type="button" on:click=move |_| decide(every.clone(), true)>
-                                        "Add all"
-                                    </button>
-                                </span>
-                            }
-                        })}
-                    </div>
-                    <p class="muted small">
-                        "Irori asks before adding what it finds. Add a device to use it, or ignore "
-                        "it to stop being asked."
-                    </p>
-                    {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
-                    <ul class="room-devices">
-                        {all
-                            .into_iter()
-                            .map(|device| {
-                                let (add, ignore) = (device.id.clone(), device.id.clone());
-                                view! {
-                                    <li>
-                                        {icon(&device.protocol, has_icon(live, &device.protocol))}
-                                        <span class="name">{device.name.to_string()}</span>
-                                        <span class="muted small">{device.protocol.clone()}</span>
-                                        <span class="room-actions">
-                                            <button type="button" on:click=move |_| decide(vec![add.clone()], true)>
-                                                "Add"
-                                            </button>
-                                            <button type="button" on:click=move |_| decide(vec![ignore.clone()], false)>
-                                                "Ignore"
-                                            </button>
-                                        </span>
-                                    </li>
-                                }
-                            })
-                            .collect_view()}
-                    </ul>
-                </section>
-            }
-        })
-    }
-}
-
-fn has_icon(live: crate::Live, protocol: &str) -> bool {
-    live.home
-        .get_untracked()
-        .extensions
-        .iter()
-        .any(|(id, extension)| id.as_str() == protocol && extension.has_icon)
 }
 
 /// The helpers in the home: the switches Irori keeps itself, each with its switch and a way to
@@ -876,18 +747,21 @@ pub fn remember(key: &str, value: &str) {
     }
 }
 
-/// Where devices come from, and how to get more of them.
+/// Where devices come from: pick the extension a device speaks, see everything it has found,
+/// and add the ones that belong in the home.
 ///
-/// There's no "scan now" button because there's nothing to scan on demand: protocols that
-/// find devices are always listening. What a person *can* do here is unlock what they found but
-/// couldn't use — a device waiting for its encryption key.
+/// There's no "scan now" button because there's nothing to scan on demand: protocols that find
+/// devices are always listening. Nothing an extension finds joins the home on its own — this is
+/// the only way in (`docs/specs/config.md` §3.2).
 #[component]
 fn AddDevice() -> impl IntoView {
     let live = expect_context::<crate::Live>();
-    // Which protocol's flow is open, if any — at most one at a time.
+    // Which extension's screen is open, if any — at most one at a time.
     let selected = RwSignal::new(None::<ExtensionId>);
-    // The extensions and how many devices/waiting items each has — not the readings. A redraw
-    // on every sensor report would throw away a key being pasted into a form below (D33).
+    // The one just left, so going back lands on its card — the card the screen grew out of.
+    let came_from = StoredValue::new(None::<ExtensionId>);
+    // The extensions and how much each has — not the readings. A redraw on every sensor report
+    // would throw away a key being pasted into a form below (D33).
     let extensions = Memo::new(move |_| {
         let home = live.home.get();
         home.extensions
@@ -895,16 +769,38 @@ fn AddDevice() -> impl IntoView {
             // Helpers are an extension for the core's own reasons (D40), but nothing here finds
             // a helper: you make one, by naming it. That has its own button on the Helpers tab.
             .filter(|(id, _)| id.as_str() != HELPERS)
+            // Only extensions that bring devices: an automation engine or a page has none to
+            // find, so offering it here would be a door to nowhere.
+            .filter(|(_, extension)| !extension.entity_kinds.is_empty())
             .map(|(id, extension)| {
-                let devices = home
+                let here = home
                     .devices
                     .iter()
                     .filter(|device| device.protocol.as_str() == id.as_str())
                     .count();
-                (id.clone(), extension.clone(), devices)
+                let found = home
+                    .held
+                    .iter()
+                    .filter(|device| device.protocol == id.as_str())
+                    .count()
+                    + extension.waiting.len();
+                (id.clone(), extension.clone(), here, found)
             })
             .collect::<Vec<_>>()
     });
+    let ids = Memo::new(move |_| {
+        extensions.with(|all| all.iter().map(|(id, ..)| id.clone()).collect::<Vec<_>>())
+    });
+    // Going somewhere inside the window is a change of its own (`transition.rs`): the step being
+    // left slides away and the card you picked grows into the next step's heading, or shrinks
+    // back into its card.
+    let go = move |to: Option<ExtensionId>| {
+        let kind = crate::transition::step(to.is_some());
+        if to.is_none() {
+            came_from.set_value(selected.get_untracked());
+        }
+        crate::transition::around(kind, move || selected.set(to));
+    };
 
     view! {
         {move || match selected.get() {
@@ -912,218 +808,540 @@ fn AddDevice() -> impl IntoView {
             // expands in place — the second step is a screen of its own, and a row that grows
             // while the rows below it stay put reads as a disclosure, not as going somewhere.
             None => view! {
-                <section class="add-device">
-                    <p class="muted">
-                        "Irori doesn't talk to devices itself: each kind of device arrives "
-                        "through an extension. Pick the one your device speaks. "
-                        <A href="/extensions">"Manage extensions"</A>
-                        "."
-                    </p>
+                <section class="add-device add-step">
+                    <div class="add-intro">
+                        <p class="muted">
+                            "Irori doesn't talk to devices itself: each kind of device arrives "
+                            "through an extension. Pick the one your device speaks to see what it "
+                            "has found."
+                        </p>
+                        <A href="/extensions" attr:class="quiet-button">"Manage extensions"</A>
+                    </div>
+                    // Keyed by extension, so a card arrives once and then keeps up — what it
+                    // has found and what's in the home change while the window is open.
                     <div class="protocol-cards">
-                        {extensions
-                            .get()
-                            .into_iter()
-                            .map(|(id, extension, devices)| {
-                                protocol_card(id, extension, devices, selected)
-                            })
-                            .collect_view()}
+                        <For
+                            each=move || ids.get()
+                            key=|id| id.clone()
+                            children=move |id| {
+                                let i = ids
+                                    .with_untracked(|ids| ids.iter().position(|known| *known == id))
+                                    .unwrap_or(0);
+                                let back_here = came_from.get_value().as_ref() == Some(&id);
+                                protocol_card(i, id, extensions, back_here, go)
+                            }
+                        />
                     </div>
                 </section>
             }
                 .into_any(),
-            // Step two: that one extension, and nothing else — what it can be asked to do, and
-            // what it has found.
-            Some(id) => {
-                let found = extensions.get().into_iter().find(|(known, _, _)| known == &id);
-                let Some((id, extension, _)) = found else {
-                    selected.set(None);
-                    return ().into_any();
-                };
-                view! {
-                    <section class="add-device">
-                        <button
-                            type="button"
-                            class="link protocol-back"
-                            on:click=move |_| selected.set(None)
-                        >
-                            "‹ All extensions"
-                        </button>
-                        <ProtocolActions id=id.clone() extension=extension.clone() />
-                        <crate::waiting::WaitingFor extension=id.clone() />
-                        <ProtocolDevices id=id.clone() />
-                    </section>
-                }
-                    .into_any()
-            }
+            // Step two: that one extension, and nothing else — what it can be asked to do, what
+            // it has found, and what of it is already in the home.
+            Some(id) => view! { <ProtocolStep id=id on_back=move || go(None) /> }.into_any(),
         }}
     }
 }
 
-/// One extension, as something to press: its icon, its name, and how much it already has.
+/// One extension, as something to press: its icon, its name, and what it has.
 fn protocol_card(
+    i: usize,
     id: ExtensionId,
-    extension: crate::api::Extension,
-    devices: usize,
-    selected: RwSignal<Option<ExtensionId>>,
+    extensions: Memo<Vec<(ExtensionId, crate::api::Extension, usize, usize)>>,
+    back_here: bool,
+    go: impl Fn(Option<ExtensionId>) + Copy + 'static,
 ) -> impl IntoView {
     let pick = {
         let id = id.clone();
-        move |_| selected.set(Some(id.clone()))
+        move |event: ev::MouseEvent| {
+            // The card grows into the next step's heading: it takes the heading's name for the
+            // change, and gives it up again once it's gone.
+            crate::transition::name_target(&event, "add-hero");
+            go(Some(id.clone()))
+        }
     };
-    let waiting = extension.waiting.len();
+    let style = format!(
+        "--i: {i}{}",
+        if back_here {
+            "; view-transition-name: add-hero"
+        } else {
+            ""
+        }
+    );
+    let this = {
+        let id = id.clone();
+        move || {
+            extensions.with(|all| {
+                all.iter()
+                    .find(|(known, ..)| *known == id)
+                    .map(|(_, extension, here, found)| (extension.clone(), *here, *found))
+            })
+        }
+    };
+    let Some((extension, _, _)) = this() else {
+        return ().into_any();
+    };
+    let counts = this.clone();
+    let state = this.clone();
 
     view! {
-        <button type="button" class="protocol-card" on:click=pick>
+        <button type="button" class="protocol-card" style=style on:click=pick>
             {icon(id.as_str(), extension.has_icon)}
             <span class="name">{extension.name.clone()}</span>
             <span class="badge">{how(&extension.iot_class)}</span>
-            <span
-                class="state"
-                class:ok=extension.state == "running"
-                class:wants-setup=extension.state == "needs_setup"
-            >
-                {extension.state.replace('_', " ")}
-            </span>
-            <span class="muted small">
-                {format!("{devices} device{} here", if devices == 1 { "" } else { "s" })}
-                {(waiting > 0).then(|| format!(" · {waiting} waiting for you"))}
+            {move || state().map(|(extension, ..)| view! {
+                <span
+                    class="state"
+                    class:ok=extension.state == "running"
+                    class:wants-setup=extension.state == "needs_setup"
+                >
+                    {extension.state.replace('_', " ")}
+                </span>
+            })}
+            <span class="protocol-card-counts">
+                {move || counts().map(|(_, here, found)| view! {
+                    {(found > 0).then(|| view! {
+                        <span class="found-count">{format!("{found} found")}</span>
+                    })}
+                    <span class="muted small">{format!("{here} in your home")}</span>
+                })}
             </span>
         </button>
     }
+    .into_any()
 }
 
-/// What one extension has found: the devices still waiting to be let in, each with its own Add
-/// and Ignore, and then the ones already here — so the screen you opened to pair a device is
-/// also where you watch it arrive.
+/// How long a device that was just added stays drawn in the found list while it leaves it. A
+/// little longer than the leaving itself (`--dur-layout`, after the check has shown for
+/// `--dur-base`), so it's never cut short.
+const LEAVING_FOR: std::time::Duration = std::time::Duration::from_millis(700);
+
+/// What one extension has found, and what of it is already in the home: the screen you open to
+/// add a device is also where you watch it arrive and move across.
 #[component]
-fn ProtocolDevices(id: ExtensionId) -> impl IntoView {
+fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl IntoView {
     let live = expect_context::<crate::Live>();
     let trouble = RwSignal::new(None::<String>);
-
-    let held = {
+    // The extension itself, for the heading: only the parts the heading shows, so a reading
+    // arriving doesn't redraw it.
+    let extension = {
         let id = id.clone();
         Memo::new(move |_| {
-            live.home
-                .get()
-                .held
-                .into_iter()
-                .filter(|device| device.why == "new" && device.protocol == id.as_str())
-                .collect::<Vec<_>>()
+            live.home.with(|home| {
+                home.extensions
+                    .iter()
+                    .find(|(known, _)| **known == id)
+                    .map(|(_, extension)| extension.clone())
+            })
         })
     };
+    let name = move || extension.with(|e| e.as_ref().map(|e| e.name.clone()).unwrap_or_default());
+    let icon_there = move || extension.with(|e| e.as_ref().is_some_and(|e| e.has_icon));
+
+    // What it has found that isn't in the home — what a device is, never what it's reporting, so
+    // this changes when a device turns up or leaves, not every couple of seconds.
+    let found = {
+        let id = id.clone();
+        Memo::new(move |_| {
+            live.home.with(|home| {
+                home.held
+                    .iter()
+                    .filter(|device| device.protocol == id.as_str())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+        })
+    };
+    // Devices just added, still drawn while they leave the found list.
+    let leaving = RwSignal::new(Vec::<crate::api::HeldDevice>::new());
+    // Devices with an add on its way.
+    let busy = RwSignal::new(BTreeSet::<DeviceId>::new());
+    // What the checkboxes have picked.
+    let picked = RwSignal::new(BTreeSet::<DeviceId>::new());
+    // The found list as drawn: what's found, and what's on its way out of it, in name order so a
+    // device leaving keeps its place.
+    let drawn = Memo::new(move |_| {
+        let mut all = found.get();
+        for device in leaving.get() {
+            if !all.iter().any(|held| held.id == device.id) {
+                all.push(device);
+            }
+        }
+        all.sort_by(|a, b| {
+            (a.name.as_str().to_lowercase(), a.id.as_str())
+                .cmp(&(b.name.as_str().to_lowercase(), b.id.as_str()))
+        });
+        all
+    });
+    // The ones that can still be added: found, and not already on their way.
+    let addable = Memo::new(move |_| {
+        found
+            .get()
+            .into_iter()
+            .map(|device| device.id)
+            .filter(|id| !busy.with(|busy| busy.contains(id)))
+            .collect::<Vec<_>>()
+    });
+    let chosen = Memo::new(move |_| {
+        addable
+            .get()
+            .into_iter()
+            .filter(|id| picked.with(|picked| picked.contains(id)))
+            .collect::<Vec<_>>()
+    });
+
+    // What's already in the home: names and rooms, which change when a person changes them.
     let here = {
         let id = id.clone();
         Memo::new(move |_| {
-            live.home
-                .get()
-                .devices
-                .iter()
-                .filter(|device| device.protocol.as_str() == id.as_str())
-                .map(|device| (device.id.clone(), device.name.to_string()))
-                .collect::<Vec<_>>()
+            live.home.with(|home| {
+                let mut here = home
+                    .devices
+                    .iter()
+                    .filter(|device| device.protocol.as_str() == id.as_str())
+                    .map(|device| {
+                        let room = device
+                            .area_id
+                            .as_ref()
+                            .and_then(|area| home.area(area))
+                            .map(|area| area.name.to_string());
+                        (device.id.clone(), device.name.to_string(), room)
+                    })
+                    .collect::<Vec<_>>();
+                here.sort_by_key(|a| a.1.to_lowercase());
+                here
+            })
         })
     };
 
-    let decide = move |device: irori_types::DeviceId, add: bool| {
+    // The first rows come in one after another as the step opens; one that turns up later
+    // arrives on its own, with a glow that says it's new. After the step's first moment, a row
+    // being drawn means a device just arrived.
+    let opening = StoredValue::new(true);
+    set_timeout(
+        move || opening.set_value(false),
+        std::time::Duration::from_millis(400),
+    );
+
+    // Adds each of `ids`, one after another. One that fails doesn't stop the rest, and the
+    // trouble names it. Each one leaves the found list as its add comes back.
+    let add = move |ids: Vec<DeviceId>| {
+        if ids.is_empty() {
+            return;
+        }
+        busy.update(|busy| busy.extend(ids.iter().cloned()));
+        picked.update(|picked| picked.retain(|id| !ids.contains(id)));
+        trouble.set(None);
         spawn_local(async move {
-            let edit = crate::api::DeviceEdit {
-                added: add.then_some(true),
-                ignored: (!add).then_some(true),
-                ..Default::default()
-            };
-            match crate::api::edit_device(&device, &edit).await {
-                Ok(()) => trouble.set(None),
-                Err(why) => trouble.set(Some(why)),
+            let mut failed = Vec::new();
+            for id in ids {
+                let edit = crate::api::DeviceEdit {
+                    added: Some(true),
+                    ..Default::default()
+                };
+                let snapshot = found
+                    .with_untracked(|found| found.iter().find(|device| device.id == id).cloned());
+                match crate::api::edit_device(&id, &edit).await {
+                    Ok(()) => {
+                        if let Some(device) = snapshot {
+                            leaving.update(|leaving| leaving.push(device));
+                            let gone = id.clone();
+                            set_timeout(
+                                move || leaving.update(|leaving| leaving.retain(|d| d.id != gone)),
+                                LEAVING_FOR,
+                            );
+                        }
+                        crate::refresh(live);
+                    }
+                    Err(why) => {
+                        let called = snapshot
+                            .map(|device| device.name.to_string())
+                            .unwrap_or_else(|| id.to_string());
+                        failed.push(format!("{called}: {why}"));
+                    }
+                }
+                busy.update(|busy| {
+                    busy.remove(&id);
+                });
             }
-            crate::refresh(live);
+            if !failed.is_empty() {
+                trouble.set(Some(format!("Couldn't add {}", failed.join("; "))));
+            }
         });
     };
 
+    let back = move |_| on_back.run(());
+    let protocol = id.clone();
+    let for_actions = id.clone();
+    let for_home = id.to_string();
+
     view! {
-        {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
-        {move || {
-            let held = held.get();
-            (!held.is_empty()).then(|| {
-                let count = held.len();
-                view! {
-                    <div class="protocol-found">
-                        <h3>
-                            {format!(
-                                "{count} device{} found, waiting for you",
-                                if count == 1 { "" } else { "s" },
-                            )}
-                        </h3>
-                        <ul class="room-devices">
-                            {held
-                                .into_iter()
-                                .map(|device| {
-                                    let (add, ignore) = (device.id.clone(), device.id.clone());
-                                    view! {
-                                        <li>
-                                            <span class="name">{device.name.to_string()}</span>
-                                            <span class="room-actions">
-                                                <button
-                                                    type="button"
-                                                    class="add"
-                                                    on:click=move |_| decide(add.clone(), true)
-                                                >
-                                                    "Add"
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    on:click=move |_| decide(ignore.clone(), false)
-                                                >
-                                                    "Ignore"
-                                                </button>
-                                            </span>
-                                        </li>
+        <section class="add-device add-step">
+            <button type="button" class="quiet-button protocol-back" on:click=back>
+                <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M15 6l-6 6 6 6" />
+                </svg>
+                "All extensions"
+            </button>
+            <div class="add-step-head">
+                {move || icon(protocol.as_str(), icon_there())}
+                <h3>{name}</h3>
+                {move || extension.with(|e| e.as_ref().map(|e| view! {
+                    <span class="state" class:ok=e.state == "running">
+                        {e.state.replace('_', " ")}
+                    </span>
+                }))}
+            </div>
+            {move || extension.get().map(|extension| view! {
+                <ProtocolActions id=for_actions.clone() extension=extension />
+            })}
+            {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
+
+            <div class="found">
+                <div class="found-head">
+                    <h4>
+                        "Found on your network"
+                        {move || {
+                            let count = found.with(Vec::len);
+                            (count > 0).then(|| view! { <span class="found-count">{count}</span> })
+                        }}
+                    </h4>
+                    {move || {
+                        let count = addable.with(Vec::len);
+                        (count > 1).then(|| view! {
+                            <label class="pick-all" title="Select all">
+                                <input
+                                    type="checkbox"
+                                    aria-label="Select all"
+                                    prop:checked=move || {
+                                        !addable.with(Vec::is_empty)
+                                            && chosen.with(Vec::len) == addable.with(Vec::len)
                                     }
-                                })
-                                .collect_view()}
-                        </ul>
-                    </div>
-                }
-            })
-        }}
-        {move || {
-            let here = here.get();
-            view! {
-                <div class="protocol-found">
-                    <h3>
-                        {format!(
-                            "{} device{} already here",
-                            here.len(),
-                            if here.len() == 1 { "" } else { "s" },
-                        )}
-                    </h3>
-                    {if here.is_empty() {
-                        view! {
-                            <p class="muted small">
-                                "Nothing yet. An extension that can find devices is always "
-                                "listening, so one appears here on its own within a few seconds "
-                                "of joining."
-                            </p>
-                        }
-                            .into_any()
-                    } else {
-                        view! {
-                            <ul class="room-devices">
-                                {here
-                                    .into_iter()
-                                    .map(|(device, name)| view! {
-                                        <li>
-                                            <A href=format!("/devices/{device}")>{name}</A>
-                                        </li>
-                                    })
-                                    .collect_view()}
-                            </ul>
-                        }
-                            .into_any()
+                                    on:change=move |ev| {
+                                        if event_target_checked(&ev) {
+                                            picked.update(|set| set.extend(addable.get_untracked()));
+                                        } else {
+                                            picked.update(BTreeSet::clear);
+                                        }
+                                    }
+                                />
+                            </label>
+                        })
                     }}
+                    <span class="found-actions">
+                        {move || {
+                            let chosen_now = chosen.get();
+                            let all = addable.get();
+                            if !chosen_now.is_empty() {
+                                let count = chosen_now.len();
+                                view! {
+                                    <button
+                                        type="button"
+                                        class="primary"
+                                        on:click=move |_| add(chosen.get_untracked())
+                                    >
+                                        {format!("Add selected ({count})")}
+                                    </button>
+                                }
+                                    .into_any()
+                            } else if !all.is_empty() {
+                                let count = all.len();
+                                view! {
+                                    <button
+                                        type="button"
+                                        class="primary"
+                                        on:click=move |_| add(addable.get_untracked())
+                                    >
+                                        {format!("Add all ({count})")}
+                                    </button>
+                                }
+                                    .into_any()
+                            } else {
+                                ().into_any()
+                            }
+                        }}
+                    </span>
                 </div>
-            }
-        }}
+                <crate::waiting::WaitingFor extension=id.clone() />
+                {move || {
+                    let nothing = drawn.with(Vec::is_empty) && {
+                        let waiting = extension.with(|e| e.as_ref().is_some_and(|e| !e.waiting.is_empty()));
+                        !waiting
+                    };
+                    nothing.then(|| view! {
+                        <div class="listening-empty">
+                            <span class="listening-ring" aria-hidden="true"></span>
+                            <p>
+                                {format!("Listening for {} devices on your network…", name())}
+                            </p>
+                            <p class="muted small">
+                                "Anything it finds shows up here within a few seconds of joining. "
+                                "Devices already in your home are listed below."
+                            </p>
+                        </div>
+                    })
+                }}
+                <ul class="device-cards">
+                    <For
+                        each=move || drawn.get()
+                        key=|device| device.id.clone()
+                        children=move |device| {
+                            let i = found.with_untracked(|found| {
+                                found.iter().position(|d| d.id == device.id).unwrap_or(0)
+                            });
+                            let arrived = !opening.get_value();
+                            let id = device.id.clone();
+                            let is_leaving = {
+                                let id = id.clone();
+                                Memo::new(move |_| leaving.with(|l| l.iter().any(|d| d.id == id)))
+                            };
+                            let is_busy = {
+                                let id = id.clone();
+                                Memo::new(move |_| busy.with(|busy| busy.contains(&id)))
+                            };
+                            let is_picked = {
+                                let id = id.clone();
+                                Memo::new(move |_| picked.with(|picked| picked.contains(&id)))
+                            };
+                            let chips = provides(&device.provides);
+                            let toggle = {
+                                let id = id.clone();
+                                move |ev| {
+                                    let on = event_target_checked(&ev);
+                                    picked.update(|set| {
+                                        if on {
+                                            set.insert(id.clone());
+                                        } else {
+                                            set.remove(&id);
+                                        }
+                                    });
+                                }
+                            };
+                            let add_one = {
+                                let id = id.clone();
+                                move |_| add(vec![id.clone()])
+                            };
+                            let made = [device.manufacturer.clone(), device.model.clone()]
+                                .into_iter()
+                                .flatten()
+                                .collect::<Vec<_>>()
+                                .join(" · ");
+                            let name = device.name.to_string();
+                            view! {
+                                <li
+                                    class="device-card found-card"
+                                    class:arrived=arrived
+                                    class:leaving=is_leaving
+                                    class:picked=is_picked
+                                    style=format!("--i: {i}")
+                                >
+                                    <div class="device-card-inner">
+                                        <label class="pick">
+                                            <input
+                                                type="checkbox"
+                                                aria-label=format!("Select {name}")
+                                                prop:checked=is_picked
+                                                prop:disabled=move || is_leaving.get() || is_busy.get()
+                                                on:change=toggle
+                                            />
+                                        </label>
+                                        {icon(&device.protocol, icon_there())}
+                                        <span class="device-card-text">
+                                            <span class="name">{name.clone()}</span>
+                                            {(!made.is_empty()).then(|| view! {
+                                                <span class="device-card-made">{made}</span>
+                                            })}
+                                            <span class="provides">{chips}</span>
+                                        </span>
+                                        <button
+                                            type="button"
+                                            class="add-one"
+                                            class:busy=is_busy
+                                            class:done=is_leaving
+                                            disabled=move || is_busy.get() || is_leaving.get()
+                                            aria-label=format!("Add {name}")
+                                            on:click=add_one
+                                        >
+                                            <span class="add-one-label">"Add"</span>
+                                            <svg class="add-one-check" viewBox="0 0 24 24" aria-hidden="true"
+                                                 fill="none" stroke="currentColor" stroke-width="2.2"
+                                                 stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="M5 12.5l4.5 4.5L19 7.5" pathLength="1" />
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </li>
+                            }
+                        }
+                    />
+                </ul>
+            </div>
+
+            <div class="in-home">
+                <h4>
+                    "In your home"
+                    {move || {
+                        let count = here.with(Vec::len);
+                        (count > 0).then(|| view! { <span class="found-count quiet">{count}</span> })
+                    }}
+                </h4>
+                {move || here.with(Vec::is_empty).then(|| view! {
+                    <p class="muted small">"Nothing yet. Add a device above and it moves down here."</p>
+                })}
+                <ul class="device-cards">
+                    <For
+                        each=move || here.get()
+                        key=|(id, name, room)| (id.clone(), name.clone(), room.clone())
+                        children=move |(device, name, room)| {
+                            let arrived = !opening.get_value();
+                            let for_home = for_home.clone();
+                            view! {
+                                <li class="device-card home-card" class:arrived=arrived>
+                                    <A
+                                        href=format!("/devices/{device}")
+                                        attr:class="device-card-inner"
+                                    >
+                                        {icon(&for_home, icon_there())}
+                                        <span class="device-card-text">
+                                            <span class="name">{name}</span>
+                                            <span class="device-card-made">
+                                                {room.unwrap_or_else(|| "No room".to_owned())}
+                                            </span>
+                                        </span>
+                                        <svg class="home-chevron" viewBox="0 0 24 24" aria-hidden="true"
+                                             fill="none" stroke="currentColor" stroke-width="2"
+                                             stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M9 6l6 6-6 6" />
+                                        </svg>
+                                    </A>
+                                </li>
+                            }
+                        }
+                    />
+                </ul>
+            </div>
+        </section>
     }
+}
+
+/// What a found device would bring, as small labels: `2 sensors`, `1 light`.
+fn provides(kinds: &BTreeMap<String, usize>) -> AnyView {
+    if kinds.is_empty() {
+        return view! { <span class="chip quiet">"nothing Irori can use yet"</span> }.into_any();
+    }
+    kinds
+        .iter()
+        .map(|(kind, count)| {
+            let word = kind.replace('_', " ");
+            let plural = match (*count, word.ends_with(['s', 'h', 'x'])) {
+                (1, _) => "",
+                (_, true) => "es",
+                _ => "s",
+            };
+            view! { <span class="chip">{format!("{count} {word}{plural}")}</span> }
+        })
+        .collect_view()
+        .into_any()
 }
 
 /// The button for a protocol's declared action (Zigbee's permit-join, say) — nothing at all for
@@ -1237,7 +1455,7 @@ fn ProtocolActions(id: ExtensionId, extension: crate::api::Extension) -> impl In
                 .collect_view()}
             {not_yet}
             {move || listening.get().map(|said| view! {
-                <div class="listening">
+                <div class="listening-empty">
                     <p>{said}</p>
                     <p class="muted small">
                         {move || {
@@ -1304,14 +1522,27 @@ fn group_view(group: Group, controls: Controls) -> AnyView {
             {group
                 .entities
                 .into_iter()
-                .map(|(entity, state)| row(entity, state, controls))
+                .map(|(entity, state)| row(entity, state, controls, None))
                 .collect_view()}
         </section>
     }
     .into_any()
 }
 
-pub fn row(entity: Entity, state: Option<EntityState>, controls: Controls) -> AnyView {
+/// A row's way into its own last 24 hours. The device page gives its rows one; the list, which
+/// is for switching things rather than reading them back, doesn't.
+#[derive(Debug, Clone, Copy)]
+pub struct Unroll {
+    pub open: RwSignal<bool>,
+    pub toggle: Callback<()>,
+}
+
+pub fn row(
+    entity: Entity,
+    state: Option<EntityState>,
+    controls: Controls,
+    unroll: Option<Unroll>,
+) -> AnyView {
     let offline = state
         .as_ref()
         .is_some_and(|s| s.availability == Availability::Unavailable);
@@ -1327,11 +1558,80 @@ pub fn row(entity: Entity, state: Option<EntityState>, controls: Controls) -> An
                 <span class="id" title=full_id>{id}</span>
             </span>
             {offline.then(|| view! { <span class="badge">"offline"</span> })}
-            {control(&entity, state.as_ref(), offline, controls)}
+            {unrolling(&entity, control(&entity, state.as_ref(), offline, controls), unroll)}
             {move || failure().map(|why| view! { <p class="why">{why}</p> })}
         </div>
     }
     .into_any()
+}
+
+/// The call to open a row's history, where the eye already is. A reading *is* the thing to ask
+/// about, so for sensors the reading itself is the button; a light or switch's control is for
+/// switching, so there the button is the chevron beside it.
+fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyView {
+    let Some(Unroll { open, toggle }) = unroll else {
+        return control;
+    };
+    let expanded = move || open.get().to_string();
+    let chevron = view! { <span class="unroll-mark" aria-hidden="true"></span> };
+    let hint = view! { <span class="visually-hidden">" — last 24 hours"</span> };
+    match entity.capabilities {
+        Capabilities::Sensor(_) | Capabilities::BinarySensor(_) => view! {
+            <button
+                type="button"
+                class="unroll reading-unroll"
+                class:open=move || open.get()
+                title="Last 24 hours"
+                aria-expanded=expanded
+                on:click=move |event| {
+                    if !crate::gesture::swallow_click(&event) {
+                        toggle.run(());
+                    }
+                }
+                on:pointerdown=|event| crate::gesture::pull_down(&event)
+                on:pointermove=move |event| pull(&event, open, toggle)
+                on:pointerup=|event| crate::gesture::pull_up(&event)
+                on:pointercancel=|event| crate::gesture::pull_up(&event)
+            >
+                {control}
+                {hint}
+                {chevron}
+            </button>
+        }
+        .into_any(),
+        Capabilities::Light(_) | Capabilities::Switch(_) => view! {
+            {control}
+            <button
+                type="button"
+                class="unroll"
+                class:open=move || open.get()
+                title="Last 24 hours"
+                aria-label=format!("{} — last 24 hours", entity.name)
+                aria-expanded=expanded
+                on:click=move |event| {
+                    if !crate::gesture::swallow_click(&event) {
+                        toggle.run(());
+                    }
+                }
+                on:pointerdown=|event| crate::gesture::pull_down(&event)
+                on:pointermove=move |event| pull(&event, open, toggle)
+                on:pointerup=|event| crate::gesture::pull_up(&event)
+                on:pointercancel=|event| crate::gesture::pull_up(&event)
+            >
+                {chevron}
+            </button>
+        }
+        .into_any(),
+    }
+}
+
+/// A pull on a history handle: down opens the drawer, up closes it.
+fn pull(event: &ev::PointerEvent, open: RwSignal<bool>, toggle: Callback<()>) {
+    if let Some(down) = crate::gesture::pull_move(event)
+        && down != open.get_untracked()
+    {
+        toggle.run(());
+    }
 }
 
 fn control(
@@ -1461,10 +1761,14 @@ fn light_controls(
             let entity_id = entity_id.clone();
             move || offline || controls.busy.get().contains(&entity_id)
         };
+        // Where the thumb is while it's being dragged: the label and the filled part of the track
+        // follow it, and only letting go sends anything. Starts at what the device reported, and
+        // does again whenever the device reports.
+        let dragged = RwSignal::new(level);
         sub.push(
             view! {
                 <label class="dim" title="Brightness">
-                    <span class="lv">{level}%</span>
+                    <span class="lv">{move || dragged.get()}%</span>
                     <input
                         type="range"
                         min="1"
@@ -1472,7 +1776,13 @@ fn light_controls(
                         step="1"
                         aria-label={format!("Brightness for {}", entity.name)}
                         prop:value=level.to_string()
+                        style:--fill=move || format!("{}%", fill(dragged.get(), 1, 100))
                         disabled=disable
+                        on:input:target=move |ev| {
+                            if let Ok(pct) = ev.target().value().parse::<u16>() {
+                                dragged.set(pct);
+                            }
+                        }
                         on:change:target=move |ev| {
                             let pct = ev.target().value().parse::<u16>().unwrap_or(level);
                             run(pct)
@@ -1504,18 +1814,26 @@ fn light_controls(
             let entity_id = entity_id.clone();
             move || offline || controls.busy.get().contains(&entity_id)
         };
+        let dragged = RwSignal::new(current);
         sub.push(
             view! {
                 <label class="dim" title="Color temperature">
-                    <span class="lv">{current}K</span>
+                    <span class="lv">{move || dragged.get()}K</span>
+                    // No fill here: the track is the colors themselves, warm to cool.
                     <input
                         type="range"
+                        class="kelvin"
                         min=range.min.to_string()
                         max=range.max.to_string()
                         step="100"
                         aria-label={format!("Color temperature for {}", entity.name)}
                         prop:value=current.to_string()
                         disabled=disable
+                        on:input:target=move |ev| {
+                            if let Ok(kelvin) = ev.target().value().parse::<u16>() {
+                                dragged.set(kelvin);
+                            }
+                        }
                         on:change:target=move |ev| {
                             let kelvin = ev.target().value().parse::<u16>().unwrap_or(current);
                             run(kelvin)
@@ -1576,10 +1894,23 @@ fn light_controls(
     .into_any()
 }
 
+/// How far along a slider's track `value` sits, as a whole percentage — where its filled part
+/// ends. Any number type a slider holds: a light's level, a wall's thickness, a snap step.
+pub(crate) fn fill(value: impl Into<f64>, min: impl Into<f64>, max: impl Into<f64>) -> u16 {
+    let (value, min, max) = (value.into(), min.into(), max.into());
+    if max <= min {
+        return 100;
+    }
+    ((value.clamp(min, max) - min) * 100.0 / (max - min)).floor() as u16
+}
+
 fn reading(level: u8) -> impl IntoView {
     view! {
         <span class="reading">
-            {format!("{}%", brightness_pct(level))}
+            <span class="n" data-n=brightness_pct(level).to_string()>
+                {brightness_pct(level).to_string()}
+            </span>
+            "%"
         </span>
     }
 }
@@ -1593,12 +1924,29 @@ fn knob(entity: &Entity, on: Option<bool>, offline: bool, controls: Controls) ->
         let entity_id = entity_id.clone();
         move || controls.busy.get().contains(&entity_id)
     };
+    let pending = busy.clone();
     // What the click means is "I want it off", not "flip whatever it is now": the page sends the
     // state the person asked for, so a second click on a stale row can't undo the first.
     let wanted = !on.unwrap_or(false);
     let click = {
         let entity_id = entity_id.clone();
-        move |_| controls.set_on.run((entity_id.clone(), wanted))
+        move |event: ev::MouseEvent| {
+            // A swipe already said what it wanted when it let go.
+            if !crate::gesture::swallow_click(&event) {
+                controls.set_on.run((entity_id.clone(), wanted));
+            }
+        }
+    };
+    // Swiped: whichever side the knob was let go on, if that's not where it already is.
+    let let_go = {
+        let entity_id = entity_id.clone();
+        move |event: ev::PointerEvent| {
+            if let Some(side) = crate::gesture::knob_up(&event)
+                && Some(side) != on
+            {
+                controls.set_on.run((entity_id.clone(), side));
+            }
+        }
     };
     let label = format!("Turn {} {}", entity.name, if wanted { "on" } else { "off" });
     // A screen reader is told what the knob shows. `mixed` is how ARIA says "neither", which is
@@ -1613,10 +1961,19 @@ fn knob(entity: &Entity, on: Option<bool>, offline: bool, controls: Controls) ->
             type="button"
             class="toggle"
             class:unknown=on.is_none()
+            // Waiting on the device, as opposed to unable to reach it: both disable the switch,
+            // but only this one is going to change.
+            class:pending=pending
             aria-label=label
             aria-pressed=pressed
             disabled=move || offline || busy()
             on:click=click
+            on:pointerdown=|event| crate::gesture::knob_down(&event)
+            on:pointermove=|event| crate::gesture::knob_move(&event)
+            on:pointerup=let_go
+            on:pointercancel=|event| {
+                crate::gesture::knob_up(&event);
+            }
         >
             <span class="knob"></span>
         </button>
@@ -1624,19 +1981,20 @@ fn knob(entity: &Entity, on: Option<bool>, offline: bool, controls: Controls) ->
 }
 
 fn sensor(capabilities: &SensorCapabilities, value: Option<&State>) -> AnyView {
-    let (reading, unit) = match value {
-        Some(State::Sensor(sensor)) => (
+    let (reading, unit, counts) = match value {
+        Some(State::Sensor(sensor)) => {
+            let unit = capabilities.unit.clone().unwrap_or_default();
             match &sensor.value {
-                SensorValue::Number(n) => number(*n),
-                SensorValue::Text(text) => text.clone(),
-            },
-            capabilities.unit.clone().unwrap_or_default(),
-        ),
-        _ => (UNKNOWN.to_owned(), String::new()),
+                SensorValue::Number(n) => (number(*n), unit, Some(n.to_string())),
+                SensorValue::Text(text) => (text.clone(), unit, None),
+            }
+        }
+        _ => (UNKNOWN.to_owned(), String::new(), None),
     };
+    // A number counts to its next value as it changes (count.rs); words just change.
     view! {
         <span class="reading">
-            {reading}
+            <span class="n" data-n=counts>{reading}</span>
             <span class="unit">{(!unit.is_empty()).then(|| format!(" {unit}"))}</span>
         </span>
     }
@@ -1661,8 +2019,8 @@ pub(crate) fn wording(class: Option<BinarySensorClass>, on: bool) -> &'static st
     match (class, on) {
         (Some(Motion | Vibration), true) => "Motion",
         (Some(Motion | Vibration), false) => "Still",
-        (Some(Occupancy), true) => "Occupied",
-        (Some(Occupancy), false) => "Empty",
+        (Some(Occupancy), true) => "Detected",
+        (Some(Occupancy), false) => "Clear",
         (Some(Door | Window), true) => "Open",
         (Some(Door | Window), false) => "Closed",
         (Some(Moisture), true) => "Wet",
@@ -1779,6 +2137,18 @@ mod tests {
                 "level for {pct}% must read back as {pct}%"
             );
         }
+    }
+
+    /// A slider's filled part ends where its thumb is, at either end of any range — and a value
+    /// outside the range, or a range with nothing in it, can't push the fill off the track.
+    #[test]
+    fn a_slider_fills_up_to_its_thumb() {
+        assert_eq!(fill(1, 1, 100), 0);
+        assert_eq!(fill(100, 1, 100), 100);
+        assert_eq!(fill(2700, 2000, 6500), 15);
+        assert_eq!(fill(9000, 2000, 6500), 100);
+        assert_eq!(fill(0, 2000, 6500), 0);
+        assert_eq!(fill(50, 50, 50), 100);
     }
 
     #[test]

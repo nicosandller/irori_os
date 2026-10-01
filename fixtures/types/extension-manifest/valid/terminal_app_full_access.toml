@@ -5,9 +5,9 @@ version = "0.1.0"
 irori = ">=0.1.0, <0.2.0"
 
 [[contributes.app]]
-id = "terminal"
-title = "Terminal"
-run = { command = "bin/terminal" }
+label = "Terminal"
+entry = "app/index.html"
+placement = "sidebar"
 
 [permissions]
 api = ["registry:read", "states:read"]

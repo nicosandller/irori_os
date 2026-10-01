@@ -10,10 +10,17 @@ license.workspace = true
 [dependencies]
 irori-types.workspace = true
 # Successor of `cel-interpreter` (ROADMAP D41). No chrono/regex: the surface does not use them.
-cel = { version = "0.14.5", default-features = false }
+# Only with `engine`: the types alone (what a page shares) compile without it.
+cel = { version = "0.14.5", default-features = false, optional = true }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[features]
+# Expressions, the registry type-check, and evaluation. Without it, only the document types —
+# what a wasm page needs to read and write them.
+default = ["engine"]
+engine = ["dep:cel"]
 
 [dev-dependencies]
 anyhow.workspace = true

@@ -145,6 +145,19 @@ additive change: a new tag in `Capabilities` and `State`.
 Device classes are closed lists: a protocol maps what it knows and leaves the rest absent.
 New classes are additive.
 
+### 4.5 Irori's own device
+
+Irori is a device in its own home: `irori_hub`, from the built-in `irori` protocol, with the
+sensors `sensor.irori_version` (text), `sensor.irori_uptime` (minutes), `sensor.irori_cpu`,
+`sensor.irori_memory` and `sensor.irori_disk` (% in use, the disk being the data directory's), and
+`sensor.irori_temperature` (°C) on a machine that says, such as a Raspberry Pi. They're read every
+30 seconds, so an automation can watch them like any sensor. Unlike every other device it is never
+held for "+ Add device": nobody has to be asked whether Irori may be in the home.
+
+"Irori starts up" is not one of these entities. A value set at boot is already there when an
+automation engine starts watching, so it can't be seen changing; engines keep a `startup`
+trigger for it, and the flow editor offers it under Irori.
+
 ## 5. State
 
 ### 5.1 EntityState

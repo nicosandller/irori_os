@@ -43,14 +43,20 @@ pub struct Home {
     pub floorplan: Floorplan,
 }
 
-/// A device kept out of the home: enough to recognise it and let it in.
+/// A device an extension has found that isn't in the home: enough to recognise it and decide
+/// whether it belongs. What it is, never what it's reporting, so the list of these holds still.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct HeldDevice {
     pub id: DeviceId,
     pub protocol: String,
     pub name: Name,
-    /// `ignored`, or `new` while Irori asks before adding.
-    pub why: String,
+    #[serde(default)]
+    pub manufacturer: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// How many entities of each kind it would bring — `{"light": 1, "sensor": 2}`.
+    #[serde(default)]
+    pub provides: std::collections::BTreeMap<String, usize>,
 }
 
 impl Home {
@@ -130,6 +136,75 @@ pub struct Extension {
     /// Which of `actions` are usable right now, as the protocol itself says.
     #[serde(default)]
     pub available_actions: Vec<String>,
+    /// Its own page, with an entry in the sidebar (`docs/specs/automations.md` §B3).
+    #[serde(default)]
+    pub app: Option<AppInfo>,
+    /// Whether it's an automation engine.
+    #[serde(default)]
+    pub engine: bool,
+}
+
+/// An extension's page, as its manifest describes it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AppInfo {
+    pub label: String,
+    /// The API scopes it declared: what the bridge may hand its page.
+    #[serde(default)]
+    pub api: Vec<String>,
+}
+
+/// One entry of `/api/dev/apps`: a running extension's page and whether its files are there.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AppEntry {
+    pub extension: String,
+    pub built: bool,
+}
+
+pub async fn fetch_apps() -> Result<Vec<AppEntry>, String> {
+    let response = Request::get("/api/dev/apps")
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        return Err(format!("/api/dev/apps answered {}", response.status()));
+    }
+    response
+        .json::<Vec<AppEntry>>()
+        .await
+        .map_err(|e| format!("Irori sent something this page can't read: {e}"))
+}
+
+/// Asks an extension's engine something for its page. Answers the engine's value, or its
+/// refusal in words.
+pub async fn app_rpc(
+    extension: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let url = format!("/api/dev/apps/{extension}/rpc");
+    let response = Request::post(&url)
+        .json(&serde_json::json!({ "method": method, "params": params }))
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        let status = response.status();
+        return Err(match response.json::<Refused>().await {
+            Ok(refused) => refused.error,
+            Err(_) => format!("the extension didn't answer ({status})"),
+        });
+    }
+    #[derive(Deserialize)]
+    struct Answer {
+        #[serde(default)]
+        value: serde_json::Value,
+    }
+    response
+        .json::<Answer>()
+        .await
+        .map(|answer| answer.value)
+        .map_err(|e| format!("Irori sent something this page can't read: {e}"))
 }
 
 /// One action an extension declares (`docs/specs/protocols.md` §5).
@@ -381,10 +456,7 @@ pub struct DeviceEdit {
     /// `None` leaves the area alone; `Some(None)` un-says it, letting the device suggest again.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub area: Option<Option<WhereTo>>,
-    /// `Some(true)` keeps the device out of the home; `Some(false)` lets it back in.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ignored: Option<bool>,
-    /// `Some(true)` adds a device that's waiting to be added.
+    /// `Some(true)` adds a device an extension has found ("+ Add device").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub added: Option<bool>,
 }
@@ -405,6 +477,16 @@ pub async fn edit_device(device_id: &DeviceId, edit: &DeviceEdit) -> Result<(), 
     let response = Request::patch(&format!("/api/dev/devices/{device_id}"))
         .json(edit)
         .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+/// Removes a device from the home: everything Irori keeps of it goes, and it's listed as found
+/// again, to be added back from "+ Add device" if wanted.
+pub async fn remove_device(device_id: &DeviceId) -> Result<(), String> {
+    let response = Request::delete(&format!("/api/dev/devices/{device_id}"))
         .send()
         .await
         .map_err(unreachable)?;
@@ -616,15 +698,24 @@ pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {
 /// The tail of an extension's own output, oldest line first — what the log window shows, and
 /// where a failure's real reason is written out in full rather than summarised onto the card.
 pub async fn fetch_extension_log(id: &str) -> Result<Vec<String>, String> {
+    fetch_log(&format!("/api/dev/extensions/{id}/log")).await
+}
+
+/// Irori's own log, oldest line first: what this process has said since it started, which
+/// includes the lines an extension's output arrived as. The Settings page's log window shows it.
+pub async fn fetch_system_log() -> Result<Vec<String>, String> {
+    fetch_log("/api/dev/system/log").await
+}
+
+/// Either log. The same `{"lines": [...]}` shape by design, so one window reads both, and always
+/// a 200, so a log with nothing in it is an empty list rather than an error.
+async fn fetch_log(path: &str) -> Result<Vec<String>, String> {
     #[derive(Deserialize)]
     struct Log {
         #[serde(default)]
         lines: Vec<String>,
     }
-    let response = Request::get(&format!("/api/dev/extensions/{id}/log"))
-        .send()
-        .await
-        .map_err(unreachable)?;
+    let response = Request::get(path).send().await.map_err(unreachable)?;
     if !response.ok() {
         return match checked(response).await {
             Err(reason) => Err(reason),

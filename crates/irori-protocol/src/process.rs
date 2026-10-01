@@ -12,8 +12,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use irori_types::{
-    Availability, DeviceDescription, EntityDescription, RunCommand, ServiceCall, StateReport,
-    UniqueId, Waiting,
+    Availability, ContextId, DeviceDescription, EntityDescription, EntityId, EntityState,
+    LightTurnOn, RunCommand, ServiceCall, StateReport, Timestamp, UniqueId, Waiting,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -84,6 +84,58 @@ pub enum FromExt {
         #[serde(default)]
         error: Option<String>,
     },
+    // --- Engine operations (`docs/specs/automations.md` §B2). Each needs an API scope and is
+    // answered with `ToExt::Answer`.
+    /// Every entity, and whether time and sun triggers can be armed. `registry:read`.
+    GetRegistry {
+        id: u64,
+    },
+    /// Every entity's current state. `states:read`.
+    GetStates {
+        id: u64,
+    },
+    /// The recent changes of these entities since `since`, oldest first. `history:read`.
+    GetHistory {
+        id: u64,
+        entities: Vec<EntityId>,
+        since: Timestamp,
+    },
+    /// Start receiving `state_changed` and/or `registry_changed`. `events:read`.
+    Subscribe {
+        id: u64,
+        #[serde(default)]
+        states: bool,
+        #[serde(default)]
+        registry: bool,
+    },
+    /// Ask an entity to do something, as a run of this engine. `services:call`.
+    CallService {
+        id: u64,
+        entity_id: EntityId,
+        command: WireCommand,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<LightTurnOn>,
+        run_id: ContextId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_id: Option<ContextId>,
+    },
+    /// The answer to an `app_request` from the extension's page.
+    AppAnswer {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+}
+
+/// What a `call_service` asks for: the same three commands a person has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WireCommand {
+    TurnOn,
+    TurnOff,
+    Toggle,
 }
 
 /// A message from the host to the extension process.
@@ -114,6 +166,32 @@ pub enum ToExt {
         action_id: String,
     },
     Stop,
+    /// The answer to an engine operation. `error` starts with a code for `call_service`
+    /// (`unavailable: …`).
+    Answer {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// A state changed somewhere in the home (after `subscribe { states: true }`).
+    StateChanged {
+        entity_id: EntityId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        old_state: Option<Box<EntityState>>,
+        new_state: Box<EntityState>,
+    },
+    /// An entity or device was added, changed or removed (after `subscribe { registry: true }`).
+    /// Ask again with `get_registry`.
+    RegistryChanged {},
+    /// The extension's page asked it something.
+    AppRequest {
+        id: u64,
+        method: String,
+        #[serde(default)]
+        params: serde_json::Value,
+    },
 }
 
 /// A failed service call on the wire (`docs/specs/protocols.md` §7.3).
@@ -382,7 +460,14 @@ fn handle_host_line(
             }
         }
         ToExt::Stop => return ReadControl::Stop,
-        ToExt::Hello { .. } => {}
+        // Engine traffic is read by `engine::run`, not by a protocol extension's `serve`.
+        // A line that arrives here is consumed so the reader stays up; the same messages
+        // were ignored by the reader this replaced.
+        ToExt::Hello { .. }
+        | ToExt::Answer { .. }
+        | ToExt::StateChanged { .. }
+        | ToExt::RegistryChanged {}
+        | ToExt::AppRequest { .. } => {}
     }
     ReadControl::Continue
 }
@@ -498,7 +583,7 @@ impl Pending {
     }
 }
 
-async fn read_json<T: for<'de> Deserialize<'de>>(
+pub(crate) async fn read_json<T: for<'de> Deserialize<'de>>(
     reader: &mut BufReader<impl tokio::io::AsyncRead + Unpin>,
 ) -> Result<T, String> {
     let mut line = String::new();
@@ -510,6 +595,19 @@ async fn read_json<T: for<'de> Deserialize<'de>>(
         return Err("the host closed the connection".into());
     }
     serde_json::from_str(line.trim()).map_err(|e| format!("invalid message: {e}"))
+}
+
+pub(crate) async fn write_json<T: Serialize>(
+    stdout: &tokio::sync::Mutex<impl AsyncWriteExt + Unpin>,
+    value: &T,
+) -> Result<(), String> {
+    let mut line = serde_json::to_string(value).map_err(|e| e.to_string())?;
+    line.push('\n');
+    let mut out = stdout.lock().await;
+    out.write_all(line.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+    out.flush().await.map_err(|e| e.to_string())
 }
 
 /// Creates `dir` if it isn't there and, on Unix, restricts it to its owner.
@@ -557,6 +655,7 @@ pub fn spawn(
     package_dir: &Path,
     state_dir: &Path,
     run: &RunCommand,
+    env: &[(String, std::path::PathBuf)],
 ) -> Result<(ExtProcess, ChildStderr), String> {
     let command = package_dir.join(run.command.as_str());
     if !command.is_file() {
@@ -578,6 +677,7 @@ pub fn spawn(
     let mut child = Command::new(&command)
         .current_dir(package_dir)
         .env("IRORI_EXTENSION_DATA", &state_dir)
+        .envs(env.iter().map(|(key, value)| (key, value)))
         .args(&run.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -742,7 +842,7 @@ mod tests {
             args: Vec::new(),
         };
         let state = tmp.path().join("state");
-        let (process, _stderr) = spawn(Path::new("pkg"), &state, &run).expect(
+        let (process, _stderr) = spawn(Path::new("pkg"), &state, &run, &[]).expect(
             "spawn should resolve `pkg/bin/prog` against this process's cwd, \
              not the child's post-chdir one",
         );
@@ -773,7 +873,7 @@ mod tests {
             args: Vec::new(),
         };
         let state = tmp.path().join("state");
-        let (_process, stderr) = spawn(tmp.path(), &state, &run).expect("starts");
+        let (_process, stderr) = spawn(tmp.path(), &state, &run, &[]).expect("starts");
 
         let mut lines = tokio::io::BufReader::new(stderr).lines();
         assert_eq!(
@@ -812,7 +912,7 @@ mod tests {
         std::fs::create_dir(&widened).expect("mkdir");
         std::fs::set_permissions(&widened, std::fs::Permissions::from_mode(0o755))
             .expect("widen it");
-        let _existing = spawn(tmp.path(), &widened, &run).expect("starts");
+        let _existing = spawn(tmp.path(), &widened, &run, &[]).expect("starts");
         assert_eq!(
             mode_of(&widened),
             0o700,
@@ -820,7 +920,7 @@ mod tests {
         );
 
         let fresh = tmp.path().join("fresh");
-        let _created = spawn(tmp.path(), &fresh, &run).expect("starts");
+        let _created = spawn(tmp.path(), &fresh, &run, &[]).expect("starts");
         assert_eq!(
             mode_of(&fresh),
             0o700,

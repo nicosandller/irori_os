@@ -1371,6 +1371,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "irori-engine-automations"
+version = "0.0.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "irori-flow-types",
+ "irori-flows",
+ "irori-protocol",
+ "irori-rules",
+ "irori-types",
+ "jiff",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "irori-flow-types"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "irori-rules",
+ "irori-types",
+ "jsonschema",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+]
+
+[[package]]
+name = "irori-flows"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "irori-flow-types",
+ "irori-rules",
+ "irori-types",
+ "jiff",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "irori-ha-discovery"
 version = "0.0.0"
 dependencies = [
@@ -3755,6 +3801,7 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "irori-flow-types",
  "irori-protocol-mqtt",
  "irori-protocol-zigbee",
  "irori-rules",

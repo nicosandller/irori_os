@@ -1,0 +1,23 @@
+[package]
+name = "irori-flows"
+description = "The flow engine: validates flows against the home and runs them. Sans-IO, deterministic."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+irori-types.workspace = true
+irori-rules = { workspace = true, features = ["engine"] }
+irori-flow-types.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+jiff.workspace = true
+
+[lints]
+workspace = true

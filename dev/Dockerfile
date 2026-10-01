@@ -21,11 +21,11 @@ ENV CARGO_TARGET_DIR=/target
 FROM toolchain AS build
 # Extra cargo flags, e.g. "--no-default-features" for the barebones build.
 ARG FEATURES=""
-COPY . .
-# The default build's `ui` feature only embeds whatever `cargo xtask ui` has already put in
-# `crates/irori/ui/` (`crates/irori/src/server.rs`'s own doc comment on this) — a plain `cargo
-# build` does not build it, so without this the server always falls back to the placeholder
-# page. Skipped for the barebones build, which doesn't compile the `ui` feature in at all.
+# The wasm build tools, installed *before* `COPY . .` below on purpose: nothing here reads the
+# source tree, so keeping them above the copy makes this ~570 MB layer a function of the pinned
+# toolchain alone. Run after the copy, every source change invalidated it and left a fresh copy
+# of the layer behind in the build cache — a new PR under `dev/pi review` is a source change, and
+# six of those came to fill a 20 GB Colima disk.
 #
 # `trunk` is downloaded prebuilt rather than `cargo install`ed: its own release build (LTO,
 # one codegen unit) needs more memory than this environment reliably has to spare, and gets
@@ -44,16 +44,36 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       && curl --fail --location --silent --show-error \
          "https://github.com/trunk-rs/trunk/releases/latest/download/trunk-$(uname -m)-unknown-linux-musl.tar.gz" \
       | tar xz -C /usr/local/bin trunk \
-      && cargo install wasm-bindgen-cli --version 0.2.128 --locked --profile dev \
-      && cargo xtask ui ; \
+      && cargo install wasm-bindgen-cli --version 0.2.128 --locked --profile dev ; \
     fi
+COPY . .
+# The default build's `ui` feature only embeds whatever `cargo xtask ui` has already put in
+# `crates/irori/ui/` (`crates/irori/src/server.rs`'s own doc comment on this) — a plain `cargo
+# build` does not build it, so without this the server always falls back to the placeholder
+# page. Skipped for the barebones build, which doesn't compile the `ui` feature in at all.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/target \
+    if [ "$FEATURES" != "--no-default-features" ]; then \
+      cargo xtask ui ; \
+    fi
+# The official packages, laid out as `IRORI_OFFICIAL_PACKAGES` expects. Automations also carries
+# its page, which `cargo xtask ui` built above; the barebones build has none, so the extension
+# still installs and the shell says its page wasn't built.
+#
+# `irori` is built on its own first: every release binary is linked with fat LTO, and cargo
+# links the binaries of one invocation side by side. Six of them at once can take more memory
+# than a default Colima VM (4 GB) has, and the linker is killed with nothing but "exit code 101"
+# at the end of a long log. The extensions then link two at a time (`-j 2`), whatever the VM's
+# CPU count.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/target \
     cargo build --locked --release -p irori $FEATURES \
+    && cargo build --locked --release -j 2 \
       -p irori-protocol-demo -p irori-protocol-esphome -p irori-protocol-mqtt \
-      -p irori-protocol-zigbee \
+      -p irori-protocol-zigbee -p irori-engine-automations \
     && cp /target/release/irori /irori \
     && mkdir -p /official/demo/bin /official/esphome/bin /official/mqtt/bin /official/zigbee/bin \
+      /official/automations/bin \
     && cp extensions/demo/irori-extension.toml extensions/demo/icon.svg /official/demo/ \
     && cp /target/release/irori-ext-demo /official/demo/bin/ \
     && cp extensions/protocols/esphome/irori-extension.toml extensions/protocols/esphome/icon.svg /official/esphome/ \
@@ -61,7 +81,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp extensions/protocols/mqtt/irori-extension.toml extensions/protocols/mqtt/config.schema.json /official/mqtt/ \
     && cp /target/release/irori-ext-mqtt /official/mqtt/bin/ \
     && cp extensions/protocols/zigbee/irori-extension.toml extensions/protocols/zigbee/config.schema.json /official/zigbee/ \
-    && cp /target/release/irori-ext-zigbee /official/zigbee/bin/
+    && cp /target/release/irori-ext-zigbee /official/zigbee/bin/ \
+    && cp extensions/automations/irori-extension.toml extensions/automations/icon.svg /official/automations/ \
+    && cp /target/release/irori-ext-automations /official/automations/bin/ \
+    && if [ -f extensions/automations/app/dist/index.html ]; then \
+         cp -r extensions/automations/app/dist /official/automations/app ; \
+       fi
 # Lab emulators are not part of the Irori workspace. The musl target already
 # links the finished binary statically, same as irori above. Forcing that
 # through RUSTFLAGS also forces it onto proc-macro crates (prost-derive),
@@ -86,8 +111,9 @@ COPY dev/lab/entrypoint.sh /usr/local/bin/irori-lab-entrypoint
 RUN chmod 755 /usr/local/bin/irori-lab-entrypoint /usr/share/irori/lab/matter/run.sh
 # Fails the build if the binary isn't really static (it was built against musl, this is glibc).
 RUN irori version
-# Root only so the lab entrypoint can create /dev/zigbee0, then it drops to irori.
-# With IRORI_LAB unset the entrypoint does that drop and nothing else.
+# Root only so the lab entrypoint can create /dev/zigbee0 and refresh installed
+# official packages, then it drops to irori. With IRORI_LAB unset that drop and
+# the refresh are all it does.
 # Listening on all interfaces is needed inside a container. It stays private: compose publishes
 # the port on the host's 127.0.0.1 only. The flag goes away when auth lands (ROADMAP D12, M1.5).
 # Both absolute: the container has no WORKDIR, so the relative defaults would land in `/`, which

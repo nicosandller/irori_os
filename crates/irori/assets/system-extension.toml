@@ -1,0 +1,11 @@
+[extension]
+id = "irori"
+name = "Irori"
+version = "0.3.1"
+irori = ">=0.0.0"
+description = "Irori itself as a device: its version, how long it's been up, and how busy the machine is, for automations to use."
+
+# Built in and always running: it reads this machine, nothing else, and isn't installable.
+[[contributes.protocol]]
+iot_class = "local_polling"
+entity_kinds = ["sensor"]

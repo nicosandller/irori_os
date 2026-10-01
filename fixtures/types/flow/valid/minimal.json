@@ -1,0 +1,9 @@
+{
+  "id": "on_at_startup",
+  "name": "Lamp on at startup",
+  "nodes": {
+    "start": { "type": "trigger", "trigger": { "type": "startup" } },
+    "lamp": { "type": "call", "service": "switch.turn_on", "entity": "switch.demo_plug" }
+  },
+  "wires": [["start", "lamp"]]
+}

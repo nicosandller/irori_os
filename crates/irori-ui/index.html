@@ -13,20 +13,95 @@
       color-scheme: light dark;
       --ink: #1c1714; --paper: #faf7f4; --ember: #c4552b; --muted: #6b625b;
       --fg: var(--ink); --bg: var(--paper); --line: #e6dfd8; --card: #fffdfb; --sunk: #efe9e3;
+      /* A warning: amber, quieter than the ember a failure gets. */
+      --warn: #a8560a;
+      /* A failure, as text: the ember, deepened until it reads on the page. */
+      --error: #a8431f;
       --sans: "IBM Plex Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
       --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+      /* Motion: quick, and small. A control panel is used every day, so nothing should make
+         anyone wait for it; motion here says "that worked" or "still working", not "look". */
+      --dur-fast: 120ms; --dur-base: 180ms;
+      /* For things that move the layout around them, or travel across the page: a drawer
+         rolling down, the page changing. Still short — the eye has further to go, not longer
+         to wait. */
+      --dur-layout: 240ms;
+      /* For the moments that are the point: a page arriving, a tile becoming a page, a floor
+         changing, a number counting to where it's going. Long enough to be seen, never long
+         enough to wait for. */
+      --dur-expressive: 340ms;
+      --ease-out: cubic-bezier(.2, .7, .3, 1);
+      /* A mild overshoot, for the few things that are pushed around by a finger: the toggle's
+         knob and a slider's thumb. */
+      --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
+      /* Arrives fast and settles long: for things crossing the page. */
+      --ease-emphasized: cubic-bezier(.2, 0, 0, 1);
+      /* A proper bounce, for things that are let go of: a thumb released, a marker put down. */
+      --ease-bounce: cubic-bezier(.34, 1.9, .5, 1);
     }
     @media (prefers-color-scheme: dark) {
       :root { --fg: var(--paper); --bg: var(--ink); --muted: #a89e96; --line: #3a322d;
-              --card: #241e1a; --sunk: #17120f; }
+              --card: #241e1a; --sunk: #17120f; --warn: #e8a05c;
+              --error: #e07a4d; }
     }
     * { box-sizing: border-box; }
+    /* Jumps within a page glide there — with motion on. */
+    html { scroll-behavior: smooth; }
+    html[data-motion="off"] { scroll-behavior: auto; }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+    /* Motion off: when the system asks for less motion, or Settings says so. Nothing moves, and
+       every change lands at once — the page says the same things, just without the travel. */
+    @media (prefers-reduced-motion: reduce) {
+      :root { --dur-fast: 0ms; --dur-base: 0ms; --dur-layout: 0ms; --dur-expressive: 0ms; }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) {
+          animation: none !important; }
+    }
+    html[data-motion="off"]::view-transition-group(*),
+    html[data-motion="off"]::view-transition-old(*),
+    html[data-motion="off"]::view-transition-new(*) { animation: none !important; }
+    .shell[data-motion="off"] { --dur-fast: 0ms; --dur-base: 0ms; --dur-layout: 0ms;
+                                --dur-expressive: 0ms; }
+    .shell[data-motion="off"] *, .shell[data-motion="off"] *::before,
+    .shell[data-motion="off"] *::after { animation: none !important; transition: none !important; }
     body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 var(--sans); }
+
+    /* Changing page (src/transition.rs says which change it is, as `data-nav` on <html>). The
+       shell stays put — its sidebar highlight glides on its own — and the page moves: up from
+       below for a page further down the sidebar, down from above for one further up, sideways
+       between the device list and a device (whose name travels between its row and the
+       heading), and growing out of a Start tile into the page it opens. */
+    main { view-transition-name: page; }
+    ::view-transition-group(root), ::view-transition-old(root),
+    ::view-transition-new(root) { animation: none; }
+    html:not([data-nav])::view-transition-group(*),
+    html:not([data-nav])::view-transition-old(*),
+    html:not([data-nav])::view-transition-new(*) { animation: none; }
+    html[data-nav]::view-transition-group(*) {
+        animation-duration: var(--dur-expressive); animation-timing-function: var(--ease-emphasized); }
+    html[data-nav]::view-transition-group(page) { animation: none; }
+    html[data-nav]::view-transition-old(page) {
+        animation: page-away var(--dur-fast) var(--ease-out) both; }
+    html[data-nav]::view-transition-new(page) {
+        animation: page-arrive var(--dur-expressive) var(--ease-emphasized) both; }
+    html[data-nav="down"] { --away: 0 -12px; --from: 0 36px; }
+    html[data-nav="up"] { --away: 0 12px; --from: 0 -36px; }
+    html[data-nav="into-device"] { --away: -16px 0; --from: 32px 0; }
+    html[data-nav="to-list"] { --away: 16px 0; --from: -32px 0; }
+    html[data-nav="fade"] { --away: 0 0; --from: 0 0; }
+    html[data-nav="tile"] { --away: 0 0; --from: 0 24px; }
+    @keyframes page-away { to { opacity: 0; translate: var(--away); } }
+    @keyframes page-arrive { from { opacity: 0; translate: var(--from); } }
+    /* A Start tile, clicked, grows into the heading of the page it opens: the tile is `hero`
+       for the change (transition.rs), and so is the new page's heading row — the browser grows
+       one into the other while the rest of the page rises in behind. */
+    html[data-nav="tile"] .page-head { view-transition-name: hero; }
 
     /* The shell: a sidebar that folds down to icons, and the page beside it. The same on every
        page, so nothing moves when you switch. */
     .shell { display: grid; grid-template-columns: 13rem 1fr; min-height: 100vh;
-             transition: grid-template-columns .15s; }
+             transition: grid-template-columns var(--dur-base) var(--ease-out); }
     .shell.folded { grid-template-columns: 3.5rem 1fr; }
     main { width: 100%; max-width: 56rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; min-width: 0; }
 
@@ -41,8 +116,10 @@
     .sidebar nav { display: flex; flex-direction: column; gap: .15rem; }
     .sidebar nav a { display: flex; align-items: center; gap: .7rem; padding: .5rem .6rem;
                      border-radius: .4rem; color: var(--muted); text-decoration: none;
-                     font-size: .95rem; white-space: nowrap; border-left: 2px solid transparent; }
-    .sidebar nav a svg { width: 1.25rem; height: 1.25rem; flex: none; }
+                     font-size: .95rem; white-space: nowrap; border-left: 2px solid transparent;
+                     transition: color var(--dur-fast), background-color var(--dur-fast),
+                                 border-color var(--dur-base) var(--ease-out); }
+    .sidebar nav a svg, .sidebar nav a img { width: 1.25rem; height: 1.25rem; flex: none; }
     .sidebar nav a:hover { color: var(--fg); background: var(--sunk); }
     .sidebar nav a[aria-current="page"] { color: var(--fg); background: var(--sunk);
                                           border-left-color: var(--ember); }
@@ -50,17 +127,44 @@
             color: var(--muted); background: transparent; border: 1px solid transparent;
             border-radius: .4rem; cursor: pointer; flex: none; }
     .fold:hover { color: var(--fg); border-color: var(--line); }
-    .fold svg { width: 1rem; height: 1rem; transition: transform .15s; }
+    .fold svg { width: 1rem; height: 1rem; transition: transform var(--dur-base) var(--ease-out); }
     .sidebar-bottom { margin-top: auto; display: flex; flex-direction: column; gap: .25rem; }
     .sidebar .settings-link { display: flex; align-items: center; gap: .7rem; padding: .5rem .6rem;
                               border-radius: .4rem; color: var(--muted); text-decoration: none;
                               font-size: .95rem; white-space: nowrap;
-                              border-left: 2px solid transparent; }
+                              border-left: 2px solid transparent;
+                              transition: color var(--dur-fast), background-color var(--dur-fast),
+                                          border-color var(--dur-base) var(--ease-out); }
     .sidebar .settings-link svg { width: 1.25rem; height: 1.25rem; flex: none; }
     .sidebar .settings-link:hover { color: var(--fg); background: var(--sunk); }
     .sidebar .settings-link[aria-current="page"] { color: var(--fg); background: var(--sunk);
                                                    border-left-color: var(--ember); }
     .sidebar .live { padding: .5rem .6rem; }
+
+    /* A highlight that glides to whatever is chosen in a column, rather than the choice jumping
+       (src/glide.rs measures where; each list says how wide and what colour). It lands without
+       travelling the first time, and fades out where nothing is chosen. */
+    .glide { position: absolute; top: 0; z-index: 0; pointer-events: none; opacity: 0;
+             transition: transform var(--dur-base) var(--ease-out),
+                         height var(--dur-base) var(--ease-out), opacity var(--dur-fast); }
+    .glide[data-shown] { opacity: 1; }
+    .glide:not([data-placed]) { transition: opacity var(--dur-fast); }
+
+    /* The sidebar's: the page being shown. The links sit over it and stop drawing their own
+       — except on a phone, where they're a row and draw it themselves again. */
+    .sidebar > .glide { left: .6rem; right: .6rem; border-radius: .4rem;
+                        background: var(--sunk); box-shadow: inset 2px 0 0 var(--ember); }
+    .sidebar nav a, .sidebar .settings-link { position: relative; z-index: 1; }
+    @media (min-width: 721px) {
+      .sidebar nav a[aria-current="page"], .sidebar .settings-link[aria-current="page"] {
+          background: transparent; border-left-color: transparent; }
+    }
+    /* Under the pointer, an icon leans toward its page; the cog turns a notch. */
+    .sidebar nav a svg, .sidebar .settings-link svg {
+        transition: translate var(--dur-base) var(--ease-spring),
+                    rotate var(--dur-base) var(--ease-spring); }
+    .sidebar nav a:hover svg { translate: 2px 0; }
+    .sidebar .settings-link:hover svg { rotate: 45deg; }
 
     /* Folded: icons only. Labels stay in the page for screen readers, and in each link's title. */
     .folded .sidebar .label { position: absolute; width: 1px; height: 1px; overflow: hidden;
@@ -80,6 +184,7 @@
       .sidebar-top { margin: 0; }
       .sidebar nav { flex-direction: row; }
       .sidebar nav a { padding: .4rem .5rem; border-left: none; }
+      .sidebar > .glide { display: none; }
       .fold { display: none; }
       .sidebar-bottom { flex-direction: row; align-items: center; margin: 0 0 0 auto; gap: .25rem; }
       .sidebar .live { padding: 0; }
@@ -154,7 +259,14 @@
     .tiles .tile { flex: 1 1 8rem; padding: .9rem 1rem; border: 1px solid var(--line);
                    border-radius: .5rem; background: var(--card); text-decoration: none;
                    color: inherit; display: block; }
-    .tiles a.tile:hover { border-color: var(--ember); }
+    .tiles a.tile:hover { border-color: var(--ember); transform: translateY(-2px);
+                          box-shadow: 0 .4rem 1rem rgba(28, 23, 20, .08); }
+    .tiles a.tile:active { transform: translateY(0); box-shadow: none; }
+    /* On arrival, the counts come in one after another. Only once: the tiles are fixed markup
+       and only the numbers inside them are live, so a new reading doesn't play this again. */
+    .tiles .tile { animation: rise var(--dur-base) var(--ease-out) backwards;
+                   animation-delay: calc(var(--i, 0) * 60ms); }
+    @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
     .tiles .count { display: block; font-size: 1.75rem; font-weight: 500;
                     font-variant-numeric: tabular-nums; }
     .tiles .label { display: block; color: var(--muted); font-size: .8rem; }
@@ -183,6 +295,16 @@
                     border-radius: .4rem; cursor: pointer; }
     button.danger:hover { border-color: var(--ember); }
     button:disabled { opacity: .55; cursor: default; }
+
+    /* Every button eases into its hover colours rather than snapping, and gives a little under
+       a press. `:where` keeps these at no specificity, so each button's own rules still win.
+       Left out: the toggle, which has a press of its own, and the Floorplan's device markers,
+       which are placed by their transform. */
+    :where(button:not(.toggle, .marker), .add, a.tile) {
+        transition: color var(--dur-fast), background-color var(--dur-fast),
+                    border-color var(--dur-fast), box-shadow var(--dur-base) var(--ease-out),
+                    transform var(--dur-fast) var(--ease-out), opacity var(--dur-fast); }
+    :where(button:not(.toggle, .marker, :disabled)):active { transform: scale(.97); }
 
     /* Extensions page: search, quick filters, and a grid of cards. */
     .ext-controls { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center;
@@ -230,7 +352,11 @@
         .ext-btn .bar { animation: none; background: rgba(196, 85, 43, .18); }
     }
     .dot { width: .5rem; height: .5rem; border-radius: 2px; background: var(--muted); }
-    .dot.ok { background: var(--ember); box-shadow: 0 0 .4rem var(--ember); }
+    .dot.ok { background: var(--ember); box-shadow: 0 0 .4rem var(--ember);
+              animation: breathe 2.4s ease-in-out infinite; }
+    /* Live: the dot breathes while the core keeps answering, and goes still when it doesn't —
+       stillness here is itself the news. */
+    @keyframes breathe { 50% { box-shadow: 0 0 .15rem var(--ember); } }
 
     /* The gear icon (settings) and the form it opens, generated from an extension's own schema.
        Sits beside the install/uninstall button rather than in the top-right corner, which the
@@ -264,7 +390,11 @@
     .filter:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
 
     .banner { margin: 0 0 1.25rem; padding: .6rem .8rem; border: 1px solid var(--ember);
-              border-radius: .4rem; color: var(--ember); font-size: .875rem; }
+              border-radius: .4rem; color: var(--ember); font-size: .875rem;
+              animation: drop-in var(--dur-base) var(--ease-out) backwards; }
+    /* Once, when something goes wrong: a banner stays put while the trouble does, and a new
+       reason only changes its words. */
+    @keyframes drop-in { from { opacity: 0; transform: translateY(-4px); } }
 
     .device { margin-bottom: 1.5rem; border: 1px solid var(--line); border-radius: .5rem;
               background: var(--card); overflow: hidden; }
@@ -288,6 +418,17 @@
     .reading { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
     .reading .unit { color: var(--muted); }
     .reading.on { color: var(--ember); }
+    /* A number that just changed (count.rs) counts to its new value, lit in ember as it goes and
+       rising into place if it went up, dropping into place if it went down. */
+    .n { display: inline-block; }
+    [data-moved="up-a"] { animation: rose-a 700ms var(--ease-out); }
+    [data-moved="up-b"] { animation: rose-b 700ms var(--ease-out); }
+    [data-moved="down-a"] { animation: fell-a 700ms var(--ease-out); }
+    [data-moved="down-b"] { animation: fell-b 700ms var(--ease-out); }
+    @keyframes rose-a { from { color: var(--ember); translate: 0 .3em; } }
+    @keyframes rose-b { from { color: var(--ember); translate: 0 .3em; } }
+    @keyframes fell-a { from { color: var(--ember); translate: 0 -.3em; } }
+    @keyframes fell-b { from { color: var(--ember); translate: 0 -.3em; } }
     .badge { color: var(--muted); font: .65rem var(--mono); letter-spacing: .08em;
              text-transform: uppercase; }
     /* Why the last command was refused, on its own line under the row it belongs to. */
@@ -296,14 +437,34 @@
     /* The toggle: a switch that shows what the entity is doing, not what was clicked. */
     .toggle { flex: none; width: 3.1rem; height: 1.75rem; padding: .18rem; cursor: pointer;
               background: var(--sunk); border: 1px solid var(--line); border-radius: 1rem;
-              display: flex; justify-content: flex-start; transition: background .15s; }
-    .toggle .knob { width: 1.3rem; height: 1.3rem; border-radius: 50%; background: var(--card);
-                    border: 1px solid var(--line); transition: transform .15s; }
+              display: flex; justify-content: flex-start;
+              transition: background-color var(--dur-base) var(--ease-out),
+                          border-color var(--dur-base) var(--ease-out), opacity var(--dur-fast); }
+    /* The knob springs across, a touch past where it lands and back. */
+    .toggle .knob { width: 1.3rem; height: 1.3rem; border-radius: .65rem; background: var(--card);
+                    border: 1px solid var(--line);
+                    transition: transform var(--dur-base) var(--ease-spring),
+                                width var(--dur-fast) var(--ease-out),
+                                border-color var(--dur-base); }
     .toggle[aria-pressed="true"] { background: var(--ember); border-color: var(--ember); }
     .toggle[aria-pressed="true"] .knob { transform: translateX(1.35rem); border-color: transparent; }
     .toggle:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
-    .toggle:disabled { cursor: progress; opacity: .5; }
+    .toggle:disabled { cursor: default; opacity: .5; }
     .toggle.unknown .knob { transform: translateX(.67rem); }
+    /* Held down, the knob stretches toward where it's about to go, keeping the edge it leaves
+       from where it was: the press is felt before the device has answered. */
+    .toggle:active:not(:disabled) .knob { width: 1.6rem; }
+    .toggle[aria-pressed="true"]:active:not(:disabled) .knob { transform: translateX(1.05rem); }
+    .toggle.unknown:active:not(:disabled) .knob { transform: translateX(.52rem); }
+    /* Asked, and waiting for the device to say it's done: the knob breathes, so a slow device
+       reads as busy rather than broken. Offline stays plain and dim — nothing is coming. */
+    /* Swiped (gesture.rs): the knob is under the finger, so nothing eases it; let go, and it
+       springs home from there. A horizontal swipe on a phone is the toggle's, not the page's. */
+    .toggle { touch-action: pan-y; }
+    .toggle[data-dragging] .knob { transition: width var(--dur-fast) var(--ease-out); }
+    .toggle.pending { cursor: progress; opacity: .8; }
+    .toggle.pending .knob { animation: knob-wait .9s ease-in-out infinite alternate; }
+    @keyframes knob-wait { to { scale: .78; } }
 
     /* A lit light's level and color, on its own line under the row: one slider per thing the
        light can set. The value a slider shows is the device's, not the last thing asked for. */
@@ -312,7 +473,52 @@
     .light-controls .dim { display: inline-flex; align-items: center; gap: .45rem;
                            font: .72rem var(--mono); color: var(--muted); }
     .light-controls .lv { min-width: 2.6rem; text-align: right; font-variant-numeric: tabular-nums; }
-    .light-controls input[type="range"] { width: 7rem; accent-color: var(--ember); }
+    /* Every slider is drawn here rather than left to the browser, so the track can say what the
+       slider means: the value filled in ember up to the thumb, or color temperature as the
+       colors themselves. The thumb swells under the pointer and more while held. `--fill` is set
+       from the page as the thumb moves. */
+    .light-controls input[type="range"] { width: 7rem; }
+    input[type="range"] {
+        height: 1.1rem; margin: 0; padding: 0; background: transparent;
+        -webkit-appearance: none; appearance: none; cursor: pointer; }
+    input[type="range"]::-webkit-slider-runnable-track {
+        height: 4px; border-radius: 2px;
+        background: linear-gradient(to right, var(--ember) var(--fill, 0%),
+                                    var(--line) var(--fill, 0%)); }
+    input[type="range"]::-moz-range-track {
+        height: 4px; border-radius: 2px; background: var(--line); }
+    input[type="range"]::-moz-range-progress {
+        height: 4px; border-radius: 2px; background: var(--ember); }
+    input[type="range"].kelvin::-webkit-slider-runnable-track {
+        background: linear-gradient(to right, #f5a54a, #fbe3c4, #e9f1ff); }
+    input[type="range"].kelvin::-moz-range-track {
+        background: linear-gradient(to right, #f5a54a, #fbe3c4, #e9f1ff); }
+    input[type="range"].kelvin::-moz-range-progress { background: transparent; }
+    input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none; appearance: none; width: 14px; height: 14px; margin-top: -5px;
+        border-radius: 50%; background: var(--card); border: 2px solid var(--ember);
+        box-shadow: 0 1px 2px rgba(28, 23, 20, .2);
+        transition: transform var(--dur-base) var(--ease-bounce),
+                    box-shadow var(--dur-fast) var(--ease-out); }
+    input[type="range"]::-moz-range-thumb {
+        box-sizing: border-box; width: 14px; height: 14px; border-radius: 50%;
+        background: var(--card); border: 2px solid var(--ember);
+        box-shadow: 0 1px 2px rgba(28, 23, 20, .2);
+        transition: transform var(--dur-base) var(--ease-bounce),
+                    box-shadow var(--dur-fast) var(--ease-out); }
+    input[type="range"]:hover:not(:disabled)::-webkit-slider-thumb {
+        transform: scale(1.15); }
+    input[type="range"]:hover:not(:disabled)::-moz-range-thumb {
+        transform: scale(1.15); }
+    input[type="range"]:active:not(:disabled)::-webkit-slider-thumb {
+        transform: scale(1.4); box-shadow: 0 0 0 5px rgba(196, 85, 43, .18); }
+    input[type="range"]:active:not(:disabled)::-moz-range-thumb {
+        transform: scale(1.4); box-shadow: 0 0 0 5px rgba(196, 85, 43, .18); }
+    input[type="range"]:focus { outline: none; }
+    input[type="range"]:focus-visible::-webkit-slider-thumb {
+        box-shadow: 0 0 0 3px var(--card), 0 0 0 5px var(--ember); }
+    input[type="range"]:focus-visible::-moz-range-thumb {
+        box-shadow: 0 0 0 3px var(--card), 0 0 0 5px var(--ember); }
     .light-controls input[type="color"] { width: 2.1rem; height: 1.55rem; padding: 0 .1rem;
                                           border: 1px solid var(--line); border-radius: .4rem;
                                           background: var(--card); cursor: pointer; }
@@ -357,6 +563,12 @@
     .inline-form button:hover, .room-actions button:not(.toggle):hover {
         border-color: var(--ember); color: var(--ember); }
     .room-actions .danger:hover { border-color: #b4342c; color: #b4342c; }
+
+    /* Picking several found devices at once: a checkbox lining up with a row, and the
+       select-all box that feeds the "Add/Ignore selected" buttons. */
+    .pick { display: flex; align-items: center; align-self: center; }
+    .pick input, .pick-all input { width: 1rem; height: 1rem; margin: 0;
+                                   accent-color: var(--ember); cursor: pointer; }
     .page-head > button { padding: .35rem .7rem; font: inherit; font-size: .85rem;
                           color: var(--muted); background: transparent;
                           border: 1px solid var(--line); border-radius: .4rem; cursor: pointer; }
@@ -385,15 +597,106 @@
                   color: var(--ember); background: none; border: none; cursor: pointer;
                   text-decoration: underline; }
 
-    /* The expandable "last 24 hours" table under an entity: its own scroll, so a day of
-       changes from a chatty sensor rolls through it instead of stretching the page. */
-    .history-toggle { margin-left: auto; display: inline-flex; align-items: center; gap: .3rem;
-                      padding: .25rem .5rem; font: inherit; font-size: .8rem; color: var(--muted);
-                      background: transparent; border: 1px solid var(--line); border-radius: .4rem;
-                      cursor: pointer; }
-    .history-toggle:hover { border-color: var(--ember); color: var(--ember); }
-    .history-toggle .chevron { transition: transform .15s; }
-    .history-toggle.open .chevron { transform: rotate(-45deg); }
+    /* The way into an entity's last 24 hours, where the eye already is: on the device page a
+       sensor's reading is itself the button, and a switch or light has a chevron beside its
+       control. The chevron turns as the drawer rolls down. */
+    .unroll { display: inline-flex; align-items: center; gap: .4rem; padding: .2rem .45rem;
+              margin: -.2rem -.45rem -.2rem 0; font: inherit; color: inherit; cursor: pointer;
+              background: transparent; border: 1px solid transparent; border-radius: .4rem; }
+    .unroll:hover, .unroll.open { border-color: var(--line); background: var(--sunk); }
+    /* Pulled (gesture.rs): it gives a little under the finger and bounces back when let go. A
+       vertical pull here is the drawer's, not the page's. */
+    .unroll { touch-action: pan-x;
+              transition: translate var(--dur-base) var(--ease-bounce),
+                          border-color var(--dur-fast), background-color var(--dur-fast); }
+    .unroll[data-y0] { transition: none; }
+    .unroll:focus-visible { outline: 2px solid var(--ember); outline-offset: 1px; }
+    .reading-unroll .reading { text-decoration: underline dotted var(--muted);
+                               text-underline-offset: .25em; }
+    .reading-unroll:hover .reading { text-decoration-color: var(--ember); }
+    .unroll-mark { width: .45rem; height: .45rem; margin: -.15rem .1rem 0;
+                   border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted);
+                   rotate: 45deg; transition: rotate var(--dur-base) var(--ease-spring),
+                                              margin var(--dur-base) var(--ease-out); }
+    .unroll.open .unroll-mark { rotate: 225deg; margin-top: .25rem; }
+    .unroll:hover .unroll-mark { border-color: var(--ember); }
+    /* A light's sliders take their own line: the chevron stays up by the switch. */
+    .entity .light-controls { order: 2; }
+    .entity .why { order: 3; }
+
+    /* The drawer the history rolls down in. Rows of a grid from nothing to its content's
+       height, so it opens to exactly what's inside, and closes as smoothly as it opens. */
+    .drawer { display: grid; grid-template-rows: 0fr;
+              transition: grid-template-rows var(--dur-layout) var(--ease-out); }
+    .drawer.open { grid-template-rows: 1fr; }
+    .drawer-inner { min-height: 0; overflow: hidden; opacity: 0; translate: 0 -6px;
+                    transition: opacity var(--dur-base) var(--ease-out),
+                                translate var(--dur-layout) var(--ease-out); }
+    .drawer.open .drawer-inner { opacity: 1; translate: 0 0; }
+    .history-head { display: flex; justify-content: flex-end; padding: .5rem .75rem 0; }
+    .history-head .switcher button { padding: .2rem .6rem; font-size: .75rem; }
+
+    /* A number's day. The line draws itself in from the left once, when the day arrives (it's
+       the one thing here allowed to take longer: it's the data arriving, not the page moving);
+       the area settles in behind it, and now's dot lands and rings once. Pointing, or the
+       arrow keys, put a rule, a dot and the reading at that moment over it. */
+    .chart { margin: 0; padding: .6rem .75rem .5rem; }
+    .chart-plot { position: relative; height: 9.5rem; margin: .6rem 3.4rem .2rem 0;
+                  cursor: crosshair; touch-action: pan-y; border-radius: .25rem; }
+    .chart-plot:focus { outline: none; }
+    /* Written out as markup (chart.rs); these wrappers stay out of the layout, so what's in them
+       is placed against the plot itself. */
+    .chart-layer { display: contents; }
+    .chart-plot:focus-visible { outline: 2px solid var(--ember); outline-offset: 4px; }
+    .chart-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+    /* The day arriving draws itself in, once (chart.rs marks that drawing `arriving`). After
+       that the day grows a reading at a time: the line simply runs on, and the end rings. */
+    .chart-plot svg.arriving { animation: chart-draw 560ms var(--ease-out) both; }
+    @keyframes chart-draw { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
+    .chart-grid line { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .chart-line { fill: none; stroke: var(--ember); stroke-width: 2; stroke-linejoin: round;
+                  stroke-linecap: round; }
+    .chart-area { fill: var(--ember); opacity: .12; }
+    .arriving .chart-area { animation: settle 400ms var(--ease-out) 200ms backwards; }
+    @keyframes settle { from { opacity: 0; } }
+    .chart-tick { position: absolute; left: 0; translate: 0 -120%; color: var(--muted);
+                  font: .65rem var(--mono); font-variant-numeric: tabular-nums; }
+    .chart-tick.top { top: 8%; }
+    .chart-tick.bottom { top: 92%; }
+    .chart-end, .chart-dot { position: absolute; width: .6rem; height: .6rem;
+                             translate: -50% -50%; border-radius: 50%;
+                             background: var(--ember); box-shadow: 0 0 0 2px var(--card); }
+    .chart-end { left: 100%; }
+    .chart-end.arriving { animation: pop var(--dur-base) var(--ease-spring) 480ms backwards; }
+    .chart-end::after { content: ""; position: absolute; inset: 0; border-radius: 50%; }
+    .chart-end.arriving::after { animation: ring .7s var(--ease-out) 560ms backwards; }
+    .chart-end.grown::after { animation: ring .7s var(--ease-out); }
+    @keyframes pop { from { scale: 0; } }
+    .chart-latest { position: absolute; left: 100%; translate: .6rem -50%; white-space: nowrap;
+                    color: var(--fg); font: .75rem var(--mono); font-variant-numeric: tabular-nums; }
+    .chart-latest.arriving { animation: settle var(--dur-base) var(--ease-out) 480ms backwards; }
+    .chart-latest.grown { animation: rose-a 700ms var(--ease-out); }
+    .chart-rule { position: absolute; top: 0; bottom: 0; width: 1px; translate: -.5px 0;
+                  background: var(--muted); opacity: .5; pointer-events: none; }
+    /* The hover layer is written afresh as the pointer moves, so nothing in it animates on
+       appearing — it would replay with every pixel. A crosshair follows instantly anyway. */
+    .chart-dot { pointer-events: none; }
+    .chart-tip { position: absolute; bottom: calc(100% + .3rem); translate: -50% 0; z-index: 1;
+                 display: grid; padding: .3rem .5rem; pointer-events: none; white-space: nowrap;
+                 background: var(--card); border: 1px solid var(--line); border-radius: .4rem;
+                 box-shadow: 0 .3rem .8rem rgba(28, 23, 20, .12); font-size: .75rem; }
+    .chart-tip.start { translate: -.6rem 0; }
+    .chart-tip.end { translate: calc(-100% + .6rem) 0; }
+    .chart-tip strong { font: 500 .85rem var(--mono); font-variant-numeric: tabular-nums; }
+    .chart-tip span { color: var(--muted); font-family: var(--mono); }
+    .chart-axis { display: flex; justify-content: space-between; margin-right: 3.4rem;
+                  color: var(--muted); font: .65rem var(--mono); }
+    /* Waiting for the day: the chart's own height, gently lit, so nothing jumps when it comes. */
+    .chart-waiting { height: 9.5rem; margin: 1.3rem 4.15rem 2rem .75rem; border-radius: .4rem;
+                     background: linear-gradient(90deg, var(--sunk) 30%, var(--line) 50%,
+                                 var(--sunk) 70%) 0 0 / 300% 100%;
+                     animation: waiting 1.4s ease-in-out infinite; }
+    @keyframes waiting { from { background-position: 100% 0; } to { background-position: 0 0; } }
     .history { border-top: 1px solid var(--line); }
     .history-scroll { max-height: 14rem; overflow-y: auto; }
     table.history { width: 100%; border-collapse: collapse; font-size: .85rem; }
@@ -422,7 +725,8 @@
     table.devices .group-name { font-weight: 500; }
     .chevron { width: .5rem; height: .5rem; border-right: 2px solid var(--muted);
                border-bottom: 2px solid var(--muted); transform: rotate(45deg);
-               margin: 0 .2rem .2rem .1rem; transition: transform .15s; flex: none; }
+               margin: 0 .2rem .2rem .1rem; flex: none;
+               transition: transform var(--dur-base) var(--ease-out), margin var(--dur-base) var(--ease-out); }
     .group.folded .chevron { transform: rotate(-45deg); margin-bottom: 0; }
     .group.folded tr:not(.group-head) { display: none; }
     table.devices th[scope="row"] .description { display: block; color: var(--muted);
@@ -508,7 +812,17 @@
     .start-wordmark { display: flex; align-items: center; gap: 1.5rem; padding: .5rem 0 .25rem; }
     .start-box { display: grid; place-items: center; width: 6rem; height: 6rem; flex: none;
                  border: 2px solid var(--fg); border-radius: .5rem; }
-    .start-ember { width: 2.5rem; height: 2.5rem; border-radius: .25rem; background: var(--ember); }
+    .start-ember { width: 2.5rem; height: 2.5rem; border-radius: .25rem; background: var(--ember);
+                   animation: embers 3.2s ease-in-out infinite; }
+    /* The hearth, alive: an uneven glow rather than a steady pulse, so it reads as a fire and not
+       a clock. */
+    @keyframes embers {
+        0%, 100% { opacity: 1; box-shadow: 0 0 1.2rem rgba(196, 85, 43, .45); }
+        17% { opacity: .9; box-shadow: 0 0 .7rem rgba(196, 85, 43, .3); }
+        31% { opacity: 1; box-shadow: 0 0 1.5rem rgba(196, 85, 43, .55); }
+        58% { opacity: .86; box-shadow: 0 0 .8rem rgba(196, 85, 43, .3); }
+        73% { opacity: .97; box-shadow: 0 0 1.35rem rgba(196, 85, 43, .5); }
+    }
     .start-letters { display: grid; gap: .35rem; min-width: 0; }
     .start-title { margin: 0; font-size: 1.9rem; font-weight: 600; letter-spacing: .3em; line-height: 1.05;
                    text-indent: .3em; overflow-wrap: anywhere; }
@@ -521,7 +835,14 @@
                        color: var(--muted); text-decoration: none;
                        border: 1px solid var(--line); border-radius: .4rem; }
     .settings-menu a:hover { color: var(--fg); border-color: var(--ember); }
-    .settings-section { scroll-margin-top: 1rem; }
+    .settings-section { scroll-margin-top: 1rem;
+                        animation: rise var(--dur-base) var(--ease-out) backwards;
+                        animation-delay: calc(var(--i, 0) * 45ms); }
+    /* Where a menu link landed: one ember ring, fading. */
+    .settings-section[data-flash="a"] { animation: flash-a 900ms var(--ease-out); }
+    .settings-section[data-flash="b"] { animation: flash-b 900ms var(--ease-out); }
+    @keyframes flash-a { from { box-shadow: 0 0 0 3px rgba(196, 85, 43, .5); } }
+    @keyframes flash-b { from { box-shadow: 0 0 0 3px rgba(196, 85, 43, .5); } }
     .settings-section > .inline-form { margin-top: .75rem; }
 
     /* The Floorplan: a canvas that takes the whole page, with its controls floating over it.
@@ -529,6 +850,11 @@
        those into pixels, so walls, grid and markers can't disagree about where anything is. */
     main.full { max-width: none; padding: 0; position: relative; display: flex;
                 flex-direction: column; }
+    /* An extension's own page (app_frame.rs): the whole of what the sidebar leaves. */
+    .app-frame { flex: 1; width: 100%; min-height: 100vh; border: 0; display: block;
+                 background: var(--bg); }
+    .app-frame.hidden { display: none; }
+    main.full > .card { margin: 2rem auto; max-width: 40rem; }
     .floorplan { position: relative; flex: 1; min-height: 24rem; overflow: hidden;
                  background: var(--bg); }
     .floorplan .canvas { position: absolute; inset: 0; cursor: grab; touch-action: none;
@@ -786,11 +1112,106 @@
                               border: 1px solid var(--ember); border-radius: .4rem;
                               font-size: .85rem; }
 
+    /* Motion on the plan. The markers and the plan itself are redrawn with every reading and on
+       every pan, so they only ever transition — nothing on them plays as it appears. The panels
+       around the canvas appear once per Edit or per pick, so those can slide in. */
+    .floorplan .toolbar, .floorplan .device-picker {
+        animation: from-left var(--dur-base) var(--ease-out) backwards; }
+    .floorplan .inspector { animation: from-right var(--dur-base) var(--ease-out) backwards; }
+    .floorplan .plan-banner { animation: lift var(--dur-base) var(--ease-out) backwards; }
+    /* `translate`, not `transform`: several of these are already placed by their transform. */
+    @keyframes from-left { from { opacity: 0; translate: -8px 0; } }
+    @keyframes from-right { from { opacity: 0; translate: 8px 0; } }
+    @keyframes lift { from { opacity: 0; translate: 0 6px; } }
+
+    /* The tool in hand and the floor shown: a highlight that slides between them. */
+    .floorplan .toolbar > .glide { left: .3rem; right: .3rem; border-radius: .4rem;
+                                   background: var(--ember); }
+    .floorplan .floor-picker { position: relative; }
+    .floorplan .floor-picker > .glide { left: .3rem; right: .3rem; border-radius: .35rem;
+                                        background: var(--ember); }
+    .floorplan .toolbar button, .floorplan .floor-picker > button { position: relative;
+                                                                    z-index: 1; }
+    .floorplan .floor-picker > button.chosen { background: transparent; border-color: transparent; }
+    @media (min-width: 721px) {
+      .floorplan .toolbar button.chosen { background: transparent; border-color: transparent; }
+    }
+
+    /* Devices: a marker leans in under the pointer and gives under a press; a lamp's pip warms
+       up rather than snapping on, and sends out one ring as it does. */
+    .floorplan .marker { transition: scale var(--dur-base) var(--ease-spring),
+                                     box-shadow var(--dur-base) var(--ease-out),
+                                     border-color var(--dur-base), opacity var(--dur-base); }
+    .floorplan .marker.switchable:hover, .floorplan .marker.movable:hover { scale: 1.06; }
+    .floorplan .marker.switchable:active, .floorplan .marker.movable:active { scale: .96; }
+    .floorplan .marker .pip { position: relative;
+                              transition: background-color var(--dur-base) var(--ease-out),
+                                          box-shadow var(--dur-base) var(--ease-out); }
+    .floorplan .marker.on .pip::after { content: ""; position: absolute; inset: 0;
+                                        border-radius: 50%; pointer-events: none;
+                                        animation: ring .6s var(--ease-out) forwards; }
+    @keyframes ring {
+        from { box-shadow: 0 0 0 0 rgba(196, 85, 43, .55); }
+        to { box-shadow: 0 0 0 .7rem rgba(196, 85, 43, 0); }
+    }
+
+    /* Held, a marker lifts off the plan; put down, it settles with a bounce. A motion sensor
+       that senses someone lights its pip. */
+    .floorplan .marker.lifted { scale: 1.12;
+                                box-shadow: 0 .6rem 1.2rem rgba(28, 23, 20, .22); }
+    .floorplan .marker.dropped { animation: settle-down 520ms var(--ease-bounce); }
+    @keyframes settle-down { from { scale: 1.14; } }
+    .floorplan .marker.sensing .pip { background: var(--ember);
+                                      box-shadow: 0 0 .5rem var(--ember); }
+
+    /* The plan, alive (floorplan/ambience.rs): a lit light's warm pool, as bright as the light
+       and stopped by its room's walls, fading as the light changes; a motion sensor's ripples
+       spreading across its room while it senses someone. With motion off the ripples stand
+       still as a faint ring — still saying someone's there. */
+    .floorplan .pool { transition: opacity var(--dur-expressive) var(--ease-out); }
+    .floorplan .ripple circle { fill: none; stroke: var(--ember); stroke-width: 2;
+                                vector-effect: non-scaling-stroke; opacity: .3; scale: .6;
+                                transform-box: fill-box; transform-origin: center;
+                                animation: ripple 1.8s var(--ease-out) infinite; }
+    .floorplan .ripple .later { animation-delay: .9s; }
+    @keyframes ripple { from { scale: .08; opacity: .6; } to { scale: 1; opacity: 0; } }
+    @media (prefers-color-scheme: dark) {
+      .floorplan .pool { mix-blend-mode: screen; }
+    }
+
+    /* Changing floor (transition.rs `around`): the plan, and only the plan, moves — going up,
+       the floor below sinks away and the one above comes down into view. */
+    .floorplan .canvas { view-transition-name: plan; }
+    html[data-nav][data-nav^="floor"]::view-transition-old(page),
+    html[data-nav][data-nav^="floor"]::view-transition-new(page),
+    html[data-nav][data-nav^="floor"]::view-transition-group(plan) { animation: none; }
+    html[data-nav][data-nav^="floor"]::view-transition-old(plan) {
+        animation: page-away var(--dur-base) var(--ease-out) both; }
+    html[data-nav][data-nav^="floor"]::view-transition-new(plan) {
+        animation: page-arrive var(--dur-expressive) var(--ease-emphasized) both; }
+    html[data-nav="floor-up"] { --away: 0 56px; --from: 0 -56px; }
+    /* Changing page onto or off the Floorplan, the plan is part of the page, and moves with it. */
+    html[data-nav]:not([data-nav^="floor"])::view-transition-group(plan) { animation: none; }
+    html[data-nav]:not([data-nav^="floor"])::view-transition-old(plan) {
+        animation: page-away var(--dur-fast) var(--ease-out) both; }
+    html[data-nav]:not([data-nav^="floor"])::view-transition-new(plan) {
+        animation: page-arrive var(--dur-expressive) var(--ease-emphasized) both; }
+    html[data-nav="floor-down"] { --away: 0 -56px; --from: 0 56px; }
+
+    /* What's picked, and what's being drawn: dashed lines that march, the way a selection does
+       in any drawing tool. Walls and openings change colour rather than switching. */
+    .floorplan .area.chosen, .floorplan .pending line, .floorplan .tracing polygon {
+        animation: march .8s linear infinite; }
+    @keyframes march { to { stroke-dashoffset: -10; } }
+    .floorplan .wall, .floorplan .door, .floorplan .window {
+        transition: stroke var(--dur-fast) var(--ease-out); }
+
     /* On a phone the tools take the width rather than a column down the side of a small canvas. */
     @media (max-width: 720px) {
       .floorplan .toolbar { top: auto; bottom: 4.5rem; left: 1rem; right: 1rem;
                             flex-direction: row; justify-content: center; }
       .floorplan .tool-gap { width: 1px; height: auto; margin: .3rem .2rem; }
+      .floorplan .toolbar > .glide { display: none; }
       .floorplan .device-picker { top: 4rem; left: 1rem; right: 1rem; width: auto; }
       .floorplan .inspector { width: auto; }
       .floorplan .plan-side { top: 4rem; right: 1rem; max-height: 45%; }
@@ -814,6 +1235,22 @@
                    border: 1px solid transparent; border-radius: .4rem; cursor: pointer; }
     .modal-close:hover { color: var(--ember); border-color: var(--line); }
     .modal-body { padding: 1rem 1.25rem 1.25rem; overflow-y: auto; }
+    /* A window arrives: the page dims behind it and the window rises into place. Once per
+       opening — a window is fixed markup around whatever redraws inside it. */
+    .modal-backdrop { animation: dim var(--dur-base) var(--ease-out) backwards; }
+    .modal { animation: rise-in var(--dur-layout) var(--ease-emphasized) backwards; }
+    @keyframes dim { from { background: rgba(28, 23, 20, 0); } }
+    @keyframes rise-in { from { opacity: 0; translate: 0 .75rem; scale: .98; } }
+
+    /* Asking before something that can't be taken back. */
+    .confirm p { margin: 0 0 .6rem; }
+    .confirm-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
+    .confirm-actions button { padding: .45rem .9rem; font: inherit; font-size: .9rem;
+                              color: var(--fg); background: var(--card);
+                              border: 1px solid var(--line); border-radius: .4rem; cursor: pointer; }
+    .confirm-actions button:hover { border-color: var(--muted); }
+    .confirm-actions .danger-solid { color: #fff; background: #b4342c; border-color: #b4342c; }
+    .confirm-actions .danger-solid:hover { background: #982b24; border-color: #982b24; }
     /* In a window of its own, the form needs no rule dividing it off from a card above it. */
     .modal .settings-form { margin-top: 0; padding-top: 0; border-top: none; }
     .modal .add-device { margin: 0; }
@@ -838,27 +1275,246 @@
     .ext-settings-btn.wants-setup { width: auto; padding: 0 .7rem; font-size: .85rem;
                                     color: var(--ember); border-color: var(--ember); }
 
-    /* Step one of adding a device: the extensions as things to press, not a list that expands. */
+    /* Step one of adding a device: the extensions as things to press, not a list that expands.
+       They come in one after another when the window opens. */
     .protocol-cards { display: grid; gap: .6rem; margin-top: .8rem;
                       grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); }
     .protocol-card { display: flex; flex-direction: column; align-items: flex-start; gap: .3rem;
                      padding: .8rem; font: inherit; text-align: left; color: inherit;
                      background: var(--card); border: 1px solid var(--line); border-radius: .5rem;
-                     cursor: pointer; }
-    .protocol-card:hover { border-color: var(--ember); }
+                     cursor: pointer;
+                     animation: rise var(--dur-base) var(--ease-out) backwards;
+                     animation-delay: calc(var(--i, 0) * 45ms); }
+    .protocol-card:hover { border-color: var(--ember); translate: 0 -2px;
+                           box-shadow: 0 .4rem 1rem rgba(28, 23, 20, .08); }
     .protocol-card .protocol-icon { width: 1.75rem; height: 1.75rem; margin-bottom: .2rem; }
     .protocol-card .name { font-weight: 500; }
-    .protocol-back { padding: 0; margin-bottom: .6rem; font-size: .85rem; }
+    .protocol-card-counts { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+    /* A secondary action in the window: a small bordered button, not a word to find. */
+    .quiet-button { display: inline-flex; align-items: center; gap: .3rem; padding: .3rem .65rem;
+                    font: inherit; font-size: .82rem; color: var(--muted); text-decoration: none;
+                    background: var(--card); border: 1px solid var(--line); border-radius: .4rem;
+                    cursor: pointer; white-space: nowrap; }
+    .quiet-button:hover { color: var(--ember); border-color: var(--ember); }
+    .quiet-button svg { width: .9rem; height: .9rem; }
+    .protocol-back { margin: 0 0 .75rem; }
+    .add-intro { display: flex; align-items: flex-start; gap: 1rem; }
+    .add-intro p { margin: 0; flex: 1; }
+
+    /* A number of things found: a small ember pill, the one colour on the page that says
+       "something here for you". On the Devices page it sits on the Add device button. */
+    .found-count, .count-badge { display: inline-grid; place-items: center; min-width: 1.25rem;
+                   height: 1.25rem; padding: 0 .35rem; font: 500 .7rem/1 var(--mono);
+                   color: #fff; background: var(--ember); border-radius: 1rem; }
+    .found-count.quiet { color: var(--muted); background: var(--sunk); }
+    h4 .found-count { margin-left: .45rem; vertical-align: .1em; }
+    .add .count-badge { margin-left: .45rem; vertical-align: .05em;
+                        animation: pop var(--dur-expressive) var(--ease-bounce) backwards; }
+    @keyframes pop { from { scale: 0; } }
+
+    /* Step two: one extension. Its heading is the card that was picked, grown. */
+    .add-step-head { display: flex; align-items: center; gap: .6rem; margin-bottom: .6rem;
+                     view-transition-name: add-hero; }
+    .add-step-head h3 { margin: 0; font-size: 1.05rem; }
+    .add-step-head .protocol-icon { width: 1.75rem; height: 1.75rem; }
+    .add-step { view-transition-name: add-step; }
+    .found, .in-home { margin-top: 1rem; }
+    .found-head { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem;
+                  margin-bottom: .5rem; }
+    .found h4, .in-home h4 { margin: 0; font-size: .7rem; font-family: var(--mono);
+                             font-weight: 400; letter-spacing: .08em; text-transform: uppercase;
+                             color: var(--muted); }
+    .in-home h4 { margin-bottom: .5rem; }
+    .found-actions { margin-left: auto; display: flex; gap: .5rem; }
+    button.primary { padding: .4rem .85rem; font: inherit; font-size: .85rem; font-weight: 500;
+                     color: #fff; background: var(--ember); border: 1px solid var(--ember);
+                     border-radius: .4rem; cursor: pointer;
+                     animation: rise var(--dur-fast) var(--ease-out) backwards; }
+    button.primary:hover { background: #ab4717; border-color: #ab4717; }
+
+    /* A device, as a card: what it is and what it would bring, and one button to bring it in. */
+    .device-cards { display: grid; gap: .4rem; margin: 0; padding: 0; list-style: none; }
+    .device-card { display: grid; grid-template-rows: 1fr;
+                   animation: rise var(--dur-base) var(--ease-out) backwards;
+                   animation-delay: calc(min(var(--i, 0), 8) * 40ms);
+                   transition: grid-template-rows var(--dur-layout) var(--ease-emphasized),
+                               opacity var(--dur-layout), margin var(--dur-layout); }
+    .device-card-inner { display: flex; align-items: center; gap: .7rem; min-height: 0;
+                         overflow: hidden; padding: .6rem .75rem; color: inherit;
+                         text-decoration: none; background: var(--card);
+                         border: 1px solid var(--line); border-radius: .5rem;
+                         transition: border-color var(--dur-fast), box-shadow var(--dur-base),
+                                     background-color var(--dur-fast); }
+    .device-card .protocol-icon { flex: none; width: 1.6rem; height: 1.6rem; }
+    .device-card-text { display: flex; flex-direction: column; gap: .15rem; min-width: 0;
+                        flex: 1; }
+    .device-card .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .device-card-made { color: var(--muted); font-size: .78rem; }
+    .provides { display: flex; flex-wrap: wrap; gap: .25rem; margin-top: .1rem; }
+    .chip { padding: .05rem .4rem; font: .65rem/1.5 var(--mono); color: var(--muted);
+            background: var(--sunk); border-radius: .25rem; }
+    .chip.quiet { font-style: italic; }
+    .found-card.picked .device-card-inner { border-color: var(--ember);
+        background: color-mix(in srgb, var(--ember) 5%, var(--card)); }
+    .found-card .device-card-inner:hover { border-color: var(--muted); }
+    /* One that turned up while the window was open says so, once. */
+    .device-card.arrived { animation: arrive var(--dur-expressive) var(--ease-out) backwards; }
+    .device-card.arrived .device-card-inner { animation: glow 1.6s var(--ease-out); }
+    @keyframes arrive { from { opacity: 0; translate: 0 -6px; scale: .98; } }
+    @keyframes glow { from { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ember) 35%, transparent); } }
+    /* Added: the check shows, then the card folds away to nothing and the ones below close up. */
+    .device-card.leaving { grid-template-rows: 0fr; opacity: 0; margin-bottom: -.4rem;
+                           transition-delay: var(--dur-base); pointer-events: none; }
+
+    .add-one { position: relative; flex: none; min-width: 4.2rem; height: 2rem; padding: 0 .8rem;
+               font: inherit; font-size: .85rem; font-weight: 500; color: var(--ember);
+               background: var(--card); border: 1px solid var(--ember); border-radius: .4rem;
+               cursor: pointer; }
+    .add-one:hover { color: #fff; background: var(--ember); }
+    .add-one-label { transition: opacity var(--dur-fast); }
+    .add-one-check { position: absolute; inset: 0; margin: auto; width: 1.1rem; height: 1.1rem;
+                     stroke-dasharray: 1; stroke-dashoffset: 1; }
+    /* On its way: the word gives way to a turning ring. */
+    .add-one.busy .add-one-label, .add-one.done .add-one-label { opacity: 0; }
+    .add-one.busy::after { content: ""; position: absolute; inset: 0; margin: auto; width: .9rem;
+                           height: .9rem; border: 2px solid currentColor; border-right-color: transparent;
+                           border-radius: 50%; animation: turn .7s linear infinite; }
+    @keyframes turn { to { rotate: 1turn; } }
+    .add-one.done { color: #fff; background: var(--ember); opacity: 1; }
+    .add-one.done .add-one-check { stroke-dashoffset: 0;
+        transition: stroke-dashoffset var(--dur-expressive) var(--ease-spring); }
+
+    /* Nothing found yet: it's listening, and a ring breathing out from the middle says so. */
+    .listening-empty { display: flex; flex-direction: column; align-items: center; gap: .3rem;
+                       padding: 1.2rem 1rem; text-align: center; border: 1px dashed var(--line);
+                       border-radius: .5rem; }
+    .listening-empty p { margin: 0; }
+    .listening-ring { position: relative; width: .7rem; height: .7rem; margin-bottom: .4rem;
+                      border-radius: 50%; background: var(--ember); }
+    .listening-ring::after { content: ""; position: absolute; inset: 0; border-radius: 50%;
+                             border: 2px solid var(--ember);
+                             animation: ping 1.8s var(--ease-out) infinite; }
+    @keyframes ping { to { scale: 3; opacity: 0; } }
+
+    /* Found but locked: the same card, with its key form inside it and a dashed ember edge that
+       says it needs something from you before it can be added. The sentence explaining the whole
+       list is the section heading's job here. */
+    .found .waiting-for > p { display: none; }
+    .found .waiting-list { display: grid; gap: .4rem; margin-bottom: .4rem; }
+    .found .waiting-list li { padding: .7rem .8rem; background: var(--card);
+                              border: 1px dashed var(--ember); border-radius: .5rem;
+                              animation: rise var(--dur-base) var(--ease-out) backwards; }
+    .found .waiting-list li:last-child { border-bottom: 1px dashed var(--ember); }
+
+    /* What's already in the home: the same card, pointing to the device's page. */
+    .home-card .device-card-inner:hover { border-color: var(--ember); }
+    .home-card .home-chevron { flex: none; width: 1rem; height: 1rem; color: var(--muted);
+                          transition: translate var(--dur-fast) var(--ease-out), color var(--dur-fast); }
+    .home-card .device-card-inner:hover .home-chevron { color: var(--ember); translate: 3px 0; }
+
+    /* Between the two steps (transition.rs `step`): the step being left slides away and the
+       next comes in from the side it's going to, while the picked card and the heading become
+       each other. The page behind stays still. */
+    html[data-nav^="step"]::view-transition-group(root),
+    html[data-nav^="step"]::view-transition-group(page) { animation: none; }
+    html[data-nav^="step"]::view-transition-old(root),
+    html[data-nav^="step"]::view-transition-new(root),
+    html[data-nav^="step"]::view-transition-old(page),
+    html[data-nav^="step"]::view-transition-new(page) { animation: none; }
+    html[data-nav^="step"]::view-transition-group(add-hero) {
+        animation-duration: var(--dur-expressive); animation-timing-function: var(--ease-emphasized); }
+    html[data-nav="step-in"]::view-transition-old(add-step) {
+        animation: step-away-left var(--dur-layout) var(--ease-out) both; }
+    html[data-nav="step-in"]::view-transition-new(add-step) {
+        animation: step-from-right var(--dur-expressive) var(--ease-emphasized) both; }
+    html[data-nav="step-out"]::view-transition-old(add-step) {
+        animation: step-away-right var(--dur-layout) var(--ease-out) both; }
+    html[data-nav="step-out"]::view-transition-new(add-step) {
+        animation: step-from-left var(--dur-expressive) var(--ease-emphasized) both; }
+    @keyframes step-away-left { to { opacity: 0; translate: -2rem 0; } }
+    @keyframes step-away-right { to { opacity: 0; translate: 2rem 0; } }
+    @keyframes step-from-right { from { opacity: 0; translate: 2rem 0; } }
+    @keyframes step-from-left { from { opacity: 0; translate: -2rem 0; } }
+
     /* Step two: what this one extension has found, waiting and already here. */
     .protocol-found { margin-top: 1rem; }
+    .protocol-found-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem;
+                           margin: 0 0 .4rem; }
+    .protocol-found-head h3 { margin: 0; font-size: .9rem; }
     .protocol-found h3 { margin: 0 0 .4rem; font-size: .9rem; }
     .protocol-found p { margin: 0; }
 
-    /* An extension's own output. Scrolls in both directions rather than wrapping: a stack trace
-       or a config dump is easier to read with its lines intact. */
-    .ext-log { max-height: 26rem; margin: .6rem 0 0; padding: .6rem .75rem; overflow: auto;
-               font: .78rem/1.5 var(--mono); white-space: pre; background: var(--sunk);
-               border-radius: .4rem; }
+    /* The log window (log_window.rs): a bar of filters, a search and the copy button, then the
+       log itself — one row per line, so it reads down the page rather than across it. */
+    .modal.wide { max-width: 60rem; }
+    .log-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: .6rem 0; }
+    .log-filter button { display: inline-flex; align-items: center; gap: .35rem; }
+    .log-count { min-width: 1.2rem; padding: 0 .3rem; font: .65rem/1.4 var(--mono);
+                 text-align: center; color: var(--card); background: var(--muted);
+                 border-radius: 1rem; }
+    .log-filter button:nth-child(2) .log-count { background: var(--warn); }
+    .log-filter button:nth-child(3) .log-count { background: var(--error); }
+    .log-filter button .log-count.none { color: var(--muted); background: transparent; }
+    .log-search { flex: 1 1 10rem; min-width: 0; padding: .35rem .6rem; font: inherit;
+                  font-size: .85rem; color: var(--fg); background: var(--card);
+                  border: 1px solid var(--line); border-radius: .4rem; }
+    .log-search:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
+
+    /* Copy: an icon, quiet until it's wanted. The clipboard gives way to a check that draws
+       itself in when the copy worked, and gives a little shake when the browser said no. */
+    .log-copy { display: inline-grid; place-items: center; width: 2.1rem; height: 2.1rem;
+                padding: 0; color: var(--muted); background: var(--card);
+                border: 1px solid var(--line); border-radius: .4rem; cursor: pointer; }
+    .log-copy:hover { color: var(--fg); border-color: var(--muted); }
+    .log-copy .copy-icon { width: 1.1rem; height: 1.1rem; overflow: visible; }
+    .log-copy .copy-clip { transform-origin: center; transform-box: fill-box;
+                           transition: opacity var(--dur-fast), scale var(--dur-base) var(--ease-out); }
+    .log-copy .copy-check { stroke-dasharray: 1; stroke-dashoffset: 1; opacity: 0;
+                            transition: stroke-dashoffset var(--dur-expressive) var(--ease-spring),
+                                        opacity var(--dur-fast); }
+    .log-copy.done { color: var(--ember); border-color: var(--ember); }
+    .log-copy.done .copy-clip { opacity: 0; scale: .6; }
+    .log-copy.done .copy-check { stroke-dashoffset: 0; opacity: 1; }
+    .log-copy.failed { color: #b4342c; border-color: #b4342c;
+                       animation: shake var(--dur-expressive) var(--ease-out); }
+    @keyframes shake { 20%, 60% { translate: -3px 0; } 40%, 80% { translate: 3px 0; } }
+
+    /* The log: scrolls in place, newest at the bottom. */
+    .log-window { max-height: min(60vh, 34rem); overflow: auto; background: var(--sunk);
+                  border-radius: .4rem; font: .78rem/1.5 var(--mono); }
+    .log-quiet { margin: 0; padding: .8rem; font-family: var(--sans); }
+    .log-lines { margin: 0; padding: .3rem 0; list-style: none; }
+    /* A row: when, how serious, and what — the time and the level in columns of their own, so
+       the eye can run down either. A long message wraps under itself rather than off the edge. */
+    .log-row { display: grid; grid-template-columns: 4.6rem 3.4rem 1fr; gap: .6rem;
+               align-items: baseline; padding: .12rem .75rem .12rem calc(.75rem - 2px);
+               border-left: 2px solid transparent; }
+    .log-row:hover { background: color-mix(in srgb, var(--line) 45%, transparent); }
+    .log-row.log-warn { border-left-color: var(--warn);
+                        background: color-mix(in srgb, var(--warn) 7%, transparent); }
+    .log-row.log-error { border-left-color: var(--error);
+                         background: color-mix(in srgb, var(--error) 9%, transparent); }
+    /* A line that arrived while the window was open fades in where it lands. */
+    .log-row.fresh { animation: log-in var(--dur-layout) var(--ease-out) backwards; }
+    @keyframes log-in { from { opacity: 0; translate: 0 4px; } }
+    .log-stamp { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .log-level { justify-self: start; padding: 0 .35rem; font-size: .62rem; line-height: 1.5;
+                 letter-spacing: .06em; text-transform: uppercase; border-radius: .25rem; }
+    .log-level.error { color: var(--card); background: var(--error); font-weight: 600; }
+    .log-level.warn { color: var(--warn); border: 1px solid var(--warn); }
+    .log-level.info { color: var(--muted); border: 1px solid var(--line); }
+    .log-level.debug, .log-level.trace { color: var(--muted); opacity: .7; }
+    .log-text { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
+    .log-row.log-error .log-message { color: var(--error); font-weight: 600; }
+    .log-source { display: inline-block; margin-right: .45rem; padding: 0 .35rem;
+                  font-size: .68rem; color: var(--fg); background: var(--card);
+                  border: 1px solid var(--line); border-radius: .25rem; }
+    .log-field { margin-left: .6rem; color: var(--muted); }
+    .log-key { opacity: .75; }
+    @media (max-width: 40rem) {
+      .log-row { grid-template-columns: auto 1fr; }
+      .log-row .log-text { grid-column: 1 / -1; }
+    }
 
     /* While a pairing window is open: what to do now, and what has arrived so far. */
     .listening { margin-top: .6rem; padding: .6rem .75rem; background: var(--sunk);

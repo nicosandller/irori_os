@@ -10,6 +10,23 @@ export HOME=/var/lib/irori
 export USER=irori
 export LOGNAME=irori
 
+# Installing copies a package into the data volume, which outlives the image, so an
+# official extension installed before a rebuild would keep running its old files.
+# Refresh each one from the image. Its data and its settings live elsewhere.
+data="${IRORI_DATA:-/var/lib/irori}"
+packages="${IRORI_OFFICIAL_PACKAGES:-/usr/share/irori/extensions}"
+if [ -d "$data/extensions" ]; then
+  for installed in "$data"/extensions/*/; do
+    [ -d "$installed" ] || continue
+    id=$(basename "$installed")
+    bundled="$packages/$id"
+    [ -d "$bundled" ] || continue
+    rm -rf "$installed"
+    cp -r "$bundled" "$data/extensions/$id"
+    chown -R irori:irori "$data/extensions/$id"
+  done
+fi
+
 if [ "${IRORI_LAB:-}" = "1" ]; then
   config="${IRORI_CONFIG:-/var/lib/irori/config}"
   mkdir -p "$config" /var/lib/irori/lab

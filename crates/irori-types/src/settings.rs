@@ -88,21 +88,15 @@ pub struct DeviceSettings {
     pub description: Option<Description>,
     /// Which room it's in, if that's been decided.
     pub area: Placement,
-    /// Kept out of the home: not listed, not controllable, nothing it reports is recorded. The
-    /// protocol may still talk to it; Irori just doesn't let it in.
-    pub ignored: bool,
-    /// A person added it. Only matters while Irori asks before adding new devices.
+    /// A person added it from "+ Add device". Only matters while Irori asks before adding new
+    /// devices, which it always does outside tests (`docs/specs/config.md` §3.2).
     pub added: bool,
 }
 
 impl DeviceSettings {
     /// Whether this says anything at all. An entry that says nothing is not written out.
     pub fn is_empty(&self) -> bool {
-        self.name.is_none()
-            && self.description.is_none()
-            && self.area.is_unsaid()
-            && !self.ignored
-            && !self.added
+        self.name.is_none() && self.description.is_none() && self.area.is_unsaid() && !self.added
     }
 }
 

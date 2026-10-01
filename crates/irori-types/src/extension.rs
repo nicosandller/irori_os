@@ -68,6 +68,31 @@ impl ExtensionManifest {
         })
     }
 
+    /// The command that starts this extension's process: its protocol's or its engine's. An
+    /// extension runs at most one process (`docs/specs/automations.md` §B1).
+    pub fn run_command(&self) -> Option<&RunCommand> {
+        self.contributes
+            .protocol
+            .first()
+            .and_then(|p| p.run.as_ref())
+            .or_else(|| {
+                self.contributes
+                    .automation
+                    .first()
+                    .and_then(|a| a.run.as_ref())
+            })
+    }
+
+    /// Whether it contributes an automation engine.
+    pub fn is_engine(&self) -> bool {
+        !self.contributes.automation.is_empty()
+    }
+
+    /// Its page in the sidebar, if it has one.
+    pub fn app(&self) -> Option<&AppContribution> {
+        self.contributes.app.first()
+    }
+
     /// Parts of the manifest this version of Irori ignores. Not errors: an extension can offer
     /// newer contribution kinds and still work on an older core. Show these to the user.
     pub fn warnings(&self) -> Vec<String> {
@@ -76,8 +101,6 @@ impl ExtensionManifest {
         for (kind, entries) in [
             ("dashboard", &self.contributes.dashboard),
             ("card", &self.contributes.card),
-            ("app", &self.contributes.app),
-            ("automation", &self.contributes.automation),
         ] {
             if !entries.is_empty() {
                 warnings.push(format!(
@@ -132,13 +155,15 @@ pub struct Contributions {
     /// Reserved for Phase 2c; read but ignored, with a warning.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub card: Vec<ReservedContribution>,
-    /// Reserved for Phase 3; read but ignored, with a warning.
+    /// A page of its own in the sidebar (`docs/specs/automations.md` §B3). At most one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub app: Vec<ReservedContribution>,
-    /// Reserved: an automation engine. Read but ignored, with a warning, until a later Irori
-    /// implements the host.
+    #[schemars(length(max = 1))]
+    pub app: Vec<AppContribution>,
+    /// An automation engine (`docs/specs/automations.md` §B2). At most one, and not alongside a
+    /// protocol: an extension runs one process.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub automation: Vec<ReservedContribution>,
+    #[schemars(length(max = 1))]
+    pub automation: Vec<AutomationContribution>,
     /// Kinds this version of Irori doesn't know; read but ignored, with a warning.
     #[serde(flatten)]
     #[schemars(skip)]
@@ -170,7 +195,70 @@ impl Contributions {
                 .validate()
                 .map_err(|e| InvariantError(format!("contributes.protocol[{i}]: {e}")))?;
         }
+        if self.automation.len() > 1 {
+            return Err(InvariantError(format!(
+                "an extension contributes at most one automation engine (found {})",
+                self.automation.len()
+            )));
+        }
+        if self.app.len() > 1 {
+            return Err(InvariantError(format!(
+                "an extension contributes at most one app (found {})",
+                self.app.len()
+            )));
+        }
+        if !self.protocol.is_empty() && !self.automation.is_empty() {
+            return Err(InvariantError(
+                "an extension runs one process: contribute a protocol or an automation engine, not both"
+                    .into(),
+            ));
+        }
+        for app in &self.app {
+            if !app.entry.as_str().ends_with(".html") {
+                return Err(InvariantError(format!(
+                    "contributes.app: entry `{}` must be an .html page",
+                    app.entry
+                )));
+            }
+        }
         Ok(())
+    }
+}
+
+/// A `[[contributes.automation]]` entry: the extension is an automation engine. It watches the
+/// home and calls services through the engine operations (`docs/specs/automations.md` §B2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AutomationContribution {
+    /// How to start it, for external extensions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<RunCommand>,
+}
+
+/// A `[[contributes.app]]` entry: a page of the extension's own, with an entry in the sidebar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AppContribution {
+    /// The sidebar entry's text, e.g. "Automations".
+    pub label: Name,
+    /// The page, relative to the package root, e.g. `app/index.html`.
+    pub entry: PackagePath,
+    /// Where it appears. Only the sidebar in this version.
+    #[serde(default, skip_serializing_if = "AppPlacement::is_sidebar")]
+    pub placement: AppPlacement,
+}
+
+/// Where an app's entry appears.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AppPlacement {
+    #[default]
+    Sidebar,
+}
+
+impl AppPlacement {
+    fn is_sidebar(&self) -> bool {
+        matches!(self, Self::Sidebar)
     }
 }
 
@@ -362,6 +450,9 @@ pub enum ApiScope {
     /// Call services on any entity, e.g. turn on a light another protocol provides.
     #[serde(rename = "services:call")]
     ServicesCall,
+    /// Read the recent history of any entity's state.
+    #[serde(rename = "history:read")]
+    HistoryRead,
 }
 
 impl fmt::Display for ApiScope {
@@ -371,6 +462,7 @@ impl fmt::Display for ApiScope {
             Self::StatesRead => "states:read",
             Self::EventsRead => "events:read",
             Self::ServicesCall => "services:call",
+            Self::HistoryRead => "history:read",
         })
     }
 }

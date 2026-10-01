@@ -32,6 +32,9 @@ const CALL_WINDOW: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 /// forgotten. Far more than any home sends to one protocol in five minutes.
 const MAX_RECENT_CALLS: usize = 1024;
 
+/// The protocol Irori's own device comes from (`irori_hub`: its version, uptime, load).
+pub const SYSTEM_PROTOCOL: &str = "irori";
+
 #[derive(Debug, Default)]
 pub(crate) struct Home {
     devices: BTreeMap<DeviceId, Device>,
@@ -52,23 +55,25 @@ pub(crate) struct Home {
     /// a device can be taken out of the home and put back without asking the protocol again.
     device_descriptions: HashMap<DeviceId, DeviceDescription>,
     entity_descriptions: HashMap<EntityId, (Vec<EntityKind>, EntityDescription)>,
-    /// Devices a person has ignored: out of the registry, but remembered.
-    ignored: BTreeMap<DeviceId, Ignored>,
-    /// Which ignored device each of their entities belongs to, to recognise what arrives for them.
-    ignored_entities: HashMap<Key, DeviceId>,
+    /// Devices a protocol has found that aren't in the home: out of the registry, but what their
+    /// protocol says about them is kept, so adding one shows it as it is now.
+    found: BTreeMap<DeviceId, Found>,
+    /// Which found device each of their entities belongs to, to recognise what arrives for them.
+    found_entities: HashMap<Key, DeviceId>,
     /// What the core last told an entity to be, until the device reports back. `Toggle` uses it,
     /// so two toggles in a row don't both see the old value while the first is still in flight.
     commanded: HashMap<EntityId, bool>,
     recent_calls: HashMap<ProtocolId, VecDeque<(ContextId, Timestamp)>>,
 }
 
-/// A device a person has chosen to keep out of the home (`docs/specs/config.md` §3.2).
+/// A device a protocol has found that isn't in the home (`docs/specs/config.md` §3.2): nobody has
+/// added it yet, or somebody removed it.
 ///
 /// Everything its protocol says about it lands here instead of in the registry: nothing is
-/// listed, nothing can be switched, nothing is recorded. The latest of it is kept, so stopping
-/// ignoring the device puts it back as it is now, not as it was.
+/// listed, nothing can be switched, nothing is recorded. The latest of it is kept, so adding the
+/// device puts it in as it is now, not as it was.
 #[derive(Debug, Clone)]
-struct Ignored {
+struct Found {
     protocol: ProtocolId,
     description: DeviceDescription,
     entities: BTreeMap<UniqueId, (Vec<EntityKind>, EntityDescription)>,
@@ -77,24 +82,23 @@ struct Ignored {
     available: bool,
 }
 
-/// A device found but kept out of the home, as the page lists it: enough to recognise it and
-/// let it in.
+/// A device found but not in the home, as "+ Add device" lists it: enough to recognise it and
+/// decide whether it belongs.
+///
+/// Only what the device *is*, never what it's reporting: the page redraws this list when it
+/// changes, and a list that changed with every reading would never hold still long enough to
+/// pick from.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct HeldDevice {
     pub id: DeviceId,
     pub protocol: ProtocolId,
     pub name: Name,
-    pub why: Held,
-}
-
-/// Why a device is kept out of the home.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Held {
-    /// A person ignored it.
-    Ignored,
-    /// It's new, and Irori asks before adding new devices.
-    New,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manufacturer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// How many entities of each kind it would bring — `{"light": 1, "sensor": 2}`.
+    pub provides: BTreeMap<String, usize>,
 }
 
 /// A service call resolved to the protocol that handles it.
@@ -148,46 +152,48 @@ impl Home {
         &self.settings
     }
 
-    /// Whether a device is kept out of the home, and why. Ignoring wins over being new: an
-    /// ignored device stays ignored whatever Irori asks about new ones. Any other `devices.toml`
-    /// entry means it isn't new — a name or a room is as much a decision as `added = true`, so
-    /// turning asking on in `irori.toml` and restarting doesn't hold a home that was already named.
-    fn held(&self, id: &DeviceId) -> Option<Held> {
-        let settings = self.settings.devices.get(id);
-        if settings.is_some_and(|settings| settings.ignored) {
-            return Some(Held::Ignored);
-        }
-        let known = settings.is_some();
-        (self.settings.ask_before_adding && !known).then_some(Held::New)
+    /// Whether a device is kept out of the home: while Irori asks before adding — always, outside
+    /// tests — anything a person hasn't said a word about. Any `devices.toml` entry is a word
+    /// about it: a name or a room is as much a decision as `added = true`, and removing a device
+    /// is what takes its entry away.
+    /// Whether a device waits for a person to add it. Irori's own device never does: nobody
+    /// has to be asked whether Irori may be in the home.
+    fn is_held(&self, protocol: &ProtocolId, id: &DeviceId) -> bool {
+        protocol.as_str() != SYSTEM_PROTOCOL
+            && self.settings.ask_before_adding
+            && !self.settings.devices.contains_key(id)
     }
 
-    fn is_held(&self, id: &DeviceId) -> bool {
-        self.held(id).is_some()
-    }
-
+    /// Every device found but not in the home, in id order.
     pub fn held_devices(&self) -> Vec<HeldDevice> {
-        self.ignored
+        self.found
             .iter()
-            .filter_map(|(id, held)| {
-                Some(HeldDevice {
+            .map(|(id, found)| {
+                let mut provides = BTreeMap::new();
+                for (_, description) in found.entities.values() {
+                    *provides.entry(description.kind().to_string()).or_insert(0) += 1;
+                }
+                HeldDevice {
                     id: id.clone(),
-                    protocol: held.protocol.clone(),
-                    name: self.name_for_device(id, &held.description.name),
-                    why: self.held(id)?,
-                })
+                    protocol: found.protocol.clone(),
+                    name: self.name_for_device(id, &found.description.name),
+                    manufacturer: found.description.manufacturer.clone(),
+                    model: found.description.model.clone(),
+                    provides,
+                }
             })
             .collect()
     }
 
-    /// Takes a device out of the home, keeping what its protocol said so it can come back.
-    fn ignore(&mut self, id: &DeviceId, _stamp: &Stamp) -> Vec<Event> {
+    /// Takes a device out of the home, keeping what its protocol said so it can be added again.
+    fn hold(&mut self, id: &DeviceId) -> Vec<Event> {
         let (Some(device), Some(description)) = (
             self.devices.get(id).cloned(),
             self.device_descriptions.get(id).cloned(),
         ) else {
             return vec![];
         };
-        let mut ignored = Ignored {
+        let mut found = Found {
             protocol: device.protocol.clone(),
             description,
             entities: BTreeMap::new(),
@@ -202,15 +208,15 @@ impl Home {
             .collect();
         for entity in &owned {
             if let Some(described) = self.entity_descriptions.get(&entity.id) {
-                ignored
+                found
                     .entities
                     .insert(entity.unique_id.clone(), described.clone());
             }
             if let Some(state) = self.states.get(&entity.id) {
                 if state.availability == Availability::Unavailable {
-                    ignored.available = false;
+                    found.available = false;
                 }
-                ignored.reports.insert(
+                found.reports.insert(
                     entity.unique_id.clone(),
                     StateReport {
                         unique_id: entity.unique_id.clone(),
@@ -221,55 +227,55 @@ impl Home {
                 );
             }
         }
-        // Removed first, then recorded as ignored: the other way round, removal would take the
-        // entities for already-ignored ones and leave them in the registry without their device.
+        // Removed first, then recorded as found: the other way round, removal would take the
+        // entities for already-found ones and leave them in the registry without their device.
         let events = self
             .remove_device(&device.protocol, &device.unique_id)
             .unwrap_or_default();
         for entity in &owned {
-            self.ignored_entities.insert(
+            self.found_entities.insert(
                 (device.protocol.clone(), entity.unique_id.clone()),
                 id.clone(),
             );
         }
-        self.ignored.insert(id.clone(), ignored);
+        self.found.insert(id.clone(), found);
         events
     }
 
-    /// Puts an ignored device back, as its protocol last described it.
-    fn restore(&mut self, id: &DeviceId, stamp: &Stamp) -> Vec<Event> {
-        let Some(ignored) = self.ignored.remove(id) else {
+    /// Puts a found device in the home, as its protocol last described it.
+    fn admit(&mut self, id: &DeviceId, stamp: &Stamp) -> Vec<Event> {
+        let Some(found) = self.found.remove(id) else {
             return vec![];
         };
-        let protocol = ignored.protocol;
-        for unique_id in ignored.entities.keys() {
-            self.ignored_entities
+        let protocol = found.protocol;
+        for unique_id in found.entities.keys() {
+            self.found_entities
                 .remove(&(protocol.clone(), unique_id.clone()));
         }
         let mut events = Vec::new();
         // Each step is what the protocol said and the core accepted before; if one is
-        // refused now (the registry changed meanwhile), the rest still go back.
+        // refused now (the registry changed meanwhile), the rest still go in.
         events.extend(
-            self.describe_device(&protocol, ignored.description.clone())
+            self.describe_device(&protocol, found.description.clone())
                 .unwrap_or_default(),
         );
-        for (kinds, description) in ignored.entities.into_values() {
+        for (kinds, description) in found.entities.into_values() {
             events.extend(
                 self.describe_entity(&protocol, &kinds, description, stamp)
                     .unwrap_or_default(),
             );
         }
-        for report in ignored.reports.into_values() {
+        for report in found.reports.into_values() {
             events.extend(
                 self.report_state(&protocol, report, stamp)
                     .unwrap_or_default(),
             );
         }
-        if !ignored.available {
+        if !found.available {
             events.extend(
                 self.set_availability(
                     &protocol,
-                    AvailabilityTarget::Device(ignored.description.unique_id),
+                    AvailabilityTarget::Device(found.description.unique_id),
                     Availability::Unavailable,
                     stamp,
                 )
@@ -347,24 +353,24 @@ impl Home {
         self.settings = settings;
         let mut events = Vec::new();
 
-        // Ignoring first, so the renames below only touch what's still in the home.
-        let now_ignored: Vec<DeviceId> = self
+        // In and out of the home first, so the renames below only touch what's in it.
+        let now_held: Vec<DeviceId> = self
             .devices
-            .keys()
-            .filter(|id| self.is_held(id))
-            .cloned()
+            .iter()
+            .filter(|(id, device)| self.is_held(&device.protocol, id))
+            .map(|(id, _)| id.clone())
             .collect();
-        for id in now_ignored {
-            events.extend(self.ignore(&id, stamp));
+        for id in now_held {
+            events.extend(self.hold(&id));
         }
-        let no_longer_ignored: Vec<DeviceId> = self
-            .ignored
-            .keys()
-            .filter(|id| !self.is_held(id))
-            .cloned()
+        let now_added: Vec<DeviceId> = self
+            .found
+            .iter()
+            .filter(|(id, found)| !self.is_held(&found.protocol, id))
+            .map(|(id, _)| id.clone())
             .collect();
-        for id in no_longer_ignored {
-            events.extend(self.restore(&id, stamp));
+        for id in now_added {
+            events.extend(self.admit(&id, stamp));
         }
 
         for id in self.devices.keys().cloned().collect::<Vec<_>>() {
@@ -412,14 +418,14 @@ impl Home {
             .validate()
             .map_err(|e| Rejected(e.to_string()))?;
         let unique_id = &description.unique_id;
-        let ignored_id = device_id_for(protocol, unique_id);
-        if self.is_held(&ignored_id) {
-            match self.ignored.get_mut(&ignored_id) {
-                Some(ignored) => ignored.description = description,
+        let held_id = device_id_for(protocol, unique_id);
+        if self.is_held(protocol, &held_id) || self.found.contains_key(&held_id) {
+            match self.found.get_mut(&held_id) {
+                Some(found) => found.description = description,
                 None => {
-                    self.ignored.insert(
-                        ignored_id,
-                        Ignored {
+                    self.found.insert(
+                        held_id,
+                        Found {
                             protocol: protocol.clone(),
                             description,
                             entities: BTreeMap::new(),
@@ -431,11 +437,12 @@ impl Home {
             }
             return Ok(vec![]);
         }
-        // Reached through a device that's ignored: as far as the home knows, it's reached directly.
+        // Reached through a device that isn't in the home: as far as the home knows, it's reached
+        // directly.
         let via_unique_id = description
             .via_device_unique_id
             .clone()
-            .filter(|via| !self.ignored.contains_key(&device_id_for(protocol, via)));
+            .filter(|via| !self.found.contains_key(&device_id_for(protocol, via)));
         let via = match &via_unique_id {
             Some(via) => Some(self.device_id(protocol, via).cloned().ok_or_else(|| {
                 Rejected(format!(
@@ -583,10 +590,10 @@ impl Home {
         }
         if let Some(device) = &description.device_unique_id {
             let device_id = device_id_for(protocol, device);
-            if let Some(ignored) = self.ignored.get_mut(&device_id) {
-                self.ignored_entities
+            if let Some(found) = self.found.get_mut(&device_id) {
+                self.found_entities
                     .insert((protocol.clone(), unique_id.clone()), device_id);
-                ignored
+                found
                     .entities
                     .insert(unique_id.clone(), (kinds.to_vec(), description));
                 return Ok(vec![]);
@@ -755,10 +762,10 @@ impl Home {
         unique_id: &UniqueId,
     ) -> Result<Vec<Event>, Rejected> {
         let key = (protocol.clone(), unique_id.clone());
-        if let Some(device) = self.ignored_entities.remove(&key) {
-            if let Some(ignored) = self.ignored.get_mut(&device) {
-                ignored.entities.remove(unique_id);
-                ignored.reports.remove(unique_id);
+        if let Some(device) = self.found_entities.remove(&key) {
+            if let Some(found) = self.found.get_mut(&device) {
+                found.entities.remove(unique_id);
+                found.reports.remove(unique_id);
             }
             return Ok(vec![]);
         }
@@ -781,9 +788,9 @@ impl Home {
         unique_id: &UniqueId,
     ) -> Result<Vec<Event>, Rejected> {
         let key = (protocol.clone(), unique_id.clone());
-        if let Some(ignored) = self.ignored.remove(&device_id_for(protocol, unique_id)) {
-            for entity in ignored.entities.keys() {
-                self.ignored_entities
+        if let Some(found) = self.found.remove(&device_id_for(protocol, unique_id)) {
+            for entity in found.entities.keys() {
+                self.found_entities
                     .remove(&(protocol.clone(), entity.clone()));
             }
             return Ok(vec![]);
@@ -817,7 +824,7 @@ impl Home {
         Ok(events)
     }
 
-    /// Removes every device this protocol owns, in the home or ignored.
+    /// Removes every device this protocol owns, in the home or found.
     pub fn remove_protocol(&mut self, protocol: &ProtocolId) -> Vec<Event> {
         let live: Vec<UniqueId> = self
             .devices
@@ -825,19 +832,56 @@ impl Home {
             .filter(|device| &device.protocol == protocol)
             .map(|device| device.unique_id.clone())
             .collect();
-        let ignored: Vec<UniqueId> = self
-            .ignored
+        let found: Vec<UniqueId> = self
+            .found
             .values()
-            .filter(|held| &held.protocol == protocol)
-            .map(|held| held.description.unique_id.clone())
+            .filter(|found| &found.protocol == protocol)
+            .map(|found| found.description.unique_id.clone())
             .collect();
         let mut events = Vec::new();
-        for unique_id in live.into_iter().chain(ignored) {
+        for unique_id in live.into_iter().chain(found) {
             if let Ok(ev) = self.remove_device(protocol, &unique_id) {
                 events.extend(ev);
             }
         }
         events
+    }
+
+    /// Removes a device from the home (`docs/specs/config.md` §3.2): out of the registry —
+    /// entities, states, names, what reaches the home through it — and back among what its
+    /// protocol has found, as the protocol last described it. So it's listed under
+    /// "+ Add device" straight away, without the device having to announce itself again, and
+    /// adding it back is like adding it the first time. A device that's already only found stays
+    /// found.
+    pub fn forget_device(&mut self, id: &DeviceId) -> Result<Vec<Event>, Rejected> {
+        if self.devices.contains_key(id) {
+            return Ok(self.hold(id));
+        }
+        if self.found.contains_key(id) {
+            return Ok(vec![]);
+        }
+        Err(Rejected(format!("there's no device `{id}`")))
+    }
+
+    /// The entities a device keeps — in the home, or remembered for a found one — as protocol
+    /// and unique id pairs, the two fields an `entities.toml` key is made of.
+    pub fn device_entity_keys(&self, id: &DeviceId) -> Option<Vec<(ProtocolId, UniqueId)>> {
+        if let Some(device) = self.devices.get(id) {
+            return Some(
+                self.entities
+                    .iter()
+                    .filter(|(_, entity)| entity.device_id.as_ref() == Some(id))
+                    .map(|(_, entity)| (device.protocol.clone(), entity.unique_id.clone()))
+                    .collect(),
+            );
+        }
+        self.found.get(id).map(|found| {
+            found
+                .entities
+                .keys()
+                .map(|unique_id| (found.protocol.clone(), unique_id.clone()))
+                .collect()
+        })
     }
 
     // --- State ----------------------------------------------------------------------------
@@ -851,14 +895,14 @@ impl Home {
         report.validate().map_err(|e| Rejected(e.to_string()))?;
         let unique_id = &report.unique_id;
         if let Some(device) = self
-            .ignored_entities
+            .found_entities
             .get(&(protocol.clone(), unique_id.clone()))
         {
-            if let Some(ignored) = self.ignored.get_mut(device) {
+            if let Some(found) = self.found.get_mut(device) {
                 // Kept without its cause: by the time it's put back, no call is waiting on it.
                 let mut report = report;
                 report.caused_by = None;
-                ignored.reports.insert(report.unique_id.clone(), report);
+                found.reports.insert(report.unique_id.clone(), report);
             }
             return Ok(vec![]);
         }
@@ -927,8 +971,8 @@ impl Home {
     ) -> Result<Vec<Event>, Rejected> {
         let target = match target {
             AvailabilityTarget::Device(device) => {
-                if let Some(ignored) = self.ignored.get_mut(&device_id_for(protocol, &device)) {
-                    ignored.available = availability == Availability::Available;
+                if let Some(found) = self.found.get_mut(&device_id_for(protocol, &device)) {
+                    found.available = availability == Availability::Available;
                     return Ok(vec![]);
                 }
                 AvailabilityTarget::Device(device)
@@ -938,7 +982,7 @@ impl Home {
                     .into_iter()
                     .filter(|u| {
                         !self
-                            .ignored_entities
+                            .found_entities
                             .contains_key(&(protocol.clone(), u.clone()))
                     })
                     .collect();
@@ -1508,7 +1552,6 @@ mod tests {
             name: Some(name(what)),
             description: None,
             area: Placement::Unsaid,
-            ignored: false,
         }
     }
 
@@ -1518,7 +1561,6 @@ mod tests {
             name: None,
             description: None,
             area: Placement::In(AreaId::try_from(area).expect("valid")),
-            ignored: false,
         }
     }
 
@@ -1528,7 +1570,6 @@ mod tests {
             name: None,
             description: None,
             area: Placement::Nowhere,
-            ignored: false,
         }
     }
 
@@ -1655,109 +1696,9 @@ mod tests {
         assert!(refused.0.contains("demo_ab"), "{}", refused.0);
     }
 
-    /// One description, set by a person, like the name.
-    fn ignoring(unique: &str) -> Settings {
+    /// What Irori's own config always says: ask before adding, with these devices added.
+    fn asking(added: &[&str]) -> Settings {
         Settings {
-            devices: [(
-                key(unique),
-                irori_types::DeviceSettings {
-                    ignored: true,
-                    ..Default::default()
-                },
-            )]
-            .into(),
-            ..Settings::default()
-        }
-    }
-
-    /// Ignoring a device takes it and its entities out of the home. What its protocol goes
-    /// on saying is kept, not refused — so nothing is counted as a rejected report — and letting
-    /// it back in restores it as it is now, not as it was when it left.
-    #[test]
-    fn an_ignored_device_leaves_the_home_and_comes_back_as_it_is_now() {
-        let mut home = home_with_lamp();
-        home.report_state(
-            &protocol(),
-            report("lamp-light", Some(light(false, Some(10)))),
-            &stamp(1),
-        )
-        .expect("report");
-
-        let events = home.settle(ignoring("lamp"));
-        assert!(home.devices.is_empty() && home.entities.is_empty() && home.states.is_empty());
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, Event::DeviceRemoved { .. })),
-            "{events:?}"
-        );
-        assert_eq!(home.held_devices().len(), 1);
-        assert_eq!(home.held_devices()[0].name.as_str(), "Desk lamp");
-
-        // The protocol carries on as usual, and nothing it says is an error.
-        home.describe_device(&protocol(), device("lamp", "Desk lamp v2"))
-            .expect("described while ignored");
-        home.report_state(
-            &protocol(),
-            report("lamp-light", Some(light(true, Some(200)))),
-            &stamp(2),
-        )
-        .expect("reported while ignored");
-        home.set_availability(
-            &protocol(),
-            AvailabilityTarget::Device(uid("lamp")),
-            Availability::Available,
-            &stamp(2),
-        )
-        .expect("availability while ignored");
-        assert!(home.devices.is_empty(), "still out of the home");
-        assert!(
-            home.resolve(&lamp_id(), Command::Toggle).is_err(),
-            "an ignored entity can't be commanded"
-        );
-
-        home.settle(Settings::default());
-        assert!(home.held_devices().is_empty());
-        assert_eq!(
-            device_named(&home, "demo_lamp"),
-            "Desk lamp v2",
-            "its latest name"
-        );
-        assert_eq!(
-            home.state(&lamp_id()).and_then(|state| state.state.clone()),
-            Some(light(true, Some(200))),
-            "its latest reading"
-        );
-    }
-
-    /// A device that's ignored before it's ever seen never enters the home at all.
-    #[test]
-    fn a_device_ignored_in_advance_never_arrives() {
-        let mut home = Home::default();
-        home.settle(ignoring("lamp"));
-        home.describe_device(&protocol(), device("lamp", "Desk lamp"))
-            .expect("device");
-        home.describe_entity(
-            &protocol(),
-            &ALL,
-            entity("lamp-light", None, Some("lamp"), dimmable()),
-            &stamp(0),
-        )
-        .expect("entity");
-        assert!(home.devices.is_empty() && home.entities.is_empty());
-        assert_eq!(home.held_devices().len(), 1);
-
-        // And a protocol that removes it while ignored is taken at its word.
-        home.remove_device(&protocol(), &uid("lamp"))
-            .expect("removed");
-        assert!(home.held_devices().is_empty());
-    }
-
-    /// While Irori asks before adding, a new device waits outside the home until a person adds
-    /// it, then joins as it is now. One already added joins as soon as it's found.
-    #[test]
-    fn a_new_device_waits_to_be_added_while_irori_asks() {
-        let asking = |added: &[&str]| Settings {
             ask_before_adding: true,
             devices: added
                 .iter()
@@ -1772,7 +1713,123 @@ mod tests {
                 })
                 .collect(),
             ..Settings::default()
-        };
+        }
+    }
+
+    /// Irori's own device is in the home at once, even when every other device waits for "+ Add
+    /// device".
+    #[test]
+    fn irori_itself_is_never_held() {
+        let mut home = Home::default();
+        home.settle(asking(&[]));
+        let irori: ProtocolId = SYSTEM_PROTOCOL.parse().expect("a protocol id");
+        home.describe_device(&irori, device("hub", "Irori"))
+            .expect("Irori");
+        home.describe_device(&protocol(), device("lamp", "Desk lamp"))
+            .expect("lamp");
+        let ids: Vec<String> = home.devices().map(|d| d.id.to_string()).collect();
+        assert_eq!(ids, ["irori_hub"]);
+        assert_eq!(home.held_devices().len(), 1, "the lamp waits");
+    }
+
+    /// Removing a device takes it and its entities out of the home, and puts it straight back
+    /// among what its protocol has found — without the protocol having to describe it again,
+    /// which a device that stays connected never would. What the protocol goes on saying is kept,
+    /// not refused, and adding it back brings it in as it is now.
+    #[test]
+    fn a_removed_device_is_found_again_at_once_and_comes_back_as_it_is_now() {
+        let mut home = Home::default();
+        home.settle(asking(&["lamp"]));
+        home.describe_device(&protocol(), device("lamp", "Desk lamp"))
+            .expect("lamp");
+        home.describe_entity(
+            &protocol(),
+            &ALL,
+            entity("lamp-light", None, Some("lamp"), dimmable()),
+            &stamp(0),
+        )
+        .expect("light");
+        home.report_state(
+            &protocol(),
+            report("lamp-light", Some(light(false, Some(10)))),
+            &stamp(1),
+        )
+        .expect("report");
+
+        // What `Config::forget_device` does: the row goes, then the core is told.
+        let events = home.forget_device(&key("lamp")).expect("removed");
+        home.settle(asking(&[]));
+        assert!(home.devices.is_empty() && home.entities.is_empty() && home.states.is_empty());
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::DeviceRemoved { .. })),
+            "{events:?}"
+        );
+        let found = home.held_devices();
+        assert_eq!(found.len(), 1, "listed as found straight away");
+        assert_eq!(found[0].name.as_str(), "Desk lamp");
+        assert_eq!(found[0].provides, [("light".to_owned(), 1)].into());
+
+        // The protocol carries on as usual, and nothing it says is an error.
+        home.describe_device(&protocol(), device("lamp", "Desk lamp v2"))
+            .expect("described while found");
+        home.report_state(
+            &protocol(),
+            report("lamp-light", Some(light(true, Some(200)))),
+            &stamp(2),
+        )
+        .expect("reported while found");
+        home.set_availability(
+            &protocol(),
+            AvailabilityTarget::Device(uid("lamp")),
+            Availability::Available,
+            &stamp(2),
+        )
+        .expect("availability while found");
+        assert!(home.devices.is_empty(), "still out of the home");
+        assert!(
+            home.resolve(&lamp_id(), Command::Toggle).is_err(),
+            "a found device's entity can't be commanded"
+        );
+
+        home.settle(asking(&["lamp"]));
+        assert!(home.held_devices().is_empty());
+        assert_eq!(
+            device_named(&home, "demo_lamp"),
+            "Desk lamp v2",
+            "its latest name"
+        );
+        assert_eq!(
+            home.state(&lamp_id()).and_then(|state| state.state.clone()),
+            Some(light(true, Some(200))),
+            "its latest reading"
+        );
+    }
+
+    /// Removing a device that's only found leaves it found; the protocol saying it's gone is
+    /// what takes it off the list.
+    #[test]
+    fn a_found_device_stays_found_until_its_protocol_says_it_is_gone() {
+        let mut home = Home::default();
+        home.settle(asking(&[]));
+        home.describe_device(&protocol(), device("lamp", "Desk lamp"))
+            .expect("device");
+        assert_eq!(home.held_devices().len(), 1);
+
+        home.forget_device(&key("lamp")).expect("nothing to do");
+        assert_eq!(home.held_devices().len(), 1);
+        assert!(home.forget_device(&key("nobody")).is_err());
+
+        home.remove_device(&protocol(), &uid("lamp"))
+            .expect("removed");
+        assert!(home.held_devices().is_empty());
+    }
+
+    /// While Irori asks before adding, a new device waits outside the home until a person adds
+    /// it, then joins as it is now. One already added joins as soon as it's found.
+    #[test]
+    fn a_new_device_waits_to_be_added_while_irori_asks() {
         let mut home = Home::default();
         home.settle(asking(&["plug"]));
         home.describe_device(&protocol(), device("lamp", "Desk lamp"))
@@ -1797,7 +1854,11 @@ mod tests {
         );
         let held = home.held_devices();
         assert_eq!(held.len(), 1);
-        assert_eq!((held[0].id.as_str(), held[0].why), ("demo_lamp", Held::New));
+        assert_eq!(held[0].id.as_str(), "demo_lamp");
+        assert_eq!(
+            held[0].model.as_deref(),
+            device("lamp", "Desk lamp").model.as_deref()
+        );
 
         home.settle(asking(&["plug", "lamp"]));
         assert!(home.devices.contains_key(&key("lamp")));
@@ -1819,50 +1880,6 @@ mod tests {
             .expect("lamp");
         assert!(home.devices.contains_key(&key("lamp")));
         assert!(home.held_devices().is_empty());
-    }
-
-    /// Ignored stays ignored whether or not Irori asks; stopping asking lets every new device in.
-    #[test]
-    fn stopping_asking_lets_new_devices_in_but_not_ignored_ones() {
-        let mut home = Home::default();
-        home.settle(Settings {
-            ask_before_adding: true,
-            devices: [(
-                key("plug"),
-                irori_types::DeviceSettings {
-                    ignored: true,
-                    ..Default::default()
-                },
-            )]
-            .into(),
-            ..Settings::default()
-        });
-        home.describe_device(&protocol(), device("lamp", "Desk lamp"))
-            .expect("lamp");
-        home.describe_device(&protocol(), device("plug", "Plug"))
-            .expect("plug");
-        let mut why: Vec<_> = home
-            .held_devices()
-            .into_iter()
-            .map(|held| held.why)
-            .collect();
-        why.sort_by_key(|why| format!("{why:?}"));
-        assert_eq!(why, [Held::Ignored, Held::New]);
-
-        home.settle(Settings {
-            devices: [(
-                key("plug"),
-                irori_types::DeviceSettings {
-                    ignored: true,
-                    ..Default::default()
-                },
-            )]
-            .into(),
-            ..Settings::default()
-        });
-        assert!(home.devices.contains_key(&key("lamp")));
-        assert_eq!(home.held_devices().len(), 1);
-        assert_eq!(home.held_devices()[0].why, Held::Ignored);
     }
 
     #[test]
@@ -2081,7 +2098,6 @@ mod tests {
                     name: Some(name("Reading lamp")),
                     description: None,
                     area: Placement::In(AreaId::try_from("study").expect("valid")),
-                    ignored: false,
                 },
             )]
             .into(),

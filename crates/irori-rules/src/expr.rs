@@ -62,10 +62,85 @@ impl fmt::Display for ExprError {
 
 impl std::error::Error for ExprError {}
 
+/// What `var(…)` is called inside CEL, where `var` is a reserved word. Authors write `var`;
+/// [`compile`] renames it on the way in.
+pub(crate) const VAR_FN: &str = "irori_var";
+
+/// The name an author wrote for a function CEL knows by another name.
+pub(crate) fn author_name(name: &str) -> &str {
+    if name == VAR_FN { "var" } else { name }
+}
+
+/// `var(` outside string literals becomes `irori_var(`, and a whole number `30` becomes `30.0`;
+/// everything else is kept as written.
+fn rename_reserved(source: &str) -> String {
+    let mut out = String::with_capacity(source.len() + 8);
+    let chars: Vec<char> = source.chars().collect();
+    let mut quote: Option<char> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some(q) = quote {
+            out.push(c);
+            if c == '\\' && i + 1 < chars.len() {
+                out.push(chars[i + 1]);
+                i += 2;
+                continue;
+            }
+            if c == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '"' || c == '\'' {
+            quote = Some(c);
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        let starts_word = i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
+        // A whole number is written as a decimal, so every number is the same kind: CEL won't
+        // mix `70 - 12.5`, and `10 / 4` would be 2.
+        if starts_word && c.is_ascii_digit() && (i == 0 || chars[i - 1] != '.') {
+            let mut j = i;
+            while j < chars.len() && chars[j].is_ascii_digit() {
+                j += 1;
+            }
+            let whole = chars
+                .get(j)
+                .is_none_or(|next| !(next.is_alphanumeric() || *next == '_' || *next == '.'));
+            out.extend(&chars[i..j]);
+            if whole {
+                out.push_str(".0");
+            }
+            i = j;
+            continue;
+        }
+        if starts_word && chars[i..].starts_with(&['v', 'a', 'r']) {
+            let mut j = i + 3;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            let ends_word = chars
+                .get(i + 3)
+                .is_none_or(|next| !(next.is_alphanumeric() || *next == '_'));
+            if ends_word && chars.get(j) == Some(&'(') {
+                out.push_str(VAR_FN);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
 /// Compile `source` as CEL. Does not type-check against a registry; that's a later layer.
 pub fn compile(source: &str) -> Result<Compiled, ExprError> {
-    let program =
-        Program::compile(source).map_err(|errors| ExprError::Parse(errors.to_string()))?;
+    let program = Program::compile(&rename_reserved(source))
+        .map_err(|errors| ExprError::Parse(errors.to_string()))?;
     Ok(Compiled {
         source: source.to_owned(),
         program,

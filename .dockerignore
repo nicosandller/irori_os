@@ -3,6 +3,7 @@
 target
 **/target
 crates/irori-ui/dist
+extensions/automations/app/dist
 data
 .qa-shots-*
 **/.DS_Store

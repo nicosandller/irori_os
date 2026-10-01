@@ -13,11 +13,20 @@
 # QA screenshot output from `cargo xtask qa`
 .qa-shots-*/
 
-# Local Claude Code settings
-.claude/settings.local.json
+# Claude Code: local settings, agents, and anything else it keeps here.
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+# Local opencode config (personal providers/models)
+opencode.json
 # The UI: it's outside the workspace, so it has its own target dir; plus trunk's output and the
 # copy embedded into the binary (`cargo xtask ui`).
 /crates/irori-ui/target
 /crates/irori-ui/dist
 /crates/irori/ui/*
 !/crates/irori/ui/.gitkeep
+# The Automations page and the shell/page kit: outside the workspace too, each with its own
+# target dir; the page's trunk output is packed into the extension (`cargo xtask ui`).
+/extensions/automations/app/target
+/extensions/automations/app/dist
+/crates/irori-ui-kit/target

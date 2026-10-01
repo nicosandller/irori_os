@@ -6,7 +6,8 @@
 //! entities belong to it.
 
 use irori_types::{
-    Area, AreaId, Capabilities, Device, Entity, EntityId, EntityState, Name, SensorValue, State,
+    Area, AreaId, Availability, Capabilities, Device, Entity, EntityId, EntityState, Name,
+    SensorValue, State,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -14,6 +15,7 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 
 use crate::api::{self, DeviceEdit, Home};
+use crate::chart;
 
 /// The two picker choices that aren't an area. Neither can collide with an area id: one is empty
 /// and the other has a space in it, and a slug can have neither.
@@ -55,6 +57,10 @@ pub fn DevicePage() -> impl IntoView {
     // Once a device is ignored it has no page any more: go back to the list, which says where it went.
     let navigate = leptos_router::hooks::use_navigate();
     let leave = Callback::new(move |()| navigate("/devices", Default::default()));
+
+    // This device's name is the one that travels back to its row, whichever way it was reached.
+    let travelling = expect_context::<crate::transition::Travelling>().0;
+    Effect::new(move |_| travelling.set(params.read().get("id")));
 
     let shape = Memo::new(move |_| {
         shape_of(
@@ -229,34 +235,31 @@ fn page(
         }
     };
 
-    let ignore = {
+    // Removing asks first, in a window of Irori's own rather than the browser's: it says what
+    // goes and how to get the device back, which is the part worth reading before pressing it.
+    let confirming = RwSignal::new(false);
+    let removing = RwSignal::new(false);
+    let remove = {
         let id = device.id.clone();
-        let what = device.name.to_string();
-        move |_| {
-            let asked = window()
-                .confirm_with_message(&format!(
-                    "Ignore {what}? It leaves Irori until you let it back in."
-                ))
-                .unwrap_or(false);
-            if !asked {
-                return;
-            }
+        move || {
             let id = id.clone();
+            removing.set(true);
             spawn_local(async move {
-                let edit = DeviceEdit {
-                    ignored: Some(true),
-                    ..DeviceEdit::default()
-                };
-                match api::edit_device(&id, &edit).await {
+                match api::remove_device(&id).await {
                     Ok(()) => {
                         crate::refresh(live);
                         leave.run(());
                     }
-                    Err(why) => trouble.set(Some(why)),
+                    Err(why) => {
+                        removing.set(false);
+                        confirming.set(false);
+                        trouble.set(Some(why));
+                    }
                 }
             });
         }
     };
+    let what = device.name.to_string();
     let start = {
         let name = device.name.to_string();
         let description = device
@@ -312,15 +315,54 @@ fn page(
     view! {
         <p class="crumb"><A href="/devices">"← All devices"</A></p>
         <div class="page-head">
-            <h1>{device.name.to_string()}</h1>
+            // The same name the list's link had, so the name travels up from the row it was.
+            <h1 style=crate::transition::device_name(device.id.as_ref())>
+                {device.name.to_string()}
+            </h1>
             <div class="page-actions">
                 // The two things a person decides about a device, kept as buttons rather than a
-                // section: Edit opens the fields below; Ignore is what a device that has no use
-                // here is for.
+                // section: Edit opens the fields below; Remove takes it out of the home.
                 <button type="button" on:click=start>"Edit"</button>
-                <button type="button" class="danger-button" on:click=ignore>"Ignore"</button>
+                <button type="button" class="danger-button" on:click=move |_| confirming.set(true)>
+                    "Remove"
+                </button>
             </div>
         </div>
+        {move || confirming.get().then(|| {
+            let remove = remove.clone();
+            view! {
+                <crate::modal::Modal
+                    title=format!("Remove {what}?")
+                    on_close=move || confirming.set(false)
+                >
+                    <div class="confirm">
+                        <p>
+                            "Irori deletes everything it keeps about it — its name, room, "
+                            "entities, spot on the floorplan and history — and nothing can use it "
+                            "any more."
+                        </p>
+                        <p class="muted small">
+                            "The device itself isn't touched. It'll be listed under "
+                            <strong>"+ Add device"</strong>
+                            " if you want it back."
+                        </p>
+                        <div class="confirm-actions">
+                            <button type="button" on:click=move |_| confirming.set(false)>
+                                "Cancel"
+                            </button>
+                            <button
+                                type="button"
+                                class="danger-solid"
+                                disabled=move || removing.get()
+                                on:click=move |_| remove()
+                            >
+                                {move || if removing.get() { "Removing…" } else { "Remove" }}
+                            </button>
+                        </div>
+                    </div>
+                </crate::modal::Modal>
+            }
+        })}
         {device
             .description
             .as_ref()
@@ -582,15 +624,15 @@ fn EntityRow(
     };
     let row = entity.clone();
 
-    // The expandable "last 24 hours" table. Fetched once, the first time it's opened, and kept:
-    // reopening shows the same day it loaded, which is honest about what was on file then.
-    // A mention of the recorder (M1.3) owning the long view lives under the table instead.
+    // The rolled-up "last 24 hours", opened from the row's own reading. Fetched once, the
+    // first time it's opened, and kept: reopening shows the same day it loaded, which is honest
+    // about what was on file then.
     let open = RwSignal::new(false);
     let history = RwSignal::new(None::<Result<Vec<EntityState>, String>>);
     let fetching = RwSignal::new(false);
     let toggle = {
         let id = id.clone();
-        move |_| {
+        move |()| {
             let id = id.clone();
             if !open.get_untracked()
                 && !fetching.get_untracked()
@@ -606,10 +648,14 @@ fn EntityRow(
             open.update(|open| *open = !*open);
         }
     };
+    let unroll = devices::Unroll {
+        open,
+        toggle: Callback::new(toggle),
+    };
 
     view! {
         <div class="entity-row">
-            {move || devices::row(row.clone(), state.get(), controls)}
+            {move || devices::row(row.clone(), state.get(), controls, Some(unroll))}
             <div class="entity-name">
                 {move || {
                     if being_edited() {
@@ -644,40 +690,44 @@ fn EntityRow(
                         .into_any()
                     }
                 }}
-                <button
-                    type="button"
-                    class="history-toggle"
-                    class:open=move || open.get()
-                    aria-expanded=move || open.get().to_string()
-                    on:click=toggle
-                >
-                    <span class="chevron" aria-hidden="true"></span>
-                    "Last 24 hours"
-                </button>
             </div>
-            {move || open.get().then(|| history_panel(entity.clone(), history))}
+            // Always there, rolled up or down, so it can roll both ways; `inert` while rolled
+            // up, so nobody tabs into what they can't see.
+            <div class="drawer" class:open=move || open.get() inert=move || (!open.get()).then_some("")>
+                <div class="drawer-inner">{history_panel(entity, history, state)}</div>
+            </div>
         </div>
     }
 }
 
-/// The unrolled "last 24 hours": the day of changes the server has recorded for this entity,
-/// newest first, in its own scroll so a sensor that changed a hundred times doesn't stretch the
-/// page. "As much as available" is what it says: the server keeps what happened while it's been
-/// running, and notes the long view is the recorder's job (M1.3).
+/// The unrolled "last 24 hours": the day of changes the server has recorded for this entity.
+/// A number's day is drawn as a chart, with the table a click away; anything else — on and off,
+/// words — is the table, newest first, in its own scroll so a sensor that changed a hundred
+/// times doesn't stretch the page. "As much as available" is what it says: the server keeps
+/// what happened while it's been running, and the long view is the recorder's job (M1.3).
 fn history_panel(
     entity: Entity,
     history: RwSignal<Option<Result<Vec<EntityState>, String>>>,
+    // The row's reading as it is now, so a chart can grow with it.
+    live: Memo<Option<EntityState>>,
 ) -> AnyView {
+    let numeric = matches!(entity.capabilities, Capabilities::Sensor(_));
     view! {
         <div class="history">
             {move || match history.get() {
+                // A number's chart will need the room: keep it, so the drawer doesn't jump
+                // when the day arrives.
+                None if numeric => view! {
+                    <div class="chart-waiting" aria-label="Looking for the last 24 hours…"></div>
+                }
+                .into_any(),
                 None => view! {
                     <p class="muted small history-note">"Looking for the last 24 hours…"</p>
                 }
                 .into_any(),
                 Some(Err(why)) => view! {
                     <p class="why">{why}</p>
-                    <p class="muted small history-note">"The table is empty until it can be asked again."</p>
+                    <p class="muted small history-note">"Nothing to show until it can be asked again."</p>
                 }
                 .into_any(),
                 Some(Ok(states)) if states.is_empty() => view! {
@@ -687,37 +737,131 @@ fn history_panel(
                     </p>
                 }
                 .into_any(),
-                Some(Ok(states)) => view! {
-                    <div class="history-scroll">
-                        <table class="history">
-                            <thead>
-                                <tr>
-                                    <th scope="col">"Time"</th>
-                                    <th scope="col">"Reading"</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {states
-                                    .into_iter()
-                                    .rev()
-                                    .map(|state| {
-                                        let at = state.last_changed;
-                                        view! {
-                                            <tr>
-                                                <th scope="row">
-                                                    <time title=at.to_string()>{clock_time(at)}</time>
-                                                </th>
-                                                <td>{reading_of(&entity, &state)}</td>
-                                            </tr>
-                                        }
-                                    })
-                                    .collect_view()}
-                            </tbody>
-                        </table>
-                    </div>
-                }
-                .into_any(),
+                Some(Ok(states)) => match readings(&states) {
+                    Some(numbers) => charted(&entity, numbers, states, live),
+                    None => table(&entity, states),
+                },
             }}
+        </div>
+    }
+    .into_any()
+}
+
+/// A day of readings as numbers, if every reading is a number or a gap. A gap is the sensor
+/// not saying anything — unreachable, or registered but not yet reporting — which the chart
+/// shows as a break in the line rather than a value it didn't have. Gaps before the first number
+/// are dropped: the day starts when the readings do. Any words in there, and it's the table.
+fn readings(states: &[EntityState]) -> Option<Vec<chart::Reading>> {
+    let mut numbers = Vec::new();
+    for state in states {
+        let reading = as_reading(state)?;
+        if reading.value.is_nan() && numbers.is_empty() {
+            continue;
+        }
+        numbers.push(reading);
+    }
+    (!numbers.is_empty()).then_some(numbers)
+}
+
+/// One state as a point on the chart: its number, or a gap. Nothing if it's words or not a
+/// sensor at all.
+fn as_reading(state: &EntityState) -> Option<chart::Reading> {
+    let value = match (state.availability, state.state.as_ref()) {
+        (Availability::Unavailable, _) | (_, None) => f64::NAN,
+        (_, Some(State::Sensor(sensor))) => match sensor.value {
+            SensorValue::Number(value) => value,
+            SensorValue::Text(_) => return None,
+        },
+        (_, Some(_)) => return None,
+    };
+    Some(chart::Reading {
+        at_ms: state.last_changed.as_jiff().as_millisecond() as f64,
+        at: clock_time(state.last_changed),
+        value,
+    })
+}
+
+/// The chart, with the same day as a table behind a switch: the table is where every number is
+/// readable without pointing at it.
+fn charted(
+    entity: &Entity,
+    numbers: Vec<chart::Reading>,
+    states: Vec<EntityState>,
+    live: Memo<Option<EntityState>>,
+) -> AnyView {
+    let as_table = RwSignal::new(false);
+    let unit = match &entity.capabilities {
+        Capabilities::Sensor(capabilities) => capabilities.unit.clone().unwrap_or_default(),
+        _ => String::new(),
+    };
+    let name = entity.name.to_string();
+    let chart = view! {
+        <chart::StepChart
+            readings=numbers
+            live=Signal::derive(move || live.get().as_ref().and_then(as_reading))
+            unit=unit
+            name=name
+        />
+    }
+    .into_any();
+    let table = table(entity, states);
+    view! {
+        <div class="history-head">
+            <div class="switcher" role="group" aria-label="Show as">
+                <button
+                    type="button"
+                    class:chosen=move || !as_table.get()
+                    aria-pressed=move || (!as_table.get()).to_string()
+                    on:click=move |_| as_table.set(false)
+                >
+                    "Chart"
+                </button>
+                <button
+                    type="button"
+                    class:chosen=move || as_table.get()
+                    aria-pressed=move || as_table.get().to_string()
+                    on:click=move |_| as_table.set(true)
+                >
+                    "Table"
+                </button>
+            </div>
+        </div>
+        // Both drawn once and kept, so switching is instant and loses nothing. Coming back to
+        // the chart draws its line in again — the same day, arriving again.
+        <div hidden=move || as_table.get()>{chart}</div>
+        <div hidden=move || !as_table.get()>{table}</div>
+    }
+    .into_any()
+}
+
+fn table(entity: &Entity, states: Vec<EntityState>) -> AnyView {
+    view! {
+        <div class="history-scroll">
+            <table class="history">
+                <thead>
+                    <tr>
+                        <th scope="col">"Time"</th>
+                        <th scope="col">"Reading"</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {states
+                        .into_iter()
+                        .rev()
+                        .map(|state| {
+                            let at = state.last_changed;
+                            view! {
+                                <tr>
+                                    <th scope="row">
+                                        <time title=at.to_string()>{clock_time(at)}</time>
+                                    </th>
+                                    <td>{reading_of(entity, &state)}</td>
+                                </tr>
+                            }
+                        })
+                        .collect_view()}
+                </tbody>
+            </table>
         </div>
     }
     .into_any()

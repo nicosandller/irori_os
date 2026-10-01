@@ -43,28 +43,81 @@
           "description": "Call services on any entity, e.g. turn on a light another protocol provides.",
           "type": "string",
           "const": "services:call"
+        },
+        {
+          "description": "Read the recent history of any entity's state.",
+          "type": "string",
+          "const": "history:read"
         }
       ]
+    },
+    "AppContribution": {
+      "description": "A `[[contributes.app]]` entry: a page of the extension's own, with an entry in the sidebar.",
+      "type": "object",
+      "properties": {
+        "entry": {
+          "description": "The page, relative to the package root, e.g. `app/index.html`.",
+          "$ref": "#/$defs/PackagePath"
+        },
+        "label": {
+          "description": "The sidebar entry's text, e.g. \"Automations\".",
+          "$ref": "#/$defs/Name"
+        },
+        "placement": {
+          "description": "Where it appears. Only the sidebar in this version.",
+          "$ref": "#/$defs/AppPlacement"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "entry"
+      ]
+    },
+    "AppPlacement": {
+      "description": "Where an app's entry appears.",
+      "type": "string",
+      "enum": [
+        "sidebar"
+      ]
+    },
+    "AutomationContribution": {
+      "description": "A `[[contributes.automation]]` entry: the extension is an automation engine. It watches the\nhome and calls services through the engine operations (`docs/specs/automations.md` §B2).",
+      "type": "object",
+      "properties": {
+        "run": {
+          "description": "How to start it, for external extensions.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunCommand"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "Contributions": {
       "description": "The `[contributes]` table: one list per contribution kind.",
       "type": "object",
       "properties": {
         "app": {
-          "description": "Reserved for Phase 3; read but ignored, with a warning.",
+          "description": "A page of its own in the sidebar (`docs/specs/automations.md` §B3). At most one.",
           "type": "array",
           "items": {
-            "type": "object",
-            "additionalProperties": true
-          }
+            "$ref": "#/$defs/AppContribution"
+          },
+          "maxItems": 1
         },
         "automation": {
-          "description": "Reserved: an automation engine. Read but ignored, with a warning, until a later Irori\nimplements the host.",
+          "description": "An automation engine (`docs/specs/automations.md` §B2). At most one, and not alongside a\nprotocol: an extension runs one process.",
           "type": "array",
           "items": {
-            "type": "object",
-            "additionalProperties": true
-          }
+            "$ref": "#/$defs/AutomationContribution"
+          },
+          "maxItems": 1
         },
         "card": {
           "description": "Reserved for Phase 2c; read but ignored, with a warning.",
