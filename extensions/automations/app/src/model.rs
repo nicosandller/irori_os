@@ -9,6 +9,7 @@ use irori_flow_types::{
 };
 use irori_types::{
     BinarySensorClass, Capabilities, EntityId, EntityKind, EntityState, SensorValue, State,
+    ValueShape,
 };
 use leptos::prelude::WithUntracked;
 
@@ -186,6 +187,17 @@ impl Home {
                     Capabilities::BinarySensor(b) => b.device_class,
                     _ => None,
                 })
+        })
+    }
+
+    /// What kind of value `entity` has: on/off, a number, or text. On/off when it isn't known,
+    /// since that's what a person picking a fresh entity most often means.
+    pub fn value_shape(&self, entity: &str) -> ValueShape {
+        self.entities.with_untracked(|entities| {
+            entities
+                .iter()
+                .find(|e| e.id.as_str() == entity)
+                .map_or(ValueShape::Bool, |e| e.capabilities.primary_shape())
         })
     }
 
@@ -600,10 +612,7 @@ fn first_number_sensor(home: &Home) -> String {
     home.entities.with_untracked(|entities| {
         entities
             .iter()
-            .find(|entity| {
-                matches!(&entity.capabilities, irori_types::Capabilities::Sensor(s)
-                    if s.value_type == irori_types::SensorValueType::Number)
-            })
+            .find(|entity| entity.capabilities.primary_shape() == ValueShape::Number)
             .map(|entity| entity.id.to_string())
             .unwrap_or_else(|| "sensor.choose_one".into())
     })

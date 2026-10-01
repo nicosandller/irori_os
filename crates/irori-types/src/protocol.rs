@@ -10,7 +10,7 @@ use std::fmt;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
-use crate::num::{Num, whole};
+use crate::kinds::light::LightTurnOn;
 use crate::{
     Attributes, Capabilities, Context, ContextId, EntityKind, InvariantError, Name, ObjectId,
     State, UniqueId,
@@ -352,7 +352,7 @@ pub enum ServiceName {
 }
 
 impl ServiceName {
-    pub const ALL: [ServiceName; 4] = [
+    pub const ALL: &'static [ServiceName] = &[
         Self::LightTurnOn,
         Self::LightTurnOff,
         Self::SwitchTurnOn,
@@ -374,11 +374,6 @@ impl ServiceName {
             Self::LightTurnOn | Self::LightTurnOff => EntityKind::Light,
             Self::SwitchTurnOn | Self::SwitchTurnOff => EntityKind::Switch,
         }
-    }
-
-    /// Whether it takes `data`.
-    fn takes_data(self) -> bool {
-        matches!(self, Self::LightTurnOn)
     }
 }
 
@@ -429,19 +424,10 @@ fn json_type(value: &serde_json::Value) -> &'static str {
 
 impl Serialize for ServiceCall {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let data = match &self.service {
-            Service::LightTurnOn(data) if *data != LightTurnOn::default() => {
-                match serde_json::to_value(data).map_err(serde::ser::Error::custom)? {
-                    serde_json::Value::Object(map) => Some(map),
-                    _ => None,
-                }
-            }
-            _ => None,
-        };
         RawServiceCall {
             service: self.service.name(),
             unique_id: self.unique_id.clone(),
-            data,
+            data: self.service.data(),
             context: self.context.clone(),
         }
         .serialize(serializer)
@@ -452,20 +438,8 @@ impl<'de> Deserialize<'de> for ServiceCall {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error as _;
         let raw = RawServiceCall::deserialize(deserializer)?;
-        let name = raw.service;
-        let data = raw.data.unwrap_or_default();
-        if !name.takes_data() && !data.is_empty() {
-            return Err(D::Error::custom(format!("`{name}` takes no data")));
-        }
-        let service = match name {
-            ServiceName::LightTurnOn => Service::LightTurnOn(
-                LightTurnOn::deserialize(serde_json::Value::Object(data))
-                    .map_err(|e| D::Error::custom(format!("`{name}` data: {e}")))?,
-            ),
-            ServiceName::LightTurnOff => Service::LightTurnOff,
-            ServiceName::SwitchTurnOn => Service::SwitchTurnOn,
-            ServiceName::SwitchTurnOff => Service::SwitchTurnOff,
-        };
+        let service = Service::from_data(raw.service, raw.data.unwrap_or_default())
+            .map_err(D::Error::custom)?;
         let call = ServiceCall {
             unique_id: raw.unique_id,
             service,
@@ -479,10 +453,7 @@ impl<'de> Deserialize<'de> for ServiceCall {
 impl ServiceCall {
     /// Deserialization runs this; call it yourself when building a call in code.
     pub fn validate(&self) -> Result<(), InvariantError> {
-        match &self.service {
-            Service::LightTurnOn(data) => data.validate(),
-            _ => Ok(()),
-        }
+        self.service.validate()
     }
 }
 
@@ -524,98 +495,6 @@ impl JsonSchema for ServiceCall {
             "additionalProperties": false,
             "allOf": rules,
         })
-    }
-}
-
-/// Data for `light.turn_on`. Everything is optional: with no data, the light turns on at its
-/// last brightness and color.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(transform = crate::schema::one_color_setting)]
-pub struct LightTurnOn {
-    /// 1-255. Needs a dimmable light.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1, max = 255))]
-    pub brightness: Option<u8>,
-    /// Needs color temperature support, within the light's range. Not together with `rgb`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1000, max = 20000))]
-    pub color_temp_kelvin: Option<u16>,
-    /// Needs RGB support. Not together with `color_temp_kelvin`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rgb: Option<[u8; 3]>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawLightTurnOn {
-    // Numbers as written, so the checks below can name the field (see `crate::num`).
-    #[serde(default)]
-    brightness: Option<Num>,
-    #[serde(default)]
-    color_temp_kelvin: Option<Num>,
-    #[serde(default)]
-    rgb: Option<[Num; 3]>,
-}
-
-impl<'de> Deserialize<'de> for LightTurnOn {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de::Error as _;
-        let raw = RawLightTurnOn::deserialize(deserializer)?;
-        if raw
-            .brightness
-            .is_some_and(|n| whole::<u8>("brightness", n, 0, 0).is_ok())
-        {
-            return Err(D::Error::custom(TURN_ON_BRIGHTNESS_ZERO));
-        }
-        let rgb = match raw.rgb {
-            Some([r, g, b]) => Some([
-                whole("rgb[0]", r, 0, 255).map_err(D::Error::custom)?,
-                whole("rgb[1]", g, 0, 255).map_err(D::Error::custom)?,
-                whole("rgb[2]", b, 0, 255).map_err(D::Error::custom)?,
-            ]),
-            None => None,
-        };
-        let data = LightTurnOn {
-            brightness: raw
-                .brightness
-                .map(|n| whole("brightness", n, 1, 255))
-                .transpose()
-                .map_err(D::Error::custom)?,
-            color_temp_kelvin: raw
-                .color_temp_kelvin
-                .map(|n| whole("color_temp_kelvin", n, 1000, 20000))
-                .transpose()
-                .map_err(D::Error::custom)?,
-            rgb,
-        };
-        data.validate().map_err(D::Error::custom)?;
-        Ok(data)
-    }
-}
-
-const TURN_ON_BRIGHTNESS_ZERO: &str =
-    "brightness 0 is invalid; brightness is 1-255 (use `light.turn_off` to turn a light off)";
-
-impl LightTurnOn {
-    /// Deserialization runs this; call it yourself when building the data in code.
-    pub fn validate(&self) -> Result<(), InvariantError> {
-        if self.brightness == Some(0) {
-            return Err(InvariantError(TURN_ON_BRIGHTNESS_ZERO.into()));
-        }
-        if let Some(kelvin) = self.color_temp_kelvin
-            && !(1000..=20000).contains(&kelvin)
-        {
-            return Err(InvariantError(format!(
-                "color_temp_kelvin {kelvin} is out of range; it must be from 1000 to 20000"
-            )));
-        }
-        if self.color_temp_kelvin.is_some() && self.rgb.is_some() {
-            return Err(InvariantError(
-                "set `color_temp_kelvin` or `rgb`, not both".into(),
-            ));
-        }
-        Ok(())
     }
 }
 

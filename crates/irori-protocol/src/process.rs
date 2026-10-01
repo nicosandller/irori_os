@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use irori_types::{
     Availability, ContextId, DeviceDescription, EntityDescription, EntityId, EntityState,
-    LightTurnOn, RunCommand, ServiceCall, StateReport, Timestamp, UniqueId, Waiting,
+    RunCommand, ServiceCall, StateReport, Timestamp, UniqueId, Waiting,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -112,9 +112,11 @@ pub enum FromExt {
     CallService {
         id: u64,
         entity_id: EntityId,
+        /// The action: `turn_on`, `set_value`, … or `toggle`, which the core resolves.
         command: WireCommand,
+        /// The action's data, as its service takes it (`docs/specs/protocols.md` §7.1).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        data: Option<LightTurnOn>,
+        data: Option<serde_json::Map<String, serde_json::Value>>,
         run_id: ContextId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_id: Option<ContextId>,
@@ -129,14 +131,11 @@ pub enum FromExt {
     },
 }
 
-/// What a `call_service` asks for: the same three commands a person has.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WireCommand {
-    TurnOn,
-    TurnOff,
-    Toggle,
-}
+/// What a `call_service` asks for: an action of the entity's kind, the part of a service name
+/// after the dot (`turn_on`), or `toggle`. The core checks it against the entity, so the wire
+/// doesn't need to know every kind's actions, and an engine built before a kind existed still
+/// talks to a core that has it.
+pub type WireCommand = String;
 
 /// A message from the host to the extension process.
 #[derive(Debug, Serialize, Deserialize)]

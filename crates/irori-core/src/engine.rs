@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use irori_protocol::{FromExt, ToExt, WireCommand};
-use irori_types::{ApiScope, Context, ExtensionId, ExtensionManifest, LightTurnOn, Origin};
+use irori_protocol::{FromExt, ToExt};
+use irori_types::{ApiScope, Context, ExtensionId, ExtensionManifest, Origin};
 use serde_json::json;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -210,17 +210,9 @@ impl EngineLink {
                     self.answer(id, Err(format!("not_allowed: {error}")));
                     return None;
                 }
-                let command = match (command, data) {
-                    (WireCommand::TurnOn, data) => Command::TurnOn(data.unwrap_or_default()),
-                    (WireCommand::TurnOff, None) => Command::TurnOff,
-                    (WireCommand::Toggle, None) => Command::Toggle,
-                    (_, Some(LightTurnOn { .. })) => {
-                        self.answer(
-                            id,
-                            Err("not_supported: `data` is only for turn_on".to_owned()),
-                        );
-                        return None;
-                    }
+                let command = Command {
+                    action: command,
+                    data: data.unwrap_or_default(),
                 };
                 // The core says who's asking: this extension, as this run. An engine can't
                 // claim to be a person or another extension.

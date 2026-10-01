@@ -148,7 +148,7 @@ async fn devices_appear_and_commands_round_trip_with_their_context() {
     assert_eq!(core.devices().len(), 1);
 
     let context = user_context();
-    core.call_service(&lamp_id("lamp"), Command::Toggle, context.clone())
+    core.call_service(&lamp_id("lamp"), Command::toggle(), context.clone())
         .await
         .expect("toggle works");
     eventually("the lamp reports it's off", || {
@@ -170,10 +170,13 @@ async fn devices_appear_and_commands_round_trip_with_their_context() {
     let err = core
         .call_service(
             &lamp_id("lamp"),
-            Command::TurnOn(LightTurnOn {
-                rgb: Some([1, 2, 3]),
-                ..LightTurnOn::default()
-            }),
+            Command::with(
+                "turn_on",
+                &LightTurnOn {
+                    rgb: Some([1, 2, 3]),
+                    ..LightTurnOn::default()
+                },
+            ),
             user_context(),
         )
         .await
@@ -242,8 +245,8 @@ async fn two_toggles_at_once_cancel_each_other_out() {
     // off, then on again.
     let lamp = lamp_id("slow_lamp");
     let (first, second) = tokio::join!(
-        core.call_service(&lamp, Command::Toggle, user_context()),
-        core.call_service(&lamp, Command::Toggle, user_context()),
+        core.call_service(&lamp, Command::toggle(), user_context()),
+        core.call_service(&lamp, Command::toggle(), user_context()),
     );
     first.expect("first toggle");
     second.expect("second toggle");
@@ -300,7 +303,7 @@ async fn a_failed_command_doesnt_change_what_the_core_thinks() {
     // Both toggles see a lamp that's still on, so both try to turn it off.
     for _ in 0..2 {
         let err = core
-            .call_service(&lamp_id("broken_lamp"), Command::Toggle, user_context())
+            .call_service(&lamp_id("broken_lamp"), Command::toggle(), user_context())
             .await
             .expect_err("the lamp is unplugged");
         assert!(matches!(err, CallError::Unavailable(_)), "{err}");
@@ -520,8 +523,8 @@ async fn calls_time_out_and_health_is_shown() {
     // cover the wait as well, rather than ten seconds each.
     let lamp = lamp_id("silent");
     let (first, second) = tokio::join!(
-        core.call_service(&lamp, Command::TurnOff, user_context()),
-        core.call_service(&lamp, Command::TurnOff, user_context()),
+        core.call_service(&lamp, Command::turn_off(), user_context()),
+        core.call_service(&lamp, Command::turn_off(), user_context()),
     );
     assert_eq!(first.expect_err("no answer"), CallError::Timeout);
     assert_eq!(second.expect_err("no answer"), CallError::Timeout);
@@ -529,7 +532,7 @@ async fn calls_time_out_and_health_is_shown() {
     host.shutdown().await;
 
     let err = core
-        .call_service(&lamp_id("silent"), Command::TurnOff, user_context())
+        .call_service(&lamp_id("silent"), Command::turn_off(), user_context())
         .await
         .expect_err("stopped");
     assert!(matches!(err, CallError::NotRunning(_)), "{err}");

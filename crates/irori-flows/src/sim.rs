@@ -5,9 +5,7 @@ use std::collections::BTreeMap;
 
 use irori_flow_types::trace::{Outcome, RunRecord, TestKind};
 use irori_flow_types::{Flow, NodeId, Port};
-use irori_types::{
-    Availability, EntityId, EntityState, SensorState, SensorValue, State, Timestamp,
-};
+use irori_types::{Availability, EntityId, EntityState, State, Timestamp, Typed};
 
 use crate::engine::{Arm, CountingIds, Effect, Engine};
 
@@ -175,44 +173,17 @@ fn pretend(state: &mut EntityState, value: &serde_json::Value) -> Result<(), Str
     let entity = state.entity_id.clone();
     let wrong = || format!("{value} isn't a value {entity} can have");
     state.availability = Availability::Available;
-    state.state = Some(match (&state.state, value) {
-        (_, serde_json::Value::Null) => {
+    let typed = match value {
+        serde_json::Value::Null => {
             state.state = None;
             return Ok(());
         }
-        (Some(State::Light(light)), serde_json::Value::Bool(on)) => {
-            let mut light = light.clone();
-            light.on = *on;
-            State::Light(light)
-        }
-        (Some(State::Switch(_)), serde_json::Value::Bool(on)) => {
-            State::Switch(irori_types::SwitchState { on: *on })
-        }
-        (Some(State::BinarySensor(_)), serde_json::Value::Bool(on)) => {
-            State::BinarySensor(irori_types::BinarySensorState { on: *on })
-        }
-        (Some(State::Sensor(_)) | None, serde_json::Value::Number(n))
-            if entity.kind() == irori_types::EntityKind::Sensor =>
-        {
-            State::Sensor(SensorState {
-                value: SensorValue::Number(n.as_f64().ok_or_else(wrong)?),
-            })
-        }
-        (Some(State::Sensor(_)) | None, serde_json::Value::String(text))
-            if entity.kind() == irori_types::EntityKind::Sensor =>
-        {
-            State::Sensor(SensorState {
-                value: SensorValue::Text(text.clone()),
-            })
-        }
-        (None, serde_json::Value::Bool(on)) => match entity.kind() {
-            irori_types::EntityKind::Switch => State::Switch(irori_types::SwitchState { on: *on }),
-            irori_types::EntityKind::BinarySensor => {
-                State::BinarySensor(irori_types::BinarySensorState { on: *on })
-            }
-            _ => return Err(wrong()),
-        },
+        serde_json::Value::Bool(on) => Typed::Bool(*on),
+        serde_json::Value::Number(n) => Typed::Number(n.as_f64().ok_or_else(wrong)?),
+        serde_json::Value::String(text) => Typed::Text(text.clone()),
         _ => return Err(wrong()),
-    });
+    };
+    state.state =
+        Some(State::with_primary(entity.kind(), state.state.as_ref(), &typed).ok_or_else(wrong)?);
     Ok(())
 }

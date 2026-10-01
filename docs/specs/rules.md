@@ -213,7 +213,8 @@ At least one of `from`, `to`, `for` may be omitted:
 | both | that exact transition |
 | neither | any typed-value change (not mere attribute-only, not mere availability) |
 
-**What "typed value" means**, by kind — the same field `on()` / `num()` / `text()` read:
+**What "typed value" means**, by kind — the same field `on()` / `num()` / `text()` read. It is
+the kind's primary value ([entities.md](entities.md) §4.4), so every kind has one:
 
 | Kind | Compared against `from`/`to` | Allowed JSON |
 |---|---|---|
@@ -750,9 +751,9 @@ An expression is a single boolean or value. The grammar a person writes:
 
 | Function | Returns | Type-check at save | Runtime |
 |---|---|---|---|
-| `num(id)` | number | `id` is a **string literal**; entity exists, `sensor` with `value_type: number` | error if unavailable or `state` is null |
-| `on(id)` | bool | string literal; entity exists, kind is `light`, `switch`, or `binary_sensor` | error if unavailable or null |
-| `text(id)` | string | string literal; entity exists, `sensor` with `value_type: text` | error if unavailable or null |
+| `num(id)` | number | `id` is a **string literal**; entity exists, its typed value (§5.1) is a number: today a `sensor` with `value_type: number` | error if unavailable or `state` is null |
+| `on(id)` | bool | string literal; entity exists, its typed value is on/off: `light`, `switch`, `binary_sensor` | error if unavailable or null |
+| `text(id)` | string | string literal; entity exists, its typed value is text: today a `sensor` with `value_type: text` | error if unavailable or null |
 | `brightness(id)` | number 1–255 | string literal; entity exists, `light`, `capabilities.brightness` | last brightness, even while off; error if unavailable, null, or brightness absent |
 | `available(id)` | bool | string literal; entity exists | `availability == available`; **false** if the entity is gone at run time |
 | `unknown(id)` | bool | string literal; entity exists | `state` is `null` |

@@ -161,9 +161,12 @@ A request outside the extension's declared scopes is answered with an error nami
 scope, e.g. `this extension didn't ask for services:call`. **Scopes are enforced here**, on every
 request.
 
-`call_service` takes what a person's command takes: `command` (`turn_on`, `turn_off`,
-`toggle`) and, for `turn_on`, `data` (`brightness` 1–255, `color_temp_kelvin`, `rgb`), resolved
-against the entity exactly as a command from the UI is ([protocols.md](protocols.md) §7.1).
+`call_service` takes what a person's command takes: `command`, one of the entity's kind's
+actions (the part of a service name after the dot: `turn_on`, `turn_off`) or `toggle`, and `data`
+as that service takes it (a light's `turn_on`: `brightness` 1–255, `color_temp_kelvin`, `rgb`),
+resolved against the entity exactly as a command from the UI is ([protocols.md](protocols.md)
+§7.1). The core checks `command` against the entity, not the wire, so an engine needs no update
+for a kind added after it was built.
 People-facing spellings such as `brightness_pct` are the engine's to convert. The core builds the call's context itself:
 `Origin::Automation { extension: <this extension>, run_id }`, with `parent_id` if given (the
 context of the state change that started the run). An engine can't claim to be another

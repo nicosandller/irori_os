@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use cel::Program;
 use cel::common::ast::{Expr, IdedExpr, LiteralValue};
-use irori_types::{Capabilities, Entity, EntityId, SensorValueType};
+use irori_types::{Capabilities, Entity, EntityId, ValueShape};
 
 use crate::{
     Action, CallData, Condition, ExprString, LightCallData, Rule, RuleService, Trigger, TypedValue,
@@ -145,8 +145,7 @@ fn walk_triggers_one(
             }
             if (above.is_some() || below.is_some())
                 && let Some(found) = registry.entity(entity)
-                && !matches!(&found.capabilities, Capabilities::Sensor(s)
-                    if s.value_type == SensorValueType::Number)
+                && found.capabilities.primary_shape() != ValueShape::Number
             {
                 problems.push(problem(
                     here,
@@ -710,18 +709,26 @@ fn check_fn_against_registry(
             "{name}(\"{id}\"): no such entity — check the entity id"
         ));
     };
+    let shape = entity.capabilities.primary_shape();
     match (name, &entity.capabilities) {
-        ("num", Capabilities::Sensor(s)) if s.value_type == SensorValueType::Number => Ok(()),
-        ("num", _) => Err(format!(
-            "num(\"{id}\"): entity is {}, not a numeric sensor — use on(\"{id}\")",
-            entity.capabilities.kind()
-        )),
-        ("text", Capabilities::Sensor(s)) if s.value_type == SensorValueType::Text => Ok(()),
+        ("num", _) if shape == ValueShape::Number => Ok(()),
+        ("num", _) => {
+            let instead = if shape == ValueShape::Text {
+                "text"
+            } else {
+                "on"
+            };
+            Err(format!(
+                "num(\"{id}\"): entity is {}, not a numeric sensor — use {instead}(\"{id}\")",
+                entity.capabilities.kind()
+            ))
+        }
+        ("text", _) if shape == ValueShape::Text => Ok(()),
         ("text", _) => Err(format!("text(\"{id}\"): entity is not a text sensor")),
-        (
-            "on",
-            Capabilities::Light(_) | Capabilities::Switch(_) | Capabilities::BinarySensor(_),
-        ) => Ok(()),
+        ("on", _) if shape == ValueShape::Bool => Ok(()),
+        ("on", _) if shape == ValueShape::Text => Err(format!(
+            "on(\"{id}\"): entity is text, not on/off — use text(\"{id}\")"
+        )),
         ("on", _) => Err(format!(
             "on(\"{id}\"): entity is a number, not on/off — use num(\"{id}\")"
         )),
@@ -828,35 +835,20 @@ fn check_state_match(
 }
 
 fn typed_value_fits(value: &TypedValue, entity: &Entity) -> Result<(), String> {
-    match (value, &entity.capabilities) {
-        (TypedValue::Null, _) => Ok(()),
-        (
-            TypedValue::Bool(_),
-            Capabilities::Light(_) | Capabilities::Switch(_) | Capabilities::BinarySensor(_),
-        ) => Ok(()),
-        (TypedValue::Bool(_), _) => Err(format!(
-            "`is` is a boolean, but {} is a {}",
+    let (shape, what) = match value {
+        TypedValue::Null => return Ok(()),
+        TypedValue::Bool(_) => (ValueShape::Bool, "a boolean"),
+        TypedValue::Number(_) => (ValueShape::Number, "a number"),
+        TypedValue::Text(_) => (ValueShape::Text, "a string"),
+    };
+    if entity.capabilities.primary_shape() == shape {
+        Ok(())
+    } else {
+        Err(format!(
+            "`is` is {what}, but {} is a {}",
             entity.id,
             entity.capabilities.kind()
-        )),
-        (TypedValue::Number(_), Capabilities::Sensor(s))
-            if s.value_type == SensorValueType::Number =>
-        {
-            Ok(())
-        }
-        (TypedValue::Number(_), _) => Err(format!(
-            "`is` is a number, but {} is a {}",
-            entity.id,
-            entity.capabilities.kind()
-        )),
-        (TypedValue::Text(_), Capabilities::Sensor(s)) if s.value_type == SensorValueType::Text => {
-            Ok(())
-        }
-        (TypedValue::Text(_), _) => Err(format!(
-            "`is` is a string, but {} is a {}",
-            entity.id,
-            entity.capabilities.kind()
-        )),
+        ))
     }
 }
 
@@ -928,8 +920,8 @@ impl crate::expr::Compiled {
 mod tests {
     use super::*;
     use irori_types::{
-        BinarySensorCapabilities, LightCapabilities, Name, SensorCapabilities, SwitchCapabilities,
-        UniqueId,
+        BinarySensorCapabilities, LightCapabilities, Name, SensorCapabilities, SensorValueType,
+        SwitchCapabilities, UniqueId,
     };
 
     fn entity(id: &str, capabilities: Capabilities) -> Entity {

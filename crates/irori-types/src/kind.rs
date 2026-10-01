@@ -19,7 +19,8 @@ pub enum EntityKind {
 }
 
 impl EntityKind {
-    pub const ALL: [EntityKind; 4] = [Self::Light, Self::Switch, Self::Sensor, Self::BinarySensor];
+    pub const ALL: &'static [EntityKind] =
+        &[Self::Light, Self::Switch, Self::Sensor, Self::BinarySensor];
 
     /// The domain string used in entity ids and service names.
     pub fn domain(self) -> &'static str {
@@ -32,7 +33,7 @@ impl EntityKind {
     }
 
     pub fn from_domain(domain: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|k| k.domain() == domain)
+        Self::ALL.iter().copied().find(|k| k.domain() == domain)
     }
 }
 

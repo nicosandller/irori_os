@@ -1,0 +1,302 @@
+//! What differs from one entity kind to the next. Each kind has its own file with its
+//! capabilities, state, and service data, and the checks that go with them. This module is where
+//! the tagged enums ([`Capabilities`], [`State`], [`Service`]) hand each question to the kind.
+//!
+//! Adding a kind: a file here, then a variant in [`EntityKind`], [`Capabilities`], [`State`],
+//! [`Service`] and [`ServiceName`]. The compiler lists every `match` that has to answer for it.
+
+pub(crate) mod binary_sensor;
+pub(crate) mod light;
+pub(crate) mod sensor;
+pub(crate) mod switch;
+
+use crate::{Capabilities, EntityKind, InvariantError, Service, ServiceName, State};
+
+use self::light::LightTurnOn;
+use self::sensor::{SensorState, SensorValue, SensorValueType};
+
+/// An entity's value the way automations see it: what `on()`, `num()` and `text()` read, and
+/// what a state trigger's `to` is compared with (`docs/specs/rules.md` §5.1). Each kind has one,
+/// its *primary* value: a light's `on`, a sensor's reading.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Typed {
+    Bool(bool),
+    Number(f64),
+    Text(String),
+}
+
+impl Typed {
+    pub fn shape(&self) -> ValueShape {
+        match self {
+            Self::Bool(_) => ValueShape::Bool,
+            Self::Number(_) => ValueShape::Number,
+            Self::Text(_) => ValueShape::Text,
+        }
+    }
+
+    /// As plain JSON: `true`, `21.5`, `"rinse"`.
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            Self::Bool(on) => serde_json::Value::Bool(*on),
+            Self::Number(n) => serde_json::json!(n),
+            Self::Text(text) => serde_json::Value::String(text.clone()),
+        }
+    }
+}
+
+/// Which of the three a [`Typed`] value is, known from the registry before any value arrives,
+/// so rules can be checked when they're saved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueShape {
+    Bool,
+    Number,
+    Text,
+}
+
+impl EntityKind {
+    /// The shape of this kind's primary value, when the kind alone decides it. `None` when it
+    /// depends on the entity: a sensor reports numbers or text ([`Capabilities::primary_shape`]).
+    pub fn primary_shape(self) -> Option<ValueShape> {
+        match self {
+            Self::Light | Self::Switch | Self::BinarySensor => Some(ValueShape::Bool),
+            Self::Sensor => None,
+        }
+    }
+
+    /// The standard services for this kind (`docs/specs/protocols.md` §7.1).
+    pub fn services(self) -> impl Iterator<Item = ServiceName> {
+        ServiceName::ALL
+            .iter()
+            .copied()
+            .filter(move |name| name.kind() == self)
+    }
+
+    /// Whether anything can be asked of it: a light or switch can, a sensor only reports.
+    pub fn has_services(self) -> bool {
+        self.services().next().is_some()
+    }
+
+    /// The service a `toggle` on this kind resolves to, from the value it has (or was last told
+    /// to have). `None` for kinds that can't be toggled.
+    pub fn toggle(self, current: Option<&Typed>) -> Option<ServiceName> {
+        let on = matches!(current, Some(Typed::Bool(true)));
+        match self {
+            Self::Light if on => Some(ServiceName::LightTurnOff),
+            Self::Light => Some(ServiceName::LightTurnOn),
+            Self::Switch if on => Some(ServiceName::SwitchTurnOff),
+            Self::Switch => Some(ServiceName::SwitchTurnOn),
+            Self::Sensor | Self::BinarySensor => None,
+        }
+    }
+}
+
+impl Capabilities {
+    /// The shape of this entity's primary value.
+    pub fn primary_shape(&self) -> ValueShape {
+        match self {
+            Self::Light(_) | Self::Switch(_) | Self::BinarySensor(_) => ValueShape::Bool,
+            Self::Sensor(sensor) => match sensor.value_type {
+                SensorValueType::Number => ValueShape::Number,
+                SensorValueType::Text => ValueShape::Text,
+            },
+        }
+    }
+
+    /// Whether a reported state is one this entity can be in. `Err` says why not, as the end
+    /// of a sentence about the report ("it isn't dimmable").
+    pub fn fits(&self, state: &State) -> Result<(), String> {
+        match (self, state) {
+            (caps, state) if caps.kind() != state.kind() => Err(format!(
+                "it's a {}, but the report is for a {}",
+                caps.kind(),
+                state.kind()
+            )),
+            (Self::Light(caps), State::Light(light)) => light::fits(caps, light),
+            (Self::Sensor(caps), State::Sensor(sensor)) => sensor::fits(caps, sensor),
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether this entity can do what a service asks. `Err` says what it can't, after the
+    /// entity's name ("isn't dimmable").
+    pub fn supports(&self, service: &Service) -> Result<(), String> {
+        let name = service.name();
+        if name.kind() != self.kind() {
+            return Err(format!(
+                "is a {}; `{name}` is for a {}",
+                self.kind(),
+                name.kind()
+            ));
+        }
+        match (self, service) {
+            (Self::Light(caps), Service::LightTurnOn(data)) => light::supports(caps, data),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl State {
+    /// The value automations compare: `on` for the on/off kinds, the reading for a sensor.
+    pub fn primary(&self) -> Typed {
+        match self {
+            Self::Light(light) => Typed::Bool(light.on),
+            Self::Switch(switch) => Typed::Bool(switch.on),
+            Self::BinarySensor(sensor) => Typed::Bool(sensor.on),
+            Self::Sensor(sensor) => match &sensor.value {
+                SensorValue::Number(n) => Typed::Number(*n),
+                SensorValue::Text(text) => Typed::Text(text.clone()),
+            },
+        }
+    }
+
+    /// A state of `kind` holding `value`, keeping the rest of `previous` (a light keeps its
+    /// brightness). `None` if that kind can't hold that value, or needs more than the value to
+    /// be made from nothing (a light needs to have reported once).
+    pub fn with_primary(kind: EntityKind, previous: Option<&State>, value: &Typed) -> Option<Self> {
+        Some(match (kind, previous, value) {
+            (EntityKind::Light, Some(State::Light(light)), Typed::Bool(on)) => {
+                let mut light = light.clone();
+                light.on = *on;
+                State::Light(light)
+            }
+            (EntityKind::Switch, _, Typed::Bool(on)) => {
+                State::Switch(switch::SwitchState { on: *on })
+            }
+            (EntityKind::BinarySensor, _, Typed::Bool(on)) => {
+                State::BinarySensor(binary_sensor::BinarySensorState { on: *on })
+            }
+            (EntityKind::Sensor, _, Typed::Number(n)) => State::Sensor(SensorState {
+                value: SensorValue::Number(*n),
+            }),
+            (EntityKind::Sensor, _, Typed::Text(text)) => State::Sensor(SensorState {
+                value: SensorValue::Text(text.clone()),
+            }),
+            _ => return None,
+        })
+    }
+}
+
+impl Service {
+    /// The service `name` with `data`, checked: data a service doesn't take, or data of the
+    /// wrong shape, is refused with a message naming the service.
+    pub fn from_data(
+        name: ServiceName,
+        data: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Self, InvariantError> {
+        use serde::Deserialize as _;
+        if !name.takes_data() && !data.is_empty() {
+            return Err(InvariantError(format!("`{name}` takes no data")));
+        }
+        let service = match name {
+            ServiceName::LightTurnOn => Service::LightTurnOn(
+                LightTurnOn::deserialize(serde_json::Value::Object(data))
+                    .map_err(|e| InvariantError(format!("`{name}` data: {e}")))?,
+            ),
+            ServiceName::LightTurnOff => Service::LightTurnOff,
+            ServiceName::SwitchTurnOn => Service::SwitchTurnOn,
+            ServiceName::SwitchTurnOff => Service::SwitchTurnOff,
+        };
+        service.validate()?;
+        Ok(service)
+    }
+
+    /// Its data as a JSON object, or `None` when there's nothing to send.
+    pub fn data(&self) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let value = match self {
+            Self::LightTurnOn(data) if *data != LightTurnOn::default() => {
+                serde_json::to_value(data).ok()?
+            }
+            _ => return None,
+        };
+        match value {
+            serde_json::Value::Object(map) => Some(map),
+            _ => None,
+        }
+    }
+
+    /// Deserialization runs this; call it yourself when building a service in code.
+    pub fn validate(&self) -> Result<(), InvariantError> {
+        match self {
+            Self::LightTurnOn(data) => data.validate(),
+            _ => Ok(()),
+        }
+    }
+
+    /// The primary value it asks the entity to have, if it asks for one: `turn_on` asks for
+    /// `on`. The core remembers it until the device reports, so a `toggle` in between resolves
+    /// against what was asked rather than the value that's about to change.
+    pub fn asks_for(&self) -> Option<Typed> {
+        match self {
+            Self::LightTurnOn(_) | Self::SwitchTurnOn => Some(Typed::Bool(true)),
+            Self::LightTurnOff | Self::SwitchTurnOff => Some(Typed::Bool(false)),
+        }
+    }
+}
+
+impl ServiceName {
+    /// The service of `kind` called `action`: `(Light, "turn_on")` is `light.turn_on`.
+    pub fn of(kind: EntityKind, action: &str) -> Option<Self> {
+        kind.services().find(|name| name.action() == action)
+    }
+
+    /// The part after the dot: `turn_on`.
+    pub fn action(self) -> &'static str {
+        let name = self.as_str();
+        name.split_once('.').map_or(name, |(_, action)| action)
+    }
+
+    /// Whether it takes `data`.
+    pub fn takes_data(self) -> bool {
+        matches!(self, Self::LightTurnOn)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_service_is_found_by_its_kind_and_action() {
+        for name in ServiceName::ALL {
+            assert_eq!(ServiceName::of(name.kind(), name.action()), Some(*name));
+        }
+        assert_eq!(ServiceName::of(EntityKind::Sensor, "turn_on"), None);
+        assert!(!EntityKind::BinarySensor.has_services());
+    }
+
+    #[test]
+    fn data_a_service_does_not_take_is_refused() {
+        let mut data = serde_json::Map::new();
+        data.insert("brightness".into(), serde_json::json!(5));
+        let refused = Service::from_data(ServiceName::SwitchTurnOn, data.clone());
+        assert!(refused.is_err_and(|e| e.to_string() == "`switch.turn_on` takes no data"));
+        let light = Service::from_data(ServiceName::LightTurnOn, data).expect("valid");
+        assert_eq!(
+            light.data().and_then(|d| d.get("brightness").cloned()),
+            Some(5.into())
+        );
+        assert_eq!(Service::LightTurnOn(LightTurnOn::default()).data(), None);
+    }
+
+    #[test]
+    fn a_kinds_primary_value_round_trips_through_with_primary() {
+        for (kind, value) in [
+            (EntityKind::Switch, Typed::Bool(true)),
+            (EntityKind::BinarySensor, Typed::Bool(false)),
+            (EntityKind::Sensor, Typed::Number(21.5)),
+            (EntityKind::Sensor, Typed::Text("rinse".into())),
+        ] {
+            let state = State::with_primary(kind, None, &value).expect("holds it");
+            assert_eq!(state.primary(), value);
+        }
+        // A light keeps everything but `on`, so it has to have reported once.
+        assert_eq!(
+            State::with_primary(EntityKind::Light, None, &Typed::Bool(true)),
+            None
+        );
+        assert_eq!(
+            State::with_primary(EntityKind::Switch, None, &Typed::Number(1.0)),
+            None
+        );
+    }
+}

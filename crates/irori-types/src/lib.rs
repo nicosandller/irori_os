@@ -14,6 +14,7 @@ mod context;
 mod extension;
 mod floorplan;
 mod kind;
+mod kinds;
 mod num;
 mod protocol;
 mod registry;
@@ -38,24 +39,24 @@ pub use id::{
     IdError, Name, ObjectId, ProtocolId, RuleId, SLUG_MAX_LEN, TokenId, UniqueId, UserId,
 };
 pub use kind::EntityKind;
+pub use kinds::binary_sensor::{BinarySensorCapabilities, BinarySensorClass, BinarySensorState};
+pub use kinds::light::{ColorMode, ColorTempRange, LightCapabilities, LightState, LightTurnOn};
+pub use kinds::sensor::{
+    SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType, StateClass,
+};
+pub use kinds::switch::{SwitchCapabilities, SwitchClass, SwitchState};
+pub use kinds::{Typed, ValueShape};
 pub use protocol::{
-    DeviceDescription, EntityDescription, LightTurnOn, SecretRequest, Service, ServiceCall,
-    ServiceName, StateReport, Waiting,
+    DeviceDescription, EntityDescription, SecretRequest, Service, ServiceCall, ServiceName,
+    StateReport, Waiting,
 };
-pub use registry::{
-    Area, BinarySensorCapabilities, BinarySensorClass, Capabilities, ColorTempRange, Device,
-    Entity, Floor, LightCapabilities, SensorCapabilities, SensorClass, SensorValueType, StateClass,
-    SwitchCapabilities, SwitchClass,
-};
+pub use registry::{Area, Capabilities, Device, Entity, Floor};
 pub use schema::{SchemaDoc, schemas};
 pub use settings::{
     DeviceSettings, EntitySettings, ExtensionSettings, Placement, SecretError, Settings,
     SettingsKey,
 };
-pub use state::{
-    Attributes, Availability, BinarySensorState, ColorMode, EntityState, LightState, SensorState,
-    SensorValue, State, SwitchState,
-};
+pub use state::{Attributes, Availability, EntityState, State};
 pub use time::{Timestamp, TimestampError};
 
 /// A problem with a value that is well-formed JSON of the right shape but breaks a rule that

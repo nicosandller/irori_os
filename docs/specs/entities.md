@@ -125,8 +125,14 @@ motion sensor are three entities.
 | `capabilities` | object tagged by `kind` | yes | What it can do; see below |
 
 **Kinds in v1:** `light`, `switch`, `sensor`, `binary_sensor`.
-**Next, in likely order:** `cover`, `climate`, `button`/`event`, `lock`. Adding a kind is an
-additive change: a new tag in `Capabilities` and `State`.
+**Next, in likely order:** `number`, `select`, `button`, `event`, `text`, then `cover`, `lock`,
+`fan`, `valve`, `siren`, then `climate`, `water_heater`, `humidifier`. Adding a kind is an
+additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
+data and checks, and a new tag in `Capabilities`, `State` and `Service`.
+
+Every kind has one **primary value** (`on`, a reading, a position…), a bool, number or text. It's
+what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [rules.md](rules.md)
+§5.1), so the rules engine and the editor work with a new kind without code of their own.
 
 **Capabilities by kind** (static facts; they don't change with state):
 

@@ -194,8 +194,11 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
         panic!("a service call");
     };
     assert_eq!(entity_id, id(LIGHT));
-    assert_eq!(command, irori_protocol::WireCommand::TurnOn);
-    assert_eq!(data.and_then(|d| d.brightness), Some(153));
+    assert_eq!(command, "turn_on");
+    assert_eq!(
+        data.and_then(|d| d.get("brightness").cloned()),
+        Some(153.into())
+    );
     let (call_id, result) = answers.recv().await.expect("the answer");
     service
         .engine

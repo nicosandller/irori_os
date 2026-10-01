@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use irori_types::{ContextId, Entity, EntityId, EntityState, LightTurnOn, Timestamp};
+use irori_types::{ContextId, Entity, EntityId, EntityState, Timestamp};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncWrite, BufReader};
 use tokio::sync::{mpsc, oneshot};
@@ -185,7 +185,7 @@ impl EngineClient {
         &self,
         entity_id: EntityId,
         command: WireCommand,
-        data: Option<LightTurnOn>,
+        data: Option<serde_json::Map<String, serde_json::Value>>,
         run_id: ContextId,
         parent_id: Option<ContextId>,
     ) -> Result<(), EngineError> {
