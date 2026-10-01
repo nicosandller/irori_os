@@ -18,6 +18,51 @@ pub struct SensorCapabilities {
     /// How numeric readings accumulate, for history and statistics.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_class: Option<StateClass>,
+    /// Every text it can report, when that's a fixed list (a washing machine's program, Home
+    /// Assistant's `enum` sensors). Only for text; readings outside it are refused, and rules
+    /// comparing it with text it can never have are refused when saved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 256))]
+    pub options: Vec<String>,
+}
+
+/// At most this many options, and this long each: a fixed list a person picks from, not a
+/// catalogue.
+const MAX_OPTIONS: usize = 256;
+const MAX_OPTION_LEN: usize = 255;
+
+impl SensorCapabilities {
+    /// Deserialization of an entity runs this; call it yourself when building one in code.
+    pub fn validate(&self) -> Result<(), InvariantError> {
+        validate_options(&self.options)?;
+        if !self.options.is_empty() && self.value_type != SensorValueType::Text {
+            return Err(InvariantError(
+                "options are for a sensor that reports text; this one reports numbers".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The rules for a list of text options, shared by every kind that has one.
+pub(crate) fn validate_options(options: &[String]) -> Result<(), InvariantError> {
+    if options.len() > MAX_OPTIONS {
+        return Err(InvariantError(format!(
+            "{} options is too many; at most {MAX_OPTIONS}",
+            options.len()
+        )));
+    }
+    for (i, option) in options.iter().enumerate() {
+        if option.trim().is_empty() || option.chars().count() > MAX_OPTION_LEN {
+            return Err(InvariantError(format!(
+                "option {option:?} must be 1-{MAX_OPTION_LEN} characters and not blank"
+            )));
+        }
+        if options[..i].contains(option) {
+            return Err(InvariantError(format!("option {option:?} is listed twice")));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -159,11 +204,24 @@ pub(crate) fn fits(caps: &SensorCapabilities, sensor: &SensorState) -> Result<()
         (SensorValueType::Text, SensorValue::Number(n)) => {
             Err(format!("it reports text, but the value is the number {n}"))
         }
+        (SensorValueType::Text, SensorValue::Text(text))
+            if !caps.options.is_empty() && !caps.options.contains(text) =>
+        {
+            Err(format!(
+                "{text:?} isn't one of its options ({})",
+                caps.options.join(", ")
+            ))
+        }
         _ => Ok(()),
     }
 }
 
 impl SensorClass {
+    /// Whether a sensor of this class reports text rather than a number: a date, a timestamp.
+    pub fn reports_text(self) -> bool {
+        matches!(self, Self::Date | Self::Timestamp)
+    }
+
     /// The class Home Assistant calls `name` (`temperature`), as protocols that speak its vocabulary
     /// (ESPHome, MQTT discovery) report it.
     pub fn from_ha(name: &str) -> Option<Self> {
@@ -180,6 +238,34 @@ impl SensorClass {
 mod tests {
     use super::*;
     use crate::State;
+
+    #[test]
+    fn a_sensor_with_options_reports_only_those() {
+        let caps = SensorCapabilities {
+            value_type: SensorValueType::Text,
+            device_class: None,
+            unit: None,
+            state_class: None,
+            options: vec!["wash".into(), "rinse".into()],
+        };
+        let text = |t: &str| SensorState {
+            value: SensorValue::Text(t.into()),
+        };
+        assert!(fits(&caps, &text("rinse")).is_ok());
+        assert_eq!(
+            fits(&caps, &text("spin")),
+            Err(r#""spin" isn't one of its options (wash, rinse)"#.to_owned())
+        );
+        let blank = SensorCapabilities {
+            options: vec![" ".into()],
+            ..caps.clone()
+        };
+        assert!(blank.validate().is_err());
+        assert_eq!(
+            State::Sensor(text("rinse")).primary(),
+            crate::Typed::Text("rinse".into())
+        );
+    }
 
     #[test]
     fn classes_are_read_by_their_home_assistant_names() {

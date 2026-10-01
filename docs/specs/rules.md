@@ -783,8 +783,11 @@ timestamp literals. `attr()` is the escape hatch that matches [entities.md](enti
 readable, **scalar only** in v1. Anything rules *rely* on should become a typed field instead.
 
 **Text sensors.** [entities.md](entities.md) open question 2 (enum options on capabilities): v1
-`text(id) == 'rinse'` is a string compare. Options on capabilities are **not** required and not
-checked. Revisit when a device needs it.
+`text(id) == 'rinse'` is a string compare. When the entity lists its `options`
+([entities.md](entities.md) §4.4), comparing `text(id)` with a literal it can never have (`==` or
+`!=`, either way round) is an error when the rule is saved, and so is a state trigger or condition
+whose text `to`/`is` isn't one of them: `sensor.washer_program is never "spin"; it is one of: wash,
+rinse`. Without options, any text is allowed.
 
 A real ESPHome temperature entity is the same surface with a longer id:
 

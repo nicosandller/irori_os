@@ -109,6 +109,15 @@ impl Capabilities {
         }
     }
 
+    /// Every text its primary value can be, when that's a fixed list. Rules check the text
+    /// they compare against it, and the editor offers it.
+    pub fn text_options(&self) -> Option<&[String]> {
+        match self {
+            Self::Sensor(sensor) if !sensor.options.is_empty() => Some(&sensor.options),
+            _ => None,
+        }
+    }
+
     /// Whether a reported state is one this entity can be in. `Err` says why not, as the end
     /// of a sentence about the report ("it isn't dimmable").
     pub fn fits(&self, state: &State) -> Result<(), String> {

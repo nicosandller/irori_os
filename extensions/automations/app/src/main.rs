@@ -106,10 +106,20 @@ impl Home {
         })
     }
 
-    /// The texts `entity` has reported over the last day, newest first, and its text now: the
-    /// values a condition or trigger on it can usefully name. Asked for the first time it's
-    /// wanted; the answer arrives a moment later.
+    /// Every text `entity` can say, when it lists them. Otherwise the texts it has reported over
+    /// the last day, newest first, and its text now: the values a condition or trigger on it can
+    /// usefully name. Asked for the first time it's wanted; the answer arrives a moment later.
     pub fn texts(&self, entity: &EntityId) -> Vec<String> {
+        // A sensor that lists what it can say needs no guessing from its history.
+        let declared = self.entities.with_untracked(|entities| {
+            entities
+                .iter()
+                .find(|e| &e.id == entity)
+                .and_then(|e| e.capabilities.text_options().map(<[String]>::to_vec))
+        });
+        if let Some(options) = declared {
+            return options;
+        }
         let seen = self.seen;
         let known = seen.with(|seen| seen.get(entity).cloned());
         let mut texts = known.unwrap_or_else(|| {

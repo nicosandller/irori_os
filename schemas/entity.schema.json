@@ -265,6 +265,14 @@
               "type": "string",
               "const": "sensor"
             },
+            "options": {
+              "description": "Every text it can report, when that's a fixed list (a washing machine's program, Home\nAssistant's `enum` sensors). Only for text; readings outside it are refused, and rules\ncomparing it with text it can never have are refused when saved.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256
+            },
             "state_class": {
               "description": "How numeric readings accumulate, for history and statistics.",
               "anyOf": [

@@ -578,6 +578,7 @@ async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
             device_class: Some(SensorClass::Temperature),
             unit: Some("°C".into()),
             state_class: Some(StateClass::Measurement),
+            options: Vec::new(),
         }),
     })
     .await?;
@@ -634,6 +635,7 @@ async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
             device_class: Some(SensorClass::Illuminance),
             unit: Some("lx".into()),
             state_class: Some(StateClass::Measurement),
+            options: Vec::new(),
         }),
     })
     .await?;
@@ -665,6 +667,7 @@ async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
             device_class: Some(SensorClass::Distance),
             unit: Some("m".into()),
             state_class: Some(StateClass::Measurement),
+            options: Vec::new(),
         }),
     })
     .await?;
@@ -756,6 +759,7 @@ async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
             device_class: None,
             unit: None,
             state_class: None,
+            options: Vec::new(),
         }),
     })
     .await?;
@@ -780,6 +784,7 @@ fn measurement(
             device_class: Some(class),
             unit: Some(unit.into()),
             state_class: Some(StateClass::Measurement),
+            options: Vec::new(),
         }),
     })
 }

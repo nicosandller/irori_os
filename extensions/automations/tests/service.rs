@@ -74,6 +74,7 @@ fn home() -> (Vec<Entity>, Vec<EntityState>) {
                     device_class: None,
                     unit: None,
                     state_class: None,
+                    options: Vec::new(),
                 }),
             ),
             entity(

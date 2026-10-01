@@ -146,6 +146,7 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | | `device_class` | Home Assistant's sensor device classes, by the same names (`temperature`, `humidity`, `power`, `pm25`, `timestamp`, …; 61 in all, see the schema), except carbon dioxide, which is `co2`. HA's `enum` isn't a class here: a sensor reporting from a fixed list says so with `options` | absent | |
 | | `unit` | string | absent | E.g. `°C`, `lx`, `%`, `W`, `kWh` |
 | | `state_class` | `measurement` \| `total` \| `total_increasing` | absent | How values accumulate, for statistics |
+| | `options` | list of up to 256 distinct, non-blank strings | absent | Only with `value_type: text`: every text it can report (HA's `enum` sensors). A reading outside it is refused, and rules comparing it with text it can never have are refused when saved |
 | `binary_sensor` | `device_class` | Home Assistant's binary sensor device classes, by the same names (`motion`, `occupancy`, `presence`, `door`, `garage_door`, `window`, `opening`, `lock`, …; 29 in all, see the schema) | absent | Says what `on` means, as in Home Assistant: a `lock` that's on is **unlocked**, a `battery` that's on is low |
 
 Device classes are closed lists, matching Home Assistant's: a protocol maps what it knows (with
@@ -310,8 +311,7 @@ Recorded as D20 in the ROADMAP decision log.
 1. **Entity renames.** When a user renames `light.hallway` to `light.hall_ceiling`, should the
    core rewrite rule files (they're the user's plain-text source of truth, D18), keep an alias,
    or refuse while rules reference it? Decide in M0.7 (config) with M0.3 (rules).
-2. **Text sensor values.** Should `text` sensors that report from a fixed set (e.g. a
-   washing machine program) declare their options in capabilities, so rules can check
-   `== 'rinse'` against them? Likely yes; decide with M0.3.
+2. ~~**Text sensor values.**~~ Decided: a text sensor may list its `options` (§4.4), and rules are
+   checked against them.
 3. **Units.** Free-form strings today. Before AI dashboards and statistics, decide whether to
    restrict units per `device_class` and normalize (e.g. store °C, display °F).

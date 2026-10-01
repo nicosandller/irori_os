@@ -162,6 +162,7 @@ pub fn sensor(
                 3 => Some(StateClass::Total),
                 _ => None,
             },
+            options: Vec::new(),
         }),
     })
 }
@@ -183,6 +184,7 @@ pub fn text_sensor(
             device_class: SensorClass::from_ha(&entity.device_class),
             unit: None,
             state_class: None,
+            options: Vec::new(),
         }),
     })
 }

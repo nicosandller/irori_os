@@ -1082,6 +1082,7 @@ mod tests {
                 device_class: None,
                 unit: Some("°C".to_owned()),
                 state_class: None,
+                options: Vec::new(),
             }),
         };
         let mut state = reading("2026-09-16T10:00:00Z", true);

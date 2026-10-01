@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use cel::Program;
-use cel::common::ast::{Expr, IdedExpr, LiteralValue};
+use cel::common::ast::{CallExpr, Expr, IdedExpr, LiteralValue};
 use irori_types::{Capabilities, Entity, EntityId, ValueShape};
 
 use crate::{
@@ -610,6 +610,9 @@ fn walk_ast(
                 *uses_clock = true;
             }
             check_arity(name, call.args.len())?;
+            if name == "_==_" || name == "_!=_" {
+                check_text_comparison(call, registry)?;
+            }
             if ENTITY_FNS.contains(&name) {
                 let Some(first) = call.args.first() else {
                     return Err(format!("{name}() needs a string literal entity id"));
@@ -842,13 +845,61 @@ fn typed_value_fits(value: &TypedValue, entity: &Entity) -> Result<(), String> {
         TypedValue::Text(_) => (ValueShape::Text, "a string"),
     };
     if entity.capabilities.primary_shape() == shape {
-        Ok(())
+        match value {
+            TypedValue::Text(text) => text_can_be(entity, text),
+            _ => Ok(()),
+        }
     } else {
         Err(format!(
             "`is` is {what}, but {} is a {}",
             entity.id,
             entity.capabilities.kind()
         ))
+    }
+}
+
+/// Whether `entity` can ever report `text`: always, unless it lists its options.
+fn text_can_be(entity: &Entity, text: &str) -> Result<(), String> {
+    match entity.capabilities.text_options() {
+        Some(options) if !options.iter().any(|o| o == text) => Err(format!(
+            "{} is never {text:?}; it is one of: {}",
+            entity.id,
+            options.join(", ")
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// `text('id') == 'x'` (either way round, or `!=`): `x` must be something the entity can say.
+/// The entity id in `text('id')`, if `expr` is that call.
+fn text_of(expr: &IdedExpr) -> Option<&str> {
+    match &expr.expr {
+        Expr::Call(inner) if crate::expr::author_name(inner.func_name.as_str()) == "text" => {
+            inner.args.first().and_then(string_literal)
+        }
+        _ => None,
+    }
+}
+
+fn check_text_comparison(call: &CallExpr, registry: &impl RegistryView) -> Result<(), String> {
+    let [left, right] = call.args.as_slice() else {
+        return Ok(());
+    };
+    let (id, literal) = match (
+        text_of(left),
+        string_literal(right),
+        text_of(right),
+        string_literal(left),
+    ) {
+        (Some(id), Some(literal), _, _) | (_, _, Some(id), Some(literal)) => (id, literal),
+        _ => return Ok(()),
+    };
+    let Ok(entity_id) = id.parse::<EntityId>() else {
+        return Ok(());
+    };
+    match registry.entity(&entity_id) {
+        Some(entity) => text_can_be(entity, literal),
+        None => Ok(()),
     }
 }
 
@@ -951,6 +1002,7 @@ mod tests {
                     device_class: None,
                     unit: Some("lx".into()),
                     state_class: None,
+                    options: Vec::new(),
                 }),
             ),
             entity(
@@ -1001,6 +1053,7 @@ mod tests {
                 device_class: None,
                 unit: None,
                 state_class: None,
+                options: Vec::new(),
             }),
         );
         let mut registry = hallway_registry();
@@ -1015,6 +1068,44 @@ mod tests {
             Err(r#"on("sensor.washer_program"): entity is text, not on/off — use text("sensor.washer_program")"#.to_owned())
         );
         assert_eq!(check("text"), Ok(()));
+    }
+
+    #[test]
+    fn text_a_sensor_can_never_report_is_rejected() {
+        let washer = entity(
+            "sensor.washer_program",
+            Capabilities::Sensor(SensorCapabilities {
+                value_type: SensorValueType::Text,
+                device_class: None,
+                unit: None,
+                state_class: None,
+                options: vec!["wash".into(), "rinse".into()],
+            }),
+        );
+        let mut registry = hallway_registry();
+        registry.entities.insert(washer.id.clone(), washer.clone());
+        let problems_with = |expr: &str| {
+            let mut rule = hallway_rule();
+            if let Condition::Expr { expr: e } = &mut rule.conditions[0] {
+                *e = serde_json::from_value(serde_json::json!(expr)).unwrap();
+            }
+            validate(&rule, &registry)
+        };
+        assert!(problems_with("text('sensor.washer_program') == 'rinse'").is_empty());
+        for wrong in [
+            "text('sensor.washer_program') == 'spin'",
+            "'spin' != text('sensor.washer_program')",
+        ] {
+            let problems = problems_with(wrong);
+            assert!(
+                problems.iter().any(|p| p
+                    .reason
+                    .contains(r#"is never "spin"; it is one of: wash, rinse"#)),
+                "{wrong}: {problems:?}"
+            );
+        }
+        assert!(typed_value_fits(&TypedValue::Text("spin".into()), &washer).is_err());
+        assert!(typed_value_fits(&TypedValue::Text("wash".into()), &washer).is_ok());
     }
 
     #[test]

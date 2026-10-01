@@ -121,6 +121,7 @@ async fn describe(ctx: &ProtocolContext, reading: &Reading) -> Result<(), Protoc
             device_class: reading.class,
             unit: reading.unit.map(str::to_owned),
             state_class: (!reading.text).then_some(StateClass::Measurement),
+            options: Vec::new(),
         }),
     })
     .await?;

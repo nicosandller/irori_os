@@ -373,9 +373,25 @@ fn parse_sensor(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics)
         "total_increasing" => Some(StateClass::TotalIncreasing),
         _ => None,
     });
+    // HA's `enum` sensors list what they can say; there's no class for that here, only the list.
+    let options: Vec<String> = root
+        .get("options")
+        .and_then(serde_json::Value::as_array)
+        .map(|options| {
+            options
+                .iter()
+                .filter_map(|o| o.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
     // A unit at all is the strongest signal this is a number, not text (HA has no separate
-    // "this sensor is numeric" flag) — Tasmota/Z2M numeric sensors always carry one.
-    let value_type = if str_field(root, "unit_of_measurement").is_some() || device_class.is_some() {
+    // "this sensor is numeric" flag) — Tasmota/Z2M numeric sensors always carry one. A class
+    // says so too, unless it's one of the text classes (a timestamp) or the sensor lists options.
+    let numeric_class = device_class.is_some_and(|class| !class.reports_text());
+    let value_type = if options.is_empty()
+        && str_field(root, "device_class") != Some("enum")
+        && (str_field(root, "unit_of_measurement").is_some() || numeric_class)
+    {
         SensorValueType::Number
     } else {
         SensorValueType::Text
@@ -386,6 +402,7 @@ fn parse_sensor(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics)
             device_class,
             unit: str_field(root, "unit_of_measurement").map(str::to_owned),
             state_class,
+            options,
         }),
         EntityTopics::Sensor {
             state_topic,
@@ -549,6 +566,34 @@ mod tests {
         let error = parse(Component::Switch, br#"{"name": "x", "command_topic": "t"}"#)
             .expect_err("no unique_id");
         assert!(error.contains("unique_id"));
+    }
+
+    #[test]
+    fn enum_and_timestamp_sensors_report_text() {
+        let program = parse(
+            Component::Sensor,
+            br#"{"unique_id": "washer_program", "name": "Program", "state_topic": "washer/state",
+                "device_class": "enum", "options": ["wash", "rinse", "spin"]}"#,
+        )
+        .expect("valid");
+        let Capabilities::Sensor(caps) = &program.capabilities else {
+            panic!("a sensor");
+        };
+        assert_eq!(caps.value_type, SensorValueType::Text);
+        assert_eq!(caps.options, ["wash", "rinse", "spin"]);
+        assert_eq!(caps.device_class, None);
+
+        let last_seen = parse(
+            Component::Sensor,
+            br#"{"unique_id": "plug_last_seen", "name": "Last seen", "state_topic": "plug/state",
+                "device_class": "timestamp"}"#,
+        )
+        .expect("valid");
+        let Capabilities::Sensor(caps) = &last_seen.capabilities else {
+            panic!("a sensor");
+        };
+        assert_eq!(caps.value_type, SensorValueType::Text);
+        assert_eq!(caps.device_class, Some(SensorClass::Timestamp));
     }
 
     #[test]

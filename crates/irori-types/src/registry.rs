@@ -177,6 +177,7 @@ impl Capabilities {
                 color_temp_kelvin: Some(range),
                 ..
             }) => range.validate(),
+            Self::Sensor(sensor) => sensor.validate(),
             _ => Ok(()),
         }
     }

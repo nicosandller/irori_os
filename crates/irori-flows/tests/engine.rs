@@ -99,6 +99,7 @@ fn registry() -> MapRegistry {
                     device_class: None,
                     unit: Some("lx".into()),
                     state_class: None,
+                    options: Vec::new(),
                 }),
             ),
             entity(

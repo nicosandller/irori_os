@@ -1,0 +1,1 @@
+options are for a sensor that reports text; this one reports numbers
