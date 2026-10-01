@@ -220,6 +220,12 @@
             }
           ]
         },
+        "entity_format": {
+          "description": "Which version of the entity format it reads, when it reads entities and states through\nthe API (an automation engine, its page). Left out, it's 1: what every extension built\nbefore formats existed reads. Irori sends it entities and states in that format, leaving\nout what the format doesn't have (`docs/specs/extensions.md` §5).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1
+        },
         "icon": {
           "description": "A square SVG, relative to the package root, shown beside the extension and its devices so\nthey can be told apart at a glance. Always displayed as an image, never inlined into a\npage, so it can't run script. A built-in extension embeds the file as well\n(`Protocol::ICON`).",
           "anyOf": [

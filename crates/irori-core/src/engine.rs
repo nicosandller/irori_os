@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use irori_protocol::{FromExt, ToExt};
-use irori_types::{ApiScope, Context, ExtensionId, ExtensionManifest, Origin};
+use irori_types::{ApiScope, Context, ExtensionId, ExtensionManifest, Origin, format};
 use serde_json::json;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -19,6 +19,9 @@ use crate::{AppCall, AppInfo, CallError, Command, Core, Event};
 /// the messages waiting to go to it.
 pub(crate) struct EngineLink {
     scopes: Vec<ApiScope>,
+    /// The entity format it reads: entities and states it's sent are in this one
+    /// (`irori_types::format`), so an engine built before a kind or field existed isn't sent it.
+    format: u32,
     is_protocol: bool,
     out_tx: mpsc::UnboundedSender<ToExt>,
     out_rx: mpsc::UnboundedReceiver<ToExt>,
@@ -37,6 +40,7 @@ impl EngineLink {
         let (app_tx, app_rx) = mpsc::channel(64);
         Self {
             scopes: manifest.permissions.api.clone(),
+            format: manifest.extension.entity_format,
             is_protocol: !manifest.contributes.protocol.is_empty(),
             out_tx,
             out_rx,
@@ -103,11 +107,13 @@ impl EngineLink {
                 entity_id,
                 old_state,
                 new_state,
-            } if self.states => Some(ToExt::StateChanged {
-                entity_id,
-                old_state,
-                new_state,
-            }),
+            } if self.states && format::readable(self.format, entity_id.kind()) => {
+                Some(ToExt::StateChanged {
+                    entity_id,
+                    old_state,
+                    new_state,
+                })
+            }
             Event::DeviceAdded { .. }
             | Event::DeviceUpdated { .. }
             | Event::DeviceRemoved { .. }
@@ -149,8 +155,13 @@ impl EngineLink {
         match from {
             FromExt::GetRegistry { id } => {
                 let result = self.allowed(ApiScope::RegistryRead).map(|()| {
+                    let entities: Vec<serde_json::Value> = core
+                        .entities()
+                        .iter()
+                        .filter_map(|entity| format::entity_for(self.format, entity))
+                        .collect();
                     json!({
-                        "entities": core.entities(),
+                        "entities": entities,
                         // `irori.toml` has neither yet (rules.md K13).
                         "timezone": false,
                         "location": false,
@@ -159,9 +170,14 @@ impl EngineLink {
                 self.answer(id, result);
             }
             FromExt::GetStates { id } => {
-                let result = self
-                    .allowed(ApiScope::StatesRead)
-                    .map(|()| json!(core.states()));
+                let result = self.allowed(ApiScope::StatesRead).map(|()| {
+                    json!(
+                        core.states()
+                            .iter()
+                            .filter_map(|state| format::state_for(self.format, state))
+                            .collect::<Vec<_>>()
+                    )
+                });
                 self.answer(id, result);
             }
             FromExt::GetHistory {
@@ -172,11 +188,15 @@ impl EngineLink {
                 let result = self.allowed(ApiScope::HistoryRead).map(|()| {
                     let history: serde_json::Map<String, serde_json::Value> = entities
                         .iter()
+                        // An entity the engine can't read has no history it could read either.
+                        .filter(|entity| format::readable(self.format, entity.kind()))
                         .map(|entity| {
-                            (
-                                entity.as_str().to_owned(),
-                                json!(core.history(entity, since)),
-                            )
+                            let states: Vec<serde_json::Value> = core
+                                .history(entity, since)
+                                .iter()
+                                .filter_map(|state| format::state_for(self.format, state))
+                                .collect();
+                            (entity.as_str().to_owned(), json!(states))
                         })
                         .collect();
                     serde_json::Value::Object(history)
@@ -304,6 +324,7 @@ pub(crate) fn app_info(manifest: &ExtensionManifest) -> Option<AppInfo> {
         label: app.label.clone(),
         entry: app.entry.clone(),
         api: manifest.permissions.api.clone(),
+        entity_format: manifest.extension.entity_format,
     })
 }
 

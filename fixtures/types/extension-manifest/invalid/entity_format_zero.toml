@@ -1,0 +1,18 @@
+[extension]
+id = "automations"
+name = "Automations"
+version = "0.1.0"
+irori = ">=0.1.0, <0.2.0"
+icon = "icon.svg"
+entity_format = 0
+
+[[contributes.automation]]
+run = { command = "bin/irori-ext-automations" }
+
+[[contributes.app]]
+label = "Automations"
+entry = "app/index.html"
+
+[permissions]
+api = ["registry:read", "states:read", "events:read", "services:call", "history:read"]
+host_fs = ["$CONFIG/flows"]

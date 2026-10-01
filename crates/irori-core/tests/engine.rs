@@ -264,3 +264,119 @@ async fn the_core_names_the_engine_as_the_origin_of_its_calls() {
     );
     host.shutdown().await;
 }
+
+/// A lamp whose light is one of its diagnostics: `entity_category` is newer than the first
+/// entity format.
+struct DiagnosticLamp;
+impl Protocol for DiagnosticLamp {
+    type Config = NoSettings;
+    const MANIFEST: &'static str = r#"
+        [extension]
+        id = "lamp"
+        name = "Lamp"
+        version = "0.1.0"
+        irori = ">=0.0.0"
+
+        [[contributes.protocol]]
+        iot_class = "local_push"
+        entity_kinds = ["light"]
+    "#;
+    async fn run(_: NoSettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
+        ctx.describe_device(DeviceDescription {
+            unique_id: uid("lamp"),
+            name: Name::try_from("Lamp")?,
+            manufacturer: None,
+            model: None,
+            sw_version: None,
+            hw_version: None,
+            suggested_area: None,
+            via_device_unique_id: None,
+        })
+        .await?;
+        ctx.describe_entity(EntityDescription {
+            unique_id: uid("lamp-light"),
+            name: None,
+            device_unique_id: Some(uid("lamp")),
+            suggested_object_id: None,
+            capabilities: Capabilities::Light(LightCapabilities {
+                brightness: false,
+                color_temp_kelvin: None,
+                rgb: false,
+            }),
+            entity_category: Some(irori_protocol::types::EntityCategory::Diagnostic),
+        })
+        .await?;
+        ctx.stopped().await;
+        Ok(())
+    }
+}
+
+/// An engine installed before entity formats existed says nothing about one, and must be sent
+/// only what it was built to read: an entity with a field it doesn't know would fail its whole
+/// registry, and the engine would stop.
+#[tokio::test]
+async fn an_engine_built_before_entity_formats_is_sent_what_it_can_read() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let mut engines = Vec::new();
+    for (id, format) in [("old", ""), ("new", "entity_format = 2")] {
+        let package = packages_dir.path().join(id);
+        std::fs::create_dir_all(package.join("bin")).expect("made the package dir");
+        std::fs::write(
+            package.join("irori-extension.toml"),
+            format!(
+                r#"
+                    [extension]
+                    id = "{id}"
+                    name = "Engine"
+                    version = "0.1.0"
+                    irori = ">=0.0.0"
+                    {format}
+
+                    [[contributes.automation]]
+                    run = {{ command = "bin/engine" }}
+
+                    [permissions]
+                    api = ["registry:read"]
+                "#
+            ),
+        )
+        .expect("wrote the manifest");
+        let program = package.join("bin/engine");
+        std::fs::write(
+            &program,
+            "#!/bin/sh\nread hello\nsleep 1\necho '{\"type\":\"get_registry\",\"id\":1}'\n\
+             read answer; echo \"registry: $answer\" >&2\nwhile read line; do :; done\n",
+        )
+        .expect("wrote the program");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .expect("made it executable");
+        engines.push(ExtensionId::try_from(id).expect("valid"));
+    }
+
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![builtin::<DiagnosticLamp>().expect("valid")],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("starts");
+    let registry_of = |engine: &ExtensionId| {
+        core.log(engine).iter().find_map(|line| {
+            line.split_once("registry: ")
+                .map(|(_, json)| json.to_owned())
+        })
+    };
+    for engine in &engines {
+        eventually("the registry is answered", || registry_of(engine).is_some()).await;
+    }
+    let old = registry_of(&engines[0]).expect("answered");
+    let new = registry_of(&engines[1]).expect("answered");
+    assert!(old.contains("light.lamp_lamp"), "{old}");
+    assert!(!old.contains("entity_category"), "{old}");
+    assert!(new.contains(r#""entity_category":"diagnostic""#), "{new}");
+
+    host.shutdown().await;
+}

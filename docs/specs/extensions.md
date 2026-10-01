@@ -93,6 +93,7 @@ More, valid and invalid, in `fixtures/types/extension-manifest/`.
 | `description` | 1–500 chars, one line | no | |
 | `config_schema` | package path | no | JSON Schema (draft 2020-12) for its settings. External extensions only: a built-in extension's schema is generated from its Rust config type |
 | `icon` | package path | no | A square SVG shown beside the extension and its devices. Always displayed as an image (`<img>`, served with a no-script content policy), never inlined into a page. A built-in extension embeds the same file (`Protocol::ICON`), and the two must agree |
+| `entity_format` | integer ≥ 1 | no | The entity format it reads through the API (registry, states, history, events, its page's bridge). Default 1, the first. Irori sends it entities and states in that format, leaving out kinds and fields added since: see below |
 
 **Versions** are [Semantic Versioning](https://semver.org) `MAJOR.MINOR.PATCH` with an optional
 pre-release: `1.4.0`, `0.3.0-beta.1`. No build metadata (`+abc`), so two equal versions are
@@ -105,6 +106,21 @@ pre-release of Irori counts as its release: `0.2.0-dev` satisfies `>=0.2.0`.
 
 An extension whose requirement doesn't match the running Irori isn't started; it shows as
 `failed` with the reason, e.g. `requires Irori >=0.2.0, this is 0.1.0`.
+
+**Entity formats.** Extensions parse what they're sent strictly, as Irori does, so one built
+before a kind or a field existed can't read it: an unknown kind in an entity id, or an unknown
+field, fails the whole message, and an engine whose registry fails stops. So each extension says
+which format it reads, and Irori converts down (`irori_types::format`):
+
+| Format | Adds |
+|---|---|
+| 1 | `light`, `switch`, `sensor`, `binary_sensor` |
+| 2 | `entity_category` on entities, `options` on text sensors |
+
+A reader of an older format isn't sent entities of newer kinds at all (nor their states, history
+or changes), and is sent the others without the newer fields. Every change to what an entity or
+state looks like on the wire adds a format. An extension raises its `entity_format` once it has
+learned what the new one adds.
 
 **Package paths** (`config_schema`, `run.command`) are relative to the package root: `/`-separated
 names of letters, digits, `.`, `_`, `-`, where no name starts with `.`. So a path can't point

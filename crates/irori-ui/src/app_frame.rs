@@ -5,6 +5,7 @@
 //! end answers — only messages from its own frame, and only what the extension's declared scopes
 //! allow.
 
+use irori_types::format;
 use irori_ui_kit::message::{Hello, Reply, Request, TOKENS, Theme, VERSION, scope_for};
 use leptos::ev;
 use leptos::prelude::*;
@@ -153,6 +154,9 @@ fn Frame(id: String) -> impl IntoView {
                 .get_untracked()
                 .map(|(app, _, _)| app.api)
                 .unwrap_or_default();
+            let entity_format = app
+                .get_untracked()
+                .map_or(1, |(app, _, _)| app.entity_format);
             if let Some(scope) = scope_for(&request.op)
                 && !scopes.iter().any(|declared| declared == scope)
             {
@@ -177,8 +181,13 @@ fn Frame(id: String) -> impl IntoView {
                 }
                 "registry" => {
                     let value = live.home.with_untracked(|home| {
+                        let entities: Vec<serde_json::Value> = home
+                            .entities
+                            .iter()
+                            .filter_map(|entity| format::entity_for(entity_format, entity))
+                            .collect();
                         serde_json::json!({
-                            "entities": home.entities,
+                            "entities": entities,
                             "devices": home.devices,
                             "areas": home.areas,
                         })
@@ -186,16 +195,30 @@ fn Frame(id: String) -> impl IntoView {
                     post(&Reply::answer(request.id, Ok(value)));
                 }
                 "states" => {
-                    let value = live
-                        .home
-                        .with_untracked(|home| serde_json::to_value(&home.states));
-                    post(&Reply::answer(request.id, value.map_err(|e| e.to_string())));
+                    let value = live.home.with_untracked(|home| {
+                        serde_json::Value::Array(
+                            home.states
+                                .iter()
+                                .filter_map(|state| format::state_for(entity_format, state))
+                                .collect(),
+                        )
+                    });
+                    post(&Reply::answer(request.id, Ok(value)));
                 }
                 "history" => spawn_local(async move {
                     let entity = request.args["entity_id"].as_str().unwrap_or_default();
                     let result = match entity.parse::<irori_types::EntityId>() {
-                        Ok(entity) => api::entity_history(&entity).await.and_then(|states| {
-                            serde_json::to_value(states).map_err(|e| e.to_string())
+                        // A page can't be told about an entity its format doesn't have.
+                        Ok(entity) if !format::readable(entity_format, entity.kind()) => {
+                            Ok(serde_json::Value::Array(Vec::new()))
+                        }
+                        Ok(entity) => api::entity_history(&entity).await.map(|states| {
+                            serde_json::Value::Array(
+                                states
+                                    .iter()
+                                    .filter_map(|state| format::state_for(entity_format, state))
+                                    .collect(),
+                            )
                         }),
                         Err(error) => Err(error.to_string()),
                     };

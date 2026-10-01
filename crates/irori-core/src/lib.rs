@@ -155,6 +155,8 @@ pub struct AppInfo {
     pub entry: PackagePath,
     /// The API scopes it declared: what the shell's bridge may hand its page.
     pub api: Vec<ApiScope>,
+    /// The entity format its page reads, as its manifest says (`irori_types::format`).
+    pub entity_format: u32,
 }
 
 fn is_present<S: serde::Serializer>(

@@ -13,6 +13,7 @@ mod id;
 mod context;
 mod extension;
 mod floorplan;
+pub mod format;
 mod kind;
 mod kinds;
 mod num;

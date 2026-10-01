@@ -154,6 +154,14 @@ pub struct AppInfo {
     /// The API scopes it declared: what the bridge may hand its page.
     #[serde(default)]
     pub api: Vec<String>,
+    /// The entity format its page reads; what it's handed is in that format
+    /// (`irori_types::format`). 1 for a page built before formats existed.
+    #[serde(default = "first_format")]
+    pub entity_format: u32,
+}
+
+fn first_format() -> u32 {
+    1
 }
 
 /// One entry of `/api/dev/apps`: a running extension's page and whether its files are there.
