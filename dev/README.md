@@ -135,9 +135,9 @@ It raises the memory limit to 2 GB (Zigbee2MQTT needs it) unless `IRORI_PI_MEMOR
 | ESPHome | Four boards announce `_esphomelib._tcp` inside the container. One extra encrypted board prints its key in `dev/pi logs`. |
 | Matter | Three nodes, once their binaries are pinned in `dev/lab/matter/`. Until then the log names each one's discriminator and passcode. |
 
-Rooms and the names in `dev/lab/home/` are copied into an empty data volume only. A volume that already has `areas.toml` is left alone. `dev/pi down --wipe` starts the house over.
+`areas.toml` and `devices.toml` from `dev/lab/home/` are each copied only when that file is missing. A file already in the volume is left alone, so lab mode does not replace device names that were saved without a rooms file. `dev/pi down --wipe` starts the house over.
 
-The emulators live under `dev/lab/` and are not linked into `irori` or any extension. The coordinator speaks the ASH framing Zigbee2MQTT 2.14.1's ember driver uses, and answers the EZSP version command. Further EZSP commands are logged as `not handled yet` until each one is filled in against that pin; Permit joining does not interview the 14 devices until that list is done.
+The emulators live under `dev/lab/` and are not linked into `irori` or any extension. The coordinator speaks the ASH framing Zigbee2MQTT 2.14.1's ember driver uses. It answers the startup sequence that driver sends and the interview of the catalog devices. An EZSP command that is not implemented is logged as `not handled yet` and answered with not-supported, rather than reported as success.
 
 ## What this does *not* emulate
 

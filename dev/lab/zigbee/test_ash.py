@@ -17,6 +17,7 @@ from ncp import (
     INCOMING_MESSAGE_HANDLER,
     Ncp,
     SEND_UNICAST,
+    SL_NOT_SUPPORTED,
     TRUST_CENTER_JOIN_HANDLER,
     VALUE_VERSION_INFO,
     LabDevice,
@@ -66,6 +67,16 @@ class EzspAnswers(unittest.TestCase):
         self.assertIsNone(callback)
         self.assertEqual(body[4], 7)
         self.assertEqual(len(body), 5 + 7)
+
+    def test_an_unknown_command_is_not_success(self) -> None:
+        body, callback = answer(0x0EEE, b"")
+        self.assertIsNone(callback)
+        self.assertEqual(body, u32(SL_NOT_SUPPORTED))
+
+    def test_permit_joining_is_acknowledged(self) -> None:
+        body, callback = answer(0x0022, bytes((60,)))
+        self.assertIsNone(callback)
+        self.assertEqual(body, u32(0))
 
     def test_active_endpoints_reply_names_the_coordinator_endpoint(self) -> None:
         # DIRECT to the coordinator, cluster Active_EP_req, transaction sequence 1.

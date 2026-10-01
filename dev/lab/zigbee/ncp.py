@@ -51,6 +51,31 @@ SEND_BROADCAST = 0x0036
 INCOMING_MESSAGE_HANDLER = 0x0045
 PERMIT_JOINING = 0x0022
 TRUST_CENTER_JOIN_HANDLER = 0x0024
+# Status-only commands herdsman 10.9.2 sends while starting and while joining is
+# open. Each one's response is an SLStatus, and a failure aborts that step.
+SET_CONCENTRATOR = 0x0010
+SET_MANUFACTURER_CODE = 0x0015
+SET_CONFIGURATION_VALUE = 0x0053
+SET_POLICY = 0x0055
+SET_MULTICAST_TABLE_ENTRY = 0x0064
+SET_INITIAL_SECURITY_STATE = 0x0068
+SET_VALUE = 0x00AB
+CLEAR_KEY_TABLE = 0x00B1
+IMPORT_TRANSIENT_KEY = 0x0111
+EXPORT_KEY = 0x0114
+STATUS_ONLY = {
+    SET_CONCENTRATOR,
+    SET_MANUFACTURER_CODE,
+    PERMIT_JOINING,
+    SET_CONFIGURATION_VALUE,
+    SET_POLICY,
+    SET_MULTICAST_TABLE_ENTRY,
+    SET_INITIAL_SECURITY_STATE,
+    SET_VALUE,
+    CLEAR_KEY_TABLE,
+    IMPORT_TRANSIENT_KEY,
+    EXPORT_KEY,
+}
 
 # ZDO clusters Zigbee2MQTT asks the coordinator while herdsman is starting.
 # The response id is the request id with the high bit set.
@@ -74,6 +99,8 @@ HA_PROFILE = 0x0104
 COORDINATOR_ENDPOINT = 1
 
 SL_OK = 0x0000
+# sl_status_t. An unimplemented command must not look like it succeeded.
+SL_NOT_SUPPORTED = 0x000F
 SL_NOT_JOINED = 0x0017
 SL_NETWORK_UP = 0x0015
 # EmberDeviceUpdate.STANDARD_SECURITY_UNSECURED_JOIN, EmberJoinDecision.USE_PRECONFIGURED_KEY.
@@ -451,7 +478,10 @@ def answer(frame_id: int, params: bytes) -> tuple[bytes, int | None]:
         # network key is set, sequence 0, frame counter 1. The key bytes themselves
         # stay inside the NCP; this command only reports that metadata.
         return u32(SL_OK) + bytes((1, 0, 0, 0)) + u32(1), None
-    return u32(SL_OK), None
+    if frame_id in STATUS_ONLY:
+        return u32(SL_OK), None
+    print(f"lab zigbee: EZSP {frame_id:#06x} not handled yet", flush=True)
+    return u32(SL_NOT_SUPPORTED), None
 
 
 class Ncp:
