@@ -162,16 +162,30 @@ pub fn port_label(node: &Node, port: Port) -> String {
 pub fn flag_words(class: Option<BinarySensorClass>) -> (&'static str, &'static str) {
     use BinarySensorClass::*;
     match class {
-        Some(Motion | Occupancy) => ("detected", "clear"),
+        Some(Motion | Occupancy | Presence) => ("detected", "clear"),
         Some(Vibration) => ("shaking", "still"),
-        Some(Door | Window) => ("open", "closed"),
+        Some(Door | GarageDoor | Window | Opening) => ("open", "closed"),
         Some(Moisture) => ("wet", "dry"),
         Some(Smoke) => ("smoke", "clear"),
         Some(Gas) => ("gas", "clear"),
+        Some(CarbonMonoxide) => ("carbon monoxide", "clear"),
+        Some(GlassBreak) => ("glass broken", "clear"),
+        Some(Sound) => ("sound", "quiet"),
+        Some(Tamper) => ("tampered", "clear"),
         Some(Plug) => ("plugged in", "unplugged"),
+        Some(Power) => ("powered", "without power"),
         Some(Connectivity) => ("connected", "disconnected"),
         Some(Battery) => ("low", "ok"),
+        Some(BatteryCharging) => ("charging", "not charging"),
+        Some(Cold) => ("cold", "normal"),
+        Some(Heat) => ("hot", "normal"),
+        Some(Light) => ("light", "dark"),
+        Some(Lock) => ("unlocked", "locked"),
+        Some(Moving) => ("moving", "stopped"),
+        Some(Running) => ("running", "stopped"),
         Some(Problem) => ("a problem", "ok"),
+        Some(Safety) => ("unsafe", "safe"),
+        Some(Update) => ("an update", "up to date"),
         None => ("on", "off"),
     }
 }

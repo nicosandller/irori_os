@@ -347,7 +347,7 @@ fn color_temp_range(root: &serde_json::Value) -> Result<ColorTempRange, String> 
 }
 
 fn parse_switch(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
-    let device_class = str_field(root, "device_class").and_then(switch_class);
+    let device_class = str_field(root, "device_class").and_then(SwitchClass::from_ha);
     let command_topic = str_field(root, "command_topic")
         .ok_or("a switch needs a `command_topic`")?
         .to_owned();
@@ -366,7 +366,7 @@ fn parse_sensor(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics)
     let state_topic = str_field(root, "state_topic")
         .ok_or("a sensor needs a `state_topic`")?
         .to_owned();
-    let device_class = str_field(root, "device_class").and_then(sensor_class);
+    let device_class = str_field(root, "device_class").and_then(SensorClass::from_ha);
     let state_class = str_field(root, "state_class").and_then(|s| match s {
         "measurement" => Some(StateClass::Measurement),
         "total" => Some(StateClass::Total),
@@ -400,7 +400,7 @@ fn parse_binary_sensor(root: &serde_json::Value) -> Result<(Capabilities, Entity
         .to_owned();
     Ok((
         Capabilities::BinarySensor(BinarySensorCapabilities {
-            device_class: str_field(root, "device_class").and_then(binary_sensor_class),
+            device_class: str_field(root, "device_class").and_then(BinarySensorClass::from_ha),
         }),
         EntityTopics::BinarySensor {
             state_topic,
@@ -408,56 +408,6 @@ fn parse_binary_sensor(root: &serde_json::Value) -> Result<(Capabilities, Entity
             payload_off: owned_str(root, "payload_off", "OFF"),
         },
     ))
-}
-
-fn switch_class(text: &str) -> Option<SwitchClass> {
-    match text {
-        "outlet" => Some(SwitchClass::Outlet),
-        "switch" => Some(SwitchClass::Switch),
-        _ => None,
-    }
-}
-
-/// HA's own device-class strings, mapped to Irori's closed list (`docs/specs/entities.md` §4.4).
-/// Anything HA has that Irori doesn't is left absent, never an error (`docs/specs/entities.md`:
-/// "a protocol maps what it knows and leaves the rest absent").
-fn sensor_class(text: &str) -> Option<SensorClass> {
-    match text {
-        "temperature" => Some(SensorClass::Temperature),
-        "humidity" => Some(SensorClass::Humidity),
-        "illuminance" => Some(SensorClass::Illuminance),
-        "pressure" | "atmospheric_pressure" => Some(SensorClass::Pressure),
-        "power" => Some(SensorClass::Power),
-        "energy" => Some(SensorClass::Energy),
-        "voltage" => Some(SensorClass::Voltage),
-        "current" => Some(SensorClass::Current),
-        "battery" => Some(SensorClass::Battery),
-        // HA's string is `carbon_dioxide`, not `co2` — Irori's variant is named for the gas, not
-        // HA's exact spelling.
-        "carbon_dioxide" => Some(SensorClass::Co2),
-        "pm25" => Some(SensorClass::Pm25),
-        "signal_strength" => Some(SensorClass::SignalStrength),
-        "distance" => Some(SensorClass::Distance),
-        _ => None,
-    }
-}
-
-fn binary_sensor_class(text: &str) -> Option<BinarySensorClass> {
-    match text {
-        "motion" => Some(BinarySensorClass::Motion),
-        "occupancy" => Some(BinarySensorClass::Occupancy),
-        "door" => Some(BinarySensorClass::Door),
-        "window" => Some(BinarySensorClass::Window),
-        "moisture" => Some(BinarySensorClass::Moisture),
-        "smoke" => Some(BinarySensorClass::Smoke),
-        "gas" => Some(BinarySensorClass::Gas),
-        "vibration" => Some(BinarySensorClass::Vibration),
-        "plug" => Some(BinarySensorClass::Plug),
-        "connectivity" => Some(BinarySensorClass::Connectivity),
-        "problem" => Some(BinarySensorClass::Problem),
-        "battery" => Some(BinarySensorClass::Battery),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -603,9 +553,12 @@ mod tests {
 
     #[test]
     fn ha_carbon_dioxide_maps_to_irori_co2() {
-        assert_eq!(sensor_class("carbon_dioxide"), Some(SensorClass::Co2));
         assert_eq!(
-            sensor_class("co2"),
+            SensorClass::from_ha("carbon_dioxide"),
+            Some(SensorClass::Co2)
+        );
+        assert_eq!(
+            SensorClass::from_ha("co2"),
             None,
             "HA never actually sends this spelling"
         );

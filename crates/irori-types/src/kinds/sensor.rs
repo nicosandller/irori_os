@@ -29,20 +29,71 @@ pub enum SensorValueType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+/// What a sensor measures: Home Assistant's sensor device classes, by the same names. A
+/// sensor whose readings come from a fixed list says so with `options` instead of a class.
 pub enum SensorClass {
-    Temperature,
+    AbsoluteHumidity,
+    ApparentPower,
+    Aqi,
+    Area,
+    AtmosphericPressure,
+    Battery,
+    BloodGlucoseConcentration,
+    /// Carbon dioxide; Home Assistant's `carbon_dioxide`.
+    Co2,
+    CarbonMonoxide,
+    Conductivity,
+    Current,
+    DataRate,
+    DataSize,
+    Date,
+    Distance,
+    Duration,
+    Energy,
+    EnergyDistance,
+    EnergyStorage,
+    Frequency,
+    Gas,
     Humidity,
     Illuminance,
-    Pressure,
-    Power,
-    Energy,
-    Voltage,
-    Current,
-    Battery,
-    Co2,
+    Irradiance,
+    Moisture,
+    Monetary,
+    NitrogenDioxide,
+    NitrogenMonoxide,
+    NitrousOxide,
+    Ozone,
+    Ph,
+    Pm1,
+    Pm10,
     Pm25,
+    Pm4,
+    Power,
+    PowerFactor,
+    Precipitation,
+    PrecipitationIntensity,
+    Pressure,
+    Radon,
+    ReactiveEnergy,
+    ReactivePower,
     SignalStrength,
-    Distance,
+    SoundPressure,
+    Speed,
+    SulphurDioxide,
+    Temperature,
+    TemperatureDelta,
+    Timestamp,
+    Uptime,
+    VolatileOrganicCompounds,
+    VolatileOrganicCompoundsParts,
+    Voltage,
+    Volume,
+    VolumeFlowRate,
+    VolumeStorage,
+    Water,
+    Weight,
+    WindDirection,
+    WindSpeed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -112,10 +163,46 @@ pub(crate) fn fits(caps: &SensorCapabilities, sensor: &SensorState) -> Result<()
     }
 }
 
+impl SensorClass {
+    /// The class Home Assistant calls `name` (`temperature`), as protocols that speak its vocabulary
+    /// (ESPHome, MQTT discovery) report it.
+    pub fn from_ha(name: &str) -> Option<Self> {
+        match name {
+            // Named for the gas here; Home Assistant spells it out, and never sends `co2`.
+            "carbon_dioxide" => Some(Self::Co2),
+            "co2" => None,
+            _ => super::from_ha(name),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::State;
+
+    #[test]
+    fn classes_are_read_by_their_home_assistant_names() {
+        assert_eq!(
+            SensorClass::from_ha("temperature"),
+            Some(SensorClass::Temperature)
+        );
+        assert_eq!(
+            SensorClass::from_ha("carbon_dioxide"),
+            Some(SensorClass::Co2)
+        );
+        assert_eq!(
+            SensorClass::from_ha("volatile_organic_compounds_parts"),
+            Some(SensorClass::VolatileOrganicCompoundsParts)
+        );
+        assert_eq!(SensorClass::from_ha("co2"), None);
+        assert_eq!(SensorClass::from_ha("enum"), None);
+        assert_eq!(SensorClass::from_ha("Temperature"), None);
+        assert_eq!(
+            crate::BinarySensorClass::from_ha("garage_door"),
+            Some(crate::BinarySensorClass::GarageDoor)
+        );
+    }
 
     #[test]
     fn sensor_value_schema_rejects_numbers_rust_cant_read() {

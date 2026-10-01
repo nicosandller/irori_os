@@ -2016,28 +2016,36 @@ const UNKNOWN: &str = "unknown";
 /// nothing better to say than on and off.
 pub(crate) fn wording(class: Option<BinarySensorClass>, on: bool) -> &'static str {
     use BinarySensorClass::*;
-    match (class, on) {
-        (Some(Motion | Vibration), true) => "Motion",
-        (Some(Motion | Vibration), false) => "Still",
-        (Some(Occupancy), true) => "Detected",
-        (Some(Occupancy), false) => "Clear",
-        (Some(Door | Window), true) => "Open",
-        (Some(Door | Window), false) => "Closed",
-        (Some(Moisture), true) => "Wet",
-        (Some(Moisture), false) => "Dry",
-        (Some(Smoke), true) => "Smoke",
-        (Some(Gas), true) => "Gas",
-        (Some(Smoke | Gas), false) => "Clear",
-        (Some(Plug), true) => "Plugged in",
-        (Some(Plug), false) => "Unplugged",
-        (Some(Connectivity), true) => "Connected",
-        (Some(Connectivity), false) => "Disconnected",
-        (Some(Battery), true) => "Low",
-        (Some(Problem), true) => "Problem",
-        (Some(Problem | Battery), false) => "OK",
-        (None, true) => "On",
-        (None, false) => "Off",
-    }
+    // What `on` means follows Home Assistant's classes: a `lock` that's on is unlocked, a
+    // `battery` that's on is low.
+    let (yes, no) = match class {
+        Some(Motion | Vibration) => ("Motion", "Still"),
+        Some(Occupancy | Presence) => ("Detected", "Clear"),
+        Some(Door | GarageDoor | Window | Opening) => ("Open", "Closed"),
+        Some(Moisture) => ("Wet", "Dry"),
+        Some(Smoke) => ("Smoke", "Clear"),
+        Some(Gas) => ("Gas", "Clear"),
+        Some(CarbonMonoxide) => ("Carbon monoxide", "Clear"),
+        Some(GlassBreak) => ("Glass broken", "Clear"),
+        Some(Sound) => ("Sound", "Quiet"),
+        Some(Tamper) => ("Tampered", "Clear"),
+        Some(Plug) => ("Plugged in", "Unplugged"),
+        Some(Power) => ("Powered", "No power"),
+        Some(Connectivity) => ("Connected", "Disconnected"),
+        Some(Battery) => ("Low", "OK"),
+        Some(BatteryCharging) => ("Charging", "Not charging"),
+        Some(Cold) => ("Cold", "Normal"),
+        Some(Heat) => ("Hot", "Normal"),
+        Some(Light) => ("Light", "Dark"),
+        Some(Lock) => ("Unlocked", "Locked"),
+        Some(Moving) => ("Moving", "Stopped"),
+        Some(Running) => ("Running", "Stopped"),
+        Some(Problem) => ("Problem", "OK"),
+        Some(Safety) => ("Unsafe", "Safe"),
+        Some(Update) => ("Update available", "Up to date"),
+        None => ("On", "Off"),
+    };
+    if on { yes } else { no }
 }
 
 /// A reading a person can read: whole numbers stay whole, the rest keep up to three decimals

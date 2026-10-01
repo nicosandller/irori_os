@@ -15,6 +15,13 @@ use crate::{Capabilities, EntityKind, InvariantError, Service, ServiceName, Stat
 use self::light::LightTurnOn;
 use self::sensor::{SensorState, SensorValue, SensorValueType};
 
+/// Reads a device class (or another name-only enum) by its Home Assistant name, which is also
+/// Irori's spelling. `None` for a name Irori doesn't have, which a protocol leaves absent rather
+/// than guessing.
+pub(crate) fn from_ha<T: serde::de::DeserializeOwned>(name: &str) -> Option<T> {
+    serde_json::from_value(serde_json::Value::String(name.to_owned())).ok()
+}
+
 /// An entity's value the way automations see it: what `on()`, `num()` and `text()` read, and
 /// what a state trigger's `to` is compared with (`docs/specs/rules.md` §5.1). Each kind has one,
 /// its *primary* value: a light's `on`, a sensor's reading.

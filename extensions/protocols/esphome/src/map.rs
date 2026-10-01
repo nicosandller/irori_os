@@ -8,7 +8,8 @@
 use esphome_client::types::{
     BinarySensorStateResponse, DeviceInfoResponse, LightStateResponse,
     ListEntitiesBinarySensorResponse, ListEntitiesLightResponse, ListEntitiesSensorResponse,
-    ListEntitiesSwitchResponse, SensorStateResponse, SwitchStateResponse,
+    ListEntitiesSwitchResponse, ListEntitiesTextSensorResponse, SensorStateResponse,
+    SwitchStateResponse, TextSensorStateResponse,
 };
 use irori_protocol::ProtocolError;
 use irori_protocol::types::{
@@ -73,7 +74,11 @@ pub fn device_id(info: &DeviceInfoResponse) -> Result<UniqueId, ProtocolError> {
 /// entity is not allowed to change kind (`docs/specs/entities.md` §4), so the core would refuse
 /// the new one and the entity would vanish. With the kind in the id they are simply two
 /// different entities, and the old one is removed as any disappeared entity is.
-pub fn entity_id(device: &UniqueId, kind: EntityKind, key: u32) -> Result<UniqueId, ProtocolError> {
+pub fn entity_id(
+    device: &UniqueId,
+    kind: impl std::fmt::Display,
+    key: u32,
+) -> Result<UniqueId, ProtocolError> {
     Ok(UniqueId::try_from(format!("{device}-{kind}-{key}"))?)
 }
 
@@ -145,10 +150,11 @@ pub fn sensor(
         device_unique_id: Some(device.clone()),
         suggested_object_id: None,
         capabilities: Capabilities::Sensor(SensorCapabilities {
-            // ESPHome sensors carry numbers; text lives in its separate `text_sensor` kind,
-            // which Irori doesn't model yet.
+            // ESPHome sensors carry numbers; text comes from `text_sensor` (below).
             value_type: SensorValueType::Number,
-            device_class: sensor_class(&entity.device_class),
+            // ESPHome's device classes are Home Assistant's. One Irori doesn't have is left out; the
+            // reading still arrives.
+            device_class: SensorClass::from_ha(&entity.device_class),
             unit: optional(&entity.unit_of_measurement),
             state_class: match entity.state_class {
                 1 | 4 => Some(StateClass::Measurement),
@@ -156,6 +162,27 @@ pub fn sensor(
                 3 => Some(StateClass::Total),
                 _ => None,
             },
+        }),
+    })
+}
+
+/// ESPHome's `text_sensor`: an Irori `sensor` that reports text. Its id says `text_sensor`
+/// rather than `sensor`, so it never shares one with a numeric sensor of the same key.
+pub fn text_sensor(
+    device: &UniqueId,
+    entity: &ListEntitiesTextSensorResponse,
+) -> Result<EntityDescription, ProtocolError> {
+    Ok(EntityDescription {
+        unique_id: entity_id(device, "text_sensor", entity.key)?,
+        name: Some(Name::try_from(entity.name.as_str())?),
+        device_unique_id: Some(device.clone()),
+        suggested_object_id: None,
+        capabilities: Capabilities::Sensor(SensorCapabilities {
+            value_type: SensorValueType::Text,
+            // Text sensors carry text classes (`date`, `timestamp`) or none at all.
+            device_class: SensorClass::from_ha(&entity.device_class),
+            unit: None,
+            state_class: None,
         }),
     })
 }
@@ -170,7 +197,7 @@ pub fn binary_sensor(
         device_unique_id: Some(device.clone()),
         suggested_object_id: None,
         capabilities: Capabilities::BinarySensor(BinarySensorCapabilities {
-            device_class: binary_sensor_class(&entity.device_class),
+            device_class: BinarySensorClass::from_ha(&entity.device_class),
         }),
     })
 }
@@ -206,6 +233,15 @@ pub fn light_state(state: &LightStateResponse, known: &LightCapabilities) -> Sta
     })
 }
 
+/// `None` when the device says it has no text right now.
+pub fn text_sensor_state(state: &TextSensorStateResponse) -> Option<State> {
+    (!state.missing_state).then(|| {
+        State::Sensor(SensorState {
+            value: SensorValue::Text(state.state.clone()),
+        })
+    })
+}
+
 pub fn switch_state(state: &SwitchStateResponse) -> State {
     State::Switch(SwitchState { on: state.state })
 }
@@ -224,45 +260,6 @@ pub fn sensor_state(state: &SensorStateResponse) -> Option<State> {
     Some(State::Sensor(SensorState {
         value: SensorValue::Number(value),
     }))
-}
-
-/// ESPHome's device classes are Home Assistant's, and Irori models the ones it has a meaning
-/// for. An unknown class is simply not set: the reading still arrives.
-fn sensor_class(class: &str) -> Option<SensorClass> {
-    Some(match class {
-        "temperature" => SensorClass::Temperature,
-        "humidity" => SensorClass::Humidity,
-        "illuminance" => SensorClass::Illuminance,
-        "pressure" | "atmospheric_pressure" => SensorClass::Pressure,
-        "power" => SensorClass::Power,
-        "energy" => SensorClass::Energy,
-        "voltage" => SensorClass::Voltage,
-        "current" => SensorClass::Current,
-        "battery" => SensorClass::Battery,
-        "carbon_dioxide" => SensorClass::Co2,
-        "pm25" => SensorClass::Pm25,
-        "signal_strength" => SensorClass::SignalStrength,
-        "distance" => SensorClass::Distance,
-        _ => return None,
-    })
-}
-
-fn binary_sensor_class(class: &str) -> Option<BinarySensorClass> {
-    Some(match class {
-        "motion" => BinarySensorClass::Motion,
-        "occupancy" | "presence" => BinarySensorClass::Occupancy,
-        "door" | "garage_door" => BinarySensorClass::Door,
-        "window" | "opening" => BinarySensorClass::Window,
-        "moisture" => BinarySensorClass::Moisture,
-        "smoke" => BinarySensorClass::Smoke,
-        "gas" => BinarySensorClass::Gas,
-        "vibration" => BinarySensorClass::Vibration,
-        "plug" => BinarySensorClass::Plug,
-        "connectivity" => BinarySensorClass::Connectivity,
-        "problem" | "safety" => BinarySensorClass::Problem,
-        "battery" => BinarySensorClass::Battery,
-        _ => return None,
-    })
 }
 
 /// 0.0-1.0 to 1-255. `None` for nothing (which is "off", not a brightness).
@@ -369,6 +366,46 @@ mod tests {
         assert_eq!(light.brightness, None, "it never said it could dim");
         assert_eq!(light.color_temp_kelvin, None);
         assert_eq!(light.rgb, None);
+    }
+
+    #[test]
+    fn a_text_sensor_is_a_sensor_that_reports_text() {
+        let device = UniqueId::try_from("00:11:22:33:44:55").expect("valid");
+        let listed = ListEntitiesTextSensorResponse {
+            key: 7,
+            name: "Wifi network".into(),
+            device_class: "timestamp".into(),
+            ..Default::default()
+        };
+        let described = text_sensor(&device, &listed).expect("valid");
+        assert_eq!(
+            described.unique_id.as_str(),
+            "00:11:22:33:44:55-text_sensor-7"
+        );
+        assert!(matches!(
+            described.capabilities,
+            Capabilities::Sensor(SensorCapabilities {
+                value_type: SensorValueType::Text,
+                device_class: Some(SensorClass::Timestamp),
+                ..
+            })
+        ));
+        let state = TextSensorStateResponse {
+            key: 7,
+            state: "Home".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            text_sensor_state(&state),
+            Some(State::Sensor(SensorState {
+                value: SensorValue::Text("Home".into())
+            }))
+        );
+        let missing = TextSensorStateResponse {
+            missing_state: true,
+            ..state
+        };
+        assert_eq!(text_sensor_state(&missing), None);
     }
 
     #[test]

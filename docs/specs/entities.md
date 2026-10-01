@@ -143,13 +143,13 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | | `rgb` | bool | `false` | Supports RGB color |
 | `switch` | `device_class` | `outlet` \| `switch` | absent | |
 | `sensor` | `value_type` | `number` \| `text` | **required** | Rules are type-checked against it |
-| | `device_class` | `temperature` \| `humidity` \| `illuminance` \| `pressure` \| `power` \| `energy` \| `voltage` \| `current` \| `battery` \| `co2` \| `pm25` \| `signal_strength` \| `distance` | absent | |
+| | `device_class` | Home Assistant's sensor device classes, by the same names (`temperature`, `humidity`, `power`, `pm25`, `timestamp`, …; 61 in all, see the schema), except carbon dioxide, which is `co2`. HA's `enum` isn't a class here: a sensor reporting from a fixed list says so with `options` | absent | |
 | | `unit` | string | absent | E.g. `°C`, `lx`, `%`, `W`, `kWh` |
 | | `state_class` | `measurement` \| `total` \| `total_increasing` | absent | How values accumulate, for statistics |
-| `binary_sensor` | `device_class` | `motion` \| `occupancy` \| `door` \| `window` \| `moisture` \| `smoke` \| `gas` \| `vibration` \| `plug` \| `connectivity` \| `problem` \| `battery` | absent | Says what `on` means |
+| `binary_sensor` | `device_class` | Home Assistant's binary sensor device classes, by the same names (`motion`, `occupancy`, `presence`, `door`, `garage_door`, `window`, `opening`, `lock`, …; 29 in all, see the schema) | absent | Says what `on` means, as in Home Assistant: a `lock` that's on is **unlocked**, a `battery` that's on is low |
 
-Device classes are closed lists: a protocol maps what it knows and leaves the rest absent.
-New classes are additive.
+Device classes are closed lists, matching Home Assistant's: a protocol maps what it knows (with
+`SensorClass::from_ha` and friends) and leaves the rest absent. New classes are additive.
 
 ### 4.5 Irori's own device
 

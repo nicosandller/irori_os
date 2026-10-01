@@ -22,3 +22,11 @@ pub enum SwitchClass {
 pub struct SwitchState {
     pub on: bool,
 }
+
+impl SwitchClass {
+    /// The class Home Assistant calls `name` (`outlet`), as protocols that speak its vocabulary
+    /// (ESPHome, MQTT discovery) report it.
+    pub fn from_ha(name: &str) -> Option<Self> {
+        super::from_ha(name)
+    }
+}

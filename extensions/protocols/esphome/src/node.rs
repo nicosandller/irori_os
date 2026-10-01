@@ -449,7 +449,7 @@ async fn list_entities(
                         device = %device,
                         skipped,
                         "left out entities of kinds Irori doesn't model yet \
-                         (fan, cover, climate, text sensors, and the rest)"
+                         (fan, cover, climate, and the rest)"
                     );
                 }
                 return Ok(entities);
@@ -457,6 +457,9 @@ async fn list_entities(
             EspHomeMessage::ListEntitiesLightResponse(e) => (e.key, map::light(device, e)),
             EspHomeMessage::ListEntitiesSwitchResponse(e) => (e.key, map::switch(device, e)),
             EspHomeMessage::ListEntitiesSensorResponse(e) => (e.key, map::sensor(device, e)),
+            EspHomeMessage::ListEntitiesTextSensorResponse(e) => {
+                (e.key, map::text_sensor(device, e))
+            }
             EspHomeMessage::ListEntitiesBinarySensorResponse(e) => {
                 (e.key, map::binary_sensor(device, e))
             }
@@ -497,6 +500,7 @@ fn report(
         EspHomeMessage::SwitchStateResponse(s) => (s.key, Some(map::switch_state(s))),
         EspHomeMessage::BinarySensorStateResponse(s) => (s.key, Some(map::binary_sensor_state(s))),
         EspHomeMessage::SensorStateResponse(s) => (s.key, map::sensor_state(s)),
+        EspHomeMessage::TextSensorStateResponse(s) => (s.key, map::text_sensor_state(s)),
         _ => return None,
     };
     let unique_id = by_key.get(&key)?.clone();
