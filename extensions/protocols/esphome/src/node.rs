@@ -12,8 +12,9 @@ use std::time::Duration;
 use esphome_client::EspHomeClient;
 use esphome_client::error::ClientError;
 use esphome_client::types::{
-    EspHomeMessage, LightCommandRequest, ListEntitiesRequest, NumberCommandRequest, PingResponse,
-    SelectCommandRequest, SubscribeStatesRequest, SwitchCommandRequest, TextCommandRequest,
+    ButtonCommandRequest, EspHomeMessage, LightCommandRequest, ListEntitiesRequest,
+    NumberCommandRequest, PingResponse, SelectCommandRequest, SubscribeStatesRequest,
+    SwitchCommandRequest, TextCommandRequest,
 };
 use irori_protocol::types::{
     Capabilities, ContextId, DeviceDescription, EntityDescription, LightCapabilities, Service,
@@ -471,6 +472,7 @@ async fn list_entities(
             EspHomeMessage::ListEntitiesNumberResponse(e) => (e.key, map::number(device, e)),
             EspHomeMessage::ListEntitiesSelectResponse(e) => (e.key, map::select(device, e)),
             EspHomeMessage::ListEntitiesTextResponse(e) => (e.key, map::text(device, e)),
+            EspHomeMessage::ListEntitiesButtonResponse(e) => (e.key, map::button(device, e)),
             EspHomeMessage::ListEntitiesTextSensorResponse(e) => {
                 (e.key, map::text_sensor(device, e))
             }
@@ -634,6 +636,13 @@ async fn command(
             .try_write(TextCommandRequest {
                 key,
                 state: data.value.clone(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| e.to_string()),
+        Service::ButtonPress => client
+            .try_write(ButtonCommandRequest {
+                key,
                 ..Default::default()
             })
             .await

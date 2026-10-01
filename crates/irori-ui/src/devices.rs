@@ -4,8 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use irori_types::{
-    AreaId, Availability, BinarySensorCapabilities, BinarySensorClass, Capabilities, Device,
-    DeviceId, Entity, EntityId, EntityState, ExtensionId, LightCapabilities, LightState,
+    AreaId, Availability, BinarySensorCapabilities, BinarySensorClass, ButtonClass, Capabilities,
+    Device, DeviceId, Entity, EntityId, EntityState, ExtensionId, LightCapabilities, LightState,
     LightTurnOn, NumberCapabilities, NumberMode, SelectCapabilities, SensorCapabilities,
     SensorClass, SensorValue, State, TextCapabilities, TextMode,
 };
@@ -33,6 +33,8 @@ pub struct Controls {
     pub set_option: Callback<(EntityId, String)>,
     /// Ask a text entity to hold this.
     pub set_text: Callback<(EntityId, String)>,
+    /// Press a button.
+    pub press: Callback<EntityId>,
 }
 
 /// One device and the entities it provides. `device` is `None` for entities that belong to no
@@ -1583,6 +1585,10 @@ fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyVi
     let expanded = move || open.get().to_string();
     let chevron = view! { <span class="unroll-mark" aria-hidden="true"></span> };
     let hint = view! { <span class="visually-hidden">" — last 24 hours"</span> };
+    // A button has nothing to remember from one day to the next.
+    if matches!(entity.capabilities, Capabilities::Button(_)) {
+        return control;
+    }
     match entity.capabilities {
         Capabilities::Sensor(_) | Capabilities::BinarySensor(_) => view! {
             <button
@@ -1611,7 +1617,8 @@ fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyVi
         | Capabilities::Switch(_)
         | Capabilities::Number(_)
         | Capabilities::Select(_)
-        | Capabilities::Text(_) => view! {
+        | Capabilities::Text(_)
+        | Capabilities::Button(_) => view! {
             {control}
             <button
                 type="button"
@@ -1667,7 +1674,42 @@ fn control(
         Capabilities::Text(capabilities) => {
             text_control(entity, capabilities, value, offline, controls)
         }
+        Capabilities::Button(capabilities) => {
+            button_control(entity, capabilities.device_class, offline, controls)
+        }
     }
+}
+
+/// A button: one press, named for what it does when the device says.
+fn button_control(
+    entity: &Entity,
+    class: Option<ButtonClass>,
+    offline: bool,
+    controls: Controls,
+) -> AnyView {
+    let label = match class {
+        Some(ButtonClass::Restart) => "Restart",
+        Some(ButtonClass::Identify) => "Identify",
+        Some(ButtonClass::Update) => "Update",
+        None => "Press",
+    };
+    let entity_id = entity.id.clone();
+    let disable = {
+        let entity_id = entity_id.clone();
+        move || offline || controls.busy.get().contains(&entity_id)
+    };
+    view! {
+        <button
+            type="button"
+            class="press"
+            aria-label=format!("{label}: {}", entity.name)
+            disabled=disable
+            on:click=move |_| controls.press.run(entity_id.clone())
+        >
+            {label}
+        </button>
+    }
+    .into_any()
 }
 
 /// A text: a box holding what the device last reported, sent when the box is left. A secret

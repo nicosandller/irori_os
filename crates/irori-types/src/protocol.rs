@@ -358,6 +358,7 @@ pub enum Service {
     NumberSetValue(NumberSetValue),
     SelectSelectOption(SelectOption),
     TextSetValue(TextSetValue),
+    ButtonPress,
 }
 
 impl Service {
@@ -370,6 +371,7 @@ impl Service {
             Self::NumberSetValue(_) => ServiceName::NumberSetValue,
             Self::SelectSelectOption(_) => ServiceName::SelectSelectOption,
             Self::TextSetValue(_) => ServiceName::TextSetValue,
+            Self::ButtonPress => ServiceName::ButtonPress,
         }
     }
 }
@@ -391,6 +393,8 @@ pub enum ServiceName {
     SelectSelectOption,
     #[serde(rename = "text.set_value")]
     TextSetValue,
+    #[serde(rename = "button.press")]
+    ButtonPress,
 }
 
 impl ServiceName {
@@ -402,6 +406,7 @@ impl ServiceName {
         Self::NumberSetValue,
         Self::SelectSelectOption,
         Self::TextSetValue,
+        Self::ButtonPress,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -413,6 +418,7 @@ impl ServiceName {
             Self::NumberSetValue => "number.set_value",
             Self::SelectSelectOption => "select.select_option",
             Self::TextSetValue => "text.set_value",
+            Self::ButtonPress => "button.press",
         }
     }
 
@@ -424,6 +430,7 @@ impl ServiceName {
             Self::NumberSetValue => EntityKind::Number,
             Self::SelectSelectOption => EntityKind::Select,
             Self::TextSetValue => EntityKind::Text,
+            Self::ButtonPress => EntityKind::Button,
         }
     }
 }

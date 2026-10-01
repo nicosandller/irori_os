@@ -1550,6 +1550,15 @@ async fn command(State(state): State<AppState>, Json(request): Json<CommandReque
         .await
     {
         Ok(()) => {
+            // Something with no value (a button) reports nothing to wait for.
+            let has_value = core
+                .entities()
+                .iter()
+                .find(|entity| entity.id == request.entity_id)
+                .is_some_and(|entity| entity.capabilities.primary_shape().is_some());
+            if !has_value {
+                return Json(core.state(&request.entity_id)).into_response();
+            }
             let settled = settled(changes, &request.entity_id, &who.id).await;
             Json(settled.or_else(|| core.state(&request.entity_id))).into_response()
         }

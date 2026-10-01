@@ -368,6 +368,13 @@ pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, 
         (EntityTopics::Text { command_topic, .. }, Service::TextSetValue(data)) => {
             Ok(vec![text_publish(command_topic, &data.value)])
         }
+        (
+            EntityTopics::Button {
+                command_topic,
+                payload_press,
+            },
+            Service::ButtonPress,
+        ) => Ok(vec![text_publish(command_topic, payload_press)]),
         _ => Err(format!("this entity has no `{}` service", service.name())),
     }
 }
@@ -408,6 +415,8 @@ pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, Un
         | EntityTopics::Text { state_topic, .. } => {
             list.extend(state_topic.clone());
         }
+        // Nothing to listen to: a press leaves no state.
+        EntityTopics::Button { .. } => {}
     }
     list.into_iter().map(|t| (t, unique_id.clone())).collect()
 }

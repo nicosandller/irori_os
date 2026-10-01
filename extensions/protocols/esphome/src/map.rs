@@ -7,20 +7,20 @@
 
 use esphome_client::types::{
     BinarySensorStateResponse, DeviceInfoResponse, EspHomeMessage, LightStateResponse,
-    ListEntitiesBinarySensorResponse, ListEntitiesLightResponse, ListEntitiesNumberResponse,
-    ListEntitiesSelectResponse, ListEntitiesSensorResponse, ListEntitiesSwitchResponse,
-    ListEntitiesTextResponse, ListEntitiesTextSensorResponse, NumberStateResponse,
-    SelectStateResponse, SensorStateResponse, SwitchStateResponse, TextSensorStateResponse,
-    TextStateResponse,
+    ListEntitiesBinarySensorResponse, ListEntitiesButtonResponse, ListEntitiesLightResponse,
+    ListEntitiesNumberResponse, ListEntitiesSelectResponse, ListEntitiesSensorResponse,
+    ListEntitiesSwitchResponse, ListEntitiesTextResponse, ListEntitiesTextSensorResponse,
+    NumberStateResponse, SelectStateResponse, SensorStateResponse, SwitchStateResponse,
+    TextSensorStateResponse, TextStateResponse,
 };
 use irori_protocol::ProtocolError;
 use irori_protocol::types::{
-    BinarySensorCapabilities, BinarySensorClass, BinarySensorState, Capabilities, ColorMode,
-    ColorTempRange, DeviceDescription, EntityCategory, EntityDescription, EntityKind,
-    LightCapabilities, LightState, Name, NumberCapabilities, NumberMode, NumberState, ObjectId,
-    SelectCapabilities, SelectState, SensorCapabilities, SensorClass, SensorState, SensorValue,
-    SensorValueType, State, StateClass, SwitchCapabilities, SwitchClass, SwitchState,
-    TextCapabilities, TextMode, TextState, UniqueId, Unmodeled,
+    BinarySensorCapabilities, BinarySensorClass, BinarySensorState, ButtonCapabilities,
+    ButtonClass, Capabilities, ColorMode, ColorTempRange, DeviceDescription, EntityCategory,
+    EntityDescription, EntityKind, LightCapabilities, LightState, Name, NumberCapabilities,
+    NumberMode, NumberState, ObjectId, SelectCapabilities, SelectState, SensorCapabilities,
+    SensorClass, SensorState, SensorValue, SensorValueType, State, StateClass, SwitchCapabilities,
+    SwitchClass, SwitchState, TextCapabilities, TextMode, TextState, UniqueId, Unmodeled,
 };
 
 /// ESPHome's `ColorMode` enum (api.proto). The values are a bit mask of what a mode carries.
@@ -247,6 +247,23 @@ pub fn select_state(state: &SelectStateResponse) -> Option<State> {
     })
 }
 
+/// ESPHome's `button`: something to press. It has no state, so nothing is ever reported for it.
+pub fn button(
+    device: &UniqueId,
+    entity: &ListEntitiesButtonResponse,
+) -> Result<EntityDescription, ProtocolError> {
+    Ok(EntityDescription {
+        unique_id: entity_id(device, EntityKind::Button, entity.key)?,
+        name: Some(Name::try_from(entity.name.as_str())?),
+        device_unique_id: Some(device.clone()),
+        suggested_object_id: None,
+        capabilities: Capabilities::Button(ButtonCapabilities {
+            device_class: ButtonClass::from_ha(&entity.device_class),
+        }),
+        entity_category: category(entity.entity_category),
+    })
+}
+
 /// ESPHome's `text`: a piece of text set from outside, unlike a `text_sensor`.
 pub fn text(
     device: &UniqueId,
@@ -360,7 +377,6 @@ pub fn unmodeled(device: &UniqueId, message: &EspHomeMessage) -> Option<Unmodele
     use EspHomeMessage as M;
     let (platform, name) = match message {
         M::ListEntitiesAlarmControlPanelResponse(e) => ("alarm_control_panel", &e.name),
-        M::ListEntitiesButtonResponse(e) => ("button", &e.name),
         M::ListEntitiesCameraResponse(e) => ("camera", &e.name),
         M::ListEntitiesClimateResponse(e) => ("climate", &e.name),
         M::ListEntitiesCoverResponse(e) => ("cover", &e.name),
@@ -640,6 +656,26 @@ mod tests {
             Some(State::Select(SelectState {
                 option: "previous".into()
             }))
+        );
+    }
+
+    #[test]
+    fn a_button_says_what_it_does() {
+        let device = UniqueId::try_from("00:11:22:33:44:55").expect("valid");
+        let listed = ListEntitiesButtonResponse {
+            key: 8,
+            name: "Restart".into(),
+            device_class: "restart".into(),
+            entity_category: 1,
+            ..Default::default()
+        };
+        let described = button(&device, &listed).expect("valid");
+        assert_eq!(described.unique_id.as_str(), "00:11:22:33:44:55-button-8");
+        assert_eq!(
+            described.capabilities,
+            Capabilities::Button(ButtonCapabilities {
+                device_class: Some(ButtonClass::Restart)
+            })
         );
     }
 

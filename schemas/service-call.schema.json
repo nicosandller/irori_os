@@ -164,6 +164,26 @@
           "data"
         ]
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "button.press"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -409,7 +429,8 @@
         "switch.turn_off",
         "number.set_value",
         "select.select_option",
-        "text.set_value"
+        "text.set_value",
+        "button.press"
       ]
     },
     "TextSetValue": {

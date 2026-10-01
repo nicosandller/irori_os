@@ -1892,6 +1892,42 @@ mod tests {
     }
 
     #[test]
+    fn a_button_is_pressed_and_never_has_a_value() {
+        let mut home = home_with_lamp();
+        home.describe_entity(
+            &protocol(),
+            ALL,
+            entity(
+                "lamp-identify",
+                Some("Identify"),
+                Some("lamp"),
+                Capabilities::Button(irori_types::ButtonCapabilities {
+                    device_class: Some(irori_types::ButtonClass::Identify),
+                }),
+            ),
+            &stamp(0),
+        )
+        .expect("entity");
+        let id = EntityId::try_from("button.demo_lamp_identify").expect("valid");
+        assert_eq!(
+            home.resolve(&id, Command::new("press"))
+                .expect("pressed")
+                .service,
+            Service::ButtonPress
+        );
+        assert!(home.resolve(&id, Command::toggle()).is_err());
+        assert_eq!(home.state(&id).and_then(|s| s.state.clone()), None);
+        // Whatever a protocol reports for it, a button has no state to be in.
+        let report = StateReport {
+            unique_id: uid("lamp-identify"),
+            state: Some(light(true, None)),
+            attributes: Default::default(),
+            caused_by: None,
+        };
+        assert!(home.report_state(&protocol(), report, &stamp(1)).is_err());
+    }
+
+    #[test]
     fn a_number_is_set_only_within_its_range() {
         let mut home = home_with_lamp();
         home.describe_entity(

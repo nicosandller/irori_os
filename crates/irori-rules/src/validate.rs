@@ -145,7 +145,7 @@ fn walk_triggers_one(
             }
             if (above.is_some() || below.is_some())
                 && let Some(found) = registry.entity(entity)
-                && found.capabilities.primary_shape() != ValueShape::Number
+                && found.capabilities.primary_shape() != Some(ValueShape::Number)
             {
                 problems.push(problem(
                     here,
@@ -712,7 +712,16 @@ fn check_fn_against_registry(
             "{name}(\"{id}\"): no such entity — check the entity id"
         ));
     };
-    let shape = entity.capabilities.primary_shape();
+    let Some(shape) = entity.capabilities.primary_shape() else {
+        // `available()` and `unknown()` are about the entity, not a value, so they still apply.
+        return match name {
+            "num" | "text" | "on" | "brightness" => Err(format!(
+                "{name}(\"{id}\"): entity is a {}, which has no value to read",
+                entity.capabilities.kind()
+            )),
+            _ => Ok(()),
+        };
+    };
     match (name, &entity.capabilities) {
         ("num", _) if shape == ValueShape::Number => Ok(()),
         ("num", _) => {
@@ -844,7 +853,14 @@ fn typed_value_fits(value: &TypedValue, entity: &Entity) -> Result<(), String> {
         TypedValue::Number(_) => (ValueShape::Number, "a number"),
         TypedValue::Text(_) => (ValueShape::Text, "a string"),
     };
-    if entity.capabilities.primary_shape() == shape {
+    let Some(has) = entity.capabilities.primary_shape() else {
+        return Err(format!(
+            "{} is a {}, which has no value to compare",
+            entity.id,
+            entity.capabilities.kind()
+        ));
+    };
+    if has == shape {
         match value {
             TypedValue::Text(text) => text_can_be(entity, text),
             _ => Ok(()),
@@ -1069,6 +1085,33 @@ mod tests {
             Err(r#"on("sensor.washer_program"): entity is text, not on/off — use text("sensor.washer_program")"#.to_owned())
         );
         assert_eq!(check("text"), Ok(()));
+    }
+
+    #[test]
+    fn a_button_has_no_value_to_read_or_compare() {
+        let restart = entity(
+            "button.board_restart",
+            Capabilities::Button(irori_types::ButtonCapabilities { device_class: None }),
+        );
+        let mut registry = hallway_registry();
+        registry
+            .entities
+            .insert(restart.id.clone(), restart.clone());
+        assert_eq!(
+            check_fn_against_registry("on", &restart.id, &registry),
+            Err(
+                r#"on("button.board_restart"): entity is a button, which has no value to read"#
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            check_fn_against_registry("available", &restart.id, &registry),
+            Ok(())
+        );
+        assert_eq!(
+            typed_value_fits(&TypedValue::Bool(true), &restart),
+            Err("button.board_restart is a button, which has no value to compare".to_owned())
+        );
     }
 
     #[test]

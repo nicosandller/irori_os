@@ -14,6 +14,7 @@ pub enum Component {
     Number,
     Select,
     Text,
+    Button,
 }
 
 impl Component {
@@ -26,6 +27,7 @@ impl Component {
             "number" => Some(Self::Number),
             "select" => Some(Self::Select),
             "text" => Some(Self::Text),
+            "button" => Some(Self::Button),
             _ => None,
         }
     }
@@ -41,6 +43,7 @@ impl fmt::Display for Component {
             Self::Number => "number",
             Self::Select => "select",
             Self::Text => "text",
+            Self::Button => "button",
         })
     }
 }

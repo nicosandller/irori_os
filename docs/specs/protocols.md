@@ -258,6 +258,7 @@ manifest's `entity_kinds`.
 | `number.set_value` | `value`, a finite number within the number's `min`–`max` | |
 | `select.select_option` | `option`, one of the select's `options` | |
 | `text.set_value` | `value`, a string within the text's lengths | |
+| `button.press` | none | |
 
 `sensor` and `binary_sensor` have no services.
 

@@ -433,6 +433,11 @@ pub async fn set_light(
     command(entity_id, "turn_on", serde_json::to_value(data).ok()).await
 }
 
+/// Presses a button.
+pub async fn press(entity_id: &EntityId) -> Result<Option<EntityState>, String> {
+    command(entity_id, "press", None).await
+}
+
 /// Sets a text entity to `value`.
 pub async fn set_text(entity_id: &EntityId, value: String) -> Result<Option<EntityState>, String> {
     command(

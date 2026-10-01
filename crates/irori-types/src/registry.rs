@@ -5,6 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::kinds::binary_sensor::BinarySensorCapabilities;
+use crate::kinds::button::ButtonCapabilities;
 use crate::kinds::light::LightCapabilities;
 use crate::kinds::number::NumberCapabilities;
 use crate::kinds::select::SelectCapabilities;
@@ -185,6 +186,7 @@ pub enum Capabilities {
     Number(NumberCapabilities),
     Select(SelectCapabilities),
     Text(TextCapabilities),
+    Button(ButtonCapabilities),
 }
 
 impl Capabilities {
@@ -197,6 +199,7 @@ impl Capabilities {
             Self::Number(_) => EntityKind::Number,
             Self::Select(_) => EntityKind::Select,
             Self::Text(_) => EntityKind::Text,
+            Self::Button(_) => EntityKind::Button,
         }
     }
 

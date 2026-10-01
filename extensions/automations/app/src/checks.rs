@@ -311,7 +311,7 @@ impl Checks {
         let entity = home.entities.with_untracked(|entities| {
             entities
                 .iter()
-                .find(|e| e.capabilities.primary_shape() == ValueShape::Number)
+                .find(|e| e.capabilities.primary_shape() == Some(ValueShape::Number))
                 .or_else(|| entities.iter().find(|e| WATCHABLE.contains(&e.id.kind())))
                 .map(|e| e.id.to_string())
         });

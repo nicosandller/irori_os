@@ -211,7 +211,8 @@ impl Home {
             entities
                 .iter()
                 .find(|e| e.id.as_str() == entity)
-                .map_or(ValueShape::Bool, |e| e.capabilities.primary_shape())
+                .and_then(|e| e.capabilities.primary_shape())
+                .unwrap_or(ValueShape::Bool)
         })
     }
 
@@ -636,7 +637,7 @@ fn first_number_sensor(home: &Home) -> String {
     home.entities.with_untracked(|entities| {
         entities
             .iter()
-            .find(|entity| entity.capabilities.primary_shape() == ValueShape::Number)
+            .find(|entity| entity.capabilities.primary_shape() == Some(ValueShape::Number))
             .map(|entity| entity.id.to_string())
             .unwrap_or_else(|| "sensor.choose_one".into())
     })

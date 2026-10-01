@@ -20,7 +20,8 @@ use crate::{Entity, EntityKind, EntityState};
 /// 3. Adds `number`.
 /// 4. Adds `select`.
 /// 5. Adds `text`.
-pub const ENTITY_FORMAT: u32 = 5;
+/// 6. Adds `button`.
+pub const ENTITY_FORMAT: u32 = 6;
 
 pub(crate) fn first() -> u32 {
     1
@@ -39,6 +40,7 @@ impl EntityKind {
             Self::Number => 3,
             Self::Select => 4,
             Self::Text => 5,
+            Self::Button => 6,
         }
     }
 }
@@ -128,6 +130,13 @@ mod tests {
         .expect("valid");
         assert_eq!(entity_for(4, &message), None);
         assert!(entity_for(5, &message).is_some());
+        let restart: Entity = serde_json::from_str(
+            r#"{"id": "button.restart", "protocol": "esphome", "unique_id": "r",
+                "name": "Restart", "capabilities": {"kind": "button"}}"#,
+        )
+        .expect("valid");
+        assert_eq!(entity_for(5, &restart), None);
+        assert!(entity_for(6, &restart).is_some());
     }
 
     #[test]

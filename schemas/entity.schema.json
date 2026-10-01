@@ -216,6 +216,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^button\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "button"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -266,6 +289,27 @@
         "update",
         "vibration",
         "window"
+      ]
+    },
+    "ButtonClass": {
+      "description": "What pressing it does, when that's one of Home Assistant's.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "restart"
+          ]
+        },
+        {
+          "description": "Makes the device show itself: a blink, a beep.",
+          "type": "string",
+          "const": "identify"
+        },
+        {
+          "description": "Installs an update the device has.",
+          "type": "string",
+          "const": "update"
+        }
       ]
     },
     "Capabilities": {
@@ -520,6 +564,29 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "device_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ButtonClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "button"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
@@ -599,6 +666,10 @@
         {
           "maxLength": 69,
           "pattern": "^text\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^button\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

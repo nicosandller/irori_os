@@ -1,0 +1,11 @@
+{
+  "id": "button.kitchen_board_restart",
+  "protocol": "esphome",
+  "unique_id": "a4:cf:12:34:56:80-button-restart",
+  "name": "Restart",
+  "capabilities": {
+    "kind": "button",
+    "device_class": "restart"
+  },
+  "entity_category": "config"
+}

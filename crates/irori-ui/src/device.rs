@@ -771,7 +771,7 @@ fn history_panel(
     // The row's reading as it is now, so a chart can grow with it.
     live: Memo<Option<EntityState>>,
 ) -> AnyView {
-    let numeric = entity.capabilities.primary_shape() == irori_types::ValueShape::Number;
+    let numeric = entity.capabilities.primary_shape() == Some(irori_types::ValueShape::Number);
     view! {
         <div class="history">
             {move || match history.get() {
@@ -953,6 +953,7 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
         (Capabilities::Switch(_), Some(State::Switch(switch))) => {
             if switch.on { "On" } else { "Off" }.to_owned()
         }
+        (Capabilities::Button(_), _) => "—".to_owned(),
         (Capabilities::Select(_), Some(State::Select(select))) => select.option.clone(),
         (Capabilities::Text(text), Some(State::Text(state))) => {
             if text.mode == irori_types::TextMode::Password {

@@ -22,6 +22,8 @@ pub enum EntityKind {
     Select,
     /// A piece of text set by a person, e.g. a message for a display.
     Text,
+    /// Something to press, e.g. a restart button. It has no value.
+    Button,
 }
 
 impl EntityKind {
@@ -33,6 +35,7 @@ impl EntityKind {
         Self::Number,
         Self::Select,
         Self::Text,
+        Self::Button,
     ];
 
     /// The domain string used in entity ids and service names.
@@ -45,6 +48,7 @@ impl EntityKind {
             Self::Number => "number",
             Self::Select => "select",
             Self::Text => "text",
+            Self::Button => "button",
         }
     }
 

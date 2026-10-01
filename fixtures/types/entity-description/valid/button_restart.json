@@ -1,0 +1,10 @@
+{
+  "unique_id": "a4:cf:12:34:56:80-button-restart",
+  "name": "Restart",
+  "device_unique_id": "a4:cf:12:34:56:80",
+  "capabilities": {
+    "kind": "button",
+    "device_class": "restart"
+  },
+  "entity_category": "config"
+}

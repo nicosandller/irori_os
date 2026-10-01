@@ -8,10 +8,10 @@
 //! being unusable does that, and always with a reason a person could act on.
 
 use irori_types::{
-    BinarySensorCapabilities, BinarySensorClass, Capabilities, ColorTempRange, EntityCategory,
-    LightCapabilities, Name, NumberCapabilities, NumberMode, SelectCapabilities,
-    SensorCapabilities, SensorClass, SensorValueType, StateClass, SwitchCapabilities, SwitchClass,
-    TextCapabilities, TextMode, UniqueId,
+    BinarySensorCapabilities, BinarySensorClass, ButtonCapabilities, ButtonClass, Capabilities,
+    ColorTempRange, EntityCategory, LightCapabilities, Name, NumberCapabilities, NumberMode,
+    SelectCapabilities, SensorCapabilities, SensorClass, SensorValueType, StateClass,
+    SwitchCapabilities, SwitchClass, TextCapabilities, TextMode, UniqueId,
 };
 
 use crate::template::ValueTemplate;
@@ -124,6 +124,11 @@ pub enum EntityTopics {
         command_topic: String,
         value_template: ValueTemplate,
     },
+    /// Something to press: `payload_press` is published, and nothing is ever read back.
+    Button {
+        command_topic: String,
+        payload_press: String,
+    },
 }
 
 /// Everything Irori needs from one discovery config payload.
@@ -172,6 +177,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::Number => parse_number(&root)?,
         Component::Select => parse_select(&root)?,
         Component::Text => parse_text(&root)?,
+        Component::Button => parse_button(&root)?,
     };
 
     Ok(ParsedConfig {
@@ -448,6 +454,20 @@ fn parse_select(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics)
             state_topic: str_field(root, "state_topic").map(str::to_owned),
             command_topic,
             value_template: ValueTemplate::parse(str_field(root, "value_template")),
+        },
+    ))
+}
+
+fn parse_button(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
+    let command_topic = plain_command(root, "a button")?;
+    Ok((
+        Capabilities::Button(ButtonCapabilities {
+            device_class: str_field(root, "device_class").and_then(ButtonClass::from_ha),
+        }),
+        EntityTopics::Button {
+            command_topic,
+            // Home Assistant's default.
+            payload_press: owned_str(root, "payload_press", "PRESS"),
         },
     ))
 }
@@ -794,6 +814,31 @@ mod tests {
 
         let no_options = br#"{"unique_id": "s", "name": "Mode", "command_topic": "x/set"}"#;
         assert!(parse(Component::Select, no_options).is_err());
+    }
+
+    #[test]
+    fn a_button_sends_its_press_payload_and_listens_to_nothing() {
+        let payload = br#"{"unique_id": "0x1234_identify", "name": "Identify",
+            "command_topic": "zigbee2mqtt/Lamp/set/identify", "payload_press": "identify",
+            "device_class": "identify", "entity_category": "config"}"#;
+        let parsed = parse(Component::Button, payload).expect("valid");
+        assert_eq!(
+            parsed.capabilities,
+            Capabilities::Button(ButtonCapabilities {
+                device_class: Some(ButtonClass::Identify)
+            })
+        );
+        let unique_id = UniqueId::try_from("0x1234_identify").expect("valid");
+        assert!(crate::state::topics_of(&unique_id, &parsed.topics).is_empty());
+        let sent = crate::state::encode(&parsed.topics, &irori_types::Service::ButtonPress)
+            .expect("a button takes press");
+        assert_eq!(sent[0].topic, "zigbee2mqtt/Lamp/set/identify");
+        assert_eq!(sent[0].payload, b"identify");
+        let plain = br#"{"unique_id": "b", "name": "Go", "command_topic": "x/set"}"#;
+        let parsed = parse(Component::Button, plain).expect("valid");
+        let sent = crate::state::encode(&parsed.topics, &irori_types::Service::ButtonPress)
+            .expect("press");
+        assert_eq!(sent[0].payload, b"PRESS", "Home Assistant's default");
     }
 
     #[test]

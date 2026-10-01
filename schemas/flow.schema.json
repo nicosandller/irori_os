@@ -369,6 +369,10 @@
         {
           "maxLength": 69,
           "pattern": "^text\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^button\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

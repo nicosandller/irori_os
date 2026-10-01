@@ -120,6 +120,27 @@
         "window"
       ]
     },
+    "ButtonClass": {
+      "description": "What pressing it does, when that's one of Home Assistant's.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "restart"
+          ]
+        },
+        {
+          "description": "Makes the device show itself: a blink, a beep.",
+          "type": "string",
+          "const": "identify"
+        },
+        {
+          "description": "Installs an update the device has.",
+          "type": "string",
+          "const": "update"
+        }
+      ]
+    },
     "Capabilities": {
       "description": "What an entity can do, per kind. Static facts that don't change with its state.",
       "oneOf": [
@@ -366,6 +387,29 @@
                 "string",
                 "null"
               ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "device_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ButtonClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "button"
             }
           },
           "additionalProperties": false,

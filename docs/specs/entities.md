@@ -125,8 +125,8 @@ motion sensor are three entities.
 | `capabilities` | object tagged by `kind` | yes | What it can do; see below |
 | `entity_category` | `config` \| `diagnostic` | no | One of the device's settings (a motion sensor's timeout) or diagnostics (its signal strength) rather than what it's for. Pages list these after the device's other entities. Home Assistant's names; set by the protocol |
 
-**Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`.
-**Next, in likely order:** `button`, `event`, then `cover`, `lock`,
+**Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`.
+**Next, in likely order:** `event`, then `cover`, `lock`,
 `fan`, `valve`, `siren`, then `climate`, `water_heater`, `humidifier`. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
@@ -158,6 +158,7 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | `text` | `min_length`, `max_length` | 0–255, `min ≤ max` | `0`, `255` | Characters, not bytes |
 | | `pattern` | regular expression | absent | The device's; it checks it, pages show it |
 | | `mode` | `text` \| `password` | `text` | A `password` is never shown by pages |
+| `button` | `device_class` | `identify` \| `restart` \| `update` | absent | What pressing it does |
 
 Device classes are closed lists, matching Home Assistant's: a protocol maps what it knows (with
 `SensorClass::from_ha` and friends) and leaves the rest absent. New classes are additive.
@@ -232,6 +233,10 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | `number` | `value` | finite number | yes | Within its `min`–`max` (checked by the core) |
 | `select` | `option` | string | yes | One of its `options` (checked by the core) |
 | `text` | `value` | string | yes | Within its `min_length`–`max_length` characters (checked by the core) |
+
+A `button` has **no state**: there is no `button` tag, and its `EntityState.state` is always
+`null`. For a button that means "has no value", not "unknown" (§5.2): pressing it is something it
+does, not something it is. Rules can't read or compare it (`on()`, a state trigger), only press it.
 
 **Brightness is 1–255**, not a percentage: that's what Zigbee and Home Assistant use, so no
 precision is lost converting. Services will accept `brightness_pct` for people (M0.3).

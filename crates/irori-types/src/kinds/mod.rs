@@ -6,6 +6,7 @@
 //! [`Service`] and [`ServiceName`]. The compiler lists every `match` that has to answer for it.
 
 pub(crate) mod binary_sensor;
+pub(crate) mod button;
 pub(crate) mod light;
 pub(crate) mod number;
 pub(crate) mod select;
@@ -67,17 +68,6 @@ pub enum ValueShape {
 }
 
 impl EntityKind {
-    /// The shape of this kind's primary value, when the kind alone decides it. `None` when it
-    /// depends on the entity: a sensor reports numbers or text ([`Capabilities::primary_shape`]).
-    pub fn primary_shape(self) -> Option<ValueShape> {
-        match self {
-            Self::Light | Self::Switch | Self::BinarySensor => Some(ValueShape::Bool),
-            Self::Number => Some(ValueShape::Number),
-            Self::Select | Self::Text => Some(ValueShape::Text),
-            Self::Sensor => None,
-        }
-    }
-
     /// The standard services for this kind (`docs/specs/protocols.md` §7.1).
     pub fn services(self) -> impl Iterator<Item = ServiceName> {
         ServiceName::ALL
@@ -100,15 +90,20 @@ impl EntityKind {
             Self::Light => Some(ServiceName::LightTurnOn),
             Self::Switch if on => Some(ServiceName::SwitchTurnOff),
             Self::Switch => Some(ServiceName::SwitchTurnOn),
-            Self::Sensor | Self::BinarySensor | Self::Number | Self::Select | Self::Text => None,
+            Self::Sensor
+            | Self::BinarySensor
+            | Self::Number
+            | Self::Select
+            | Self::Text
+            | Self::Button => None,
         }
     }
 }
 
 impl Capabilities {
-    /// The shape of this entity's primary value.
-    pub fn primary_shape(&self) -> ValueShape {
-        match self {
+    /// The shape of this entity's primary value, or `None` when it has none (a button).
+    pub fn primary_shape(&self) -> Option<ValueShape> {
+        Some(match self {
             Self::Light(_) | Self::Switch(_) | Self::BinarySensor(_) => ValueShape::Bool,
             Self::Number(_) => ValueShape::Number,
             Self::Select(_) | Self::Text(_) => ValueShape::Text,
@@ -116,7 +111,8 @@ impl Capabilities {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
             },
-        }
+            Self::Button(_) => return None,
+        })
     }
 
     /// Every text its primary value can be, when that's a fixed list. Rules check the text
@@ -240,6 +236,7 @@ impl Service {
             ServiceName::LightTurnOff => Service::LightTurnOff,
             ServiceName::SwitchTurnOn => Service::SwitchTurnOn,
             ServiceName::SwitchTurnOff => Service::SwitchTurnOff,
+            ServiceName::ButtonPress => Service::ButtonPress,
             ServiceName::NumberSetValue => Service::NumberSetValue(
                 NumberSetValue::deserialize(serde_json::Value::Object(data))
                     .map_err(|e| InvariantError(format!("`{name}` data: {e}")))?,
@@ -293,6 +290,8 @@ impl Service {
             Self::NumberSetValue(data) => Some(Typed::Number(data.value)),
             Self::SelectSelectOption(data) => Some(Typed::Text(data.option.clone())),
             Self::TextSetValue(data) => Some(Typed::Text(data.value.clone())),
+            // A press leaves nothing to remember.
+            Self::ButtonPress => None,
         }
     }
 }

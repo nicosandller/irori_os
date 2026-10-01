@@ -200,6 +200,11 @@
           "description": "A piece of text set by a person, e.g. a message for a display.",
           "type": "string",
           "const": "text"
+        },
+        {
+          "description": "Something to press, e.g. a restart button. It has no value.",
+          "type": "string",
+          "const": "button"
         }
       ]
     },
