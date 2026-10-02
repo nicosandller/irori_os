@@ -5,6 +5,7 @@ use irori_types::{HumidifierCapabilities, HumidifierState};
 use leptos::prelude::*;
 
 use super::knob;
+use crate::choices::choices;
 use crate::devices::Controls;
 
 /// A humidifier in words: "On · 50% · now 62%".
@@ -80,28 +81,22 @@ pub(crate) fn humidifier_control(
         let options = capabilities
             .modes
             .iter()
-            .map(|mode| {
-                let selected = chosen.as_deref() == Some(mode.as_str());
-                view! { <option value=mode.clone() selected=selected>{mode.clone()}</option> }
-            })
-            .collect_view();
-        view! {
-            <select
-                class="select-control"
-                aria-label=format!("Mode for {}", entity.name)
-                disabled=disable.clone()
-                on:change:target=move |ev| {
-                    controls.act.run((
-                        entity_id.clone(),
-                        "set_mode",
-                        Some(serde_json::json!({ "mode": ev.target().value() })),
-                    ));
-                }
-            >
-                <option value="" selected=chosen.is_none() disabled=true>"Mode"</option>
-                {options}
-            </select>
-        }
+            .map(|mode| (mode.clone(), mode.clone()))
+            .collect();
+        let current = chosen.clone();
+        choices(
+            format!("Mode for {}", entity.name),
+            options,
+            move || current.clone(),
+            disable.clone(),
+            move |mode| {
+                controls.act.run((
+                    entity_id.clone(),
+                    "set_mode",
+                    Some(serde_json::json!({ "mode": mode })),
+                ));
+            },
+        )
     });
     let now = current
         .as_ref()

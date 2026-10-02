@@ -279,7 +279,7 @@ fn card(
                             " "
                             <button
                                 type="button"
-                                class="link"
+                                class="quiet-button"
                                 on:click=move |_| log_open.set(Some(id_log.clone()))
                             >
                                 "View log"

@@ -300,11 +300,11 @@
        a press. `:where` keeps these at no specificity, so each button's own rules still win.
        Left out: the toggle, which has a press of its own, and the Floorplan's device markers,
        which are placed by their transform. */
-    :where(button:not(.toggle, .marker), .add, a.tile) {
+    :where(button:not(.toggle, .marker), .add, a.tile, a.quiet-button) {
         transition: color var(--dur-fast), background-color var(--dur-fast),
                     border-color var(--dur-fast), box-shadow var(--dur-base) var(--ease-out),
                     transform var(--dur-fast) var(--ease-out), opacity var(--dur-fast); }
-    :where(button:not(.toggle, .marker, :disabled)):active { transform: scale(.97); }
+    :where(button:not(.toggle, .marker, :disabled), a.quiet-button):active { transform: scale(.97); }
 
     /* Extensions page: search, quick filters, and a grid of cards. */
     .ext-controls { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center;
@@ -470,10 +470,24 @@
        light can set. The value a slider shows is the device's, not the last thing asked for. */
     .light-controls { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center;
                       gap: .3rem .9rem; padding: .2rem .1rem 0; }
-    .select-control { font: inherit; padding: .2rem .35rem; max-width: 12rem; }
+    /* A short list of choices, and the one-shot buttons beside a cover. The same bordered
+       button as the rest of the page: the chosen choice is sunk, with an ember edge. */
+    .choices { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .35rem;
+               max-width: 100%; }
+    .choices button, button.press {
+        padding: .25rem .65rem; font: inherit; font-size: .8rem; color: var(--muted);
+        background: var(--card); border: 1px solid var(--line); border-radius: .4rem;
+        cursor: pointer;
+        transition: color var(--dur-fast), background-color var(--dur-base) var(--ease-out),
+                    border-color var(--dur-fast), transform var(--dur-fast) var(--ease-out); }
+    .choices button:hover:not(:disabled), button.press:hover:not(:disabled) {
+        color: var(--fg); border-color: var(--ember); }
+    .choices button[aria-pressed="true"] {
+        color: var(--fg); background: var(--sunk); border-color: var(--ember); }
+    .choices button:focus-visible, button.press:focus-visible {
+        outline: 2px solid var(--ember); outline-offset: 2px; }
     .text-control { font: inherit; padding: .25rem .4rem; width: 12rem; }
-    .press { font: inherit; padding: .25rem .8rem; }
-    .cover-buttons { display: inline-flex; gap: .35rem; }
+    .cover-buttons { display: inline-flex; flex-wrap: wrap; gap: .35rem; }
     .lock-code { display: flex; flex-direction: column; gap: .3rem; margin: .8rem 0; }
     .fan-swing { display: inline-flex; align-items: center; gap: .35rem; }
     /* A thermostat's target, typed in, and what the room is now. */
@@ -550,8 +564,8 @@
     .entity-group { margin: 1.1rem 0 .3rem; font-size: .8rem; font-weight: 500; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
     .room-card ul { margin: 0; padding: 0; list-style: none; font-size: .875rem; }
     .room-card li { padding: .1rem 0; overflow-wrap: anywhere; }
-    .room-card a { text-decoration: none; }
-    .room-card a:hover { text-decoration: underline; }
+    .room-card a { color: inherit; text-decoration: none; }
+    .room-card a:hover { color: var(--ember); }
 
     .room-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .75rem;
                  margin-bottom: .5rem; }
@@ -595,12 +609,10 @@
                            border: 1px solid var(--line); border-radius: .4rem; cursor: pointer; }
     .page-actions button:hover { border-color: var(--ember); color: var(--ember); }
 
-    .room-picker { display: flex; align-items: center; gap: .75rem; }
-    .room-picker > span { color: var(--muted); font: .7rem var(--mono); letter-spacing: .08em;
-                          text-transform: uppercase; }
-    .room-picker select { padding: .4rem .6rem; font: inherit; font-size: .95rem;
-                          color: var(--fg); background: var(--bg);
-                          border: 1px solid var(--line); border-radius: .4rem; }
+    /* A name that goes somewhere, in the colour of the text around it. Ember is the hover,
+       the way the device table does it, rather than a link that is ember all the time. */
+    a.row-link { color: inherit; text-decoration: none; transition: color var(--dur-fast); }
+    a.row-link:hover { color: var(--ember); }
     table.devices .room { color: var(--muted); }
 
     /* A device's entity, with the name it can be given underneath its reading. */
@@ -609,10 +621,6 @@
     .entity-row .entity { border-bottom: none; padding-bottom: .2rem; }
     .entity-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem;
                    padding: 0 1rem .6rem; }
-    button.link { padding: 0; margin-left: .5rem; font: inherit; font-size: .8rem;
-                  color: var(--ember); background: none; border: none; cursor: pointer;
-                  text-decoration: underline; }
-
     /* The way into an entity's last 24 hours, where the eye already is: on the device page a
        sensor's reading is itself the button, and a switch or light has a chevron beside its
        control. The chevron turns as the drawer rolls down. */
@@ -627,9 +635,6 @@
                           border-color var(--dur-fast), background-color var(--dur-fast); }
     .unroll[data-y0] { transition: none; }
     .unroll:focus-visible { outline: 2px solid var(--ember); outline-offset: 1px; }
-    .reading-unroll .reading { text-decoration: underline dotted var(--muted);
-                               text-underline-offset: .25em; }
-    .reading-unroll:hover .reading { text-decoration-color: var(--ember); }
     .unroll-mark { width: .45rem; height: .45rem; margin: -.15rem .1rem 0;
                    border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted);
                    rotate: 45deg; transition: rotate var(--dur-base) var(--ease-spring),
@@ -820,7 +825,10 @@
 
     .empty { color: var(--muted); }
     .muted { color: var(--muted); }
-    a { color: var(--ember); }
+    /* Nothing on the page is a hyperlink. A control is a button; a place you can go is drawn
+       as one of those, or as the sidebar and the device table draw it. */
+    a { color: inherit; text-decoration: none; }
+    p .quiet-button { margin: 0 .35rem; vertical-align: middle; }
 
     /* The start screen: the IroriOS wordmark as the terminal prints it, big enough to be the
        first thing a browser lands on. */
@@ -847,10 +855,12 @@
 
     /* Settings: the in-page menu, and the sections it scrolls to. */
     .settings-menu { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1.5rem; }
-    .settings-menu a { padding: .3rem .7rem; font: .8rem var(--mono); letter-spacing: .05em;
-                       color: var(--muted); text-decoration: none;
-                       border: 1px solid var(--line); border-radius: .4rem; }
-    .settings-menu a:hover { color: var(--fg); border-color: var(--ember); }
+    .settings-menu button { padding: .3rem .7rem; font: .8rem var(--mono); letter-spacing: .05em;
+                            color: var(--muted); background: transparent; cursor: pointer;
+                            border: 1px solid var(--line); border-radius: .4rem;
+                            transition: color var(--dur-fast), border-color var(--dur-fast),
+                                        background-color var(--dur-fast); }
+    .settings-menu button:hover { color: var(--fg); border-color: var(--ember); }
     .settings-section { scroll-margin-top: 1rem;
                         animation: rise var(--dur-base) var(--ease-out) backwards;
                         animation-delay: calc(var(--i, 0) * 45ms); }
@@ -1276,10 +1286,7 @@
     .settings-help { color: var(--muted); font-size: .78rem; line-height: 1.4; }
     .settings-required { margin-left: .4rem; color: var(--ember); font: .65rem var(--mono);
                          letter-spacing: .08em; text-transform: uppercase; }
-    .settings-field select { padding: .4rem .6rem; font: inherit; font-size: .95rem;
-                             color: var(--fg); background: var(--bg);
-                             border: 1px solid var(--line); border-radius: .4rem; }
-    .settings-field select:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
+    .settings-field .choices { margin-top: .15rem; }
     .settings-advanced { border: 1px solid var(--line); border-radius: .4rem;
                          padding: .5rem .75rem; }
     .settings-advanced summary { cursor: pointer; font-size: .85rem; color: var(--muted); }

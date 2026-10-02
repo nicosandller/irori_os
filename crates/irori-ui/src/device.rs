@@ -329,7 +329,7 @@ fn page(
     };
 
     view! {
-        <p class="crumb"><A href="/devices">"← All devices"</A></p>
+        <p class="crumb"><A href="/devices" attr:class="quiet-button">"All devices"</A></p>
         <div class="page-head">
             // The same name the list's link had, so the name travels up from the row it was.
             <h1 style=crate::transition::device_name(device.id.as_ref())>
@@ -449,42 +449,34 @@ fn page(
                         move || {
                             if renaming.get() {
                                 let move_to = move_to.clone();
+                                let mut options = vec![(
+                                    NOWHERE.to_owned(),
+                                    "Unassigned".to_owned(),
+                                )];
+                                options.extend(areas.iter().map(|area| {
+                                    (area.id.to_string(), area.name.to_string())
+                                }));
+                                // Only worth offering when there's something to go back to.
+                                if suggested.is_some() {
+                                    options.push((
+                                        LET_THE_DEVICE_SAY.to_owned(),
+                                        "Wherever the device says".to_owned(),
+                                    ));
+                                }
+                                let here = in_room
+                                    .as_ref()
+                                    .map(AreaId::to_string)
+                                    .unwrap_or_else(|| NOWHERE.to_owned());
                                 view! {
-                                <label class="room-picker">
-                                    <select
-                                        on:change:target=move |ev| move_to(ev.target().value())
-                                        prop:value=in_room
-                                            .as_ref()
-                                            .map(AreaId::to_string)
-                                            .unwrap_or_else(|| NOWHERE.to_owned())
-                                    >
-                                        <option value=NOWHERE selected=in_room.is_none()>
-                                            "Unassigned"
-                                        </option>
-                                        {areas
-                                            .iter()
-                                            .map(|area| {
-                                                let id = area.id.to_string();
-                                                view! {
-                                                    <option value=id.clone() selected=in_room
-                                                        .as_ref()
-                                                        .is_some_and(|chosen| chosen.as_str() == id)
-                                                    >
-                                                        {area.name.to_string()}
-                                                    </option>
-                                                }
-                                            })
-                                            .collect_view()}
-                                        // Only worth offering when there's something to go back to.
-                                        {suggested.is_some().then(|| view! {
-                                            <option value=LET_THE_DEVICE_SAY>
-                                                "Wherever the device says"
-                                            </option>
-                                        })}
-                                    </select>
-                                </label>
-                            }
-                            .into_any()
+                                    {crate::choices::choices(
+                                        "Area",
+                                        options,
+                                        move || Some(here.clone()),
+                                        || false,
+                                        move_to,
+                                    )}
+                                }
+                                .into_any()
                         } else {
                             view! {
                                 {room_name.clone().unwrap_or_else(|| "Unassigned".to_owned())}
@@ -516,13 +508,14 @@ fn page(
                 })}
                 {device.via_device_id.clone().map(|via| view! {
                     <dt>"Reached through"</dt>
-                    <dd><A href=format!("/devices/{via}")>{via.to_string()}</A></dd>
+                    <dd><A href=format!("/devices/{via}") attr:class="row-link">{via.to_string()}</A></dd>
                 })}
             </dl>
             {if areas.is_empty() {
                 view! {
                     <p class="muted small">
-                        "No areas yet. " <A href="/settings">"Make one"</A>
+                        "No areas yet. "
+                        <A href="/settings" attr:class="quiet-button">"Make one"</A>
                         " and this device can go in it."
                     </p>
                 }
@@ -756,7 +749,7 @@ fn EntityRow(
                         .into_any()
                     } else {
                         view! {
-                            <button type="button" class="link" on:click=start.clone()>
+                            <button type="button" class="quiet-button" on:click=start.clone()>
                                 "Rename"
                             </button>
                         }
@@ -1055,7 +1048,7 @@ fn missing(id: &str, known: bool) -> impl IntoView {
                     "Irori hasn't heard from any devices yet.".to_owned()
                 }}
             </p>
-            <p><A href="/devices">"All devices"</A></p>
+            <p><A href="/devices" attr:class="quiet-button">"All devices"</A></p>
         </section>
     }
 }

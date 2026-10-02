@@ -3,10 +3,10 @@
 use irori_types::{Entity, SelectCapabilities, State};
 use leptos::prelude::*;
 
-use super::UNKNOWN;
+use crate::choices::choices;
 use crate::devices::Controls;
 
-/// A select: its choices in a dropdown, on the one the device last reported. Choosing sends it.
+/// A select: its choices as buttons, on the one the device last reported. Choosing sends it.
 pub(crate) fn select_control(
     entity: &Entity,
     capabilities: &SelectCapabilities,
@@ -26,28 +26,21 @@ pub(crate) fn select_control(
     let options = capabilities
         .options
         .iter()
-        .map(|option| {
-            let chosen = current.as_deref() == Some(option.as_str());
-            view! { <option value=option.clone() selected=chosen>{option.clone()}</option> }
-        })
-        .collect_view();
-    view! {
-        <select
-            class="select-control"
-            aria-label=entity.name.to_string()
-            disabled=disable
-            on:change:target=move |ev| {
-                controls.act.run((
-                    entity_id.clone(),
-                    "select_option",
-                    Some(serde_json::json!({ "option": ev.target().value() })),
-                ));
-            }
-        >
-            // Until it says, nothing is chosen rather than its first option.
-            {current.is_none().then(|| view! { <option value="" selected=true disabled=true>{UNKNOWN}</option> })}
-            {options}
-        </select>
-    }
-    .into_any()
+        .map(|option| (option.clone(), option.clone()))
+        .collect();
+    // Until it says, nothing is pressed rather than its first option.
+    let chosen = current.clone();
+    choices(
+        entity.name.to_string(),
+        options,
+        move || chosen.clone(),
+        disable,
+        move |option| {
+            controls.act.run((
+                entity_id.clone(),
+                "select_option",
+                Some(serde_json::json!({ "option": option })),
+            ));
+        },
+    )
 }

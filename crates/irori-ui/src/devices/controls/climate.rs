@@ -4,6 +4,7 @@ use irori_types::{ClimateCapabilities, ClimateState, Entity, HvacMode, State};
 use leptos::prelude::*;
 
 use super::degrees;
+use crate::choices::choices;
 use crate::devices::Controls;
 
 /// A thermostat's mode, in words.
@@ -67,30 +68,19 @@ pub(crate) fn climate_control(
                   chosen: Option<String>| {
         let entity_id = entity_id.clone();
         let disable = disable.clone();
-        let options = options
-            .into_iter()
-            .map(|(value, words)| {
-                let selected = chosen.as_deref() == Some(value.as_str());
-                view! { <option value=value selected=selected>{words}</option> }
-            })
-            .collect_view();
-        view! {
-            <select
-                class="select-control"
-                aria-label=label
-                disabled=disable
-                on:change:target=move |ev| {
-                    controls.act.run((
-                        entity_id.clone(),
-                        action,
-                        Some(serde_json::json!({ field: ev.target().value() })),
-                    ));
-                }
-            >
-                <option value="" selected=chosen.is_none() disabled=true>"—"</option>
-                {options}
-            </select>
-        }
+        choices(
+            label,
+            options,
+            move || chosen.clone(),
+            disable,
+            move |picked| {
+                controls.act.run((
+                    entity_id.clone(),
+                    action,
+                    Some(serde_json::json!({ field: picked })),
+                ));
+            },
+        )
     };
     let mode = picker(
         format!("Mode for {}", entity.name),

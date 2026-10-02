@@ -4,6 +4,7 @@ use irori_types::{Entity, FanCapabilities, FanState, State};
 use leptos::prelude::*;
 
 use super::{fill, knob};
+use crate::choices::choices;
 use crate::devices::Controls;
 
 /// A fan in words: "On · 66%", "On · sleep", "Off".
@@ -81,28 +82,22 @@ pub(crate) fn fan_control(
         let options = capabilities
             .preset_modes
             .iter()
-            .map(|mode| {
-                let chosen = current_mode.as_deref() == Some(mode.as_str());
-                view! { <option value=mode.clone() selected=chosen>{mode.clone()}</option> }
-            })
-            .collect_view();
-        view! {
-            <select
-                class="select-control"
-                aria-label=format!("Mode for {}", entity.name)
-                disabled=disable
-                on:change:target=move |ev| {
-                    controls.act.run((
-                        entity_id.clone(),
-                        "set_preset_mode",
-                        Some(serde_json::json!({ "preset_mode": ev.target().value() })),
-                    ));
-                }
-            >
-                <option value="" selected=current_mode.is_none() disabled=true>"Mode"</option>
-                {options}
-            </select>
-        }
+            .map(|mode| (mode.clone(), mode.clone()))
+            .collect();
+        let chosen = current_mode.clone();
+        choices(
+            format!("Mode for {}", entity.name),
+            options,
+            move || chosen.clone(),
+            disable,
+            move |mode| {
+                controls.act.run((
+                    entity_id.clone(),
+                    "set_preset_mode",
+                    Some(serde_json::json!({ "preset_mode": mode })),
+                ));
+            },
+        )
     });
     let swing = capabilities.oscillate.then(|| {
         let swinging = running

@@ -263,7 +263,7 @@ pub fn Devices() -> impl IntoView {
                         "{waiting} device{} found that Irori can't use yet. ",
                         if waiting == 1 { "" } else { "s" },
                     )}
-                    <button type="button" class="link" on:click=move |_| adding.set(true)>
+                    <button type="button" class="quiet-button" on:click=move |_| adding.set(true)>
                         "See what they need"
                     </button>
                 </p>
