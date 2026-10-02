@@ -126,8 +126,8 @@ motion sensor are three entities.
 | `entity_category` | `config` \| `diagnostic` | no | One of the device's settings (a motion sensor's timeout) or diagnostics (its signal strength) rather than what it's for. Pages list these after the device's other entities. Home Assistant's names; set by the protocol |
 
 **Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`,
-`event`, `cover`, `lock`, `fan`, `valve`, `siren`.
-**Next, in likely order:** `climate`, `water_heater`, `humidifier`. Adding a kind is an
+`event`, `cover`, `lock`, `fan`, `valve`, `siren`, `climate`.
+**Next, in likely order:** `water_heater`, `humidifier`. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
 
@@ -170,9 +170,21 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | | `position`, `stop` | bool | `false` | Opens part of the way; can be stopped |
 | `siren` | `tones` | up to 256 distinct strings | `[]` | The tones it can sound |
 | | `volume`, `duration` | bool | `false` | Can be told how loud; for how long |
+| `climate` | `hvac_modes` | 1 or more of `off` \| `heat` \| `cool` \| `heat_cool` \| `auto` \| `dry` \| `fan_only` | **required** | The modes it can be put in |
+| | `min_temp`, `max_temp` | °C, `min ≤ max` | **required** | The targets it takes |
+| | `temp_step` | °C above 0 | **required** | How finely a target can be set |
+| | `target_temperature` | bool | `false` | Takes one target |
+| | `target_temperature_range` | bool | `false` | Takes a range: heats below `target_temp_low`, cools above `target_temp_high` |
+| | `target_humidity` | `{ min, max }` in % | absent | Takes a target humidity in this range |
+| | `fan_modes`, `swing_modes`, `preset_modes` | up to 256 distinct strings each | `[]` | E.g. `auto`/`low`/`high`; `off`/`vertical`; `eco`/`away`/`boost` |
 | `fan` | `speed_count` | integer | `0` | How many real speeds it has; 0 when its speed can't be set. Speeds go over the wire as percentages, as in Home Assistant |
 | | `oscillate`, `direction` | bool | `false` | Can swing; can turn the other way |
 | | `preset_modes` | up to 256 distinct strings | `[]` | Modes beyond its speed, e.g. `auto`, `sleep` |
+
+**Temperatures are °C** in climate entities, in their capabilities, state and services alike.
+A protocol converts from what a device speaks (°F, K) on the way in and back on the way out
+(`irori_types::units`), so a rule comparing a thermostat's target with a temperature sensor never
+compares °F with °C. Pages show °C for now.
 
 **Unlocking and opening let someone in.** Pages ask before sending them, in a window that also
 takes the code a lock needs. A code travels with its call (`lock.unlock {code}`), is never shown
@@ -258,6 +270,13 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | `valve` | `state` | `open` \| `opening` \| `closed` \| `closing` | yes | Its typed value, as a cover's |
 | | `position` | integer 0–100 | no | When it opens part of the way |
 | `siren` | `on` | bool | yes | Sounding or not |
+| `climate` | `hvac_mode` | one of its `hvac_modes` | yes | Its typed value, for rules (`text()`) |
+| | `hvac_action` | `off` \| `preheating` \| `heating` \| `cooling` \| `drying` \| `idle` \| `fan` \| `defrosting` | no | What it's doing now, when it says: set to heat but idle in a warm room |
+| | `current_temperature` | °C | no | The room, as it measures it |
+| | `target_temperature` | °C | no | With `target_temperature` |
+| | `target_temp_low`, `target_temp_high` | °C | no | With `target_temperature_range` |
+| | `current_humidity`, `target_humidity` | % 0–100 | no | |
+| | `fan_mode`, `swing_mode`, `preset_mode` | string | no | One of its lists (checked by the core) |
 | `fan` | `on` | bool | yes | Its typed value |
 | | `percentage` | integer 0–100 | no | Its speed, when it has speeds. Kept while off |
 | | `oscillating` | bool | no | When it can swing |
@@ -367,5 +386,6 @@ Recorded as D20 in the ROADMAP decision log.
    or refuse while rules reference it? Decide in M0.7 (config) with M0.3 (rules).
 2. ~~**Text sensor values.**~~ Decided: a text sensor may list its `options` (§4.4), and rules are
    checked against them.
-3. **Units.** Free-form strings today. Before AI dashboards and statistics, decide whether to
-   restrict units per `device_class` and normalize (e.g. store °C, display °F).
+3. **Units.** Temperatures are decided: °C in the model, converted by protocols (§4.4). Other
+   units are free-form strings today. Before AI dashboards and statistics, decide whether to
+   restrict them per `device_class` and normalize them too.

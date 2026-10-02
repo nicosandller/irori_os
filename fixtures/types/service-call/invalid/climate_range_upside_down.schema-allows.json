@@ -1,0 +1,15 @@
+{
+  "service": "climate.set_temperature",
+  "unique_id": "c",
+  "data": {
+    "target_temp_low": 24,
+    "target_temp_high": 19
+  },
+  "context": {
+    "id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+    "origin": {
+      "type": "user",
+      "user_id": "nico"
+    }
+  }
+}

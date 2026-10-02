@@ -24,6 +24,7 @@ mod schema;
 mod settings;
 mod state;
 mod time;
+pub mod units;
 
 pub use context::{Context, Origin};
 pub use extension::{
@@ -42,6 +43,10 @@ pub use id::{
 pub use kind::EntityKind;
 pub use kinds::binary_sensor::{BinarySensorCapabilities, BinarySensorClass, BinarySensorState};
 pub use kinds::button::{ButtonCapabilities, ButtonClass};
+pub use kinds::climate::{
+    ClimateCapabilities, ClimateFanMode, ClimateHvacMode, ClimatePresetMode, ClimateSetTemperature,
+    ClimateState, ClimateSwingMode, HumidityRange, HvacAction, HvacMode, SetHumidity,
+};
 pub use kinds::cover::{
     CoverCapabilities, CoverClass, CoverState, OpenState, SetPosition, SetTilt,
 };

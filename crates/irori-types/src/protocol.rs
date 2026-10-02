@@ -10,6 +10,10 @@ use std::fmt;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
+use crate::kinds::climate::{
+    ClimateFanMode, ClimateHvacMode, ClimatePresetMode, ClimateSetTemperature, ClimateSwingMode,
+    SetHumidity,
+};
 use crate::kinds::cover::{SetPosition, SetTilt};
 use crate::kinds::fan::{FanOscillate, FanPercentage, FanPresetMode, FanSetDirection, FanTurnOn};
 use crate::kinds::light::LightTurnOn;
@@ -403,6 +407,14 @@ pub enum Service {
     ValveSetPosition(SetPosition),
     SirenTurnOn(SirenTurnOn),
     SirenTurnOff,
+    ClimateSetHvacMode(ClimateHvacMode),
+    ClimateSetTemperature(ClimateSetTemperature),
+    ClimateSetHumidity(SetHumidity),
+    ClimateSetFanMode(ClimateFanMode),
+    ClimateSetSwingMode(ClimateSwingMode),
+    ClimateSetPresetMode(ClimatePresetMode),
+    ClimateTurnOn,
+    ClimateTurnOff,
 }
 
 impl Service {
@@ -436,6 +448,14 @@ impl Service {
             Self::ValveSetPosition(_) => ServiceName::ValveSetPosition,
             Self::SirenTurnOn(_) => ServiceName::SirenTurnOn,
             Self::SirenTurnOff => ServiceName::SirenTurnOff,
+            Self::ClimateSetHvacMode(_) => ServiceName::ClimateSetHvacMode,
+            Self::ClimateSetTemperature(_) => ServiceName::ClimateSetTemperature,
+            Self::ClimateSetHumidity(_) => ServiceName::ClimateSetHumidity,
+            Self::ClimateSetFanMode(_) => ServiceName::ClimateSetFanMode,
+            Self::ClimateSetSwingMode(_) => ServiceName::ClimateSetSwingMode,
+            Self::ClimateSetPresetMode(_) => ServiceName::ClimateSetPresetMode,
+            Self::ClimateTurnOn => ServiceName::ClimateTurnOn,
+            Self::ClimateTurnOff => ServiceName::ClimateTurnOff,
         }
     }
 }
@@ -499,6 +519,22 @@ pub enum ServiceName {
     SirenTurnOn,
     #[serde(rename = "siren.turn_off")]
     SirenTurnOff,
+    #[serde(rename = "climate.set_hvac_mode")]
+    ClimateSetHvacMode,
+    #[serde(rename = "climate.set_temperature")]
+    ClimateSetTemperature,
+    #[serde(rename = "climate.set_humidity")]
+    ClimateSetHumidity,
+    #[serde(rename = "climate.set_fan_mode")]
+    ClimateSetFanMode,
+    #[serde(rename = "climate.set_swing_mode")]
+    ClimateSetSwingMode,
+    #[serde(rename = "climate.set_preset_mode")]
+    ClimateSetPresetMode,
+    #[serde(rename = "climate.turn_on")]
+    ClimateTurnOn,
+    #[serde(rename = "climate.turn_off")]
+    ClimateTurnOff,
 }
 
 impl ServiceName {
@@ -531,6 +567,14 @@ impl ServiceName {
         Self::ValveSetPosition,
         Self::SirenTurnOn,
         Self::SirenTurnOff,
+        Self::ClimateSetHvacMode,
+        Self::ClimateSetTemperature,
+        Self::ClimateSetHumidity,
+        Self::ClimateSetFanMode,
+        Self::ClimateSetSwingMode,
+        Self::ClimateSetPresetMode,
+        Self::ClimateTurnOn,
+        Self::ClimateTurnOff,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -563,6 +607,14 @@ impl ServiceName {
             Self::ValveSetPosition => "valve.set_position",
             Self::SirenTurnOn => "siren.turn_on",
             Self::SirenTurnOff => "siren.turn_off",
+            Self::ClimateSetHvacMode => "climate.set_hvac_mode",
+            Self::ClimateSetTemperature => "climate.set_temperature",
+            Self::ClimateSetHumidity => "climate.set_humidity",
+            Self::ClimateSetFanMode => "climate.set_fan_mode",
+            Self::ClimateSetSwingMode => "climate.set_swing_mode",
+            Self::ClimateSetPresetMode => "climate.set_preset_mode",
+            Self::ClimateTurnOn => "climate.turn_on",
+            Self::ClimateTurnOff => "climate.turn_off",
         }
     }
 
@@ -591,6 +643,14 @@ impl ServiceName {
                 EntityKind::Valve
             }
             Self::SirenTurnOn | Self::SirenTurnOff => EntityKind::Siren,
+            Self::ClimateSetHvacMode
+            | Self::ClimateSetTemperature
+            | Self::ClimateSetHumidity
+            | Self::ClimateSetFanMode
+            | Self::ClimateSetSwingMode
+            | Self::ClimateSetPresetMode
+            | Self::ClimateTurnOn
+            | Self::ClimateTurnOff => EntityKind::Climate,
         }
     }
 }
@@ -695,6 +755,12 @@ impl JsonSchema for ServiceCall {
         let fan_direction = generator.subschema_for::<FanSetDirection>();
         let fan_preset = generator.subschema_for::<FanPresetMode>();
         let siren_turn_on = generator.subschema_for::<SirenTurnOn>();
+        let climate_mode = generator.subschema_for::<ClimateHvacMode>();
+        let climate_temperature = generator.subschema_for::<ClimateSetTemperature>();
+        let set_humidity = generator.subschema_for::<SetHumidity>();
+        let climate_fan = generator.subschema_for::<ClimateFanMode>();
+        let climate_swing = generator.subschema_for::<ClimateSwingMode>();
+        let climate_preset = generator.subschema_for::<ClimatePresetMode>();
         // Per service: the shape of `data`.
         let rules: Vec<_> = ServiceName::ALL
             .iter()
@@ -717,6 +783,12 @@ impl JsonSchema for ServiceCall {
                     ServiceName::FanSetDirection => fan_direction.clone(),
                     ServiceName::FanSetPresetMode => fan_preset.clone(),
                     ServiceName::SirenTurnOn => siren_turn_on.clone(),
+                    ServiceName::ClimateSetHvacMode => climate_mode.clone(),
+                    ServiceName::ClimateSetTemperature => climate_temperature.clone(),
+                    ServiceName::ClimateSetHumidity => set_humidity.clone(),
+                    ServiceName::ClimateSetFanMode => climate_fan.clone(),
+                    ServiceName::ClimateSetSwingMode => climate_swing.clone(),
+                    ServiceName::ClimateSetPresetMode => climate_preset.clone(),
                     _ => no_data.clone(),
                 };
                 json_schema!({

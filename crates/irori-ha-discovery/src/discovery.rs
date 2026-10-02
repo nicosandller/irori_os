@@ -7,13 +7,15 @@
 //! unexpected field never fails the whole entity — only a field this parser actually depends on
 //! being unusable does that, and always with a reason a person could act on.
 
+use irori_types::units::{TemperatureUnit, round_to};
 use irori_types::{
     BinarySensorCapabilities, BinarySensorClass, ButtonCapabilities, ButtonClass, Capabilities,
-    ColorTempRange, CoverCapabilities, CoverClass, EntityCategory, EventCapabilities, EventClass,
-    FanCapabilities, LightCapabilities, LockCapabilities, LockStatus, Name, NumberCapabilities,
-    NumberMode, SelectCapabilities, SensorCapabilities, SensorClass, SensorValueType,
-    SirenCapabilities, StateClass, SwitchCapabilities, SwitchClass, TextCapabilities, TextMode,
-    UniqueId, ValveCapabilities, ValveClass,
+    ClimateCapabilities, ColorTempRange, CoverCapabilities, CoverClass, EntityCategory,
+    EventCapabilities, EventClass, FanCapabilities, HumidityRange, HvacMode, LightCapabilities,
+    LockCapabilities, LockStatus, Name, NumberCapabilities, NumberMode, SelectCapabilities,
+    SensorCapabilities, SensorClass, SensorValueType, SirenCapabilities, StateClass,
+    SwitchCapabilities, SwitchClass, TextCapabilities, TextMode, UniqueId, ValveCapabilities,
+    ValveClass,
 };
 
 use crate::template::{CommandTemplate, ValueTemplate};
@@ -160,6 +162,55 @@ pub enum EntityTopics {
         state_on: String,
         state_off: String,
     },
+    /// A thermostat or air conditioner, as Home Assistant's MQTT climate lets it vary: each
+    /// setting on its own topics.
+    Climate(Box<ClimateTopics>),
+}
+
+/// How a climate entity is told what to do and says what it's doing. Temperatures go out and
+/// come in in `unit`; Irori's model holds °C.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClimateTopics {
+    pub unit: TemperatureUnit,
+    pub modes: Vec<HvacMode>,
+    pub mode: Option<FanPart>,
+    pub temperature: Option<FanPart>,
+    pub temperature_low: Option<FanPart>,
+    pub temperature_high: Option<FanPart>,
+    pub target_humidity: Option<FanPart>,
+    pub fan_mode: Option<FanPart>,
+    pub swing_mode: Option<FanPart>,
+    pub preset_mode: Option<FanPart>,
+    /// Read only: `(state_topic, value_template)`.
+    pub current_temperature: Option<(String, ValueTemplate)>,
+    pub current_humidity: Option<(String, ValueTemplate)>,
+    pub action: Option<(String, ValueTemplate)>,
+    /// Its own on and off, when it has them; otherwise turning it off sets the `off` mode.
+    pub power: Option<ClimatePower>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClimatePower {
+    pub command_topic: String,
+    pub command_template: CommandTemplate,
+    pub payload_on: String,
+    pub payload_off: String,
+}
+
+impl ClimateTopics {
+    /// Every setting it reads, with the field it fills, for decoding a message on `topic`.
+    pub(crate) fn settings(&self) -> [(&'static str, Option<&FanPart>); 8] {
+        [
+            ("mode", self.mode.as_ref()),
+            ("temperature", self.temperature.as_ref()),
+            ("temperature_low", self.temperature_low.as_ref()),
+            ("temperature_high", self.temperature_high.as_ref()),
+            ("target_humidity", self.target_humidity.as_ref()),
+            ("fan_mode", self.fan_mode.as_ref()),
+            ("swing_mode", self.swing_mode.as_ref()),
+            ("preset_mode", self.preset_mode.as_ref()),
+        ]
+    }
 }
 
 /// One setting of a fan: where it's sent and how, and where it's read back.
@@ -302,6 +353,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::Fan => parse_fan(&root)?,
         Component::Valve => parse_valve(&root)?,
         Component::Siren => parse_siren(&root)?,
+        Component::Climate => parse_climate(&root)?,
     };
 
     Ok(ParsedConfig {
@@ -669,6 +721,144 @@ fn parse_valve(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics),
     Ok((
         Capabilities::Valve(capabilities),
         EntityTopics::Valve(Box::new(topics)),
+    ))
+}
+
+/// A number from a discovery config, written as a number or (Zigbee2MQTT's `min_temp`) as text.
+fn number_field(root: &serde_json::Value, key: &str) -> Option<f64> {
+    match root.get(key)? {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(text) => text.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+fn string_list(root: &serde_json::Value, key: &str) -> Option<Vec<String>> {
+    root.get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        })
+}
+
+/// One setting of a Home Assistant MQTT climate (or fan): `<name>_command_topic` and
+/// `<name>_command_template`, read back on `<name>_state_topic` through `<value_key>`. `None`
+/// without a command topic, or with a command template Irori can't render: the rest of the
+/// entity still works.
+fn setting(root: &serde_json::Value, name: &str, value_key: &str) -> Option<FanPart> {
+    let command_topic = str_field(root, &format!("{name}_command_topic"))?.to_owned();
+    let command_template = CommandTemplate::parse(
+        str_field(root, &format!("{name}_command_template")),
+        "value",
+    )
+    .ok()?;
+    Some(FanPart {
+        command_topic,
+        command_template,
+        state_topic: str_field(root, &format!("{name}_state_topic")).map(str::to_owned),
+        value_template: ValueTemplate::parse(str_field(root, value_key)),
+    })
+}
+
+/// A read-only value: `<name>_topic` through `<name>_template`.
+fn reading(root: &serde_json::Value, name: &str) -> Option<(String, ValueTemplate)> {
+    let topic = str_field(root, &format!("{name}_topic"))?.to_owned();
+    let template = match ValueTemplate::parse(str_field(root, &format!("{name}_template"))) {
+        // Zigbee2MQTT's action template is a lookup Irori doesn't run; the value it looks up
+        // is read instead, and `state.rs` names it the way the lookup would.
+        ValueTemplate::Unsupported(text) => {
+            ValueTemplate::first_path(&text).unwrap_or(ValueTemplate::Unsupported(text))
+        }
+        template => template,
+    };
+    Some((topic, template))
+}
+
+fn parse_climate(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
+    let unit = match str_field(root, "temperature_unit") {
+        Some(unit) => TemperatureUnit::parse(unit)
+            .ok_or_else(|| format!("`temperature_unit` {unit:?} isn't C, F or K"))?,
+        None => TemperatureUnit::Celsius,
+    };
+    let modes: Vec<HvacMode> = string_list(root, "modes")
+        .unwrap_or_else(|| {
+            ["auto", "off", "cool", "heat", "dry", "fan_only"]
+                .map(str::to_owned)
+                .to_vec()
+        })
+        .iter()
+        .filter_map(|mode| HvacMode::parse(mode))
+        .collect();
+    let power = str_field(root, "power_command_topic").and_then(|topic| {
+        Some(ClimatePower {
+            command_topic: topic.to_owned(),
+            command_template: CommandTemplate::parse(
+                str_field(root, "power_command_template"),
+                "value",
+            )
+            .ok()?,
+            payload_on: owned_str(root, "payload_on", "ON"),
+            payload_off: owned_str(root, "payload_off", "OFF"),
+        })
+    });
+    let topics = ClimateTopics {
+        unit,
+        mode: setting(root, "mode", "mode_state_template"),
+        temperature: setting(root, "temperature", "temperature_state_template"),
+        temperature_low: setting(root, "temperature_low", "temperature_low_state_template"),
+        temperature_high: setting(root, "temperature_high", "temperature_high_state_template"),
+        target_humidity: setting(root, "target_humidity", "target_humidity_state_template"),
+        fan_mode: setting(root, "fan_mode", "fan_mode_state_template"),
+        swing_mode: setting(root, "swing_mode", "swing_mode_state_template"),
+        preset_mode: setting(root, "preset_mode", "preset_mode_value_template"),
+        current_temperature: reading(root, "current_temperature"),
+        current_humidity: reading(root, "current_humidity"),
+        action: reading(root, "action"),
+        power,
+        modes: modes.clone(),
+    };
+    // Home Assistant's defaults, which are in °C, or °F for a device that speaks °F.
+    let (default_min, default_max) = match unit {
+        TemperatureUnit::Fahrenheit => (44.6, 95.0),
+        TemperatureUnit::Celsius | TemperatureUnit::Kelvin => (7.0, 35.0),
+    };
+    let to_celsius = |value: f64| round_to(unit.to_celsius(value), 2);
+    let list = |key: &str, part: &Option<FanPart>| -> Vec<String> {
+        if part.is_some() {
+            string_list(root, key).unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    };
+    let capabilities = ClimateCapabilities {
+        hvac_modes: if modes.is_empty() {
+            vec![HvacMode::Off]
+        } else {
+            modes
+        },
+        min_temp: to_celsius(number_field(root, "min_temp").unwrap_or(default_min)),
+        max_temp: to_celsius(number_field(root, "max_temp").unwrap_or(default_max)),
+        temp_step: round_to(
+            unit.step_to_celsius(number_field(root, "temp_step").unwrap_or(1.0)),
+            2,
+        ),
+        target_temperature: topics.temperature.is_some(),
+        target_temperature_range: topics.temperature_low.is_some()
+            && topics.temperature_high.is_some(),
+        target_humidity: topics.target_humidity.as_ref().map(|_| HumidityRange {
+            min: number_field(root, "min_humidity").unwrap_or(30.0),
+            max: number_field(root, "max_humidity").unwrap_or(99.0),
+        }),
+        fan_modes: list("fan_modes", &topics.fan_mode),
+        swing_modes: list("swing_modes", &topics.swing_mode),
+        preset_modes: list("preset_modes", &topics.preset_mode),
+    };
+    capabilities.validate().map_err(|e| e.to_string())?;
+    Ok((
+        Capabilities::Climate(capabilities),
+        EntityTopics::Climate(Box::new(topics)),
     ))
 }
 
@@ -1363,6 +1553,145 @@ mod tests {
         )
         .expect("a speed");
         assert_eq!(sent[0].payload, b"8");
+    }
+
+    /// A Zigbee2MQTT radiator valve, as 2.x publishes it.
+    #[test]
+    fn a_zigbee2mqtt_thermostat_is_read_and_told() {
+        let parsed = parse(
+            Component::Climate,
+            br#"{"unique_id": "0x01_climate_zigbee2mqtt", "name": null,
+                "device": {"identifiers": ["zigbee2mqtt_0x01"], "name": "Bedroom TRV"},
+                "action_template": "{% set values = {None:None,'idle':'idle','heat':'heating','cool':'cooling','fan_only':'fan'} %}{{ values[value_json.running_state] }}",
+                "action_topic": "zigbee2mqtt/TRV",
+                "current_temperature_template": "{{ value_json.local_temperature }}",
+                "current_temperature_topic": "zigbee2mqtt/TRV",
+                "max_temp": "30", "min_temp": "5",
+                "mode_command_topic": "zigbee2mqtt/TRV/set/system_mode",
+                "mode_state_template": "{{ value_json.system_mode }}",
+                "mode_state_topic": "zigbee2mqtt/TRV",
+                "modes": ["off", "heat", "auto"],
+                "preset_mode_command_topic": "zigbee2mqtt/TRV/set/preset",
+                "preset_mode_state_topic": "zigbee2mqtt/TRV",
+                "preset_mode_value_template": "{{ value_json.preset }}",
+                "preset_modes": ["manual", "boost"],
+                "temp_step": 0.5,
+                "temperature_command_topic": "zigbee2mqtt/TRV/set/current_heating_setpoint",
+                "temperature_state_template": "{{ value_json.current_heating_setpoint }}",
+                "temperature_state_topic": "zigbee2mqtt/TRV",
+                "temperature_unit": "C"}"#,
+        )
+        .expect("valid");
+        let Capabilities::Climate(caps) = &parsed.capabilities else {
+            panic!("a climate entity");
+        };
+        assert_eq!(
+            caps.hvac_modes,
+            vec![HvacMode::Off, HvacMode::Heat, HvacMode::Auto]
+        );
+        assert_eq!(
+            (caps.min_temp, caps.max_temp, caps.temp_step),
+            (5.0, 30.0, 0.5)
+        );
+        assert!(caps.target_temperature);
+        assert_eq!(
+            caps.preset_modes,
+            vec!["manual".to_owned(), "boost".to_owned()]
+        );
+
+        let Some(Ok(irori_types::State::Climate(state))) = crate::state::decode(
+            &parsed.topics,
+            "zigbee2mqtt/TRV",
+            br#"{"system_mode": "heat", "local_temperature": 19.5,
+                 "current_heating_setpoint": 21, "running_state": "heat", "preset": "manual"}"#,
+            None,
+        ) else {
+            panic!(
+                "a climate state: {:?}",
+                crate::state::decode(
+                    &parsed.topics,
+                    "zigbee2mqtt/TRV",
+                    br#"{"system_mode": "heat"}"#,
+                    None
+                )
+            );
+        };
+        assert_eq!(state.hvac_mode, HvacMode::Heat);
+        assert_eq!(state.hvac_action, Some(irori_types::HvacAction::Heating));
+        assert_eq!(state.current_temperature, Some(19.5));
+        assert_eq!(state.target_temperature, Some(21.0));
+        assert_eq!(state.preset_mode.as_deref(), Some("manual"));
+
+        let warmer = crate::state::encode(
+            &parsed.topics,
+            &irori_types::Service::ClimateSetTemperature(irori_types::ClimateSetTemperature {
+                temperature: Some(22.5),
+                ..Default::default()
+            }),
+        )
+        .expect("sent");
+        assert_eq!(
+            warmer[0].topic,
+            "zigbee2mqtt/TRV/set/current_heating_setpoint"
+        );
+        assert_eq!(warmer[0].payload, b"22.5");
+
+        // Off, then on again: back to the mode it was in, not the first in its list.
+        let was = irori_types::State::Climate(irori_types::ClimateState::in_mode(HvacMode::Auto));
+        let on = crate::state::encode_with(
+            &parsed.topics,
+            &irori_types::Service::ClimateTurnOn,
+            Some(&was),
+        )
+        .expect("sent");
+        assert_eq!(
+            (on[0].topic.as_str(), on[0].payload.as_slice()),
+            ("zigbee2mqtt/TRV/set/system_mode", b"auto".as_slice())
+        );
+        let off = crate::state::encode(&parsed.topics, &irori_types::Service::ClimateTurnOff)
+            .expect("sent");
+        assert_eq!(off[0].payload, b"off");
+    }
+
+    #[test]
+    fn a_thermostat_in_fahrenheit_is_held_in_celsius() {
+        let parsed = parse(
+            Component::Climate,
+            br#"{"unique_id": "t", "name": "Hall", "temperature_unit": "F",
+                "mode_command_topic": "t/mode/set", "mode_state_topic": "t/mode",
+                "modes": ["off", "cool"],
+                "temperature_command_topic": "t/target/set", "temperature_state_topic": "t/target"}"#,
+        )
+        .expect("valid");
+        let Capabilities::Climate(caps) = &parsed.capabilities else {
+            panic!("a climate entity");
+        };
+        assert_eq!((caps.min_temp, caps.max_temp), (7.0, 35.0));
+        // The mode first, then the target in °F comes in as °C.
+        let mode = crate::state::decode(&parsed.topics, "t/mode", b"cool", None)
+            .expect("its topic")
+            .expect("read");
+        let Some(Ok(irori_types::State::Climate(state))) =
+            crate::state::decode(&parsed.topics, "t/target", b"77", Some(&mode))
+        else {
+            panic!("a climate state");
+        };
+        assert_eq!(state.target_temperature, Some(25.0));
+        assert!(
+            crate::state::decode(&parsed.topics, "t/target", b"77", None)
+                .expect("its topic")
+                .is_err(),
+            "no state until it says its mode"
+        );
+        let sent = crate::state::encode(
+            &parsed.topics,
+            &irori_types::Service::ClimateSetTemperature(irori_types::ClimateSetTemperature {
+                temperature: Some(21.0),
+                ..Default::default()
+            }),
+        )
+        .expect("sent");
+        assert_eq!(sent[0].payload, b"69.8");
     }
 
     #[test]

@@ -377,6 +377,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^climate\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "climate"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -929,6 +952,91 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "fan_modes": {
+              "description": "Its fan's modes, e.g. `auto`, `low`, `high`.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256
+            },
+            "hvac_modes": {
+              "description": "The modes it can be put in, at least one.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/HvacMode"
+              },
+              "minItems": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "climate"
+            },
+            "max_temp": {
+              "description": "The highest target it takes, in °C.",
+              "type": "number",
+              "format": "double"
+            },
+            "min_temp": {
+              "description": "The lowest target it takes, in °C.",
+              "type": "number",
+              "format": "double"
+            },
+            "preset_modes": {
+              "description": "Presets, e.g. `eco`, `away`, `boost`.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256
+            },
+            "swing_modes": {
+              "description": "How its louvres swing, e.g. `off`, `vertical`.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256
+            },
+            "target_humidity": {
+              "description": "Takes a target humidity, within this range in %.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HumidityRange"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "target_temperature": {
+              "description": "Takes one target temperature.",
+              "type": "boolean",
+              "default": false
+            },
+            "target_temperature_range": {
+              "description": "Takes a range: heat below the low end, cool above the high one.",
+              "type": "boolean",
+              "default": false
+            },
+            "temp_step": {
+              "description": "How finely a target can be set, in °C, e.g. 0.5.",
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "hvac_modes",
+            "min_temp",
+            "max_temp",
+            "temp_step"
+          ]
         }
       ]
     },
@@ -1052,6 +1160,10 @@
         {
           "maxLength": 70,
           "pattern": "^siren\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 72,
+          "pattern": "^climate\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -1069,6 +1181,53 @@
           "description": "A button being pressed: a remote's, a wall switch's.",
           "type": "string",
           "const": "button"
+        }
+      ]
+    },
+    "HumidityRange": {
+      "type": "object",
+      "properties": {
+        "max": {
+          "type": "number",
+          "format": "double",
+          "maximum": 100,
+          "minimum": 0
+        },
+        "min": {
+          "type": "number",
+          "format": "double",
+          "maximum": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "min",
+        "max"
+      ]
+    },
+    "HvacMode": {
+      "description": "What it's set to do: Home Assistant's modes.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "off",
+            "heat",
+            "cool",
+            "dry",
+            "fan_only"
+          ]
+        },
+        {
+          "description": "Heats or cools to stay within a range.",
+          "type": "string",
+          "const": "heat_cool"
+        },
+        {
+          "description": "Follows its own schedule or logic.",
+          "type": "string",
+          "const": "auto"
         }
       ]
     },

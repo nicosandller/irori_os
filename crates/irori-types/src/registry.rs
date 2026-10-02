@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::kinds::binary_sensor::BinarySensorCapabilities;
 use crate::kinds::button::ButtonCapabilities;
+use crate::kinds::climate::ClimateCapabilities;
 use crate::kinds::cover::CoverCapabilities;
 use crate::kinds::event::EventCapabilities;
 use crate::kinds::fan::FanCapabilities;
@@ -199,6 +200,7 @@ pub enum Capabilities {
     Fan(FanCapabilities),
     Valve(ValveCapabilities),
     Siren(SirenCapabilities),
+    Climate(ClimateCapabilities),
 }
 
 impl Capabilities {
@@ -218,6 +220,7 @@ impl Capabilities {
             Self::Fan(_) => EntityKind::Fan,
             Self::Valve(_) => EntityKind::Valve,
             Self::Siren(_) => EntityKind::Siren,
+            Self::Climate(_) => EntityKind::Climate,
         }
     }
 
@@ -235,6 +238,7 @@ impl Capabilities {
             Self::Event(event) => event.validate(),
             Self::Fan(fan) => fan.validate(),
             Self::Siren(siren) => siren.validate(),
+            Self::Climate(climate) => climate.validate(),
             _ => Ok(()),
         }
     }

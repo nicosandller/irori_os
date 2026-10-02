@@ -273,6 +273,12 @@ manifest's `entity_kinds`.
 | `valve.open`, `valve.close`, `valve.stop`, `valve.set_position` | as the cover's | As a cover's, without tilt. `valve.toggle` closes an open or opening valve |
 | `siren.turn_on` | `tone` (one of its `tones`), `volume_level` 0.0–1.0, `duration` 1–86400 s; all optional | Each needs the siren to say it can. `siren.toggle` resolves to `turn_on` or `turn_off` |
 | `siren.turn_off` | none | |
+| `climate.set_hvac_mode` | `hvac_mode`, one of its `hvac_modes` | |
+| `climate.set_temperature` | `temperature`, or both `target_temp_low` and `target_temp_high` (low ≤ high), in °C within its `min_temp`–`max_temp`; optionally `hvac_mode` to switch to | A single target needs `target_temperature`; a range needs `target_temperature_range` |
+| `climate.set_humidity` | `humidity` %, within its `target_humidity` range | |
+| `climate.set_fan_mode`, `climate.set_swing_mode`, `climate.set_preset_mode` | `fan_mode`, `swing_mode`, `preset_mode`: one of its lists | |
+| `climate.turn_on` | none | Back to the last mode it was in other than `off` (the protocol remembers it), or its first mode that isn't. `climate.toggle` resolves to `turn_on` from `off`, `turn_off` from anything else |
+| `climate.turn_off` | none | Needs `off` among its modes. Its own power switch when it has one (MQTT's `power_command_topic`), otherwise the `off` mode |
 | `fan.turn_on` | `percentage` 1–100, `preset_mode`; both optional | `fan.toggle` resolves to `turn_on` or `turn_off` |
 | `fan.turn_off` | none | |
 | `fan.set_percentage` | `percentage` 0–100 | 0 turns it off. Needs a `speed_count` |

@@ -11,14 +11,14 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 
 use esphome_client::API_VERSION;
 use esphome_client::types::{
-    BinarySensorStateResponse, CoverStateResponse, DeviceInfoResponse, EspHomeMessage,
-    FanStateResponse, HelloResponse, ListEntitiesBinarySensorResponse, ListEntitiesButtonResponse,
-    ListEntitiesCoverResponse, ListEntitiesDoneResponse, ListEntitiesFanResponse,
-    ListEntitiesLockResponse, ListEntitiesMediaPlayerResponse, ListEntitiesNumberResponse,
-    ListEntitiesSelectResponse, ListEntitiesSensorResponse, ListEntitiesSirenResponse,
-    ListEntitiesTextResponse, ListEntitiesValveResponse, LockStateResponse, NumberStateResponse,
-    SelectStateResponse, SensorStateResponse, SirenStateResponse, TextStateResponse,
-    ValveStateResponse,
+    BinarySensorStateResponse, ClimateStateResponse, CoverStateResponse, DeviceInfoResponse,
+    EspHomeMessage, FanStateResponse, HelloResponse, ListEntitiesBinarySensorResponse,
+    ListEntitiesButtonResponse, ListEntitiesClimateResponse, ListEntitiesCoverResponse,
+    ListEntitiesDoneResponse, ListEntitiesFanResponse, ListEntitiesLockResponse,
+    ListEntitiesMediaPlayerResponse, ListEntitiesNumberResponse, ListEntitiesSelectResponse,
+    ListEntitiesSensorResponse, ListEntitiesSirenResponse, ListEntitiesTextResponse,
+    ListEntitiesValveResponse, LockStateResponse, NumberStateResponse, SelectStateResponse,
+    SensorStateResponse, SirenStateResponse, TextStateResponse, ValveStateResponse,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -39,6 +39,7 @@ const DOOR_KEY: u32 = 10;
 const SPEAKER_KEY: u32 = 11;
 const VALVE_KEY: u32 = 12;
 const SIREN_KEY: u32 = 13;
+const THERMOSTAT_KEY: u32 = 15;
 /// 32 bytes. Printed at startup as base64 so the waiting-for-a-key panel has something to paste.
 const LAB_KEY: [u8; 32] = *b"irori-lab-esphome-key-32bytes!!!";
 
@@ -218,6 +219,18 @@ fn answers(message: EspHomeMessage, board: &Board) -> Vec<EspHomeMessage> {
                 ..Default::default()
             })]
         }
+        // The thermostat speaks °F, as some do, and takes what it's told. It keeps nothing, so a
+        // change of target answers in heat, and a change of mode at 70 °F.
+        EspHomeMessage::ClimateCommandRequest(request) => {
+            vec![EspHomeMessage::ClimateStateResponse(thermostat(
+                if request.has_mode { request.mode } else { 3 },
+                if request.has_target_temperature {
+                    request.target_temperature
+                } else {
+                    70.0
+                },
+            ))]
+        }
         EspHomeMessage::SirenCommandRequest(request) => {
             vec![EspHomeMessage::SirenStateResponse(SirenStateResponse {
                 key: request.key,
@@ -395,6 +408,21 @@ fn entities(_board: &Board) -> Vec<EspHomeMessage> {
             tones: vec!["beep".to_owned(), "alarm".to_owned()],
             ..Default::default()
         }),
+        EspHomeMessage::ListEntitiesClimateResponse(ListEntitiesClimateResponse {
+            key: THERMOSTAT_KEY,
+            name: "Thermostat".to_owned(),
+            supports_current_temperature: true,
+            supports_action: true,
+            // Off, cool, heat, auto.
+            supported_modes: vec![0, 2, 3, 6],
+            visual_min_temperature: 50.0,
+            visual_max_temperature: 86.0,
+            visual_target_temperature_step: 1.0,
+            // Home, away, eco.
+            supported_presets: vec![1, 2, 5],
+            temperature_unit: 1,
+            ..Default::default()
+        }),
         // Irori has no media player kind yet: this shows as "Also has…".
         EspHomeMessage::ListEntitiesMediaPlayerResponse(ListEntitiesMediaPlayerResponse {
             key: SPEAKER_KEY,
@@ -403,6 +431,24 @@ fn entities(_board: &Board) -> Vec<EspHomeMessage> {
         }),
         EspHomeMessage::ListEntitiesDoneResponse(ListEntitiesDoneResponse {}),
     ]
+}
+
+/// The thermostat in `mode` aiming for `target` °F, in a 68 °F room: heating while it's below.
+fn thermostat(mode: i32, target: f32) -> ClimateStateResponse {
+    let heating = mode == 3 && target > 68.0;
+    ClimateStateResponse {
+        key: THERMOSTAT_KEY,
+        mode,
+        current_temperature: 68.0,
+        target_temperature: target,
+        // `ClimateAction`: off, heating, idle.
+        action: match (mode, heating) {
+            (0, _) => 0,
+            (_, true) => 3,
+            _ => 4,
+        },
+        ..Default::default()
+    }
 }
 
 fn states(board: &Board) -> Vec<EspHomeMessage> {
@@ -428,6 +474,7 @@ fn states(board: &Board) -> Vec<EspHomeMessage> {
             state: false,
             ..Default::default()
         }),
+        EspHomeMessage::ClimateStateResponse(thermostat(3, 70.0)),
         EspHomeMessage::ValveStateResponse(ValveStateResponse {
             key: VALVE_KEY,
             position: 1.0,

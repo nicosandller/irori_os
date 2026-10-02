@@ -7,6 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::kinds::binary_sensor::BinarySensorState;
+use crate::kinds::climate::ClimateState;
 use crate::kinds::cover::CoverState;
 use crate::kinds::event::EventState;
 use crate::kinds::fan::FanState;
@@ -146,6 +147,7 @@ pub enum State {
     Fan(FanState),
     Valve(ValveState),
     Siren(SirenState),
+    Climate(ClimateState),
 }
 
 impl State {
@@ -159,6 +161,7 @@ impl State {
             Self::Cover(cover) => cover.validate(),
             Self::Fan(fan) => fan.validate(),
             Self::Valve(valve) => valve.validate(),
+            Self::Climate(climate) => climate.validate(),
             Self::Switch(_)
             | Self::BinarySensor(_)
             | Self::Select(_)
@@ -184,6 +187,7 @@ impl State {
             Self::Fan(_) => EntityKind::Fan,
             Self::Valve(_) => EntityKind::Valve,
             Self::Siren(_) => EntityKind::Siren,
+            Self::Climate(_) => EntityKind::Climate,
         }
     }
 }

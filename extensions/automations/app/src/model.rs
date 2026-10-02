@@ -580,6 +580,10 @@ pub fn state_words(state: &EntityState, home: &Home) -> String {
         Some(State::Lock(l)) => l.state.as_str().to_owned(),
         Some(State::Valve(v)) => v.state.as_str().to_owned(),
         Some(State::Siren(s)) => if s.on { "sounding" } else { "quiet" }.into(),
+        Some(State::Climate(c)) => match c.target_temperature {
+            Some(target) => format!("{} {target}°", c.hvac_mode.as_str()),
+            None => c.hvac_mode.as_str().to_owned(),
+        },
         Some(State::Fan(f)) => match (f.on, f.percentage) {
             (true, Some(p)) => format!("on {p}%"),
             (true, None) => "on".into(),

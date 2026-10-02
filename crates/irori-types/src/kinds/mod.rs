@@ -7,6 +7,7 @@
 
 pub(crate) mod binary_sensor;
 pub(crate) mod button;
+pub(crate) mod climate;
 pub(crate) mod cover;
 pub(crate) mod event;
 pub(crate) mod fan;
@@ -22,6 +23,9 @@ pub(crate) mod valve;
 
 use crate::{Capabilities, EntityKind, InvariantError, Service, ServiceName, State};
 
+use self::climate::{
+    CLIMATE_MODES, ClimateHvacMode, ClimateSetTemperature, ClimateState, HvacMode,
+};
 use self::cover::{CoverState, OPEN_STATES, OpenState, SetPosition, SetTilt};
 use self::event::EventState;
 use self::fan::{FanState, FanTurnOn};
@@ -112,6 +116,12 @@ impl EntityKind {
             Self::Fan => Some(ServiceName::FanTurnOn),
             Self::Siren if on => Some(ServiceName::SirenTurnOff),
             Self::Siren => Some(ServiceName::SirenTurnOn),
+            Self::Climate => match current {
+                Some(Typed::Text(text)) if HvacMode::parse(text) != Some(HvacMode::Off) => {
+                    Some(ServiceName::ClimateTurnOff)
+                }
+                _ => Some(ServiceName::ClimateTurnOn),
+            },
             Self::Sensor
             | Self::BinarySensor
             | Self::Number
@@ -163,7 +173,8 @@ impl Capabilities {
             | Self::Event(_)
             | Self::Cover(_)
             | Self::Valve(_)
-            | Self::Lock(_) => ValueShape::Text,
+            | Self::Lock(_)
+            | Self::Climate(_) => ValueShape::Text,
             Self::Sensor(sensor) => match sensor.value_type {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
@@ -181,6 +192,7 @@ impl Capabilities {
             Self::Event(event) => Some(&event.event_types),
             Self::Cover(_) | Self::Valve(_) => Some(&OPEN_STATES),
             Self::Lock(_) => Some(&LOCK_STATES),
+            Self::Climate(_) => Some(&CLIMATE_MODES),
             _ => None,
         }
     }
@@ -203,6 +215,7 @@ impl Capabilities {
             (Self::Cover(caps), State::Cover(state)) => cover::fits(caps, state),
             (Self::Fan(caps), State::Fan(state)) => fan::fits(caps, state),
             (Self::Valve(caps), State::Valve(state)) => valve::fits(caps, state),
+            (Self::Climate(caps), State::Climate(state)) => climate::fits(caps, state),
             _ => Ok(()),
         }
     }
@@ -246,6 +259,26 @@ impl Capabilities {
             (Self::Fan(caps), Service::FanSetPresetMode(data)) => {
                 fan::supports_preset(caps, &data.preset_mode)
             }
+            (Self::Climate(caps), Service::ClimateSetHvacMode(data)) => {
+                climate::supports_mode(caps, data.hvac_mode)
+            }
+            (Self::Climate(caps), Service::ClimateSetTemperature(data)) => {
+                climate::supports_temperature(caps, data)
+            }
+            (Self::Climate(caps), Service::ClimateSetHumidity(data)) => {
+                climate::supports_humidity(caps, data.humidity)
+            }
+            (Self::Climate(caps), Service::ClimateSetFanMode(data)) => {
+                climate::supports_fan_mode(caps, &data.fan_mode)
+            }
+            (Self::Climate(caps), Service::ClimateSetSwingMode(data)) => {
+                climate::supports_swing_mode(caps, &data.swing_mode)
+            }
+            (Self::Climate(caps), Service::ClimateSetPresetMode(data)) => {
+                climate::supports_preset(caps, &data.preset_mode)
+            }
+            (Self::Climate(caps), Service::ClimateTurnOn) => climate::supports_turn_on(caps),
+            (Self::Climate(caps), Service::ClimateTurnOff) => climate::supports_turn_off(caps),
             _ => Ok(()),
         }
     }
@@ -267,6 +300,7 @@ impl State {
             Self::Cover(cover) => Typed::Text(cover.state.as_str().to_owned()),
             Self::Valve(valve) => Typed::Text(valve.state.as_str().to_owned()),
             Self::Lock(lock) => Typed::Text(lock.state.as_str().to_owned()),
+            Self::Climate(climate) => Typed::Text(climate.hvac_mode.as_str().to_owned()),
             Self::Sensor(sensor) => match &sensor.value {
                 SensorValue::Number(n) => Typed::Number(*n),
                 SensorValue::Text(text) => Typed::Text(text.clone()),
@@ -343,6 +377,16 @@ impl State {
                     }),
                 }
             }
+            (EntityKind::Climate, previous, Typed::Text(text)) => {
+                let hvac_mode = HvacMode::parse(text)?;
+                match previous {
+                    Some(State::Climate(climate)) => State::Climate(ClimateState {
+                        hvac_mode,
+                        ..climate.clone()
+                    }),
+                    _ => State::Climate(ClimateState::in_mode(hvac_mode)),
+                }
+            }
             (EntityKind::Sensor, _, Typed::Text(text)) => State::Sensor(SensorState {
                 value: SensorValue::Text(text.clone()),
             }),
@@ -397,6 +441,16 @@ impl Service {
             ServiceName::FanSetPresetMode => Service::FanSetPresetMode(parse(name, data)?),
             ServiceName::SirenTurnOn => Service::SirenTurnOn(parse(name, data)?),
             ServiceName::SirenTurnOff => Service::SirenTurnOff,
+            ServiceName::ClimateSetHvacMode => Service::ClimateSetHvacMode(parse(name, data)?),
+            ServiceName::ClimateSetTemperature => {
+                Service::ClimateSetTemperature(parse(name, data)?)
+            }
+            ServiceName::ClimateSetHumidity => Service::ClimateSetHumidity(parse(name, data)?),
+            ServiceName::ClimateSetFanMode => Service::ClimateSetFanMode(parse(name, data)?),
+            ServiceName::ClimateSetSwingMode => Service::ClimateSetSwingMode(parse(name, data)?),
+            ServiceName::ClimateSetPresetMode => Service::ClimateSetPresetMode(parse(name, data)?),
+            ServiceName::ClimateTurnOn => Service::ClimateTurnOn,
+            ServiceName::ClimateTurnOff => Service::ClimateTurnOff,
             ServiceName::ValveOpen => Service::ValveOpen,
             ServiceName::ValveClose => Service::ValveClose,
             ServiceName::ValveStop => Service::ValveStop,
@@ -452,6 +506,12 @@ impl Service {
             Self::FanOscillate(data) => serde_json::to_value(data).ok()?,
             Self::FanSetDirection(data) => serde_json::to_value(data).ok()?,
             Self::FanSetPresetMode(data) => serde_json::to_value(data).ok()?,
+            Self::ClimateSetHvacMode(data) => serde_json::to_value(data).ok()?,
+            Self::ClimateSetTemperature(data) => serde_json::to_value(data).ok()?,
+            Self::ClimateSetHumidity(data) => serde_json::to_value(data).ok()?,
+            Self::ClimateSetFanMode(data) => serde_json::to_value(data).ok()?,
+            Self::ClimateSetSwingMode(data) => serde_json::to_value(data).ok()?,
+            Self::ClimateSetPresetMode(data) => serde_json::to_value(data).ok()?,
             Self::LockLock(code) | Self::LockUnlock(code) | Self::LockOpen(code)
                 if code.code.is_some() =>
             {
@@ -471,6 +531,10 @@ impl Service {
             Self::LightTurnOn(data) => data.validate(),
             Self::NumberSetValue(data) => data.validate(),
             Self::SirenTurnOn(data) => data.validate(),
+            Self::ClimateSetTemperature(data) => data.validate(),
+            Self::ClimateSetHumidity(data) if !(0.0..=100.0).contains(&data.humidity) => Err(
+                InvariantError(format!("humidity is 0-100%, not {}", data.humidity)),
+            ),
             _ => Ok(()),
         }
     }
@@ -508,6 +572,20 @@ impl Service {
                 .as_str()
                 .to_owned(),
             )),
+            Self::ClimateSetHvacMode(ClimateHvacMode { hvac_mode })
+            | Self::ClimateSetTemperature(ClimateSetTemperature {
+                hvac_mode: Some(hvac_mode),
+                ..
+            }) => Some(Typed::Text(hvac_mode.as_str().to_owned())),
+            Self::ClimateTurnOff => Some(Typed::Text(HvacMode::Off.as_str().to_owned())),
+            // Which mode `turn_on` lands in is the device's to say, and a target or a fan mode
+            // leaves the mode as it is.
+            Self::ClimateTurnOn
+            | Self::ClimateSetTemperature(_)
+            | Self::ClimateSetHumidity(_)
+            | Self::ClimateSetFanMode(_)
+            | Self::ClimateSetSwingMode(_)
+            | Self::ClimateSetPresetMode(_) => None,
             // A press, a stop or a tilt leaves nothing for a toggle to go by.
             Self::ButtonPress | Self::CoverStop | Self::CoverSetTilt(_) | Self::ValveStop => None,
         }
@@ -541,6 +619,12 @@ impl ServiceName {
                 | Self::FanSetDirection
                 | Self::FanSetPresetMode
                 | Self::ValveSetPosition
+                | Self::ClimateSetHvacMode
+                | Self::ClimateSetTemperature
+                | Self::ClimateSetHumidity
+                | Self::ClimateSetFanMode
+                | Self::ClimateSetSwingMode
+                | Self::ClimateSetPresetMode
         )
     }
 
@@ -564,6 +648,12 @@ impl ServiceName {
                 | Self::FanSetPresetMode
                 | Self::ValveSetPosition
                 | Self::SirenTurnOn
+                | Self::ClimateSetHvacMode
+                | Self::ClimateSetTemperature
+                | Self::ClimateSetHumidity
+                | Self::ClimateSetFanMode
+                | Self::ClimateSetSwingMode
+                | Self::ClimateSetPresetMode
         )
     }
 }

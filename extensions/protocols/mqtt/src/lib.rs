@@ -44,6 +44,9 @@ struct Entity {
     /// splits on/off and brightness across two topics, so decoding one needs what the other last
     /// reported (`irori_ha_discovery::state::decode`'s own `previous` parameter).
     last_state: Option<State>,
+    /// The last state it reported while on, for a `turn_on` that goes back to it (a
+    /// thermostat's mode).
+    last_on: Option<State>,
 }
 
 #[derive(Debug, Default)]
@@ -167,6 +170,9 @@ async fn apply(
             ) {
                 Some(Ok(new_state)) => {
                     entity.last_state = Some(new_state.clone());
+                    if state::is_on(&new_state) {
+                        entity.last_on = Some(new_state.clone());
+                    }
                     ctx.report_state(StateReport {
                         unique_id,
                         state: Some(new_state),
@@ -250,11 +256,11 @@ async fn describe(
     // A redescribe (the same entity's discovery config firing again, e.g. Z2M republishing on
     // its own restart) must drop this entity's old topic-index entries first — otherwise a topic
     // it no longer uses keeps reporting for it, and one it still uses ends up listed twice.
-    let last_state = if let Some(old) = registry.entities.remove(&unique_id) {
+    let (last_state, last_on) = if let Some(old) = registry.entities.remove(&unique_id) {
         deindex(&unique_id, &old.topics, registry);
-        old.last_state
+        (old.last_state, old.last_on)
     } else {
-        None
+        (None, None)
     };
 
     for (topic, _) in state::topics_of(&unique_id, &parsed.topics) {
@@ -290,6 +296,7 @@ async fn describe(
         Entity {
             topics: parsed.topics,
             last_state,
+            last_on,
         },
     );
 }
@@ -331,7 +338,11 @@ async fn route(incoming: IncomingCall, registry: &Registry, broker: &impl Publis
         incoming.reply(Err(ServiceError::unavailable(why)));
         return;
     };
-    let messages = match state::encode(&entity.topics, &incoming.call.service) {
+    let messages = match state::encode_with(
+        &entity.topics,
+        &incoming.call.service,
+        entity.last_on.as_ref(),
+    ) {
         Ok(messages) => messages,
         Err(why) => {
             incoming.reply(Err(ServiceError::failed(why)));
@@ -759,6 +770,7 @@ mod tests {
                     brightness_scale: 100,
                 },
                 last_state: None,
+                last_on: None,
             },
         );
         registry
@@ -907,6 +919,7 @@ mod tests {
                         command_topic: "zigbee2mqtt/Living room lamp/set".to_owned(),
                     },
                     last_state: None,
+                    last_on: None,
                 },
             );
             registry

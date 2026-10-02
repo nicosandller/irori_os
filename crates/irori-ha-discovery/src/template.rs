@@ -68,7 +68,8 @@ impl ValueTemplate {
     /// The first `value_json` path in a template too complex to run, for a value that is only
     /// kept when it's one of a known list anyway: Zigbee2MQTT's fan preset template is "the mode,
     /// if it's one of these presets", and reading the mode and checking it against the presets is
-    /// the same thing.
+    /// the same thing. Its thermostat action template, `values[value_json.running_state]`, is
+    /// read the same way.
     pub fn first_path(template: &str) -> Option<Self> {
         let start = template.find("value_json")?;
         let rest = &template[start..];
@@ -81,7 +82,9 @@ impl ValueTemplate {
                     '"' | '\'' => *quoted = !*quoted,
                     _ => {}
                 }
-                let stop = *depth == 0 && !*quoted && (c.is_whitespace() || c == '}' || c == '|');
+                // A `]` closing what was open before the path (`values[value_json.x]`) ends it too.
+                let stop = *depth < 0
+                    || (*depth == 0 && !*quoted && (c.is_whitespace() || c == '}' || c == '|'));
                 Some((i, stop))
             })
             .find(|(_, stop)| *stop)

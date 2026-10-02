@@ -16,9 +16,10 @@ use esphome_client::types::{
     NumberCommandRequest, PingResponse, SelectCommandRequest, SubscribeStatesRequest,
     SwitchCommandRequest, TextCommandRequest,
 };
+use irori_protocol::types::units::TemperatureUnit;
 use irori_protocol::types::{
-    Capabilities, ContextId, DeviceDescription, EntityDescription, Service, State, StateReport,
-    UniqueId, Unmodeled,
+    Capabilities, ContextId, DeviceDescription, EntityDescription, HvacMode, Service, State,
+    StateReport, UniqueId, Unmodeled,
 };
 use irori_protocol::{IncomingCall, ServiceError};
 use tokio::sync::mpsc;
@@ -269,7 +270,7 @@ async fn session(
         let device = handshake(&mut client).await?;
         let device_unique_id = map::device_id(&device).map_err(|e| e.to_string())?;
         let description = map::device(&device).map_err(|e| e.to_string())?;
-        let (entities, unmodeled) = list_entities(&mut client, &device_unique_id).await?;
+        let (entities, unmodeled, units) = list_entities(&mut client, &device_unique_id).await?;
         Ok::<_, Opening>((
             client,
             device,
@@ -277,9 +278,10 @@ async fn session(
             description,
             entities,
             unmodeled,
+            units,
         ))
     };
-    let (mut client, device, device_unique_id, description, entities, unmodeled) =
+    let (mut client, device, device_unique_id, description, entities, unmodeled, units) =
         match tokio::time::timeout(SETUP_TIMEOUT, opening).await {
             Ok(Ok(opened)) => opened,
             Ok(Err(Opening::Locked(why))) => return Ok(Ended::Locked(why)),
@@ -293,10 +295,14 @@ async fn session(
         };
     // What each entity said it can do, so its reports are trimmed to that and its commands
     // checked against it: a light's colours, a cover's position.
-    let capabilities: HashMap<u32, Capabilities> = entities
-        .iter()
-        .map(|(key, entity)| (*key, entity.capabilities.clone()))
-        .collect();
+    let mut learned = Known {
+        capabilities: entities
+            .iter()
+            .map(|(key, entity)| (*key, entity.capabilities.clone()))
+            .collect(),
+        units,
+        last_on: HashMap::new(),
+    };
     let by_key: HashMap<u32, UniqueId> = entities
         .iter()
         .map(|(key, entity)| (*key, entity.unique_id.clone()))
@@ -371,7 +377,7 @@ async fn session(
                         return Ok(Ended::Disconnected(format!("{address} said goodbye")));
                     }
                     message => {
-                        if let Some(report) = report(&message, &by_key, &capabilities, &mut commanded) {
+                        if let Some(report) = report(&message, &by_key, &mut learned, &mut commanded) {
                             let event = Event::Reported {
                                 connection,
                                 device: device_unique_id.clone(),
@@ -387,7 +393,7 @@ async fn session(
             call = calls.recv() => {
                 let Some(incoming) = call else { return Ok(Ended::Stopping) };
                 let key = by_unique_id.get(&incoming.call.unique_id).copied();
-                command(&mut client, incoming, key, &capabilities, &mut commanded).await;
+                command(&mut client, incoming, key, &learned, &mut commanded).await;
             }
             _ = quiet.tick() => {
                 if asked {
@@ -434,12 +440,38 @@ async fn handshake(
     }
 }
 
+/// What a connection knows about each entity beyond its description.
+struct Known {
+    /// What each entity said it can do, so its reports are trimmed to that and its commands
+    /// checked against it: a light's colours, a cover's position.
+    capabilities: HashMap<u32, Capabilities>,
+    units: Units,
+    /// Each climate entity's last mode other than `off`, for `turn_on` to go back to.
+    last_on: HashMap<u32, HvacMode>,
+}
+
+/// How each entity speaks, where Irori's model says otherwise: a thermostat in °F.
+#[derive(Debug, Default)]
+struct Units {
+    temperature: HashMap<u32, TemperatureUnit>,
+    climate_reads: HashMap<u32, map::ClimateReads>,
+}
+
+impl Units {
+    fn temperature_of(&self, key: u32) -> TemperatureUnit {
+        self.temperature
+            .get(&key)
+            .copied()
+            .unwrap_or(TemperatureUnit::Celsius)
+    }
+}
+
 /// Everything the device has, of the kinds Irori models. Kinds it doesn't (fan, cover, climate,
 /// text sensors, …) are counted and mentioned once, not dropped silently.
 async fn list_entities(
     client: &mut EspHomeClient,
     device: &UniqueId,
-) -> Result<(Vec<(u32, EntityDescription)>, Vec<Unmodeled>), String> {
+) -> Result<(Vec<(u32, EntityDescription)>, Vec<Unmodeled>, Units), String> {
     client
         .try_write(ListEntitiesRequest {})
         .await
@@ -447,6 +479,7 @@ async fn list_entities(
 
     let mut entities = Vec::new();
     let mut unmodeled = Vec::new();
+    let mut units = Units::default();
     let mut skipped = 0_usize;
     loop {
         let message = client
@@ -463,7 +496,7 @@ async fn list_entities(
                         "listed what Irori has no entity kind for yet on the device"
                     );
                 }
-                return Ok((entities, unmodeled));
+                return Ok((entities, unmodeled, units));
             }
             EspHomeMessage::ListEntitiesLightResponse(e) => {
                 (e.key, "light", e.name.clone(), map::light(device, e))
@@ -503,6 +536,13 @@ async fn list_entities(
             }
             EspHomeMessage::ListEntitiesSirenResponse(e) => {
                 (e.key, "siren", e.name.clone(), map::siren(device, e))
+            }
+            EspHomeMessage::ListEntitiesClimateResponse(e) => {
+                units
+                    .temperature
+                    .insert(e.key, map::temperature_unit(e.temperature_unit));
+                units.climate_reads.insert(e.key, map::ClimateReads::of(e));
+                (e.key, "climate", e.name.clone(), map::climate(device, e))
             }
             EspHomeMessage::ListEntitiesTextSensorResponse(e) => (
                 e.key,
@@ -557,10 +597,33 @@ async fn list_entities(
 fn report(
     message: &EspHomeMessage,
     by_key: &HashMap<u32, UniqueId>,
-    capabilities: &HashMap<u32, Capabilities>,
+    known: &mut Known,
     commanded: &mut HashMap<u32, VecDeque<(ContextId, Instant)>>,
 ) -> Option<StateReport> {
+    let capabilities = &known.capabilities;
     let (key, state) = match message {
+        EspHomeMessage::ClimateStateResponse(s) => {
+            let Some(Capabilities::Climate(caps)) = capabilities.get(&s.key) else {
+                return None;
+            };
+            let state = map::climate_state(
+                s,
+                caps,
+                known.units.temperature_of(s.key),
+                known
+                    .units
+                    .climate_reads
+                    .get(&s.key)
+                    .copied()
+                    .unwrap_or_default(),
+            );
+            if let Some(State::Climate(climate)) = &state
+                && climate.hvac_mode != HvacMode::Off
+            {
+                known.last_on.insert(s.key, climate.hvac_mode);
+            }
+            (s.key, state)
+        }
         EspHomeMessage::LightStateResponse(s) => {
             let Some(Capabilities::Light(known)) = capabilities.get(&s.key) else {
                 return None;
@@ -636,9 +699,10 @@ async fn command(
     client: &mut EspHomeClient,
     incoming: IncomingCall,
     key: Option<u32>,
-    capabilities: &HashMap<u32, Capabilities>,
+    known: &Known,
     commanded: &mut HashMap<u32, VecDeque<(ContextId, Instant)>>,
 ) {
+    let capabilities = &known.capabilities;
     let Some(key) = key else {
         // The core only sends calls for entities this device described, so this means the
         // device was reflashed between the two.
@@ -757,6 +821,30 @@ async fn command(
             .try_write(map::valve_command(key, &incoming.call.service))
             .await
             .map_err(|e| e.to_string()),
+        Service::ClimateSetHvacMode(_)
+        | Service::ClimateSetTemperature(_)
+        | Service::ClimateSetHumidity(_)
+        | Service::ClimateSetFanMode(_)
+        | Service::ClimateSetSwingMode(_)
+        | Service::ClimateSetPresetMode(_)
+        | Service::ClimateTurnOn
+        | Service::ClimateTurnOff => {
+            let on_mode = match capabilities.get(&key) {
+                Some(Capabilities::Climate(caps)) => {
+                    caps.mode_to_turn_on(known.last_on.get(&key).copied())
+                }
+                _ => None,
+            };
+            client
+                .try_write(map::climate_command(
+                    key,
+                    &incoming.call.service,
+                    known.units.temperature_of(key),
+                    on_mode,
+                ))
+                .await
+                .map_err(|e| e.to_string())
+        }
         Service::SirenTurnOn(_) | Service::SirenTurnOff => client
             .try_write(map::siren_command(key, &incoming.call.service))
             .await

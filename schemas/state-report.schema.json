@@ -73,6 +73,45 @@
         "reverse"
       ]
     },
+    "HvacAction": {
+      "description": "What it's doing right now, which can differ from its mode: set to heat, but idle because\nthe room is warm enough.",
+      "type": "string",
+      "enum": [
+        "off",
+        "preheating",
+        "heating",
+        "cooling",
+        "drying",
+        "idle",
+        "fan",
+        "defrosting"
+      ]
+    },
+    "HvacMode": {
+      "description": "What it's set to do: Home Assistant's modes.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "off",
+            "heat",
+            "cool",
+            "dry",
+            "fan_only"
+          ]
+        },
+        {
+          "description": "Heats or cools to stay within a range.",
+          "type": "string",
+          "const": "heat_cool"
+        },
+        {
+          "description": "Follows its own schedule or logic.",
+          "type": "string",
+          "const": "auto"
+        }
+      ]
+    },
     "LockStatus": {
       "oneOf": [
         {
@@ -449,6 +488,97 @@
           "required": [
             "kind",
             "on"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "current_humidity": {
+              "description": "In %.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "current_temperature": {
+              "description": "The room's temperature, as it measures it, in °C.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "fan_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hvac_action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HvacAction"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "hvac_mode": {
+              "$ref": "#/$defs/HvacMode"
+            },
+            "kind": {
+              "type": "string",
+              "const": "climate"
+            },
+            "preset_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "swing_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target_humidity": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "target_temp_high": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "target_temp_low": {
+              "description": "In °C, for one that takes a range.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "target_temperature": {
+              "description": "In °C, for one that takes a single target.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "hvac_mode"
           ]
         }
       ]

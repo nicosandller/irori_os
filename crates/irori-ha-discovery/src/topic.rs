@@ -21,6 +21,7 @@ pub enum Component {
     Fan,
     Valve,
     Siren,
+    Climate,
 }
 
 impl Component {
@@ -40,6 +41,7 @@ impl Component {
             "fan" => Some(Self::Fan),
             "valve" => Some(Self::Valve),
             "siren" => Some(Self::Siren),
+            "climate" => Some(Self::Climate),
             _ => None,
         }
     }
@@ -62,6 +64,7 @@ impl fmt::Display for Component {
             Self::Fan => "fan",
             Self::Valve => "valve",
             Self::Siren => "siren",
+            Self::Climate => "climate",
         })
     }
 }
@@ -147,7 +150,7 @@ mod tests {
 
     #[test]
     fn an_unsupported_component_or_wrong_shape_is_skipped_not_an_error() {
-        assert!(parse("homeassistant/climate/x/config", "homeassistant").is_none());
+        assert!(parse("homeassistant/vacuum/x/config", "homeassistant").is_none());
         assert!(parse("somethingelse/switch/x/config", "homeassistant").is_none());
         assert!(parse("homeassistant/switch/x/state", "homeassistant").is_none());
         assert!(parse("homeassistant/switch//config", "homeassistant").is_none());

@@ -235,6 +235,11 @@
           "description": "Sounds an alarm: on or off, sometimes with a tone, volume and duration.",
           "type": "string",
           "const": "siren"
+        },
+        {
+          "description": "Heats or cools a room, e.g. a thermostat or an air conditioner.",
+          "type": "string",
+          "const": "climate"
         }
       ]
     },

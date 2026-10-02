@@ -1,17 +1,18 @@
 //! The demo's devices that do more than switch and measure: a front door lock that locks itself
 //! again, a doorbell with a chime and a screen, a living room blind that takes a moment to move,
-//! a ceiling fan, and a water shut-off with a leak alarm. Between them, one of every kind beyond
-//! lights, switches and sensors.
+//! a ceiling fan, a water shut-off with a leak alarm, and a thermostat. Between them, one of every
+//! kind beyond lights, switches and sensors.
 
 use tokio::time::{Duration, Instant};
 
 use irori_protocol::types::{
-    ButtonCapabilities, Capabilities, CoverCapabilities, CoverClass, CoverState, EntityCategory,
-    EntityDescription, EventCapabilities, EventClass, EventState, FanCapabilities, FanDirection,
-    FanState, LockCapabilities, LockState, LockStatus, Name, NumberCapabilities, NumberMode,
-    NumberState, OpenState, SelectCapabilities, SelectState, SensorClass, Service,
-    SirenCapabilities, SirenState, State, TextCapabilities, TextMode, TextState, ValveCapabilities,
-    ValveClass, ValveState, percentage_to_speed, speed_to_percentage,
+    ButtonCapabilities, Capabilities, ClimateCapabilities, ClimateState, CoverCapabilities,
+    CoverClass, CoverState, EntityCategory, EntityDescription, EventCapabilities, EventClass,
+    EventState, FanCapabilities, FanDirection, FanState, HvacAction, HvacMode, LockCapabilities,
+    LockState, LockStatus, Name, NumberCapabilities, NumberMode, NumberState, OpenState,
+    SelectCapabilities, SelectState, SensorClass, Service, SirenCapabilities, SirenState, State,
+    TextCapabilities, TextMode, TextState, ValveCapabilities, ValveClass, ValveState,
+    percentage_to_speed, speed_to_percentage,
 };
 use irori_protocol::{ProtocolContext, ProtocolError};
 
@@ -32,6 +33,8 @@ const FAN_FAN: &str = "ceiling-fan-fan";
 const SHUTOFF: &str = "water-shutoff";
 const SHUTOFF_VALVE: &str = "water-shutoff-valve";
 const SHUTOFF_ALARM: &str = "water-shutoff-alarm";
+const THERMOSTAT: &str = "thermostat";
+const THERMOSTAT_CLIMATE: &str = "thermostat-climate";
 
 const CHIMES: [&str; 3] = ["Ding-dong", "Westminster", "Off"];
 const FAN_SPEEDS: u16 = 3;
@@ -56,6 +59,34 @@ pub(crate) struct Gadgets {
     valve: OpenState,
     alarm: bool,
     alarm_until: Option<Instant>,
+    thermostat: ClimateState,
+    /// The mode `turn_on` goes back to.
+    thermostat_on: HvacMode,
+}
+
+/// The living room's thermostat: heats, or follows its schedule, in °C.
+fn thermostat_capabilities() -> ClimateCapabilities {
+    ClimateCapabilities {
+        hvac_modes: vec![HvacMode::Off, HvacMode::Heat, HvacMode::Auto],
+        min_temp: 7.0,
+        max_temp: 30.0,
+        temp_step: 0.5,
+        target_temperature: true,
+        target_temperature_range: false,
+        target_humidity: None,
+        fan_modes: Vec::new(),
+        swing_modes: Vec::new(),
+        preset_modes: vec!["comfort".into(), "eco".into(), "away".into()],
+    }
+}
+
+/// What a thermostat is doing in a room at `room` °C: heating while it's below the target.
+fn heating(thermostat: &ClimateState, room: f64) -> HvacAction {
+    match (thermostat.hvac_mode, thermostat.target_temperature) {
+        (HvacMode::Off, _) => HvacAction::Off,
+        (_, Some(target)) if room < target => HvacAction::Heating,
+        _ => HvacAction::Idle,
+    }
 }
 
 /// Where the blind is, and where it's going.
@@ -129,6 +160,14 @@ impl Gadgets {
             valve: OpenState::Open,
             alarm: false,
             alarm_until: None,
+            thermostat: ClimateState {
+                hvac_action: Some(HvacAction::Idle),
+                current_temperature: Some(21.0),
+                target_temperature: Some(21.0),
+                preset_mode: Some("comfort".into()),
+                ..ClimateState::in_mode(HvacMode::Heat)
+            },
+            thermostat_on: HvacMode::Heat,
         }
     }
 
@@ -165,6 +204,7 @@ impl Gadgets {
                 }),
             ),
             (SHUTOFF_ALARM, State::Siren(SirenState { on: self.alarm })),
+            (THERMOSTAT_CLIMATE, State::Climate(self.thermostat.clone())),
         ]
     }
 
@@ -285,9 +325,47 @@ impl Gadgets {
                 self.alarm_until = None;
                 SHUTOFF_ALARM
             }
+            (THERMOSTAT_CLIMATE, Service::ClimateSetHvacMode(data)) => {
+                self.thermostat_mode(data.hvac_mode);
+                THERMOSTAT_CLIMATE
+            }
+            (THERMOSTAT_CLIMATE, Service::ClimateTurnOn) => {
+                self.thermostat_mode(self.thermostat_on);
+                THERMOSTAT_CLIMATE
+            }
+            (THERMOSTAT_CLIMATE, Service::ClimateTurnOff) => {
+                self.thermostat_mode(HvacMode::Off);
+                THERMOSTAT_CLIMATE
+            }
+            (THERMOSTAT_CLIMATE, Service::ClimateSetTemperature(data)) => {
+                if let Some(mode) = data.hvac_mode {
+                    self.thermostat_mode(mode);
+                }
+                if data.temperature.is_some() {
+                    self.thermostat.target_temperature = data.temperature;
+                    // A target set by hand is no preset's.
+                    self.thermostat.preset_mode = None;
+                }
+                self.thermostat.hvac_action = Some(heating(
+                    &self.thermostat,
+                    self.thermostat.current_temperature.unwrap_or(21.0),
+                ));
+                THERMOSTAT_CLIMATE
+            }
+            // Each preset is a target: comfortable, saving, or nobody home.
+            (THERMOSTAT_CLIMATE, Service::ClimateSetPresetMode(data)) => {
+                self.thermostat.target_temperature = Some(match data.preset_mode.as_str() {
+                    "comfort" => 21.0,
+                    "eco" => 18.5,
+                    _ => 15.0,
+                });
+                self.thermostat.preset_mode = Some(data.preset_mode.clone());
+                THERMOSTAT_CLIMATE
+            }
             (
                 LOCK_LOCK | LOCK_AUTO | DOORBELL_RING | DOORBELL_CHIME | DOORBELL_MESSAGE
-                | BLIND_COVER | BLIND_CALIBRATE | FAN_FAN | SHUTOFF_VALVE | SHUTOFF_ALARM,
+                | BLIND_COVER | BLIND_CALIBRATE | FAN_FAN | SHUTOFF_VALVE | SHUTOFF_ALARM
+                | THERMOSTAT_CLIMATE,
                 _,
             ) => {
                 return Some(Err(format!(
@@ -300,6 +378,17 @@ impl Gadgets {
         Some(Ok(self.state_of(changed)))
     }
 
+    fn thermostat_mode(&mut self, mode: HvacMode) {
+        self.thermostat.hvac_mode = mode;
+        if mode != HvacMode::Off {
+            self.thermostat_on = mode;
+        }
+        self.thermostat.hvac_action = Some(heating(
+            &self.thermostat,
+            self.thermostat.current_temperature.unwrap_or(21.0),
+        ));
+    }
+
     /// A speed set by percentage lands on one of its three, as a real fan's would, and leaves
     /// any preset mode.
     fn fan_speed(&mut self, percentage: u8) {
@@ -308,10 +397,16 @@ impl Gadgets {
         self.fan.preset_mode = None;
     }
 
-    /// What changed on its own by `now`: the blind moving, the lock locking itself again, the
-    /// alarm running out.
-    pub(crate) fn tick(&mut self, now: Instant) -> Vec<(&'static str, State)> {
+    /// What changed on its own by `now`, with the living room at `room` °C: the blind moving,
+    /// the lock locking itself again, the alarm running out, the thermostat reading the room.
+    pub(crate) fn tick(&mut self, now: Instant, room: f64) -> Vec<(&'static str, State)> {
         let mut changed = Vec::new();
+        let before = self.thermostat.clone();
+        self.thermostat.current_temperature = Some(room);
+        self.thermostat.hvac_action = Some(heating(&self.thermostat, room));
+        if self.thermostat != before {
+            changed.push(THERMOSTAT_CLIMATE);
+        }
         if self.blind.step() {
             changed.push(BLIND_COVER);
         }
@@ -495,6 +590,22 @@ pub(crate) async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError>
     .await?;
 
     ctx.describe_device(device(
+        THERMOSTAT,
+        "Demo thermostat",
+        "Virtual thermostat",
+        "Living room",
+    )?)
+    .await?;
+    ctx.describe_entity(entity(
+        THERMOSTAT_CLIMATE,
+        None,
+        THERMOSTAT,
+        Capabilities::Climate(thermostat_capabilities()),
+        None,
+    )?)
+    .await?;
+
+    ctx.describe_device(device(
         SHUTOFF,
         "Demo water shut-off",
         "Virtual water valve with leak alarm",
@@ -597,6 +708,10 @@ mod tests {
                 }),
             ),
             (
+                THERMOSTAT_CLIMATE,
+                Capabilities::Climate(thermostat_capabilities()),
+            ),
+            (
                 DOORBELL_RING,
                 Capabilities::Event(EventCapabilities {
                     event_types: vec!["ring".into()],
@@ -648,7 +763,7 @@ mod tests {
             assert_fits(&[state]);
         }
         for second in 0..20 {
-            assert_fits(&gadgets.tick(now + Duration::from_secs(second)));
+            assert_fits(&gadgets.tick(now + Duration::from_secs(second), 20.0));
         }
         assert_fits(&rings(0, 1000));
     }
@@ -659,8 +774,8 @@ mod tests {
         let mut gadgets = Gadgets::new();
         let unlock = Service::LockUnlock(LockCode::default());
         gadgets.call(LOCK_LOCK, &unlock, now);
-        assert!(gadgets.tick(now + Duration::from_secs(29)).is_empty());
-        let relocked = gadgets.tick(now + Duration::from_secs(30));
+        assert!(gadgets.tick(now + Duration::from_secs(29), 21.0).is_empty());
+        let relocked = gadgets.tick(now + Duration::from_secs(30), 21.0);
         assert_eq!(
             relocked,
             vec![(
@@ -674,7 +789,11 @@ mod tests {
         let never = Service::NumberSetValue(NumberSetValue { value: 0.0 });
         gadgets.call(LOCK_AUTO, &never, now);
         gadgets.call(LOCK_LOCK, &unlock, now);
-        assert!(gadgets.tick(now + Duration::from_secs(3600)).is_empty());
+        assert!(
+            gadgets
+                .tick(now + Duration::from_secs(3600), 21.0)
+                .is_empty()
+        );
         assert_eq!(gadgets.lock, LockStatus::Unlocked);
     }
 
@@ -694,16 +813,16 @@ mod tests {
             (OpenState::Closing, Some(100))
         );
         for _ in 0..3 {
-            gadgets.tick(now);
+            gadgets.tick(now, 21.0);
         }
         assert_eq!(gadgets.blind.state().state, OpenState::Open);
         assert_eq!(gadgets.blind.position, 40);
-        assert!(gadgets.tick(now).is_empty(), "still once it's there");
+        assert!(gadgets.tick(now, 21.0).is_empty(), "still once it's there");
 
         gadgets.call(BLIND_CALIBRATE, &Service::ButtonPress, now);
         let mut lowest = 100;
         for _ in 0..10 {
-            gadgets.tick(now);
+            gadgets.tick(now, 21.0);
             lowest = lowest.min(gadgets.blind.position);
         }
         assert_eq!((lowest, gadgets.blind.position), (0, 40));
@@ -740,8 +859,8 @@ mod tests {
         });
         gadgets.call(SHUTOFF_ALARM, &sound, now);
         assert!(gadgets.alarm);
-        assert!(gadgets.tick(now + Duration::from_secs(4)).is_empty());
-        assert_eq!(gadgets.tick(now + Duration::from_secs(5)).len(), 1);
+        assert!(gadgets.tick(now + Duration::from_secs(4), 21.0).is_empty());
+        assert_eq!(gadgets.tick(now + Duration::from_secs(5), 21.0).len(), 1);
         assert!(!gadgets.alarm);
     }
 
@@ -754,6 +873,36 @@ mod tests {
         assert_eq!(rings(0, 300).len(), 4);
         assert!(rings(66, 209).is_empty());
         assert_eq!(rings(209, 211).len(), 1);
+    }
+
+    #[test]
+    fn the_thermostat_heats_a_cold_room_and_comes_back_on_as_it_was() {
+        let now = Instant::now();
+        let mut gadgets = Gadgets::new();
+        let cold = gadgets.tick(now, 19.0);
+        assert_fits(&cold);
+        assert_eq!(gadgets.thermostat.hvac_action, Some(HvacAction::Heating));
+        gadgets.tick(now, 22.0);
+        assert_eq!(gadgets.thermostat.hvac_action, Some(HvacAction::Idle));
+        assert!(gadgets.tick(now, 22.0).is_empty(), "nothing new to say");
+
+        let auto = Service::ClimateSetHvacMode(irori_protocol::types::ClimateHvacMode {
+            hvac_mode: HvacMode::Auto,
+        });
+        gadgets.call(THERMOSTAT_CLIMATE, &auto, now);
+        gadgets.call(THERMOSTAT_CLIMATE, &Service::ClimateTurnOff, now);
+        assert_eq!(gadgets.thermostat.hvac_action, Some(HvacAction::Off));
+        let Some(Ok(on)) = gadgets.call(THERMOSTAT_CLIMATE, &Service::ClimateTurnOn, now) else {
+            panic!("it turns on");
+        };
+        assert_fits(&[on]);
+        assert_eq!(gadgets.thermostat.hvac_mode, HvacMode::Auto);
+
+        let away = Service::ClimateSetPresetMode(irori_protocol::types::ClimatePresetMode {
+            preset_mode: "away".into(),
+        });
+        gadgets.call(THERMOSTAT_CLIMATE, &away, now);
+        assert_eq!(gadgets.thermostat.target_temperature, Some(15.0));
     }
 
     #[test]

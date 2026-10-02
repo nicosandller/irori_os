@@ -593,6 +593,178 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "climate.set_hvac_mode"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ClimateHvacMode"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "climate.set_temperature"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ClimateSetTemperature"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "climate.set_humidity"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/SetHumidity"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "climate.set_fan_mode"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ClimateFanMode"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "climate.set_swing_mode"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ClimateSwingMode"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "climate.set_preset_mode"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ClimatePresetMode"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "climate.turn_on"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "climate.turn_off"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -601,6 +773,96 @@
     "context"
   ],
   "$defs": {
+    "ClimateFanMode": {
+      "description": "Data for `climate.set_fan_mode`.",
+      "type": "object",
+      "properties": {
+        "fan_mode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "fan_mode"
+      ]
+    },
+    "ClimateHvacMode": {
+      "description": "Data for `climate.set_hvac_mode`.",
+      "type": "object",
+      "properties": {
+        "hvac_mode": {
+          "$ref": "#/$defs/HvacMode"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "hvac_mode"
+      ]
+    },
+    "ClimatePresetMode": {
+      "description": "Data for `climate.set_preset_mode`.",
+      "type": "object",
+      "properties": {
+        "preset_mode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "preset_mode"
+      ]
+    },
+    "ClimateSetTemperature": {
+      "description": "Data for `climate.set_temperature`: a single target, or a range, in °C; optionally the mode\nto switch to at the same time.",
+      "type": "object",
+      "properties": {
+        "hvac_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HvacMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target_temp_high": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "target_temp_low": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "temperature": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ClimateSwingMode": {
+      "description": "Data for `climate.set_swing_mode`.",
+      "type": "object",
+      "properties": {
+        "swing_mode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "swing_mode"
+      ]
+    },
     "Context": {
       "description": "Why something happened. Every state change and service call carries one, so any change can\nbe traced back to its cause (`docs/specs/entities.md` §6).",
       "type": "object",
@@ -724,6 +986,31 @@
         }
       },
       "additionalProperties": false
+    },
+    "HvacMode": {
+      "description": "What it's set to do: Home Assistant's modes.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "off",
+            "heat",
+            "cool",
+            "dry",
+            "fan_only"
+          ]
+        },
+        {
+          "description": "Heats or cools to stay within a range.",
+          "type": "string",
+          "const": "heat_cool"
+        },
+        {
+          "description": "Follows its own schedule or logic.",
+          "type": "string",
+          "const": "auto"
+        }
+      ]
     },
     "LightTurnOn": {
       "description": "Data for `light.turn_on`. Everything is optional: with no data, the light turns on at its\nlast brightness and color.",
@@ -956,7 +1243,31 @@
         "valve.stop",
         "valve.set_position",
         "siren.turn_on",
-        "siren.turn_off"
+        "siren.turn_off",
+        "climate.set_hvac_mode",
+        "climate.set_temperature",
+        "climate.set_humidity",
+        "climate.set_fan_mode",
+        "climate.set_swing_mode",
+        "climate.set_preset_mode",
+        "climate.turn_on",
+        "climate.turn_off"
+      ]
+    },
+    "SetHumidity": {
+      "description": "Data for `climate.set_humidity` and `humidifier.set_humidity`, in %.",
+      "type": "object",
+      "properties": {
+        "humidity": {
+          "type": "number",
+          "format": "double",
+          "maximum": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "humidity"
       ]
     },
     "SetPosition": {
