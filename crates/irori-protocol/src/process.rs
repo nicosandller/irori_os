@@ -723,6 +723,30 @@ pub struct ExtProcess {
     pub stdout: BufReader<ChildStdout>,
 }
 
+/// Runs `command`, and tries again when the kernel says the program file is still busy.
+///
+/// That error is `ETXTBSY` ("Text file busy"): exec found the file open for writing. An
+/// extension starts from a binary that was just copied into its package, and the tests start a
+/// script they just wrote. The writer has closed the file; the kernel can take a moment to
+/// agree. A few short waits cover that window. Every other error comes back at once.
+fn spawn_child(command: &mut Command) -> std::io::Result<Child> {
+    const ATTEMPTS: u32 = 8;
+    let mut attempt = 0;
+    loop {
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && attempt + 1 < ATTEMPTS =>
+            {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Starts the package's `run.command` with stdin/stdout piped for the protocol, and its stderr
 /// piped for the host to read.
 ///
@@ -756,7 +780,8 @@ pub fn spawn(
     let state_dir = std::path::absolute(state_dir).unwrap_or_else(|_| state_dir.to_path_buf());
     create_private_dir(&state_dir)
         .map_err(|e| format!("couldn't create {}: {e}", state_dir.display()))?;
-    let mut child = Command::new(&command)
+    let mut child_command = Command::new(&command);
+    child_command
         .current_dir(package_dir)
         .env("IRORI_EXTENSION_DATA", &state_dir)
         .envs(env.iter().map(|(key, value)| (key, value)))
@@ -767,8 +792,8 @@ pub fn spawn(
         // failed, and inheriting them sends them to Irori's stderr where nothing can show them
         // to the person looking at the extension's card.
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
+        .kill_on_drop(true);
+    let mut child = spawn_child(&mut child_command)
         .map_err(|e| format!("couldn't start {}: {e}", command.display()))?;
     let stdin = child
         .stdin
@@ -1059,6 +1084,41 @@ mod tests {
             mode_of(&fresh),
             0o700,
             "a directory this creates is owner-only from the start"
+        );
+    }
+
+    /// Exec returns "Text file busy" while something still has the program open for writing.
+    /// Spawn has to outlast that, because the host starts an extension from a file it just wrote.
+    #[tokio::test]
+    async fn spawn_retries_while_the_program_file_is_busy() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("a temp dir");
+        std::fs::create_dir_all(tmp.path().join("bin")).expect("mkdir");
+        let program = tmp.path().join("bin/prog");
+        std::fs::write(&program, "#!/bin/sh\nexit 0\n").expect("write the program");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+        // Held open across the first exec attempts, then released while spawn is still retrying.
+        let writing = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&program)
+            .expect("hold the program open for writing");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            drop(writing);
+        });
+
+        let run = RunCommand {
+            command: PackagePath::try_from("bin/prog").expect("a valid package path"),
+            args: Vec::new(),
+        };
+        let state = tmp.path().join("state");
+        let started = spawn(tmp.path(), &state, &run, &[]);
+        release.join().expect("the writer finishes");
+        assert!(
+            started.expect("starts").0.child.id().is_some(),
+            "the program should have started once its file was closed"
         );
     }
 }
