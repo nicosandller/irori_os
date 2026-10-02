@@ -968,7 +968,9 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
         }
         (Capabilities::Button(_), _) => "—".to_owned(),
         (Capabilities::Event(_), Some(State::Event(event))) => event.event_type.clone(),
-        (Capabilities::Cover(_), Some(State::Cover(cover))) => devices::cover_words(cover),
+        (Capabilities::Cover(_), Some(State::Cover(cover))) => {
+            devices::opening_words(cover.opening())
+        }
         (Capabilities::Lock(_), Some(State::Lock(lock))) => {
             devices::lock_words(lock.state).to_owned()
         }
@@ -986,11 +988,7 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
             if siren.on { "Sounding" } else { "Quiet" }.to_owned()
         }
         (Capabilities::Valve(_), Some(State::Valve(valve))) => {
-            devices::cover_words(&irori_types::CoverState {
-                state: valve.state,
-                position: valve.position,
-                tilt: None,
-            })
+            devices::opening_words(valve.opening())
         }
         (Capabilities::Select(_), Some(State::Select(select))) => select.option.clone(),
         (Capabilities::Text(text), Some(State::Text(state))) => {
