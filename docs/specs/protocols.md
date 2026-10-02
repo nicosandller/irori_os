@@ -270,6 +270,7 @@ manifest's `entity_kinds`.
 | `cover.set_tilt` | `tilt` 0–100 | Needs `tilt` |
 | `lock.lock`, `lock.unlock` | `code`, optional | The code is required when the lock `requires_code`. `lock.toggle` unlocks a locked or locking lock and locks anything else |
 | `lock.open` | `code`, optional | Needs `open` |
+| `valve.open`, `valve.close`, `valve.stop`, `valve.set_position` | as the cover's | As a cover's, without tilt. `valve.toggle` closes an open or opening valve |
 | `fan.turn_on` | `percentage` 1–100, `preset_mode`; both optional | `fan.toggle` resolves to `turn_on` or `turn_off` |
 | `fan.turn_off` | none | |
 | `fan.set_percentage` | `percentage` 0–100 | 0 turns it off. Needs a `speed_count` |

@@ -16,6 +16,7 @@ use crate::kinds::select::SelectCapabilities;
 use crate::kinds::sensor::SensorCapabilities;
 use crate::kinds::switch::SwitchCapabilities;
 use crate::kinds::text::TextCapabilities;
+use crate::kinds::valve::ValveCapabilities;
 use crate::{
     AreaId, Description, DeviceId, EntityId, EntityKind, FloorId, InvariantError, Name, ProtocolId,
     UniqueId,
@@ -195,6 +196,7 @@ pub enum Capabilities {
     Cover(CoverCapabilities),
     Lock(LockCapabilities),
     Fan(FanCapabilities),
+    Valve(ValveCapabilities),
 }
 
 impl Capabilities {
@@ -212,6 +214,7 @@ impl Capabilities {
             Self::Cover(_) => EntityKind::Cover,
             Self::Lock(_) => EntityKind::Lock,
             Self::Fan(_) => EntityKind::Fan,
+            Self::Valve(_) => EntityKind::Valve,
         }
     }
 

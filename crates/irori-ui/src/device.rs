@@ -973,6 +973,13 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
             devices::lock_words(lock.state).to_owned()
         }
         (Capabilities::Fan(_), Some(State::Fan(fan))) => devices::fan_words(fan),
+        (Capabilities::Valve(_), Some(State::Valve(valve))) => {
+            devices::cover_words(&irori_types::CoverState {
+                state: valve.state,
+                position: valve.position,
+                tilt: None,
+            })
+        }
         (Capabilities::Select(_), Some(State::Select(select))) => select.option.clone(),
         (Capabilities::Text(text), Some(State::Text(state))) => {
             if text.mode == irori_types::TextMode::Password {

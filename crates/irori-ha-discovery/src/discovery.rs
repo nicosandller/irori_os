@@ -12,7 +12,8 @@ use irori_types::{
     ColorTempRange, CoverCapabilities, CoverClass, EntityCategory, EventCapabilities, EventClass,
     FanCapabilities, LightCapabilities, LockCapabilities, LockStatus, Name, NumberCapabilities,
     NumberMode, SelectCapabilities, SensorCapabilities, SensorClass, SensorValueType, StateClass,
-    SwitchCapabilities, SwitchClass, TextCapabilities, TextMode, UniqueId,
+    SwitchCapabilities, SwitchClass, TextCapabilities, TextMode, UniqueId, ValveCapabilities,
+    ValveClass,
 };
 
 use crate::template::{CommandTemplate, ValueTemplate};
@@ -145,6 +146,8 @@ pub enum EntityTopics {
     Lock(Box<LockTopics>),
     /// A fan, as Home Assistant's MQTT fan lets it vary.
     Fan(Box<FanTopics>),
+    /// A valve: a cover with fewer settings, read and sent the same way.
+    Valve(Box<CoverTopics>),
 }
 
 /// One setting of a fan: where it's sent and how, and where it's read back.
@@ -285,6 +288,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::Cover => parse_cover(&root)?,
         Component::Lock => parse_lock(&root)?,
         Component::Fan => parse_fan(&root)?,
+        Component::Valve => parse_valve(&root)?,
     };
 
     Ok(ParsedConfig {
@@ -562,6 +566,56 @@ fn parse_select(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics)
             command_template,
             value_template: ValueTemplate::parse(str_field(root, "value_template")),
         },
+    ))
+}
+
+/// Home Assistant's MQTT valve. One that `reports_position` says a number on its state topic and
+/// takes one on its command topic; otherwise it opens and closes like a cover.
+fn parse_valve(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
+    let (command_topic, command_template) = plain_command(root, "a valve")?;
+    let owned = |key: &str| str_field(root, key).map(str::to_owned);
+    let number = |key: &str, default: f64| {
+        root.get(key)
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(default)
+    };
+    let reports_position = bool_field(root, "reports_position");
+    let state_topic = owned("state_topic");
+    let value_template = ValueTemplate::parse(str_field(root, "value_template"));
+    let topics = CoverTopics {
+        command_topic: Some(command_topic.clone()),
+        payload_open: owned_str(root, "payload_open", "OPEN"),
+        payload_close: owned_str(root, "payload_close", "CLOSE"),
+        // A valve stops only when it says how.
+        payload_stop: owned("payload_stop"),
+        state_topic: state_topic.clone(),
+        value_template: (!reports_position).then(|| value_template.clone()),
+        state_open: owned_str(root, "state_open", "open"),
+        state_opening: owned_str(root, "state_opening", "opening"),
+        state_closed: owned_str(root, "state_closed", "closed"),
+        state_closing: owned_str(root, "state_closing", "closing"),
+        state_stopped: "stopped".to_owned(),
+        position_topic: reports_position.then(|| state_topic.clone()).flatten(),
+        position_template: value_template,
+        position_open: number("position_open", 100.0),
+        position_closed: number("position_closed", 0.0),
+        set_position_topic: reports_position.then_some(command_topic),
+        set_position_template: command_template,
+        tilt_command_topic: None,
+        tilt_command_template: CommandTemplate::Value,
+        tilt_status_topic: None,
+        tilt_status_template: ValueTemplate::None,
+        tilt_min: 0.0,
+        tilt_max: 100.0,
+    };
+    let capabilities = ValveCapabilities {
+        device_class: str_field(root, "device_class").and_then(ValveClass::from_ha),
+        position: reports_position,
+        stop: topics.payload_stop.is_some(),
+    };
+    Ok((
+        Capabilities::Valve(capabilities),
+        EntityTopics::Valve(Box::new(topics)),
     ))
 }
 
@@ -1256,6 +1310,57 @@ mod tests {
         )
         .expect("a speed");
         assert_eq!(sent[0].payload, b"8");
+    }
+
+    #[test]
+    fn a_valve_opens_and_closes_or_says_how_far() {
+        let plain = parse(
+            Component::Valve,
+            br#"{"unique_id": "v", "name": "Main water", "command_topic": "v/set",
+                "state_topic": "v/state", "device_class": "water"}"#,
+        )
+        .expect("valid");
+        assert_eq!(
+            plain.capabilities,
+            Capabilities::Valve(ValveCapabilities {
+                device_class: Some(ValveClass::Water),
+                position: false,
+                stop: false,
+            })
+        );
+        assert_eq!(
+            crate::state::decode(&plain.topics, "v/state", b"closed", None),
+            Some(Ok(irori_types::State::Valve(irori_types::ValveState {
+                state: irori_types::OpenState::Closed,
+                position: None,
+            })))
+        );
+        let sent =
+            crate::state::encode(&plain.topics, &irori_types::Service::ValveOpen).expect("open");
+        assert_eq!(sent[0].payload, b"OPEN");
+
+        let zone = parse(
+            Component::Valve,
+            br#"{"unique_id": "z", "name": "Garden zone", "command_topic": "z/set",
+                "state_topic": "z/state", "reports_position": true, "payload_stop": "STOP"}"#,
+        )
+        .expect("valid");
+        assert_eq!(
+            crate::state::decode(&zone.topics, "z/state", b"40", None),
+            Some(Ok(irori_types::State::Valve(irori_types::ValveState {
+                state: irori_types::OpenState::Open,
+                position: Some(40),
+            })))
+        );
+        let sent = crate::state::encode(
+            &zone.topics,
+            &irori_types::Service::ValveSetPosition(irori_types::SetPosition { position: 25 }),
+        )
+        .expect("a position");
+        assert_eq!(
+            (sent[0].topic.as_str(), sent[0].payload.as_slice()),
+            ("z/set", &b"25"[..])
+        );
     }
 
     #[test]

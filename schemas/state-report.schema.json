@@ -406,6 +406,33 @@
             "kind",
             "on"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "valve"
+            },
+            "position": {
+              "description": "0 (closed) to 100 (open), when it can say.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            },
+            "state": {
+              "$ref": "#/$defs/OpenState"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
+          ]
         }
       ]
     },

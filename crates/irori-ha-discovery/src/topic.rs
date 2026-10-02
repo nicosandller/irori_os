@@ -19,6 +19,7 @@ pub enum Component {
     Cover,
     Lock,
     Fan,
+    Valve,
 }
 
 impl Component {
@@ -36,6 +37,7 @@ impl Component {
             "cover" => Some(Self::Cover),
             "lock" => Some(Self::Lock),
             "fan" => Some(Self::Fan),
+            "valve" => Some(Self::Valve),
             _ => None,
         }
     }
@@ -56,6 +58,7 @@ impl fmt::Display for Component {
             Self::Cover => "cover",
             Self::Lock => "lock",
             Self::Fan => "fan",
+            Self::Valve => "valve",
         })
     }
 }

@@ -17,6 +17,7 @@ pub(crate) mod select;
 pub(crate) mod sensor;
 pub(crate) mod switch;
 pub(crate) mod text;
+pub(crate) mod valve;
 
 use crate::{Capabilities, EntityKind, InvariantError, Service, ServiceName, State};
 
@@ -29,6 +30,7 @@ use self::number::{NumberSetValue, NumberState};
 use self::select::{SelectOption, SelectState};
 use self::sensor::{SensorState, SensorValue, SensorValueType};
 use self::text::{TextSetValue, TextState};
+use self::valve::ValveState;
 
 /// Reads a device class (or another name-only enum) by its Home Assistant name, which is also
 /// Irori's spelling. `None` for a name Irori doesn't have, which a protocol leaves absent rather
@@ -120,6 +122,13 @@ impl EntityKind {
                 Some(state) if state.is_open_or_opening() => Some(ServiceName::CoverClose),
                 _ => Some(ServiceName::CoverOpen),
             },
+            Self::Valve => match current.and_then(|current| match current {
+                Typed::Text(text) => OpenState::parse(text),
+                _ => None,
+            }) {
+                Some(state) if state.is_open_or_opening() => Some(ServiceName::ValveClose),
+                _ => Some(ServiceName::ValveOpen),
+            },
             Self::Lock => match current {
                 Some(Typed::Text(text))
                     if matches!(
@@ -143,9 +152,12 @@ impl Capabilities {
                 ValueShape::Bool
             }
             Self::Number(_) => ValueShape::Number,
-            Self::Select(_) | Self::Text(_) | Self::Event(_) | Self::Cover(_) | Self::Lock(_) => {
-                ValueShape::Text
-            }
+            Self::Select(_)
+            | Self::Text(_)
+            | Self::Event(_)
+            | Self::Cover(_)
+            | Self::Valve(_)
+            | Self::Lock(_) => ValueShape::Text,
             Self::Sensor(sensor) => match sensor.value_type {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
@@ -161,7 +173,7 @@ impl Capabilities {
             Self::Sensor(sensor) if !sensor.options.is_empty() => Some(&sensor.options),
             Self::Select(select) => Some(&select.options),
             Self::Event(event) => Some(&event.event_types),
-            Self::Cover(_) => Some(&OPEN_STATES),
+            Self::Cover(_) | Self::Valve(_) => Some(&OPEN_STATES),
             Self::Lock(_) => Some(&LOCK_STATES),
             _ => None,
         }
@@ -184,6 +196,7 @@ impl Capabilities {
             (Self::Event(caps), State::Event(state)) => event::fits(caps, state),
             (Self::Cover(caps), State::Cover(state)) => cover::fits(caps, state),
             (Self::Fan(caps), State::Fan(state)) => fan::fits(caps, state),
+            (Self::Valve(caps), State::Valve(state)) => valve::fits(caps, state),
             _ => Ok(()),
         }
     }
@@ -209,6 +222,10 @@ impl Capabilities {
             }
             (Self::Cover(caps), Service::CoverSetTilt(data)) => cover::supports_tilt(caps, data),
             (Self::Cover(caps), Service::CoverStop) => cover::supports_stop(caps),
+            (Self::Valve(caps), Service::ValveSetPosition(data)) => {
+                valve::supports_position(caps, data)
+            }
+            (Self::Valve(caps), Service::ValveStop) => valve::supports_stop(caps),
             (Self::Lock(caps), Service::LockLock(data) | Service::LockUnlock(data)) => {
                 lock::supports(caps, data, false)
             }
@@ -240,6 +257,7 @@ impl State {
             Self::Text(text) => Typed::Text(text.value.clone()),
             Self::Event(event) => Typed::Text(event.event_type.clone()),
             Self::Cover(cover) => Typed::Text(cover.state.as_str().to_owned()),
+            Self::Valve(valve) => Typed::Text(valve.state.as_str().to_owned()),
             Self::Lock(lock) => Typed::Text(lock.state.as_str().to_owned()),
             Self::Sensor(sensor) => match &sensor.value {
                 SensorValue::Number(n) => Typed::Number(*n),
@@ -294,6 +312,13 @@ impl State {
             },
             (EntityKind::Lock, _, Typed::Text(text)) => State::Lock(LockState {
                 state: LockStatus::parse(text)?,
+            }),
+            (EntityKind::Valve, previous, Typed::Text(text)) => State::Valve(ValveState {
+                state: OpenState::parse(text)?,
+                position: match previous {
+                    Some(State::Valve(valve)) => valve.position,
+                    _ => None,
+                },
             }),
             (EntityKind::Cover, previous, Typed::Text(text)) => {
                 let state = OpenState::parse(text)?;
@@ -361,6 +386,10 @@ impl Service {
             ServiceName::FanOscillate => Service::FanOscillate(parse(name, data)?),
             ServiceName::FanSetDirection => Service::FanSetDirection(parse(name, data)?),
             ServiceName::FanSetPresetMode => Service::FanSetPresetMode(parse(name, data)?),
+            ServiceName::ValveOpen => Service::ValveOpen,
+            ServiceName::ValveClose => Service::ValveClose,
+            ServiceName::ValveStop => Service::ValveStop,
+            ServiceName::ValveSetPosition => Service::ValveSetPosition(parse(name, data)?),
             ServiceName::CoverOpen => Service::CoverOpen,
             ServiceName::CoverClose => Service::CoverClose,
             ServiceName::CoverStop => Service::CoverStop,
@@ -398,7 +427,9 @@ impl Service {
             Self::NumberSetValue(data) => serde_json::to_value(data).ok()?,
             Self::SelectSelectOption(data) => serde_json::to_value(data).ok()?,
             Self::TextSetValue(data) => serde_json::to_value(data).ok()?,
-            Self::CoverSetPosition(data) => serde_json::to_value(data).ok()?,
+            Self::CoverSetPosition(data) | Self::ValveSetPosition(data) => {
+                serde_json::to_value(data).ok()?
+            }
             Self::CoverSetTilt(data) => serde_json::to_value(data).ok()?,
             Self::FanTurnOn(data) if *data != FanTurnOn::default() => {
                 serde_json::to_value(data).ok()?
@@ -446,9 +477,13 @@ impl Service {
             Self::LockLock(_) => Some(Typed::Text(LockStatus::Locked.as_str().to_owned())),
             Self::LockUnlock(_) => Some(Typed::Text(LockStatus::Unlocked.as_str().to_owned())),
             Self::LockOpen(_) => Some(Typed::Text(LockStatus::Open.as_str().to_owned())),
-            Self::CoverOpen => Some(Typed::Text(OpenState::Open.as_str().to_owned())),
-            Self::CoverClose => Some(Typed::Text(OpenState::Closed.as_str().to_owned())),
-            Self::CoverSetPosition(data) => Some(Typed::Text(
+            Self::CoverOpen | Self::ValveOpen => {
+                Some(Typed::Text(OpenState::Open.as_str().to_owned()))
+            }
+            Self::CoverClose | Self::ValveClose => {
+                Some(Typed::Text(OpenState::Closed.as_str().to_owned()))
+            }
+            Self::CoverSetPosition(data) | Self::ValveSetPosition(data) => Some(Typed::Text(
                 if data.position == 0 {
                     OpenState::Closed
                 } else {
@@ -458,7 +493,7 @@ impl Service {
                 .to_owned(),
             )),
             // A press, a stop or a tilt leaves nothing for a toggle to go by.
-            Self::ButtonPress | Self::CoverStop | Self::CoverSetTilt(_) => None,
+            Self::ButtonPress | Self::CoverStop | Self::CoverSetTilt(_) | Self::ValveStop => None,
         }
     }
 }
@@ -489,6 +524,7 @@ impl ServiceName {
                 | Self::FanOscillate
                 | Self::FanSetDirection
                 | Self::FanSetPresetMode
+                | Self::ValveSetPosition
         )
     }
 
@@ -510,6 +546,7 @@ impl ServiceName {
                 | Self::FanOscillate
                 | Self::FanSetDirection
                 | Self::FanSetPresetMode
+                | Self::ValveSetPosition
         )
     }
 }

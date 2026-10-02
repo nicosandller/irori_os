@@ -4,7 +4,7 @@
 use irori_types::{
     BinarySensorState, ColorMode, CoverState, EventState, FanDirection, FanPercentage, FanState,
     LightState, LockState, NumberState, OpenState, SelectState, SensorState, SensorValue, Service,
-    State, SwitchState, TextState, UniqueId, percentage_to_speed, speed_to_percentage,
+    State, SwitchState, TextState, UniqueId, ValveState, percentage_to_speed, speed_to_percentage,
 };
 
 use crate::discovery::EntityTopics;
@@ -93,6 +93,26 @@ pub fn decode(
         } if state_topic.as_deref() == Some(topic) => Some(decode_number(payload, value_template)),
         EntityTopics::Cover(cover) => decode_cover(cover, topic, payload, previous),
         EntityTopics::Fan(fan) => decode_fan(fan, topic, payload, previous),
+        // Read as a cover, from what it last said as a valve.
+        EntityTopics::Valve(valve) => {
+            let previous = match previous {
+                Some(State::Valve(old)) => Some(State::Cover(CoverState {
+                    state: old.state,
+                    position: old.position,
+                    tilt: None,
+                })),
+                _ => None,
+            };
+            decode_cover(valve, topic, payload, previous.as_ref()).map(|decoded| {
+                decoded.map(|state| match state {
+                    State::Cover(cover) => State::Valve(ValveState {
+                        state: cover.state,
+                        position: cover.position,
+                    }),
+                    other => other,
+                })
+            })
+        }
         EntityTopics::Lock(lock) if lock.state_topic.as_deref() == Some(topic) => {
             Some(decode_text(payload, &lock.value_template).and_then(|said| {
                 lock.said
@@ -621,6 +641,16 @@ pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, 
         ) => Ok(vec![text_publish(command_topic, payload_press)]),
         (EntityTopics::Cover(cover), service) => encode_cover(cover, service),
         (EntityTopics::Fan(fan), service) => encode_fan(fan, service),
+        (EntityTopics::Valve(valve), service) => {
+            let as_cover = match service {
+                Service::ValveOpen => Service::CoverOpen,
+                Service::ValveClose => Service::CoverClose,
+                Service::ValveStop => Service::CoverStop,
+                Service::ValveSetPosition(data) => Service::CoverSetPosition(data.clone()),
+                other => return Err(format!("a valve has no `{}` service", other.name())),
+            };
+            encode_cover(valve, &as_cover).map_err(|e| e.replace("cover", "valve"))
+        }
         (EntityTopics::Lock(lock), service) => {
             let payload = match service {
                 Service::LockLock(_) => &lock.payload_lock,
@@ -792,7 +822,7 @@ pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, Un
                 list.extend(part.state_topic.clone());
             }
         }
-        EntityTopics::Cover(cover) => {
+        EntityTopics::Cover(cover) | EntityTopics::Valve(cover) => {
             list.extend(cover.state_topic.clone());
             list.extend(cover.position_topic.clone());
             list.extend(cover.tilt_status_topic.clone());

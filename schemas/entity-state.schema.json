@@ -324,6 +324,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^valve\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "valve"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -441,6 +464,10 @@
         {
           "maxLength": 68,
           "pattern": "^fan\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^valve\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -892,6 +919,33 @@
           "required": [
             "kind",
             "on"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "valve"
+            },
+            "position": {
+              "description": "0 (closed) to 100 (open), when it can say.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            },
+            "state": {
+              "$ref": "#/$defs/OpenState"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
           ]
         }
       ]

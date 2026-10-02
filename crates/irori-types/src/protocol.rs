@@ -396,6 +396,10 @@ pub enum Service {
     FanOscillate(FanOscillate),
     FanSetDirection(FanSetDirection),
     FanSetPresetMode(FanPresetMode),
+    ValveOpen,
+    ValveClose,
+    ValveStop,
+    ValveSetPosition(SetPosition),
 }
 
 impl Service {
@@ -423,6 +427,10 @@ impl Service {
             Self::FanOscillate(_) => ServiceName::FanOscillate,
             Self::FanSetDirection(_) => ServiceName::FanSetDirection,
             Self::FanSetPresetMode(_) => ServiceName::FanSetPresetMode,
+            Self::ValveOpen => ServiceName::ValveOpen,
+            Self::ValveClose => ServiceName::ValveClose,
+            Self::ValveStop => ServiceName::ValveStop,
+            Self::ValveSetPosition(_) => ServiceName::ValveSetPosition,
         }
     }
 }
@@ -474,6 +482,14 @@ pub enum ServiceName {
     FanSetDirection,
     #[serde(rename = "fan.set_preset_mode")]
     FanSetPresetMode,
+    #[serde(rename = "valve.open")]
+    ValveOpen,
+    #[serde(rename = "valve.close")]
+    ValveClose,
+    #[serde(rename = "valve.stop")]
+    ValveStop,
+    #[serde(rename = "valve.set_position")]
+    ValveSetPosition,
 }
 
 impl ServiceName {
@@ -500,6 +516,10 @@ impl ServiceName {
         Self::FanOscillate,
         Self::FanSetDirection,
         Self::FanSetPresetMode,
+        Self::ValveOpen,
+        Self::ValveClose,
+        Self::ValveStop,
+        Self::ValveSetPosition,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -526,6 +546,10 @@ impl ServiceName {
             Self::FanOscillate => "fan.oscillate",
             Self::FanSetDirection => "fan.set_direction",
             Self::FanSetPresetMode => "fan.set_preset_mode",
+            Self::ValveOpen => "valve.open",
+            Self::ValveClose => "valve.close",
+            Self::ValveStop => "valve.stop",
+            Self::ValveSetPosition => "valve.set_position",
         }
     }
 
@@ -550,6 +574,9 @@ impl ServiceName {
             | Self::FanOscillate
             | Self::FanSetDirection
             | Self::FanSetPresetMode => EntityKind::Fan,
+            Self::ValveOpen | Self::ValveClose | Self::ValveStop | Self::ValveSetPosition => {
+                EntityKind::Valve
+            }
         }
     }
 }
@@ -662,7 +689,9 @@ impl JsonSchema for ServiceCall {
                     ServiceName::NumberSetValue => number_set_value.clone(),
                     ServiceName::SelectSelectOption => select_option.clone(),
                     ServiceName::TextSetValue => text_set_value.clone(),
-                    ServiceName::CoverSetPosition => set_position.clone(),
+                    ServiceName::CoverSetPosition | ServiceName::ValveSetPosition => {
+                        set_position.clone()
+                    }
                     ServiceName::CoverSetTilt => set_tilt.clone(),
                     ServiceName::LockLock | ServiceName::LockUnlock | ServiceName::LockOpen => {
                         lock_code.clone()

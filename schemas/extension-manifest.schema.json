@@ -225,6 +225,11 @@
           "description": "A fan: on or off, and often a speed, a swing and modes.",
           "type": "string",
           "const": "fan"
+        },
+        {
+          "description": "Lets water or gas through, or doesn't, e.g. a main shut-off.",
+          "type": "string",
+          "const": "valve"
         }
       ]
     },

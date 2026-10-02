@@ -12,9 +12,10 @@ use esphome_client::types::{
     ListEntitiesEventResponse, ListEntitiesFanResponse, ListEntitiesLightResponse,
     ListEntitiesLockResponse, ListEntitiesNumberResponse, ListEntitiesSelectResponse,
     ListEntitiesSensorResponse, ListEntitiesSwitchResponse, ListEntitiesTextResponse,
-    ListEntitiesTextSensorResponse, LockCommandRequest, LockStateResponse, NumberStateResponse,
-    SelectStateResponse, SensorStateResponse, SwitchStateResponse, TextSensorStateResponse,
-    TextStateResponse,
+    ListEntitiesTextSensorResponse, ListEntitiesValveResponse, LockCommandRequest,
+    LockStateResponse, NumberStateResponse, SelectStateResponse, SensorStateResponse,
+    SwitchStateResponse, TextSensorStateResponse, TextStateResponse, ValveCommandRequest,
+    ValveStateResponse,
 };
 use irori_protocol::ProtocolError;
 use irori_protocol::types::{
@@ -26,7 +27,8 @@ use irori_protocol::types::{
     Name, NumberCapabilities, NumberMode, NumberState, ObjectId, OpenState, SelectCapabilities,
     SelectState, SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType,
     Service, State, StateClass, SwitchCapabilities, SwitchClass, SwitchState, TextCapabilities,
-    TextMode, TextState, UniqueId, Unmodeled, percentage_to_speed, speed_to_percentage,
+    TextMode, TextState, UniqueId, Unmodeled, ValveCapabilities, ValveClass, ValveState,
+    percentage_to_speed, speed_to_percentage,
 };
 
 /// ESPHome's `ColorMode` enum (api.proto). The values are a bit mask of what a mode carries.
@@ -407,6 +409,55 @@ pub fn fan_command(
     request
 }
 
+/// ESPHome's `valve`.
+pub fn valve(
+    device: &UniqueId,
+    entity: &ListEntitiesValveResponse,
+) -> Result<EntityDescription, ProtocolError> {
+    Ok(EntityDescription {
+        unique_id: entity_id(device, EntityKind::Valve, entity.key)?,
+        name: Some(Name::try_from(entity.name.as_str())?),
+        device_unique_id: Some(device.clone()),
+        suggested_object_id: None,
+        capabilities: Capabilities::Valve(ValveCapabilities {
+            device_class: ValveClass::from_ha(&entity.device_class),
+            position: entity.supports_position,
+            stop: entity.supports_stop,
+        }),
+        entity_category: category(entity.entity_category),
+    })
+}
+
+/// A valve's state, like a cover's: closed is position 0, `current_operation` 1 opening, 2 closing.
+pub fn valve_state(state: &ValveStateResponse, known: &ValveCapabilities) -> State {
+    State::Valve(ValveState {
+        state: match state.current_operation {
+            1 => OpenState::Opening,
+            2 => OpenState::Closing,
+            _ if state.position > 0.0 => OpenState::Open,
+            _ => OpenState::Closed,
+        },
+        position: known.position.then(|| to_percent(state.position)),
+    })
+}
+
+pub fn valve_command(key: u32, service: &Service) -> ValveCommandRequest {
+    let mut request = ValveCommandRequest {
+        key,
+        ..Default::default()
+    };
+    match service {
+        Service::ValveOpen => (request.has_position, request.position) = (true, 1.0),
+        Service::ValveClose => (request.has_position, request.position) = (true, 0.0),
+        Service::ValveStop => request.stop = true,
+        Service::ValveSetPosition(data) => {
+            (request.has_position, request.position) = (true, f32::from(data.position) / 100.0);
+        }
+        _ => {}
+    }
+    request
+}
+
 /// ESPHome's `lock`.
 pub fn lock(
     device: &UniqueId,
@@ -624,7 +675,6 @@ pub fn unmodeled(device: &UniqueId, message: &EspHomeMessage) -> Option<Unmodele
         M::ListEntitiesSirenResponse(e) => ("siren", &e.name),
         M::ListEntitiesTimeResponse(e) => ("time", &e.name),
         M::ListEntitiesUpdateResponse(e) => ("update", &e.name),
-        M::ListEntitiesValveResponse(e) => ("valve", &e.name),
         M::ListEntitiesWaterHeaterResponse(e) => ("water_heater", &e.name),
         _ => return None,
     };
@@ -927,6 +977,30 @@ mod tests {
         assert!(request.has_speed_level && request.speed_level == 3);
         let off = fan_command(5, &Service::FanTurnOff, Some(&known));
         assert!(off.has_state && !off.state);
+    }
+
+    #[test]
+    fn a_valve_reports_and_is_sent_like_a_cover() {
+        let zone = ValveCapabilities {
+            device_class: Some(ValveClass::Water),
+            position: true,
+            stop: false,
+        };
+        let opening = ValveStateResponse {
+            key: 6,
+            position: 0.3,
+            current_operation: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            valve_state(&opening, &zone),
+            State::Valve(ValveState {
+                state: OpenState::Opening,
+                position: Some(30),
+            })
+        );
+        let close = valve_command(6, &Service::ValveClose);
+        assert!(close.has_position && close.position == 0.0);
     }
 
     #[test]

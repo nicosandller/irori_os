@@ -331,6 +331,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^valve\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "valve"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -819,6 +842,39 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "device_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ValveClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "valve"
+            },
+            "position": {
+              "description": "Can be opened part of the way, and says how far.",
+              "type": "boolean",
+              "default": false
+            },
+            "stop": {
+              "description": "Can be stopped while it moves.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
@@ -934,6 +990,10 @@
         {
           "maxLength": 68,
           "pattern": "^fan\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^valve\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -1098,6 +1158,13 @@
       "maxLength": 255,
       "minLength": 1,
       "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+    },
+    "ValveClass": {
+      "type": "string",
+      "enum": [
+        "water",
+        "gas"
+      ]
     }
   }
 }

@@ -578,6 +578,7 @@ pub fn state_words(state: &EntityState, home: &Home) -> String {
         Some(State::Text(t)) => t.value.clone(),
         Some(State::Event(e)) => e.event_type.clone(),
         Some(State::Lock(l)) => l.state.as_str().to_owned(),
+        Some(State::Valve(v)) => v.state.as_str().to_owned(),
         Some(State::Fan(f)) => match (f.on, f.percentage) {
             (true, Some(p)) => format!("on {p}%"),
             (true, None) => "on".into(),

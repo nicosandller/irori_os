@@ -1617,7 +1617,8 @@ fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyVi
         | Capabilities::Button(_)
         | Capabilities::Cover(_)
         | Capabilities::Lock(_)
-        | Capabilities::Fan(_) => view! {
+        | Capabilities::Fan(_)
+        | Capabilities::Valve(_) => view! {
             {control}
             <button
                 type="button"
@@ -1678,7 +1679,29 @@ fn control(
         }
         Capabilities::Event(_) => happened(state),
         Capabilities::Cover(capabilities) => {
-            cover_control(entity, capabilities, value, offline, controls)
+            let current = match value {
+                Some(State::Cover(cover)) => Some(cover.clone()),
+                _ => None,
+            };
+            cover_control(entity, capabilities, current, offline, controls)
+        }
+        // A valve is a cover without slats.
+        Capabilities::Valve(valve) => {
+            let current = match value {
+                Some(State::Valve(state)) => Some(CoverState {
+                    state: state.state,
+                    position: state.position,
+                    tilt: None,
+                }),
+                _ => None,
+            };
+            let as_cover = CoverCapabilities {
+                device_class: None,
+                position: valve.position,
+                tilt: false,
+                stop: valve.stop,
+            };
+            cover_control(entity, &as_cover, current, offline, controls)
         }
         Capabilities::Lock(capabilities) => {
             lock_control(entity, capabilities, value, offline, controls)
@@ -1969,19 +1992,16 @@ pub(crate) fn cover_words(cover: &CoverState) -> String {
     }
 }
 
-/// A cover: where it is, buttons to open, stop and close it, and sliders for its position and
-/// tilt when it has them. Like a light's sliders, only letting go sends anything.
+/// Something that opens and closes, a cover or a valve: where it is, buttons to open, stop and
+/// close it, and sliders for its position and tilt when it has them. Like a light's sliders,
+/// only letting go sends anything.
 fn cover_control(
     entity: &Entity,
     capabilities: &CoverCapabilities,
-    value: Option<&State>,
+    current: Option<CoverState>,
     offline: bool,
     controls: Controls,
 ) -> AnyView {
-    let current = match value {
-        Some(State::Cover(cover)) => Some(cover.clone()),
-        _ => None,
-    };
     let entity_id = entity.id.clone();
     let disable = {
         let entity_id = entity_id.clone();

@@ -1,0 +1,9 @@
+{
+  "unique_id": "a4:cf:12:34:56:80-valve-main",
+  "name": "Main water",
+  "device_unique_id": "a4:cf:12:34:56:80",
+  "capabilities": {
+    "kind": "valve",
+    "device_class": "water"
+  }
+}

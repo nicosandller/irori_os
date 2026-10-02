@@ -472,6 +472,88 @@
           "data"
         ]
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "valve.open"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "valve.close"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "valve.stop"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "valve.set_position"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/SetPosition"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
     }
   ],
   "required": [
@@ -829,7 +911,11 @@
         "fan.set_percentage",
         "fan.oscillate",
         "fan.set_direction",
-        "fan.set_preset_mode"
+        "fan.set_preset_mode",
+        "valve.open",
+        "valve.close",
+        "valve.stop",
+        "valve.set_position"
       ]
     },
     "SetPosition": {

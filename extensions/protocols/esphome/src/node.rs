@@ -498,6 +498,9 @@ async fn list_entities(
             EspHomeMessage::ListEntitiesFanResponse(e) => {
                 (e.key, "fan", e.name.clone(), map::fan(device, e))
             }
+            EspHomeMessage::ListEntitiesValveResponse(e) => {
+                (e.key, "valve", e.name.clone(), map::valve(device, e))
+            }
             EspHomeMessage::ListEntitiesTextSensorResponse(e) => (
                 e.key,
                 "text_sensor",
@@ -562,6 +565,12 @@ fn report(
             (s.key, Some(map::light_state(s, known)))
         }
         EspHomeMessage::LockStateResponse(s) => (s.key, map::lock_state(s)),
+        EspHomeMessage::ValveStateResponse(s) => {
+            let Some(Capabilities::Valve(known)) = capabilities.get(&s.key) else {
+                return None;
+            };
+            (s.key, Some(map::valve_state(s, known)))
+        }
         EspHomeMessage::FanStateResponse(s) => {
             let Some(Capabilities::Fan(known)) = capabilities.get(&s.key) else {
                 return None;
@@ -732,6 +741,13 @@ async fn command(
                 .await
                 .map_err(|e| e.to_string())
         }
+        Service::ValveOpen
+        | Service::ValveClose
+        | Service::ValveStop
+        | Service::ValveSetPosition(_) => client
+            .try_write(map::valve_command(key, &incoming.call.service))
+            .await
+            .map_err(|e| e.to_string()),
         Service::LockLock(_) | Service::LockUnlock(_) | Service::LockOpen(_) => client
             .try_write(map::lock_command(key, &incoming.call.service))
             .await
