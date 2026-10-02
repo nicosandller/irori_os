@@ -49,13 +49,7 @@ impl WaterHeaterCapabilities {
     /// The mode `turn_on` picks: the one it was in last if that wasn't `off`, otherwise its
     /// first mode that isn't.
     pub fn mode_to_turn_on(&self, last: Option<WaterHeaterMode>) -> Option<WaterHeaterMode> {
-        last.filter(|mode| *mode != WaterHeaterMode::Off && self.operation_modes.contains(mode))
-            .or_else(|| {
-                self.operation_modes
-                    .iter()
-                    .copied()
-                    .find(|mode| *mode != WaterHeaterMode::Off)
-            })
+        super::mode_to_turn_on(&self.operation_modes, WaterHeaterMode::Off, last)
     }
 }
 

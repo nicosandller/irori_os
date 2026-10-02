@@ -9,6 +9,7 @@
 
 pub mod bridge;
 pub mod discovery;
+pub mod kinds;
 pub mod map;
 pub mod state;
 pub mod template;

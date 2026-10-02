@@ -532,6 +532,7 @@ mod tests {
     use irori_types::{LightTurnOn, Service, ServiceCall};
 
     use super::*;
+    use irori_ha_discovery::discovery::LightTopics;
 
     type Published = (String, Vec<u8>, bool);
 
@@ -747,7 +748,7 @@ mod tests {
         registry.entities.insert(
             unique_id.clone(),
             Entity {
-                topics: EntityTopics::LightDefault {
+                topics: EntityTopics::Light(LightTopics::Default {
                     state_topic: Some("t/POWER".to_owned()),
                     command_topic: "t/cmnd/POWER".to_owned(),
                     payload_on: "ON".to_owned(),
@@ -755,7 +756,7 @@ mod tests {
                     brightness_state_topic: Some("t/RESULT".to_owned()),
                     brightness_command_topic: Some("t/cmnd/Dimmer".to_owned()),
                     brightness_scale: 100,
-                },
+                }),
                 last_state: None,
                 last_on: None,
             },
@@ -913,10 +914,10 @@ mod tests {
         registry.entities.insert(
             UniqueId::try_from("0x0017880104e45520_light").expect("valid"),
             Entity {
-                topics: EntityTopics::LightJson {
+                topics: EntityTopics::Light(LightTopics::Json {
                     state_topic: "zigbee2mqtt/Living room lamp".to_owned(),
                     command_topic: "zigbee2mqtt/Living room lamp/set".to_owned(),
-                },
+                }),
                 last_state: None,
                 last_on: None,
             },

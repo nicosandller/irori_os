@@ -59,7 +59,9 @@ pub use kinds::humidifier::{
 pub use kinds::light::{ColorMode, ColorTempRange, LightCapabilities, LightState, LightTurnOn};
 pub use kinds::lock::{LockCapabilities, LockCode, LockState, LockStatus};
 pub use kinds::number::{NumberCapabilities, NumberMode, NumberSetValue, NumberState};
-pub use kinds::opening::{OpenState, OpeningAbilities, OpeningCommand, SetPosition};
+pub use kinds::opening::{
+    OpenState, OpeningAbilities, OpeningCommand, OpeningState, SetPosition,
+};
 pub use kinds::select::{SelectCapabilities, SelectOption, SelectState};
 pub use kinds::sensor::{
     SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType, StateClass,
@@ -72,7 +74,7 @@ pub use kinds::water_heater::{
     WaterHeaterCapabilities, WaterHeaterMode, WaterHeaterOperationMode, WaterHeaterSetTemperature,
     WaterHeaterState,
 };
-pub use kinds::{Typed, ValueShape};
+pub use kinds::{Typed, ValueShape, mode_to_turn_on};
 pub use protocol::{
     DeviceDescription, EntityDescription, SecretRequest, Service, ServiceCall, ServiceName,
     StateReport, Unmodeled, Waiting,

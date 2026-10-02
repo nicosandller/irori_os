@@ -125,13 +125,7 @@ impl ClimateCapabilities {
     /// The mode `turn_on` picks: the one it was in last if that wasn't `off`, otherwise its
     /// first mode that isn't. `None` when every mode is `off`.
     pub fn mode_to_turn_on(&self, last: Option<HvacMode>) -> Option<HvacMode> {
-        last.filter(|mode| *mode != HvacMode::Off && self.hvac_modes.contains(mode))
-            .or_else(|| {
-                self.hvac_modes
-                    .iter()
-                    .copied()
-                    .find(|mode| *mode != HvacMode::Off)
-            })
+        super::mode_to_turn_on(&self.hvac_modes, HvacMode::Off, last)
     }
 }
 

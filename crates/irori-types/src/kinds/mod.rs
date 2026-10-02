@@ -42,6 +42,14 @@ pub(crate) fn from_ha<T: serde::de::DeserializeOwned>(name: &str) -> Option<T> {
     serde_json::from_value(serde_json::Value::String(name.to_owned())).ok()
 }
 
+/// The mode `turn_on` puts something with `modes` in: the one it was in `last` if that wasn't
+/// `off` and it still has it, otherwise its first mode that isn't `off`. `None` when every mode is
+/// `off`. A thermostat's and a water heater's, for the core and for protocols that remember.
+pub fn mode_to_turn_on<M: Copy + PartialEq>(modes: &[M], off: M, last: Option<M>) -> Option<M> {
+    last.filter(|mode| *mode != off && modes.contains(mode))
+        .or_else(|| modes.iter().copied().find(|mode| *mode != off))
+}
+
 /// An entity's value the way automations see it: what `on()`, `num()` and `text()` read, and
 /// what a state trigger's `to` is compared with (`docs/specs/rules.md` §5.1). Each kind has one,
 /// its *primary* value: a light's `on`, a sensor's reading.
