@@ -42,6 +42,8 @@ pub enum EntityKind {
     WaterHeater,
     /// A humidifier or dehumidifier.
     Humidifier,
+    /// A TV, a speaker, or another player.
+    MediaPlayer,
 }
 
 impl EntityKind {
@@ -63,6 +65,7 @@ impl EntityKind {
         Self::Climate,
         Self::WaterHeater,
         Self::Humidifier,
+        Self::MediaPlayer,
     ];
 
     /// The domain string used in entity ids and service names.
@@ -85,6 +88,7 @@ impl EntityKind {
             Self::Climate => "climate",
             Self::WaterHeater => "water_heater",
             Self::Humidifier => "humidifier",
+            Self::MediaPlayer => "media_player",
         }
     }
 

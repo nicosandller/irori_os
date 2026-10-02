@@ -1,0 +1,32 @@
+[package]
+name = "irori-protocol-cast"
+description = "Google Cast receivers on the local network."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+irori-types.workspace = true
+irori-protocol.workspace = true
+
+mdns-sd = "0.21"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+rcgen = "0.13"
+
+[[bin]]
+name = "irori-ext-cast"
+path = "src/main.rs"
+
+[lints]
+workspace = true

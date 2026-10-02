@@ -19,6 +19,7 @@ use crate::kinds::fan::{FanOscillate, FanPercentage, FanPresetMode, FanSetDirect
 use crate::kinds::humidifier::HumidifierMode;
 use crate::kinds::light::LightTurnOn;
 use crate::kinds::lock::LockCode;
+use crate::kinds::media_player::{MediaSeek, PlayMedia, VolumeMute, VolumeSet};
 use crate::kinds::number::NumberSetValue;
 use crate::kinds::opening::SetPosition;
 use crate::kinds::select::SelectOption;
@@ -430,6 +431,18 @@ pub enum Service {
     HumidifierTurnOff,
     HumidifierSetHumidity(SetHumidity),
     HumidifierSetMode(HumidifierMode),
+    MediaPlayerTurnOn,
+    MediaPlayerTurnOff,
+    MediaPlayerVolumeSet(VolumeSet),
+    MediaPlayerVolumeMute(VolumeMute),
+    MediaPlayerPlay,
+    MediaPlayerPause,
+    MediaPlayerPlayPause,
+    MediaPlayerStop,
+    MediaPlayerSeek(MediaSeek),
+    MediaPlayerNextTrack,
+    MediaPlayerPreviousTrack,
+    MediaPlayerPlayMedia(Box<PlayMedia>),
 }
 
 impl Service {
@@ -479,6 +492,18 @@ impl Service {
             Self::HumidifierTurnOff => ServiceName::HumidifierTurnOff,
             Self::HumidifierSetHumidity(_) => ServiceName::HumidifierSetHumidity,
             Self::HumidifierSetMode(_) => ServiceName::HumidifierSetMode,
+            Self::MediaPlayerTurnOn => ServiceName::MediaPlayerTurnOn,
+            Self::MediaPlayerTurnOff => ServiceName::MediaPlayerTurnOff,
+            Self::MediaPlayerVolumeSet(_) => ServiceName::MediaPlayerVolumeSet,
+            Self::MediaPlayerVolumeMute(_) => ServiceName::MediaPlayerVolumeMute,
+            Self::MediaPlayerPlay => ServiceName::MediaPlayerPlay,
+            Self::MediaPlayerPause => ServiceName::MediaPlayerPause,
+            Self::MediaPlayerPlayPause => ServiceName::MediaPlayerPlayPause,
+            Self::MediaPlayerStop => ServiceName::MediaPlayerStop,
+            Self::MediaPlayerSeek(_) => ServiceName::MediaPlayerSeek,
+            Self::MediaPlayerNextTrack => ServiceName::MediaPlayerNextTrack,
+            Self::MediaPlayerPreviousTrack => ServiceName::MediaPlayerPreviousTrack,
+            Self::MediaPlayerPlayMedia(_) => ServiceName::MediaPlayerPlayMedia,
         }
     }
 }
@@ -574,6 +599,30 @@ pub enum ServiceName {
     HumidifierSetHumidity,
     #[serde(rename = "humidifier.set_mode")]
     HumidifierSetMode,
+    #[serde(rename = "media_player.turn_on")]
+    MediaPlayerTurnOn,
+    #[serde(rename = "media_player.turn_off")]
+    MediaPlayerTurnOff,
+    #[serde(rename = "media_player.volume_set")]
+    MediaPlayerVolumeSet,
+    #[serde(rename = "media_player.volume_mute")]
+    MediaPlayerVolumeMute,
+    #[serde(rename = "media_player.media_play")]
+    MediaPlayerPlay,
+    #[serde(rename = "media_player.media_pause")]
+    MediaPlayerPause,
+    #[serde(rename = "media_player.media_play_pause")]
+    MediaPlayerPlayPause,
+    #[serde(rename = "media_player.media_stop")]
+    MediaPlayerStop,
+    #[serde(rename = "media_player.media_seek")]
+    MediaPlayerSeek,
+    #[serde(rename = "media_player.media_next_track")]
+    MediaPlayerNextTrack,
+    #[serde(rename = "media_player.media_previous_track")]
+    MediaPlayerPreviousTrack,
+    #[serde(rename = "media_player.play_media")]
+    MediaPlayerPlayMedia,
 }
 
 impl ServiceName {
@@ -622,6 +671,18 @@ impl ServiceName {
         Self::HumidifierTurnOff,
         Self::HumidifierSetHumidity,
         Self::HumidifierSetMode,
+        Self::MediaPlayerTurnOn,
+        Self::MediaPlayerTurnOff,
+        Self::MediaPlayerVolumeSet,
+        Self::MediaPlayerVolumeMute,
+        Self::MediaPlayerPlay,
+        Self::MediaPlayerPause,
+        Self::MediaPlayerPlayPause,
+        Self::MediaPlayerStop,
+        Self::MediaPlayerSeek,
+        Self::MediaPlayerNextTrack,
+        Self::MediaPlayerPreviousTrack,
+        Self::MediaPlayerPlayMedia,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -670,6 +731,18 @@ impl ServiceName {
             Self::HumidifierTurnOff => "humidifier.turn_off",
             Self::HumidifierSetHumidity => "humidifier.set_humidity",
             Self::HumidifierSetMode => "humidifier.set_mode",
+            Self::MediaPlayerTurnOn => "media_player.turn_on",
+            Self::MediaPlayerTurnOff => "media_player.turn_off",
+            Self::MediaPlayerVolumeSet => "media_player.volume_set",
+            Self::MediaPlayerVolumeMute => "media_player.volume_mute",
+            Self::MediaPlayerPlay => "media_player.media_play",
+            Self::MediaPlayerPause => "media_player.media_pause",
+            Self::MediaPlayerPlayPause => "media_player.media_play_pause",
+            Self::MediaPlayerStop => "media_player.media_stop",
+            Self::MediaPlayerSeek => "media_player.media_seek",
+            Self::MediaPlayerNextTrack => "media_player.media_next_track",
+            Self::MediaPlayerPreviousTrack => "media_player.media_previous_track",
+            Self::MediaPlayerPlayMedia => "media_player.play_media",
         }
     }
 
@@ -714,6 +787,18 @@ impl ServiceName {
             | Self::HumidifierTurnOff
             | Self::HumidifierSetHumidity
             | Self::HumidifierSetMode => EntityKind::Humidifier,
+            Self::MediaPlayerTurnOn
+            | Self::MediaPlayerTurnOff
+            | Self::MediaPlayerVolumeSet
+            | Self::MediaPlayerVolumeMute
+            | Self::MediaPlayerPlay
+            | Self::MediaPlayerPause
+            | Self::MediaPlayerPlayPause
+            | Self::MediaPlayerStop
+            | Self::MediaPlayerSeek
+            | Self::MediaPlayerNextTrack
+            | Self::MediaPlayerPreviousTrack
+            | Self::MediaPlayerPlayMedia => EntityKind::MediaPlayer,
         }
     }
 }
@@ -827,6 +912,10 @@ impl JsonSchema for ServiceCall {
         let heater_temperature = generator.subschema_for::<WaterHeaterSetTemperature>();
         let heater_mode = generator.subschema_for::<WaterHeaterOperationMode>();
         let humidifier_mode = generator.subschema_for::<HumidifierMode>();
+        let volume_set = generator.subschema_for::<VolumeSet>();
+        let volume_mute = generator.subschema_for::<VolumeMute>();
+        let media_seek = generator.subschema_for::<MediaSeek>();
+        let play_media = generator.subschema_for::<PlayMedia>();
         // Per service: the shape of `data`.
         let rules: Vec<_> = ServiceName::ALL
             .iter()
@@ -859,6 +948,10 @@ impl JsonSchema for ServiceCall {
                     ServiceName::WaterHeaterSetOperationMode => heater_mode.clone(),
                     ServiceName::HumidifierSetHumidity => set_humidity.clone(),
                     ServiceName::HumidifierSetMode => humidifier_mode.clone(),
+                    ServiceName::MediaPlayerVolumeSet => volume_set.clone(),
+                    ServiceName::MediaPlayerVolumeMute => volume_mute.clone(),
+                    ServiceName::MediaPlayerSeek => media_seek.clone(),
+                    ServiceName::MediaPlayerPlayMedia => play_media.clone(),
                     _ => no_data.clone(),
                 };
                 json_schema!({

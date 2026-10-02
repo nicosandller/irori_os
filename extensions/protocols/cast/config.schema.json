@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Settings",
+  "type": "object",
+  "properties": {
+    "ignore_cec": {
+      "description": "Receivers whose HDMI standby and active-input flags are ignored, each a device id or the\nreceiver's exact name. A speaker already ignores those flags.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "known_hosts": {
+      "description": "Receivers to connect to by address, as well as anything found on the network. Empty means\nthe network announcement is the whole list. Each one has to be a private, loopback, or\nlink-local address, or a name under `.local`, `.home.arpa`, `.internal`, `.lan`, or\n`.home`. A port, a bare name, a public address, or an internet hostname is refused.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "uuids": {
+      "description": "Which receivers to adopt, as 32 lowercase hex characters with no dashes. Empty adopts\nevery one that announces itself.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

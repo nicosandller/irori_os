@@ -320,8 +320,7 @@ fn entities() -> Vec<EspHomeMessage> {
                 ..Default::default()
             },
         ),
-        // Irori has no media player kind yet; the protocol should list it as unmodeled and keep
-        // the rest.
+        // ESPHome doesn't map media_player; the protocol lists it as unmodeled and keeps the rest.
         EspHomeMessage::ListEntitiesMediaPlayerResponse(
             esphome_client::types::ListEntitiesMediaPlayerResponse {
                 key: SPEAKER_KEY,

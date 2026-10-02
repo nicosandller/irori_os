@@ -580,6 +580,11 @@ pub fn state_words(state: &EntityState, home: &Home) -> String {
         Some(State::Lock(l)) => l.state.as_str().to_owned(),
         Some(State::Valve(v)) => v.state.as_str().to_owned(),
         Some(State::Siren(s)) => if s.on { "sounding" } else { "quiet" }.into(),
+        // Not sent to this engine yet (it reads entity format 2).
+        Some(State::MediaPlayer(player)) => match player.title.as_deref() {
+            Some(title) if !title.is_empty() => format!("{} · {title}", player.state.as_str()),
+            _ => player.state.as_str().to_owned(),
+        },
         Some(State::Humidifier(h)) => match (h.on, h.target_humidity) {
             (true, Some(target)) => format!("on {target}%"),
             (true, None) => "on".into(),

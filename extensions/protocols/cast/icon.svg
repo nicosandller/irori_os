@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="Google Cast">
+  <!-- An original mark: a screen with a cast signal in front of it. -->
+  <rect x="6" y="10" width="28" height="20" rx="3" fill="#c4784a"/>
+  <rect x="9" y="13" width="22" height="14" rx="1.5" fill="#fff"/>
+  <path d="M20 34h8v2.5a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2z" fill="#c4784a"/>
+  <path d="M32 30c4.5-3.2 7-7.4 7-12" fill="none" stroke="#c4784a" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M32 25.5c2.6-1.8 4-4.2 4-7.5" fill="none" stroke="#c4784a" stroke-width="2.4" stroke-linecap="round"/>
+  <circle cx="32" cy="20" r="1.7" fill="#c4784a"/>
+</svg>

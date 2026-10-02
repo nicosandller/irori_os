@@ -20,9 +20,9 @@ use std::time::Duration;
 use irori_protocol::types::{
     BinarySensorCapabilities, BinarySensorClass, BinarySensorState, Capabilities, ColorMode,
     ColorTempRange, ContextId, DeviceDescription, EntityDescription, LightCapabilities, LightState,
-    LightTurnOn, Name, ObjectId, SensorCapabilities, SensorClass, SensorState, SensorValue,
-    SensorValueType, Service, State, StateClass, StateReport, SwitchCapabilities, SwitchClass,
-    SwitchState, UniqueId,
+    LightTurnOn, MediaPlayerCapabilities, MediaPlayerClass, MediaPlayerState, Name, ObjectId,
+    Playback, SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType, Service,
+    State, StateClass, StateReport, SwitchCapabilities, SwitchClass, SwitchState, UniqueId,
 };
 use irori_protocol::{Protocol, ProtocolContext, ProtocolError, ServiceError};
 use schemars::JsonSchema;
@@ -100,7 +100,10 @@ const AIR_TEMPERATURE: &str = "air-monitor-temperature";
 const AIR_HUMIDITY: &str = "air-monitor-humidity";
 const AIR_CO2: &str = "air-monitor-co2";
 const TV: &str = "tv";
+/// The text sensor this used to be. Removed on start so a home that already has it doesn't keep
+/// both: describing an entity again never changes its kind.
 const TV_STATE: &str = "tv-state";
+const TV_PLAYER: &str = "tv-player";
 const TV_AREA: &str = "tv-area-mmwave-sensor";
 const TV_AREA_OCCUPANCY: &str = "tv-area-mmwave-sensor-occupancy";
 
@@ -194,6 +197,9 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
         })
         .collect();
     let mut plug_on = false;
+    let mut shown_secs = 0;
+    // A command holds until the scripted step changes, so a click isn't wiped by the next tick.
+    let mut hold: Option<(u64, MediaPlayerState)> = None;
     let mut gadgets = gadgets::Gadgets::new();
     for (entity, state) in gadgets.states() {
         ctx.report_state(report(entity, Some(state), None)?);
@@ -254,6 +260,16 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
                         plug_on = matches!(call.service, Service::SwitchTurnOn);
                         Ok((PLUG_SWITCH, State::Switch(SwitchState { on: plug_on })))
                     }
+                    (TV_PLAYER, service) => {
+                        let mut player = shown_player(shown_secs, hold.as_ref());
+                        match apply_player(&mut player, service) {
+                            Ok(()) => {
+                                hold = Some((shown_secs / TV_SECS, player.clone()));
+                                Ok((TV_PLAYER, State::MediaPlayer(player)))
+                            }
+                            Err(message) => Err(message),
+                        }
+                    }
                     (_, _) => Err(format!(
                         "the demo has no `{}` for {}",
                         call.unique_id,
@@ -270,8 +286,17 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
             }
             _ = readings.tick() => {
                 let secs = tick * config.sensor_interval_secs;
+                shown_secs = secs;
+                if hold.as_ref().is_some_and(|(step, _)| *step != secs / TV_SECS) {
+                    hold = None;
+                }
                 let hour = (secs % DAY_SECS) as f64 / DAY_SECS as f64 * 24.0;
                 report_sensors(&ctx, hour, secs, plug_on)?;
+                ctx.report_state(report(
+                    TV_PLAYER,
+                    Some(State::MediaPlayer(shown_player(secs, hold.as_ref()))),
+                    None,
+                )?);
                 let room = living_temperature(hour);
                 let damp = humidity(hour);
                 for (entity, state) in gadgets.tick(tokio::time::Instant::now(), room, damp) {
@@ -381,13 +406,6 @@ fn report_sensors(
         ctx.report_state(flag(contact, open(contact, hour))?);
         ctx.report_state(number(battery_id, charge)?);
     }
-    ctx.report_state(report(
-        TV_STATE,
-        Some(State::Sensor(SensorState {
-            value: SensorValue::Text(tv(secs).into()),
-        })),
-        None,
-    )?);
     ctx.report_state(flag(TV_AREA_OCCUPANCY, watching(secs))?);
     Ok(())
 }
@@ -526,6 +544,90 @@ fn open(contact: &str, hour: f64) -> bool {
 fn tv(secs: u64) -> &'static str {
     const SHOW: [&str; 5] = ["playing", "paused", "playing", "idle", "off"];
     SHOW[usize::try_from(secs / TV_SECS).unwrap_or(0) % SHOW.len()]
+}
+
+/// The scripted player for `secs`: the word from [`tv`], a title while it's playing.
+fn scripted_player(secs: u64) -> MediaPlayerState {
+    let state = Playback::parse(tv(secs)).unwrap_or(Playback::Off);
+    MediaPlayerState {
+        state,
+        volume: Some(40),
+        muted: Some(false),
+        title: (state == Playback::Playing).then(|| "The evening news".into()),
+        artist: None,
+        album: None,
+        app: None,
+        content_type: None,
+        duration: None,
+        position: None,
+    }
+}
+
+/// The player to show: a command from this step, or the script.
+fn shown_player(secs: u64, hold: Option<&(u64, MediaPlayerState)>) -> MediaPlayerState {
+    match hold {
+        Some((step, player)) if *step == secs / TV_SECS => player.clone(),
+        _ => scripted_player(secs),
+    }
+}
+
+/// Applies one command. It sticks until the next scripted step.
+fn apply_player(player: &mut MediaPlayerState, service: &Service) -> Result<(), String> {
+    match service {
+        Service::MediaPlayerTurnOn => {
+            player.state = Playback::Idle;
+            player.title = None;
+        }
+        Service::MediaPlayerTurnOff => {
+            player.state = Playback::Off;
+            player.title = None;
+        }
+        Service::MediaPlayerVolumeSet(data) => player.volume = Some(data.volume),
+        Service::MediaPlayerVolumeMute(data) => player.muted = Some(data.mute),
+        Service::MediaPlayerPlay => {
+            player.state = Playback::Playing;
+            if player.title.is_none() {
+                player.title = Some("The evening news".into());
+            }
+        }
+        Service::MediaPlayerPause => player.state = Playback::Paused,
+        Service::MediaPlayerPlayPause => {
+            if player.state == Playback::Playing {
+                player.state = Playback::Paused;
+            } else {
+                player.state = Playback::Playing;
+                if player.title.is_none() {
+                    player.title = Some("The evening news".into());
+                }
+            }
+        }
+        Service::MediaPlayerStop => {
+            player.state = Playback::Idle;
+            player.title = None;
+        }
+        Service::MediaPlayerSeek(data) => player.position = Some(data.position),
+        Service::MediaPlayerNextTrack => {
+            player.state = Playback::Playing;
+            player.title = Some("The next show".into());
+        }
+        Service::MediaPlayerPreviousTrack => {
+            player.state = Playback::Playing;
+            player.title = Some("The previous show".into());
+        }
+        Service::MediaPlayerPlayMedia(data) => {
+            player.state = Playback::Playing;
+            player.content_type = Some(data.content_type.clone());
+            player.title = Some(
+                data.title
+                    .clone()
+                    .unwrap_or_else(|| data.content_id.clone()),
+            );
+        }
+        other => {
+            return Err(format!("the demo TV has no {}", other.name()));
+        }
+    }
+    Ok(())
 }
 
 /// How long the TV stays in each state.
@@ -781,18 +883,22 @@ async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
 
     ctx.describe_device(device(TV, "Demo TV", "Virtual TV", "Living room")?)
         .await?;
+    // Missing on a fresh home; a home that already has the old sensor drops it.
+    let _ = ctx.remove_entity(id(TV_STATE)?).await;
     ctx.describe_entity(EntityDescription {
-        unique_id: id(TV_STATE)?,
-        name: Some(Name::try_from("State")?),
+        unique_id: id(TV_PLAYER)?,
+        name: None,
         device_unique_id: Some(id(TV)?),
-        suggested_object_id: None,
-        // off, idle, playing or paused.
-        capabilities: Capabilities::Sensor(SensorCapabilities {
-            value_type: SensorValueType::Text,
-            device_class: None,
-            unit: None,
-            state_class: None,
-            options: Vec::new(),
+        suggested_object_id: Some(ObjectId::try_from("demo_tv")?),
+        capabilities: Capabilities::MediaPlayer(MediaPlayerCapabilities {
+            device_class: Some(MediaPlayerClass::Tv),
+            volume: true,
+            mute: true,
+            seek: true,
+            play_media: true,
+            queue: true,
+            turn_on: true,
+            turn_off: true,
         }),
         entity_category: None,
     })
@@ -885,6 +991,8 @@ fn report(
 
 #[cfg(test)]
 mod tests {
+    use irori_protocol::types::PlayMedia;
+
     use super::*;
 
     #[test]
@@ -974,6 +1082,30 @@ mod tests {
             assert!((0..300).any(|s| tv(s) == state), "{state}");
         }
         assert_eq!((tv(0), tv(59), tv(60)), ("playing", "playing", "paused"));
+        let mut held = scripted_player(60);
+        assert_eq!(held.state, Playback::Paused);
+        apply_player(
+            &mut held,
+            &Service::MediaPlayerPlayMedia(Box::new(PlayMedia {
+                content_type: "video".into(),
+                content_id: "https://example.com/clip.mp4".into(),
+                title: Some("Big Buck Bunny".into()),
+                artist: None,
+                album: None,
+                image_url: None,
+            })),
+        )
+        .expect("plays");
+        let hold = (60 / TV_SECS, held);
+        assert_eq!(
+            shown_player(90, Some(&hold)).title.as_deref(),
+            Some("Big Buck Bunny")
+        );
+        assert_eq!(shown_player(120, Some(&hold)).state, Playback::Playing);
+        assert_eq!(
+            shown_player(120, Some(&hold)).title.as_deref(),
+            Some("The evening news")
+        );
         assert!(watching(0) && watching(209) && !watching(210) && watching(420));
         let co2s: Vec<f64> = hours.iter().map(|h| co2(*h)).collect();
         assert!(co2s.iter().any(|c| *c > 900.0) && co2s.iter().any(|c| *c < 500.0));

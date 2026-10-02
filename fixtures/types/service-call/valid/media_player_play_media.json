@@ -1,0 +1,16 @@
+{
+  "service": "media_player.play_media",
+  "unique_id": "aabbccddeeff00112233445566778899",
+  "data": {
+    "content_type": "video",
+    "content_id": "https://example.com/clip.mp4",
+    "title": "The evening news"
+  },
+  "context": {
+    "id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+    "origin": {
+      "type": "user",
+      "user_id": "nico"
+    }
+  }
+}

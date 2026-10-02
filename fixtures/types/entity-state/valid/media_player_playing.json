@@ -1,0 +1,26 @@
+{
+  "entity_id": "media_player.living_room",
+  "availability": "available",
+  "state": {
+    "kind": "media_player",
+    "state": "playing",
+    "volume": 40,
+    "muted": false,
+    "title": "The evening news",
+    "app": "Default Media Receiver",
+    "content_type": "video",
+    "duration": 1800,
+    "position": 12
+  },
+  "last_changed": "2026-09-15T22:04:12Z",
+  "last_updated": "2026-09-15T22:04:12Z",
+  "last_reported": "2026-09-15T22:04:12Z",
+  "context": {
+    "id": "01K5B2Q7M0N1P2Q3R4S5T6V7W8",
+    "parent_id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+    "origin": {
+      "type": "device",
+      "protocol": "cast"
+    }
+  }
+}

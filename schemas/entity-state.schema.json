@@ -439,6 +439,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^media_player\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "media_player"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -576,6 +599,10 @@
         {
           "maxLength": 75,
           "pattern": "^humidifier\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 77,
+          "pattern": "^media_player\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -764,6 +791,34 @@
           "required": [
             "type"
           ]
+        }
+      ]
+    },
+    "Playback": {
+      "description": "What it's doing. The primary value automations compare.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "playing",
+            "paused",
+            "buffering"
+          ]
+        },
+        {
+          "description": "Switched off, or the TV isn't showing this source.",
+          "type": "string",
+          "const": "off"
+        },
+        {
+          "description": "On, with nothing playing. A backdrop counts as this.",
+          "type": "string",
+          "const": "idle"
+        },
+        {
+          "description": "The TV is in standby. Only when the device says so.",
+          "type": "string",
+          "const": "standby"
         }
       ]
     },
@@ -1293,6 +1348,97 @@
           "required": [
             "kind",
             "on"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "album": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 255,
+              "minLength": 1
+            },
+            "app": {
+              "description": "The app that's showing, when it says.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 255,
+              "minLength": 1
+            },
+            "artist": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 255,
+              "minLength": 1
+            },
+            "content_type": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 255,
+              "minLength": 1
+            },
+            "duration": {
+              "description": "How long the current media is, in seconds.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "kind": {
+              "type": "string",
+              "const": "media_player"
+            },
+            "muted": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "position": {
+              "description": "Where playback is, in seconds, when it can seek.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "state": {
+              "description": "What it's doing. Its typed value, for rules (`text()`).",
+              "$ref": "#/$defs/Playback"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 255,
+              "minLength": 1
+            },
+            "volume": {
+              "description": "0–100, when volume can be set.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
           ]
         }
       ]

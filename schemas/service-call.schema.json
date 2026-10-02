@@ -933,6 +933,254 @@
           "data"
         ]
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "media_player.turn_on"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "media_player.turn_off"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "media_player.volume_set"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/VolumeSet"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "media_player.volume_mute"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/VolumeMute"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "media_player.media_play"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "media_player.media_pause"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "media_player.media_play_pause"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "media_player.media_stop"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "media_player.media_seek"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/MediaSeek"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "media_player.media_next_track"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "media_player.media_previous_track"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "media_player.play_media"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/PlayMedia"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
     }
   ],
   "required": [
@@ -1262,6 +1510,20 @@
       },
       "additionalProperties": false
     },
+    "MediaSeek": {
+      "description": "Data for `media_player.media_seek`. `position` is seconds from the start.",
+      "type": "object",
+      "properties": {
+        "position": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "position"
+      ]
+    },
     "NumberSetValue": {
       "description": "Data for `number.set_value`.",
       "type": "object",
@@ -1372,6 +1634,59 @@
         }
       ]
     },
+    "PlayMedia": {
+      "description": "Data for `media_player.play_media`.",
+      "type": "object",
+      "properties": {
+        "album": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 255,
+          "minLength": 1
+        },
+        "artist": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 255,
+          "minLength": 1
+        },
+        "content_id": {
+          "type": "string",
+          "maxLength": 2048,
+          "minLength": 1
+        },
+        "content_type": {
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        },
+        "image_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2048,
+          "minLength": 1
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 255,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "content_type",
+        "content_id"
+      ]
+    },
     "ProtocolId": {
       "description": "Format of a slug (protocol id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
       "type": "string",
@@ -1440,7 +1755,19 @@
         "humidifier.turn_on",
         "humidifier.turn_off",
         "humidifier.set_humidity",
-        "humidifier.set_mode"
+        "humidifier.set_mode",
+        "media_player.turn_on",
+        "media_player.turn_off",
+        "media_player.volume_set",
+        "media_player.volume_mute",
+        "media_player.media_play",
+        "media_player.media_pause",
+        "media_player.media_play_pause",
+        "media_player.media_stop",
+        "media_player.media_seek",
+        "media_player.media_next_track",
+        "media_player.media_previous_track",
+        "media_player.play_media"
       ]
     },
     "SetHumidity": {
@@ -1561,6 +1888,35 @@
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "VolumeMute": {
+      "description": "Data for `media_player.volume_mute`.",
+      "type": "object",
+      "properties": {
+        "mute": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mute"
+      ]
+    },
+    "VolumeSet": {
+      "description": "Data for `media_player.volume_set`.",
+      "type": "object",
+      "properties": {
+        "volume": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "volume"
+      ]
     },
     "WaterHeaterMode": {
       "description": "Home Assistant's operation modes.",

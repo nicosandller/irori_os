@@ -14,6 +14,7 @@ use crate::kinds::fan::FanState;
 use crate::kinds::humidifier::HumidifierState;
 use crate::kinds::light::LightState;
 use crate::kinds::lock::LockState;
+use crate::kinds::media_player::MediaPlayerState;
 use crate::kinds::number::NumberState;
 use crate::kinds::select::SelectState;
 use crate::kinds::sensor::SensorState;
@@ -152,6 +153,7 @@ pub enum State {
     Climate(ClimateState),
     WaterHeater(WaterHeaterState),
     Humidifier(HumidifierState),
+    MediaPlayer(MediaPlayerState),
 }
 
 impl State {
@@ -168,6 +170,7 @@ impl State {
             Self::Climate(climate) => climate.validate(),
             Self::WaterHeater(heater) => heater.validate(),
             Self::Humidifier(humidifier) => humidifier.validate(),
+            Self::MediaPlayer(player) => player.validate(),
             Self::Switch(_)
             | Self::BinarySensor(_)
             | Self::Select(_)
@@ -196,6 +199,7 @@ impl State {
             Self::Climate(_) => EntityKind::Climate,
             Self::WaterHeater(_) => EntityKind::WaterHeater,
             Self::Humidifier(_) => EntityKind::Humidifier,
+            Self::MediaPlayer(_) => EntityKind::MediaPlayer,
         }
     }
 }

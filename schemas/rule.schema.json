@@ -605,6 +605,10 @@
         {
           "maxLength": 75,
           "pattern": "^humidifier\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 77,
+          "pattern": "^media_player\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

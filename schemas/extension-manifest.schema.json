@@ -250,6 +250,11 @@
           "description": "A humidifier or dehumidifier.",
           "type": "string",
           "const": "humidifier"
+        },
+        {
+          "description": "A TV, a speaker, or another player.",
+          "type": "string",
+          "const": "media_player"
         }
       ]
     },
