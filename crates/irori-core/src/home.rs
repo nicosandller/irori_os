@@ -2049,7 +2049,7 @@ mod tests {
             )
             .expect_err("no position")
             .to_string(),
-            "`cover.demo_lamp_blind` can only open and close, not go to a position"
+            "`cover.demo_lamp_blind` can only open and close, not go part of the way"
         );
     }
 
