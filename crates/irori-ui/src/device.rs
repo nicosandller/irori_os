@@ -937,7 +937,7 @@ fn table(entity: &Entity, states: Vec<EntityState>) -> AnyView {
     .into_any()
 }
 
-/// What a change meant, in the same words as its row uses (`devices.rs`). The table's cells are
+/// What a change meant, in the same words as its row uses (`devices/controls`). The table's cells are
 /// plain text, so the reading is a string rather than the row's spans.
 fn reading_of(entity: &Entity, state: &EntityState) -> String {
     let value = state.state.as_ref();
