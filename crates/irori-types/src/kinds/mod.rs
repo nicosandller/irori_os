@@ -1,9 +1,12 @@
 //! What differs from one entity kind to the next. Each kind has its own file with its
-//! capabilities, state, and service data, and the checks that go with them. This module is where
-//! the tagged enums ([`Capabilities`], [`State`], [`Service`]) hand each question to the kind.
+//! capabilities, state, and service data, and everything about them: its checks, its primary
+//! value, its toggle, the data its services take. This module only hands each question to the
+//! kind, through the tagged enums ([`Capabilities`], [`State`], [`Service`]).
 //!
 //! Adding a kind: a file here, then a variant in [`EntityKind`], [`Capabilities`], [`State`],
-//! [`Service`] and [`ServiceName`]. The compiler lists every `match` that has to answer for it.
+//! [`Service`] and [`ServiceName`]. The compiler lists every `match` that has to answer for it,
+//! and each answer is one line calling into the kind's file. A cover and a valve share
+//! [`opening`]; a kind like another one shares that way rather than being cast into it.
 
 pub(crate) mod binary_sensor;
 pub(crate) mod button;
@@ -15,6 +18,7 @@ pub(crate) mod humidifier;
 pub(crate) mod light;
 pub(crate) mod lock;
 pub(crate) mod number;
+pub(crate) mod opening;
 pub(crate) mod select;
 pub(crate) mod sensor;
 pub(crate) mod siren;
@@ -25,25 +29,11 @@ pub(crate) mod water_heater;
 
 use crate::{Capabilities, EntityKind, InvariantError, Service, ServiceName, State};
 
-use self::climate::{
-    CLIMATE_MODES, ClimateHvacMode, ClimateSetTemperature, ClimateState, HvacMode,
-};
-use self::cover::{CoverState, OPEN_STATES, OpenState, SetPosition, SetTilt};
-use self::event::EventState;
-use self::fan::{FanState, FanTurnOn};
-use self::humidifier::HumidifierState;
-use self::light::LightTurnOn;
-use self::lock::{LOCK_STATES, LockCode, LockState, LockStatus};
-use self::number::{NumberSetValue, NumberState};
-use self::select::{SelectOption, SelectState};
-use self::sensor::{SensorState, SensorValue, SensorValueType};
-use self::siren::{SirenState, SirenTurnOn};
-use self::text::{TextSetValue, TextState};
-use self::valve::ValveState;
-use self::water_heater::{
-    OPERATION_MODES, WaterHeaterMode, WaterHeaterOperationMode, WaterHeaterSetTemperature,
-    WaterHeaterState,
-};
+use self::climate::CLIMATE_MODES;
+use self::lock::LOCK_STATES;
+use self::opening::{OPEN_STATES, OpeningCommand};
+use self::sensor::SensorValueType;
+use self::water_heater::OPERATION_MODES;
 
 /// Reads a device class (or another name-only enum) by its Home Assistant name, which is also
 /// Irori's spelling. `None` for a name Irori doesn't have, which a protocol leaves absent rather
@@ -90,6 +80,44 @@ pub enum ValueShape {
     Text,
 }
 
+/// Whether a service takes `data`, and whether it can do without.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Data {
+    /// Refused: `switch.turn_on`.
+    None,
+    /// Taken, all of it optional: `light.turn_on`.
+    Optional,
+    /// Has a field that has to be there: a number's `value`.
+    Required,
+}
+
+/// `data` as the data `T` of service `name`, with a message naming the service when it isn't.
+pub(crate) fn parse<T: serde::de::DeserializeOwned>(
+    name: ServiceName,
+    data: serde_json::Map<String, serde_json::Value>,
+) -> Result<T, InvariantError> {
+    serde_json::from_value(serde_json::Value::Object(data))
+        .map_err(|e| InvariantError(format!("`{name}` data: {e}")))
+}
+
+/// A kind's file was asked to build another kind's service: a slip in this module's dispatch.
+pub(crate) fn not_mine(name: ServiceName) -> InvariantError {
+    InvariantError(format!("`{name}` isn't a {} service", name.kind()))
+}
+
+/// The toggle of a kind whose primary value is on or off.
+pub(crate) fn on_off_toggle(
+    current: Option<&Typed>,
+    turn_on: ServiceName,
+    turn_off: ServiceName,
+) -> ServiceName {
+    if matches!(current, Some(Typed::Bool(true))) {
+        turn_off
+    } else {
+        turn_on
+    }
+}
+
 impl EntityKind {
     /// Whether every report is something happening, even one identical to the last: two
     /// `double` presses of a remote are two presses (`docs/specs/entities.md` §5.3).
@@ -113,65 +141,24 @@ impl EntityKind {
     /// The service a `toggle` on this kind resolves to, from the value it has (or was last told
     /// to have). `None` for kinds that can't be toggled.
     pub fn toggle(self, current: Option<&Typed>) -> Option<ServiceName> {
-        let on = matches!(current, Some(Typed::Bool(true)));
-        match self {
-            Self::Light if on => Some(ServiceName::LightTurnOff),
-            Self::Light => Some(ServiceName::LightTurnOn),
-            Self::Switch if on => Some(ServiceName::SwitchTurnOff),
-            Self::Switch => Some(ServiceName::SwitchTurnOn),
-            Self::Fan if on => Some(ServiceName::FanTurnOff),
-            Self::Fan => Some(ServiceName::FanTurnOn),
-            Self::Siren if on => Some(ServiceName::SirenTurnOff),
-            Self::Siren => Some(ServiceName::SirenTurnOn),
-            Self::Humidifier if on => Some(ServiceName::HumidifierTurnOff),
-            Self::Humidifier => Some(ServiceName::HumidifierTurnOn),
-            Self::Climate => match current {
-                Some(Typed::Text(text)) if HvacMode::parse(text) != Some(HvacMode::Off) => {
-                    Some(ServiceName::ClimateTurnOff)
-                }
-                _ => Some(ServiceName::ClimateTurnOn),
-            },
-            Self::WaterHeater => match current {
-                Some(Typed::Text(text))
-                    if WaterHeaterMode::parse(text) != Some(WaterHeaterMode::Off) =>
-                {
-                    Some(ServiceName::WaterHeaterTurnOff)
-                }
-                _ => Some(ServiceName::WaterHeaterTurnOn),
-            },
+        Some(match self {
+            Self::Light => light::toggle(current),
+            Self::Switch => switch::toggle(current),
+            Self::Fan => fan::toggle(current),
+            Self::Siren => siren::toggle(current),
+            Self::Humidifier => humidifier::toggle(current),
+            Self::Climate => climate::toggle(current),
+            Self::WaterHeater => water_heater::toggle(current),
+            Self::Lock => lock::toggle(current),
+            Self::Cover | Self::Valve => OpeningCommand::toggle_service(self, current),
             Self::Sensor
             | Self::BinarySensor
             | Self::Number
             | Self::Select
             | Self::Text
             | Self::Button
-            | Self::Event => None,
-            Self::Cover => match current.and_then(|current| match current {
-                Typed::Text(text) => OpenState::parse(text),
-                _ => None,
-            }) {
-                Some(state) if state.is_open_or_opening() => Some(ServiceName::CoverClose),
-                _ => Some(ServiceName::CoverOpen),
-            },
-            Self::Valve => match current.and_then(|current| match current {
-                Typed::Text(text) => OpenState::parse(text),
-                _ => None,
-            }) {
-                Some(state) if state.is_open_or_opening() => Some(ServiceName::ValveClose),
-                _ => Some(ServiceName::ValveOpen),
-            },
-            Self::Lock => match current {
-                Some(Typed::Text(text))
-                    if matches!(
-                        LockStatus::parse(text),
-                        Some(LockStatus::Locked | LockStatus::Locking)
-                    ) =>
-                {
-                    Some(ServiceName::LockUnlock)
-                }
-                _ => Some(ServiceName::LockLock),
-            },
-        }
+            | Self::Event => return None,
+        })
     }
 }
 
@@ -253,73 +240,21 @@ impl Capabilities {
                 name.kind()
             ));
         }
-        match (self, service) {
-            (Self::Light(caps), Service::LightTurnOn(data)) => light::supports(caps, data),
-            (Self::Number(caps), Service::NumberSetValue(data)) => number::supports(caps, data),
-            (Self::Select(caps), Service::SelectSelectOption(data)) => select::supports(caps, data),
-            (Self::Text(caps), Service::TextSetValue(data)) => text::supports(caps, data),
-            (Self::Cover(caps), Service::CoverSetPosition(data)) => {
-                cover::supports_position(caps, data)
-            }
-            (Self::Cover(caps), Service::CoverSetTilt(data)) => cover::supports_tilt(caps, data),
-            (Self::Cover(caps), Service::CoverStop) => cover::supports_stop(caps),
-            (Self::Valve(caps), Service::ValveSetPosition(data)) => {
-                valve::supports_position(caps, data)
-            }
-            (Self::Valve(caps), Service::ValveStop) => valve::supports_stop(caps),
-            (Self::Siren(caps), Service::SirenTurnOn(data)) => siren::supports(caps, data),
-            (Self::Lock(caps), Service::LockLock(data) | Service::LockUnlock(data)) => {
-                lock::supports(caps, data, false)
-            }
-            (Self::Lock(caps), Service::LockOpen(data)) => lock::supports(caps, data, true),
-            (Self::Fan(caps), Service::FanTurnOn(data)) => fan::supports_turn_on(caps, data),
-            (Self::Fan(caps), Service::FanSetPercentage(data)) => {
-                fan::supports_percentage(caps, data.percentage)
-            }
-            (Self::Fan(caps), Service::FanOscillate(_)) => fan::supports_oscillate(caps),
-            (Self::Fan(caps), Service::FanSetDirection(_)) => fan::supports_direction(caps),
-            (Self::Fan(caps), Service::FanSetPresetMode(data)) => {
-                fan::supports_preset(caps, &data.preset_mode)
-            }
-            (Self::Climate(caps), Service::ClimateSetHvacMode(data)) => {
-                climate::supports_mode(caps, data.hvac_mode)
-            }
-            (Self::Climate(caps), Service::ClimateSetTemperature(data)) => {
-                climate::supports_temperature(caps, data)
-            }
-            (Self::Climate(caps), Service::ClimateSetHumidity(data)) => {
-                climate::supports_humidity(caps, data.humidity)
-            }
-            (Self::Climate(caps), Service::ClimateSetFanMode(data)) => {
-                climate::supports_fan_mode(caps, &data.fan_mode)
-            }
-            (Self::Climate(caps), Service::ClimateSetSwingMode(data)) => {
-                climate::supports_swing_mode(caps, &data.swing_mode)
-            }
-            (Self::Climate(caps), Service::ClimateSetPresetMode(data)) => {
-                climate::supports_preset(caps, &data.preset_mode)
-            }
-            (Self::Climate(caps), Service::ClimateTurnOn) => climate::supports_turn_on(caps),
-            (Self::Climate(caps), Service::ClimateTurnOff) => climate::supports_turn_off(caps),
-            (Self::WaterHeater(caps), Service::WaterHeaterSetTemperature(data)) => {
-                water_heater::supports_temperature(caps, data)
-            }
-            (Self::WaterHeater(caps), Service::WaterHeaterSetOperationMode(data)) => {
-                water_heater::supports_mode(caps, data.operation_mode)
-            }
-            (Self::Humidifier(caps), Service::HumidifierSetHumidity(data)) => {
-                humidifier::supports_humidity(caps, data.humidity)
-            }
-            (Self::Humidifier(caps), Service::HumidifierSetMode(data)) => {
-                humidifier::supports_mode(caps, &data.mode)
-            }
-            (Self::WaterHeater(caps), Service::WaterHeaterTurnOn) => {
-                water_heater::supports_turn_on(caps)
-            }
-            (Self::WaterHeater(caps), Service::WaterHeaterTurnOff) => {
-                water_heater::supports_turn_off(caps)
-            }
-            _ => Ok(()),
+        match self {
+            Self::Light(caps) => light::supports_service(caps, service),
+            Self::Number(caps) => number::supports_service(caps, service),
+            Self::Select(caps) => select::supports_service(caps, service),
+            Self::Text(caps) => text::supports_service(caps, service),
+            Self::Cover(caps) => cover::supports_service(caps, service),
+            Self::Valve(caps) => valve::supports_service(caps, service),
+            Self::Siren(caps) => siren::supports_service(caps, service),
+            Self::Lock(caps) => lock::supports_service(caps, service),
+            Self::Fan(caps) => fan::supports_service(caps, service),
+            Self::Climate(caps) => climate::supports_service(caps, service),
+            Self::WaterHeater(caps) => water_heater::supports_service(caps, service),
+            Self::Humidifier(caps) => humidifier::supports_service(caps, service),
+            Self::Switch(_) | Self::Button(_) => Ok(()),
+            Self::Sensor(_) | Self::BinarySensor(_) | Self::Event(_) => Ok(()),
         }
     }
 }
@@ -328,25 +263,22 @@ impl State {
     /// The value automations compare: `on` for the on/off kinds, the reading for a sensor.
     pub fn primary(&self) -> Typed {
         match self {
-            Self::Light(light) => Typed::Bool(light.on),
-            Self::Switch(switch) => Typed::Bool(switch.on),
-            Self::BinarySensor(sensor) => Typed::Bool(sensor.on),
-            Self::Fan(fan) => Typed::Bool(fan.on),
-            Self::Siren(siren) => Typed::Bool(siren.on),
-            Self::Humidifier(humidifier) => Typed::Bool(humidifier.on),
-            Self::Number(number) => Typed::Number(number.value),
-            Self::Select(select) => Typed::Text(select.option.clone()),
-            Self::Text(text) => Typed::Text(text.value.clone()),
-            Self::Event(event) => Typed::Text(event.event_type.clone()),
-            Self::Cover(cover) => Typed::Text(cover.state.as_str().to_owned()),
-            Self::Valve(valve) => Typed::Text(valve.state.as_str().to_owned()),
-            Self::Lock(lock) => Typed::Text(lock.state.as_str().to_owned()),
-            Self::Climate(climate) => Typed::Text(climate.hvac_mode.as_str().to_owned()),
-            Self::WaterHeater(heater) => Typed::Text(heater.operation_mode.as_str().to_owned()),
-            Self::Sensor(sensor) => match &sensor.value {
-                SensorValue::Number(n) => Typed::Number(*n),
-                SensorValue::Text(text) => Typed::Text(text.clone()),
-            },
+            Self::Light(state) => light::primary(state),
+            Self::Switch(state) => switch::primary(state),
+            Self::BinarySensor(state) => binary_sensor::primary(state),
+            Self::Fan(state) => fan::primary(state),
+            Self::Siren(state) => siren::primary(state),
+            Self::Humidifier(state) => humidifier::primary(state),
+            Self::Number(state) => number::primary(state),
+            Self::Select(state) => select::primary(state),
+            Self::Text(state) => text::primary(state),
+            Self::Event(state) => event::primary(state),
+            Self::Cover(state) => cover::primary(state),
+            Self::Valve(state) => valve::primary(state),
+            Self::Lock(state) => lock::primary(state),
+            Self::Climate(state) => climate::primary(state),
+            Self::WaterHeater(state) => water_heater::primary(state),
+            Self::Sensor(state) => sensor::primary(state),
         }
     }
 
@@ -354,123 +286,41 @@ impl State {
     /// brightness). `None` if that kind can't hold that value, or needs more than the value to
     /// be made from nothing (a light needs to have reported once).
     pub fn with_primary(kind: EntityKind, previous: Option<&State>, value: &Typed) -> Option<Self> {
-        Some(match (kind, previous, value) {
-            (EntityKind::Light, Some(State::Light(light)), Typed::Bool(on)) => {
-                let mut light = light.clone();
-                light.on = *on;
-                State::Light(light)
-            }
-            (EntityKind::Switch, _, Typed::Bool(on)) => {
-                State::Switch(switch::SwitchState { on: *on })
-            }
-            (EntityKind::Siren, _, Typed::Bool(on)) => State::Siren(SirenState { on: *on }),
-            (EntityKind::Humidifier, previous, Typed::Bool(on)) => match previous {
-                Some(State::Humidifier(old)) => State::Humidifier(HumidifierState {
-                    on: *on,
-                    ..old.clone()
-                }),
-                _ => State::Humidifier(HumidifierState {
-                    on: *on,
-                    target_humidity: None,
-                    current_humidity: None,
-                    mode: None,
-                    action: None,
-                }),
-            },
-            (EntityKind::BinarySensor, _, Typed::Bool(on)) => {
-                State::BinarySensor(binary_sensor::BinarySensorState { on: *on })
-            }
-            (EntityKind::Sensor, _, Typed::Number(n)) => State::Sensor(SensorState {
-                value: SensorValue::Number(*n),
-            }),
-            (EntityKind::Number, _, Typed::Number(value)) => {
-                State::Number(NumberState { value: *value })
-            }
-            (EntityKind::Select, _, Typed::Text(option)) => State::Select(SelectState {
-                option: option.clone(),
-            }),
-            (EntityKind::Text, _, Typed::Text(value)) => State::Text(TextState {
-                value: value.clone(),
-            }),
-            (EntityKind::Event, _, Typed::Text(event_type)) => State::Event(EventState {
-                event_type: event_type.clone(),
-            }),
-            (EntityKind::Fan, previous, Typed::Bool(on)) => match previous {
-                Some(State::Fan(fan)) => State::Fan(FanState {
-                    on: *on,
-                    ..fan.clone()
-                }),
-                _ => State::Fan(FanState {
-                    on: *on,
-                    percentage: None,
-                    oscillating: None,
-                    direction: None,
-                    preset_mode: None,
-                }),
-            },
-            (EntityKind::Lock, _, Typed::Text(text)) => State::Lock(LockState {
-                state: LockStatus::parse(text)?,
-            }),
-            (EntityKind::Valve, previous, Typed::Text(text)) => State::Valve(ValveState {
-                state: OpenState::parse(text)?,
-                position: match previous {
-                    Some(State::Valve(valve)) => valve.position,
+        /// The previous state, when it was one of this kind's.
+        macro_rules! previous {
+            ($variant:ident) => {
+                match previous {
+                    Some(State::$variant(state)) => Some(state),
                     _ => None,
-                },
-            }),
-            (EntityKind::Cover, previous, Typed::Text(text)) => {
-                let state = OpenState::parse(text)?;
-                match previous {
-                    Some(State::Cover(cover)) => State::Cover(CoverState {
-                        state,
-                        ..cover.clone()
-                    }),
-                    _ => State::Cover(CoverState {
-                        state,
-                        position: None,
-                        tilt: None,
-                    }),
                 }
+            };
+        }
+        Some(match kind {
+            EntityKind::Light => State::Light(light::with_primary(previous!(Light), value)?),
+            EntityKind::Switch => State::Switch(switch::with_primary(value)?),
+            EntityKind::Sensor => State::Sensor(sensor::with_primary(value)?),
+            EntityKind::BinarySensor => State::BinarySensor(binary_sensor::with_primary(value)?),
+            EntityKind::Number => State::Number(number::with_primary(value)?),
+            EntityKind::Select => State::Select(select::with_primary(value)?),
+            EntityKind::Text => State::Text(text::with_primary(value)?),
+            EntityKind::Event => State::Event(event::with_primary(value)?),
+            EntityKind::Lock => State::Lock(lock::with_primary(value)?),
+            EntityKind::Siren => State::Siren(siren::with_primary(value)?),
+            EntityKind::Fan => State::Fan(fan::with_primary(previous!(Fan), value)?),
+            EntityKind::Cover => State::Cover(cover::with_primary(previous!(Cover), value)?),
+            EntityKind::Valve => State::Valve(valve::with_primary(previous!(Valve), value)?),
+            EntityKind::Climate => {
+                State::Climate(climate::with_primary(previous!(Climate), value)?)
             }
-            (EntityKind::Climate, previous, Typed::Text(text)) => {
-                let hvac_mode = HvacMode::parse(text)?;
-                match previous {
-                    Some(State::Climate(climate)) => State::Climate(ClimateState {
-                        hvac_mode,
-                        ..climate.clone()
-                    }),
-                    _ => State::Climate(ClimateState::in_mode(hvac_mode)),
-                }
+            EntityKind::WaterHeater => {
+                State::WaterHeater(water_heater::with_primary(previous!(WaterHeater), value)?)
             }
-            (EntityKind::WaterHeater, previous, Typed::Text(text)) => {
-                let operation_mode = WaterHeaterMode::parse(text)?;
-                match previous {
-                    Some(State::WaterHeater(heater)) => State::WaterHeater(WaterHeaterState {
-                        operation_mode,
-                        ..heater.clone()
-                    }),
-                    _ => State::WaterHeater(WaterHeaterState {
-                        operation_mode,
-                        current_temperature: None,
-                        target_temperature: None,
-                    }),
-                }
+            EntityKind::Humidifier => {
+                State::Humidifier(humidifier::with_primary(previous!(Humidifier), value)?)
             }
-            (EntityKind::Sensor, _, Typed::Text(text)) => State::Sensor(SensorState {
-                value: SensorValue::Text(text.clone()),
-            }),
-            _ => return None,
+            EntityKind::Button => return None,
         })
     }
-}
-
-/// `data` as the data `T` of service `name`, with a message naming the service when it isn't.
-fn parse<T: serde::de::DeserializeOwned>(
-    name: ServiceName,
-    data: serde_json::Map<String, serde_json::Value>,
-) -> Result<T, InvariantError> {
-    serde_json::from_value(serde_json::Value::Object(data))
-        .map_err(|e| InvariantError(format!("`{name}` data: {e}")))
 }
 
 impl Service {
@@ -480,134 +330,37 @@ impl Service {
         name: ServiceName,
         data: serde_json::Map<String, serde_json::Value>,
     ) -> Result<Self, InvariantError> {
-        use serde::Deserialize as _;
         if !name.takes_data() && !data.is_empty() {
             return Err(InvariantError(format!("`{name}` takes no data")));
         }
-        let service = match name {
-            ServiceName::LightTurnOn => Service::LightTurnOn(
-                LightTurnOn::deserialize(serde_json::Value::Object(data))
-                    .map_err(|e| InvariantError(format!("`{name}` data: {e}")))?,
-            ),
-            ServiceName::LightTurnOff => Service::LightTurnOff,
-            ServiceName::SwitchTurnOn => Service::SwitchTurnOn,
-            ServiceName::SwitchTurnOff => Service::SwitchTurnOff,
-            ServiceName::ButtonPress => Service::ButtonPress,
-            ServiceName::LockLock | ServiceName::LockUnlock | ServiceName::LockOpen => {
-                let code = LockCode::deserialize(serde_json::Value::Object(data))
-                    .map_err(|e| InvariantError(format!("`{name}` data: {e}")))?;
-                match name {
-                    ServiceName::LockLock => Service::LockLock(code),
-                    ServiceName::LockUnlock => Service::LockUnlock(code),
-                    _ => Service::LockOpen(code),
-                }
+        let service = match name.kind() {
+            EntityKind::Light => light::service(name, data),
+            EntityKind::Switch => switch::service(name, data),
+            EntityKind::Number => number::service(name, data),
+            EntityKind::Select => select::service(name, data),
+            EntityKind::Text => text::service(name, data),
+            EntityKind::Button => button::service(name, data),
+            EntityKind::Cover => cover::service(name, data),
+            EntityKind::Valve => valve::service(name, data),
+            EntityKind::Lock => lock::service(name, data),
+            EntityKind::Fan => fan::service(name, data),
+            EntityKind::Siren => siren::service(name, data),
+            EntityKind::Climate => climate::service(name, data),
+            EntityKind::WaterHeater => water_heater::service(name, data),
+            EntityKind::Humidifier => humidifier::service(name, data),
+            EntityKind::Sensor | EntityKind::BinarySensor | EntityKind::Event => {
+                Err(not_mine(name))
             }
-            ServiceName::FanTurnOff => Service::FanTurnOff,
-            ServiceName::FanTurnOn => Service::FanTurnOn(parse(name, data)?),
-            ServiceName::FanSetPercentage => Service::FanSetPercentage(parse(name, data)?),
-            ServiceName::FanOscillate => Service::FanOscillate(parse(name, data)?),
-            ServiceName::FanSetDirection => Service::FanSetDirection(parse(name, data)?),
-            ServiceName::FanSetPresetMode => Service::FanSetPresetMode(parse(name, data)?),
-            ServiceName::SirenTurnOn => Service::SirenTurnOn(parse(name, data)?),
-            ServiceName::SirenTurnOff => Service::SirenTurnOff,
-            ServiceName::ClimateSetHvacMode => Service::ClimateSetHvacMode(parse(name, data)?),
-            ServiceName::ClimateSetTemperature => {
-                Service::ClimateSetTemperature(parse(name, data)?)
-            }
-            ServiceName::ClimateSetHumidity => Service::ClimateSetHumidity(parse(name, data)?),
-            ServiceName::ClimateSetFanMode => Service::ClimateSetFanMode(parse(name, data)?),
-            ServiceName::ClimateSetSwingMode => Service::ClimateSetSwingMode(parse(name, data)?),
-            ServiceName::ClimateSetPresetMode => Service::ClimateSetPresetMode(parse(name, data)?),
-            ServiceName::ClimateTurnOn => Service::ClimateTurnOn,
-            ServiceName::ClimateTurnOff => Service::ClimateTurnOff,
-            ServiceName::WaterHeaterSetTemperature => {
-                Service::WaterHeaterSetTemperature(parse(name, data)?)
-            }
-            ServiceName::WaterHeaterSetOperationMode => {
-                Service::WaterHeaterSetOperationMode(parse(name, data)?)
-            }
-            ServiceName::WaterHeaterTurnOn => Service::WaterHeaterTurnOn,
-            ServiceName::HumidifierTurnOn => Service::HumidifierTurnOn,
-            ServiceName::HumidifierTurnOff => Service::HumidifierTurnOff,
-            ServiceName::HumidifierSetHumidity => {
-                Service::HumidifierSetHumidity(parse(name, data)?)
-            }
-            ServiceName::HumidifierSetMode => Service::HumidifierSetMode(parse(name, data)?),
-            ServiceName::WaterHeaterTurnOff => Service::WaterHeaterTurnOff,
-            ServiceName::ValveOpen => Service::ValveOpen,
-            ServiceName::ValveClose => Service::ValveClose,
-            ServiceName::ValveStop => Service::ValveStop,
-            ServiceName::ValveSetPosition => Service::ValveSetPosition(parse(name, data)?),
-            ServiceName::CoverOpen => Service::CoverOpen,
-            ServiceName::CoverClose => Service::CoverClose,
-            ServiceName::CoverStop => Service::CoverStop,
-            ServiceName::CoverSetPosition => Service::CoverSetPosition(
-                SetPosition::deserialize(serde_json::Value::Object(data))
-                    .map_err(|e| InvariantError(format!("`{name}` data: {e}")))?,
-            ),
-            ServiceName::CoverSetTilt => Service::CoverSetTilt(
-                SetTilt::deserialize(serde_json::Value::Object(data))
-                    .map_err(|e| InvariantError(format!("`{name}` data: {e}")))?,
-            ),
-            ServiceName::NumberSetValue => Service::NumberSetValue(
-                NumberSetValue::deserialize(serde_json::Value::Object(data))
-                    .map_err(|e| InvariantError(format!("`{name}` data: {e}")))?,
-            ),
-            ServiceName::SelectSelectOption => Service::SelectSelectOption(
-                SelectOption::deserialize(serde_json::Value::Object(data))
-                    .map_err(|e| InvariantError(format!("`{name}` data: {e}")))?,
-            ),
-            ServiceName::TextSetValue => Service::TextSetValue(
-                TextSetValue::deserialize(serde_json::Value::Object(data))
-                    .map_err(|e| InvariantError(format!("`{name}` data: {e}")))?,
-            ),
-        };
+        }?;
         service.validate()?;
         Ok(service)
     }
 
-    /// Its data as a JSON object, or `None` when there's nothing to send.
+    /// Its data as a JSON object, or `None` when there's nothing to send (a `turn_on` with
+    /// nothing set).
     pub fn data(&self) -> Option<serde_json::Map<String, serde_json::Value>> {
-        let value = match self {
-            Self::LightTurnOn(data) if *data != LightTurnOn::default() => {
-                serde_json::to_value(data).ok()?
-            }
-            Self::NumberSetValue(data) => serde_json::to_value(data).ok()?,
-            Self::SelectSelectOption(data) => serde_json::to_value(data).ok()?,
-            Self::TextSetValue(data) => serde_json::to_value(data).ok()?,
-            Self::CoverSetPosition(data) | Self::ValveSetPosition(data) => {
-                serde_json::to_value(data).ok()?
-            }
-            Self::CoverSetTilt(data) => serde_json::to_value(data).ok()?,
-            Self::FanTurnOn(data) if *data != FanTurnOn::default() => {
-                serde_json::to_value(data).ok()?
-            }
-            Self::FanSetPercentage(data) => serde_json::to_value(data).ok()?,
-            Self::SirenTurnOn(data) if *data != SirenTurnOn::default() => {
-                serde_json::to_value(data).ok()?
-            }
-            Self::FanOscillate(data) => serde_json::to_value(data).ok()?,
-            Self::FanSetDirection(data) => serde_json::to_value(data).ok()?,
-            Self::FanSetPresetMode(data) => serde_json::to_value(data).ok()?,
-            Self::ClimateSetHvacMode(data) => serde_json::to_value(data).ok()?,
-            Self::ClimateSetTemperature(data) => serde_json::to_value(data).ok()?,
-            Self::ClimateSetHumidity(data) => serde_json::to_value(data).ok()?,
-            Self::ClimateSetFanMode(data) => serde_json::to_value(data).ok()?,
-            Self::ClimateSetSwingMode(data) => serde_json::to_value(data).ok()?,
-            Self::ClimateSetPresetMode(data) => serde_json::to_value(data).ok()?,
-            Self::WaterHeaterSetTemperature(data) => serde_json::to_value(data).ok()?,
-            Self::WaterHeaterSetOperationMode(data) => serde_json::to_value(data).ok()?,
-            Self::HumidifierSetHumidity(data) => serde_json::to_value(data).ok()?,
-            Self::HumidifierSetMode(data) => serde_json::to_value(data).ok()?,
-            Self::LockLock(code) | Self::LockUnlock(code) | Self::LockOpen(code)
-                if code.code.is_some() =>
-            {
-                serde_json::to_value(code).ok()?
-            }
-            _ => return None,
-        };
-        match value {
-            serde_json::Value::Object(map) => Some(map),
+        match serde_json::to_value(self).ok()? {
+            serde_json::Value::Object(map) if !map.is_empty() => Some(map),
             _ => None,
         }
     }
@@ -619,14 +372,7 @@ impl Service {
             Self::NumberSetValue(data) => data.validate(),
             Self::SirenTurnOn(data) => data.validate(),
             Self::ClimateSetTemperature(data) => data.validate(),
-            Self::ClimateSetHumidity(data) | Self::HumidifierSetHumidity(data)
-                if !(0.0..=100.0).contains(&data.humidity) =>
-            {
-                Err(InvariantError(format!(
-                    "humidity is 0-100%, not {}",
-                    data.humidity
-                )))
-            }
+            Self::ClimateSetHumidity(data) | Self::HumidifierSetHumidity(data) => data.validate(),
             _ => Ok(()),
         }
     }
@@ -635,61 +381,23 @@ impl Service {
     /// `on`. The core remembers it until the device reports, so a `toggle` in between resolves
     /// against what was asked rather than the value that's about to change.
     pub fn asks_for(&self) -> Option<Typed> {
-        match self {
-            Self::LightTurnOn(_) | Self::SwitchTurnOn => Some(Typed::Bool(true)),
-            Self::LightTurnOff | Self::SwitchTurnOff => Some(Typed::Bool(false)),
-            Self::NumberSetValue(data) => Some(Typed::Number(data.value)),
-            Self::SelectSelectOption(data) => Some(Typed::Text(data.option.clone())),
-            Self::TextSetValue(data) => Some(Typed::Text(data.value.clone())),
-            Self::FanTurnOn(_) | Self::SirenTurnOn(_) => Some(Typed::Bool(true)),
-            Self::SirenTurnOff => Some(Typed::Bool(false)),
-            Self::FanTurnOff => Some(Typed::Bool(false)),
-            Self::FanSetPercentage(data) => Some(Typed::Bool(data.percentage > 0)),
-            Self::FanOscillate(_) | Self::FanSetDirection(_) | Self::FanSetPresetMode(_) => None,
-            Self::LockLock(_) => Some(Typed::Text(LockStatus::Locked.as_str().to_owned())),
-            Self::LockUnlock(_) => Some(Typed::Text(LockStatus::Unlocked.as_str().to_owned())),
-            Self::LockOpen(_) => Some(Typed::Text(LockStatus::Open.as_str().to_owned())),
-            Self::CoverOpen | Self::ValveOpen => {
-                Some(Typed::Text(OpenState::Open.as_str().to_owned()))
-            }
-            Self::CoverClose | Self::ValveClose => {
-                Some(Typed::Text(OpenState::Closed.as_str().to_owned()))
-            }
-            Self::CoverSetPosition(data) | Self::ValveSetPosition(data) => Some(Typed::Text(
-                if data.position == 0 {
-                    OpenState::Closed
-                } else {
-                    OpenState::Open
-                }
-                .as_str()
-                .to_owned(),
-            )),
-            Self::ClimateSetHvacMode(ClimateHvacMode { hvac_mode })
-            | Self::ClimateSetTemperature(ClimateSetTemperature {
-                hvac_mode: Some(hvac_mode),
-                ..
-            }) => Some(Typed::Text(hvac_mode.as_str().to_owned())),
-            Self::ClimateTurnOff => Some(Typed::Text(HvacMode::Off.as_str().to_owned())),
-            Self::WaterHeaterSetOperationMode(WaterHeaterOperationMode { operation_mode })
-            | Self::WaterHeaterSetTemperature(WaterHeaterSetTemperature {
-                operation_mode: Some(operation_mode),
-                ..
-            }) => Some(Typed::Text(operation_mode.as_str().to_owned())),
-            Self::WaterHeaterTurnOff => Some(Typed::Text(WaterHeaterMode::Off.as_str().to_owned())),
-            Self::WaterHeaterTurnOn | Self::WaterHeaterSetTemperature(_) => None,
-            Self::HumidifierTurnOn => Some(Typed::Bool(true)),
-            Self::HumidifierTurnOff => Some(Typed::Bool(false)),
-            Self::HumidifierSetHumidity(_) | Self::HumidifierSetMode(_) => None,
-            // Which mode `turn_on` lands in is the device's to say, and a target or a fan mode
-            // leaves the mode as it is.
-            Self::ClimateTurnOn
-            | Self::ClimateSetTemperature(_)
-            | Self::ClimateSetHumidity(_)
-            | Self::ClimateSetFanMode(_)
-            | Self::ClimateSetSwingMode(_)
-            | Self::ClimateSetPresetMode(_) => None,
-            // A press, a stop or a tilt leaves nothing for a toggle to go by.
-            Self::ButtonPress | Self::CoverStop | Self::CoverSetTilt(_) | Self::ValveStop => None,
+        match self.name().kind() {
+            EntityKind::Light => light::asks_for(self),
+            EntityKind::Switch => switch::asks_for(self),
+            EntityKind::Number => number::asks_for(self),
+            EntityKind::Select => select::asks_for(self),
+            EntityKind::Text => text::asks_for(self),
+            EntityKind::Cover => cover::asks_for(self),
+            EntityKind::Valve => valve::asks_for(self),
+            EntityKind::Lock => lock::asks_for(self),
+            EntityKind::Fan => fan::asks_for(self),
+            EntityKind::Siren => siren::asks_for(self),
+            EntityKind::Climate => climate::asks_for(self),
+            EntityKind::WaterHeater => water_heater::asks_for(self),
+            EntityKind::Humidifier => humidifier::asks_for(self),
+            // A press leaves nothing for a toggle to go by.
+            EntityKind::Button => None,
+            EntityKind::Sensor | EntityKind::BinarySensor | EntityKind::Event => None,
         }
     }
 }
@@ -706,71 +414,42 @@ impl ServiceName {
         name.split_once('.').map_or(name, |(_, action)| action)
     }
 
+    fn data(self) -> Data {
+        match self.kind() {
+            EntityKind::Light => light::data_of(self),
+            EntityKind::Switch => switch::data_of(self),
+            EntityKind::Number => number::data_of(self),
+            EntityKind::Select => select::data_of(self),
+            EntityKind::Text => text::data_of(self),
+            EntityKind::Button => button::data_of(self),
+            EntityKind::Cover => cover::data_of(self),
+            EntityKind::Valve => valve::data_of(self),
+            EntityKind::Lock => lock::data_of(self),
+            EntityKind::Fan => fan::data_of(self),
+            EntityKind::Siren => siren::data_of(self),
+            EntityKind::Climate => climate::data_of(self),
+            EntityKind::WaterHeater => water_heater::data_of(self),
+            EntityKind::Humidifier => humidifier::data_of(self),
+            EntityKind::Sensor | EntityKind::BinarySensor | EntityKind::Event => Data::None,
+        }
+    }
+
     /// Whether it can't do without `data`: its data has a field that has to be there (a
     /// number's `value`), where a light's `turn_on` has none.
     pub fn requires_data(self) -> bool {
-        matches!(
-            self,
-            Self::NumberSetValue
-                | Self::SelectSelectOption
-                | Self::TextSetValue
-                | Self::CoverSetPosition
-                | Self::CoverSetTilt
-                | Self::FanSetPercentage
-                | Self::FanOscillate
-                | Self::FanSetDirection
-                | Self::FanSetPresetMode
-                | Self::ValveSetPosition
-                | Self::ClimateSetHvacMode
-                | Self::ClimateSetTemperature
-                | Self::ClimateSetHumidity
-                | Self::ClimateSetFanMode
-                | Self::ClimateSetSwingMode
-                | Self::ClimateSetPresetMode
-                | Self::WaterHeaterSetTemperature
-                | Self::WaterHeaterSetOperationMode
-                | Self::HumidifierSetHumidity
-                | Self::HumidifierSetMode
-        )
+        self.data() == Data::Required
     }
 
     /// Whether it takes `data`.
     pub fn takes_data(self) -> bool {
-        matches!(
-            self,
-            Self::LightTurnOn
-                | Self::NumberSetValue
-                | Self::SelectSelectOption
-                | Self::TextSetValue
-                | Self::CoverSetPosition
-                | Self::CoverSetTilt
-                | Self::LockLock
-                | Self::LockUnlock
-                | Self::LockOpen
-                | Self::FanTurnOn
-                | Self::FanSetPercentage
-                | Self::FanOscillate
-                | Self::FanSetDirection
-                | Self::FanSetPresetMode
-                | Self::ValveSetPosition
-                | Self::SirenTurnOn
-                | Self::ClimateSetHvacMode
-                | Self::ClimateSetTemperature
-                | Self::ClimateSetHumidity
-                | Self::ClimateSetFanMode
-                | Self::ClimateSetSwingMode
-                | Self::ClimateSetPresetMode
-                | Self::WaterHeaterSetTemperature
-                | Self::WaterHeaterSetOperationMode
-                | Self::HumidifierSetHumidity
-                | Self::HumidifierSetMode
-        )
+        self.data() != Data::None
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::LightTurnOn;
 
     #[test]
     fn every_service_is_found_by_its_kind_and_action() {

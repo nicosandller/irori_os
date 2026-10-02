@@ -3,6 +3,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::{Data, Typed};
+use crate::{Service, ServiceName};
+
 use crate::InvariantError;
 use crate::num::{Num, whole};
 
@@ -302,6 +305,58 @@ pub(crate) fn fits(caps: &LightCapabilities, light: &LightState) -> Result<(), S
         rgb: light.rgb,
     };
     supports(caps, &data).map_err(|what| format!("it {what}"))
+}
+
+pub(crate) fn primary(state: &LightState) -> Typed {
+    Typed::Bool(state.on)
+}
+
+/// A light keeps everything but `on`, so it has to have reported once.
+pub(crate) fn with_primary(previous: Option<&LightState>, value: &Typed) -> Option<LightState> {
+    match value {
+        Typed::Bool(on) => Some(LightState {
+            on: *on,
+            ..previous?.clone()
+        }),
+        _ => None,
+    }
+}
+
+pub(crate) fn toggle(current: Option<&Typed>) -> ServiceName {
+    super::on_off_toggle(current, ServiceName::LightTurnOn, ServiceName::LightTurnOff)
+}
+
+pub(crate) fn data_of(name: ServiceName) -> Data {
+    match name {
+        ServiceName::LightTurnOn => Data::Optional,
+        _ => Data::None,
+    }
+}
+
+pub(crate) fn service(
+    name: ServiceName,
+    data: serde_json::Map<String, serde_json::Value>,
+) -> Result<Service, InvariantError> {
+    Ok(match name {
+        ServiceName::LightTurnOn => Service::LightTurnOn(super::parse(name, data)?),
+        ServiceName::LightTurnOff => Service::LightTurnOff,
+        _ => return Err(super::not_mine(name)),
+    })
+}
+
+pub(crate) fn asks_for(service: &Service) -> Option<Typed> {
+    match service {
+        Service::LightTurnOn(_) => Some(Typed::Bool(true)),
+        Service::LightTurnOff => Some(Typed::Bool(false)),
+        _ => None,
+    }
+}
+
+pub(crate) fn supports_service(caps: &LightCapabilities, service: &Service) -> Result<(), String> {
+    match service {
+        Service::LightTurnOn(data) => supports(caps, data),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]

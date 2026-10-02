@@ -47,9 +47,7 @@ pub use kinds::climate::{
     ClimateCapabilities, ClimateFanMode, ClimateHvacMode, ClimatePresetMode, ClimateSetTemperature,
     ClimateState, ClimateSwingMode, HumidityRange, HvacAction, HvacMode, SetHumidity,
 };
-pub use kinds::cover::{
-    CoverCapabilities, CoverClass, CoverState, OpenState, SetPosition, SetTilt,
-};
+pub use kinds::cover::{CoverCapabilities, CoverClass, CoverState, SetTilt};
 pub use kinds::event::{EventCapabilities, EventClass, EventState};
 pub use kinds::fan::{
     FanCapabilities, FanDirection, FanOscillate, FanPercentage, FanPresetMode, FanSetDirection,
@@ -61,6 +59,7 @@ pub use kinds::humidifier::{
 pub use kinds::light::{ColorMode, ColorTempRange, LightCapabilities, LightState, LightTurnOn};
 pub use kinds::lock::{LockCapabilities, LockCode, LockState, LockStatus};
 pub use kinds::number::{NumberCapabilities, NumberMode, NumberSetValue, NumberState};
+pub use kinds::opening::{OpenState, OpeningAbilities, OpeningCommand, SetPosition};
 pub use kinds::select::{SelectCapabilities, SelectOption, SelectState};
 pub use kinds::sensor::{
     SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType, StateClass,

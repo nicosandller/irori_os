@@ -4,6 +4,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::{Data, Typed};
+use crate::{Service, ServiceName};
+
 use super::sensor::validate_options;
 use crate::InvariantError;
 
@@ -60,6 +63,49 @@ pub(crate) fn supports(caps: &SelectCapabilities, data: &SelectOption) -> Result
 /// Whether a reported option is one of its choices.
 pub(crate) fn fits(caps: &SelectCapabilities, state: &SelectState) -> Result<(), String> {
     caps.has(&state.option).map_err(|what| format!("it {what}"))
+}
+
+pub(crate) fn primary(state: &SelectState) -> Typed {
+    Typed::Text(state.option.clone())
+}
+
+pub(crate) fn with_primary(value: &Typed) -> Option<SelectState> {
+    match value {
+        Typed::Text(option) => Some(SelectState {
+            option: option.clone(),
+        }),
+        _ => None,
+    }
+}
+
+pub(crate) fn data_of(_: ServiceName) -> Data {
+    Data::Required
+}
+
+pub(crate) fn service(
+    name: ServiceName,
+    data: serde_json::Map<String, serde_json::Value>,
+) -> Result<Service, InvariantError> {
+    match name {
+        ServiceName::SelectSelectOption => {
+            Ok(Service::SelectSelectOption(super::parse(name, data)?))
+        }
+        _ => Err(super::not_mine(name)),
+    }
+}
+
+pub(crate) fn asks_for(service: &Service) -> Option<Typed> {
+    match service {
+        Service::SelectSelectOption(data) => Some(Typed::Text(data.option.clone())),
+        _ => None,
+    }
+}
+
+pub(crate) fn supports_service(caps: &SelectCapabilities, service: &Service) -> Result<(), String> {
+    match service {
+        Service::SelectSelectOption(data) => supports(caps, data),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]

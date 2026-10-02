@@ -6,6 +6,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::Data;
+use crate::{InvariantError, Service, ServiceName};
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ButtonCapabilities {
@@ -28,5 +31,20 @@ impl ButtonClass {
     /// The class Home Assistant calls `name`.
     pub fn from_ha(name: &str) -> Option<Self> {
         super::from_ha(name)
+    }
+}
+
+pub(crate) fn data_of(_: ServiceName) -> Data {
+    Data::None
+}
+
+/// A press leaves nothing for a toggle to go by, so there's no `asks_for`.
+pub(crate) fn service(
+    name: ServiceName,
+    _: serde_json::Map<String, serde_json::Value>,
+) -> Result<Service, InvariantError> {
+    match name {
+        ServiceName::ButtonPress => Ok(Service::ButtonPress),
+        _ => Err(super::not_mine(name)),
     }
 }

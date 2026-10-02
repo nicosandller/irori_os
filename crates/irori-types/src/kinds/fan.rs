@@ -4,6 +4,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::{Data, Typed};
+use crate::{Service, ServiceName};
+
 use crate::InvariantError;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -186,6 +189,78 @@ pub fn speed_to_percentage(speed: u16, count: u16) -> u8 {
     (u32::from(speed.min(count)) * 100 / u32::from(count))
         .try_into()
         .unwrap_or(100)
+}
+
+pub(crate) fn primary(state: &FanState) -> Typed {
+    Typed::Bool(state.on)
+}
+
+/// Keeps its speed and settings as it said them last.
+pub(crate) fn with_primary(previous: Option<&FanState>, value: &Typed) -> Option<FanState> {
+    let Typed::Bool(on) = value else {
+        return None;
+    };
+    Some(match previous {
+        Some(fan) => FanState {
+            on: *on,
+            ..fan.clone()
+        },
+        None => FanState {
+            on: *on,
+            percentage: None,
+            oscillating: None,
+            direction: None,
+            preset_mode: None,
+        },
+    })
+}
+
+pub(crate) fn toggle(current: Option<&Typed>) -> ServiceName {
+    super::on_off_toggle(current, ServiceName::FanTurnOn, ServiceName::FanTurnOff)
+}
+
+pub(crate) fn data_of(name: ServiceName) -> Data {
+    match name {
+        ServiceName::FanTurnOn => Data::Optional,
+        ServiceName::FanTurnOff => Data::None,
+        _ => Data::Required,
+    }
+}
+
+pub(crate) fn service(
+    name: ServiceName,
+    data: serde_json::Map<String, serde_json::Value>,
+) -> Result<Service, InvariantError> {
+    Ok(match name {
+        ServiceName::FanTurnOn => Service::FanTurnOn(super::parse(name, data)?),
+        ServiceName::FanTurnOff => Service::FanTurnOff,
+        ServiceName::FanSetPercentage => Service::FanSetPercentage(super::parse(name, data)?),
+        ServiceName::FanOscillate => Service::FanOscillate(super::parse(name, data)?),
+        ServiceName::FanSetDirection => Service::FanSetDirection(super::parse(name, data)?),
+        ServiceName::FanSetPresetMode => Service::FanSetPresetMode(super::parse(name, data)?),
+        _ => return Err(super::not_mine(name)),
+    })
+}
+
+/// Oscillation, direction and a preset leave on and off as they are.
+pub(crate) fn asks_for(service: &Service) -> Option<Typed> {
+    match service {
+        Service::FanTurnOn(_) => Some(Typed::Bool(true)),
+        Service::FanTurnOff => Some(Typed::Bool(false)),
+        Service::FanSetPercentage(data) => Some(Typed::Bool(data.percentage > 0)),
+        _ => None,
+    }
+}
+
+pub(crate) fn supports_service(caps: &FanCapabilities, service: &Service) -> Result<(), String> {
+    match service {
+        Service::FanTurnOn(data) => supports_turn_on(caps, data),
+        Service::FanSetPercentage(data) => supports_percentage(caps, data.percentage),
+        Service::FanOscillate(_) => supports_oscillate(caps),
+        Service::FanSetDirection(_) => supports_direction(caps),
+        Service::FanSetPresetMode(data) => supports_preset(caps, &data.preset_mode),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]

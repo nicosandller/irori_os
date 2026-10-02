@@ -4,6 +4,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::{Data, Typed};
+use crate::{Service, ServiceName};
+
 use super::climate::HumidityRange;
 use crate::InvariantError;
 
@@ -123,6 +126,83 @@ pub(crate) fn fits(caps: &HumidifierCapabilities, state: &HumidifierState) -> Re
         supports_mode(caps, mode).map_err(|what| format!("it {what}"))?;
     }
     Ok(())
+}
+
+pub(crate) fn primary(state: &HumidifierState) -> Typed {
+    Typed::Bool(state.on)
+}
+
+/// Keeps its target, reading and mode as it said them last.
+pub(crate) fn with_primary(
+    previous: Option<&HumidifierState>,
+    value: &Typed,
+) -> Option<HumidifierState> {
+    let Typed::Bool(on) = value else {
+        return None;
+    };
+    Some(match previous {
+        Some(old) => HumidifierState {
+            on: *on,
+            ..old.clone()
+        },
+        None => HumidifierState {
+            on: *on,
+            target_humidity: None,
+            current_humidity: None,
+            mode: None,
+            action: None,
+        },
+    })
+}
+
+pub(crate) fn toggle(current: Option<&Typed>) -> ServiceName {
+    super::on_off_toggle(
+        current,
+        ServiceName::HumidifierTurnOn,
+        ServiceName::HumidifierTurnOff,
+    )
+}
+
+pub(crate) fn data_of(name: ServiceName) -> Data {
+    match name {
+        ServiceName::HumidifierSetHumidity | ServiceName::HumidifierSetMode => Data::Required,
+        _ => Data::None,
+    }
+}
+
+pub(crate) fn service(
+    name: ServiceName,
+    data: serde_json::Map<String, serde_json::Value>,
+) -> Result<Service, InvariantError> {
+    Ok(match name {
+        ServiceName::HumidifierTurnOn => Service::HumidifierTurnOn,
+        ServiceName::HumidifierTurnOff => Service::HumidifierTurnOff,
+        ServiceName::HumidifierSetHumidity => {
+            Service::HumidifierSetHumidity(super::parse(name, data)?)
+        }
+        ServiceName::HumidifierSetMode => Service::HumidifierSetMode(super::parse(name, data)?),
+        _ => return Err(super::not_mine(name)),
+    })
+}
+
+/// A target or a mode leaves on and off as they are.
+pub(crate) fn asks_for(service: &Service) -> Option<Typed> {
+    match service {
+        Service::HumidifierTurnOn => Some(Typed::Bool(true)),
+        Service::HumidifierTurnOff => Some(Typed::Bool(false)),
+        _ => None,
+    }
+}
+
+pub(crate) fn supports_service(
+    caps: &HumidifierCapabilities,
+    service: &Service,
+) -> Result<(), String> {
+    match service {
+        Service::HumidifierSetHumidity(data) => supports_humidity(caps, data.humidity),
+        Service::HumidifierSetMode(data) => supports_mode(caps, &data.mode),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]

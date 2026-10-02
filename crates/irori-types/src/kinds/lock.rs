@@ -9,6 +9,9 @@ use std::sync::LazyLock;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::{Data, Typed};
+use crate::{InvariantError, Service, ServiceName};
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LockCapabilities {
@@ -110,6 +113,69 @@ pub(crate) fn supports(
         return Err("needs a code".into());
     }
     Ok(())
+}
+
+pub(crate) fn primary(state: &LockState) -> Typed {
+    Typed::Text(state.state.as_str().to_owned())
+}
+
+pub(crate) fn with_primary(value: &Typed) -> Option<LockState> {
+    match value {
+        Typed::Text(text) => Some(LockState {
+            state: LockStatus::parse(text)?,
+        }),
+        _ => None,
+    }
+}
+
+/// Unlocks it when it's locked or locking, locks it otherwise.
+pub(crate) fn toggle(current: Option<&Typed>) -> ServiceName {
+    match current {
+        Some(Typed::Text(text))
+            if matches!(
+                LockStatus::parse(text),
+                Some(LockStatus::Locked | LockStatus::Locking)
+            ) =>
+        {
+            ServiceName::LockUnlock
+        }
+        _ => ServiceName::LockLock,
+    }
+}
+
+/// Each takes an optional code.
+pub(crate) fn data_of(_: ServiceName) -> Data {
+    Data::Optional
+}
+
+pub(crate) fn service(
+    name: ServiceName,
+    data: serde_json::Map<String, serde_json::Value>,
+) -> Result<Service, InvariantError> {
+    Ok(match name {
+        ServiceName::LockLock => Service::LockLock(super::parse(name, data)?),
+        ServiceName::LockUnlock => Service::LockUnlock(super::parse(name, data)?),
+        ServiceName::LockOpen => Service::LockOpen(super::parse(name, data)?),
+        _ => return Err(super::not_mine(name)),
+    })
+}
+
+pub(crate) fn asks_for(service: &Service) -> Option<Typed> {
+    let status = match service {
+        Service::LockLock(_) => LockStatus::Locked,
+        Service::LockUnlock(_) => LockStatus::Unlocked,
+        Service::LockOpen(_) => LockStatus::Open,
+        _ => return None,
+    };
+    Some(Typed::Text(status.as_str().to_owned()))
+}
+
+pub(crate) fn supports_service(caps: &LockCapabilities, service: &Service) -> Result<(), String> {
+    match service {
+        Service::LockLock(data) | Service::LockUnlock(data) => supports(caps, data, false),
+        Service::LockOpen(data) => supports(caps, data, true),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]

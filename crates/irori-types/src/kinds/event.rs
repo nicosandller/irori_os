@@ -9,6 +9,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::Typed;
+
 use super::sensor::validate_options;
 use crate::InvariantError;
 
@@ -68,6 +70,19 @@ pub(crate) fn fits(caps: &EventCapabilities, state: &EventState) -> Result<(), S
             caps.event_types.join(", "),
             state.event_type
         ))
+    }
+}
+
+pub(crate) fn primary(state: &EventState) -> Typed {
+    Typed::Text(state.event_type.clone())
+}
+
+pub(crate) fn with_primary(value: &Typed) -> Option<EventState> {
+    match value {
+        Typed::Text(event_type) => Some(EventState {
+            event_type: event_type.clone(),
+        }),
+        _ => None,
     }
 }
 

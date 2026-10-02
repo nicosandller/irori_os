@@ -3,6 +3,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::Typed;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BinarySensorCapabilities {
@@ -58,5 +60,16 @@ impl BinarySensorClass {
     /// (ESPHome, MQTT discovery) report it.
     pub fn from_ha(name: &str) -> Option<Self> {
         super::from_ha(name)
+    }
+}
+
+pub(crate) fn primary(state: &BinarySensorState) -> Typed {
+    Typed::Bool(state.on)
+}
+
+pub(crate) fn with_primary(value: &Typed) -> Option<BinarySensorState> {
+    match value {
+        Typed::Bool(on) => Some(BinarySensorState { on: *on }),
+        _ => None,
     }
 }

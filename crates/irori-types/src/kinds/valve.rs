@@ -1,10 +1,16 @@
 //! `valve`: something that lets water or gas through, or doesn't, e.g. a main water shut-off or
-//! an irrigation zone. Opens and closes like a cover, sometimes part of the way.
+//! an irrigation zone. Opens and closes like a cover ([`super::opening`]), sometimes part of the
+//! way.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::cover::{OpenState, SetPosition};
+use super::opening::OpeningCommand;
+use super::{Data, Typed};
+use crate::{InvariantError, Service, ServiceName};
+
+use super::opening::{OpenState, OpeningAbilities, OpeningState};
+use crate::EntityKind;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -17,6 +23,16 @@ pub struct ValveCapabilities {
     /// Can be stopped while it moves.
     #[serde(default)]
     pub stop: bool,
+}
+
+impl ValveCapabilities {
+    /// What it can do besides open and close, as anything that opens and closes.
+    pub fn opening(&self) -> OpeningAbilities {
+        OpeningAbilities {
+            position: self.position,
+            stop: self.stop,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -46,44 +62,72 @@ pub struct ValveState {
 impl ValveState {
     /// Deserialization runs this; call it yourself when building one in code.
     pub fn validate(&self) -> Result<(), crate::InvariantError> {
-        match self.position {
-            Some(position) if position > 100 => Err(crate::InvariantError(format!(
-                "a valve's position is 0-100, not {position}"
-            ))),
-            _ => Ok(()),
+        self.opening().validate(EntityKind::Valve)
+    }
+
+    /// Where it is, as anything that opens and closes.
+    pub fn opening(&self) -> OpeningState {
+        OpeningState {
+            state: self.state,
+            position: self.position,
         }
     }
 }
 
-/// Whether a valve can be sent to a position. `Err` follows the entity's name.
-pub(crate) fn supports_position(
-    caps: &ValveCapabilities,
-    data: &SetPosition,
-) -> Result<(), String> {
-    if !caps.position {
-        return Err("can only open and close, not open part of the way".into());
+impl From<OpeningState> for ValveState {
+    fn from(opening: OpeningState) -> Self {
+        Self {
+            state: opening.state,
+            position: opening.position,
+        }
     }
-    if data.position > 100 {
-        return Err(format!(
-            "takes a position from 0 to 100, not {}",
-            data.position
-        ));
-    }
-    Ok(())
 }
 
-pub(crate) fn supports_stop(caps: &ValveCapabilities) -> Result<(), String> {
-    if caps.stop {
-        Ok(())
-    } else {
-        Err("can't be stopped while it moves".into())
+pub(crate) fn primary(state: &ValveState) -> Typed {
+    Typed::Text(state.state.as_str().to_owned())
+}
+
+/// Keeps the position it said last.
+pub(crate) fn with_primary(previous: Option<&ValveState>, value: &Typed) -> Option<ValveState> {
+    let state = match value {
+        Typed::Text(text) => OpenState::parse(text)?,
+        _ => return None,
+    };
+    Some(ValveState {
+        state,
+        position: previous.and_then(|valve| valve.position),
+    })
+}
+
+pub(crate) fn data_of(name: ServiceName) -> Data {
+    super::opening::data_of(name)
+}
+
+pub(crate) fn service(
+    name: ServiceName,
+    data: serde_json::Map<String, serde_json::Value>,
+) -> Result<Service, InvariantError> {
+    Ok(match name {
+        ServiceName::ValveOpen => Service::ValveOpen,
+        ServiceName::ValveClose => Service::ValveClose,
+        ServiceName::ValveStop => Service::ValveStop,
+        ServiceName::ValveSetPosition => Service::ValveSetPosition(super::parse(name, data)?),
+        _ => return Err(super::not_mine(name)),
+    })
+}
+
+pub(crate) fn asks_for(service: &Service) -> Option<Typed> {
+    OpeningCommand::of(EntityKind::Valve, service).and_then(OpeningCommand::asks_for)
+}
+
+pub(crate) fn supports_service(caps: &ValveCapabilities, service: &Service) -> Result<(), String> {
+    match OpeningCommand::of(EntityKind::Valve, service) {
+        Some(command) => super::opening::supports(caps.opening(), command),
+        None => Ok(()),
     }
 }
 
 /// Whether a reported state is one this valve can be in.
 pub(crate) fn fits(caps: &ValveCapabilities, state: &ValveState) -> Result<(), String> {
-    if state.position.is_some() && !caps.position {
-        return Err("it reports a position, but said it can't open part of the way".into());
-    }
-    Ok(())
+    super::opening::fits(caps.opening(), state.opening())
 }

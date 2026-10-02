@@ -4,6 +4,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::{Data, Typed};
+use crate::{Service, ServiceName};
+
 use super::sensor::SensorClass;
 use crate::InvariantError;
 
@@ -140,6 +143,45 @@ pub(crate) fn supports(caps: &NumberCapabilities, data: &NumberSetValue) -> Resu
 /// Whether a reported value is one this number can have.
 pub(crate) fn fits(caps: &NumberCapabilities, state: &NumberState) -> Result<(), String> {
     caps.takes(state.value).map_err(|what| format!("it {what}"))
+}
+
+pub(crate) fn primary(state: &NumberState) -> Typed {
+    Typed::Number(state.value)
+}
+
+pub(crate) fn with_primary(value: &Typed) -> Option<NumberState> {
+    match value {
+        Typed::Number(value) => Some(NumberState { value: *value }),
+        _ => None,
+    }
+}
+
+pub(crate) fn data_of(_: ServiceName) -> Data {
+    Data::Required
+}
+
+pub(crate) fn service(
+    name: ServiceName,
+    data: serde_json::Map<String, serde_json::Value>,
+) -> Result<Service, InvariantError> {
+    match name {
+        ServiceName::NumberSetValue => Ok(Service::NumberSetValue(super::parse(name, data)?)),
+        _ => Err(super::not_mine(name)),
+    }
+}
+
+pub(crate) fn asks_for(service: &Service) -> Option<Typed> {
+    match service {
+        Service::NumberSetValue(data) => Some(Typed::Number(data.value)),
+        _ => None,
+    }
+}
+
+pub(crate) fn supports_service(caps: &NumberCapabilities, service: &Service) -> Result<(), String> {
+    match service {
+        Service::NumberSetValue(data) => supports(caps, data),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]

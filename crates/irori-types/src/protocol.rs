@@ -14,12 +14,13 @@ use crate::kinds::climate::{
     ClimateFanMode, ClimateHvacMode, ClimatePresetMode, ClimateSetTemperature, ClimateSwingMode,
     SetHumidity,
 };
-use crate::kinds::cover::{SetPosition, SetTilt};
+use crate::kinds::cover::SetTilt;
 use crate::kinds::fan::{FanOscillate, FanPercentage, FanPresetMode, FanSetDirection, FanTurnOn};
 use crate::kinds::humidifier::HumidifierMode;
 use crate::kinds::light::LightTurnOn;
 use crate::kinds::lock::LockCode;
 use crate::kinds::number::NumberSetValue;
+use crate::kinds::opening::SetPosition;
 use crate::kinds::select::SelectOption;
 use crate::kinds::siren::SirenTurnOn;
 use crate::kinds::text::TextSetValue;
@@ -379,7 +380,11 @@ pub struct ServiceCall {
 
 /// A service and its data. The standard services of every entity kind; each protocol handles
 /// the ones for the kinds it provides.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// It serializes as its data alone (`null` for a service without any): the wire shape is
+/// [`ServiceCall`]'s, which names the service beside it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
 pub enum Service {
     LightTurnOn(LightTurnOn),
     LightTurnOff,

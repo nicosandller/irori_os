@@ -4,6 +4,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::{Data, Typed};
+use crate::{Service, ServiceName};
+
 use crate::InvariantError;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -208,6 +211,95 @@ pub(crate) fn fits(caps: &WaterHeaterCapabilities, state: &WaterHeaterState) -> 
         return Ok(());
     }
     supports_mode(caps, state.operation_mode).map_err(|what| format!("it {what}"))
+}
+
+pub(crate) fn primary(state: &WaterHeaterState) -> Typed {
+    Typed::Text(state.operation_mode.as_str().to_owned())
+}
+
+/// Keeps its temperatures as it said them last.
+pub(crate) fn with_primary(
+    previous: Option<&WaterHeaterState>,
+    value: &Typed,
+) -> Option<WaterHeaterState> {
+    let operation_mode = match value {
+        Typed::Text(text) => WaterHeaterMode::parse(text)?,
+        _ => return None,
+    };
+    Some(match previous {
+        Some(heater) => WaterHeaterState {
+            operation_mode,
+            ..heater.clone()
+        },
+        None => WaterHeaterState {
+            operation_mode,
+            current_temperature: None,
+            target_temperature: None,
+        },
+    })
+}
+
+/// Turns it off when it's in any mode but off, on otherwise.
+pub(crate) fn toggle(current: Option<&Typed>) -> ServiceName {
+    match current {
+        Some(Typed::Text(text)) if WaterHeaterMode::parse(text) != Some(WaterHeaterMode::Off) => {
+            ServiceName::WaterHeaterTurnOff
+        }
+        _ => ServiceName::WaterHeaterTurnOn,
+    }
+}
+
+pub(crate) fn data_of(name: ServiceName) -> Data {
+    match name {
+        ServiceName::WaterHeaterSetTemperature | ServiceName::WaterHeaterSetOperationMode => {
+            Data::Required
+        }
+        _ => Data::None,
+    }
+}
+
+pub(crate) fn service(
+    name: ServiceName,
+    data: serde_json::Map<String, serde_json::Value>,
+) -> Result<Service, InvariantError> {
+    Ok(match name {
+        ServiceName::WaterHeaterSetTemperature => {
+            Service::WaterHeaterSetTemperature(super::parse(name, data)?)
+        }
+        ServiceName::WaterHeaterSetOperationMode => {
+            Service::WaterHeaterSetOperationMode(super::parse(name, data)?)
+        }
+        ServiceName::WaterHeaterTurnOn => Service::WaterHeaterTurnOn,
+        ServiceName::WaterHeaterTurnOff => Service::WaterHeaterTurnOff,
+        _ => return Err(super::not_mine(name)),
+    })
+}
+
+/// Which mode `turn_on` lands in is the device's to say.
+pub(crate) fn asks_for(service: &Service) -> Option<Typed> {
+    let mode = match service {
+        Service::WaterHeaterSetOperationMode(WaterHeaterOperationMode { operation_mode })
+        | Service::WaterHeaterSetTemperature(WaterHeaterSetTemperature {
+            operation_mode: Some(operation_mode),
+            ..
+        }) => *operation_mode,
+        Service::WaterHeaterTurnOff => WaterHeaterMode::Off,
+        _ => return None,
+    };
+    Some(Typed::Text(mode.as_str().to_owned()))
+}
+
+pub(crate) fn supports_service(
+    caps: &WaterHeaterCapabilities,
+    service: &Service,
+) -> Result<(), String> {
+    match service {
+        Service::WaterHeaterSetTemperature(data) => supports_temperature(caps, data),
+        Service::WaterHeaterSetOperationMode(data) => supports_mode(caps, data.operation_mode),
+        Service::WaterHeaterTurnOn => supports_turn_on(caps),
+        Service::WaterHeaterTurnOff => supports_turn_off(caps),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]

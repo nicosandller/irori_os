@@ -4,6 +4,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::{Data, Typed};
+use crate::{Service, ServiceName};
+
 use crate::InvariantError;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -90,6 +93,54 @@ pub(crate) fn supports(caps: &SirenCapabilities, data: &SirenTurnOn) -> Result<(
         return Err("can't be told for how long".into());
     }
     Ok(())
+}
+
+pub(crate) fn primary(state: &SirenState) -> Typed {
+    Typed::Bool(state.on)
+}
+
+pub(crate) fn with_primary(value: &Typed) -> Option<SirenState> {
+    match value {
+        Typed::Bool(on) => Some(SirenState { on: *on }),
+        _ => None,
+    }
+}
+
+pub(crate) fn toggle(current: Option<&Typed>) -> ServiceName {
+    super::on_off_toggle(current, ServiceName::SirenTurnOn, ServiceName::SirenTurnOff)
+}
+
+pub(crate) fn data_of(name: ServiceName) -> Data {
+    match name {
+        ServiceName::SirenTurnOn => Data::Optional,
+        _ => Data::None,
+    }
+}
+
+pub(crate) fn service(
+    name: ServiceName,
+    data: serde_json::Map<String, serde_json::Value>,
+) -> Result<Service, InvariantError> {
+    Ok(match name {
+        ServiceName::SirenTurnOn => Service::SirenTurnOn(super::parse(name, data)?),
+        ServiceName::SirenTurnOff => Service::SirenTurnOff,
+        _ => return Err(super::not_mine(name)),
+    })
+}
+
+pub(crate) fn asks_for(service: &Service) -> Option<Typed> {
+    match service {
+        Service::SirenTurnOn(_) => Some(Typed::Bool(true)),
+        Service::SirenTurnOff => Some(Typed::Bool(false)),
+        _ => None,
+    }
+}
+
+pub(crate) fn supports_service(caps: &SirenCapabilities, service: &Service) -> Result<(), String> {
+    match service {
+        Service::SirenTurnOn(data) => supports(caps, data),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]

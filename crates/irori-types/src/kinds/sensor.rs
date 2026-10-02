@@ -3,6 +3,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::Typed;
+
 use crate::InvariantError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -232,6 +234,23 @@ impl SensorClass {
             _ => super::from_ha(name),
         }
     }
+}
+
+pub(crate) fn primary(state: &SensorState) -> Typed {
+    match &state.value {
+        SensorValue::Number(n) => Typed::Number(*n),
+        SensorValue::Text(text) => Typed::Text(text.clone()),
+    }
+}
+
+pub(crate) fn with_primary(value: &Typed) -> Option<SensorState> {
+    Some(SensorState {
+        value: match value {
+            Typed::Number(n) => SensorValue::Number(*n),
+            Typed::Text(text) => SensorValue::Text(text.clone()),
+            Typed::Bool(_) => return None,
+        },
+    })
 }
 
 #[cfg(test)]

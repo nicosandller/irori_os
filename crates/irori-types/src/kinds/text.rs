@@ -4,6 +4,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::{Data, Typed};
+use crate::{Service, ServiceName};
+
 use crate::InvariantError;
 
 /// The longest text anything is asked to hold, as in Home Assistant.
@@ -101,6 +104,47 @@ pub(crate) fn supports(caps: &TextCapabilities, data: &TextSetValue) -> Result<(
 pub(crate) fn fits(caps: &TextCapabilities, state: &TextState) -> Result<(), String> {
     caps.takes(&state.value)
         .map_err(|what| format!("it {what}"))
+}
+
+pub(crate) fn primary(state: &TextState) -> Typed {
+    Typed::Text(state.value.clone())
+}
+
+pub(crate) fn with_primary(value: &Typed) -> Option<TextState> {
+    match value {
+        Typed::Text(value) => Some(TextState {
+            value: value.clone(),
+        }),
+        _ => None,
+    }
+}
+
+pub(crate) fn data_of(_: ServiceName) -> Data {
+    Data::Required
+}
+
+pub(crate) fn service(
+    name: ServiceName,
+    data: serde_json::Map<String, serde_json::Value>,
+) -> Result<Service, InvariantError> {
+    match name {
+        ServiceName::TextSetValue => Ok(Service::TextSetValue(super::parse(name, data)?)),
+        _ => Err(super::not_mine(name)),
+    }
+}
+
+pub(crate) fn asks_for(service: &Service) -> Option<Typed> {
+    match service {
+        Service::TextSetValue(data) => Some(Typed::Text(data.value.clone())),
+        _ => None,
+    }
+}
+
+pub(crate) fn supports_service(caps: &TextCapabilities, service: &Service) -> Result<(), String> {
+    match service {
+        Service::TextSetValue(data) => supports(caps, data),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]

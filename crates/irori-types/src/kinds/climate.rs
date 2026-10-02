@@ -7,6 +7,9 @@ use std::sync::LazyLock;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::{Data, Typed};
+use crate::{Service, ServiceName};
+
 use crate::InvariantError;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -347,6 +350,20 @@ pub struct SetHumidity {
     pub humidity: f64,
 }
 
+impl SetHumidity {
+    /// Deserialization runs this; call it yourself when building one in code.
+    pub fn validate(&self) -> Result<(), InvariantError> {
+        if (0.0..=100.0).contains(&self.humidity) {
+            Ok(())
+        } else {
+            Err(InvariantError(format!(
+                "humidity is 0-100%, not {}",
+                self.humidity
+            )))
+        }
+    }
+}
+
 /// Data for `climate.set_fan_mode`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -483,6 +500,92 @@ pub(crate) fn fits(caps: &ClimateCapabilities, state: &ClimateState) -> Result<(
         }
     }
     Ok(())
+}
+
+pub(crate) fn primary(state: &ClimateState) -> Typed {
+    Typed::Text(state.hvac_mode.as_str().to_owned())
+}
+
+/// Keeps its targets and readings as it said them last.
+pub(crate) fn with_primary(previous: Option<&ClimateState>, value: &Typed) -> Option<ClimateState> {
+    let hvac_mode = match value {
+        Typed::Text(text) => HvacMode::parse(text)?,
+        _ => return None,
+    };
+    Some(match previous {
+        Some(climate) => ClimateState {
+            hvac_mode,
+            ..climate.clone()
+        },
+        None => ClimateState::in_mode(hvac_mode),
+    })
+}
+
+/// Turns it off when it's in any mode but off, on otherwise.
+pub(crate) fn toggle(current: Option<&Typed>) -> ServiceName {
+    match current {
+        Some(Typed::Text(text)) if HvacMode::parse(text) != Some(HvacMode::Off) => {
+            ServiceName::ClimateTurnOff
+        }
+        _ => ServiceName::ClimateTurnOn,
+    }
+}
+
+pub(crate) fn data_of(name: ServiceName) -> Data {
+    match name {
+        ServiceName::ClimateTurnOn | ServiceName::ClimateTurnOff => Data::None,
+        _ => Data::Required,
+    }
+}
+
+pub(crate) fn service(
+    name: ServiceName,
+    data: serde_json::Map<String, serde_json::Value>,
+) -> Result<Service, InvariantError> {
+    use super::parse;
+    Ok(match name {
+        ServiceName::ClimateSetHvacMode => Service::ClimateSetHvacMode(parse(name, data)?),
+        ServiceName::ClimateSetTemperature => Service::ClimateSetTemperature(parse(name, data)?),
+        ServiceName::ClimateSetHumidity => Service::ClimateSetHumidity(parse(name, data)?),
+        ServiceName::ClimateSetFanMode => Service::ClimateSetFanMode(parse(name, data)?),
+        ServiceName::ClimateSetSwingMode => Service::ClimateSetSwingMode(parse(name, data)?),
+        ServiceName::ClimateSetPresetMode => Service::ClimateSetPresetMode(parse(name, data)?),
+        ServiceName::ClimateTurnOn => Service::ClimateTurnOn,
+        ServiceName::ClimateTurnOff => Service::ClimateTurnOff,
+        _ => return Err(super::not_mine(name)),
+    })
+}
+
+/// Which mode `turn_on` lands in is the device's to say, and a target or a fan mode leaves the
+/// mode as it is.
+pub(crate) fn asks_for(service: &Service) -> Option<Typed> {
+    let mode = match service {
+        Service::ClimateSetHvacMode(ClimateHvacMode { hvac_mode })
+        | Service::ClimateSetTemperature(ClimateSetTemperature {
+            hvac_mode: Some(hvac_mode),
+            ..
+        }) => *hvac_mode,
+        Service::ClimateTurnOff => HvacMode::Off,
+        _ => return None,
+    };
+    Some(Typed::Text(mode.as_str().to_owned()))
+}
+
+pub(crate) fn supports_service(
+    caps: &ClimateCapabilities,
+    service: &Service,
+) -> Result<(), String> {
+    match service {
+        Service::ClimateSetHvacMode(data) => supports_mode(caps, data.hvac_mode),
+        Service::ClimateSetTemperature(data) => supports_temperature(caps, data),
+        Service::ClimateSetHumidity(data) => supports_humidity(caps, data.humidity),
+        Service::ClimateSetFanMode(data) => supports_fan_mode(caps, &data.fan_mode),
+        Service::ClimateSetSwingMode(data) => supports_swing_mode(caps, &data.swing_mode),
+        Service::ClimateSetPresetMode(data) => supports_preset(caps, &data.preset_mode),
+        Service::ClimateTurnOn => supports_turn_on(caps),
+        Service::ClimateTurnOff => supports_turn_off(caps),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]

@@ -1,11 +1,14 @@
 //! `cover`: something that opens and closes, e.g. a blind, a curtain, a garage door, a gate.
 
-use std::sync::LazyLock;
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::InvariantError;
+use super::opening::OpeningCommand;
+use super::{Data, Typed};
+use crate::{Service, ServiceName};
+
+use super::opening::{OpenState, OpeningAbilities, OpeningState};
+use crate::{EntityKind, InvariantError};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -46,50 +49,6 @@ impl CoverClass {
     }
 }
 
-/// Where something that opens and closes is: a cover's or a valve's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum OpenState {
-    Open,
-    Opening,
-    Closed,
-    Closing,
-}
-
-impl OpenState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Open => "open",
-            Self::Opening => "opening",
-            Self::Closed => "closed",
-            Self::Closing => "closing",
-        }
-    }
-
-    /// Whether it is open, or on its way there: what a toggle closes.
-    pub fn is_open_or_opening(self) -> bool {
-        matches!(self, Self::Open | Self::Opening)
-    }
-
-    /// Read back from [`OpenState::as_str`], e.g. a remembered command.
-    pub fn parse(text: &str) -> Option<Self> {
-        super::from_ha(text)
-    }
-}
-
-/// Every text a cover's or valve's primary value can be, for rules to check against.
-pub(crate) static OPEN_STATES: LazyLock<Vec<String>> = LazyLock::new(|| {
-    [
-        OpenState::Open,
-        OpenState::Opening,
-        OpenState::Closed,
-        OpenState::Closing,
-    ]
-    .iter()
-    .map(|state| state.as_str().to_owned())
-    .collect()
-});
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CoverState {
@@ -107,26 +66,41 @@ pub struct CoverState {
 impl CoverState {
     /// Deserialization runs this; call it yourself when building one in code.
     pub fn validate(&self) -> Result<(), InvariantError> {
-        for (what, value) in [("position", self.position), ("tilt", self.tilt)] {
-            if let Some(value) = value
-                && value > 100
-            {
-                return Err(InvariantError(format!(
-                    "a cover's {what} is 0-100, not {value}"
-                )));
-            }
+        self.opening().validate(EntityKind::Cover)?;
+        match self.tilt {
+            Some(tilt) if tilt > 100 => Err(InvariantError(format!(
+                "a cover's tilt is 0-100, not {tilt}"
+            ))),
+            _ => Ok(()),
         }
-        Ok(())
+    }
+
+    /// Where it is, as anything that opens and closes.
+    pub fn opening(&self) -> OpeningState {
+        OpeningState {
+            state: self.state,
+            position: self.position,
+        }
+    }
+
+    /// At `opening`, with its tilt as it was.
+    pub fn at(opening: OpeningState, tilt: Option<u8>) -> Self {
+        Self {
+            state: opening.state,
+            position: opening.position,
+            tilt,
+        }
     }
 }
 
-/// Data for `cover.set_position` and `valve.set_position`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SetPosition {
-    /// 0 (closed) to 100 (open).
-    #[schemars(range(max = 100))]
-    pub position: u8,
+impl CoverCapabilities {
+    /// What it can do besides open and close, as anything that opens and closes.
+    pub fn opening(&self) -> OpeningAbilities {
+        OpeningAbilities {
+            position: self.position,
+            stop: self.stop,
+        }
+    }
 }
 
 /// Data for `cover.set_tilt`.
@@ -138,51 +112,83 @@ pub struct SetTilt {
     pub tilt: u8,
 }
 
-fn percent(what: &str, value: u8) -> Result<(), String> {
-    if value <= 100 {
-        Ok(())
-    } else {
-        Err(format!("takes a {what} from 0 to 100, not {value}"))
-    }
-}
-
-/// Whether a cover can be sent to a position. `Err` follows the entity's name.
-pub(crate) fn supports_position(
-    caps: &CoverCapabilities,
-    data: &SetPosition,
-) -> Result<(), String> {
-    if !caps.position {
-        return Err("can only open and close, not go to a position".into());
-    }
-    percent("position", data.position)
-}
-
 /// Whether a cover's slats can be tilted.
 pub(crate) fn supports_tilt(caps: &CoverCapabilities, data: &SetTilt) -> Result<(), String> {
     if !caps.tilt {
         return Err("has nothing to tilt".into());
     }
-    percent("tilt", data.tilt)
-}
-
-/// Whether a cover can be stopped.
-pub(crate) fn supports_stop(caps: &CoverCapabilities) -> Result<(), String> {
-    if caps.stop {
-        Ok(())
-    } else {
-        Err("can't be stopped while it moves".into())
+    if data.tilt > 100 {
+        return Err(format!("takes a tilt from 0 to 100, not {}", data.tilt));
     }
+    Ok(())
 }
 
 /// Whether a reported state is one this cover can be in.
 pub(crate) fn fits(caps: &CoverCapabilities, state: &CoverState) -> Result<(), String> {
-    if state.position.is_some() && !caps.position {
-        return Err("it reports a position, but said it can't go to one".into());
-    }
+    super::opening::fits(caps.opening(), state.opening())?;
     if state.tilt.is_some() && !caps.tilt {
         return Err("it reports a tilt, but said it has nothing to tilt".into());
     }
     Ok(())
+}
+
+pub(crate) fn primary(state: &CoverState) -> Typed {
+    Typed::Text(state.state.as_str().to_owned())
+}
+
+/// Keeps the position and tilt it said last.
+pub(crate) fn with_primary(previous: Option<&CoverState>, value: &Typed) -> Option<CoverState> {
+    let state = match value {
+        Typed::Text(text) => OpenState::parse(text)?,
+        _ => return None,
+    };
+    Some(match previous {
+        Some(cover) => CoverState {
+            state,
+            ..cover.clone()
+        },
+        None => CoverState {
+            state,
+            position: None,
+            tilt: None,
+        },
+    })
+}
+
+pub(crate) fn data_of(name: ServiceName) -> Data {
+    match name {
+        ServiceName::CoverSetTilt => Data::Required,
+        name => super::opening::data_of(name),
+    }
+}
+
+pub(crate) fn service(
+    name: ServiceName,
+    data: serde_json::Map<String, serde_json::Value>,
+) -> Result<Service, InvariantError> {
+    Ok(match name {
+        ServiceName::CoverOpen => Service::CoverOpen,
+        ServiceName::CoverClose => Service::CoverClose,
+        ServiceName::CoverStop => Service::CoverStop,
+        ServiceName::CoverSetPosition => Service::CoverSetPosition(super::parse(name, data)?),
+        ServiceName::CoverSetTilt => Service::CoverSetTilt(super::parse(name, data)?),
+        _ => return Err(super::not_mine(name)),
+    })
+}
+
+/// A tilt leaves nothing for a toggle to go by.
+pub(crate) fn asks_for(service: &Service) -> Option<Typed> {
+    OpeningCommand::of(EntityKind::Cover, service).and_then(OpeningCommand::asks_for)
+}
+
+pub(crate) fn supports_service(caps: &CoverCapabilities, service: &Service) -> Result<(), String> {
+    match service {
+        Service::CoverSetTilt(data) => supports_tilt(caps, data),
+        service => match OpeningCommand::of(EntityKind::Cover, service) {
+            Some(command) => super::opening::supports(caps.opening(), command),
+            None => Ok(()),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -197,14 +203,12 @@ mod tests {
             tilt: false,
             stop: true,
         };
-        assert!(supports_position(&blind, &SetPosition { position: 40 }).is_ok());
         assert_eq!(
             supports_tilt(&blind, &SetTilt { tilt: 20 }),
             Err("has nothing to tilt".to_owned())
         );
         let garage = CoverCapabilities::default();
-        assert!(supports_position(&garage, &SetPosition { position: 40 }).is_err());
-        assert!(supports_stop(&garage).is_err());
+        assert_eq!(garage.opening(), OpeningAbilities::default());
         assert!(
             fits(
                 &garage,
@@ -225,6 +229,5 @@ mod tests {
         // u8 takes 140, so the range is checked by `validate`, which a `State` runs.
         assert!(state.is_ok_and(|s| s.validate().is_err()));
         assert_eq!(OpenState::parse("closing"), Some(OpenState::Closing));
-        assert_eq!(OPEN_STATES.len(), 4);
     }
 }
