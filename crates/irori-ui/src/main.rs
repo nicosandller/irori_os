@@ -9,6 +9,7 @@
 mod api;
 mod app_frame;
 mod chart;
+mod choices;
 mod count;
 mod device;
 mod devices;
@@ -367,7 +368,7 @@ fn NotFound() -> impl IntoView {
                 "IroriOS has a start screen, a Floorplan, a Devices page, an Extensions page "
                 "and a Settings page. The rest is still to come."
             </p>
-            <p><A href="/">"Back to the start"</A></p>
+            <p><A href="/" attr:class="quiet-button">"Back to the start"</A></p>
         </section>
     }
 }

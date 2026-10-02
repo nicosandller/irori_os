@@ -439,32 +439,37 @@ fn field_row(field: Field, value: RwSignal<String>, touched: RwSignal<bool>) -> 
         .into_any(),
         FieldKind::Choice(choices) => {
             // Nothing picked yet means "don't send this key at all", so the extension's own
-            // default stands — which is not the same as the first value in the list.
-            let blank = if field.required {
-                "Choose one"
-            } else {
-                "Leave as it is"
-            };
+            // default stands — which is not the same as the first value in the list. A required
+            // field has no such button: nothing is pressed until one of the real choices is.
+            let required_field = field.required;
+            let mut options = Vec::new();
+            if !required_field {
+                options.push((String::new(), "Leave as it is".to_owned()));
+            }
+            options.extend(choices.into_iter().map(|choice| (choice.clone(), choice)));
+            let group = label.clone();
             view! {
-                <label class="settings-field">
+                <div class="settings-field">
                     <span>{label}{required}</span>
-                    <select
-                        prop:value=value
-                        on:change:target=move |ev| {
-                            value.set(ev.target().value());
+                    {crate::choices::choices(
+                        group,
+                        options,
+                        move || {
+                            let current = value.get();
+                            if current.is_empty() {
+                                (!required_field).then(String::new)
+                            } else {
+                                Some(current)
+                            }
+                        },
+                        || false,
+                        move |picked| {
+                            value.set(picked);
                             touched.set(true);
-                        }
-                    >
-                        <option value="">{blank}</option>
-                        {choices
-                            .into_iter()
-                            .map(|choice| view! {
-                                <option value=choice.clone()>{choice.clone()}</option>
-                            })
-                            .collect_view()}
-                    </select>
+                        },
+                    )}
                     {note}
-                </label>
+                </div>
             }
             .into_any()
         }

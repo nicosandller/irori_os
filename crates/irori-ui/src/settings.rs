@@ -15,14 +15,12 @@ use leptos_router::components::A;
 use crate::api;
 
 /// Jumps to a section of Settings: scrolls there — smoothly, with motion on — and has it flash
-/// once, so the eye lands where the page went. The link still names the section, for anything
-/// that reads links rather than clicking them.
+/// once, so the eye lands where the page went. The button names the section.
 fn jump(id: &'static str) -> impl Fn(ev::MouseEvent) {
-    move |event| {
+    move |_event| {
         let Some(section) = document().get_element_by_id(id) else {
             return;
         };
-        event.prevent_default();
         section.scroll_into_view();
         // Two names for the same flash, alternated, so a second jump to the same section plays
         // it again rather than finding it already applied.
@@ -204,12 +202,12 @@ pub fn Settings() -> impl IntoView {
         {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
 
         <nav class="settings-menu" aria-label="Sections of Settings">
-            <a href="#instance" on:click=jump("instance")>"Instance"</a>
-            <a href="#appearance" on:click=jump("appearance")>"Appearance"</a>
-            <a href="#floors-and-areas" on:click=jump("floors-and-areas")>"Floors & areas"</a>
-            <a href="#users" on:click=jump("users")>"Users"</a>
-            <a href="#logs" on:click=jump("logs")>"Logs"</a>
-            <a href="#system" on:click=jump("system")>"System"</a>
+            <button type="button" on:click=jump("instance")>"Instance"</button>
+            <button type="button" on:click=jump("appearance")>"Appearance"</button>
+            <button type="button" on:click=jump("floors-and-areas")>"Floors & areas"</button>
+            <button type="button" on:click=jump("users")>"Users"</button>
+            <button type="button" on:click=jump("logs")>"Logs"</button>
+            <button type="button" on:click=jump("system")>"System"</button>
         </nav>
 
         <section class="card settings-section" id="instance" style="--i: 0">
@@ -1204,7 +1202,7 @@ fn in_area(device: Device, dragging: RwSignal<Option<DeviceId>>) -> AnyView {
             on:dragend=move |_| dragging.set(None)
         >
             <span class="grip" aria-hidden="true">{icon(Icon::Grip)}</span>
-            <A href=format!("/devices/{id}") attr:draggable="false">{name}</A>
+            <A href=format!("/devices/{id}") attr:class="row-link" attr:draggable="false">{name}</A>
             <span class="muted small">{through}</span>
         </li>
     }

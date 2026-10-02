@@ -5,6 +5,7 @@ use irori_types::{WaterHeaterCapabilities, WaterHeaterMode, WaterHeaterState};
 use leptos::prelude::*;
 
 use super::degrees;
+use crate::choices::choices;
 use crate::devices::Controls;
 
 /// A water heater's mode, in words.
@@ -59,40 +60,35 @@ pub(crate) fn water_heater_control(
     let options = modes
         .iter()
         .map(|mode| {
-            view! {
-                <option value=mode.as_str() selected=chosen == Some(*mode)>
-                    {operation_mode_words(*mode)}
-                </option>
-            }
+            (
+                mode.as_str().to_owned(),
+                operation_mode_words(*mode).to_owned(),
+            )
         })
-        .collect_view();
+        .collect();
     let switch = capabilities.on_off;
     let mode = {
         let entity_id = entity_id.clone();
         let disable = disable.clone();
-        view! {
-            <select
-                class="select-control"
-                aria-label=format!("Mode for {}", entity.name)
-                disabled=disable
-                on:change:target=move |ev| {
-                    let picked = ev.target().value();
-                    // Off by its own switch, and on again with it before a mode is chosen.
-                    let (action, data) = match (picked.as_str(), switch, chosen) {
-                        ("off", true, _) => ("turn_off", None),
-                        (_, true, Some(WaterHeaterMode::Off)) => ("turn_on", None),
-                        _ => (
-                            "set_operation_mode",
-                            Some(serde_json::json!({ "operation_mode": picked })),
-                        ),
-                    };
-                    controls.act.run((entity_id.clone(), action, data));
-                }
-            >
-                <option value="" selected=chosen.is_none() disabled=true>"—"</option>
-                {options}
-            </select>
-        }
+        let current_mode = chosen;
+        choices(
+            format!("Mode for {}", entity.name),
+            options,
+            move || current_mode.map(|mode| mode.as_str().to_owned()),
+            disable,
+            move |picked| {
+                // Off by its own switch, and on again with it before a mode is chosen.
+                let (action, data) = match (picked.as_str(), switch, current_mode) {
+                    ("off", true, _) => ("turn_off", None),
+                    (_, true, Some(WaterHeaterMode::Off)) => ("turn_on", None),
+                    _ => (
+                        "set_operation_mode",
+                        Some(serde_json::json!({ "operation_mode": picked })),
+                    ),
+                };
+                controls.act.run((entity_id.clone(), action, data));
+            },
+        )
     };
     let running = current
         .as_ref()

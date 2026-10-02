@@ -61,7 +61,8 @@ What moves today, and where to find it.
 | Changing page | The page arrives from where it is in the sidebar — up from below for a page further down, down from above for one further up; between devices it crossfades. | `transition.rs` (View Transition API through the router); CSS `::view-transition-*`. |
 | List → device | The list slides aside and the device's name travels from its row into the heading; back reverses it. | `transition.rs`; only the opened device's name carries a transition name. |
 | Start tiles | A tile grows into the heading of the page it opens, while the page rises in behind. | `transition.rs` `expand`; the tile and the new `.page-head` are `hero`. |
-| Settings | Sections arrive one after another; a menu link glides to its section and flashes it. | `settings.rs` `jump`; CSS `.settings-section`. |
+| Settings | Sections arrive one after another; a menu button glides to its section and flashes it. | `settings.rs` `jump`; CSS `.settings-section`. |
+| Choices | A mode, a tone, an area: buttons in a row, the chosen one sunk with an ember edge. Hover and press are the button's. | `choices.rs`; CSS `.choices`. |
 | Live numbers | A reading counts to its new value and lifts or drops into place in ember, the way it went. | `count.rs`, for anything marked `data-n`. |
 | Device page history | The reading is the button — or pull it down; a drawer rolls down to its content; a number's day is a chart that draws itself in and then **grows with each new reading**, with a crosshair, a tooltip and arrow-key stepping. | `device.rs` `EntityRow`, `chart.rs`, `gesture.rs`; CSS `.unroll`, `.drawer`, `.chart-*`. |
 | Swiping a toggle | The knob follows the finger; let go past halfway and it switches, springing home from where it was let go. | `gesture.rs`, `devices/controls/mod.rs` `knob`. |
