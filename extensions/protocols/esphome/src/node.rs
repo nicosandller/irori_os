@@ -12,14 +12,12 @@ use std::time::Duration;
 use esphome_client::EspHomeClient;
 use esphome_client::error::ClientError;
 use esphome_client::types::{
-    ButtonCommandRequest, EspHomeMessage, LightCommandRequest, ListEntitiesRequest,
-    NumberCommandRequest, PingResponse, SelectCommandRequest, SubscribeStatesRequest,
-    SwitchCommandRequest, TextCommandRequest,
+    EspHomeMessage, ListEntitiesRequest, PingResponse, SubscribeStatesRequest,
 };
 use irori_protocol::types::WaterHeaterMode;
 use irori_protocol::types::units::TemperatureUnit;
 use irori_protocol::types::{
-    Capabilities, ContextId, DeviceDescription, EntityDescription, HvacMode, Service, State,
+    Capabilities, ContextId, DeviceDescription, EntityDescription, EntityKind, HvacMode, State,
     StateReport, UniqueId, Unmodeled,
 };
 use irori_protocol::{IncomingCall, ServiceError};
@@ -458,7 +456,7 @@ struct Known {
 #[derive(Debug, Default)]
 struct Units {
     temperature: HashMap<u32, TemperatureUnit>,
-    climate_reads: HashMap<u32, map::ClimateReads>,
+    climate_reads: HashMap<u32, map::climate::Reads>,
     /// Water heaters that report the water's temperature.
     reads_current: std::collections::HashSet<u32>,
 }
@@ -504,77 +502,120 @@ async fn list_entities(
                 }
                 return Ok((entities, unmodeled, units));
             }
-            EspHomeMessage::ListEntitiesLightResponse(e) => {
-                (e.key, "light", e.name.clone(), map::light(device, e))
-            }
-            EspHomeMessage::ListEntitiesSwitchResponse(e) => {
-                (e.key, "switch", e.name.clone(), map::switch(device, e))
-            }
-            EspHomeMessage::ListEntitiesSensorResponse(e) => {
-                (e.key, "sensor", e.name.clone(), map::sensor(device, e))
-            }
-            EspHomeMessage::ListEntitiesNumberResponse(e) => {
-                (e.key, "number", e.name.clone(), map::number(device, e))
-            }
-            EspHomeMessage::ListEntitiesSelectResponse(e) => {
-                (e.key, "select", e.name.clone(), map::select(device, e))
-            }
-            EspHomeMessage::ListEntitiesTextResponse(e) => {
-                (e.key, "text", e.name.clone(), map::text(device, e))
-            }
-            EspHomeMessage::ListEntitiesButtonResponse(e) => {
-                (e.key, "button", e.name.clone(), map::button(device, e))
-            }
-            EspHomeMessage::ListEntitiesEventResponse(e) => {
-                (e.key, "event", e.name.clone(), map::event(device, e))
-            }
-            EspHomeMessage::ListEntitiesCoverResponse(e) => {
-                (e.key, "cover", e.name.clone(), map::cover(device, e))
-            }
-            EspHomeMessage::ListEntitiesLockResponse(e) => {
-                (e.key, "lock", e.name.clone(), map::lock(device, e))
-            }
+            EspHomeMessage::ListEntitiesLightResponse(e) => (
+                e.key,
+                "light",
+                e.name.clone(),
+                map::light::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesSwitchResponse(e) => (
+                e.key,
+                "switch",
+                e.name.clone(),
+                map::switch::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesSensorResponse(e) => (
+                e.key,
+                "sensor",
+                e.name.clone(),
+                map::sensor::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesNumberResponse(e) => (
+                e.key,
+                "number",
+                e.name.clone(),
+                map::number::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesSelectResponse(e) => (
+                e.key,
+                "select",
+                e.name.clone(),
+                map::select::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesTextResponse(e) => (
+                e.key,
+                "text",
+                e.name.clone(),
+                map::text::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesButtonResponse(e) => (
+                e.key,
+                "button",
+                e.name.clone(),
+                map::button::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesEventResponse(e) => (
+                e.key,
+                "event",
+                e.name.clone(),
+                map::event::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesCoverResponse(e) => (
+                e.key,
+                "cover",
+                e.name.clone(),
+                map::cover::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesLockResponse(e) => (
+                e.key,
+                "lock",
+                e.name.clone(),
+                map::lock::describe(device, e),
+            ),
             EspHomeMessage::ListEntitiesFanResponse(e) => {
-                (e.key, "fan", e.name.clone(), map::fan(device, e))
+                (e.key, "fan", e.name.clone(), map::fan::describe(device, e))
             }
-            EspHomeMessage::ListEntitiesValveResponse(e) => {
-                (e.key, "valve", e.name.clone(), map::valve(device, e))
-            }
-            EspHomeMessage::ListEntitiesSirenResponse(e) => {
-                (e.key, "siren", e.name.clone(), map::siren(device, e))
-            }
+            EspHomeMessage::ListEntitiesValveResponse(e) => (
+                e.key,
+                "valve",
+                e.name.clone(),
+                map::valve::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesSirenResponse(e) => (
+                e.key,
+                "siren",
+                e.name.clone(),
+                map::siren::describe(device, e),
+            ),
             EspHomeMessage::ListEntitiesClimateResponse(e) => {
                 units
                     .temperature
                     .insert(e.key, map::temperature_unit(e.temperature_unit));
-                units.climate_reads.insert(e.key, map::ClimateReads::of(e));
-                (e.key, "climate", e.name.clone(), map::climate(device, e))
+                units
+                    .climate_reads
+                    .insert(e.key, map::climate::Reads::of(e));
+                (
+                    e.key,
+                    "climate",
+                    e.name.clone(),
+                    map::climate::describe(device, e),
+                )
             }
             EspHomeMessage::ListEntitiesWaterHeaterResponse(e) => {
                 units
                     .temperature
                     .insert(e.key, map::temperature_unit(e.temperature_unit));
-                if map::water_heater_reads_current(e) {
+                if map::water_heater::reads_current(e) {
                     units.reads_current.insert(e.key);
                 }
                 (
                     e.key,
                     "water_heater",
                     e.name.clone(),
-                    map::water_heater(device, e),
+                    map::water_heater::describe(device, e),
                 )
             }
             EspHomeMessage::ListEntitiesTextSensorResponse(e) => (
                 e.key,
                 "text_sensor",
                 e.name.clone(),
-                map::text_sensor(device, e),
+                map::sensor::describe_text(device, e),
             ),
             EspHomeMessage::ListEntitiesBinarySensorResponse(e) => (
                 e.key,
                 "binary_sensor",
                 e.name.clone(),
-                map::binary_sensor(device, e),
+                map::binary_sensor::describe(device, e),
             ),
             EspHomeMessage::PingRequest(_) => {
                 client
@@ -626,7 +667,7 @@ fn report(
             let Some(Capabilities::Climate(caps)) = capabilities.get(&s.key) else {
                 return None;
             };
-            let state = map::climate_state(
+            let state = map::climate::state(
                 s,
                 caps,
                 known.units.temperature_of(s.key),
@@ -648,7 +689,7 @@ fn report(
             let Some(Capabilities::WaterHeater(caps)) = capabilities.get(&s.key) else {
                 return None;
             };
-            let state = map::water_heater_state(
+            let state = map::water_heater::state(
                 s,
                 caps,
                 known.units.temperature_of(s.key),
@@ -665,41 +706,36 @@ fn report(
             let Some(Capabilities::Light(known)) = capabilities.get(&s.key) else {
                 return None;
             };
-            (s.key, Some(map::light_state(s, known)))
+            (s.key, Some(map::light::state(s, known)))
         }
-        EspHomeMessage::LockStateResponse(s) => (s.key, map::lock_state(s)),
-        EspHomeMessage::SirenStateResponse(s) => (
-            s.key,
-            Some(State::Siren(irori_protocol::types::SirenState {
-                on: s.state,
-            })),
-        ),
+        EspHomeMessage::LockStateResponse(s) => (s.key, map::lock::state(s)),
+        EspHomeMessage::SirenStateResponse(s) => (s.key, Some(map::siren::state(s))),
         EspHomeMessage::ValveStateResponse(s) => {
             let Some(Capabilities::Valve(known)) = capabilities.get(&s.key) else {
                 return None;
             };
-            (s.key, Some(map::valve_state(s, known)))
+            (s.key, Some(map::valve::state(s, known)))
         }
         EspHomeMessage::FanStateResponse(s) => {
             let Some(Capabilities::Fan(known)) = capabilities.get(&s.key) else {
                 return None;
             };
-            (s.key, Some(map::fan_state(s, known)))
+            (s.key, Some(map::fan::state(s, known)))
         }
         EspHomeMessage::CoverStateResponse(s) => {
             let Some(Capabilities::Cover(known)) = capabilities.get(&s.key) else {
                 return None;
             };
-            (s.key, Some(map::cover_state(s, known)))
+            (s.key, Some(map::cover::state(s, known)))
         }
-        EspHomeMessage::SwitchStateResponse(s) => (s.key, Some(map::switch_state(s))),
-        EspHomeMessage::BinarySensorStateResponse(s) => (s.key, Some(map::binary_sensor_state(s))),
-        EspHomeMessage::SensorStateResponse(s) => (s.key, map::sensor_state(s)),
-        EspHomeMessage::TextSensorStateResponse(s) => (s.key, map::text_sensor_state(s)),
-        EspHomeMessage::NumberStateResponse(s) => (s.key, map::number_state(s)),
-        EspHomeMessage::SelectStateResponse(s) => (s.key, map::select_state(s)),
-        EspHomeMessage::TextStateResponse(s) => (s.key, map::text_state(s)),
-        EspHomeMessage::EventResponse(e) => (e.key, Some(map::event_state(e))),
+        EspHomeMessage::SwitchStateResponse(s) => (s.key, Some(map::switch::state(s))),
+        EspHomeMessage::BinarySensorStateResponse(s) => (s.key, Some(map::binary_sensor::state(s))),
+        EspHomeMessage::SensorStateResponse(s) => (s.key, map::sensor::state(s)),
+        EspHomeMessage::TextSensorStateResponse(s) => (s.key, map::sensor::text_state(s)),
+        EspHomeMessage::NumberStateResponse(s) => (s.key, map::number::state(s)),
+        EspHomeMessage::SelectStateResponse(s) => (s.key, map::select::state(s)),
+        EspHomeMessage::TextStateResponse(s) => (s.key, map::text::state(s)),
+        EspHomeMessage::EventResponse(e) => (e.key, Some(map::event::state(e))),
         _ => return None,
     };
     let unique_id = by_key.get(&key)?.clone();
@@ -751,184 +787,63 @@ async fn command(
         return;
     };
     let context = incoming.call.context.id.clone();
-    let written = match &incoming.call.service {
-        Service::LightTurnOn(data) => {
-            let known = match capabilities.get(&key) {
-                Some(Capabilities::Light(light)) => Some(light),
-                _ => None,
-            };
-            let mut request = LightCommandRequest {
-                key,
-                has_state: true,
-                state: true,
-                ..Default::default()
-            };
-            if let Some(brightness) = data.brightness {
-                request.has_brightness = true;
-                request.brightness = map::to_fraction(brightness);
-            }
-            if let Some(kelvin) = data.color_temp_kelvin {
-                request.has_color_temperature = true;
-                request.color_temperature = map::mireds(kelvin);
-            }
-            if let Some([red, green, blue]) = data.rgb {
-                request.has_rgb = true;
-                request.red = map::to_fraction(red);
-                request.green = map::to_fraction(green);
-                request.blue = map::to_fraction(blue);
-            }
-            // The core checks capabilities before it gets here; this is the last guard.
-            if known.is_none() {
-                incoming.reply(Err(ServiceError::failed(
-                    "this entity isn't a light on the device".to_owned(),
-                )));
-                return;
-            }
-            client.try_write(request).await.map_err(|e| e.to_string())
-        }
-        Service::LightTurnOff => client
-            .try_write(LightCommandRequest {
-                key,
-                has_state: true,
-                state: false,
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| e.to_string()),
-        Service::NumberSetValue(data) => client
-            .try_write(NumberCommandRequest {
-                key,
-                // The core checked it's within the number's range, which came from the device.
-                #[allow(clippy::cast_possible_truncation)]
-                state: data.value as f32,
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| e.to_string()),
-        Service::SelectSelectOption(data) => client
-            .try_write(SelectCommandRequest {
-                key,
-                state: data.option.clone(),
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| e.to_string()),
-        Service::TextSetValue(data) => client
-            .try_write(TextCommandRequest {
-                key,
-                state: data.value.clone(),
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| e.to_string()),
-        Service::ButtonPress => client
-            .try_write(ButtonCommandRequest {
-                key,
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| e.to_string()),
-        Service::CoverOpen
-        | Service::CoverClose
-        | Service::CoverStop
-        | Service::CoverSetPosition(_)
-        | Service::CoverSetTilt(_) => client
-            .try_write(map::cover_command(key, &incoming.call.service))
-            .await
-            .map_err(|e| e.to_string()),
-        Service::FanTurnOn(_)
-        | Service::FanTurnOff
-        | Service::FanSetPercentage(_)
-        | Service::FanOscillate(_)
-        | Service::FanSetDirection(_)
-        | Service::FanSetPresetMode(_) => {
+    let service = &incoming.call.service;
+    let kind = service.name().kind();
+    // The core checks the entity is of the service's kind before it gets here; this is the last
+    // guard, against a device reflashed in between.
+    if capabilities.get(&key).map(Capabilities::kind) != Some(kind) {
+        incoming.reply(Err(ServiceError::failed(format!(
+            "this entity isn't a {kind} on the device"
+        ))));
+        return;
+    }
+    let written = match kind {
+        EntityKind::Light => write(client, map::light::command(key, service)).await,
+        EntityKind::Switch => write(client, map::switch::command(key, service)).await,
+        EntityKind::Number => write(client, map::number::command(key, service)).await,
+        EntityKind::Select => write(client, map::select::command(key, service)).await,
+        EntityKind::Text => write(client, map::text::command(key, service)).await,
+        EntityKind::Button => write(client, map::button::command(key)).await,
+        EntityKind::Cover => write(client, map::cover::command(key, service)).await,
+        EntityKind::Valve => write(client, map::valve::command(key, service)).await,
+        EntityKind::Siren => write(client, map::siren::command(key, service)).await,
+        EntityKind::Lock => write(client, map::lock::command(key, service)).await,
+        EntityKind::Fan => {
             let known = match capabilities.get(&key) {
                 Some(Capabilities::Fan(fan)) => Some(fan),
                 _ => None,
             };
-            client
-                .try_write(map::fan_command(key, &incoming.call.service, known))
-                .await
-                .map_err(|e| e.to_string())
+            write(client, map::fan::command(key, service, known)).await
         }
-        Service::ValveOpen
-        | Service::ValveClose
-        | Service::ValveStop
-        | Service::ValveSetPosition(_) => client
-            .try_write(map::valve_command(key, &incoming.call.service))
-            .await
-            .map_err(|e| e.to_string()),
-        Service::ClimateSetHvacMode(_)
-        | Service::ClimateSetTemperature(_)
-        | Service::ClimateSetHumidity(_)
-        | Service::ClimateSetFanMode(_)
-        | Service::ClimateSetSwingMode(_)
-        | Service::ClimateSetPresetMode(_)
-        | Service::ClimateTurnOn
-        | Service::ClimateTurnOff => {
+        EntityKind::Climate => {
             let on_mode = match capabilities.get(&key) {
                 Some(Capabilities::Climate(caps)) => {
                     caps.mode_to_turn_on(known.last_on.get(&key).copied())
                 }
                 _ => None,
             };
-            client
-                .try_write(map::climate_command(
-                    key,
-                    &incoming.call.service,
-                    known.units.temperature_of(key),
-                    on_mode,
-                ))
-                .await
-                .map_err(|e| e.to_string())
+            let unit = known.units.temperature_of(key);
+            write(client, map::climate::command(key, service, unit, on_mode)).await
         }
-        Service::WaterHeaterSetTemperature(_)
-        | Service::WaterHeaterSetOperationMode(_)
-        | Service::WaterHeaterTurnOn
-        | Service::WaterHeaterTurnOff => {
+        EntityKind::WaterHeater => {
             let caps = match capabilities.get(&key) {
                 Some(Capabilities::WaterHeater(caps)) => Some(caps),
                 _ => None,
             };
             let on_mode =
                 caps.and_then(|caps| caps.mode_to_turn_on(known.heater_last_on.get(&key).copied()));
-            client
-                .try_write(map::water_heater_command(
-                    key,
-                    &incoming.call.service,
-                    caps,
-                    known.units.temperature_of(key),
-                    on_mode,
-                ))
-                .await
-                .map_err(|e| e.to_string())
+            let unit = known.units.temperature_of(key);
+            write(
+                client,
+                map::water_heater::command(key, service, caps, unit, on_mode),
+            )
+            .await
         }
         // The core only sends these to an entity of the kind, and ESPHome has none.
-        Service::HumidifierTurnOn
-        | Service::HumidifierTurnOff
-        | Service::HumidifierSetHumidity(_)
-        | Service::HumidifierSetMode(_) => {
-            incoming.reply(Err(ServiceError::failed(
-                "ESPHome has no humidifiers".to_owned(),
-            )));
-            return;
-        }
-        Service::SirenTurnOn(_) | Service::SirenTurnOff => client
-            .try_write(map::siren_command(key, &incoming.call.service))
-            .await
-            .map_err(|e| e.to_string()),
-        Service::LockLock(_) | Service::LockUnlock(_) | Service::LockOpen(_) => client
-            .try_write(map::lock_command(key, &incoming.call.service))
-            .await
-            .map_err(|e| e.to_string()),
-        Service::SwitchTurnOn | Service::SwitchTurnOff => client
-            .try_write(SwitchCommandRequest {
-                key,
-                state: matches!(incoming.call.service, Service::SwitchTurnOn),
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| e.to_string()),
+        EntityKind::Humidifier
+        | EntityKind::Sensor
+        | EntityKind::BinarySensor
+        | EntityKind::Event => Err(format!("ESPHome has no {kind} services")),
     };
     match written {
         Ok(()) => {
@@ -946,12 +861,20 @@ async fn command(
     }
 }
 
+/// Sends one command to the device.
+async fn write<M>(client: &mut EspHomeClient, request: M) -> Result<(), String>
+where
+    M: Into<EspHomeMessage> + std::fmt::Debug,
+{
+    client.try_write(request).await.map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use irori_protocol::host::incoming_call;
     use irori_protocol::types::{
-        Capabilities, ColorTempRange, Context, ContextId, LightTurnOn, Origin, ServiceCall, State,
-        UniqueId, UserId,
+        Capabilities, ColorTempRange, Context, ContextId, LightTurnOn, Origin, Service,
+        ServiceCall, State, UniqueId, UserId,
     };
 
     use super::*;
