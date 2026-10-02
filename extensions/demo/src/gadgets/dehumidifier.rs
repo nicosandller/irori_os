@@ -71,6 +71,7 @@ impl Gadget for Dehumidifier {
             unique_id: DRYER_HUMIDIFIER,
             name: None,
             capabilities: Capabilities::Humidifier(capabilities()),
+            suggested_object_id: None,
             category: None,
         }]
     }
@@ -103,7 +104,7 @@ impl Gadget for Dehumidifier {
     }
 
     /// Reads the room, and dries it while it's above the target.
-    fn tick(&mut self, _: Instant, room: Room) -> Vec<&'static str> {
+    fn tick(&mut self, _: Instant, room: Room, _: u64) -> Vec<&'static str> {
         let before = self.state.clone();
         self.state.current_humidity = Some(room.humidity);
         self.reconsider();
@@ -130,10 +131,10 @@ mod tests {
     fn the_dehumidifier_dries_a_damp_room() {
         let now = Instant::now();
         let mut dryer = Dehumidifier::new();
-        dryer.tick(now, room(64.0));
+        dryer.tick(now, room(64.0), 0);
         super::super::assert_fits(&dryer, &dryer.states());
         assert_eq!(dryer.state.action, Some(HumidifierAction::Drying));
-        dryer.tick(now, room(45.0));
+        dryer.tick(now, room(45.0), 0);
         assert_eq!(dryer.state.action, Some(HumidifierAction::Idle));
         dryer
             .call(DRYER_HUMIDIFIER, &Service::HumidifierTurnOff, now)

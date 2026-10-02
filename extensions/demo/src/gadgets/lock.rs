@@ -46,6 +46,7 @@ impl Gadget for FrontDoorLock {
                 unique_id: LOCK_LOCK,
                 name: None,
                 capabilities: Capabilities::Lock(LockCapabilities::default()),
+                suggested_object_id: None,
                 category: None,
             },
             Entity {
@@ -59,6 +60,7 @@ impl Gadget for FrontDoorLock {
                     device_class: Some(SensorClass::Duration),
                     mode: NumberMode::Box,
                 }),
+                suggested_object_id: None,
                 category: Some(EntityCategory::Config),
             },
         ]
@@ -102,7 +104,7 @@ impl Gadget for FrontDoorLock {
     }
 
     /// Locks itself again once its time is up.
-    fn tick(&mut self, now: Instant, _: Room) -> Vec<&'static str> {
+    fn tick(&mut self, now: Instant, _: Room, _: u64) -> Vec<&'static str> {
         match self.unlocked_at {
             Some(since)
                 if self.auto_lock > 0.0
@@ -134,9 +136,9 @@ mod tests {
         let mut lock = FrontDoorLock::new();
         let unlock = Service::LockUnlock(LockCode::default());
         lock.call(LOCK_LOCK, &unlock, now).expect("unlocks");
-        assert!(lock.tick(now + Duration::from_secs(29), ROOM).is_empty());
+        assert!(lock.tick(now + Duration::from_secs(29), ROOM, 0).is_empty());
         assert_eq!(
-            lock.tick(now + Duration::from_secs(30), ROOM),
+            lock.tick(now + Duration::from_secs(30), ROOM, 0),
             vec![LOCK_LOCK]
         );
         assert_eq!(lock.status, LockStatus::Locked);
@@ -144,7 +146,10 @@ mod tests {
         let never = Service::NumberSetValue(NumberSetValue { value: 0.0 });
         lock.call(LOCK_AUTO, &never, now).expect("takes it");
         lock.call(LOCK_LOCK, &unlock, now).expect("unlocks");
-        assert!(lock.tick(now + Duration::from_secs(3600), ROOM).is_empty());
+        assert!(
+            lock.tick(now + Duration::from_secs(3600), ROOM, 0)
+                .is_empty()
+        );
         assert_eq!(lock.status, LockStatus::Unlocked);
     }
 }

@@ -342,11 +342,15 @@ async fn route(call: IncomingCall, devices: &BTreeMap<String, Device>) {
         return;
     }
     if let Err(error) = device.commands.try_send(call) {
-        let call = match error {
-            mpsc::error::TrySendError::Full(call) | mpsc::error::TrySendError::Closed(call) => call,
+        let (call, full) = match error {
+            mpsc::error::TrySendError::Full(call) => (call, true),
+            mpsc::error::TrySendError::Closed(call) => (call, false),
         };
-        call.reply(Err(ServiceError::unavailable(
-            "the Cast device can't be reached",
-        )));
+        let error = if full {
+            ServiceError::failed("the Cast device is busy with another command")
+        } else {
+            ServiceError::unavailable("the Cast device can't be reached")
+        };
+        call.reply(Err(error));
     }
 }

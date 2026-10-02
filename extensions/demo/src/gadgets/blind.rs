@@ -92,12 +92,14 @@ impl Gadget for Blind {
                     tilt: true,
                     stop: true,
                 }),
+                suggested_object_id: None,
                 category: None,
             },
             Entity {
                 unique_id: BLIND_CALIBRATE,
                 name: Some("Calibrate"),
                 capabilities: Capabilities::Button(ButtonCapabilities::default()),
+                suggested_object_id: None,
                 category: Some(EntityCategory::Config),
             },
         ]
@@ -131,7 +133,7 @@ impl Gadget for Blind {
         Ok(BLIND_COVER)
     }
 
-    fn tick(&mut self, _: Instant, _: Room) -> Vec<&'static str> {
+    fn tick(&mut self, _: Instant, _: Room, _: u64) -> Vec<&'static str> {
         if self.step() {
             vec![BLIND_COVER]
         } else {
@@ -168,18 +170,18 @@ mod tests {
             (OpenState::Closing, Some(100))
         );
         for _ in 0..3 {
-            blind.tick(now, ROOM);
+            blind.tick(now, ROOM, 0);
         }
         assert_eq!(blind.state().state, OpenState::Open);
         assert_eq!(blind.position, 40);
-        assert!(blind.tick(now, ROOM).is_empty(), "still once it's there");
+        assert!(blind.tick(now, ROOM, 0).is_empty(), "still once it's there");
 
         blind
             .call(BLIND_CALIBRATE, &Service::ButtonPress, now)
             .expect("calibrates");
         let mut lowest = 100;
         for _ in 0..10 {
-            blind.tick(now, ROOM);
+            blind.tick(now, ROOM, 0);
             lowest = lowest.min(blind.position);
         }
         assert_eq!((lowest, blind.position), (0, 40));

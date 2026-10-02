@@ -4,7 +4,6 @@
 //! local network. The handshake signature is still checked, which keeps the record layer real.
 //! The trust boundary is the LAN, the same as a plaintext device that announces itself.
 
-use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -22,7 +21,7 @@ use tokio::sync::mpsc;
 use tokio_rustls::TlsConnector;
 
 use crate::discover::Found;
-use crate::map::{self, DEFAULT_MEDIA_RECEIVER, LoadBody, Outcome, Snap, Step};
+use crate::map::{self, Command, DEFAULT_MEDIA_RECEIVER, LoadBody, Once, Outcome, Snap};
 use crate::proto::{
     self, CastMessage, NS_CONNECTION, NS_HEARTBEAT, NS_MEDIA, NS_RECEIVER, RECEIVER,
 };
@@ -301,10 +300,60 @@ async fn publish(wire: &mut Wire, device: &Device<'_>) -> Result<(), String> {
 
 struct Pending {
     call: IncomingCall,
-    steps: VecDeque<Step>,
-    sent: bool,
+    flight: Flight,
     deadline: Instant,
     context: ContextId,
+}
+
+/// Where a command is. Each variant moves forward; nothing here is re-sent.
+enum Flight {
+    Once(Once),
+    TurnOn(TurnPhase),
+    Play(Play),
+}
+
+enum TurnPhase {
+    /// STOP the current app, when it still has a session.
+    Quit,
+    /// STOP is written. Wait until the receiver drops the session.
+    WaitQuit,
+    /// LAUNCH the default receiver and answer. Turn on does not load media.
+    Launch,
+}
+
+struct Play {
+    body: LoadBody,
+    phase: PlayPhase,
+}
+
+enum PlayPhase {
+    Quit,
+    WaitQuit,
+    /// LAUNCH, then wait until that app has a transport.
+    Launch,
+    WaitLaunch,
+    /// LOAD and answer.
+    Load,
+}
+
+impl Flight {
+    fn start(command: Command) -> Self {
+        match command {
+            Command::Once(once) => Self::Once(once),
+            Command::TurnOn { quit: true } => Self::TurnOn(TurnPhase::Quit),
+            Command::TurnOn { quit: false } => Self::TurnOn(TurnPhase::Launch),
+            Command::Play { quit, launch, body } => Self::Play(Play {
+                body,
+                phase: if quit {
+                    PlayPhase::Quit
+                } else if launch {
+                    PlayPhase::Launch
+                } else {
+                    PlayPhase::Load
+                },
+            }),
+        }
+    }
 }
 
 enum Begun {
@@ -324,10 +373,9 @@ fn begin(call: IncomingCall, snap: &Snap, cause: &mut Option<ContextId>) -> Begu
             call.reply(Err(ServiceError::failed(message)));
             Begun::Replied
         }
-        Outcome::Steps(steps) => Begun::Wait(Box::new(Pending {
+        Outcome::Do(command) => Begun::Wait(Box::new(Pending {
             call,
-            steps: VecDeque::from(steps),
-            sent: false,
+            flight: Flight::start(command),
             deadline: Instant::now() + COMMAND_DEADLINE,
             context,
         })),
@@ -364,77 +412,106 @@ fn advance(wire: &mut Wire) -> (Vec<CastMessage>, Option<Result<(), ServiceError
     };
     let mut messages = Vec::new();
     loop {
-        let Some(step) = pending.steps.front().cloned() else {
-            return (messages, Some(Ok(())));
-        };
-        match step {
-            Step::Quit => match snap.session_id.clone() {
-                None => {
-                    pending.steps.pop_front();
-                    pending.sent = false;
-                }
-                Some(session) if !pending.sent => {
-                    messages.push(quit(&session, next_id(request_id)));
-                    pending.sent = true;
-                    if pending.steps.len() == 1 {
-                        pending.steps.pop_front();
-                        return (messages, Some(Ok(())));
+        match &mut pending.flight {
+            Flight::Once(once) => {
+                let once = *once;
+                return once_message(messages, snap, request_id, once);
+            }
+            Flight::TurnOn(phase) => match *phase {
+                TurnPhase::Quit => match snap.session_id.clone() {
+                    None => *phase = TurnPhase::Launch,
+                    Some(session) => {
+                        messages.push(quit(&session, next_id(request_id)));
+                        *phase = TurnPhase::WaitQuit;
+                        return (messages, None);
                     }
-                    return (messages, None);
+                },
+                TurnPhase::WaitQuit => {
+                    if snap.session_id.is_some() {
+                        return (messages, None);
+                    }
+                    *phase = TurnPhase::Launch;
                 }
-                Some(_) => return (messages, None),
-            },
-            Step::Launch => {
-                if !pending.sent {
+                TurnPhase::Launch => {
                     messages.push(launch(next_id(request_id)));
-                    pending.sent = true;
-                }
-                let launched = snap.app_id.as_deref() == Some(DEFAULT_MEDIA_RECEIVER)
-                    && snap.transport_id.is_some();
-                if pending.steps.len() == 1 {
-                    pending.steps.pop_front();
                     return (messages, Some(Ok(())));
                 }
-                if launched {
-                    pending.steps.pop_front();
-                    pending.sent = false;
-                    continue;
+            },
+            Flight::Play(play) => match play.phase {
+                PlayPhase::Quit => match snap.session_id.clone() {
+                    None => play.phase = PlayPhase::Launch,
+                    Some(session) => {
+                        messages.push(quit(&session, next_id(request_id)));
+                        play.phase = PlayPhase::WaitQuit;
+                        return (messages, None);
+                    }
+                },
+                PlayPhase::WaitQuit => {
+                    if snap.session_id.is_some() {
+                        return (messages, None);
+                    }
+                    play.phase = PlayPhase::Launch;
                 }
-                return (messages, None);
-            }
-            Step::Load(body) => {
-                let Some(transport) = snap.transport_id.clone() else {
+                PlayPhase::Launch => {
+                    messages.push(launch(next_id(request_id)));
+                    play.phase = PlayPhase::WaitLaunch;
                     return (messages, None);
-                };
-                messages.push(load_message(&transport, &body, next_id(request_id)));
-                pending.steps.pop_front();
-                return (messages, Some(Ok(())));
+                }
+                PlayPhase::WaitLaunch => {
+                    let launched = snap.app_id.as_deref() == Some(DEFAULT_MEDIA_RECEIVER)
+                        && snap.transport_id.is_some();
+                    if !launched {
+                        return (messages, None);
+                    }
+                    play.phase = PlayPhase::Load;
+                }
+                PlayPhase::Load => {
+                    let Some(transport) = snap.transport_id.clone() else {
+                        return (messages, None);
+                    };
+                    let body = play.body.clone();
+                    messages.push(load_message(&transport, &body, next_id(request_id)));
+                    return (messages, Some(Ok(())));
+                }
+            },
+        }
+    }
+}
+
+fn once_message(
+    mut messages: Vec<CastMessage>,
+    snap: &Snap,
+    request_id: &mut u64,
+    once: Once,
+) -> (Vec<CastMessage>, Option<Result<(), ServiceError>>) {
+    match once {
+        Once::Quit => {
+            if let Some(session) = snap.session_id.clone() {
+                messages.push(quit(&session, next_id(request_id)));
             }
-            Step::Volume { level, muted } => {
-                messages.push(volume_message(level, muted, next_id(request_id)));
-                pending.steps.pop_front();
-                return (messages, Some(Ok(())));
-            }
-            Step::Media { action, position } => {
-                let (Some(transport), Some(session)) =
-                    (snap.transport_id.clone(), snap.media_session_id)
-                else {
-                    pending.steps.clear();
-                    return (
-                        messages,
-                        Some(Err(ServiceError::failed("nothing is playing"))),
-                    );
-                };
-                messages.push(media_message(
-                    &transport,
-                    action,
-                    session,
-                    position,
-                    next_id(request_id),
-                ));
-                pending.steps.pop_front();
-                return (messages, Some(Ok(())));
-            }
+            (messages, Some(Ok(())))
+        }
+        Once::Volume { level, muted } => {
+            messages.push(volume_message(level, muted, next_id(request_id)));
+            (messages, Some(Ok(())))
+        }
+        Once::Media { action, position } => {
+            let (Some(transport), Some(session)) =
+                (snap.transport_id.clone(), snap.media_session_id)
+            else {
+                return (
+                    messages,
+                    Some(Err(ServiceError::failed("nothing is playing"))),
+                );
+            };
+            messages.push(media_message(
+                &transport,
+                action,
+                session,
+                position,
+                next_id(request_id),
+            ));
+            (messages, Some(Ok(())))
         }
     }
 }

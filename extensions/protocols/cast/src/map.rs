@@ -8,6 +8,7 @@ use irori_types::{
     Capabilities, DeviceDescription, EntityDescription, MediaPlayerCapabilities, MediaPlayerClass,
     MediaPlayerState, Name, PlayMedia, Playback, Service, UniqueId,
 };
+use serde::Deserialize;
 
 use crate::discover::Found;
 
@@ -27,7 +28,7 @@ pub struct Snap {
     pub session_id: Option<String>,
     pub transport_id: Option<String>,
     pub media_session_id: Option<i64>,
-    pub player_state: Option<String>,
+    pub player_state: Option<PlayerState>,
     pub volume: Option<u8>,
     pub muted: Option<bool>,
     pub title: Option<String>,
@@ -38,6 +39,25 @@ pub struct Snap {
     pub position: Option<f64>,
     pub stand_by: Option<bool>,
     pub active_input: Option<bool>,
+}
+
+/// What the media namespace last said. An idle word, or one this protocol doesn't use, is absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlayerState {
+    Playing,
+    Paused,
+    Buffering,
+}
+
+impl PlayerState {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "PLAYING" => Some(Self::Playing),
+            "PAUSED" => Some(Self::Paused),
+            "BUFFERING" | "LOADING" => Some(Self::Buffering),
+            _ => None,
+        }
+    }
 }
 
 impl Snap {
@@ -125,48 +145,37 @@ fn blank_to_none(value: &str) -> Option<String> {
     }
 }
 
-/// Fold one receiver-status object into `snap`. Absent HDMI flags become unknown, not standby.
+/// Fold one receiver-status object into `snap`. Absent HDMI flags become unknown. A missing
+/// `applications` field leaves the running app alone; an empty list means there is no app.
 pub fn apply_receiver(snap: &mut Snap, message: &serde_json::Value) {
     let Some(status) = message.get("status") else {
         return;
     };
-    if let Some(volume) = status.get("volume") {
-        if let Some(level) = volume.get("level").and_then(serde_json::Value::as_f64) {
-            snap.volume = volume_percent(level);
-        }
-        if let Some(muted) = volume.get("muted").and_then(serde_json::Value::as_bool) {
-            snap.muted = Some(muted);
-        }
-    }
-    snap.stand_by = flag(status, "isStandBy");
-    snap.active_input = flag(status, "isActiveInput");
-    if status.get("applications").is_none() {
+    let Ok(status) = serde_json::from_value::<ReceiverStatus>(status.clone()) else {
         return;
+    };
+    if let Some(level) = status.volume.as_ref().and_then(|volume| volume.level) {
+        snap.volume = volume_percent(level);
     }
-    let app = status
-        .get("applications")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|apps| apps.first());
-    let app_id = app
-        .and_then(|app| app.get("appId"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned);
+    if let Some(muted) = status.volume.as_ref().and_then(|volume| volume.muted) {
+        snap.muted = Some(muted);
+    }
+    snap.stand_by = status.is_stand_by;
+    snap.active_input = status.is_active_input;
+    let Apps::Present(apps) = status.applications else {
+        return;
+    };
+    let app = apps.first();
+    let app_id = app.and_then(|app| app.app_id.clone());
     if app_id != snap.app_id {
         snap.clear_media();
     }
     snap.app_id = app_id;
     snap.app_name = app
-        .and_then(|app| app.get("displayName"))
-        .and_then(serde_json::Value::as_str)
+        .and_then(|app| app.display_name.as_deref())
         .and_then(|text| clip(text, TEXT_MAX));
-    snap.session_id = app
-        .and_then(|app| app.get("sessionId"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned);
-    snap.transport_id = app
-        .and_then(|app| app.get("transportId"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned);
+    snap.session_id = app.and_then(|app| app.session_id.clone());
+    snap.transport_id = app.and_then(|app| app.transport_id.clone());
     if snap.app_id.is_none() {
         snap.clear_media();
     }
@@ -174,39 +183,42 @@ pub fn apply_receiver(snap: &mut Snap, message: &serde_json::Value) {
 
 /// Fold one media-status object into `snap`.
 pub fn apply_media(snap: &mut Snap, message: &serde_json::Value) {
-    let entry = message
-        .get("status")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|entries| entries.first());
-    let Some(entry) = entry else {
+    let Ok(parsed) = serde_json::from_value::<MediaMessage>(message.clone()) else {
         snap.clear_media();
         return;
     };
-    snap.media_session_id = entry
-        .get("mediaSessionId")
-        .and_then(serde_json::Value::as_i64);
-    snap.player_state = entry
-        .get("playerState")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned);
-    snap.position = entry
-        .get("currentTime")
-        .and_then(serde_json::Value::as_f64)
-        .and_then(seconds);
-    if let Some(media) = entry.get("media") {
+    let Some(entry) = parsed.status.as_ref().and_then(|entries| entries.first()) else {
+        snap.clear_media();
+        return;
+    };
+    snap.media_session_id = entry.media_session_id;
+    snap.player_state = entry.player_state.as_deref().and_then(PlayerState::parse);
+    snap.position = entry.current_time.and_then(seconds);
+    if let Some(media) = &entry.media {
         snap.content_type = media
-            .get("contentType")
-            .and_then(serde_json::Value::as_str)
+            .content_type
+            .as_deref()
             .and_then(|text| clip(text, TEXT_MAX));
-        snap.duration = media
-            .get("duration")
-            .and_then(serde_json::Value::as_f64)
-            .and_then(seconds);
-        if let Some(metadata) = media.get("metadata") {
-            snap.title = text_field(metadata, "title");
-            snap.artist =
-                text_field(metadata, "artist").or_else(|| text_field(metadata, "subtitle"));
-            snap.album = text_field(metadata, "albumName");
+        snap.duration = media.duration.and_then(seconds);
+        if let Some(metadata) = &media.metadata {
+            snap.title = metadata
+                .title
+                .as_deref()
+                .and_then(|text| clip(text, TEXT_MAX));
+            snap.artist = metadata
+                .artist
+                .as_deref()
+                .and_then(|text| clip(text, TEXT_MAX))
+                .or_else(|| {
+                    metadata
+                        .subtitle
+                        .as_deref()
+                        .and_then(|text| clip(text, TEXT_MAX))
+                });
+            snap.album = metadata
+                .album_name
+                .as_deref()
+                .and_then(|text| clip(text, TEXT_MAX));
         }
     }
     if let (Some(position), Some(duration)) = (snap.position, snap.duration)
@@ -216,16 +228,91 @@ pub fn apply_media(snap: &mut Snap, message: &serde_json::Value) {
     }
 }
 
-fn text_field(metadata: &serde_json::Value, key: &str) -> Option<String> {
-    metadata
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .and_then(|text| clip(text, TEXT_MAX))
+/// `applications` missing leaves the app alone. Null and `[]` both mean there is no app.
+#[derive(Deserialize)]
+struct ReceiverStatus {
+    #[serde(default)]
+    volume: Option<VolumeLevel>,
+    #[serde(default, rename = "isStandBy")]
+    is_stand_by: Option<bool>,
+    #[serde(default, rename = "isActiveInput")]
+    is_active_input: Option<bool>,
+    #[serde(default, deserialize_with = "applications")]
+    applications: Apps,
 }
 
-/// `Some` only when the field is present and a boolean. Null and a missing field are unknown.
-fn flag(status: &serde_json::Value, key: &str) -> Option<bool> {
-    status.get(key).and_then(serde_json::Value::as_bool)
+#[derive(Deserialize)]
+struct VolumeLevel {
+    #[serde(default)]
+    level: Option<f64>,
+    #[serde(default)]
+    muted: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct CastApp {
+    #[serde(default, rename = "appId")]
+    app_id: Option<String>,
+    #[serde(default, rename = "displayName")]
+    display_name: Option<String>,
+    #[serde(default, rename = "sessionId")]
+    session_id: Option<String>,
+    #[serde(default, rename = "transportId")]
+    transport_id: Option<String>,
+}
+
+#[derive(Default)]
+enum Apps {
+    #[default]
+    Absent,
+    Present(Vec<CastApp>),
+}
+
+fn applications<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Apps, D::Error> {
+    match Option::<Vec<CastApp>>::deserialize(deserializer)? {
+        Some(apps) => Ok(Apps::Present(apps)),
+        None => Ok(Apps::Present(Vec::new())),
+    }
+}
+
+#[derive(Deserialize)]
+struct MediaMessage {
+    #[serde(default)]
+    status: Option<Vec<MediaEntry>>,
+}
+
+#[derive(Deserialize)]
+struct MediaEntry {
+    #[serde(default, rename = "mediaSessionId")]
+    media_session_id: Option<i64>,
+    #[serde(default, rename = "playerState")]
+    player_state: Option<String>,
+    #[serde(default, rename = "currentTime")]
+    current_time: Option<f64>,
+    #[serde(default)]
+    media: Option<MediaInfo>,
+}
+
+#[derive(Deserialize)]
+struct MediaInfo {
+    #[serde(default, rename = "contentType")]
+    content_type: Option<String>,
+    #[serde(default)]
+    duration: Option<f64>,
+    #[serde(default)]
+    metadata: Option<MediaMetadata>,
+}
+
+#[derive(Deserialize)]
+struct MediaMetadata {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    artist: Option<String>,
+    #[serde(default)]
+    subtitle: Option<String>,
+    #[serde(default, rename = "albumName")]
+    album_name: Option<String>,
 }
 
 fn volume_percent(level: f64) -> Option<u8> {
@@ -295,23 +382,25 @@ pub fn playback(snap: &Snap, speaker: bool, ignore_cec: bool) -> MediaPlayerStat
     state
 }
 
+/// Backdrop and a receiver with no app are idle, whatever the last player word was.
 fn from_app(snap: &Snap) -> Playback {
-    match snap.player_state.as_deref() {
-        Some("PLAYING") => Playback::Playing,
-        Some("PAUSED") => Playback::Paused,
-        Some("BUFFERING" | "LOADING") => Playback::Buffering,
-        _ => Playback::Idle,
+    if snap.app_id.is_none() || snap.app_id.as_deref() == Some(BACKDROP) {
+        return Playback::Idle;
+    }
+    match snap.player_state {
+        Some(PlayerState::Playing) => Playback::Playing,
+        Some(PlayerState::Paused) => Playback::Paused,
+        Some(PlayerState::Buffering) => Playback::Buffering,
+        None => Playback::Idle,
     }
 }
 
 fn app_name(snap: &Snap, playback: Playback) -> Option<String> {
     if matches!(playback, Playback::Standby | Playback::Off | Playback::Idle) {
-        return None;
+        None
+    } else {
+        snap.app_name.clone()
     }
-    if snap.app_id.as_deref() == Some(BACKDROP) {
-        return None;
-    }
-    snap.app_name.clone()
 }
 
 /// What to send for one service call. The session replies once the last write is accepted.
@@ -320,14 +409,29 @@ pub enum Outcome {
     /// Already there. Reply straight away.
     Ready,
     Fail(String),
-    Steps(Vec<Step>),
+    Do(Command),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Step {
+/// The three sequences a receiver is asked for. A single message is answered when the write
+/// succeeds. Turn on answers when the launch is written. Play answers when the load is written,
+/// after a launch has a transport.
+#[derive(Debug)]
+pub enum Command {
+    Once(Once),
+    TurnOn {
+        quit: bool,
+    },
+    Play {
+        quit: bool,
+        launch: bool,
+        body: LoadBody,
+    },
+}
+
+/// One message, answered as soon as it is written.
+#[derive(Debug, Clone, Copy)]
+pub enum Once {
     Quit,
-    Launch,
-    Load(LoadBody),
     Volume {
         level: Option<f64>,
         muted: Option<bool>,
@@ -392,23 +496,23 @@ pub fn plan(service: &Service, snap: &Snap) -> Outcome {
         Service::MediaPlayerTurnOn => turn_on(snap),
         Service::MediaPlayerTurnOff => {
             if snap.session_id.is_some() {
-                Outcome::Steps(vec![Step::Quit])
+                Outcome::Do(Command::Once(Once::Quit))
             } else {
                 Outcome::Ready
             }
         }
-        Service::MediaPlayerVolumeSet(volume) => Outcome::Steps(vec![Step::Volume {
+        Service::MediaPlayerVolumeSet(volume) => Outcome::Do(Command::Once(Once::Volume {
             level: Some(f64::from(volume.volume) / 100.0),
             muted: None,
-        }]),
-        Service::MediaPlayerVolumeMute(mute) => Outcome::Steps(vec![Step::Volume {
+        })),
+        Service::MediaPlayerVolumeMute(mute) => Outcome::Do(Command::Once(Once::Volume {
             level: None,
             muted: Some(mute.mute),
-        }]),
+        })),
         Service::MediaPlayerPlay => media_step(snap, "PLAY", None),
         Service::MediaPlayerPause => media_step(snap, "PAUSE", None),
         Service::MediaPlayerPlayPause => {
-            let action = if snap.player_state.as_deref() == Some("PLAYING") {
+            let action = if snap.player_state == Some(PlayerState::Playing) {
                 "PAUSE"
             } else {
                 "PLAY"
@@ -427,10 +531,10 @@ pub fn plan(service: &Service, snap: &Snap) -> Outcome {
 fn turn_on(snap: &Snap) -> Outcome {
     if snap.app_id.as_deref() == Some(DEFAULT_MEDIA_RECEIVER) {
         Outcome::Ready
-    } else if snap.session_id.is_some() {
-        Outcome::Steps(vec![Step::Quit, Step::Launch])
     } else {
-        Outcome::Steps(vec![Step::Launch])
+        Outcome::Do(Command::TurnOn {
+            quit: snap.session_id.is_some(),
+        })
     }
 }
 
@@ -438,22 +542,19 @@ fn play(snap: &Snap, media: &PlayMedia) -> Outcome {
     if !is_http(&media.content_id) {
         return Outcome::Fail("only an http or https address can be played".into());
     }
-    let mut steps = Vec::new();
-    if snap.app_id.as_deref() != Some(DEFAULT_MEDIA_RECEIVER) {
-        if snap.session_id.is_some() {
-            steps.push(Step::Quit);
-        }
-        steps.push(Step::Launch);
-    }
-    steps.push(Step::Load(LoadBody::from_media(media)));
-    Outcome::Steps(steps)
+    let launch = snap.app_id.as_deref() != Some(DEFAULT_MEDIA_RECEIVER);
+    Outcome::Do(Command::Play {
+        quit: launch && snap.session_id.is_some(),
+        launch,
+        body: LoadBody::from_media(media),
+    })
 }
 
 fn media_step(snap: &Snap, action: &'static str, position: Option<f64>) -> Outcome {
     if snap.media_session_id.is_none() || snap.transport_id.is_none() {
         Outcome::Fail("nothing is playing".into())
     } else {
-        Outcome::Steps(vec![Step::Media { action, position }])
+        Outcome::Do(Command::Once(Once::Media { action, position }))
     }
 }
 
@@ -520,6 +621,19 @@ mod tests {
         assert_eq!(parsed.active_input, None);
         assert_eq!(parsed.volume, Some(25));
         assert_eq!(word(&parsed, false, false), Playback::Idle);
+
+        let mut kept = snap();
+        kept.app_id = Some(DEFAULT_MEDIA_RECEIVER.to_owned());
+        kept.session_id = Some("session".to_owned());
+        apply_receiver(
+            &mut kept,
+            &serde_json::json!({
+                "status": { "volume": { "level": 0.5 } }
+            }),
+        );
+        assert_eq!(kept.app_id.as_deref(), Some(DEFAULT_MEDIA_RECEIVER));
+        assert_eq!(kept.session_id.as_deref(), Some("session"));
+        assert_eq!(kept.volume, Some(50));
     }
 
     #[test]
@@ -538,7 +652,7 @@ mod tests {
         let mut playing = snap();
         playing.app_id = Some("CC1AD845".to_owned());
         playing.app_name = Some("Default Media Receiver".to_owned());
-        playing.player_state = Some("PLAYING".to_owned());
+        playing.player_state = Some(PlayerState::Playing);
         playing.title = Some("The evening news".to_owned());
         playing.position = Some(12.0);
         let state = playback(&playing, false, false);
@@ -546,14 +660,27 @@ mod tests {
         assert_eq!(state.title.as_deref(), Some("The evening news"));
         assert_eq!(state.position, Some(12.0));
 
-        playing.player_state = Some("BUFFERING".to_owned());
+        playing.player_state = Some(PlayerState::Buffering);
         assert_eq!(word(&playing, false, false), Playback::Buffering);
-        playing.player_state = Some("LOADING".to_owned());
-        assert_eq!(word(&playing, false, false), Playback::Buffering);
-        playing.player_state = Some("PAUSED".to_owned());
+        playing.player_state = Some(PlayerState::Paused);
         assert_eq!(word(&playing, false, false), Playback::Paused);
 
-        playing.player_state = None;
+        let mut loading = snap();
+        apply_media(
+            &mut loading,
+            &serde_json::json!({
+                "status": [{
+                    "mediaSessionId": 1,
+                    "playerState": "LOADING",
+                    "media": { "contentType": "video" }
+                }]
+            }),
+        );
+        loading.app_id = Some("CC1AD845".to_owned());
+        assert_eq!(loading.player_state, Some(PlayerState::Buffering));
+        assert_eq!(word(&loading, false, false), Playback::Buffering);
+
+        playing.player_state = Some(PlayerState::Playing);
         playing.app_id = Some(BACKDROP.to_owned());
         let idle = playback(&playing, false, false);
         assert_eq!(idle.state, Playback::Idle);
@@ -563,14 +690,14 @@ mod tests {
     #[test]
     fn turn_on_launches_and_does_not_load() {
         match turn_on(&snap()) {
-            Outcome::Steps(steps) => assert_eq!(steps, vec![Step::Launch]),
+            Outcome::Do(Command::TurnOn { quit: false }) => {}
             other => panic!("expected a launch, got {other:?}"),
         }
         let mut busy = snap();
         busy.app_id = Some("YouTube".to_owned());
         busy.session_id = Some("s".to_owned());
         match turn_on(&busy) {
-            Outcome::Steps(steps) => assert_eq!(steps, vec![Step::Quit, Step::Launch]),
+            Outcome::Do(Command::TurnOn { quit: true }) => {}
             other => panic!("expected quit then launch, got {other:?}"),
         }
     }
