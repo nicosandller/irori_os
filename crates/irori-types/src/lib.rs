@@ -59,9 +59,7 @@ pub use kinds::humidifier::{
 pub use kinds::light::{ColorMode, ColorTempRange, LightCapabilities, LightState, LightTurnOn};
 pub use kinds::lock::{LockCapabilities, LockCode, LockState, LockStatus};
 pub use kinds::number::{NumberCapabilities, NumberMode, NumberSetValue, NumberState};
-pub use kinds::opening::{
-    OpenState, OpeningAbilities, OpeningCommand, OpeningState, SetPosition,
-};
+pub use kinds::opening::{OpenState, OpeningAbilities, OpeningCommand, OpeningState, SetPosition};
 pub use kinds::select::{SelectCapabilities, SelectOption, SelectState};
 pub use kinds::sensor::{
     SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType, StateClass,
