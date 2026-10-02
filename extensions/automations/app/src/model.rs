@@ -580,7 +580,7 @@ pub fn state_words(state: &EntityState, home: &Home) -> String {
         Some(State::Lock(l)) => l.state.as_str().to_owned(),
         Some(State::Valve(v)) => v.state.as_str().to_owned(),
         Some(State::Siren(s)) => if s.on { "sounding" } else { "quiet" }.into(),
-        // Not sent to this engine yet (it reads entity format 2).
+        // The canvas line. A trigger compares `state` on its own (`playing`), not the title.
         Some(State::MediaPlayer(player)) => match player.title.as_deref() {
             Some(title) if !title.is_empty() => format!("{} · {title}", player.state.as_str()),
             _ => player.state.as_str().to_owned(),
@@ -607,7 +607,6 @@ pub fn state_words(state: &EntityState, home: &Home) -> String {
             Some(position) => format!("{} {position}%", c.state.as_str()),
             None => c.state.as_str().to_owned(),
         },
-        // Not sent to this engine yet (it reads entity format 2), but a number reads as one.
         Some(State::Number(n)) => {
             if n.value.fract() == 0.0 {
                 format!("{:.0}", n.value)

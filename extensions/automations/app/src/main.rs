@@ -22,7 +22,7 @@ use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use irori_types::{Device, Entity, EntityId, EntityState};
+use irori_types::{Device, Entity, EntityId, EntityKind, EntityState};
 use irori_ui_kit::page::{Bridge, Event, apply_theme};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -117,7 +117,16 @@ impl Home {
                 .find(|e| &e.id == entity)
                 .and_then(|e| e.capabilities.text_options().map(<[String]>::to_vec))
         });
-        if let Some(options) = declared {
+        if let Some(mut options) = declared {
+            // A new "changes to" or "is" starts on the first of these. Playing is the one
+            // a person means when they pick a TV or a speaker.
+            if entity.kind() == EntityKind::MediaPlayer
+                && let Some(index) = options.iter().position(|text| text == "playing")
+                && index != 0
+            {
+                let playing = options.remove(index);
+                options.insert(0, playing);
+            }
             return options;
         }
         let seen = self.seen;

@@ -261,7 +261,9 @@ a device — through a small typed method set every engine answers (`automations
 An engine reads entities and states in the entity format its manifest declares
 ([extensions.md](extensions.md) §5); Irori leaves out the kinds and fields that came later. An
 engine installed before Irori learned a kind keeps working: it doesn't see that kind until it's
-updated. The first-party engine declares format 2.
+updated. The first-party engine declares format 16, so it is sent media players. A media player's
+value is its playback — `off`, `idle`, `playing`, `paused`, `buffering`, or `standby` — and a
+state trigger's `to` and a condition's `is` name that word (`changes to playing`, `is playing`).
 
 Automations don't really need to know what kind of device something is. They need to know what
 kind of **value** it has, and what can be asked of it. Irori is adding every kind of device Home

@@ -9,11 +9,12 @@ use irori_flows::{Arm, CountingIds, Effect, Engine, sim, validate};
 use irori_rules::MapRegistry;
 use irori_types::{
     Availability, BinarySensorCapabilities, BinarySensorState, Capabilities, Context, ContextId,
-    Entity, EntityId, EntityState, LightCapabilities, LightState, Name, Origin, SensorCapabilities,
-    SensorState, SensorValue, SensorValueType, State, SwitchCapabilities, SwitchState, Timestamp,
-    UniqueId,
+    Entity, EntityId, EntityState, LightCapabilities, LightState, MediaPlayerCapabilities,
+    MediaPlayerClass, MediaPlayerState, Name, Origin, Playback, SensorCapabilities, SensorState,
+    SensorValue, SensorValueType, State, SwitchCapabilities, SwitchState, Timestamp, UniqueId,
 };
 
+const TV: &str = "media_player.demo_tv";
 const MOTION: &str = "binary_sensor.demo_movement_motion";
 const LUX: &str = "sensor.demo_luminosity_illuminance";
 const OCCUPANCY: &str = "binary_sensor.demo_mmwave_occupancy";
@@ -937,6 +938,138 @@ fn levels_and_value_lists_are_checked() {
         problems
             .iter()
             .any(|p| p.message.contains("sensor with numbers")),
+        "{problems:#?}"
+    );
+}
+
+fn playback(word: Playback, seconds: i64) -> EntityState {
+    state(
+        TV,
+        State::MediaPlayer(MediaPlayerState {
+            state: word,
+            volume: None,
+            muted: None,
+            title: None,
+            artist: None,
+            album: None,
+            app: None,
+            content_type: None,
+            duration: None,
+            position: None,
+        }),
+        seconds,
+    )
+}
+
+fn home_with_tv() -> MapRegistry {
+    let mut home = registry();
+    home.entities.insert(
+        id(TV),
+        entity(
+            TV,
+            Capabilities::MediaPlayer(MediaPlayerCapabilities {
+                device_class: Some(MediaPlayerClass::Tv),
+                volume: true,
+                mute: true,
+                seek: false,
+                play_media: true,
+                queue: false,
+                turn_on: true,
+                turn_off: true,
+            }),
+        ),
+    );
+    home
+}
+
+/// Playing turns the light on, once the check agrees it is playing. Paused turns it off.
+fn tv_lights() -> Flow {
+    flow(serde_json::json!({
+        "id": "tv_lights", "name": "TV lights",
+        "nodes": {
+            "playing": { "type": "trigger", "trigger": { "type": "state", "entity": TV, "to": "playing" } },
+            "paused": { "type": "trigger", "trigger": { "type": "state", "entity": TV, "to": "paused" } },
+            "is_playing": { "type": "gate", "condition": { "type": "state", "entity": TV, "is": "playing" } },
+            "on": { "type": "call", "service": "light.turn_on", "entity": LIGHT },
+            "off": { "type": "call", "service": "light.turn_off", "entity": LIGHT }
+        },
+        "wires": [
+            ["playing", "is_playing"],
+            ["paused", "is_playing"],
+            ["is_playing:yes", "on"],
+            ["is_playing:no", "off"]
+        ]
+    }))
+}
+
+fn engine_with_tv(flow: Flow) -> Engine {
+    let mut engine = Engine::new(Box::new(CountingIds::default()));
+    engine.load_states([
+        flag(MOTION, false, 0),
+        flag(OCCUPANCY, false, 0),
+        lux(8.0, 0),
+        flag(LIGHT, false, 0),
+        flag(GUESTS, false, 0),
+        playback(Playback::Idle, 0),
+    ]);
+    let problems = validate::check(&flow, &home_with_tv());
+    assert!(problems.is_empty(), "{problems:#?}");
+    engine.set_flows(vec![Arm { flow, problems }], at(0));
+    engine
+}
+
+#[test]
+fn a_media_player_fires_when_it_changes_to_playing_and_a_check_can_ask_if_it_is() {
+    let mut engine = engine_with_tv(tv_lights());
+
+    change(&mut engine, playback(Playback::Playing, 10));
+    let (calls, done, _) = effects(&mut engine, at(10));
+    assert_eq!(calls, [(id(LIGHT), "light.turn_on".to_owned())]);
+    assert!(
+        done[0].steps[0]
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("\"idle\" → \"playing\"")),
+        "{:?}",
+        done[0].steps[0].note
+    );
+    assert!(
+        done[0].steps[1]
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("→ yes")),
+        "{:?}",
+        done[0].steps[1].note
+    );
+
+    change(&mut engine, playback(Playback::Paused, 20));
+    let (calls, done, _) = effects(&mut engine, at(20));
+    assert_eq!(calls, [(id(LIGHT), "light.turn_off".to_owned())]);
+    assert!(
+        done[0].steps[1]
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("→ no")),
+        "{:?}",
+        done[0].steps[1].note
+    );
+
+    // Idle is a playback word this flow leaves alone.
+    change(&mut engine, playback(Playback::Idle, 30));
+    let (calls, _, _) = effects(&mut engine, at(30));
+    assert!(calls.is_empty());
+
+    let unknown = flow(serde_json::json!({
+        "id": "bad_word", "name": "Bad word",
+        "nodes": {
+            "playing": { "type": "trigger", "trigger": { "type": "state", "entity": TV, "to": "on" } }
+        }
+    }));
+    let problems = validate::check(&unknown, &home_with_tv());
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.message.contains("never")),
         "{problems:#?}"
     );
 }

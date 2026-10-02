@@ -357,15 +357,17 @@ pub fn TextValue(
             .map(|text| Choice::new(text.clone(), text))
             .collect();
         let now = entity.parse::<EntityId>().ok().and_then(|id| {
-            home.states.with(
-                |states| match states.get(&id).and_then(|s| s.state.as_ref()) {
-                    Some(irori_types::State::Sensor(sensor)) => match &sensor.value {
-                        irori_types::SensorValue::Text(text) => Some(text.clone()),
-                        irori_types::SensorValue::Number(_) => None,
-                    },
-                    _ => None,
-                },
-            )
+            home.states.with(|states| {
+                states
+                    .get(&id)
+                    .and_then(|state| match state.state.as_ref() {
+                        Some(state) => match state.primary() {
+                            irori_types::Typed::Text(text) => Some(text),
+                            _ => None,
+                        },
+                        None => None,
+                    })
+            })
         });
         for choice in &mut choices {
             if now.as_deref() == Some(choice.value.as_str()) {

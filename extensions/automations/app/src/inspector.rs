@@ -343,12 +343,16 @@ pub fn ValueInput(
     }
 }
 
-pub const WATCHABLE: [EntityKind; 4] = [
+pub const WATCHABLE: [EntityKind; 5] = [
     EntityKind::BinarySensor,
     EntityKind::Switch,
     EntityKind::Light,
     EntityKind::Sensor,
+    EntityKind::MediaPlayer,
 ];
+
+/// The call form writes `{kind}.turn_on`, `turn_off`, or `toggle`, which lights and switches have.
+const CALLABLE: [EntityKind; 2] = [EntityKind::Light, EntityKind::Switch];
 
 /// A node's form, in the node itself when it's open on the canvas.
 #[component]
@@ -493,7 +497,7 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
                         <option value="toggle" selected=action == "toggle">"Toggle"</option>
                     </select>
                     <label>"What"</label>
-                    <EntityPicker value=entity_s kinds=EntityKind::ALL.iter().copied().filter(|k| k.has_services()).collect()
+                    <EntityPicker value=entity_s kinds=CALLABLE.to_vec()
                         pick=move |id| {
                             let action = action_now.clone();
                             edit_entity(Box::new(move |v: &mut Value| {
