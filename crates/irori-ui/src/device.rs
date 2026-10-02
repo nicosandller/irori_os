@@ -976,6 +976,9 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
         (Capabilities::Climate(_), Some(State::Climate(climate))) => {
             devices::climate_words(climate)
         }
+        (Capabilities::Humidifier(_), Some(State::Humidifier(humidifier))) => {
+            devices::humidifier_words(humidifier)
+        }
         (Capabilities::WaterHeater(_), Some(State::WaterHeater(heater))) => {
             devices::water_heater_words(heater)
         }

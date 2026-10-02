@@ -10,6 +10,7 @@ use crate::kinds::climate::ClimateCapabilities;
 use crate::kinds::cover::CoverCapabilities;
 use crate::kinds::event::EventCapabilities;
 use crate::kinds::fan::FanCapabilities;
+use crate::kinds::humidifier::HumidifierCapabilities;
 use crate::kinds::light::LightCapabilities;
 use crate::kinds::lock::LockCapabilities;
 use crate::kinds::number::NumberCapabilities;
@@ -203,6 +204,7 @@ pub enum Capabilities {
     Siren(SirenCapabilities),
     Climate(ClimateCapabilities),
     WaterHeater(WaterHeaterCapabilities),
+    Humidifier(HumidifierCapabilities),
 }
 
 impl Capabilities {
@@ -224,6 +226,7 @@ impl Capabilities {
             Self::Siren(_) => EntityKind::Siren,
             Self::Climate(_) => EntityKind::Climate,
             Self::WaterHeater(_) => EntityKind::WaterHeater,
+            Self::Humidifier(_) => EntityKind::Humidifier,
         }
     }
 
@@ -243,6 +246,7 @@ impl Capabilities {
             Self::Siren(siren) => siren.validate(),
             Self::Climate(climate) => climate.validate(),
             Self::WaterHeater(heater) => heater.validate(),
+            Self::Humidifier(humidifier) => humidifier.validate(),
             _ => Ok(()),
         }
     }

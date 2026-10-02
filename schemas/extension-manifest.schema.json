@@ -245,6 +245,11 @@
           "description": "A boiler or hot water tank.",
           "type": "string",
           "const": "water_heater"
+        },
+        {
+          "description": "A humidifier or dehumidifier.",
+          "type": "string",
+          "const": "humidifier"
         }
       ]
     },

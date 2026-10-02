@@ -282,6 +282,9 @@ manifest's `entity_kinds`.
 | `water_heater.set_temperature` | `temperature` in °C within its `min_temp`–`max_temp`; optionally `operation_mode` to switch to | Needs `target_temperature` |
 | `water_heater.set_operation_mode` | `operation_mode`, one of its `operation_modes` | |
 | `water_heater.turn_on`, `water_heater.turn_off` | none | Its own switch when it has one (`on_off`); otherwise the `off` mode, and back to the last mode other than `off`, as a climate entity. `water_heater.toggle` resolves to one or the other |
+| `humidifier.turn_on`, `humidifier.turn_off` | none | `humidifier.toggle` resolves to one or the other |
+| `humidifier.set_humidity` | `humidity` %, within its `humidity` range | |
+| `humidifier.set_mode` | `mode`, one of its `modes` | |
 | `fan.turn_on` | `percentage` 1–100, `preset_mode`; both optional | `fan.toggle` resolves to `turn_on` or `turn_off` |
 | `fan.turn_off` | none | |
 | `fan.set_percentage` | `percentage` 0–100 | 0 turns it off. Needs a `speed_count` |

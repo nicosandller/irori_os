@@ -11,6 +11,7 @@ pub(crate) mod climate;
 pub(crate) mod cover;
 pub(crate) mod event;
 pub(crate) mod fan;
+pub(crate) mod humidifier;
 pub(crate) mod light;
 pub(crate) mod lock;
 pub(crate) mod number;
@@ -30,6 +31,7 @@ use self::climate::{
 use self::cover::{CoverState, OPEN_STATES, OpenState, SetPosition, SetTilt};
 use self::event::EventState;
 use self::fan::{FanState, FanTurnOn};
+use self::humidifier::HumidifierState;
 use self::light::LightTurnOn;
 use self::lock::{LOCK_STATES, LockCode, LockState, LockStatus};
 use self::number::{NumberSetValue, NumberState};
@@ -121,6 +123,8 @@ impl EntityKind {
             Self::Fan => Some(ServiceName::FanTurnOn),
             Self::Siren if on => Some(ServiceName::SirenTurnOff),
             Self::Siren => Some(ServiceName::SirenTurnOn),
+            Self::Humidifier if on => Some(ServiceName::HumidifierTurnOff),
+            Self::Humidifier => Some(ServiceName::HumidifierTurnOn),
             Self::Climate => match current {
                 Some(Typed::Text(text)) if HvacMode::parse(text) != Some(HvacMode::Off) => {
                     Some(ServiceName::ClimateTurnOff)
@@ -179,7 +183,8 @@ impl Capabilities {
             | Self::Switch(_)
             | Self::BinarySensor(_)
             | Self::Fan(_)
-            | Self::Siren(_) => ValueShape::Bool,
+            | Self::Siren(_)
+            | Self::Humidifier(_) => ValueShape::Bool,
             Self::Number(_) => ValueShape::Number,
             Self::Select(_)
             | Self::Text(_)
@@ -231,6 +236,7 @@ impl Capabilities {
             (Self::Fan(caps), State::Fan(state)) => fan::fits(caps, state),
             (Self::Valve(caps), State::Valve(state)) => valve::fits(caps, state),
             (Self::Climate(caps), State::Climate(state)) => climate::fits(caps, state),
+            (Self::Humidifier(caps), State::Humidifier(state)) => humidifier::fits(caps, state),
             (Self::WaterHeater(caps), State::WaterHeater(state)) => water_heater::fits(caps, state),
             _ => Ok(()),
         }
@@ -301,6 +307,12 @@ impl Capabilities {
             (Self::WaterHeater(caps), Service::WaterHeaterSetOperationMode(data)) => {
                 water_heater::supports_mode(caps, data.operation_mode)
             }
+            (Self::Humidifier(caps), Service::HumidifierSetHumidity(data)) => {
+                humidifier::supports_humidity(caps, data.humidity)
+            }
+            (Self::Humidifier(caps), Service::HumidifierSetMode(data)) => {
+                humidifier::supports_mode(caps, &data.mode)
+            }
             (Self::WaterHeater(caps), Service::WaterHeaterTurnOn) => {
                 water_heater::supports_turn_on(caps)
             }
@@ -321,6 +333,7 @@ impl State {
             Self::BinarySensor(sensor) => Typed::Bool(sensor.on),
             Self::Fan(fan) => Typed::Bool(fan.on),
             Self::Siren(siren) => Typed::Bool(siren.on),
+            Self::Humidifier(humidifier) => Typed::Bool(humidifier.on),
             Self::Number(number) => Typed::Number(number.value),
             Self::Select(select) => Typed::Text(select.option.clone()),
             Self::Text(text) => Typed::Text(text.value.clone()),
@@ -351,6 +364,19 @@ impl State {
                 State::Switch(switch::SwitchState { on: *on })
             }
             (EntityKind::Siren, _, Typed::Bool(on)) => State::Siren(SirenState { on: *on }),
+            (EntityKind::Humidifier, previous, Typed::Bool(on)) => match previous {
+                Some(State::Humidifier(old)) => State::Humidifier(HumidifierState {
+                    on: *on,
+                    ..old.clone()
+                }),
+                _ => State::Humidifier(HumidifierState {
+                    on: *on,
+                    target_humidity: None,
+                    current_humidity: None,
+                    mode: None,
+                    action: None,
+                }),
+            },
             (EntityKind::BinarySensor, _, Typed::Bool(on)) => {
                 State::BinarySensor(binary_sensor::BinarySensorState { on: *on })
             }
@@ -501,6 +527,12 @@ impl Service {
                 Service::WaterHeaterSetOperationMode(parse(name, data)?)
             }
             ServiceName::WaterHeaterTurnOn => Service::WaterHeaterTurnOn,
+            ServiceName::HumidifierTurnOn => Service::HumidifierTurnOn,
+            ServiceName::HumidifierTurnOff => Service::HumidifierTurnOff,
+            ServiceName::HumidifierSetHumidity => {
+                Service::HumidifierSetHumidity(parse(name, data)?)
+            }
+            ServiceName::HumidifierSetMode => Service::HumidifierSetMode(parse(name, data)?),
             ServiceName::WaterHeaterTurnOff => Service::WaterHeaterTurnOff,
             ServiceName::ValveOpen => Service::ValveOpen,
             ServiceName::ValveClose => Service::ValveClose,
@@ -565,6 +597,8 @@ impl Service {
             Self::ClimateSetPresetMode(data) => serde_json::to_value(data).ok()?,
             Self::WaterHeaterSetTemperature(data) => serde_json::to_value(data).ok()?,
             Self::WaterHeaterSetOperationMode(data) => serde_json::to_value(data).ok()?,
+            Self::HumidifierSetHumidity(data) => serde_json::to_value(data).ok()?,
+            Self::HumidifierSetMode(data) => serde_json::to_value(data).ok()?,
             Self::LockLock(code) | Self::LockUnlock(code) | Self::LockOpen(code)
                 if code.code.is_some() =>
             {
@@ -585,9 +619,14 @@ impl Service {
             Self::NumberSetValue(data) => data.validate(),
             Self::SirenTurnOn(data) => data.validate(),
             Self::ClimateSetTemperature(data) => data.validate(),
-            Self::ClimateSetHumidity(data) if !(0.0..=100.0).contains(&data.humidity) => Err(
-                InvariantError(format!("humidity is 0-100%, not {}", data.humidity)),
-            ),
+            Self::ClimateSetHumidity(data) | Self::HumidifierSetHumidity(data)
+                if !(0.0..=100.0).contains(&data.humidity) =>
+            {
+                Err(InvariantError(format!(
+                    "humidity is 0-100%, not {}",
+                    data.humidity
+                )))
+            }
             _ => Ok(()),
         }
     }
@@ -638,6 +677,9 @@ impl Service {
             }) => Some(Typed::Text(operation_mode.as_str().to_owned())),
             Self::WaterHeaterTurnOff => Some(Typed::Text(WaterHeaterMode::Off.as_str().to_owned())),
             Self::WaterHeaterTurnOn | Self::WaterHeaterSetTemperature(_) => None,
+            Self::HumidifierTurnOn => Some(Typed::Bool(true)),
+            Self::HumidifierTurnOff => Some(Typed::Bool(false)),
+            Self::HumidifierSetHumidity(_) | Self::HumidifierSetMode(_) => None,
             // Which mode `turn_on` lands in is the device's to say, and a target or a fan mode
             // leaves the mode as it is.
             Self::ClimateTurnOn
@@ -687,6 +729,8 @@ impl ServiceName {
                 | Self::ClimateSetPresetMode
                 | Self::WaterHeaterSetTemperature
                 | Self::WaterHeaterSetOperationMode
+                | Self::HumidifierSetHumidity
+                | Self::HumidifierSetMode
         )
     }
 
@@ -718,6 +762,8 @@ impl ServiceName {
                 | Self::ClimateSetPresetMode
                 | Self::WaterHeaterSetTemperature
                 | Self::WaterHeaterSetOperationMode
+                | Self::HumidifierSetHumidity
+                | Self::HumidifierSetMode
         )
     }
 }

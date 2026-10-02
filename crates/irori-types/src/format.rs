@@ -30,7 +30,8 @@ use crate::{Entity, EntityKind, EntityState};
 /// 12. Adds `siren`.
 /// 13. Adds `climate`.
 /// 14. Adds `water_heater`.
-pub const ENTITY_FORMAT: u32 = 14;
+/// 15. Adds `humidifier`.
+pub const ENTITY_FORMAT: u32 = 15;
 
 pub(crate) fn first() -> u32 {
     1
@@ -58,6 +59,7 @@ impl EntityKind {
             Self::Siren => 12,
             Self::Climate => 13,
             Self::WaterHeater => 14,
+            Self::Humidifier => 15,
         }
     }
 }
@@ -297,6 +299,14 @@ mod tests {
         .expect("valid");
         assert_eq!(entity_for(13, &tank), None);
         assert!(entity_for(14, &tank).is_some());
+        let dryer: Entity = serde_json::from_str(
+            r#"{"id": "humidifier.basement", "protocol": "mqtt", "unique_id": "d",
+                "name": "Basement", "capabilities": {"kind": "humidifier",
+                "humidity": {"min": 35, "max": 80}}}"#,
+        )
+        .expect("valid");
+        assert_eq!(entity_for(14, &dryer), None);
+        assert!(entity_for(15, &dryer).is_some());
     }
 
     /// Every `const` and `enum` string in a schema: an enum's names however schemars lays them out.

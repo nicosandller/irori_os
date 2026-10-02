@@ -16,6 +16,7 @@ use crate::kinds::climate::{
 };
 use crate::kinds::cover::{SetPosition, SetTilt};
 use crate::kinds::fan::{FanOscillate, FanPercentage, FanPresetMode, FanSetDirection, FanTurnOn};
+use crate::kinds::humidifier::HumidifierMode;
 use crate::kinds::light::LightTurnOn;
 use crate::kinds::lock::LockCode;
 use crate::kinds::number::NumberSetValue;
@@ -420,6 +421,10 @@ pub enum Service {
     WaterHeaterSetOperationMode(WaterHeaterOperationMode),
     WaterHeaterTurnOn,
     WaterHeaterTurnOff,
+    HumidifierTurnOn,
+    HumidifierTurnOff,
+    HumidifierSetHumidity(SetHumidity),
+    HumidifierSetMode(HumidifierMode),
 }
 
 impl Service {
@@ -465,6 +470,10 @@ impl Service {
             Self::WaterHeaterSetOperationMode(_) => ServiceName::WaterHeaterSetOperationMode,
             Self::WaterHeaterTurnOn => ServiceName::WaterHeaterTurnOn,
             Self::WaterHeaterTurnOff => ServiceName::WaterHeaterTurnOff,
+            Self::HumidifierTurnOn => ServiceName::HumidifierTurnOn,
+            Self::HumidifierTurnOff => ServiceName::HumidifierTurnOff,
+            Self::HumidifierSetHumidity(_) => ServiceName::HumidifierSetHumidity,
+            Self::HumidifierSetMode(_) => ServiceName::HumidifierSetMode,
         }
     }
 }
@@ -552,6 +561,14 @@ pub enum ServiceName {
     WaterHeaterTurnOn,
     #[serde(rename = "water_heater.turn_off")]
     WaterHeaterTurnOff,
+    #[serde(rename = "humidifier.turn_on")]
+    HumidifierTurnOn,
+    #[serde(rename = "humidifier.turn_off")]
+    HumidifierTurnOff,
+    #[serde(rename = "humidifier.set_humidity")]
+    HumidifierSetHumidity,
+    #[serde(rename = "humidifier.set_mode")]
+    HumidifierSetMode,
 }
 
 impl ServiceName {
@@ -596,6 +613,10 @@ impl ServiceName {
         Self::WaterHeaterSetOperationMode,
         Self::WaterHeaterTurnOn,
         Self::WaterHeaterTurnOff,
+        Self::HumidifierTurnOn,
+        Self::HumidifierTurnOff,
+        Self::HumidifierSetHumidity,
+        Self::HumidifierSetMode,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -640,6 +661,10 @@ impl ServiceName {
             Self::WaterHeaterSetOperationMode => "water_heater.set_operation_mode",
             Self::WaterHeaterTurnOn => "water_heater.turn_on",
             Self::WaterHeaterTurnOff => "water_heater.turn_off",
+            Self::HumidifierTurnOn => "humidifier.turn_on",
+            Self::HumidifierTurnOff => "humidifier.turn_off",
+            Self::HumidifierSetHumidity => "humidifier.set_humidity",
+            Self::HumidifierSetMode => "humidifier.set_mode",
         }
     }
 
@@ -680,6 +705,10 @@ impl ServiceName {
             | Self::WaterHeaterSetOperationMode
             | Self::WaterHeaterTurnOn
             | Self::WaterHeaterTurnOff => EntityKind::WaterHeater,
+            Self::HumidifierTurnOn
+            | Self::HumidifierTurnOff
+            | Self::HumidifierSetHumidity
+            | Self::HumidifierSetMode => EntityKind::Humidifier,
         }
     }
 }
@@ -792,6 +821,7 @@ impl JsonSchema for ServiceCall {
         let climate_preset = generator.subschema_for::<ClimatePresetMode>();
         let heater_temperature = generator.subschema_for::<WaterHeaterSetTemperature>();
         let heater_mode = generator.subschema_for::<WaterHeaterOperationMode>();
+        let humidifier_mode = generator.subschema_for::<HumidifierMode>();
         // Per service: the shape of `data`.
         let rules: Vec<_> = ServiceName::ALL
             .iter()
@@ -822,6 +852,8 @@ impl JsonSchema for ServiceCall {
                     ServiceName::ClimateSetPresetMode => climate_preset.clone(),
                     ServiceName::WaterHeaterSetTemperature => heater_temperature.clone(),
                     ServiceName::WaterHeaterSetOperationMode => heater_mode.clone(),
+                    ServiceName::HumidifierSetHumidity => set_humidity.clone(),
+                    ServiceName::HumidifierSetMode => humidifier_mode.clone(),
                     _ => no_data.clone(),
                 };
                 json_schema!({

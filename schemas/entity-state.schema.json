@@ -416,6 +416,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^humidifier\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "humidifier"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -549,6 +572,10 @@
         {
           "maxLength": 77,
           "pattern": "^water_heater\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 75,
+          "pattern": "^humidifier\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -564,6 +591,16 @@
       "enum": [
         "forward",
         "reverse"
+      ]
+    },
+    "HumidifierAction": {
+      "description": "What it's doing right now.",
+      "type": "string",
+      "enum": [
+        "off",
+        "humidifying",
+        "drying",
+        "idle"
       ]
     },
     "HvacAction": {
@@ -1207,6 +1244,55 @@
           "required": [
             "kind",
             "operation_mode"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HumidifierAction"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "current_humidity": {
+              "description": "The room's humidity, as it measures it, in %.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "kind": {
+              "type": "string",
+              "const": "humidifier"
+            },
+            "mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "on": {
+              "type": "boolean"
+            },
+            "target_humidity": {
+              "description": "In %.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
           ]
         }
       ]

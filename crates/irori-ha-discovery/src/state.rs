@@ -8,9 +8,9 @@ use irori_types::{
     SelectState, SensorState, SensorValue, Service, SirenState, SirenTurnOn, State, SwitchState,
     TextState, UniqueId, ValveState, percentage_to_speed, speed_to_percentage,
 };
-use irori_types::{WaterHeaterMode, WaterHeaterState};
+use irori_types::{HumidifierAction, HumidifierState, WaterHeaterMode, WaterHeaterState};
 
-use crate::discovery::{ClimateTopics, EntityTopics, FanPart, WaterHeaterTopics};
+use crate::discovery::{ClimateTopics, EntityTopics, FanPart, HumidifierTopics, WaterHeaterTopics};
 use crate::template::ValueTemplate;
 
 /// A message to publish: one entity's command can need more than one topic (the default light
@@ -99,6 +99,9 @@ pub fn decode(
         EntityTopics::Fan(fan) => decode_fan(fan, topic, payload, previous),
         EntityTopics::Climate(climate) => decode_climate(climate, topic, payload, previous),
         EntityTopics::WaterHeater(heater) => decode_water_heater(heater, topic, payload, previous),
+        EntityTopics::Humidifier(humidifier) => {
+            decode_humidifier(humidifier, topic, payload, previous)
+        }
         EntityTopics::Siren {
             state_topic,
             value_template,
@@ -335,6 +338,88 @@ fn decode_water_heater(
             update(&mut state.current_temperature, celsius(template));
         }
         Ok(State::WaterHeater(state))
+    })())
+}
+
+/// A humidifier's settings, each on its own topic or sharing one, as a thermostat's.
+fn decode_humidifier(
+    humidifier: &HumidifierTopics,
+    topic: &str,
+    payload: &[u8],
+    previous: Option<&State>,
+) -> Option<Result<State, String>> {
+    fn on_topic<'a>(part: &'a FanPart, topic: &str) -> Option<&'a FanPart> {
+        (part.state_topic.as_deref() == Some(topic)).then_some(part)
+    }
+    let power = on_topic(&humidifier.power, topic);
+    let target = on_topic(&humidifier.target, topic);
+    let mode = humidifier
+        .mode
+        .as_ref()
+        .and_then(|part| on_topic(part, topic));
+    let reading = |reading: &Option<(String, ValueTemplate)>| {
+        reading
+            .as_ref()
+            .filter(|(reading_topic, _)| reading_topic == topic)
+            .map(|(_, template)| template.clone())
+    };
+    let (current, action) = (
+        reading(&humidifier.current_humidity),
+        reading(&humidifier.action),
+    );
+    if power.is_none()
+        && target.is_none()
+        && mode.is_none()
+        && current.is_none()
+        && action.is_none()
+    {
+        return None;
+    }
+    let said = |template: &ValueTemplate| -> Option<Option<String>> {
+        Some(match template.extract(payload).ok()? {
+            serde_json::Value::Null => None,
+            serde_json::Value::String(text) => Some(text.trim().to_owned()),
+            other => Some(other.to_string()),
+        })
+    };
+    let number =
+        |template: &ValueTemplate| said(template).map(|t| t.and_then(|t| t.parse::<f64>().ok()));
+    Some((|| {
+        let mut state = match previous {
+            Some(State::Humidifier(old)) => old.clone(),
+            _ => HumidifierState {
+                on: false,
+                target_humidity: None,
+                current_humidity: None,
+                mode: None,
+                action: None,
+            },
+        };
+        if let Some(part) = power
+            && let Some(Some(text)) = said(&part.value_template)
+        {
+            state.on = match text {
+                text if text == humidifier.payload_on => true,
+                text if text == humidifier.payload_off => false,
+                text => return Err(format!("{text:?} isn't on or off for this humidifier")),
+            };
+        }
+        if let Some(part) = target {
+            update(&mut state.target_humidity, number(&part.value_template));
+        }
+        if let Some(part) = mode {
+            update(&mut state.mode, said(&part.value_template));
+        }
+        if let Some(template) = &current {
+            update(&mut state.current_humidity, number(template));
+        }
+        if let Some(template) = &action {
+            update(
+                &mut state.action,
+                said(template).map(|text| text.as_deref().and_then(HumidifierAction::parse)),
+            );
+        }
+        Ok(State::Humidifier(state))
     })())
 }
 
@@ -765,6 +850,30 @@ pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, 
     match (topics, service) {
         (EntityTopics::Climate(climate), service) => encode_climate(climate, service, None),
         (EntityTopics::WaterHeater(heater), service) => encode_water_heater(heater, service, None),
+        (EntityTopics::Humidifier(humidifier), service) => {
+            let send = |part: &FanPart, value: &str| {
+                text_publish(&part.command_topic, &part.command_template.render(value))
+            };
+            match service {
+                Service::HumidifierTurnOn => {
+                    Ok(vec![send(&humidifier.power, &humidifier.payload_on)])
+                }
+                Service::HumidifierTurnOff => {
+                    Ok(vec![send(&humidifier.power, &humidifier.payload_off)])
+                }
+                Service::HumidifierSetHumidity(data) => {
+                    Ok(vec![send(&humidifier.target, &number_text(data.humidity))])
+                }
+                Service::HumidifierSetMode(data) => {
+                    let part = humidifier
+                        .mode
+                        .as_ref()
+                        .ok_or("this humidifier has no modes")?;
+                    Ok(vec![send(part, &data.mode)])
+                }
+                other => Err(format!("a humidifier has no `{}` service", other.name())),
+            }
+        }
         (EntityTopics::LightJson { command_topic, .. }, Service::LightTurnOff) => {
             Ok(vec![json_publish(
                 command_topic,
@@ -1256,6 +1365,17 @@ pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, Un
         EntityTopics::Event { state_topic, .. } => list.push(state_topic.clone()),
         EntityTopics::Lock(lock) => list.extend(lock.state_topic.clone()),
         EntityTopics::Siren { state_topic, .. } => list.extend(state_topic.clone()),
+        EntityTopics::Humidifier(humidifier) => {
+            list.extend(humidifier.power.state_topic.clone());
+            list.extend(humidifier.target.state_topic.clone());
+            list.extend(humidifier.mode.as_ref().and_then(|m| m.state_topic.clone()));
+            for (reading, _) in [&humidifier.current_humidity, &humidifier.action]
+                .into_iter()
+                .flatten()
+            {
+                list.push(reading.clone());
+            }
+        }
         EntityTopics::WaterHeater(heater) => {
             for part in [&heater.mode, &heater.temperature].into_iter().flatten() {
                 list.extend(part.state_topic.clone());

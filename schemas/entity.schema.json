@@ -423,6 +423,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^humidifier\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "humidifier"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -1110,6 +1133,42 @@
             "max_temp",
             "temp_step"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "device_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HumidifierClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "humidity": {
+              "description": "The target humidities it takes, in %.",
+              "$ref": "#/$defs/HumidityRange"
+            },
+            "kind": {
+              "type": "string",
+              "const": "humidifier"
+            },
+            "modes": {
+              "description": "Modes, e.g. `normal`, `eco`, `sleep`.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "humidity"
+          ]
         }
       ]
     },
@@ -1241,6 +1300,10 @@
         {
           "maxLength": 77,
           "pattern": "^water_heater\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 75,
+          "pattern": "^humidifier\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -1259,6 +1322,13 @@
           "type": "string",
           "const": "button"
         }
+      ]
+    },
+    "HumidifierClass": {
+      "type": "string",
+      "enum": [
+        "humidifier",
+        "dehumidifier"
       ]
     },
     "HumidityRange": {

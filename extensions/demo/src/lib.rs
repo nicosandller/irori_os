@@ -6,7 +6,7 @@
 //! Living room: an air monitor, a TV, and a window; and the front and back doors. A scene for
 //! designing automations. Around the house: a front door lock that locks itself again, a
 //! doorbell, a blind that takes a moment to move, a ceiling fan, a water shut-off with a leak
-//! alarm, a thermostat and a hot water tank (`gadgets`).
+//! alarm, a thermostat, a hot water tank and a dehumidifier (`gadgets`).
 //!
 //! Everything moves the way it would over a day, but a day lasts a minute: dark until dawn, the
 //! house waking up, everyone out, back in the evening. Batteries run down from full to empty over
@@ -273,7 +273,8 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
                 let hour = (secs % DAY_SECS) as f64 / DAY_SECS as f64 * 24.0;
                 report_sensors(&ctx, hour, secs, plug_on)?;
                 let room = living_temperature(hour);
-                for (entity, state) in gadgets.tick(tokio::time::Instant::now(), room) {
+                let damp = humidity(hour);
+                for (entity, state) in gadgets.tick(tokio::time::Instant::now(), room, damp) {
                     ctx.report_state(report(entity, Some(state), None)?);
                 }
                 if tick > 0 {

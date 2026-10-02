@@ -849,6 +849,90 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "humidifier.turn_on"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "humidifier.turn_off"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "humidifier.set_humidity"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/SetHumidity"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "humidifier.set_mode"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/HumidifierMode"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
     }
   ],
   "required": [
@@ -1070,6 +1154,19 @@
         }
       },
       "additionalProperties": false
+    },
+    "HumidifierMode": {
+      "description": "Data for `humidifier.set_mode`.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ]
     },
     "HvacMode": {
       "description": "What it's set to do: Home Assistant's modes.",
@@ -1339,7 +1436,11 @@
         "water_heater.set_temperature",
         "water_heater.set_operation_mode",
         "water_heater.turn_on",
-        "water_heater.turn_off"
+        "water_heater.turn_off",
+        "humidifier.turn_on",
+        "humidifier.turn_off",
+        "humidifier.set_humidity",
+        "humidifier.set_mode"
       ]
     },
     "SetHumidity": {

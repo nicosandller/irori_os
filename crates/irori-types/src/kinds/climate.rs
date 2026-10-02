@@ -54,7 +54,7 @@ pub struct HumidityRange {
 }
 
 impl HumidityRange {
-    fn validate(&self, whose: &str) -> Result<(), InvariantError> {
+    pub(crate) fn validate(&self, whose: &str) -> Result<(), InvariantError> {
         if !(0.0..=100.0).contains(&self.min)
             || !(0.0..=100.0).contains(&self.max)
             || self.min > self.max

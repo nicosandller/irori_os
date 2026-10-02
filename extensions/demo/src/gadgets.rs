@@ -1,7 +1,7 @@
 //! The demo's devices that do more than switch and measure: a front door lock that locks itself
 //! again, a doorbell with a chime and a screen, a living room blind that takes a moment to move,
-//! a ceiling fan, a water shut-off with a leak alarm, a thermostat and a hot water tank. Between
-//! them, one of every kind beyond lights, switches and sensors.
+//! a ceiling fan, a water shut-off with a leak alarm, a thermostat, a hot water tank and a
+//! dehumidifier. Between them, one of every kind beyond lights, switches and sensors.
 
 use tokio::time::{Duration, Instant};
 
@@ -16,6 +16,9 @@ use irori_protocol::types::{
 };
 use irori_protocol::{ProtocolContext, ProtocolError};
 
+use irori_protocol::types::{
+    HumidifierAction, HumidifierCapabilities, HumidifierClass, HumidifierState, HumidityRange,
+};
 use irori_protocol::types::{WaterHeaterCapabilities, WaterHeaterMode, WaterHeaterState};
 
 use crate::{device, id};
@@ -39,6 +42,8 @@ const THERMOSTAT: &str = "thermostat";
 const THERMOSTAT_CLIMATE: &str = "thermostat-climate";
 const TANK: &str = "hot-water-tank";
 const TANK_HEATER: &str = "hot-water-tank-heater";
+const DRYER: &str = "dehumidifier";
+const DRYER_HUMIDIFIER: &str = "dehumidifier-humidifier";
 
 const CHIMES: [&str; 3] = ["Ding-dong", "Westminster", "Off"];
 const FAN_SPEEDS: u16 = 3;
@@ -69,6 +74,27 @@ pub(crate) struct Gadgets {
     tank: WaterHeaterState,
     /// The mode it's in when its switch is on.
     tank_mode: WaterHeaterMode,
+    dryer: HumidifierState,
+}
+
+fn dryer_capabilities() -> HumidifierCapabilities {
+    HumidifierCapabilities {
+        device_class: Some(HumidifierClass::Dehumidifier),
+        humidity: HumidityRange {
+            min: 35.0,
+            max: 80.0,
+        },
+        modes: vec!["normal".into(), "sleep".into()],
+    }
+}
+
+/// What a dehumidifier is doing in a room at `room` %: drying while it's above the target.
+fn drying(dryer: &HumidifierState, room: f64) -> HumidifierAction {
+    match dryer.target_humidity {
+        _ if !dryer.on => HumidifierAction::Off,
+        Some(target) if room > target => HumidifierAction::Drying,
+        _ => HumidifierAction::Idle,
+    }
 }
 
 /// A heat pump hot water tank with its own switch.
@@ -197,6 +223,13 @@ impl Gadgets {
                 target_temperature: Some(55.0),
             },
             tank_mode: WaterHeaterMode::HeatPump,
+            dryer: HumidifierState {
+                on: true,
+                target_humidity: Some(50.0),
+                current_humidity: Some(50.0),
+                mode: Some("normal".into()),
+                action: Some(HumidifierAction::Idle),
+            },
         }
     }
 
@@ -235,6 +268,7 @@ impl Gadgets {
             (SHUTOFF_ALARM, State::Siren(SirenState { on: self.alarm })),
             (THERMOSTAT_CLIMATE, State::Climate(self.thermostat.clone())),
             (TANK_HEATER, State::WaterHeater(self.tank.clone())),
+            (DRYER_HUMIDIFIER, State::Humidifier(self.dryer.clone())),
         ]
     }
 
@@ -392,6 +426,20 @@ impl Gadgets {
                 self.thermostat.preset_mode = Some(data.preset_mode.clone());
                 THERMOSTAT_CLIMATE
             }
+            (DRYER_HUMIDIFIER, Service::HumidifierTurnOn | Service::HumidifierTurnOff) => {
+                self.dryer.on = matches!(service, Service::HumidifierTurnOn);
+                self.dryer_action();
+                DRYER_HUMIDIFIER
+            }
+            (DRYER_HUMIDIFIER, Service::HumidifierSetHumidity(data)) => {
+                self.dryer.target_humidity = Some(data.humidity);
+                self.dryer_action();
+                DRYER_HUMIDIFIER
+            }
+            (DRYER_HUMIDIFIER, Service::HumidifierSetMode(data)) => {
+                self.dryer.mode = Some(data.mode.clone());
+                DRYER_HUMIDIFIER
+            }
             (TANK_HEATER, Service::WaterHeaterTurnOff) => {
                 self.tank.operation_mode = WaterHeaterMode::Off;
                 TANK_HEATER
@@ -416,7 +464,7 @@ impl Gadgets {
             (
                 LOCK_LOCK | LOCK_AUTO | DOORBELL_RING | DOORBELL_CHIME | DOORBELL_MESSAGE
                 | BLIND_COVER | BLIND_CALIBRATE | FAN_FAN | SHUTOFF_VALVE | SHUTOFF_ALARM
-                | THERMOSTAT_CLIMATE | TANK_HEATER,
+                | THERMOSTAT_CLIMATE | TANK_HEATER | DRYER_HUMIDIFIER,
                 _,
             ) => {
                 return Some(Err(format!(
@@ -427,6 +475,11 @@ impl Gadgets {
             _ => return None,
         };
         Some(Ok(self.state_of(changed)))
+    }
+
+    fn dryer_action(&mut self) {
+        let room = self.dryer.current_humidity.unwrap_or(50.0);
+        self.dryer.action = Some(drying(&self.dryer, room));
     }
 
     fn thermostat_mode(&mut self, mode: HvacMode) {
@@ -448,10 +501,22 @@ impl Gadgets {
         self.fan.preset_mode = None;
     }
 
-    /// What changed on its own by `now`, with the living room at `room` °C: the blind moving,
-    /// the lock locking itself again, the alarm running out, the thermostat reading the room.
-    pub(crate) fn tick(&mut self, now: Instant, room: f64) -> Vec<(&'static str, State)> {
+    /// What changed on its own by `now`, with the living room at `room` °C and `humidity` %:
+    /// the blind moving, the lock locking itself again, the alarm running out, the thermostat
+    /// and dehumidifier reading the room.
+    pub(crate) fn tick(
+        &mut self,
+        now: Instant,
+        room: f64,
+        humidity: f64,
+    ) -> Vec<(&'static str, State)> {
         let mut changed = Vec::new();
+        let dried = self.dryer.clone();
+        self.dryer.current_humidity = Some(humidity);
+        self.dryer_action();
+        if self.dryer != dried {
+            changed.push(DRYER_HUMIDIFIER);
+        }
         let before = self.thermostat.clone();
         self.thermostat.current_temperature = Some(room);
         self.thermostat.hvac_action = Some(heating(&self.thermostat, room));
@@ -669,6 +734,22 @@ pub(crate) async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError>
     .await?;
 
     ctx.describe_device(device(
+        DRYER,
+        "Demo dehumidifier",
+        "Virtual dehumidifier",
+        "Living room",
+    )?)
+    .await?;
+    ctx.describe_entity(entity(
+        DRYER_HUMIDIFIER,
+        None,
+        DRYER,
+        Capabilities::Humidifier(dryer_capabilities()),
+        None,
+    )?)
+    .await?;
+
+    ctx.describe_device(device(
         TANK,
         "Demo hot water tank",
         "Virtual heat pump water heater",
@@ -792,6 +873,10 @@ mod tests {
             ),
             (TANK_HEATER, Capabilities::WaterHeater(tank_capabilities())),
             (
+                DRYER_HUMIDIFIER,
+                Capabilities::Humidifier(dryer_capabilities()),
+            ),
+            (
                 DOORBELL_RING,
                 Capabilities::Event(EventCapabilities {
                     event_types: vec!["ring".into()],
@@ -848,7 +933,7 @@ mod tests {
             assert_fits(&[state]);
         }
         for second in 0..20 {
-            assert_fits(&gadgets.tick(now + Duration::from_secs(second), 20.0));
+            assert_fits(&gadgets.tick(now + Duration::from_secs(second), 20.0, 50.0));
         }
         assert_fits(&rings(0, 1000));
     }
@@ -859,8 +944,17 @@ mod tests {
         let mut gadgets = Gadgets::new();
         let unlock = Service::LockUnlock(LockCode::default());
         gadgets.call(LOCK_LOCK, &unlock, now);
-        assert!(about(gadgets.tick(now + Duration::from_secs(29), 21.0), LOCK_LOCK).is_empty());
-        let relocked = about(gadgets.tick(now + Duration::from_secs(30), 21.0), LOCK_LOCK);
+        assert!(
+            about(
+                gadgets.tick(now + Duration::from_secs(29), 21.0, 50.0),
+                LOCK_LOCK
+            )
+            .is_empty()
+        );
+        let relocked = about(
+            gadgets.tick(now + Duration::from_secs(30), 21.0, 50.0),
+            LOCK_LOCK,
+        );
         assert_eq!(
             relocked,
             vec![(
@@ -876,7 +970,7 @@ mod tests {
         gadgets.call(LOCK_LOCK, &unlock, now);
         assert!(
             about(
-                gadgets.tick(now + Duration::from_secs(3600), 21.0),
+                gadgets.tick(now + Duration::from_secs(3600), 21.0, 50.0),
                 LOCK_LOCK
             )
             .is_empty()
@@ -900,19 +994,19 @@ mod tests {
             (OpenState::Closing, Some(100))
         );
         for _ in 0..3 {
-            gadgets.tick(now, 21.0);
+            gadgets.tick(now, 21.0, 50.0);
         }
         assert_eq!(gadgets.blind.state().state, OpenState::Open);
         assert_eq!(gadgets.blind.position, 40);
         assert!(
-            about(gadgets.tick(now, 21.0), BLIND_COVER).is_empty(),
+            about(gadgets.tick(now, 21.0, 50.0), BLIND_COVER).is_empty(),
             "still once it's there"
         );
 
         gadgets.call(BLIND_CALIBRATE, &Service::ButtonPress, now);
         let mut lowest = 100;
         for _ in 0..10 {
-            gadgets.tick(now, 21.0);
+            gadgets.tick(now, 21.0, 50.0);
             lowest = lowest.min(gadgets.blind.position);
         }
         assert_eq!((lowest, gadgets.blind.position), (0, 40));
@@ -950,9 +1044,9 @@ mod tests {
         gadgets.call(SHUTOFF_ALARM, &sound, now);
         assert!(gadgets.alarm);
         let alarm = |ticked| about(ticked, SHUTOFF_ALARM);
-        assert!(alarm(gadgets.tick(now + Duration::from_secs(4), 21.0)).is_empty());
+        assert!(alarm(gadgets.tick(now + Duration::from_secs(4), 21.0, 50.0)).is_empty());
         assert_eq!(
-            alarm(gadgets.tick(now + Duration::from_secs(5), 21.0)).len(),
+            alarm(gadgets.tick(now + Duration::from_secs(5), 21.0, 50.0)).len(),
             1
         );
         assert!(!gadgets.alarm);
@@ -973,13 +1067,13 @@ mod tests {
     fn the_thermostat_heats_a_cold_room_and_comes_back_on_as_it_was() {
         let now = Instant::now();
         let mut gadgets = Gadgets::new();
-        let cold = gadgets.tick(now, 19.0);
+        let cold = gadgets.tick(now, 19.0, 50.0);
         assert_fits(&cold);
         assert_eq!(gadgets.thermostat.hvac_action, Some(HvacAction::Heating));
-        gadgets.tick(now, 22.0);
+        gadgets.tick(now, 22.0, 50.0);
         assert_eq!(gadgets.thermostat.hvac_action, Some(HvacAction::Idle));
         assert!(
-            about(gadgets.tick(now, 22.0), THERMOSTAT_CLIMATE).is_empty(),
+            about(gadgets.tick(now, 22.0, 50.0), THERMOSTAT_CLIMATE).is_empty(),
             "nothing new to say"
         );
 
@@ -1006,16 +1100,31 @@ mod tests {
     fn the_tank_heats_while_on_and_cools_while_off() {
         let now = Instant::now();
         let mut gadgets = Gadgets::new();
-        gadgets.tick(now, 21.0);
+        gadgets.tick(now, 21.0, 50.0);
         assert_eq!(gadgets.tank.current_temperature, Some(51.0));
         let Some(Ok(off)) = gadgets.call(TANK_HEATER, &Service::WaterHeaterTurnOff, now) else {
             panic!("it switches off");
         };
         assert_fits(&[off]);
-        assert_fits(&gadgets.tick(now, 21.0));
+        assert_fits(&gadgets.tick(now, 21.0, 50.0));
         assert_eq!(gadgets.tank.current_temperature, Some(50.8));
         gadgets.call(TANK_HEATER, &Service::WaterHeaterTurnOn, now);
         assert_eq!(gadgets.tank.operation_mode, WaterHeaterMode::HeatPump);
+    }
+
+    #[test]
+    fn the_dehumidifier_dries_a_damp_room() {
+        let now = Instant::now();
+        let mut gadgets = Gadgets::new();
+        assert_fits(&gadgets.tick(now, 21.0, 64.0));
+        assert_eq!(gadgets.dryer.action, Some(HumidifierAction::Drying));
+        gadgets.tick(now, 21.0, 45.0);
+        assert_eq!(gadgets.dryer.action, Some(HumidifierAction::Idle));
+        let Some(Ok(off)) = gadgets.call(DRYER_HUMIDIFIER, &Service::HumidifierTurnOff, now) else {
+            panic!("it turns off");
+        };
+        assert_fits(&[off]);
+        assert_eq!(gadgets.dryer.action, Some(HumidifierAction::Off));
     }
 
     #[test]

@@ -126,8 +126,9 @@ motion sensor are three entities.
 | `entity_category` | `config` \| `diagnostic` | no | One of the device's settings (a motion sensor's timeout) or diagnostics (its signal strength) rather than what it's for. Pages list these after the device's other entities. Home Assistant's names; set by the protocol |
 
 **Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`,
-`event`, `cover`, `lock`, `fan`, `valve`, `siren`, `climate`, `water_heater`.
-**Next, in likely order:** `humidifier`. Adding a kind is an
+`event`, `cover`, `lock`, `fan`, `valve`, `siren`, `climate`, `water_heater`, `humidifier`.
+**Next, in likely order:** `update`, `alarm_control_panel`, `date`, `time`, `datetime`,
+`media_player`, `vacuum`, `lawn_mower`, `remote`, `scene`, `device_tracker`. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
 
@@ -181,6 +182,9 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | | `min_temp`, `max_temp`, `temp_step` | °C, as a climate entity's | **required** | |
 | | `target_temperature` | bool | `false` | Takes a target |
 | | `on_off` | bool | `false` | Has its own on and off apart from its modes. While switched off its mode reads `off`, even if `off` isn't among its modes |
+| `humidifier` | `device_class` | `humidifier` \| `dehumidifier` | absent | |
+| | `humidity` | `{ min, max }` in %, within 0–100 | **required** | The targets it takes |
+| | `modes` | up to 256 distinct strings | `[]` | E.g. `normal`, `eco`, `sleep` |
 | `fan` | `speed_count` | integer | `0` | How many real speeds it has; 0 when its speed can't be set. Speeds go over the wire as percentages, as in Home Assistant |
 | | `oscillate`, `direction` | bool | `false` | Can swing; can turn the other way |
 | | `preset_modes` | up to 256 distinct strings | `[]` | Modes beyond its speed, e.g. `auto`, `sleep` |
@@ -284,6 +288,10 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | `water_heater` | `operation_mode` | one of its `operation_modes`, or `off` | yes | Its typed value |
 | | `current_temperature` | °C | no | The water's |
 | | `target_temperature` | °C | no | |
+| `humidifier` | `on` | bool | yes | Its typed value |
+| | `target_humidity`, `current_humidity` | % 0–100 | no | |
+| | `mode` | string | no | One of its `modes` (checked by the core) |
+| | `action` | `off` \| `humidifying` \| `drying` \| `idle` | no | What it's doing now |
 | `fan` | `on` | bool | yes | Its typed value |
 | | `percentage` | integer 0–100 | no | Its speed, when it has speeds. Kept while off |
 | | `oscillating` | bool | no | When it can swing |

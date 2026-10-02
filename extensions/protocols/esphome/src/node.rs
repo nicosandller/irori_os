@@ -903,6 +903,16 @@ async fn command(
                 .await
                 .map_err(|e| e.to_string())
         }
+        // The core only sends these to an entity of the kind, and ESPHome has none.
+        Service::HumidifierTurnOn
+        | Service::HumidifierTurnOff
+        | Service::HumidifierSetHumidity(_)
+        | Service::HumidifierSetMode(_) => {
+            incoming.reply(Err(ServiceError::failed(
+                "ESPHome has no humidifiers".to_owned(),
+            )));
+            return;
+        }
         Service::SirenTurnOn(_) | Service::SirenTurnOff => client
             .try_write(map::siren_command(key, &incoming.call.service))
             .await

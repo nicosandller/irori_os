@@ -11,6 +11,7 @@ use crate::kinds::climate::ClimateState;
 use crate::kinds::cover::CoverState;
 use crate::kinds::event::EventState;
 use crate::kinds::fan::FanState;
+use crate::kinds::humidifier::HumidifierState;
 use crate::kinds::light::LightState;
 use crate::kinds::lock::LockState;
 use crate::kinds::number::NumberState;
@@ -150,6 +151,7 @@ pub enum State {
     Siren(SirenState),
     Climate(ClimateState),
     WaterHeater(WaterHeaterState),
+    Humidifier(HumidifierState),
 }
 
 impl State {
@@ -165,6 +167,7 @@ impl State {
             Self::Valve(valve) => valve.validate(),
             Self::Climate(climate) => climate.validate(),
             Self::WaterHeater(heater) => heater.validate(),
+            Self::Humidifier(humidifier) => humidifier.validate(),
             Self::Switch(_)
             | Self::BinarySensor(_)
             | Self::Select(_)
@@ -192,6 +195,7 @@ impl State {
             Self::Siren(_) => EntityKind::Siren,
             Self::Climate(_) => EntityKind::Climate,
             Self::WaterHeater(_) => EntityKind::WaterHeater,
+            Self::Humidifier(_) => EntityKind::Humidifier,
         }
     }
 }

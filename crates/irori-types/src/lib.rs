@@ -55,6 +55,9 @@ pub use kinds::fan::{
     FanCapabilities, FanDirection, FanOscillate, FanPercentage, FanPresetMode, FanSetDirection,
     FanState, FanTurnOn, percentage_to_speed, speed_to_percentage,
 };
+pub use kinds::humidifier::{
+    HumidifierAction, HumidifierCapabilities, HumidifierClass, HumidifierMode, HumidifierState,
+};
 pub use kinds::light::{ColorMode, ColorTempRange, LightCapabilities, LightState, LightTurnOn};
 pub use kinds::lock::{LockCapabilities, LockCode, LockState, LockStatus};
 pub use kinds::number::{NumberCapabilities, NumberMode, NumberSetValue, NumberState};

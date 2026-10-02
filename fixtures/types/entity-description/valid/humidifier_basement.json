@@ -1,0 +1,16 @@
+{
+  "unique_id": "basement-dehumidifier",
+  "name": "Basement dehumidifier",
+  "capabilities": {
+    "kind": "humidifier",
+    "device_class": "dehumidifier",
+    "humidity": {
+      "min": 35,
+      "max": 80
+    },
+    "modes": [
+      "normal",
+      "sleep"
+    ]
+  }
+}
