@@ -8,8 +8,9 @@ use irori_types::{
     SelectState, SensorState, SensorValue, Service, SirenState, SirenTurnOn, State, SwitchState,
     TextState, UniqueId, ValveState, percentage_to_speed, speed_to_percentage,
 };
+use irori_types::{WaterHeaterMode, WaterHeaterState};
 
-use crate::discovery::{ClimateTopics, EntityTopics, FanPart};
+use crate::discovery::{ClimateTopics, EntityTopics, FanPart, WaterHeaterTopics};
 use crate::template::ValueTemplate;
 
 /// A message to publish: one entity's command can need more than one topic (the default light
@@ -97,6 +98,7 @@ pub fn decode(
         EntityTopics::Cover(cover) => decode_cover(cover, topic, payload, previous),
         EntityTopics::Fan(fan) => decode_fan(fan, topic, payload, previous),
         EntityTopics::Climate(climate) => decode_climate(climate, topic, payload, previous),
+        EntityTopics::WaterHeater(heater) => decode_water_heater(heater, topic, payload, previous),
         EntityTopics::Siren {
             state_topic,
             value_template,
@@ -268,6 +270,71 @@ fn decode_climate(
             return Err("it hasn't said its mode yet".to_owned());
         }
         Ok(State::Climate(state))
+    })())
+}
+
+/// A water heater's mode, target and water temperature, read the way a thermostat's are.
+fn decode_water_heater(
+    heater: &WaterHeaterTopics,
+    topic: &str,
+    payload: &[u8],
+    previous: Option<&State>,
+) -> Option<Result<State, String>> {
+    let on = |part: &Option<FanPart>| {
+        part.as_ref()
+            .filter(|part| part.state_topic.as_deref() == Some(topic))
+            .map(|part| part.value_template.clone())
+    };
+    let (mode, target) = (on(&heater.mode), on(&heater.temperature));
+    let current = heater
+        .current_temperature
+        .as_ref()
+        .filter(|(reading, _)| reading == topic)
+        .map(|(_, template)| template.clone());
+    if mode.is_none() && target.is_none() && current.is_none() {
+        return None;
+    }
+    let said = |template: &ValueTemplate| -> Option<Option<String>> {
+        Some(match template.extract(payload).ok()? {
+            serde_json::Value::Null => None,
+            serde_json::Value::String(text) => Some(text.trim().to_owned()),
+            other => Some(other.to_string()),
+        })
+    };
+    let celsius = |template: &ValueTemplate| {
+        said(template).map(|text| {
+            text.and_then(|t| t.parse::<f64>().ok())
+                .map(|v| round_to(heater.unit.to_celsius(v), 2))
+        })
+    };
+    let said_mode = mode.as_ref().and_then(said).flatten();
+    Some((|| {
+        let operation_mode = match (&said_mode, previous) {
+            (Some(text), _) => WaterHeaterMode::parse(text)
+                .ok_or_else(|| format!("{text:?} isn't a mode this water heater has"))?,
+            (None, Some(State::WaterHeater(old))) => old.operation_mode,
+            // One with no mode topic never says its mode: it's in the first it has.
+            (None, _) if heater.mode.as_ref().is_none_or(|m| m.state_topic.is_none()) => {
+                *heater.modes.first().unwrap_or(&WaterHeaterMode::Off)
+            }
+            (None, _) => return Err("it hasn't said its mode yet".to_owned()),
+        };
+        let mut state = match previous {
+            Some(State::WaterHeater(old)) => old.clone(),
+            _ => WaterHeaterState {
+                operation_mode,
+                current_temperature: None,
+                target_temperature: None,
+            },
+        };
+        state.operation_mode = operation_mode;
+        if let Some(template) = &target {
+            update(&mut state.target_temperature, celsius(template));
+        }
+        if let Some(template) = &current {
+            update(&mut state.current_temperature, celsius(template));
+        }
+        Ok(State::WaterHeater(state))
     })())
 }
 
@@ -679,6 +746,7 @@ pub fn encode_with(
 ) -> Result<Vec<Publish>, String> {
     match topics {
         EntityTopics::Climate(climate) => encode_climate(climate, service, last_on),
+        EntityTopics::WaterHeater(heater) => encode_water_heater(heater, service, last_on),
         _ => encode(topics, service),
     }
 }
@@ -686,12 +754,17 @@ pub fn encode_with(
 /// Whether `state` is one to go back to when the entity is turned on again: a thermostat in any
 /// mode but `off`.
 pub fn is_on(state: &State) -> bool {
-    matches!(state, State::Climate(climate) if climate.hvac_mode != HvacMode::Off)
+    match state {
+        State::Climate(climate) => climate.hvac_mode != HvacMode::Off,
+        State::WaterHeater(heater) => heater.operation_mode != WaterHeaterMode::Off,
+        _ => false,
+    }
 }
 
 pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, String> {
     match (topics, service) {
         (EntityTopics::Climate(climate), service) => encode_climate(climate, service, None),
+        (EntityTopics::WaterHeater(heater), service) => encode_water_heater(heater, service, None),
         (EntityTopics::LightJson { command_topic, .. }, Service::LightTurnOff) => {
             Ok(vec![json_publish(
                 command_topic,
@@ -1013,6 +1086,79 @@ fn encode_climate(
     }
 }
 
+fn encode_water_heater(
+    heater: &WaterHeaterTopics,
+    service: &Service,
+    last_on: Option<&State>,
+) -> Result<Vec<Publish>, String> {
+    let send = |part: &FanPart, value: &str| {
+        text_publish(&part.command_topic, &part.command_template.render(value))
+    };
+    let mode = |mode: WaterHeaterMode| -> Result<Publish, String> {
+        let part = heater
+            .mode
+            .as_ref()
+            .ok_or("this water heater's mode can't be set")?;
+        Ok(send(part, mode.as_str()))
+    };
+    let power = |on: bool| {
+        heater.power.as_ref().map(|power| {
+            let payload = if on {
+                &power.payload_on
+            } else {
+                &power.payload_off
+            };
+            text_publish(
+                &power.command_topic,
+                &power.command_template.render(payload),
+            )
+        })
+    };
+    match service {
+        Service::WaterHeaterSetOperationMode(data) => Ok(vec![mode(data.operation_mode)?]),
+        Service::WaterHeaterSetTemperature(data) => {
+            let mut messages = Vec::new();
+            if let Some(operation_mode) = data.operation_mode {
+                messages.push(mode(operation_mode)?);
+            }
+            let part = heater
+                .temperature
+                .as_ref()
+                .ok_or("this water heater doesn't take a target")?;
+            messages.push(send(
+                part,
+                &device_temperature(heater.unit, data.temperature),
+            ));
+            Ok(messages)
+        }
+        Service::WaterHeaterTurnOff => match power(false) {
+            Some(message) => Ok(vec![message]),
+            None => Ok(vec![mode(WaterHeaterMode::Off)?]),
+        },
+        Service::WaterHeaterTurnOn => match power(true) {
+            Some(message) => Ok(vec![message]),
+            None => {
+                let last = match last_on {
+                    Some(State::WaterHeater(state)) => Some(state.operation_mode),
+                    _ => None,
+                };
+                let on = last
+                    .filter(|m| *m != WaterHeaterMode::Off && heater.modes.contains(m))
+                    .or_else(|| {
+                        heater
+                            .modes
+                            .iter()
+                            .copied()
+                            .find(|m| *m != WaterHeaterMode::Off)
+                    })
+                    .ok_or("this water heater has no mode to turn on to")?;
+                Ok(vec![mode(on)?])
+            }
+        },
+        other => Err(format!("a water heater has no `{}` service", other.name())),
+    }
+}
+
 /// A °C temperature as the device writes it: to a tenth in °F or K, `21` rather than `21.0`.
 fn device_temperature(unit: TemperatureUnit, celsius: f64) -> String {
     number_text(round_to(unit.from_celsius(celsius), 1))
@@ -1110,6 +1256,12 @@ pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, Un
         EntityTopics::Event { state_topic, .. } => list.push(state_topic.clone()),
         EntityTopics::Lock(lock) => list.extend(lock.state_topic.clone()),
         EntityTopics::Siren { state_topic, .. } => list.extend(state_topic.clone()),
+        EntityTopics::WaterHeater(heater) => {
+            for part in [&heater.mode, &heater.temperature].into_iter().flatten() {
+                list.extend(part.state_topic.clone());
+            }
+            list.extend(heater.current_temperature.as_ref().map(|(t, _)| t.clone()));
+        }
         EntityTopics::Climate(climate) => {
             for (_, part) in climate.settings() {
                 list.extend(part.and_then(|part| part.state_topic.clone()));

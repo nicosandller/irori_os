@@ -401,6 +401,10 @@
         {
           "maxLength": 72,
           "pattern": "^climate\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 77,
+          "pattern": "^water_heater\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

@@ -126,8 +126,8 @@ motion sensor are three entities.
 | `entity_category` | `config` \| `diagnostic` | no | One of the device's settings (a motion sensor's timeout) or diagnostics (its signal strength) rather than what it's for. Pages list these after the device's other entities. Home Assistant's names; set by the protocol |
 
 **Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`,
-`event`, `cover`, `lock`, `fan`, `valve`, `siren`, `climate`.
-**Next, in likely order:** `water_heater`, `humidifier`. Adding a kind is an
+`event`, `cover`, `lock`, `fan`, `valve`, `siren`, `climate`, `water_heater`.
+**Next, in likely order:** `humidifier`. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
 
@@ -177,11 +177,15 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | | `target_temperature_range` | bool | `false` | Takes a range: heats below `target_temp_low`, cools above `target_temp_high` |
 | | `target_humidity` | `{ min, max }` in % | absent | Takes a target humidity in this range |
 | | `fan_modes`, `swing_modes`, `preset_modes` | up to 256 distinct strings each | `[]` | E.g. `auto`/`low`/`high`; `off`/`vertical`; `eco`/`away`/`boost` |
+| `water_heater` | `operation_modes` | 1 or more of `off` \| `eco` \| `electric` \| `gas` \| `heat_pump` \| `high_demand` \| `performance` | **required** | The modes it can be put in |
+| | `min_temp`, `max_temp`, `temp_step` | °C, as a climate entity's | **required** | |
+| | `target_temperature` | bool | `false` | Takes a target |
+| | `on_off` | bool | `false` | Has its own on and off apart from its modes. While switched off its mode reads `off`, even if `off` isn't among its modes |
 | `fan` | `speed_count` | integer | `0` | How many real speeds it has; 0 when its speed can't be set. Speeds go over the wire as percentages, as in Home Assistant |
 | | `oscillate`, `direction` | bool | `false` | Can swing; can turn the other way |
 | | `preset_modes` | up to 256 distinct strings | `[]` | Modes beyond its speed, e.g. `auto`, `sleep` |
 
-**Temperatures are °C** in climate entities, in their capabilities, state and services alike.
+**Temperatures are °C** in climate entities and water heaters, in their capabilities, state and services alike.
 A protocol converts from what a device speaks (°F, K) on the way in and back on the way out
 (`irori_types::units`), so a rule comparing a thermostat's target with a temperature sensor never
 compares °F with °C. Pages show °C for now.
@@ -277,6 +281,9 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | | `target_temp_low`, `target_temp_high` | °C | no | With `target_temperature_range` |
 | | `current_humidity`, `target_humidity` | % 0–100 | no | |
 | | `fan_mode`, `swing_mode`, `preset_mode` | string | no | One of its lists (checked by the core) |
+| `water_heater` | `operation_mode` | one of its `operation_modes`, or `off` | yes | Its typed value |
+| | `current_temperature` | °C | no | The water's |
+| | `target_temperature` | °C | no | |
 | `fan` | `on` | bool | yes | Its typed value |
 | | `percentage` | integer 0–100 | no | Its speed, when it has speeds. Kept while off |
 | | `oscillating` | bool | no | When it can swing |

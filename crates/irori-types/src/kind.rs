@@ -38,6 +38,8 @@ pub enum EntityKind {
     Siren,
     /// Heats or cools a room, e.g. a thermostat or an air conditioner.
     Climate,
+    /// A boiler or hot water tank.
+    WaterHeater,
 }
 
 impl EntityKind {
@@ -57,6 +59,7 @@ impl EntityKind {
         Self::Valve,
         Self::Siren,
         Self::Climate,
+        Self::WaterHeater,
     ];
 
     /// The domain string used in entity ids and service names.
@@ -77,6 +80,7 @@ impl EntityKind {
             Self::Valve => "valve",
             Self::Siren => "siren",
             Self::Climate => "climate",
+            Self::WaterHeater => "water_heater",
         }
     }
 

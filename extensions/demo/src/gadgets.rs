@@ -1,7 +1,7 @@
 //! The demo's devices that do more than switch and measure: a front door lock that locks itself
 //! again, a doorbell with a chime and a screen, a living room blind that takes a moment to move,
-//! a ceiling fan, a water shut-off with a leak alarm, and a thermostat. Between them, one of every
-//! kind beyond lights, switches and sensors.
+//! a ceiling fan, a water shut-off with a leak alarm, a thermostat and a hot water tank. Between
+//! them, one of every kind beyond lights, switches and sensors.
 
 use tokio::time::{Duration, Instant};
 
@@ -15,6 +15,8 @@ use irori_protocol::types::{
     percentage_to_speed, speed_to_percentage,
 };
 use irori_protocol::{ProtocolContext, ProtocolError};
+
+use irori_protocol::types::{WaterHeaterCapabilities, WaterHeaterMode, WaterHeaterState};
 
 use crate::{device, id};
 
@@ -35,6 +37,8 @@ const SHUTOFF_VALVE: &str = "water-shutoff-valve";
 const SHUTOFF_ALARM: &str = "water-shutoff-alarm";
 const THERMOSTAT: &str = "thermostat";
 const THERMOSTAT_CLIMATE: &str = "thermostat-climate";
+const TANK: &str = "hot-water-tank";
+const TANK_HEATER: &str = "hot-water-tank-heater";
 
 const CHIMES: [&str; 3] = ["Ding-dong", "Westminster", "Off"];
 const FAN_SPEEDS: u16 = 3;
@@ -62,6 +66,25 @@ pub(crate) struct Gadgets {
     thermostat: ClimateState,
     /// The mode `turn_on` goes back to.
     thermostat_on: HvacMode,
+    tank: WaterHeaterState,
+    /// The mode it's in when its switch is on.
+    tank_mode: WaterHeaterMode,
+}
+
+/// A heat pump hot water tank with its own switch.
+fn tank_capabilities() -> WaterHeaterCapabilities {
+    WaterHeaterCapabilities {
+        operation_modes: vec![
+            WaterHeaterMode::Eco,
+            WaterHeaterMode::HeatPump,
+            WaterHeaterMode::Performance,
+        ],
+        min_temp: 40.0,
+        max_temp: 65.0,
+        temp_step: 1.0,
+        target_temperature: true,
+        on_off: true,
+    }
 }
 
 /// The living room's thermostat: heats, or follows its schedule, in °C.
@@ -168,6 +191,12 @@ impl Gadgets {
                 ..ClimateState::in_mode(HvacMode::Heat)
             },
             thermostat_on: HvacMode::Heat,
+            tank: WaterHeaterState {
+                operation_mode: WaterHeaterMode::HeatPump,
+                current_temperature: Some(50.0),
+                target_temperature: Some(55.0),
+            },
+            tank_mode: WaterHeaterMode::HeatPump,
         }
     }
 
@@ -205,6 +234,7 @@ impl Gadgets {
             ),
             (SHUTOFF_ALARM, State::Siren(SirenState { on: self.alarm })),
             (THERMOSTAT_CLIMATE, State::Climate(self.thermostat.clone())),
+            (TANK_HEATER, State::WaterHeater(self.tank.clone())),
         ]
     }
 
@@ -362,10 +392,31 @@ impl Gadgets {
                 self.thermostat.preset_mode = Some(data.preset_mode.clone());
                 THERMOSTAT_CLIMATE
             }
+            (TANK_HEATER, Service::WaterHeaterTurnOff) => {
+                self.tank.operation_mode = WaterHeaterMode::Off;
+                TANK_HEATER
+            }
+            (TANK_HEATER, Service::WaterHeaterTurnOn) => {
+                self.tank.operation_mode = self.tank_mode;
+                TANK_HEATER
+            }
+            (TANK_HEATER, Service::WaterHeaterSetOperationMode(data)) => {
+                self.tank_mode = data.operation_mode;
+                self.tank.operation_mode = data.operation_mode;
+                TANK_HEATER
+            }
+            (TANK_HEATER, Service::WaterHeaterSetTemperature(data)) => {
+                if let Some(mode) = data.operation_mode {
+                    self.tank_mode = mode;
+                    self.tank.operation_mode = mode;
+                }
+                self.tank.target_temperature = Some(data.temperature);
+                TANK_HEATER
+            }
             (
                 LOCK_LOCK | LOCK_AUTO | DOORBELL_RING | DOORBELL_CHIME | DOORBELL_MESSAGE
                 | BLIND_COVER | BLIND_CALIBRATE | FAN_FAN | SHUTOFF_VALVE | SHUTOFF_ALARM
-                | THERMOSTAT_CLIMATE,
+                | THERMOSTAT_CLIMATE | TANK_HEATER,
                 _,
             ) => {
                 return Some(Err(format!(
@@ -406,6 +457,18 @@ impl Gadgets {
         self.thermostat.hvac_action = Some(heating(&self.thermostat, room));
         if self.thermostat != before {
             changed.push(THERMOSTAT_CLIMATE);
+        }
+        // The tank heats a degree a reading towards its target while it's on, and loses a little
+        // to the room while it isn't.
+        let water = self.tank.current_temperature.unwrap_or(50.0);
+        let heated = match (self.tank.operation_mode, self.tank.target_temperature) {
+            (WaterHeaterMode::Off, _) => (water - 0.2).max(20.0),
+            (_, Some(target)) if water < target => (water + 1.0).min(target),
+            _ => water,
+        };
+        if (heated - water).abs() > f64::EPSILON {
+            self.tank.current_temperature = Some((heated * 10.0).round() / 10.0);
+            changed.push(TANK_HEATER);
         }
         if self.blind.step() {
             changed.push(BLIND_COVER);
@@ -606,6 +669,22 @@ pub(crate) async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError>
     .await?;
 
     ctx.describe_device(device(
+        TANK,
+        "Demo hot water tank",
+        "Virtual heat pump water heater",
+        "Kitchen",
+    )?)
+    .await?;
+    ctx.describe_entity(entity(
+        TANK_HEATER,
+        None,
+        TANK,
+        Capabilities::WaterHeater(tank_capabilities()),
+        None,
+    )?)
+    .await?;
+
+    ctx.describe_device(device(
         SHUTOFF,
         "Demo water shut-off",
         "Virtual water valve with leak alarm",
@@ -711,6 +790,7 @@ mod tests {
                 THERMOSTAT_CLIMATE,
                 Capabilities::Climate(thermostat_capabilities()),
             ),
+            (TANK_HEATER, Capabilities::WaterHeater(tank_capabilities())),
             (
                 DOORBELL_RING,
                 Capabilities::Event(EventCapabilities {
@@ -719,6 +799,11 @@ mod tests {
                 }),
             ),
         ]
+    }
+
+    /// What a tick said about one entity.
+    fn about(ticked: Vec<(&'static str, State)>, entity: &str) -> Vec<(&'static str, State)> {
+        ticked.into_iter().filter(|(id, _)| *id == entity).collect()
     }
 
     /// Irori refuses a report that doesn't fit what the entity said it is; here that would only
@@ -774,8 +859,8 @@ mod tests {
         let mut gadgets = Gadgets::new();
         let unlock = Service::LockUnlock(LockCode::default());
         gadgets.call(LOCK_LOCK, &unlock, now);
-        assert!(gadgets.tick(now + Duration::from_secs(29), 21.0).is_empty());
-        let relocked = gadgets.tick(now + Duration::from_secs(30), 21.0);
+        assert!(about(gadgets.tick(now + Duration::from_secs(29), 21.0), LOCK_LOCK).is_empty());
+        let relocked = about(gadgets.tick(now + Duration::from_secs(30), 21.0), LOCK_LOCK);
         assert_eq!(
             relocked,
             vec![(
@@ -790,9 +875,11 @@ mod tests {
         gadgets.call(LOCK_AUTO, &never, now);
         gadgets.call(LOCK_LOCK, &unlock, now);
         assert!(
-            gadgets
-                .tick(now + Duration::from_secs(3600), 21.0)
-                .is_empty()
+            about(
+                gadgets.tick(now + Duration::from_secs(3600), 21.0),
+                LOCK_LOCK
+            )
+            .is_empty()
         );
         assert_eq!(gadgets.lock, LockStatus::Unlocked);
     }
@@ -817,7 +904,10 @@ mod tests {
         }
         assert_eq!(gadgets.blind.state().state, OpenState::Open);
         assert_eq!(gadgets.blind.position, 40);
-        assert!(gadgets.tick(now, 21.0).is_empty(), "still once it's there");
+        assert!(
+            about(gadgets.tick(now, 21.0), BLIND_COVER).is_empty(),
+            "still once it's there"
+        );
 
         gadgets.call(BLIND_CALIBRATE, &Service::ButtonPress, now);
         let mut lowest = 100;
@@ -859,8 +949,12 @@ mod tests {
         });
         gadgets.call(SHUTOFF_ALARM, &sound, now);
         assert!(gadgets.alarm);
-        assert!(gadgets.tick(now + Duration::from_secs(4), 21.0).is_empty());
-        assert_eq!(gadgets.tick(now + Duration::from_secs(5), 21.0).len(), 1);
+        let alarm = |ticked| about(ticked, SHUTOFF_ALARM);
+        assert!(alarm(gadgets.tick(now + Duration::from_secs(4), 21.0)).is_empty());
+        assert_eq!(
+            alarm(gadgets.tick(now + Duration::from_secs(5), 21.0)).len(),
+            1
+        );
         assert!(!gadgets.alarm);
     }
 
@@ -884,7 +978,10 @@ mod tests {
         assert_eq!(gadgets.thermostat.hvac_action, Some(HvacAction::Heating));
         gadgets.tick(now, 22.0);
         assert_eq!(gadgets.thermostat.hvac_action, Some(HvacAction::Idle));
-        assert!(gadgets.tick(now, 22.0).is_empty(), "nothing new to say");
+        assert!(
+            about(gadgets.tick(now, 22.0), THERMOSTAT_CLIMATE).is_empty(),
+            "nothing new to say"
+        );
 
         let auto = Service::ClimateSetHvacMode(irori_protocol::types::ClimateHvacMode {
             hvac_mode: HvacMode::Auto,
@@ -903,6 +1000,22 @@ mod tests {
         });
         gadgets.call(THERMOSTAT_CLIMATE, &away, now);
         assert_eq!(gadgets.thermostat.target_temperature, Some(15.0));
+    }
+
+    #[test]
+    fn the_tank_heats_while_on_and_cools_while_off() {
+        let now = Instant::now();
+        let mut gadgets = Gadgets::new();
+        gadgets.tick(now, 21.0);
+        assert_eq!(gadgets.tank.current_temperature, Some(51.0));
+        let Some(Ok(off)) = gadgets.call(TANK_HEATER, &Service::WaterHeaterTurnOff, now) else {
+            panic!("it switches off");
+        };
+        assert_fits(&[off]);
+        assert_fits(&gadgets.tick(now, 21.0));
+        assert_eq!(gadgets.tank.current_temperature, Some(50.8));
+        gadgets.call(TANK_HEATER, &Service::WaterHeaterTurnOn, now);
+        assert_eq!(gadgets.tank.operation_mode, WaterHeaterMode::HeatPump);
     }
 
     #[test]

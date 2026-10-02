@@ -580,6 +580,39 @@
             "kind",
             "hvac_mode"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "current_temperature": {
+              "description": "The water's temperature, in °C.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "kind": {
+              "type": "string",
+              "const": "water_heater"
+            },
+            "operation_mode": {
+              "$ref": "#/$defs/WaterHeaterMode"
+            },
+            "target_temperature": {
+              "description": "In °C.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "operation_mode"
+          ]
         }
       ]
     },
@@ -589,6 +622,19 @@
       "maxLength": 255,
       "minLength": 1,
       "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+    },
+    "WaterHeaterMode": {
+      "description": "Home Assistant's operation modes.",
+      "type": "string",
+      "enum": [
+        "off",
+        "eco",
+        "electric",
+        "gas",
+        "heat_pump",
+        "high_demand",
+        "performance"
+      ]
     }
   }
 }

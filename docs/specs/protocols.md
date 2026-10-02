@@ -279,6 +279,9 @@ manifest's `entity_kinds`.
 | `climate.set_fan_mode`, `climate.set_swing_mode`, `climate.set_preset_mode` | `fan_mode`, `swing_mode`, `preset_mode`: one of its lists | |
 | `climate.turn_on` | none | Back to the last mode it was in other than `off` (the protocol remembers it), or its first mode that isn't. `climate.toggle` resolves to `turn_on` from `off`, `turn_off` from anything else |
 | `climate.turn_off` | none | Needs `off` among its modes. Its own power switch when it has one (MQTT's `power_command_topic`), otherwise the `off` mode |
+| `water_heater.set_temperature` | `temperature` in °C within its `min_temp`–`max_temp`; optionally `operation_mode` to switch to | Needs `target_temperature` |
+| `water_heater.set_operation_mode` | `operation_mode`, one of its `operation_modes` | |
+| `water_heater.turn_on`, `water_heater.turn_off` | none | Its own switch when it has one (`on_off`); otherwise the `off` mode, and back to the last mode other than `off`, as a climate entity. `water_heater.toggle` resolves to one or the other |
 | `fan.turn_on` | `percentage` 1–100, `preset_mode`; both optional | `fan.toggle` resolves to `turn_on` or `turn_off` |
 | `fan.turn_off` | none | |
 | `fan.set_percentage` | `percentage` 0–100 | 0 turns it off. Needs a `speed_count` |

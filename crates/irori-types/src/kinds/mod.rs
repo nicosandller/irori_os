@@ -20,6 +20,7 @@ pub(crate) mod siren;
 pub(crate) mod switch;
 pub(crate) mod text;
 pub(crate) mod valve;
+pub(crate) mod water_heater;
 
 use crate::{Capabilities, EntityKind, InvariantError, Service, ServiceName, State};
 
@@ -37,6 +38,10 @@ use self::sensor::{SensorState, SensorValue, SensorValueType};
 use self::siren::{SirenState, SirenTurnOn};
 use self::text::{TextSetValue, TextState};
 use self::valve::ValveState;
+use self::water_heater::{
+    OPERATION_MODES, WaterHeaterMode, WaterHeaterOperationMode, WaterHeaterSetTemperature,
+    WaterHeaterState,
+};
 
 /// Reads a device class (or another name-only enum) by its Home Assistant name, which is also
 /// Irori's spelling. `None` for a name Irori doesn't have, which a protocol leaves absent rather
@@ -122,6 +127,14 @@ impl EntityKind {
                 }
                 _ => Some(ServiceName::ClimateTurnOn),
             },
+            Self::WaterHeater => match current {
+                Some(Typed::Text(text))
+                    if WaterHeaterMode::parse(text) != Some(WaterHeaterMode::Off) =>
+                {
+                    Some(ServiceName::WaterHeaterTurnOff)
+                }
+                _ => Some(ServiceName::WaterHeaterTurnOn),
+            },
             Self::Sensor
             | Self::BinarySensor
             | Self::Number
@@ -174,7 +187,8 @@ impl Capabilities {
             | Self::Cover(_)
             | Self::Valve(_)
             | Self::Lock(_)
-            | Self::Climate(_) => ValueShape::Text,
+            | Self::Climate(_)
+            | Self::WaterHeater(_) => ValueShape::Text,
             Self::Sensor(sensor) => match sensor.value_type {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
@@ -193,6 +207,7 @@ impl Capabilities {
             Self::Cover(_) | Self::Valve(_) => Some(&OPEN_STATES),
             Self::Lock(_) => Some(&LOCK_STATES),
             Self::Climate(_) => Some(&CLIMATE_MODES),
+            Self::WaterHeater(_) => Some(&OPERATION_MODES),
             _ => None,
         }
     }
@@ -216,6 +231,7 @@ impl Capabilities {
             (Self::Fan(caps), State::Fan(state)) => fan::fits(caps, state),
             (Self::Valve(caps), State::Valve(state)) => valve::fits(caps, state),
             (Self::Climate(caps), State::Climate(state)) => climate::fits(caps, state),
+            (Self::WaterHeater(caps), State::WaterHeater(state)) => water_heater::fits(caps, state),
             _ => Ok(()),
         }
     }
@@ -279,6 +295,18 @@ impl Capabilities {
             }
             (Self::Climate(caps), Service::ClimateTurnOn) => climate::supports_turn_on(caps),
             (Self::Climate(caps), Service::ClimateTurnOff) => climate::supports_turn_off(caps),
+            (Self::WaterHeater(caps), Service::WaterHeaterSetTemperature(data)) => {
+                water_heater::supports_temperature(caps, data)
+            }
+            (Self::WaterHeater(caps), Service::WaterHeaterSetOperationMode(data)) => {
+                water_heater::supports_mode(caps, data.operation_mode)
+            }
+            (Self::WaterHeater(caps), Service::WaterHeaterTurnOn) => {
+                water_heater::supports_turn_on(caps)
+            }
+            (Self::WaterHeater(caps), Service::WaterHeaterTurnOff) => {
+                water_heater::supports_turn_off(caps)
+            }
             _ => Ok(()),
         }
     }
@@ -301,6 +329,7 @@ impl State {
             Self::Valve(valve) => Typed::Text(valve.state.as_str().to_owned()),
             Self::Lock(lock) => Typed::Text(lock.state.as_str().to_owned()),
             Self::Climate(climate) => Typed::Text(climate.hvac_mode.as_str().to_owned()),
+            Self::WaterHeater(heater) => Typed::Text(heater.operation_mode.as_str().to_owned()),
             Self::Sensor(sensor) => match &sensor.value {
                 SensorValue::Number(n) => Typed::Number(*n),
                 SensorValue::Text(text) => Typed::Text(text.clone()),
@@ -387,6 +416,20 @@ impl State {
                     _ => State::Climate(ClimateState::in_mode(hvac_mode)),
                 }
             }
+            (EntityKind::WaterHeater, previous, Typed::Text(text)) => {
+                let operation_mode = WaterHeaterMode::parse(text)?;
+                match previous {
+                    Some(State::WaterHeater(heater)) => State::WaterHeater(WaterHeaterState {
+                        operation_mode,
+                        ..heater.clone()
+                    }),
+                    _ => State::WaterHeater(WaterHeaterState {
+                        operation_mode,
+                        current_temperature: None,
+                        target_temperature: None,
+                    }),
+                }
+            }
             (EntityKind::Sensor, _, Typed::Text(text)) => State::Sensor(SensorState {
                 value: SensorValue::Text(text.clone()),
             }),
@@ -451,6 +494,14 @@ impl Service {
             ServiceName::ClimateSetPresetMode => Service::ClimateSetPresetMode(parse(name, data)?),
             ServiceName::ClimateTurnOn => Service::ClimateTurnOn,
             ServiceName::ClimateTurnOff => Service::ClimateTurnOff,
+            ServiceName::WaterHeaterSetTemperature => {
+                Service::WaterHeaterSetTemperature(parse(name, data)?)
+            }
+            ServiceName::WaterHeaterSetOperationMode => {
+                Service::WaterHeaterSetOperationMode(parse(name, data)?)
+            }
+            ServiceName::WaterHeaterTurnOn => Service::WaterHeaterTurnOn,
+            ServiceName::WaterHeaterTurnOff => Service::WaterHeaterTurnOff,
             ServiceName::ValveOpen => Service::ValveOpen,
             ServiceName::ValveClose => Service::ValveClose,
             ServiceName::ValveStop => Service::ValveStop,
@@ -512,6 +563,8 @@ impl Service {
             Self::ClimateSetFanMode(data) => serde_json::to_value(data).ok()?,
             Self::ClimateSetSwingMode(data) => serde_json::to_value(data).ok()?,
             Self::ClimateSetPresetMode(data) => serde_json::to_value(data).ok()?,
+            Self::WaterHeaterSetTemperature(data) => serde_json::to_value(data).ok()?,
+            Self::WaterHeaterSetOperationMode(data) => serde_json::to_value(data).ok()?,
             Self::LockLock(code) | Self::LockUnlock(code) | Self::LockOpen(code)
                 if code.code.is_some() =>
             {
@@ -578,6 +631,13 @@ impl Service {
                 ..
             }) => Some(Typed::Text(hvac_mode.as_str().to_owned())),
             Self::ClimateTurnOff => Some(Typed::Text(HvacMode::Off.as_str().to_owned())),
+            Self::WaterHeaterSetOperationMode(WaterHeaterOperationMode { operation_mode })
+            | Self::WaterHeaterSetTemperature(WaterHeaterSetTemperature {
+                operation_mode: Some(operation_mode),
+                ..
+            }) => Some(Typed::Text(operation_mode.as_str().to_owned())),
+            Self::WaterHeaterTurnOff => Some(Typed::Text(WaterHeaterMode::Off.as_str().to_owned())),
+            Self::WaterHeaterTurnOn | Self::WaterHeaterSetTemperature(_) => None,
             // Which mode `turn_on` lands in is the device's to say, and a target or a fan mode
             // leaves the mode as it is.
             Self::ClimateTurnOn
@@ -625,6 +685,8 @@ impl ServiceName {
                 | Self::ClimateSetFanMode
                 | Self::ClimateSetSwingMode
                 | Self::ClimateSetPresetMode
+                | Self::WaterHeaterSetTemperature
+                | Self::WaterHeaterSetOperationMode
         )
     }
 
@@ -654,6 +716,8 @@ impl ServiceName {
                 | Self::ClimateSetFanMode
                 | Self::ClimateSetSwingMode
                 | Self::ClimateSetPresetMode
+                | Self::WaterHeaterSetTemperature
+                | Self::WaterHeaterSetOperationMode
         )
     }
 }

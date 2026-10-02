@@ -17,6 +17,7 @@ use irori_types::{
     SwitchCapabilities, SwitchClass, TextCapabilities, TextMode, UniqueId, ValveCapabilities,
     ValveClass,
 };
+use irori_types::{WaterHeaterCapabilities, WaterHeaterMode};
 
 use crate::template::{CommandTemplate, ValueTemplate};
 use crate::topic::Component;
@@ -165,6 +166,20 @@ pub enum EntityTopics {
     /// A thermostat or air conditioner, as Home Assistant's MQTT climate lets it vary: each
     /// setting on its own topics.
     Climate(Box<ClimateTopics>),
+    /// A water heater, as Home Assistant's MQTT water heater: a mode, a target and the water's
+    /// temperature, each on its own topics.
+    WaterHeater(Box<WaterHeaterTopics>),
+}
+
+/// How a water heater is told what to do and says what it's doing, temperatures in `unit`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WaterHeaterTopics {
+    pub unit: TemperatureUnit,
+    pub modes: Vec<WaterHeaterMode>,
+    pub mode: Option<FanPart>,
+    pub temperature: Option<FanPart>,
+    pub current_temperature: Option<(String, ValueTemplate)>,
+    pub power: Option<ClimatePower>,
 }
 
 /// How a climate entity is told what to do and says what it's doing. Temperatures go out and
@@ -354,6 +369,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::Valve => parse_valve(&root)?,
         Component::Siren => parse_siren(&root)?,
         Component::Climate => parse_climate(&root)?,
+        Component::WaterHeater => parse_water_heater(&root)?,
     };
 
     Ok(ParsedConfig {
@@ -777,11 +793,7 @@ fn reading(root: &serde_json::Value, name: &str) -> Option<(String, ValueTemplat
 }
 
 fn parse_climate(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
-    let unit = match str_field(root, "temperature_unit") {
-        Some(unit) => TemperatureUnit::parse(unit)
-            .ok_or_else(|| format!("`temperature_unit` {unit:?} isn't C, F or K"))?,
-        None => TemperatureUnit::Celsius,
-    };
+    let unit = temperature_unit(root)?;
     let modes: Vec<HvacMode> = string_list(root, "modes")
         .unwrap_or_else(|| {
             ["auto", "off", "cool", "heat", "dry", "fan_only"]
@@ -791,18 +803,7 @@ fn parse_climate(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics
         .iter()
         .filter_map(|mode| HvacMode::parse(mode))
         .collect();
-    let power = str_field(root, "power_command_topic").and_then(|topic| {
-        Some(ClimatePower {
-            command_topic: topic.to_owned(),
-            command_template: CommandTemplate::parse(
-                str_field(root, "power_command_template"),
-                "value",
-            )
-            .ok()?,
-            payload_on: owned_str(root, "payload_on", "ON"),
-            payload_off: owned_str(root, "payload_off", "OFF"),
-        })
-    });
+    let power = power(root);
     let topics = ClimateTopics {
         unit,
         mode: setting(root, "mode", "mode_state_template"),
@@ -859,6 +860,89 @@ fn parse_climate(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics
     Ok((
         Capabilities::Climate(capabilities),
         EntityTopics::Climate(Box::new(topics)),
+    ))
+}
+
+fn temperature_unit(root: &serde_json::Value) -> Result<TemperatureUnit, String> {
+    match str_field(root, "temperature_unit") {
+        Some(unit) => TemperatureUnit::parse(unit)
+            .ok_or_else(|| format!("`temperature_unit` {unit:?} isn't C, F or K")),
+        None => Ok(TemperatureUnit::Celsius),
+    }
+}
+
+/// `power_command_topic` and its payloads, when it has its own on and off.
+fn power(root: &serde_json::Value) -> Option<ClimatePower> {
+    let topic = str_field(root, "power_command_topic")?;
+    Some(ClimatePower {
+        command_topic: topic.to_owned(),
+        command_template: CommandTemplate::parse(
+            str_field(root, "power_command_template"),
+            "value",
+        )
+        .ok()?,
+        payload_on: owned_str(root, "payload_on", "ON"),
+        payload_off: owned_str(root, "payload_off", "OFF"),
+    })
+}
+
+fn parse_water_heater(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
+    let unit = temperature_unit(root)?;
+    let modes: Vec<WaterHeaterMode> = string_list(root, "modes")
+        .unwrap_or_else(|| {
+            [
+                "off",
+                "eco",
+                "electric",
+                "gas",
+                "heat_pump",
+                "high_demand",
+                "performance",
+            ]
+            .map(str::to_owned)
+            .to_vec()
+        })
+        .iter()
+        .filter_map(|mode| WaterHeaterMode::parse(mode))
+        .collect();
+    let topics = WaterHeaterTopics {
+        unit,
+        modes: modes.clone(),
+        mode: setting(root, "mode", "mode_state_template"),
+        temperature: setting(root, "temperature", "temperature_state_template"),
+        current_temperature: reading(root, "current_temperature"),
+        power: power(root),
+    };
+    // Home Assistant's defaults: 110-140 °F, which is 43.3-60 °C.
+    let (default_min, default_max) = match unit {
+        TemperatureUnit::Fahrenheit => (110.0, 140.0),
+        TemperatureUnit::Celsius | TemperatureUnit::Kelvin => (43.3, 60.0),
+    };
+    let capabilities = WaterHeaterCapabilities {
+        operation_modes: if modes.is_empty() {
+            vec![WaterHeaterMode::Off]
+        } else {
+            modes
+        },
+        min_temp: round_to(
+            unit.to_celsius(number_field(root, "min_temp").unwrap_or(default_min)),
+            2,
+        ),
+        max_temp: round_to(
+            unit.to_celsius(number_field(root, "max_temp").unwrap_or(default_max)),
+            2,
+        ),
+        temp_step: round_to(
+            unit.step_to_celsius(number_field(root, "precision").unwrap_or(1.0)),
+            2,
+        ),
+        target_temperature: topics.temperature.is_some(),
+        on_off: topics.power.is_some(),
+    };
+    capabilities.validate().map_err(|e| e.to_string())?;
+    Ok((
+        Capabilities::WaterHeater(capabilities),
+        EntityTopics::WaterHeater(Box::new(topics)),
     ))
 }
 
@@ -1651,6 +1735,62 @@ mod tests {
         let off = crate::state::encode(&parsed.topics, &irori_types::Service::ClimateTurnOff)
             .expect("sent");
         assert_eq!(off[0].payload, b"off");
+    }
+
+    #[test]
+    fn an_mqtt_water_heater_in_fahrenheit_is_read_and_told_in_celsius() {
+        let parsed = parse(
+            Component::WaterHeater,
+            br#"{"unique_id": "w", "name": "Tank", "temperature_unit": "F",
+                "modes": ["off", "eco", "performance"],
+                "mode_command_topic": "w/mode/set", "mode_state_topic": "w/state",
+                "mode_state_template": "{{ value_json.mode }}",
+                "temperature_command_topic": "w/temp/set", "temperature_state_topic": "w/state",
+                "temperature_state_template": "{{ value_json.target }}",
+                "current_temperature_topic": "w/state",
+                "current_temperature_template": "{{ value_json.water }}"}"#,
+        )
+        .expect("valid");
+        let Capabilities::WaterHeater(caps) = &parsed.capabilities else {
+            panic!("a water heater");
+        };
+        assert_eq!((caps.min_temp, caps.max_temp), (43.33, 60.0));
+        assert!(!caps.on_off && caps.target_temperature);
+        let Some(Ok(irori_types::State::WaterHeater(state))) = crate::state::decode(
+            &parsed.topics,
+            "w/state",
+            br#"{"mode": "eco", "target": 131, "water": 122}"#,
+            None,
+        ) else {
+            panic!("a water heater state");
+        };
+        assert_eq!(state.operation_mode, WaterHeaterMode::Eco);
+        assert_eq!(
+            (state.target_temperature, state.current_temperature),
+            (Some(55.0), Some(50.0))
+        );
+        let was = irori_types::State::WaterHeater(state);
+        let on = crate::state::encode_with(
+            &parsed.topics,
+            &irori_types::Service::WaterHeaterTurnOn,
+            Some(&was),
+        )
+        .expect("sent");
+        assert_eq!(
+            (on[0].topic.as_str(), on[0].payload.as_slice()),
+            ("w/mode/set", b"eco".as_slice())
+        );
+        let hotter = crate::state::encode(
+            &parsed.topics,
+            &irori_types::Service::WaterHeaterSetTemperature(
+                irori_types::WaterHeaterSetTemperature {
+                    temperature: 60.0,
+                    operation_mode: None,
+                },
+            ),
+        )
+        .expect("sent");
+        assert_eq!(hotter[0].payload, b"140");
     }
 
     #[test]

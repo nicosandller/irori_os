@@ -400,6 +400,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^water_heater\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "water_heater"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -1037,6 +1060,56 @@
             "max_temp",
             "temp_step"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "water_heater"
+            },
+            "max_temp": {
+              "description": "The highest target it takes, in °C.",
+              "type": "number",
+              "format": "double"
+            },
+            "min_temp": {
+              "description": "The lowest target it takes, in °C.",
+              "type": "number",
+              "format": "double"
+            },
+            "on_off": {
+              "description": "Has its own on and off, apart from its modes. While it's off its mode reads `off`, even\nwhen `off` isn't one of its `operation_modes`.",
+              "type": "boolean",
+              "default": false
+            },
+            "operation_modes": {
+              "description": "The modes it can be put in, at least one.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/WaterHeaterMode"
+              },
+              "minItems": 1
+            },
+            "target_temperature": {
+              "description": "Takes a target temperature.",
+              "type": "boolean",
+              "default": false
+            },
+            "temp_step": {
+              "description": "How finely a target can be set, in °C.",
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "operation_modes",
+            "min_temp",
+            "max_temp",
+            "temp_step"
+          ]
         }
       ]
     },
@@ -1164,6 +1237,10 @@
         {
           "maxLength": 72,
           "pattern": "^climate\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 77,
+          "pattern": "^water_heater\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -1381,6 +1458,19 @@
       "enum": [
         "water",
         "gas"
+      ]
+    },
+    "WaterHeaterMode": {
+      "description": "Home Assistant's operation modes.",
+      "type": "string",
+      "enum": [
+        "off",
+        "eco",
+        "electric",
+        "gas",
+        "heat_pump",
+        "high_demand",
+        "performance"
       ]
     }
   }

@@ -22,6 +22,7 @@ use crate::kinds::number::NumberSetValue;
 use crate::kinds::select::SelectOption;
 use crate::kinds::siren::SirenTurnOn;
 use crate::kinds::text::TextSetValue;
+use crate::kinds::water_heater::{WaterHeaterOperationMode, WaterHeaterSetTemperature};
 use crate::{
     Attributes, Capabilities, Context, ContextId, EntityCategory, EntityKind, InvariantError, Name,
     ObjectId, State, UniqueId,
@@ -415,6 +416,10 @@ pub enum Service {
     ClimateSetPresetMode(ClimatePresetMode),
     ClimateTurnOn,
     ClimateTurnOff,
+    WaterHeaterSetTemperature(WaterHeaterSetTemperature),
+    WaterHeaterSetOperationMode(WaterHeaterOperationMode),
+    WaterHeaterTurnOn,
+    WaterHeaterTurnOff,
 }
 
 impl Service {
@@ -456,6 +461,10 @@ impl Service {
             Self::ClimateSetPresetMode(_) => ServiceName::ClimateSetPresetMode,
             Self::ClimateTurnOn => ServiceName::ClimateTurnOn,
             Self::ClimateTurnOff => ServiceName::ClimateTurnOff,
+            Self::WaterHeaterSetTemperature(_) => ServiceName::WaterHeaterSetTemperature,
+            Self::WaterHeaterSetOperationMode(_) => ServiceName::WaterHeaterSetOperationMode,
+            Self::WaterHeaterTurnOn => ServiceName::WaterHeaterTurnOn,
+            Self::WaterHeaterTurnOff => ServiceName::WaterHeaterTurnOff,
         }
     }
 }
@@ -535,6 +544,14 @@ pub enum ServiceName {
     ClimateTurnOn,
     #[serde(rename = "climate.turn_off")]
     ClimateTurnOff,
+    #[serde(rename = "water_heater.set_temperature")]
+    WaterHeaterSetTemperature,
+    #[serde(rename = "water_heater.set_operation_mode")]
+    WaterHeaterSetOperationMode,
+    #[serde(rename = "water_heater.turn_on")]
+    WaterHeaterTurnOn,
+    #[serde(rename = "water_heater.turn_off")]
+    WaterHeaterTurnOff,
 }
 
 impl ServiceName {
@@ -575,6 +592,10 @@ impl ServiceName {
         Self::ClimateSetPresetMode,
         Self::ClimateTurnOn,
         Self::ClimateTurnOff,
+        Self::WaterHeaterSetTemperature,
+        Self::WaterHeaterSetOperationMode,
+        Self::WaterHeaterTurnOn,
+        Self::WaterHeaterTurnOff,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -615,6 +636,10 @@ impl ServiceName {
             Self::ClimateSetPresetMode => "climate.set_preset_mode",
             Self::ClimateTurnOn => "climate.turn_on",
             Self::ClimateTurnOff => "climate.turn_off",
+            Self::WaterHeaterSetTemperature => "water_heater.set_temperature",
+            Self::WaterHeaterSetOperationMode => "water_heater.set_operation_mode",
+            Self::WaterHeaterTurnOn => "water_heater.turn_on",
+            Self::WaterHeaterTurnOff => "water_heater.turn_off",
         }
     }
 
@@ -651,6 +676,10 @@ impl ServiceName {
             | Self::ClimateSetPresetMode
             | Self::ClimateTurnOn
             | Self::ClimateTurnOff => EntityKind::Climate,
+            Self::WaterHeaterSetTemperature
+            | Self::WaterHeaterSetOperationMode
+            | Self::WaterHeaterTurnOn
+            | Self::WaterHeaterTurnOff => EntityKind::WaterHeater,
         }
     }
 }
@@ -761,6 +790,8 @@ impl JsonSchema for ServiceCall {
         let climate_fan = generator.subschema_for::<ClimateFanMode>();
         let climate_swing = generator.subschema_for::<ClimateSwingMode>();
         let climate_preset = generator.subschema_for::<ClimatePresetMode>();
+        let heater_temperature = generator.subschema_for::<WaterHeaterSetTemperature>();
+        let heater_mode = generator.subschema_for::<WaterHeaterOperationMode>();
         // Per service: the shape of `data`.
         let rules: Vec<_> = ServiceName::ALL
             .iter()
@@ -789,6 +820,8 @@ impl JsonSchema for ServiceCall {
                     ServiceName::ClimateSetFanMode => climate_fan.clone(),
                     ServiceName::ClimateSetSwingMode => climate_swing.clone(),
                     ServiceName::ClimateSetPresetMode => climate_preset.clone(),
+                    ServiceName::WaterHeaterSetTemperature => heater_temperature.clone(),
+                    ServiceName::WaterHeaterSetOperationMode => heater_mode.clone(),
                     _ => no_data.clone(),
                 };
                 json_schema!({

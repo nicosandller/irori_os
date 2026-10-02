@@ -16,6 +16,7 @@ use esphome_client::types::{
     NumberCommandRequest, PingResponse, SelectCommandRequest, SubscribeStatesRequest,
     SwitchCommandRequest, TextCommandRequest,
 };
+use irori_protocol::types::WaterHeaterMode;
 use irori_protocol::types::units::TemperatureUnit;
 use irori_protocol::types::{
     Capabilities, ContextId, DeviceDescription, EntityDescription, HvacMode, Service, State,
@@ -302,6 +303,7 @@ async fn session(
             .collect(),
         units,
         last_on: HashMap::new(),
+        heater_last_on: HashMap::new(),
     };
     let by_key: HashMap<u32, UniqueId> = entities
         .iter()
@@ -448,6 +450,8 @@ struct Known {
     units: Units,
     /// Each climate entity's last mode other than `off`, for `turn_on` to go back to.
     last_on: HashMap<u32, HvacMode>,
+    /// The same for each water heater.
+    heater_last_on: HashMap<u32, WaterHeaterMode>,
 }
 
 /// How each entity speaks, where Irori's model says otherwise: a thermostat in °F.
@@ -455,6 +459,8 @@ struct Known {
 struct Units {
     temperature: HashMap<u32, TemperatureUnit>,
     climate_reads: HashMap<u32, map::ClimateReads>,
+    /// Water heaters that report the water's temperature.
+    reads_current: std::collections::HashSet<u32>,
 }
 
 impl Units {
@@ -544,6 +550,20 @@ async fn list_entities(
                 units.climate_reads.insert(e.key, map::ClimateReads::of(e));
                 (e.key, "climate", e.name.clone(), map::climate(device, e))
             }
+            EspHomeMessage::ListEntitiesWaterHeaterResponse(e) => {
+                units
+                    .temperature
+                    .insert(e.key, map::temperature_unit(e.temperature_unit));
+                if map::water_heater_reads_current(e) {
+                    units.reads_current.insert(e.key);
+                }
+                (
+                    e.key,
+                    "water_heater",
+                    e.name.clone(),
+                    map::water_heater(device, e),
+                )
+            }
             EspHomeMessage::ListEntitiesTextSensorResponse(e) => (
                 e.key,
                 "text_sensor",
@@ -621,6 +641,23 @@ fn report(
                 && climate.hvac_mode != HvacMode::Off
             {
                 known.last_on.insert(s.key, climate.hvac_mode);
+            }
+            (s.key, state)
+        }
+        EspHomeMessage::WaterHeaterStateResponse(s) => {
+            let Some(Capabilities::WaterHeater(caps)) = capabilities.get(&s.key) else {
+                return None;
+            };
+            let state = map::water_heater_state(
+                s,
+                caps,
+                known.units.temperature_of(s.key),
+                known.units.reads_current.contains(&s.key),
+            );
+            if let Some(State::WaterHeater(heater)) = &state
+                && heater.operation_mode != WaterHeaterMode::Off
+            {
+                known.heater_last_on.insert(s.key, heater.operation_mode);
             }
             (s.key, state)
         }
@@ -839,6 +876,27 @@ async fn command(
                 .try_write(map::climate_command(
                     key,
                     &incoming.call.service,
+                    known.units.temperature_of(key),
+                    on_mode,
+                ))
+                .await
+                .map_err(|e| e.to_string())
+        }
+        Service::WaterHeaterSetTemperature(_)
+        | Service::WaterHeaterSetOperationMode(_)
+        | Service::WaterHeaterTurnOn
+        | Service::WaterHeaterTurnOff => {
+            let caps = match capabilities.get(&key) {
+                Some(Capabilities::WaterHeater(caps)) => Some(caps),
+                _ => None,
+            };
+            let on_mode =
+                caps.and_then(|caps| caps.mode_to_turn_on(known.heater_last_on.get(&key).copied()));
+            client
+                .try_write(map::water_heater_command(
+                    key,
+                    &incoming.call.service,
+                    caps,
                     known.units.temperature_of(key),
                     on_mode,
                 ))

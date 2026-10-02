@@ -20,6 +20,7 @@ use esphome_client::types::{
     ListEntitiesValveResponse, LockStateResponse, NumberStateResponse, SelectStateResponse,
     SensorStateResponse, SirenStateResponse, TextStateResponse, ValveStateResponse,
 };
+use esphome_client::types::{ListEntitiesWaterHeaterResponse, WaterHeaterStateResponse};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -40,6 +41,7 @@ const SPEAKER_KEY: u32 = 11;
 const VALVE_KEY: u32 = 12;
 const SIREN_KEY: u32 = 13;
 const THERMOSTAT_KEY: u32 = 15;
+const WATER_HEATER_KEY: u32 = 16;
 /// 32 bytes. Printed at startup as base64 so the waiting-for-a-key panel has something to paste.
 const LAB_KEY: [u8; 32] = *b"irori-lab-esphome-key-32bytes!!!";
 
@@ -229,6 +231,25 @@ fn answers(message: EspHomeMessage, board: &Board) -> Vec<EspHomeMessage> {
                 } else {
                     70.0
                 },
+            ))]
+        }
+        // The water heater takes what it's told, and keeps nothing: a new target answers in
+        // eco, and a new mode at 55 °C. Bit 1 of `has_fields` is the mode, 2 the target, 32 its
+        // switch; bit 1 of `state` is on.
+        EspHomeMessage::WaterHeaterCommandRequest(request) => {
+            let switched = request.has_fields & 32 != 0;
+            vec![EspHomeMessage::WaterHeaterStateResponse(water_heater(
+                if request.has_fields & 1 != 0 {
+                    request.mode
+                } else {
+                    1
+                },
+                if request.has_fields & 2 != 0 {
+                    request.target_temperature
+                } else {
+                    55.0
+                },
+                !switched || request.state & 2 != 0,
             ))]
         }
         EspHomeMessage::SirenCommandRequest(request) => {
@@ -423,6 +444,18 @@ fn entities(_board: &Board) -> Vec<EspHomeMessage> {
             temperature_unit: 1,
             ..Default::default()
         }),
+        EspHomeMessage::ListEntitiesWaterHeaterResponse(ListEntitiesWaterHeaterResponse {
+            key: WATER_HEATER_KEY,
+            name: "Hot water".to_owned(),
+            min_temperature: 40.0,
+            max_temperature: 65.0,
+            target_temperature_step: 1.0,
+            // Eco, performance.
+            supported_modes: vec![1, 3],
+            // Current temperature, target, modes, on and off.
+            supported_features: 1 | 2 | 4 | 16,
+            ..Default::default()
+        }),
         // Irori has no media player kind yet: this shows as "Also has…".
         EspHomeMessage::ListEntitiesMediaPlayerResponse(ListEntitiesMediaPlayerResponse {
             key: SPEAKER_KEY,
@@ -451,6 +484,18 @@ fn thermostat(mode: i32, target: f32) -> ClimateStateResponse {
     }
 }
 
+/// The water heater in `mode` aiming for `target` °C, its water at 52 °C.
+fn water_heater(mode: i32, target: f32, on: bool) -> WaterHeaterStateResponse {
+    WaterHeaterStateResponse {
+        key: WATER_HEATER_KEY,
+        mode,
+        current_temperature: 52.0,
+        target_temperature: target,
+        state: if on { 2 } else { 0 },
+        ..Default::default()
+    }
+}
+
 fn states(board: &Board) -> Vec<EspHomeMessage> {
     vec![
         EspHomeMessage::BinarySensorStateResponse(BinarySensorStateResponse {
@@ -475,6 +520,7 @@ fn states(board: &Board) -> Vec<EspHomeMessage> {
             ..Default::default()
         }),
         EspHomeMessage::ClimateStateResponse(thermostat(3, 70.0)),
+        EspHomeMessage::WaterHeaterStateResponse(water_heater(1, 55.0, true)),
         EspHomeMessage::ValveStateResponse(ValveStateResponse {
             key: VALVE_KEY,
             position: 1.0,

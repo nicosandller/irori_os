@@ -6,7 +6,7 @@
 id = "demo"
 name = "Demo"
 category = "demo"
-description = "Virtual devices for trying Irori without hardware, going through a whole day every minute: a lamp, a plug that measures power, a hallway light, presence, illuminance and mmWave sensors, an air monitor, door and window contacts, a living room with its own lights, a TV and sofa sensor that change every minute or so rather than with the day, and around the house a front door lock, a doorbell, a living room blind, a ceiling fan, a water shut-off with a leak alarm and a thermostat."
+description = "Virtual devices for trying Irori without hardware, going through a whole day every minute: a lamp, a plug that measures power, a hallway light, presence, illuminance and mmWave sensors, an air monitor, door and window contacts, a living room with its own lights, a TV and sofa sensor that change every minute or so rather than with the day, and around the house a front door lock, a doorbell, a living room blind, a ceiling fan, a water shut-off with a leak alarm, a thermostat and a hot water tank."
 version = "0.4.0"
 source = "extensions/demo"
 crate = "irori-protocol-demo"

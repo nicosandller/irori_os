@@ -19,6 +19,7 @@ use crate::kinds::siren::SirenCapabilities;
 use crate::kinds::switch::SwitchCapabilities;
 use crate::kinds::text::TextCapabilities;
 use crate::kinds::valve::ValveCapabilities;
+use crate::kinds::water_heater::WaterHeaterCapabilities;
 use crate::{
     AreaId, Description, DeviceId, EntityId, EntityKind, FloorId, InvariantError, Name, ProtocolId,
     UniqueId,
@@ -201,6 +202,7 @@ pub enum Capabilities {
     Valve(ValveCapabilities),
     Siren(SirenCapabilities),
     Climate(ClimateCapabilities),
+    WaterHeater(WaterHeaterCapabilities),
 }
 
 impl Capabilities {
@@ -221,6 +223,7 @@ impl Capabilities {
             Self::Valve(_) => EntityKind::Valve,
             Self::Siren(_) => EntityKind::Siren,
             Self::Climate(_) => EntityKind::Climate,
+            Self::WaterHeater(_) => EntityKind::WaterHeater,
         }
     }
 
@@ -239,6 +242,7 @@ impl Capabilities {
             Self::Fan(fan) => fan.validate(),
             Self::Siren(siren) => siren.validate(),
             Self::Climate(climate) => climate.validate(),
+            Self::WaterHeater(heater) => heater.validate(),
             _ => Ok(()),
         }
     }

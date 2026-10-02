@@ -20,6 +20,7 @@ use crate::kinds::siren::SirenState;
 use crate::kinds::switch::SwitchState;
 use crate::kinds::text::TextState;
 use crate::kinds::valve::ValveState;
+use crate::kinds::water_heater::WaterHeaterState;
 use crate::{AttributeKey, Context, EntityId, EntityKind, InvariantError, Timestamp};
 
 /// Free-form extra data from the protocol, e.g. Zigbee link quality. Readable by rules, but
@@ -148,6 +149,7 @@ pub enum State {
     Valve(ValveState),
     Siren(SirenState),
     Climate(ClimateState),
+    WaterHeater(WaterHeaterState),
 }
 
 impl State {
@@ -162,6 +164,7 @@ impl State {
             Self::Fan(fan) => fan.validate(),
             Self::Valve(valve) => valve.validate(),
             Self::Climate(climate) => climate.validate(),
+            Self::WaterHeater(heater) => heater.validate(),
             Self::Switch(_)
             | Self::BinarySensor(_)
             | Self::Select(_)
@@ -188,6 +191,7 @@ impl State {
             Self::Valve(_) => EntityKind::Valve,
             Self::Siren(_) => EntityKind::Siren,
             Self::Climate(_) => EntityKind::Climate,
+            Self::WaterHeater(_) => EntityKind::WaterHeater,
         }
     }
 }

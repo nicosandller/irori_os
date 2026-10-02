@@ -22,6 +22,7 @@ pub enum Component {
     Valve,
     Siren,
     Climate,
+    WaterHeater,
 }
 
 impl Component {
@@ -42,6 +43,7 @@ impl Component {
             "valve" => Some(Self::Valve),
             "siren" => Some(Self::Siren),
             "climate" => Some(Self::Climate),
+            "water_heater" => Some(Self::WaterHeater),
             _ => None,
         }
     }
@@ -65,6 +67,7 @@ impl fmt::Display for Component {
             Self::Valve => "valve",
             Self::Siren => "siren",
             Self::Climate => "climate",
+            Self::WaterHeater => "water_heater",
         })
     }
 }

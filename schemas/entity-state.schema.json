@@ -393,6 +393,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^water_heater\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "water_heater"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -522,6 +545,10 @@
         {
           "maxLength": 72,
           "pattern": "^climate\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 77,
+          "pattern": "^water_heater\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -1148,6 +1175,39 @@
             "kind",
             "hvac_mode"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "current_temperature": {
+              "description": "The water's temperature, in °C.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "kind": {
+              "type": "string",
+              "const": "water_heater"
+            },
+            "operation_mode": {
+              "$ref": "#/$defs/WaterHeaterMode"
+            },
+            "target_temperature": {
+              "description": "In °C.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "operation_mode"
+          ]
         }
       ]
     },
@@ -1170,6 +1230,19 @@
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "WaterHeaterMode": {
+      "description": "Home Assistant's operation modes.",
+      "type": "string",
+      "enum": [
+        "off",
+        "eco",
+        "electric",
+        "gas",
+        "heat_pump",
+        "high_demand",
+        "performance"
+      ]
     }
   }
 }

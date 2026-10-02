@@ -3,10 +3,10 @@ id = "demo"
 name = "Demo"
 version = "0.4.0"
 irori = ">=0.7.0"
-description = "Virtual devices for trying Irori without hardware, going through a whole day every minute: a lamp, a plug that measures power, a hallway light, presence, illuminance and mmWave sensors, an air monitor, door and window contacts, a living room with its own lights, a TV and sofa sensor that change every minute or so rather than with the day, and around the house a front door lock, a doorbell, a living room blind, a ceiling fan, a water shut-off with a leak alarm and a thermostat."
+description = "Virtual devices for trying Irori without hardware, going through a whole day every minute: a lamp, a plug that measures power, a hallway light, presence, illuminance and mmWave sensors, an air monitor, door and window contacts, a living room with its own lights, a TV and sofa sensor that change every minute or so rather than with the day, and around the house a front door lock, a doorbell, a living room blind, a ceiling fan, a water shut-off with a leak alarm, a thermostat and a hot water tank."
 icon = "icon.svg"
 
 [[contributes.protocol]]
 iot_class = "local_push"
-entity_kinds = ["light", "switch", "sensor", "binary_sensor", "number", "select", "text", "button", "event", "cover", "lock", "fan", "valve", "siren", "climate"]
+entity_kinds = ["light", "switch", "sensor", "binary_sensor", "number", "select", "text", "button", "event", "cover", "lock", "fan", "valve", "siren", "climate", "water_heater"]
 run = { command = "bin/irori-ext-demo" }

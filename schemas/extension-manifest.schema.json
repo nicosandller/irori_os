@@ -240,6 +240,11 @@
           "description": "Heats or cools a room, e.g. a thermostat or an air conditioner.",
           "type": "string",
           "const": "climate"
+        },
+        {
+          "description": "A boiler or hot water tank.",
+          "type": "string",
+          "const": "water_heater"
         }
       ]
     },

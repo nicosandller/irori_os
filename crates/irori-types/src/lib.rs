@@ -66,6 +66,10 @@ pub use kinds::siren::{SirenCapabilities, SirenState, SirenTurnOn};
 pub use kinds::switch::{SwitchCapabilities, SwitchClass, SwitchState};
 pub use kinds::text::{TextCapabilities, TextMode, TextSetValue, TextState};
 pub use kinds::valve::{ValveCapabilities, ValveClass, ValveState};
+pub use kinds::water_heater::{
+    WaterHeaterCapabilities, WaterHeaterMode, WaterHeaterOperationMode, WaterHeaterSetTemperature,
+    WaterHeaterState,
+};
 pub use kinds::{Typed, ValueShape};
 pub use protocol::{
     DeviceDescription, EntityDescription, SecretRequest, Service, ServiceCall, ServiceName,
