@@ -345,6 +345,133 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "fan.turn_on"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/FanTurnOn"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "fan.turn_off"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "fan.set_percentage"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/FanPercentage"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "fan.oscillate"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/FanOscillate"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "fan.set_direction"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/FanSetDirection"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "fan.set_preset_mode"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/FanPresetMode"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
     }
   ],
   "required": [
@@ -392,6 +519,90 @@
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "FanDirection": {
+      "type": "string",
+      "enum": [
+        "forward",
+        "reverse"
+      ]
+    },
+    "FanOscillate": {
+      "description": "Data for `fan.oscillate`.",
+      "type": "object",
+      "properties": {
+        "oscillating": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "oscillating"
+      ]
+    },
+    "FanPercentage": {
+      "description": "Data for `fan.set_percentage`. 0 turns it off.",
+      "type": "object",
+      "properties": {
+        "percentage": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "percentage"
+      ]
+    },
+    "FanPresetMode": {
+      "description": "Data for `fan.set_preset_mode`.",
+      "type": "object",
+      "properties": {
+        "preset_mode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "preset_mode"
+      ]
+    },
+    "FanSetDirection": {
+      "description": "Data for `fan.set_direction`.",
+      "type": "object",
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/FanDirection"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "direction"
+      ]
+    },
+    "FanTurnOn": {
+      "description": "Data for `fan.turn_on`: optionally, the speed or mode to come on in.",
+      "type": "object",
+      "properties": {
+        "percentage": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 100,
+          "minimum": 1
+        },
+        "preset_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "LightTurnOn": {
       "description": "Data for `light.turn_on`. Everything is optional: with no data, the light turns on at its\nlast brightness and color.",
@@ -612,7 +823,13 @@
         "cover.set_tilt",
         "lock.lock",
         "lock.unlock",
-        "lock.open"
+        "lock.open",
+        "fan.turn_on",
+        "fan.turn_off",
+        "fan.set_percentage",
+        "fan.oscillate",
+        "fan.set_direction",
+        "fan.set_preset_mode"
       ]
     },
     "SetPosition": {

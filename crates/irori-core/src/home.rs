@@ -1910,6 +1910,47 @@ mod tests {
     }
 
     #[test]
+    fn a_fan_toggles_like_a_switch_and_keeps_its_speed() {
+        let mut home = home_with_lamp();
+        home.describe_entity(
+            &protocol(),
+            ALL,
+            entity(
+                "lamp-fan",
+                Some("Fan"),
+                Some("lamp"),
+                Capabilities::Fan(irori_types::FanCapabilities {
+                    speed_count: 3,
+                    ..Default::default()
+                }),
+            ),
+            &stamp(0),
+        )
+        .expect("entity");
+        let id = EntityId::try_from("fan.demo_lamp_fan").expect("valid");
+        assert!(matches!(
+            home.resolve(&id, Command::toggle())
+                .expect("toggles")
+                .service,
+            Service::FanTurnOn(_)
+        ));
+        assert_eq!(
+            home.resolve(
+                &id,
+                Command::with(
+                    "set_preset_mode",
+                    &irori_types::FanPresetMode {
+                        preset_mode: "turbo".into()
+                    }
+                )
+            )
+            .expect_err("no presets")
+            .to_string(),
+            "`fan.demo_lamp_fan` has no preset modes"
+        );
+    }
+
+    #[test]
     fn a_lock_toggles_and_asks_for_the_code_it_needs() {
         let mut home = home_with_lamp();
         home.describe_entity(

@@ -1,0 +1,14 @@
+{
+  "unique_id": "a4:cf:12:34:56:80-fan-purifier",
+  "name": "Purifier",
+  "device_unique_id": "a4:cf:12:34:56:80",
+  "capabilities": {
+    "kind": "fan",
+    "speed_count": 3,
+    "oscillate": true,
+    "preset_modes": [
+      "auto",
+      "sleep"
+    ]
+  }
+}

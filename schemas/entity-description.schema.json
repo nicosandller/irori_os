@@ -517,6 +517,45 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "direction": {
+              "description": "Can turn the other way.",
+              "type": "boolean",
+              "default": false
+            },
+            "kind": {
+              "type": "string",
+              "const": "fan"
+            },
+            "oscillate": {
+              "description": "Can swing from side to side.",
+              "type": "boolean",
+              "default": false
+            },
+            "preset_modes": {
+              "description": "Modes beyond its speed, e.g. `auto`, `sleep`, `breeze`.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256
+            },
+            "speed_count": {
+              "description": "How many speeds it has, 0 when its speed can't be set. Speeds are set and reported as a\npercentage; this says how many steps there really are.",
+              "type": "integer",
+              "format": "uint16",
+              "default": 0,
+              "maximum": 65535,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },

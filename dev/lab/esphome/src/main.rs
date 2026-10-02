@@ -12,11 +12,12 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use esphome_client::API_VERSION;
 use esphome_client::types::{
     BinarySensorStateResponse, CoverStateResponse, DeviceInfoResponse, EspHomeMessage,
-    HelloResponse, ListEntitiesBinarySensorResponse, ListEntitiesButtonResponse,
+    FanStateResponse, HelloResponse, ListEntitiesBinarySensorResponse, ListEntitiesButtonResponse,
     ListEntitiesCoverResponse, ListEntitiesDoneResponse, ListEntitiesFanResponse,
-    ListEntitiesLockResponse, ListEntitiesNumberResponse, ListEntitiesSelectResponse,
-    ListEntitiesSensorResponse, ListEntitiesTextResponse, LockStateResponse, NumberStateResponse,
-    SelectStateResponse, SensorStateResponse, TextStateResponse,
+    ListEntitiesLockResponse, ListEntitiesMediaPlayerResponse, ListEntitiesNumberResponse,
+    ListEntitiesSelectResponse, ListEntitiesSensorResponse, ListEntitiesTextResponse,
+    LockStateResponse, NumberStateResponse, SelectStateResponse, SensorStateResponse,
+    TextStateResponse,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -34,6 +35,7 @@ const MESSAGE_KEY: u32 = 7;
 const RESTART_KEY: u32 = 8;
 const BLIND_KEY: u32 = 9;
 const DOOR_KEY: u32 = 10;
+const SPEAKER_KEY: u32 = 11;
 /// 32 bytes. Printed at startup as base64 so the waiting-for-a-key panel has something to paste.
 const LAB_KEY: [u8; 32] = *b"irori-lab-esphome-key-32bytes!!!";
 
@@ -206,6 +208,16 @@ fn answers(message: EspHomeMessage, board: &Board) -> Vec<EspHomeMessage> {
                 ..Default::default()
             })]
         }
+        // The fan does what it's told and says so; a request carries only what it changes.
+        EspHomeMessage::FanCommandRequest(request) => {
+            vec![EspHomeMessage::FanStateResponse(FanStateResponse {
+                key: request.key,
+                state: request.state || request.has_speed_level,
+                speed_level: request.speed_level,
+                oscillating: request.oscillating,
+                ..Default::default()
+            })]
+        }
         // The lock does what it's told: `LockCommand` 0 unlock, 1 lock, 2 open, answered with
         // `LockState` 2 unlocked, 1 locked, 7 open.
         EspHomeMessage::LockCommandRequest(request) => {
@@ -349,6 +361,15 @@ fn entities(_board: &Board) -> Vec<EspHomeMessage> {
         EspHomeMessage::ListEntitiesFanResponse(ListEntitiesFanResponse {
             key: FAN_KEY,
             name: "Cooling fan".to_owned(),
+            supports_speed: true,
+            supported_speed_count: 3,
+            supports_oscillation: true,
+            ..Default::default()
+        }),
+        // Irori has no media player kind yet: this shows as "Also has…".
+        EspHomeMessage::ListEntitiesMediaPlayerResponse(ListEntitiesMediaPlayerResponse {
+            key: SPEAKER_KEY,
+            name: "Speaker".to_owned(),
             ..Default::default()
         }),
         EspHomeMessage::ListEntitiesDoneResponse(ListEntitiesDoneResponse {}),
@@ -371,6 +392,12 @@ fn states(board: &Board) -> Vec<EspHomeMessage> {
         EspHomeMessage::NumberStateResponse(NumberStateResponse {
             key: LED_KEY,
             state: 40.0,
+            ..Default::default()
+        }),
+        EspHomeMessage::FanStateResponse(FanStateResponse {
+            key: FAN_KEY,
+            state: true,
+            speed_level: 1,
             ..Default::default()
         }),
         EspHomeMessage::LockStateResponse(LockStateResponse {

@@ -8,6 +8,7 @@ use crate::kinds::binary_sensor::BinarySensorCapabilities;
 use crate::kinds::button::ButtonCapabilities;
 use crate::kinds::cover::CoverCapabilities;
 use crate::kinds::event::EventCapabilities;
+use crate::kinds::fan::FanCapabilities;
 use crate::kinds::light::LightCapabilities;
 use crate::kinds::lock::LockCapabilities;
 use crate::kinds::number::NumberCapabilities;
@@ -193,6 +194,7 @@ pub enum Capabilities {
     Event(EventCapabilities),
     Cover(CoverCapabilities),
     Lock(LockCapabilities),
+    Fan(FanCapabilities),
 }
 
 impl Capabilities {
@@ -209,6 +211,7 @@ impl Capabilities {
             Self::Event(_) => EntityKind::Event,
             Self::Cover(_) => EntityKind::Cover,
             Self::Lock(_) => EntityKind::Lock,
+            Self::Fan(_) => EntityKind::Fan,
         }
     }
 
@@ -224,6 +227,7 @@ impl Capabilities {
             Self::Select(select) => select.validate(),
             Self::Text(text) => text.validate(),
             Self::Event(event) => event.validate(),
+            Self::Fan(fan) => fan.validate(),
             _ => Ok(()),
         }
     }

@@ -1,1 +1,1 @@
-invalid entity id "fan.bedroom": unknown kind before the `.`
+invalid entity id "vacuum.bedroom": unknown kind before the `.`

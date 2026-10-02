@@ -18,6 +18,7 @@ pub enum Component {
     Event,
     Cover,
     Lock,
+    Fan,
 }
 
 impl Component {
@@ -34,6 +35,7 @@ impl Component {
             "event" => Some(Self::Event),
             "cover" => Some(Self::Cover),
             "lock" => Some(Self::Lock),
+            "fan" => Some(Self::Fan),
             _ => None,
         }
     }
@@ -53,6 +55,7 @@ impl fmt::Display for Component {
             Self::Event => "event",
             Self::Cover => "cover",
             Self::Lock => "lock",
+            Self::Fan => "fan",
         })
     }
 }
@@ -126,7 +129,10 @@ mod tests {
     #[test]
     fn an_unsupported_component_is_named() {
         let named = |t| unsupported_component(t, "homeassistant");
-        assert_eq!(named("homeassistant/fan/0x1234/fan/config"), Some("fan"));
+        assert_eq!(
+            named("homeassistant/vacuum/0x1234/robot/config"),
+            Some("vacuum")
+        );
         assert_eq!(named("homeassistant/vacuum/robot/config"), Some("vacuum"));
         assert_eq!(named("homeassistant/light/0x1234/light/config"), None);
         assert_eq!(named("homeassistant/fan/0x1234/state"), None);

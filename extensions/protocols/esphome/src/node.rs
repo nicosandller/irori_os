@@ -495,6 +495,9 @@ async fn list_entities(
             EspHomeMessage::ListEntitiesLockResponse(e) => {
                 (e.key, "lock", e.name.clone(), map::lock(device, e))
             }
+            EspHomeMessage::ListEntitiesFanResponse(e) => {
+                (e.key, "fan", e.name.clone(), map::fan(device, e))
+            }
             EspHomeMessage::ListEntitiesTextSensorResponse(e) => (
                 e.key,
                 "text_sensor",
@@ -559,6 +562,12 @@ fn report(
             (s.key, Some(map::light_state(s, known)))
         }
         EspHomeMessage::LockStateResponse(s) => (s.key, map::lock_state(s)),
+        EspHomeMessage::FanStateResponse(s) => {
+            let Some(Capabilities::Fan(known)) = capabilities.get(&s.key) else {
+                return None;
+            };
+            (s.key, Some(map::fan_state(s, known)))
+        }
         EspHomeMessage::CoverStateResponse(s) => {
             let Some(Capabilities::Cover(known)) = capabilities.get(&s.key) else {
                 return None;
@@ -708,6 +717,21 @@ async fn command(
             .try_write(map::cover_command(key, &incoming.call.service))
             .await
             .map_err(|e| e.to_string()),
+        Service::FanTurnOn(_)
+        | Service::FanTurnOff
+        | Service::FanSetPercentage(_)
+        | Service::FanOscillate(_)
+        | Service::FanSetDirection(_)
+        | Service::FanSetPresetMode(_) => {
+            let known = match capabilities.get(&key) {
+                Some(Capabilities::Fan(fan)) => Some(fan),
+                _ => None,
+            };
+            client
+                .try_write(map::fan_command(key, &incoming.call.service, known))
+                .await
+                .map_err(|e| e.to_string())
+        }
         Service::LockLock(_) | Service::LockUnlock(_) | Service::LockOpen(_) => client
             .try_write(map::lock_command(key, &incoming.call.service))
             .await
@@ -847,7 +871,7 @@ mod tests {
         let connection = Connection { id: 1, address };
         let task = tokio::spawn(run(connection, None, events_tx, calls_rx));
 
-        // What it has. The fake device also offers a fan, which Irori doesn't model yet.
+        // What it has. The fake device also offers a speaker, which Irori doesn't model yet.
         let Some(Event::Arrived {
             device,
             entities,
@@ -863,14 +887,14 @@ mod tests {
         assert_eq!(
             entities.len(),
             5,
-            "the fan should be left out: {entities:?}"
+            "the speaker should be left out: {entities:?}"
         );
         // ...and listed on the device instead, so it isn't simply gone.
         assert_eq!(unmodeled.len(), 1, "{unmodeled:?}");
-        assert_eq!(unmodeled[0].platform.as_str(), "fan");
+        assert_eq!(unmodeled[0].platform.as_str(), "media_player");
         assert_eq!(
             unmodeled[0].name.as_ref().map(|n| n.as_str()),
-            Some("Ceiling fan")
+            Some("Speaker")
         );
         assert_eq!(
             unmodeled[0].device_unique_id.as_ref().map(|d| d.as_str()),

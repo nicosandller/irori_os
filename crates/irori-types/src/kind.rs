@@ -30,6 +30,8 @@ pub enum EntityKind {
     Cover,
     /// A lock, e.g. a front door's.
     Lock,
+    /// A fan: on or off, and often a speed, a swing and modes.
+    Fan,
 }
 
 impl EntityKind {
@@ -45,6 +47,7 @@ impl EntityKind {
         Self::Event,
         Self::Cover,
         Self::Lock,
+        Self::Fan,
     ];
 
     /// The domain string used in entity ids and service names.
@@ -61,6 +64,7 @@ impl EntityKind {
             Self::Event => "event",
             Self::Cover => "cover",
             Self::Lock => "lock",
+            Self::Fan => "fan",
         }
     }
 

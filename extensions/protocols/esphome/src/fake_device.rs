@@ -26,8 +26,8 @@ pub const LIGHT_KEY: u32 = 11;
 pub const SWITCH_KEY: u32 = 22;
 pub const SENSOR_KEY: u32 = 33;
 pub const MOTION_KEY: u32 = 44;
-/// An entity of a kind Irori doesn't model yet, to check it's left out rather than mangled.
-pub const FAN_KEY: u32 = 55;
+/// An entity of a kind Irori doesn't model yet, to check it's listed rather than mangled.
+pub const SPEAKER_KEY: u32 = 55;
 pub const NUMBER_KEY: u32 = 66;
 
 /// What the fake device was asked to do, for the test to check.
@@ -320,12 +320,15 @@ fn entities() -> Vec<EspHomeMessage> {
                 ..Default::default()
             },
         ),
-        // Irori has no fan kind yet; the protocol should list it as unmodeled and keep the rest.
-        EspHomeMessage::ListEntitiesFanResponse(esphome_client::types::ListEntitiesFanResponse {
-            key: FAN_KEY,
-            name: "Ceiling fan".to_owned(),
-            ..Default::default()
-        }),
+        // Irori has no media player kind yet; the protocol should list it as unmodeled and keep
+        // the rest.
+        EspHomeMessage::ListEntitiesMediaPlayerResponse(
+            esphome_client::types::ListEntitiesMediaPlayerResponse {
+                key: SPEAKER_KEY,
+                name: "Speaker".to_owned(),
+                ..Default::default()
+            },
+        ),
         EspHomeMessage::ListEntitiesDoneResponse(ListEntitiesDoneResponse {}),
     ]
 }

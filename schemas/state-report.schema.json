@@ -66,6 +66,13 @@
       "type": "string",
       "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
     },
+    "FanDirection": {
+      "type": "string",
+      "enum": [
+        "forward",
+        "reverse"
+      ]
+    },
     "LockStatus": {
       "oneOf": [
         {
@@ -348,6 +355,56 @@
           "required": [
             "kind",
             "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "direction": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/FanDirection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "fan"
+            },
+            "on": {
+              "type": "boolean"
+            },
+            "oscillating": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "percentage": {
+              "description": "Its speed, 1-100, when it has speeds. Kept while off: the speed it comes back on at.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            },
+            "preset_mode": {
+              "description": "One of its `preset_modes`, when it's in one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
           ]
         }
       ]

@@ -220,6 +220,11 @@
           "description": "A lock, e.g. a front door's.",
           "type": "string",
           "const": "lock"
+        },
+        {
+          "description": "A fan: on or off, and often a speed, a swing and modes.",
+          "type": "string",
+          "const": "fan"
         }
       ]
     },

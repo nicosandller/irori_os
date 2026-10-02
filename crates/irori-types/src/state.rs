@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::kinds::binary_sensor::BinarySensorState;
 use crate::kinds::cover::CoverState;
 use crate::kinds::event::EventState;
+use crate::kinds::fan::FanState;
 use crate::kinds::light::LightState;
 use crate::kinds::lock::LockState;
 use crate::kinds::number::NumberState;
@@ -140,6 +141,7 @@ pub enum State {
     Event(EventState),
     Cover(CoverState),
     Lock(LockState),
+    Fan(FanState),
 }
 
 impl State {
@@ -151,6 +153,7 @@ impl State {
             Self::Sensor(sensor) => sensor.validate(),
             Self::Number(number) => number.validate(),
             Self::Cover(cover) => cover.validate(),
+            Self::Fan(fan) => fan.validate(),
             Self::Switch(_)
             | Self::BinarySensor(_)
             | Self::Select(_)
@@ -172,6 +175,7 @@ impl State {
             Self::Event(_) => EntityKind::Event,
             Self::Cover(_) => EntityKind::Cover,
             Self::Lock(_) => EntityKind::Lock,
+            Self::Fan(_) => EntityKind::Fan,
         }
     }
 }

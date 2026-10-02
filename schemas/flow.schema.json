@@ -385,6 +385,10 @@
         {
           "maxLength": 69,
           "pattern": "^lock\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 68,
+          "pattern": "^fan\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

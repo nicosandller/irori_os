@@ -586,11 +586,11 @@ mod tests {
         let (ctx, mut host) = host::connect();
         let publisher = FakePublisher::default();
         let mut registry = Registry::default();
-        let topic = "homeassistant/fan/0x1234/fan/config";
-        let fan = br#"{"unique_id": "0x1234_fan", "name": "Ceiling fan",
-            "device": {"identifiers": ["0x1234"], "name": "Bedroom fan"}}"#;
+        let topic = "homeassistant/vacuum/0x1234/robot/config";
+        let robot = br#"{"unique_id": "0x1234_robot", "name": "Robot",
+            "device": {"identifiers": ["0x1234"], "name": "Robot vacuum"}}"#;
         apply(
-            message(topic, fan),
+            message(topic, robot),
             &settings(),
             &mut registry,
             &publisher,
@@ -598,10 +598,10 @@ mod tests {
         )
         .await;
         let Some(host::Op::SetUnmodeled(listed)) = host.ops.recv().await else {
-            panic!("the fan should be listed");
+            panic!("the vacuum should be listed");
         };
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].platform.as_str(), "fan");
+        assert_eq!(listed[0].platform.as_str(), "vacuum");
         assert!(
             registry.entities.is_empty(),
             "and not described as an entity"

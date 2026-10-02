@@ -9,6 +9,7 @@ pub(crate) mod binary_sensor;
 pub(crate) mod button;
 pub(crate) mod cover;
 pub(crate) mod event;
+pub(crate) mod fan;
 pub(crate) mod light;
 pub(crate) mod lock;
 pub(crate) mod number;
@@ -21,6 +22,7 @@ use crate::{Capabilities, EntityKind, InvariantError, Service, ServiceName, Stat
 
 use self::cover::{CoverState, OPEN_STATES, OpenState, SetPosition, SetTilt};
 use self::event::EventState;
+use self::fan::{FanState, FanTurnOn};
 use self::light::LightTurnOn;
 use self::lock::{LOCK_STATES, LockCode, LockState, LockStatus};
 use self::number::{NumberSetValue, NumberState};
@@ -102,6 +104,8 @@ impl EntityKind {
             Self::Light => Some(ServiceName::LightTurnOn),
             Self::Switch if on => Some(ServiceName::SwitchTurnOff),
             Self::Switch => Some(ServiceName::SwitchTurnOn),
+            Self::Fan if on => Some(ServiceName::FanTurnOff),
+            Self::Fan => Some(ServiceName::FanTurnOn),
             Self::Sensor
             | Self::BinarySensor
             | Self::Number
@@ -135,7 +139,9 @@ impl Capabilities {
     /// The shape of this entity's primary value, or `None` when it has none (a button).
     pub fn primary_shape(&self) -> Option<ValueShape> {
         Some(match self {
-            Self::Light(_) | Self::Switch(_) | Self::BinarySensor(_) => ValueShape::Bool,
+            Self::Light(_) | Self::Switch(_) | Self::BinarySensor(_) | Self::Fan(_) => {
+                ValueShape::Bool
+            }
             Self::Number(_) => ValueShape::Number,
             Self::Select(_) | Self::Text(_) | Self::Event(_) | Self::Cover(_) | Self::Lock(_) => {
                 ValueShape::Text
@@ -177,6 +183,7 @@ impl Capabilities {
             (Self::Text(caps), State::Text(state)) => text::fits(caps, state),
             (Self::Event(caps), State::Event(state)) => event::fits(caps, state),
             (Self::Cover(caps), State::Cover(state)) => cover::fits(caps, state),
+            (Self::Fan(caps), State::Fan(state)) => fan::fits(caps, state),
             _ => Ok(()),
         }
     }
@@ -206,6 +213,15 @@ impl Capabilities {
                 lock::supports(caps, data, false)
             }
             (Self::Lock(caps), Service::LockOpen(data)) => lock::supports(caps, data, true),
+            (Self::Fan(caps), Service::FanTurnOn(data)) => fan::supports_turn_on(caps, data),
+            (Self::Fan(caps), Service::FanSetPercentage(data)) => {
+                fan::supports_percentage(caps, data.percentage)
+            }
+            (Self::Fan(caps), Service::FanOscillate(_)) => fan::supports_oscillate(caps),
+            (Self::Fan(caps), Service::FanSetDirection(_)) => fan::supports_direction(caps),
+            (Self::Fan(caps), Service::FanSetPresetMode(data)) => {
+                fan::supports_preset(caps, &data.preset_mode)
+            }
             _ => Ok(()),
         }
     }
@@ -218,6 +234,7 @@ impl State {
             Self::Light(light) => Typed::Bool(light.on),
             Self::Switch(switch) => Typed::Bool(switch.on),
             Self::BinarySensor(sensor) => Typed::Bool(sensor.on),
+            Self::Fan(fan) => Typed::Bool(fan.on),
             Self::Number(number) => Typed::Number(number.value),
             Self::Select(select) => Typed::Text(select.option.clone()),
             Self::Text(text) => Typed::Text(text.value.clone()),
@@ -262,6 +279,19 @@ impl State {
             (EntityKind::Event, _, Typed::Text(event_type)) => State::Event(EventState {
                 event_type: event_type.clone(),
             }),
+            (EntityKind::Fan, previous, Typed::Bool(on)) => match previous {
+                Some(State::Fan(fan)) => State::Fan(FanState {
+                    on: *on,
+                    ..fan.clone()
+                }),
+                _ => State::Fan(FanState {
+                    on: *on,
+                    percentage: None,
+                    oscillating: None,
+                    direction: None,
+                    preset_mode: None,
+                }),
+            },
             (EntityKind::Lock, _, Typed::Text(text)) => State::Lock(LockState {
                 state: LockStatus::parse(text)?,
             }),
@@ -285,6 +315,15 @@ impl State {
             _ => return None,
         })
     }
+}
+
+/// `data` as the data `T` of service `name`, with a message naming the service when it isn't.
+fn parse<T: serde::de::DeserializeOwned>(
+    name: ServiceName,
+    data: serde_json::Map<String, serde_json::Value>,
+) -> Result<T, InvariantError> {
+    serde_json::from_value(serde_json::Value::Object(data))
+        .map_err(|e| InvariantError(format!("`{name}` data: {e}")))
 }
 
 impl Service {
@@ -316,6 +355,12 @@ impl Service {
                     _ => Service::LockOpen(code),
                 }
             }
+            ServiceName::FanTurnOff => Service::FanTurnOff,
+            ServiceName::FanTurnOn => Service::FanTurnOn(parse(name, data)?),
+            ServiceName::FanSetPercentage => Service::FanSetPercentage(parse(name, data)?),
+            ServiceName::FanOscillate => Service::FanOscillate(parse(name, data)?),
+            ServiceName::FanSetDirection => Service::FanSetDirection(parse(name, data)?),
+            ServiceName::FanSetPresetMode => Service::FanSetPresetMode(parse(name, data)?),
             ServiceName::CoverOpen => Service::CoverOpen,
             ServiceName::CoverClose => Service::CoverClose,
             ServiceName::CoverStop => Service::CoverStop,
@@ -355,6 +400,13 @@ impl Service {
             Self::TextSetValue(data) => serde_json::to_value(data).ok()?,
             Self::CoverSetPosition(data) => serde_json::to_value(data).ok()?,
             Self::CoverSetTilt(data) => serde_json::to_value(data).ok()?,
+            Self::FanTurnOn(data) if *data != FanTurnOn::default() => {
+                serde_json::to_value(data).ok()?
+            }
+            Self::FanSetPercentage(data) => serde_json::to_value(data).ok()?,
+            Self::FanOscillate(data) => serde_json::to_value(data).ok()?,
+            Self::FanSetDirection(data) => serde_json::to_value(data).ok()?,
+            Self::FanSetPresetMode(data) => serde_json::to_value(data).ok()?,
             Self::LockLock(code) | Self::LockUnlock(code) | Self::LockOpen(code)
                 if code.code.is_some() =>
             {
@@ -387,6 +439,10 @@ impl Service {
             Self::NumberSetValue(data) => Some(Typed::Number(data.value)),
             Self::SelectSelectOption(data) => Some(Typed::Text(data.option.clone())),
             Self::TextSetValue(data) => Some(Typed::Text(data.value.clone())),
+            Self::FanTurnOn(_) => Some(Typed::Bool(true)),
+            Self::FanTurnOff => Some(Typed::Bool(false)),
+            Self::FanSetPercentage(data) => Some(Typed::Bool(data.percentage > 0)),
+            Self::FanOscillate(_) | Self::FanSetDirection(_) | Self::FanSetPresetMode(_) => None,
             Self::LockLock(_) => Some(Typed::Text(LockStatus::Locked.as_str().to_owned())),
             Self::LockUnlock(_) => Some(Typed::Text(LockStatus::Unlocked.as_str().to_owned())),
             Self::LockOpen(_) => Some(Typed::Text(LockStatus::Open.as_str().to_owned())),
@@ -429,6 +485,10 @@ impl ServiceName {
                 | Self::TextSetValue
                 | Self::CoverSetPosition
                 | Self::CoverSetTilt
+                | Self::FanSetPercentage
+                | Self::FanOscillate
+                | Self::FanSetDirection
+                | Self::FanSetPresetMode
         )
     }
 
@@ -445,6 +505,11 @@ impl ServiceName {
                 | Self::LockLock
                 | Self::LockUnlock
                 | Self::LockOpen
+                | Self::FanTurnOn
+                | Self::FanSetPercentage
+                | Self::FanOscillate
+                | Self::FanSetDirection
+                | Self::FanSetPresetMode
         )
     }
 }

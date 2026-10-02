@@ -1,0 +1,15 @@
+{
+  "id": "fan.bedroom_purifier",
+  "protocol": "esphome",
+  "unique_id": "a4:cf:12:34:56:80-fan-purifier",
+  "name": "Purifier",
+  "capabilities": {
+    "kind": "fan",
+    "speed_count": 3,
+    "oscillate": true,
+    "preset_modes": [
+      "auto",
+      "sleep"
+    ]
+  }
+}

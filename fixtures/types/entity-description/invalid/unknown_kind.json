@@ -1,7 +1,7 @@
 {
-  "unique_id": "fan",
-  "name": "Fan",
+  "unique_id": "robot",
+  "name": "Robot",
   "capabilities": {
-    "kind": "fan"
+    "kind": "vacuum"
   }
 }

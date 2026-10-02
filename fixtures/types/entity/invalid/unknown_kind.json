@@ -1,5 +1,5 @@
 {
-  "id": "fan.bedroom",
+  "id": "vacuum.bedroom",
   "protocol": "mqtt",
   "unique_id": "fan",
   "name": "Bedroom fan",

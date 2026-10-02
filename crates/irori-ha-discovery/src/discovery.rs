@@ -10,8 +10,8 @@
 use irori_types::{
     BinarySensorCapabilities, BinarySensorClass, ButtonCapabilities, ButtonClass, Capabilities,
     ColorTempRange, CoverCapabilities, CoverClass, EntityCategory, EventCapabilities, EventClass,
-    LightCapabilities, LockCapabilities, LockStatus, Name, NumberCapabilities, NumberMode,
-    SelectCapabilities, SensorCapabilities, SensorClass, SensorValueType, StateClass,
+    FanCapabilities, LightCapabilities, LockCapabilities, LockStatus, Name, NumberCapabilities,
+    NumberMode, SelectCapabilities, SensorCapabilities, SensorClass, SensorValueType, StateClass,
     SwitchCapabilities, SwitchClass, TextCapabilities, TextMode, UniqueId,
 };
 
@@ -143,6 +143,34 @@ pub enum EntityTopics {
     Cover(Box<CoverTopics>),
     /// A lock, as Home Assistant's MQTT lock lets it vary.
     Lock(Box<LockTopics>),
+    /// A fan, as Home Assistant's MQTT fan lets it vary.
+    Fan(Box<FanTopics>),
+}
+
+/// One setting of a fan: where it's sent and how, and where it's read back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FanPart {
+    pub command_topic: String,
+    pub command_template: CommandTemplate,
+    pub state_topic: Option<String>,
+    pub value_template: ValueTemplate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FanTopics {
+    /// On and off.
+    pub power: FanPart,
+    pub payload_on: String,
+    pub payload_off: String,
+    /// Its speed, as the device numbers it from `speed_min` to `speed_max`.
+    pub speed: Option<FanPart>,
+    pub speed_min: i64,
+    pub speed_max: i64,
+    pub preset: Option<FanPart>,
+    pub oscillation: Option<FanPart>,
+    pub payload_oscillation_on: String,
+    pub payload_oscillation_off: String,
+    pub direction: Option<FanPart>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -256,6 +284,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::Event => parse_event(&root)?,
         Component::Cover => parse_cover(&root)?,
         Component::Lock => parse_lock(&root)?,
+        Component::Fan => parse_fan(&root)?,
     };
 
     Ok(ParsedConfig {
@@ -533,6 +562,93 @@ fn parse_select(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics)
             command_template,
             value_template: ValueTemplate::parse(str_field(root, "value_template")),
         },
+    ))
+}
+
+fn parse_fan(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
+    let (command_topic, command_template) = plain_command(root, "a fan")?;
+    // One optional setting, `<name>_command_topic` and friends. A command template Irori can't
+    // render leaves that setting out, rather than the whole fan: on and off still work.
+    let part = |name: &str, value_key: &str| -> Option<FanPart> {
+        let command_topic = str_field(root, &format!("{name}_command_topic"))?.to_owned();
+        let command_template = match CommandTemplate::parse(
+            str_field(root, &format!("{name}_command_template")),
+            "value",
+        ) {
+            Ok(template) => template,
+            // The fan still works without this setting; the rest of it is described.
+            Err(_) => return None,
+        };
+        let template = str_field(root, value_key);
+        let value_template = match ValueTemplate::parse(template) {
+            // Only presets are read this way: a value outside the list is dropped anyway.
+            ValueTemplate::Unsupported(text) if name == "preset_mode" => {
+                ValueTemplate::first_path(&text).unwrap_or(ValueTemplate::Unsupported(text))
+            }
+            other => other,
+        };
+        Some(FanPart {
+            command_topic,
+            command_template,
+            state_topic: str_field(root, &format!("{name}_state_topic")).map(str::to_owned),
+            value_template,
+        })
+    };
+    let speed_min = root
+        .get("speed_range_min")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(1);
+    let speed_max = root
+        .get("speed_range_max")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(100);
+    let speed = part("percentage", "percentage_value_template");
+    let preset = part("preset_mode", "preset_mode_value_template");
+    let preset_modes: Vec<String> = if preset.is_some() {
+        root.get("preset_modes")
+            .and_then(serde_json::Value::as_array)
+            .map(|modes| {
+                modes
+                    .iter()
+                    .filter_map(|m| m.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let topics = FanTopics {
+        power: FanPart {
+            command_topic,
+            command_template,
+            state_topic: str_field(root, "state_topic").map(str::to_owned),
+            value_template: ValueTemplate::parse(str_field(root, "state_value_template")),
+        },
+        payload_on: owned_str(root, "payload_on", "ON"),
+        payload_off: owned_str(root, "payload_off", "OFF"),
+        speed_min,
+        speed_max,
+        oscillation: part("oscillation", "oscillation_value_template"),
+        payload_oscillation_on: owned_str(root, "payload_oscillation_on", "oscillate_on"),
+        payload_oscillation_off: owned_str(root, "payload_oscillation_off", "oscillate_off"),
+        direction: part("direction", "direction_value_template"),
+        speed,
+        preset,
+    };
+    let capabilities = FanCapabilities {
+        speed_count: if topics.speed.is_some() && speed_max >= speed_min {
+            u16::try_from(speed_max - speed_min + 1).unwrap_or(u16::MAX)
+        } else {
+            0
+        },
+        oscillate: topics.oscillation.is_some(),
+        direction: topics.direction.is_some(),
+        preset_modes,
+    };
+    capabilities.validate().map_err(|e| e.to_string())?;
+    Ok((
+        Capabilities::Fan(capabilities),
+        EntityTopics::Fan(Box::new(topics)),
     ))
 }
 
@@ -1053,6 +1169,94 @@ mod tests {
         "set_position_topic": "zigbee2mqtt/Office blind/set",
         "position_topic": "zigbee2mqtt/Office blind"
     }"#;
+
+    /// Zigbee2MQTT's mode-controlled fan (`case "fan"`, a ZCL hvacFanCtrl): speeds are the
+    /// modes low, medium and high, translated through lookup tables, plus preset modes.
+    #[test]
+    fn a_z2m_mode_fan_turns_speeds_into_modes_and_back() {
+        let payload = br#"{
+            "unique_id": "0x03_fan", "name": null,
+            "device": {"identifiers": ["zigbee2mqtt_0x03"], "name": "Ceiling fan"},
+            "command_topic": "zigbee2mqtt/Ceiling fan/set/fan_state",
+            "state_topic": "zigbee2mqtt/Ceiling fan",
+            "state_value_template": "{{ value_json.fan_state }}",
+            "percentage_state_topic": "zigbee2mqtt/Ceiling fan",
+            "percentage_command_topic": "zigbee2mqtt/Ceiling fan/set/fan_mode",
+            "percentage_value_template": "{{ {'off':0, 'low':1, 'medium':2, 'high':3}[value_json[\"fan_mode\"]] | default('None') }}",
+            "percentage_command_template": "{{ {0:'off', 1:'low', 2:'medium', 3:'high'}[value] | default('') }}",
+            "speed_range_min": 1, "speed_range_max": 3,
+            "preset_mode_state_topic": "zigbee2mqtt/Ceiling fan",
+            "preset_mode_command_topic": "zigbee2mqtt/Ceiling fan/set/fan_mode",
+            "preset_mode_value_template": "{{ value_json[\"fan_mode\"] if value_json[\"fan_mode\"] in ['on', 'auto'] else 'None' | default('None') }}",
+            "preset_modes": ["on", "auto"]
+        }"#;
+        let parsed = parse(Component::Fan, payload).expect("valid");
+        assert_eq!(
+            parsed.capabilities,
+            Capabilities::Fan(FanCapabilities {
+                speed_count: 3,
+                oscillate: false,
+                direction: false,
+                preset_modes: vec!["on".into(), "auto".into()],
+            })
+        );
+        let decoded = |body: &[u8]| {
+            crate::state::decode(&parsed.topics, "zigbee2mqtt/Ceiling fan", body, None)
+        };
+        let Some(Ok(irori_types::State::Fan(medium))) =
+            decoded(br#"{"fan_state": "ON", "fan_mode": "medium"}"#)
+        else {
+            panic!("a fan state");
+        };
+        assert!(medium.on);
+        assert_eq!(medium.percentage, Some(66));
+        let Some(Ok(irori_types::State::Fan(auto))) =
+            decoded(br#"{"fan_state": "ON", "fan_mode": "auto"}"#)
+        else {
+            panic!("a fan state");
+        };
+        assert_eq!(auto.preset_mode.as_deref(), Some("auto"));
+        let sent = crate::state::encode(
+            &parsed.topics,
+            &irori_types::Service::FanSetPercentage(irori_types::FanPercentage { percentage: 100 }),
+        )
+        .expect("a speed");
+        assert_eq!(sent[0].topic, "zigbee2mqtt/Ceiling fan/set/fan_mode");
+        assert_eq!(sent[0].payload, b"high");
+        let off = crate::state::encode(
+            &parsed.topics,
+            &irori_types::Service::FanSetPercentage(irori_types::FanPercentage { percentage: 0 }),
+        )
+        .expect("off");
+        assert_eq!(off[0].payload, b"OFF");
+    }
+
+    /// Zigbee2MQTT's speed-controlled fan: a number with `| default`, sent as it is.
+    #[test]
+    fn a_z2m_speed_fan_sends_its_speed() {
+        let payload = br#"{"unique_id": "f", "name": "Fan", "command_topic": "z/Fan/set/state",
+            "state_topic": "z/Fan", "state_value_template": "{{ value_json.state }}",
+            "percentage_state_topic": "z/Fan", "percentage_command_topic": "z/Fan/set/speed",
+            "percentage_value_template": "{{ value_json[\"speed\"] | default('None') }}",
+            "percentage_command_template": "{{ value | default('') }}",
+            "speed_range_min": 1, "speed_range_max": 10}"#;
+        let parsed = parse(Component::Fan, payload).expect("valid");
+        let Some(Ok(irori_types::State::Fan(fan))) = crate::state::decode(
+            &parsed.topics,
+            "z/Fan",
+            br#"{"state": "ON", "speed": 5}"#,
+            None,
+        ) else {
+            panic!("a fan state");
+        };
+        assert_eq!((fan.on, fan.percentage), (true, Some(50)));
+        let sent = crate::state::encode(
+            &parsed.topics,
+            &irori_types::Service::FanSetPercentage(irori_types::FanPercentage { percentage: 75 }),
+        )
+        .expect("a speed");
+        assert_eq!(sent[0].payload, b"8");
+    }
 
     #[test]
     fn a_z2m_lock_says_lock_and_unlock() {

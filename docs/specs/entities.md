@@ -126,8 +126,8 @@ motion sensor are three entities.
 | `entity_category` | `config` \| `diagnostic` | no | One of the device's settings (a motion sensor's timeout) or diagnostics (its signal strength) rather than what it's for. Pages list these after the device's other entities. Home Assistant's names; set by the protocol |
 
 **Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`,
-`event`, `cover`, `lock`.
-**Next, in likely order:** `fan`, `valve`, `siren`, then `climate`, `water_heater`, `humidifier`. Adding a kind is an
+`event`, `cover`, `lock`, `fan`.
+**Next, in likely order:** `valve`, `siren`, then `climate`, `water_heater`, `humidifier`. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
 
@@ -166,6 +166,9 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | `lock` | `open` | bool | `false` | Can open the door, not only unlock it |
 | | `requires_code` | bool | `false` | Locking, unlocking and opening need its code |
 | | `code_format` | regular expression | absent | The device's; pages show it |
+| `fan` | `speed_count` | integer | `0` | How many real speeds it has; 0 when its speed can't be set. Speeds go over the wire as percentages, as in Home Assistant |
+| | `oscillate`, `direction` | bool | `false` | Can swing; can turn the other way |
+| | `preset_modes` | up to 256 distinct strings | `[]` | Modes beyond its speed, e.g. `auto`, `sleep` |
 
 **Unlocking and opening let someone in.** Pages ask before sending them, in a window that also
 takes the code a lock needs. A code travels with its call (`lock.unlock {code}`), is never shown
@@ -248,6 +251,11 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | `cover` | `state` | `open` \| `opening` \| `closed` \| `closing` | yes | Its typed value, for rules (`text()`) |
 | | `position`, `tilt` | integer 0 (closed) – 100 (open) | no | Only when it said it has them |
 | `lock` | `state` | `locked` \| `unlocked` \| `locking` \| `unlocking` \| `jammed` \| `open` \| `opening` | yes | Its typed value, for rules |
+| `fan` | `on` | bool | yes | Its typed value |
+| | `percentage` | integer 0–100 | no | Its speed, when it has speeds. Kept while off |
+| | `oscillating` | bool | no | When it can swing |
+| | `direction` | `forward` \| `reverse` | no | When it can turn either way |
+| | `preset_mode` | string | no | One of its `preset_modes`, when it's in one |
 
 **An `event`'s every report is something happening.** Two `double` presses of a remote in a row
 are two changes: each moves `last_changed` and is a change for anything watching, even though the

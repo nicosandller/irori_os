@@ -11,6 +11,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use crate::kinds::cover::{SetPosition, SetTilt};
+use crate::kinds::fan::{FanOscillate, FanPercentage, FanPresetMode, FanSetDirection, FanTurnOn};
 use crate::kinds::light::LightTurnOn;
 use crate::kinds::lock::LockCode;
 use crate::kinds::number::NumberSetValue;
@@ -389,6 +390,12 @@ pub enum Service {
     LockLock(LockCode),
     LockUnlock(LockCode),
     LockOpen(LockCode),
+    FanTurnOn(FanTurnOn),
+    FanTurnOff,
+    FanSetPercentage(FanPercentage),
+    FanOscillate(FanOscillate),
+    FanSetDirection(FanSetDirection),
+    FanSetPresetMode(FanPresetMode),
 }
 
 impl Service {
@@ -410,6 +417,12 @@ impl Service {
             Self::LockLock(_) => ServiceName::LockLock,
             Self::LockUnlock(_) => ServiceName::LockUnlock,
             Self::LockOpen(_) => ServiceName::LockOpen,
+            Self::FanTurnOn(_) => ServiceName::FanTurnOn,
+            Self::FanTurnOff => ServiceName::FanTurnOff,
+            Self::FanSetPercentage(_) => ServiceName::FanSetPercentage,
+            Self::FanOscillate(_) => ServiceName::FanOscillate,
+            Self::FanSetDirection(_) => ServiceName::FanSetDirection,
+            Self::FanSetPresetMode(_) => ServiceName::FanSetPresetMode,
         }
     }
 }
@@ -449,6 +462,18 @@ pub enum ServiceName {
     LockUnlock,
     #[serde(rename = "lock.open")]
     LockOpen,
+    #[serde(rename = "fan.turn_on")]
+    FanTurnOn,
+    #[serde(rename = "fan.turn_off")]
+    FanTurnOff,
+    #[serde(rename = "fan.set_percentage")]
+    FanSetPercentage,
+    #[serde(rename = "fan.oscillate")]
+    FanOscillate,
+    #[serde(rename = "fan.set_direction")]
+    FanSetDirection,
+    #[serde(rename = "fan.set_preset_mode")]
+    FanSetPresetMode,
 }
 
 impl ServiceName {
@@ -469,6 +494,12 @@ impl ServiceName {
         Self::LockLock,
         Self::LockUnlock,
         Self::LockOpen,
+        Self::FanTurnOn,
+        Self::FanTurnOff,
+        Self::FanSetPercentage,
+        Self::FanOscillate,
+        Self::FanSetDirection,
+        Self::FanSetPresetMode,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -489,6 +520,12 @@ impl ServiceName {
             Self::LockLock => "lock.lock",
             Self::LockUnlock => "lock.unlock",
             Self::LockOpen => "lock.open",
+            Self::FanTurnOn => "fan.turn_on",
+            Self::FanTurnOff => "fan.turn_off",
+            Self::FanSetPercentage => "fan.set_percentage",
+            Self::FanOscillate => "fan.oscillate",
+            Self::FanSetDirection => "fan.set_direction",
+            Self::FanSetPresetMode => "fan.set_preset_mode",
         }
     }
 
@@ -507,6 +544,12 @@ impl ServiceName {
             | Self::CoverSetPosition
             | Self::CoverSetTilt => EntityKind::Cover,
             Self::LockLock | Self::LockUnlock | Self::LockOpen => EntityKind::Lock,
+            Self::FanTurnOn
+            | Self::FanTurnOff
+            | Self::FanSetPercentage
+            | Self::FanOscillate
+            | Self::FanSetDirection
+            | Self::FanSetPresetMode => EntityKind::Fan,
         }
     }
 }
@@ -605,6 +648,11 @@ impl JsonSchema for ServiceCall {
         let set_position = generator.subschema_for::<SetPosition>();
         let set_tilt = generator.subschema_for::<SetTilt>();
         let lock_code = generator.subschema_for::<LockCode>();
+        let fan_turn_on = generator.subschema_for::<FanTurnOn>();
+        let fan_percentage = generator.subschema_for::<FanPercentage>();
+        let fan_oscillate = generator.subschema_for::<FanOscillate>();
+        let fan_direction = generator.subschema_for::<FanSetDirection>();
+        let fan_preset = generator.subschema_for::<FanPresetMode>();
         // Per service: the shape of `data`.
         let rules: Vec<_> = ServiceName::ALL
             .iter()
@@ -619,6 +667,11 @@ impl JsonSchema for ServiceCall {
                     ServiceName::LockLock | ServiceName::LockUnlock | ServiceName::LockOpen => {
                         lock_code.clone()
                     }
+                    ServiceName::FanTurnOn => fan_turn_on.clone(),
+                    ServiceName::FanSetPercentage => fan_percentage.clone(),
+                    ServiceName::FanOscillate => fan_oscillate.clone(),
+                    ServiceName::FanSetDirection => fan_direction.clone(),
+                    ServiceName::FanSetPresetMode => fan_preset.clone(),
                     _ => no_data.clone(),
                 };
                 json_schema!({

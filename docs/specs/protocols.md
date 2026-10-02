@@ -270,6 +270,12 @@ manifest's `entity_kinds`.
 | `cover.set_tilt` | `tilt` 0–100 | Needs `tilt` |
 | `lock.lock`, `lock.unlock` | `code`, optional | The code is required when the lock `requires_code`. `lock.toggle` unlocks a locked or locking lock and locks anything else |
 | `lock.open` | `code`, optional | Needs `open` |
+| `fan.turn_on` | `percentage` 1–100, `preset_mode`; both optional | `fan.toggle` resolves to `turn_on` or `turn_off` |
+| `fan.turn_off` | none | |
+| `fan.set_percentage` | `percentage` 0–100 | 0 turns it off. Needs a `speed_count` |
+| `fan.oscillate` | `oscillating` bool | Needs `oscillate` |
+| `fan.set_direction` | `direction` `forward` \| `reverse` | Needs `direction` |
+| `fan.set_preset_mode` | `preset_mode`, one of its `preset_modes` | |
 
 `sensor` and `binary_sensor` have no services.
 

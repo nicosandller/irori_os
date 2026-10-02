@@ -2,9 +2,9 @@
 //! (`docs/specs/entities.md` §5.3, `docs/specs/protocols.md` §7).
 
 use irori_types::{
-    BinarySensorState, ColorMode, CoverState, EventState, LightState, LockState, NumberState,
-    OpenState, SelectState, SensorState, SensorValue, Service, State, SwitchState, TextState,
-    UniqueId,
+    BinarySensorState, ColorMode, CoverState, EventState, FanDirection, FanPercentage, FanState,
+    LightState, LockState, NumberState, OpenState, SelectState, SensorState, SensorValue, Service,
+    State, SwitchState, TextState, UniqueId, percentage_to_speed, speed_to_percentage,
 };
 
 use crate::discovery::EntityTopics;
@@ -92,6 +92,7 @@ pub fn decode(
             ..
         } if state_topic.as_deref() == Some(topic) => Some(decode_number(payload, value_template)),
         EntityTopics::Cover(cover) => decode_cover(cover, topic, payload, previous),
+        EntityTopics::Fan(fan) => decode_fan(fan, topic, payload, previous),
         EntityTopics::Lock(lock) if lock.state_topic.as_deref() == Some(topic) => {
             Some(decode_text(payload, &lock.value_template).and_then(|said| {
                 lock.said
@@ -374,6 +375,101 @@ fn decode_cover(
     })())
 }
 
+/// A fan's state from a message on any of its topics, merged with what it last said. Zigbee2MQTT
+/// sends them all in one body; others give each setting a topic of its own.
+fn decode_fan(
+    fan: &crate::discovery::FanTopics,
+    topic: &str,
+    payload: &[u8],
+    previous: Option<&State>,
+) -> Option<Result<State, String>> {
+    fn on_topic<'a>(
+        part: &'a Option<crate::discovery::FanPart>,
+        topic: &str,
+    ) -> Option<&'a crate::discovery::FanPart> {
+        part.as_ref()
+            .filter(|part| part.state_topic.as_deref() == Some(topic))
+    }
+    let power = (fan.power.state_topic.as_deref() == Some(topic)).then_some(&fan.power);
+    let (speed, preset, oscillation, direction) = (
+        on_topic(&fan.speed, topic),
+        on_topic(&fan.preset, topic),
+        on_topic(&fan.oscillation, topic),
+        on_topic(&fan.direction, topic),
+    );
+    if power.is_none()
+        && speed.is_none()
+        && preset.is_none()
+        && oscillation.is_none()
+        && direction.is_none()
+    {
+        return None;
+    }
+    Some((|| {
+        let mut state = match previous {
+            Some(State::Fan(old)) => old.clone(),
+            _ => FanState {
+                on: false,
+                percentage: None,
+                oscillating: None,
+                direction: None,
+                preset_mode: None,
+            },
+        };
+        let text = |part: &crate::discovery::FanPart| -> Result<Option<String>, String> {
+            Ok(match part.value_template.extract(payload)? {
+                serde_json::Value::Null => None,
+                serde_json::Value::String(text) => Some(text.trim().to_owned()),
+                other => Some(other.to_string()),
+            })
+        };
+        if let Some(part) = power {
+            match text(part)? {
+                Some(said) if said == fan.payload_on => state.on = true,
+                Some(said) if said == fan.payload_off => state.on = false,
+                Some(said) => return Err(format!("{said:?} isn't on or off for this fan")),
+                None => {}
+            }
+        }
+        if let Some(part) = speed
+            && let Some(raw) = text(part)?.and_then(|said| said.parse::<f64>().ok())
+        {
+            let count = fan.speed_max - fan.speed_min + 1;
+            #[allow(clippy::cast_possible_truncation)]
+            let level = raw.round() as i64 - fan.speed_min + 1;
+            state.percentage = Some(if level <= 0 || count <= 0 {
+                0
+            } else {
+                speed_to_percentage(
+                    u16::try_from(level).unwrap_or(u16::MAX),
+                    u16::try_from(count).unwrap_or(u16::MAX),
+                )
+            });
+        }
+        if let Some(part) = preset {
+            // Anything not a preset (a speed, `None`) means it isn't in one.
+            state.preset_mode = text(part)?;
+        }
+        if let Some(part) = oscillation {
+            match text(part)? {
+                Some(said) if said == fan.payload_oscillation_on => state.oscillating = Some(true),
+                Some(said) if said == fan.payload_oscillation_off => {
+                    state.oscillating = Some(false);
+                }
+                _ => {}
+            }
+        }
+        if let Some(part) = direction {
+            state.direction = match text(part)?.as_deref() {
+                Some("forward") => Some(FanDirection::Forward),
+                Some("reverse") => Some(FanDirection::Reverse),
+                _ => state.direction,
+            };
+        }
+        Ok(State::Fan(state))
+    })())
+}
+
 /// The event type a message names, `None` if it names none.
 fn decode_event(
     payload: &[u8],
@@ -524,6 +620,7 @@ pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, 
             Service::ButtonPress,
         ) => Ok(vec![text_publish(command_topic, payload_press)]),
         (EntityTopics::Cover(cover), service) => encode_cover(cover, service),
+        (EntityTopics::Fan(fan), service) => encode_fan(fan, service),
         (EntityTopics::Lock(lock), service) => {
             let payload = match service {
                 Service::LockLock(_) => &lock.payload_lock,
@@ -540,6 +637,63 @@ pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, 
             )])
         }
         _ => Err(format!("this entity has no `{}` service", service.name())),
+    }
+}
+
+fn encode_fan(
+    fan: &crate::discovery::FanTopics,
+    service: &Service,
+) -> Result<Vec<Publish>, String> {
+    let send = |part: &crate::discovery::FanPart, value: &str| {
+        text_publish(&part.command_topic, &part.command_template.render(value))
+    };
+    let speed = |percentage: u8| -> Result<Publish, String> {
+        let part = fan.speed.as_ref().ok_or("this fan has no speeds to set")?;
+        let count = u16::try_from(fan.speed_max - fan.speed_min + 1).unwrap_or(u16::MAX);
+        let level = i64::from(percentage_to_speed(percentage, count)) + fan.speed_min - 1;
+        Ok(send(part, &level.to_string()))
+    };
+    let preset = |mode: &str| -> Result<Publish, String> {
+        let part = fan.preset.as_ref().ok_or("this fan has no preset modes")?;
+        Ok(send(part, mode))
+    };
+    match service {
+        Service::FanTurnOff | Service::FanSetPercentage(FanPercentage { percentage: 0 }) => {
+            Ok(vec![send(&fan.power, &fan.payload_off)])
+        }
+        Service::FanTurnOn(data) => {
+            let mut messages = vec![send(&fan.power, &fan.payload_on)];
+            if let Some(percentage) = data.percentage {
+                messages.push(speed(percentage)?);
+            }
+            if let Some(mode) = &data.preset_mode {
+                messages.push(preset(mode)?);
+            }
+            Ok(messages)
+        }
+        Service::FanSetPercentage(data) => Ok(vec![speed(data.percentage)?]),
+        Service::FanSetPresetMode(data) => Ok(vec![preset(&data.preset_mode)?]),
+        Service::FanOscillate(data) => {
+            let part = fan.oscillation.as_ref().ok_or("this fan doesn't swing")?;
+            let payload = if data.oscillating {
+                &fan.payload_oscillation_on
+            } else {
+                &fan.payload_oscillation_off
+            };
+            Ok(vec![send(part, payload)])
+        }
+        Service::FanSetDirection(data) => {
+            let part = fan
+                .direction
+                .as_ref()
+                .ok_or("this fan only turns one way")?;
+            let direction = match data.direction {
+                FanDirection::Forward => "forward",
+                FanDirection::Reverse => "reverse",
+            };
+            Ok(vec![send(part, direction)])
+        }
+        other => Err(format!("a fan has no `{}` service", other.name())),
     }
 }
 
@@ -629,6 +783,15 @@ pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, Un
         EntityTopics::Button { .. } => {}
         EntityTopics::Event { state_topic, .. } => list.push(state_topic.clone()),
         EntityTopics::Lock(lock) => list.extend(lock.state_topic.clone()),
+        EntityTopics::Fan(fan) => {
+            list.extend(fan.power.state_topic.clone());
+            for part in [&fan.speed, &fan.preset, &fan.oscillation, &fan.direction]
+                .into_iter()
+                .flatten()
+            {
+                list.extend(part.state_topic.clone());
+            }
+        }
         EntityTopics::Cover(cover) => {
             list.extend(cover.state_topic.clone());
             list.extend(cover.position_topic.clone());

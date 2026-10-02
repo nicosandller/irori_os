@@ -301,6 +301,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^fan\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "fan"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -414,6 +437,10 @@
         {
           "maxLength": 69,
           "pattern": "^lock\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 68,
+          "pattern": "^fan\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -423,6 +450,13 @@
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "FanDirection": {
+      "type": "string",
+      "enum": [
+        "forward",
+        "reverse"
+      ]
     },
     "LockStatus": {
       "oneOf": [
@@ -808,6 +842,56 @@
           "required": [
             "kind",
             "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "direction": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/FanDirection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "fan"
+            },
+            "on": {
+              "type": "boolean"
+            },
+            "oscillating": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "percentage": {
+              "description": "Its speed, 1-100, when it has speeds. Kept while off: the speed it comes back on at.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            },
+            "preset_mode": {
+              "description": "One of its `preset_modes`, when it's in one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
           ]
         }
       ]
