@@ -17,8 +17,8 @@ use esphome_client::types::{
     SwitchCommandRequest, TextCommandRequest,
 };
 use irori_protocol::types::{
-    Capabilities, ContextId, DeviceDescription, EntityDescription, Service, StateReport, UniqueId,
-    Unmodeled,
+    Capabilities, ContextId, DeviceDescription, EntityDescription, Service, State, StateReport,
+    UniqueId, Unmodeled,
 };
 use irori_protocol::{IncomingCall, ServiceError};
 use tokio::sync::mpsc;
@@ -501,6 +501,9 @@ async fn list_entities(
             EspHomeMessage::ListEntitiesValveResponse(e) => {
                 (e.key, "valve", e.name.clone(), map::valve(device, e))
             }
+            EspHomeMessage::ListEntitiesSirenResponse(e) => {
+                (e.key, "siren", e.name.clone(), map::siren(device, e))
+            }
             EspHomeMessage::ListEntitiesTextSensorResponse(e) => (
                 e.key,
                 "text_sensor",
@@ -565,6 +568,12 @@ fn report(
             (s.key, Some(map::light_state(s, known)))
         }
         EspHomeMessage::LockStateResponse(s) => (s.key, map::lock_state(s)),
+        EspHomeMessage::SirenStateResponse(s) => (
+            s.key,
+            Some(State::Siren(irori_protocol::types::SirenState {
+                on: s.state,
+            })),
+        ),
         EspHomeMessage::ValveStateResponse(s) => {
             let Some(Capabilities::Valve(known)) = capabilities.get(&s.key) else {
                 return None;
@@ -746,6 +755,10 @@ async fn command(
         | Service::ValveStop
         | Service::ValveSetPosition(_) => client
             .try_write(map::valve_command(key, &incoming.call.service))
+            .await
+            .map_err(|e| e.to_string()),
+        Service::SirenTurnOn(_) | Service::SirenTurnOff => client
+            .try_write(map::siren_command(key, &incoming.call.service))
             .await
             .map_err(|e| e.to_string()),
         Service::LockLock(_) | Service::LockUnlock(_) | Service::LockOpen(_) => client

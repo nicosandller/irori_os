@@ -230,6 +230,11 @@
           "description": "Lets water or gas through, or doesn't, e.g. a main shut-off.",
           "type": "string",
           "const": "valve"
+        },
+        {
+          "description": "Sounds an alarm: on or off, sometimes with a tone, volume and duration.",
+          "type": "string",
+          "const": "siren"
         }
       ]
     },

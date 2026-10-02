@@ -15,9 +15,10 @@ use esphome_client::types::{
     FanStateResponse, HelloResponse, ListEntitiesBinarySensorResponse, ListEntitiesButtonResponse,
     ListEntitiesCoverResponse, ListEntitiesDoneResponse, ListEntitiesFanResponse,
     ListEntitiesLockResponse, ListEntitiesMediaPlayerResponse, ListEntitiesNumberResponse,
-    ListEntitiesSelectResponse, ListEntitiesSensorResponse, ListEntitiesTextResponse,
-    ListEntitiesValveResponse, LockStateResponse, NumberStateResponse, SelectStateResponse,
-    SensorStateResponse, TextStateResponse, ValveStateResponse,
+    ListEntitiesSelectResponse, ListEntitiesSensorResponse, ListEntitiesSirenResponse,
+    ListEntitiesTextResponse, ListEntitiesValveResponse, LockStateResponse, NumberStateResponse,
+    SelectStateResponse, SensorStateResponse, SirenStateResponse, TextStateResponse,
+    ValveStateResponse,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -37,6 +38,7 @@ const BLIND_KEY: u32 = 9;
 const DOOR_KEY: u32 = 10;
 const SPEAKER_KEY: u32 = 11;
 const VALVE_KEY: u32 = 12;
+const SIREN_KEY: u32 = 13;
 /// 32 bytes. Printed at startup as base64 so the waiting-for-a-key panel has something to paste.
 const LAB_KEY: [u8; 32] = *b"irori-lab-esphome-key-32bytes!!!";
 
@@ -216,6 +218,13 @@ fn answers(message: EspHomeMessage, board: &Board) -> Vec<EspHomeMessage> {
                 ..Default::default()
             })]
         }
+        EspHomeMessage::SirenCommandRequest(request) => {
+            vec![EspHomeMessage::SirenStateResponse(SirenStateResponse {
+                key: request.key,
+                state: request.state,
+                ..Default::default()
+            })]
+        }
         // The fan does what it's told and says so; a request carries only what it changes.
         EspHomeMessage::FanCommandRequest(request) => {
             vec![EspHomeMessage::FanStateResponse(FanStateResponse {
@@ -380,6 +389,12 @@ fn entities(_board: &Board) -> Vec<EspHomeMessage> {
             device_class: "water".to_owned(),
             ..Default::default()
         }),
+        EspHomeMessage::ListEntitiesSirenResponse(ListEntitiesSirenResponse {
+            key: SIREN_KEY,
+            name: "Buzzer".to_owned(),
+            tones: vec!["beep".to_owned(), "alarm".to_owned()],
+            ..Default::default()
+        }),
         // Irori has no media player kind yet: this shows as "Also has…".
         EspHomeMessage::ListEntitiesMediaPlayerResponse(ListEntitiesMediaPlayerResponse {
             key: SPEAKER_KEY,
@@ -406,6 +421,11 @@ fn states(board: &Board) -> Vec<EspHomeMessage> {
         EspHomeMessage::NumberStateResponse(NumberStateResponse {
             key: LED_KEY,
             state: 40.0,
+            ..Default::default()
+        }),
+        EspHomeMessage::SirenStateResponse(SirenStateResponse {
+            key: SIREN_KEY,
+            state: false,
             ..Default::default()
         }),
         EspHomeMessage::ValveStateResponse(ValveStateResponse {

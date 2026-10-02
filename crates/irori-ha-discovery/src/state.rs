@@ -4,7 +4,8 @@
 use irori_types::{
     BinarySensorState, ColorMode, CoverState, EventState, FanDirection, FanPercentage, FanState,
     LightState, LockState, NumberState, OpenState, SelectState, SensorState, SensorValue, Service,
-    State, SwitchState, TextState, UniqueId, ValveState, percentage_to_speed, speed_to_percentage,
+    SirenState, SirenTurnOn, State, SwitchState, TextState, UniqueId, ValveState,
+    percentage_to_speed, speed_to_percentage,
 };
 
 use crate::discovery::EntityTopics;
@@ -93,6 +94,19 @@ pub fn decode(
         } if state_topic.as_deref() == Some(topic) => Some(decode_number(payload, value_template)),
         EntityTopics::Cover(cover) => decode_cover(cover, topic, payload, previous),
         EntityTopics::Fan(fan) => decode_fan(fan, topic, payload, previous),
+        EntityTopics::Siren {
+            state_topic,
+            value_template,
+            state_on,
+            state_off,
+            ..
+        } if state_topic.as_deref() == Some(topic) => Some(
+            decode_text(payload, value_template).and_then(|said| match said.trim() {
+                said if said == state_on => Ok(State::Siren(SirenState { on: true })),
+                said if said == state_off => Ok(State::Siren(SirenState { on: false })),
+                said => Err(format!("{said:?} isn't on or off for this siren")),
+            }),
+        ),
         // Read as a cover, from what it last said as a valve.
         EntityTopics::Valve(valve) => {
             let previous = match previous {
@@ -641,6 +655,46 @@ pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, 
         ) => Ok(vec![text_publish(command_topic, payload_press)]),
         (EntityTopics::Cover(cover), service) => encode_cover(cover, service),
         (EntityTopics::Fan(fan), service) => encode_fan(fan, service),
+        (
+            EntityTopics::Siren {
+                command_topic,
+                command_template,
+                payload_off,
+                ..
+            },
+            Service::SirenTurnOff,
+        ) => Ok(vec![text_publish(
+            command_topic,
+            &command_template.render(payload_off),
+        )]),
+        (
+            EntityTopics::Siren {
+                command_topic,
+                command_template,
+                payload_on,
+                ..
+            },
+            Service::SirenTurnOn(data),
+        ) => {
+            // Plain `ON`; told how, Home Assistant's JSON body with the state and what it was told.
+            if *data == SirenTurnOn::default() {
+                return Ok(vec![text_publish(
+                    command_topic,
+                    &command_template.render(payload_on),
+                )]);
+            }
+            let mut body = serde_json::json!({ "state": payload_on });
+            if let Some(tone) = &data.tone {
+                body["tone"] = tone.clone().into();
+            }
+            if let Some(volume) = data.volume_level {
+                body["volume_level"] = volume.into();
+            }
+            if let Some(duration) = data.duration {
+                body["duration"] = duration.into();
+            }
+            Ok(vec![json_publish(command_topic, &body)])
+        }
         (EntityTopics::Valve(valve), service) => {
             let as_cover = match service {
                 Service::ValveOpen => Service::CoverOpen,
@@ -813,6 +867,7 @@ pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, Un
         EntityTopics::Button { .. } => {}
         EntityTopics::Event { state_topic, .. } => list.push(state_topic.clone()),
         EntityTopics::Lock(lock) => list.extend(lock.state_topic.clone()),
+        EntityTopics::Siren { state_topic, .. } => list.extend(state_topic.clone()),
         EntityTopics::Fan(fan) => {
             list.extend(fan.power.state_topic.clone());
             for part in [&fan.speed, &fan.preset, &fan.oscillation, &fan.direction]

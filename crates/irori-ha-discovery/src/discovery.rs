@@ -11,9 +11,9 @@ use irori_types::{
     BinarySensorCapabilities, BinarySensorClass, ButtonCapabilities, ButtonClass, Capabilities,
     ColorTempRange, CoverCapabilities, CoverClass, EntityCategory, EventCapabilities, EventClass,
     FanCapabilities, LightCapabilities, LockCapabilities, LockStatus, Name, NumberCapabilities,
-    NumberMode, SelectCapabilities, SensorCapabilities, SensorClass, SensorValueType, StateClass,
-    SwitchCapabilities, SwitchClass, TextCapabilities, TextMode, UniqueId, ValveCapabilities,
-    ValveClass,
+    NumberMode, SelectCapabilities, SensorCapabilities, SensorClass, SensorValueType,
+    SirenCapabilities, StateClass, SwitchCapabilities, SwitchClass, TextCapabilities, TextMode,
+    UniqueId, ValveCapabilities, ValveClass,
 };
 
 use crate::template::{CommandTemplate, ValueTemplate};
@@ -148,6 +148,18 @@ pub enum EntityTopics {
     Fan(Box<FanTopics>),
     /// A valve: a cover with fewer settings, read and sent the same way.
     Valve(Box<CoverTopics>),
+    /// A siren, as Home Assistant's MQTT siren: `ON` and `OFF`, or a JSON body when it's told a
+    /// tone, a volume or a duration.
+    Siren {
+        command_topic: String,
+        command_template: CommandTemplate,
+        payload_on: String,
+        payload_off: String,
+        state_topic: Option<String>,
+        value_template: ValueTemplate,
+        state_on: String,
+        state_off: String,
+    },
 }
 
 /// One setting of a fan: where it's sent and how, and where it's read back.
@@ -289,6 +301,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::Lock => parse_lock(&root)?,
         Component::Fan => parse_fan(&root)?,
         Component::Valve => parse_valve(&root)?,
+        Component::Siren => parse_siren(&root)?,
     };
 
     Ok(ParsedConfig {
@@ -571,6 +584,46 @@ fn parse_select(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics)
 
 /// Home Assistant's MQTT valve. One that `reports_position` says a number on its state topic and
 /// takes one on its command topic; otherwise it opens and closes like a cover.
+fn parse_siren(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
+    let (command_topic, command_template) = plain_command(root, "a siren")?;
+    let payload_on = owned_str(root, "payload_on", "ON");
+    let payload_off = owned_str(root, "payload_off", "OFF");
+    let supported = |key: &str| {
+        root.get(key)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true)
+    };
+    let capabilities = SirenCapabilities {
+        tones: root
+            .get("available_tones")
+            .and_then(serde_json::Value::as_array)
+            .map(|tones| {
+                tones
+                    .iter()
+                    .filter_map(|t| t.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        // Home Assistant's defaults: both, unless it says not.
+        volume: supported("support_volume_set"),
+        duration: supported("support_duration"),
+    };
+    capabilities.validate().map_err(|e| e.to_string())?;
+    Ok((
+        Capabilities::Siren(capabilities),
+        EntityTopics::Siren {
+            state_on: owned_str(root, "state_on", &payload_on),
+            state_off: owned_str(root, "state_off", &payload_off),
+            command_topic,
+            command_template,
+            payload_on,
+            payload_off,
+            state_topic: str_field(root, "state_topic").map(str::to_owned),
+            value_template: ValueTemplate::parse(str_field(root, "state_value_template")),
+        },
+    ))
+}
+
 fn parse_valve(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
     let (command_topic, command_template) = plain_command(root, "a valve")?;
     let owned = |key: &str| str_field(root, key).map(str::to_owned);
@@ -1310,6 +1363,51 @@ mod tests {
         )
         .expect("a speed");
         assert_eq!(sent[0].payload, b"8");
+    }
+
+    #[test]
+    fn a_siren_says_on_or_sends_what_it_was_told() {
+        let parsed = parse(
+            Component::Siren,
+            br#"{"unique_id": "s", "name": "Hall siren", "command_topic": "s/set",
+                "state_topic": "s/state", "available_tones": ["alarm", "chime"],
+                "support_duration": false}"#,
+        )
+        .expect("valid");
+        assert_eq!(
+            parsed.capabilities,
+            Capabilities::Siren(SirenCapabilities {
+                tones: vec!["alarm".into(), "chime".into()],
+                volume: true,
+                duration: false,
+            })
+        );
+        assert_eq!(
+            crate::state::decode(&parsed.topics, "s/state", b"ON", None),
+            Some(Ok(irori_types::State::Siren(irori_types::SirenState {
+                on: true
+            })))
+        );
+        let plain = crate::state::encode(
+            &parsed.topics,
+            &irori_types::Service::SirenTurnOn(irori_types::SirenTurnOn::default()),
+        )
+        .expect("on");
+        assert_eq!(plain[0].payload, b"ON");
+        let told = crate::state::encode(
+            &parsed.topics,
+            &irori_types::Service::SirenTurnOn(irori_types::SirenTurnOn {
+                tone: Some("chime".into()),
+                volume_level: Some(0.5),
+                duration: None,
+            }),
+        )
+        .expect("on, told how");
+        let body: serde_json::Value = serde_json::from_slice(&told[0].payload).expect("JSON");
+        assert_eq!(
+            body,
+            serde_json::json!({"state": "ON", "tone": "chime", "volume_level": 0.5})
+        );
     }
 
     #[test]

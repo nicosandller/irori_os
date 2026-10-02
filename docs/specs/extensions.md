@@ -127,6 +127,7 @@ which format it reads, and Irori converts down (`irori_types::format`):
 | 9 | `lock` |
 | 10 | `fan` |
 | 11 | `valve` |
+| 12 | `siren` |
 
 A reader of an older format isn't sent entities of newer kinds at all (nor their states, history
 or changes), and is sent the others without the newer fields or values. Every change to what an

@@ -15,6 +15,7 @@ pub(crate) mod lock;
 pub(crate) mod number;
 pub(crate) mod select;
 pub(crate) mod sensor;
+pub(crate) mod siren;
 pub(crate) mod switch;
 pub(crate) mod text;
 pub(crate) mod valve;
@@ -29,6 +30,7 @@ use self::lock::{LOCK_STATES, LockCode, LockState, LockStatus};
 use self::number::{NumberSetValue, NumberState};
 use self::select::{SelectOption, SelectState};
 use self::sensor::{SensorState, SensorValue, SensorValueType};
+use self::siren::{SirenState, SirenTurnOn};
 use self::text::{TextSetValue, TextState};
 use self::valve::ValveState;
 
@@ -108,6 +110,8 @@ impl EntityKind {
             Self::Switch => Some(ServiceName::SwitchTurnOn),
             Self::Fan if on => Some(ServiceName::FanTurnOff),
             Self::Fan => Some(ServiceName::FanTurnOn),
+            Self::Siren if on => Some(ServiceName::SirenTurnOff),
+            Self::Siren => Some(ServiceName::SirenTurnOn),
             Self::Sensor
             | Self::BinarySensor
             | Self::Number
@@ -148,9 +152,11 @@ impl Capabilities {
     /// The shape of this entity's primary value, or `None` when it has none (a button).
     pub fn primary_shape(&self) -> Option<ValueShape> {
         Some(match self {
-            Self::Light(_) | Self::Switch(_) | Self::BinarySensor(_) | Self::Fan(_) => {
-                ValueShape::Bool
-            }
+            Self::Light(_)
+            | Self::Switch(_)
+            | Self::BinarySensor(_)
+            | Self::Fan(_)
+            | Self::Siren(_) => ValueShape::Bool,
             Self::Number(_) => ValueShape::Number,
             Self::Select(_)
             | Self::Text(_)
@@ -226,6 +232,7 @@ impl Capabilities {
                 valve::supports_position(caps, data)
             }
             (Self::Valve(caps), Service::ValveStop) => valve::supports_stop(caps),
+            (Self::Siren(caps), Service::SirenTurnOn(data)) => siren::supports(caps, data),
             (Self::Lock(caps), Service::LockLock(data) | Service::LockUnlock(data)) => {
                 lock::supports(caps, data, false)
             }
@@ -252,6 +259,7 @@ impl State {
             Self::Switch(switch) => Typed::Bool(switch.on),
             Self::BinarySensor(sensor) => Typed::Bool(sensor.on),
             Self::Fan(fan) => Typed::Bool(fan.on),
+            Self::Siren(siren) => Typed::Bool(siren.on),
             Self::Number(number) => Typed::Number(number.value),
             Self::Select(select) => Typed::Text(select.option.clone()),
             Self::Text(text) => Typed::Text(text.value.clone()),
@@ -279,6 +287,7 @@ impl State {
             (EntityKind::Switch, _, Typed::Bool(on)) => {
                 State::Switch(switch::SwitchState { on: *on })
             }
+            (EntityKind::Siren, _, Typed::Bool(on)) => State::Siren(SirenState { on: *on }),
             (EntityKind::BinarySensor, _, Typed::Bool(on)) => {
                 State::BinarySensor(binary_sensor::BinarySensorState { on: *on })
             }
@@ -386,6 +395,8 @@ impl Service {
             ServiceName::FanOscillate => Service::FanOscillate(parse(name, data)?),
             ServiceName::FanSetDirection => Service::FanSetDirection(parse(name, data)?),
             ServiceName::FanSetPresetMode => Service::FanSetPresetMode(parse(name, data)?),
+            ServiceName::SirenTurnOn => Service::SirenTurnOn(parse(name, data)?),
+            ServiceName::SirenTurnOff => Service::SirenTurnOff,
             ServiceName::ValveOpen => Service::ValveOpen,
             ServiceName::ValveClose => Service::ValveClose,
             ServiceName::ValveStop => Service::ValveStop,
@@ -435,6 +446,9 @@ impl Service {
                 serde_json::to_value(data).ok()?
             }
             Self::FanSetPercentage(data) => serde_json::to_value(data).ok()?,
+            Self::SirenTurnOn(data) if *data != SirenTurnOn::default() => {
+                serde_json::to_value(data).ok()?
+            }
             Self::FanOscillate(data) => serde_json::to_value(data).ok()?,
             Self::FanSetDirection(data) => serde_json::to_value(data).ok()?,
             Self::FanSetPresetMode(data) => serde_json::to_value(data).ok()?,
@@ -456,6 +470,7 @@ impl Service {
         match self {
             Self::LightTurnOn(data) => data.validate(),
             Self::NumberSetValue(data) => data.validate(),
+            Self::SirenTurnOn(data) => data.validate(),
             _ => Ok(()),
         }
     }
@@ -470,7 +485,8 @@ impl Service {
             Self::NumberSetValue(data) => Some(Typed::Number(data.value)),
             Self::SelectSelectOption(data) => Some(Typed::Text(data.option.clone())),
             Self::TextSetValue(data) => Some(Typed::Text(data.value.clone())),
-            Self::FanTurnOn(_) => Some(Typed::Bool(true)),
+            Self::FanTurnOn(_) | Self::SirenTurnOn(_) => Some(Typed::Bool(true)),
+            Self::SirenTurnOff => Some(Typed::Bool(false)),
             Self::FanTurnOff => Some(Typed::Bool(false)),
             Self::FanSetPercentage(data) => Some(Typed::Bool(data.percentage > 0)),
             Self::FanOscillate(_) | Self::FanSetDirection(_) | Self::FanSetPresetMode(_) => None,
@@ -547,6 +563,7 @@ impl ServiceName {
                 | Self::FanSetDirection
                 | Self::FanSetPresetMode
                 | Self::ValveSetPosition
+                | Self::SirenTurnOn
         )
     }
 }

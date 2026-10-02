@@ -14,6 +14,7 @@ use crate::kinds::lock::LockCapabilities;
 use crate::kinds::number::NumberCapabilities;
 use crate::kinds::select::SelectCapabilities;
 use crate::kinds::sensor::SensorCapabilities;
+use crate::kinds::siren::SirenCapabilities;
 use crate::kinds::switch::SwitchCapabilities;
 use crate::kinds::text::TextCapabilities;
 use crate::kinds::valve::ValveCapabilities;
@@ -197,6 +198,7 @@ pub enum Capabilities {
     Lock(LockCapabilities),
     Fan(FanCapabilities),
     Valve(ValveCapabilities),
+    Siren(SirenCapabilities),
 }
 
 impl Capabilities {
@@ -215,6 +217,7 @@ impl Capabilities {
             Self::Lock(_) => EntityKind::Lock,
             Self::Fan(_) => EntityKind::Fan,
             Self::Valve(_) => EntityKind::Valve,
+            Self::Siren(_) => EntityKind::Siren,
         }
     }
 
@@ -231,6 +234,7 @@ impl Capabilities {
             Self::Text(text) => text.validate(),
             Self::Event(event) => event.validate(),
             Self::Fan(fan) => fan.validate(),
+            Self::Siren(siren) => siren.validate(),
             _ => Ok(()),
         }
     }

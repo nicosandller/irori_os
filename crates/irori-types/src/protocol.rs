@@ -16,6 +16,7 @@ use crate::kinds::light::LightTurnOn;
 use crate::kinds::lock::LockCode;
 use crate::kinds::number::NumberSetValue;
 use crate::kinds::select::SelectOption;
+use crate::kinds::siren::SirenTurnOn;
 use crate::kinds::text::TextSetValue;
 use crate::{
     Attributes, Capabilities, Context, ContextId, EntityCategory, EntityKind, InvariantError, Name,
@@ -400,6 +401,8 @@ pub enum Service {
     ValveClose,
     ValveStop,
     ValveSetPosition(SetPosition),
+    SirenTurnOn(SirenTurnOn),
+    SirenTurnOff,
 }
 
 impl Service {
@@ -431,6 +434,8 @@ impl Service {
             Self::ValveClose => ServiceName::ValveClose,
             Self::ValveStop => ServiceName::ValveStop,
             Self::ValveSetPosition(_) => ServiceName::ValveSetPosition,
+            Self::SirenTurnOn(_) => ServiceName::SirenTurnOn,
+            Self::SirenTurnOff => ServiceName::SirenTurnOff,
         }
     }
 }
@@ -490,6 +495,10 @@ pub enum ServiceName {
     ValveStop,
     #[serde(rename = "valve.set_position")]
     ValveSetPosition,
+    #[serde(rename = "siren.turn_on")]
+    SirenTurnOn,
+    #[serde(rename = "siren.turn_off")]
+    SirenTurnOff,
 }
 
 impl ServiceName {
@@ -520,6 +529,8 @@ impl ServiceName {
         Self::ValveClose,
         Self::ValveStop,
         Self::ValveSetPosition,
+        Self::SirenTurnOn,
+        Self::SirenTurnOff,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -550,6 +561,8 @@ impl ServiceName {
             Self::ValveClose => "valve.close",
             Self::ValveStop => "valve.stop",
             Self::ValveSetPosition => "valve.set_position",
+            Self::SirenTurnOn => "siren.turn_on",
+            Self::SirenTurnOff => "siren.turn_off",
         }
     }
 
@@ -577,6 +590,7 @@ impl ServiceName {
             Self::ValveOpen | Self::ValveClose | Self::ValveStop | Self::ValveSetPosition => {
                 EntityKind::Valve
             }
+            Self::SirenTurnOn | Self::SirenTurnOff => EntityKind::Siren,
         }
     }
 }
@@ -680,6 +694,7 @@ impl JsonSchema for ServiceCall {
         let fan_oscillate = generator.subschema_for::<FanOscillate>();
         let fan_direction = generator.subschema_for::<FanSetDirection>();
         let fan_preset = generator.subschema_for::<FanPresetMode>();
+        let siren_turn_on = generator.subschema_for::<SirenTurnOn>();
         // Per service: the shape of `data`.
         let rules: Vec<_> = ServiceName::ALL
             .iter()
@@ -701,6 +716,7 @@ impl JsonSchema for ServiceCall {
                     ServiceName::FanOscillate => fan_oscillate.clone(),
                     ServiceName::FanSetDirection => fan_direction.clone(),
                     ServiceName::FanSetPresetMode => fan_preset.clone(),
+                    ServiceName::SirenTurnOn => siren_turn_on.clone(),
                     _ => no_data.clone(),
                 };
                 json_schema!({

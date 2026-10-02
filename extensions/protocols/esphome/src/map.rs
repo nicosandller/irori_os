@@ -11,11 +11,11 @@ use esphome_client::types::{
     ListEntitiesBinarySensorResponse, ListEntitiesButtonResponse, ListEntitiesCoverResponse,
     ListEntitiesEventResponse, ListEntitiesFanResponse, ListEntitiesLightResponse,
     ListEntitiesLockResponse, ListEntitiesNumberResponse, ListEntitiesSelectResponse,
-    ListEntitiesSensorResponse, ListEntitiesSwitchResponse, ListEntitiesTextResponse,
-    ListEntitiesTextSensorResponse, ListEntitiesValveResponse, LockCommandRequest,
-    LockStateResponse, NumberStateResponse, SelectStateResponse, SensorStateResponse,
-    SwitchStateResponse, TextSensorStateResponse, TextStateResponse, ValveCommandRequest,
-    ValveStateResponse,
+    ListEntitiesSensorResponse, ListEntitiesSirenResponse, ListEntitiesSwitchResponse,
+    ListEntitiesTextResponse, ListEntitiesTextSensorResponse, ListEntitiesValveResponse,
+    LockCommandRequest, LockStateResponse, NumberStateResponse, SelectStateResponse,
+    SensorStateResponse, SirenCommandRequest, SwitchStateResponse, TextSensorStateResponse,
+    TextStateResponse, ValveCommandRequest, ValveStateResponse,
 };
 use irori_protocol::ProtocolError;
 use irori_protocol::types::{
@@ -26,9 +26,9 @@ use irori_protocol::types::{
     FanState, LightCapabilities, LightState, LockCapabilities, LockCode, LockState, LockStatus,
     Name, NumberCapabilities, NumberMode, NumberState, ObjectId, OpenState, SelectCapabilities,
     SelectState, SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType,
-    Service, State, StateClass, SwitchCapabilities, SwitchClass, SwitchState, TextCapabilities,
-    TextMode, TextState, UniqueId, Unmodeled, ValveCapabilities, ValveClass, ValveState,
-    percentage_to_speed, speed_to_percentage,
+    Service, SirenCapabilities, State, StateClass, SwitchCapabilities, SwitchClass, SwitchState,
+    TextCapabilities, TextMode, TextState, UniqueId, Unmodeled, ValveCapabilities, ValveClass,
+    ValveState, percentage_to_speed, speed_to_percentage,
 };
 
 /// ESPHome's `ColorMode` enum (api.proto). The values are a bit mask of what a mode carries.
@@ -458,6 +458,48 @@ pub fn valve_command(key: u32, service: &Service) -> ValveCommandRequest {
     request
 }
 
+/// ESPHome's `siren`.
+pub fn siren(
+    device: &UniqueId,
+    entity: &ListEntitiesSirenResponse,
+) -> Result<EntityDescription, ProtocolError> {
+    Ok(EntityDescription {
+        unique_id: entity_id(device, EntityKind::Siren, entity.key)?,
+        name: Some(Name::try_from(entity.name.as_str())?),
+        device_unique_id: Some(device.clone()),
+        suggested_object_id: None,
+        capabilities: Capabilities::Siren(SirenCapabilities {
+            tones: entity.tones.clone(),
+            volume: entity.supports_volume,
+            duration: entity.supports_duration,
+        }),
+        entity_category: category(entity.entity_category),
+    })
+}
+
+pub fn siren_command(key: u32, service: &Service) -> SirenCommandRequest {
+    let mut request = SirenCommandRequest {
+        key,
+        has_state: true,
+        ..Default::default()
+    };
+    if let Service::SirenTurnOn(data) = service {
+        request.state = true;
+        if let Some(tone) = &data.tone {
+            (request.has_tone, request.tone) = (true, tone.clone());
+        }
+        if let Some(volume) = data.volume_level {
+            #[allow(clippy::cast_possible_truncation)]
+            let volume = volume as f32;
+            (request.has_volume, request.volume) = (true, volume);
+        }
+        if let Some(duration) = data.duration {
+            (request.has_duration, request.duration) = (true, duration);
+        }
+    }
+    request
+}
+
 /// ESPHome's `lock`.
 pub fn lock(
     device: &UniqueId,
@@ -672,7 +714,6 @@ pub fn unmodeled(device: &UniqueId, message: &EspHomeMessage) -> Option<Unmodele
         M::ListEntitiesInfraredResponse(e) => ("infrared", &e.name),
         M::ListEntitiesMediaPlayerResponse(e) => ("media_player", &e.name),
         M::ListEntitiesRadioFrequencyResponse(e) => ("radio_frequency", &e.name),
-        M::ListEntitiesSirenResponse(e) => ("siren", &e.name),
         M::ListEntitiesTimeResponse(e) => ("time", &e.name),
         M::ListEntitiesUpdateResponse(e) => ("update", &e.name),
         M::ListEntitiesWaterHeaterResponse(e) => ("water_heater", &e.name),
@@ -977,6 +1018,24 @@ mod tests {
         assert!(request.has_speed_level && request.speed_level == 3);
         let off = fan_command(5, &Service::FanTurnOff, Some(&known));
         assert!(off.has_state && !off.state);
+    }
+
+    #[test]
+    fn a_siren_is_told_its_tone_volume_and_duration() {
+        let request = siren_command(
+            7,
+            &Service::SirenTurnOn(irori_protocol::types::SirenTurnOn {
+                tone: Some("alarm".into()),
+                volume_level: Some(0.5),
+                duration: Some(30),
+            }),
+        );
+        assert!(request.has_state && request.state);
+        assert_eq!(request.tone, "alarm");
+        assert!(request.has_volume && (request.volume - 0.5).abs() < f32::EPSILON);
+        assert_eq!((request.has_duration, request.duration), (true, 30));
+        let off = siren_command(7, &Service::SirenTurnOff);
+        assert!(off.has_state && !off.state && !off.has_tone);
     }
 
     #[test]

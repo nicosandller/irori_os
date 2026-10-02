@@ -554,6 +554,45 @@
           "data"
         ]
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "siren.turn_on"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/SirenTurnOn"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "siren.turn_off"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -915,7 +954,9 @@
         "valve.open",
         "valve.close",
         "valve.stop",
-        "valve.set_position"
+        "valve.set_position",
+        "siren.turn_on",
+        "siren.turn_off"
       ]
     },
     "SetPosition": {
@@ -951,6 +992,40 @@
       "required": [
         "tilt"
       ]
+    },
+    "SirenTurnOn": {
+      "description": "Data for `siren.turn_on`: all optional.",
+      "type": "object",
+      "properties": {
+        "duration": {
+          "description": "How long to sound, in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "maximum": 86400,
+          "minimum": 1
+        },
+        "tone": {
+          "description": "One of its `tones`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "volume_level": {
+          "description": "0.0 (silent) to 1.0 (loudest).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
     },
     "TextSetValue": {
       "description": "Data for `text.set_value`.",

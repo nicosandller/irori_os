@@ -973,6 +973,9 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
             devices::lock_words(lock.state).to_owned()
         }
         (Capabilities::Fan(_), Some(State::Fan(fan))) => devices::fan_words(fan),
+        (Capabilities::Siren(_), Some(State::Siren(siren))) => {
+            if siren.on { "Sounding" } else { "Quiet" }.to_owned()
+        }
         (Capabilities::Valve(_), Some(State::Valve(valve))) => {
             devices::cover_words(&irori_types::CoverState {
                 state: valve.state,

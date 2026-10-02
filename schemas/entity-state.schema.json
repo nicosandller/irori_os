@@ -347,6 +347,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^siren\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "siren"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -468,6 +491,10 @@
         {
           "maxLength": 70,
           "pattern": "^valve\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^siren\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -946,6 +973,23 @@
           "required": [
             "kind",
             "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "siren"
+            },
+            "on": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
           ]
         }
       ]

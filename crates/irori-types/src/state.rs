@@ -15,6 +15,7 @@ use crate::kinds::lock::LockState;
 use crate::kinds::number::NumberState;
 use crate::kinds::select::SelectState;
 use crate::kinds::sensor::SensorState;
+use crate::kinds::siren::SirenState;
 use crate::kinds::switch::SwitchState;
 use crate::kinds::text::TextState;
 use crate::kinds::valve::ValveState;
@@ -144,6 +145,7 @@ pub enum State {
     Lock(LockState),
     Fan(FanState),
     Valve(ValveState),
+    Siren(SirenState),
 }
 
 impl State {
@@ -162,7 +164,8 @@ impl State {
             | Self::Select(_)
             | Self::Text(_)
             | Self::Event(_)
-            | Self::Lock(_) => Ok(()),
+            | Self::Lock(_)
+            | Self::Siren(_) => Ok(()),
         }
     }
 
@@ -180,6 +183,7 @@ impl State {
             Self::Lock(_) => EntityKind::Lock,
             Self::Fan(_) => EntityKind::Fan,
             Self::Valve(_) => EntityKind::Valve,
+            Self::Siren(_) => EntityKind::Siren,
         }
     }
 }
