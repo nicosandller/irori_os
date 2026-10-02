@@ -1,0 +1,772 @@
+//! The demo's devices that do more than switch and measure: a front door lock that locks itself
+//! again, a doorbell with a chime and a screen, a living room blind that takes a moment to move,
+//! a ceiling fan, and a water shut-off with a leak alarm. Between them, one of every kind beyond
+//! lights, switches and sensors.
+
+use tokio::time::{Duration, Instant};
+
+use irori_protocol::types::{
+    ButtonCapabilities, Capabilities, CoverCapabilities, CoverClass, CoverState, EntityCategory,
+    EntityDescription, EventCapabilities, EventClass, EventState, FanCapabilities, FanDirection,
+    FanState, LockCapabilities, LockState, LockStatus, Name, NumberCapabilities, NumberMode,
+    NumberState, OpenState, SelectCapabilities, SelectState, SensorClass, Service,
+    SirenCapabilities, SirenState, State, TextCapabilities, TextMode, TextState, ValveCapabilities,
+    ValveClass, ValveState, percentage_to_speed, speed_to_percentage,
+};
+use irori_protocol::{ProtocolContext, ProtocolError};
+
+use crate::{device, id};
+
+const LOCK: &str = "front-door-lock";
+const LOCK_LOCK: &str = "front-door-lock-lock";
+const LOCK_AUTO: &str = "front-door-lock-auto-lock";
+const DOORBELL: &str = "doorbell";
+const DOORBELL_RING: &str = "doorbell-ring";
+const DOORBELL_CHIME: &str = "doorbell-chime";
+const DOORBELL_MESSAGE: &str = "doorbell-message";
+const BLIND: &str = "blind";
+const BLIND_COVER: &str = "blind-cover";
+const BLIND_CALIBRATE: &str = "blind-calibrate";
+const FAN: &str = "ceiling-fan";
+const FAN_FAN: &str = "ceiling-fan-fan";
+const SHUTOFF: &str = "water-shutoff";
+const SHUTOFF_VALVE: &str = "water-shutoff-valve";
+const SHUTOFF_ALARM: &str = "water-shutoff-alarm";
+
+const CHIMES: [&str; 3] = ["Ding-dong", "Westminster", "Off"];
+const FAN_SPEEDS: u16 = 3;
+/// How far the blind moves between readings, in percent.
+const BLIND_STEP: u8 = 20;
+/// Someone at the door every two and a half minutes, ringing twice six seconds apart: two of
+/// the same event in a row, each one its own occurrence.
+const RING_EVERY: u64 = 150;
+const RINGS: [u64; 2] = [60, 66];
+
+/// What the devices are doing.
+#[derive(Debug, Clone)]
+pub(crate) struct Gadgets {
+    lock: LockStatus,
+    /// Seconds after unlocking before it locks again; 0 never.
+    auto_lock: f64,
+    unlocked_at: Option<Instant>,
+    chime: String,
+    message: String,
+    blind: Blind,
+    fan: FanState,
+    valve: OpenState,
+    alarm: bool,
+    alarm_until: Option<Instant>,
+}
+
+/// Where the blind is, and where it's going.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Blind {
+    position: u8,
+    target: u8,
+    tilt: u8,
+    /// Where to go once it gets there: calibrating runs it down, then back up.
+    then: Option<u8>,
+}
+
+impl Blind {
+    fn state(&self) -> CoverState {
+        let state = match self.target.cmp(&self.position) {
+            std::cmp::Ordering::Greater => OpenState::Opening,
+            std::cmp::Ordering::Less => OpenState::Closing,
+            std::cmp::Ordering::Equal if self.position == 0 => OpenState::Closed,
+            std::cmp::Ordering::Equal => OpenState::Open,
+        };
+        CoverState {
+            state,
+            position: Some(self.position),
+            tilt: Some(self.tilt),
+        }
+    }
+
+    fn go(&mut self, target: u8) {
+        self.target = target;
+        self.then = None;
+    }
+
+    /// One reading's worth of moving. Whether it moved.
+    fn step(&mut self) -> bool {
+        if self.position == self.target {
+            match self.then.take() {
+                Some(next) => self.target = next,
+                None => return false,
+            }
+        }
+        self.position = if self.target > self.position {
+            self.position.saturating_add(BLIND_STEP).min(self.target)
+        } else {
+            self.position.saturating_sub(BLIND_STEP).max(self.target)
+        };
+        true
+    }
+}
+
+impl Gadgets {
+    pub(crate) fn new() -> Self {
+        Self {
+            lock: LockStatus::Locked,
+            auto_lock: 30.0,
+            unlocked_at: None,
+            chime: CHIMES[0].into(),
+            message: "Parcels by the bench, please".into(),
+            blind: Blind {
+                position: 100,
+                target: 100,
+                tilt: 50,
+                then: None,
+            },
+            fan: FanState {
+                on: false,
+                percentage: Some(speed_to_percentage(1, FAN_SPEEDS)),
+                oscillating: None,
+                direction: Some(FanDirection::Forward),
+                preset_mode: None,
+            },
+            valve: OpenState::Open,
+            alarm: false,
+            alarm_until: None,
+        }
+    }
+
+    /// Every state worth reporting at the start. The doorbell has rung for nobody yet, and the
+    /// calibrate button has no state.
+    pub(crate) fn states(&self) -> Vec<(&'static str, State)> {
+        vec![
+            (LOCK_LOCK, State::Lock(LockState { state: self.lock })),
+            (
+                LOCK_AUTO,
+                State::Number(NumberState {
+                    value: self.auto_lock,
+                }),
+            ),
+            (
+                DOORBELL_CHIME,
+                State::Select(SelectState {
+                    option: self.chime.clone(),
+                }),
+            ),
+            (
+                DOORBELL_MESSAGE,
+                State::Text(TextState {
+                    value: self.message.clone(),
+                }),
+            ),
+            (BLIND_COVER, State::Cover(self.blind.state())),
+            (FAN_FAN, State::Fan(self.fan.clone())),
+            (
+                SHUTOFF_VALVE,
+                State::Valve(ValveState {
+                    state: self.valve,
+                    position: None,
+                }),
+            ),
+            (SHUTOFF_ALARM, State::Siren(SirenState { on: self.alarm })),
+        ]
+    }
+
+    fn state_of(&self, entity: &'static str) -> (&'static str, State) {
+        self.states()
+            .into_iter()
+            .find(|(unique_id, _)| *unique_id == entity)
+            .expect("every entity that takes a call has a state")
+    }
+
+    /// Carries out a call to one of these devices: the entity whose state it changed, and that
+    /// state. `None` when the call is for another of the demo's devices.
+    pub(crate) fn call(
+        &mut self,
+        unique_id: &str,
+        service: &Service,
+        now: Instant,
+    ) -> Option<Result<(&'static str, State), String>> {
+        let changed = match (unique_id, service) {
+            (LOCK_LOCK, Service::LockLock(_)) => {
+                self.lock = LockStatus::Locked;
+                self.unlocked_at = None;
+                LOCK_LOCK
+            }
+            (LOCK_LOCK, Service::LockUnlock(_)) => {
+                self.lock = LockStatus::Unlocked;
+                self.unlocked_at = Some(now);
+                LOCK_LOCK
+            }
+            (LOCK_AUTO, Service::NumberSetValue(data)) => {
+                self.auto_lock = data.value;
+                LOCK_AUTO
+            }
+            (DOORBELL_CHIME, Service::SelectSelectOption(data)) => {
+                self.chime.clone_from(&data.option);
+                DOORBELL_CHIME
+            }
+            (DOORBELL_MESSAGE, Service::TextSetValue(data)) => {
+                self.message.clone_from(&data.value);
+                DOORBELL_MESSAGE
+            }
+            (BLIND_COVER, Service::CoverOpen) => {
+                self.blind.go(100);
+                BLIND_COVER
+            }
+            (BLIND_COVER, Service::CoverClose) => {
+                self.blind.go(0);
+                BLIND_COVER
+            }
+            (BLIND_COVER, Service::CoverStop) => {
+                self.blind.go(self.blind.position);
+                BLIND_COVER
+            }
+            (BLIND_COVER, Service::CoverSetPosition(data)) => {
+                self.blind.go(data.position);
+                BLIND_COVER
+            }
+            (BLIND_COVER, Service::CoverSetTilt(data)) => {
+                self.blind.tilt = data.tilt;
+                BLIND_COVER
+            }
+            // Down to the bottom to find it, then back to where it was.
+            (BLIND_CALIBRATE, Service::ButtonPress) => {
+                let back = self.blind.target;
+                self.blind.go(0);
+                self.blind.then = Some(back);
+                BLIND_COVER
+            }
+            (FAN_FAN, Service::FanTurnOn(data)) => {
+                self.fan.on = true;
+                if let Some(percentage) = data.percentage {
+                    self.fan_speed(percentage);
+                }
+                if data.preset_mode.is_some() {
+                    self.fan.preset_mode.clone_from(&data.preset_mode);
+                }
+                FAN_FAN
+            }
+            (FAN_FAN, Service::FanTurnOff) => {
+                self.fan.on = false;
+                FAN_FAN
+            }
+            (FAN_FAN, Service::FanSetPercentage(data)) => {
+                if data.percentage == 0 {
+                    self.fan.on = false;
+                } else {
+                    self.fan.on = true;
+                    self.fan_speed(data.percentage);
+                }
+                FAN_FAN
+            }
+            (FAN_FAN, Service::FanSetDirection(data)) => {
+                self.fan.direction = Some(data.direction);
+                FAN_FAN
+            }
+            (FAN_FAN, Service::FanSetPresetMode(data)) => {
+                self.fan.on = true;
+                self.fan.preset_mode = Some(data.preset_mode.clone());
+                FAN_FAN
+            }
+            (SHUTOFF_VALVE, Service::ValveOpen) => {
+                self.valve = OpenState::Open;
+                SHUTOFF_VALVE
+            }
+            (SHUTOFF_VALVE, Service::ValveClose) => {
+                self.valve = OpenState::Closed;
+                SHUTOFF_VALVE
+            }
+            (SHUTOFF_ALARM, Service::SirenTurnOn(data)) => {
+                self.alarm = true;
+                self.alarm_until = data
+                    .duration
+                    .map(|secs| now + Duration::from_secs(secs.into()));
+                SHUTOFF_ALARM
+            }
+            (SHUTOFF_ALARM, Service::SirenTurnOff) => {
+                self.alarm = false;
+                self.alarm_until = None;
+                SHUTOFF_ALARM
+            }
+            (
+                LOCK_LOCK | LOCK_AUTO | DOORBELL_RING | DOORBELL_CHIME | DOORBELL_MESSAGE
+                | BLIND_COVER | BLIND_CALIBRATE | FAN_FAN | SHUTOFF_VALVE | SHUTOFF_ALARM,
+                _,
+            ) => {
+                return Some(Err(format!(
+                    "the demo's `{unique_id}` can't {}",
+                    service.name()
+                )));
+            }
+            _ => return None,
+        };
+        Some(Ok(self.state_of(changed)))
+    }
+
+    /// A speed set by percentage lands on one of its three, as a real fan's would, and leaves
+    /// any preset mode.
+    fn fan_speed(&mut self, percentage: u8) {
+        let speed = percentage_to_speed(percentage, FAN_SPEEDS).max(1);
+        self.fan.percentage = Some(speed_to_percentage(speed, FAN_SPEEDS));
+        self.fan.preset_mode = None;
+    }
+
+    /// What changed on its own by `now`: the blind moving, the lock locking itself again, the
+    /// alarm running out.
+    pub(crate) fn tick(&mut self, now: Instant) -> Vec<(&'static str, State)> {
+        let mut changed = Vec::new();
+        if self.blind.step() {
+            changed.push(BLIND_COVER);
+        }
+        if let Some(since) = self.unlocked_at
+            && self.auto_lock > 0.0
+            && now >= since + Duration::from_secs_f64(self.auto_lock)
+        {
+            self.lock = LockStatus::Locked;
+            self.unlocked_at = None;
+            changed.push(LOCK_LOCK);
+        }
+        if self.alarm_until.is_some_and(|until| now >= until) {
+            self.alarm = false;
+            self.alarm_until = None;
+            changed.push(SHUTOFF_ALARM);
+        }
+        changed.into_iter().map(|e| self.state_of(e)).collect()
+    }
+}
+
+/// The doorbell's rings after `from` seconds and by `to`, one report each.
+pub(crate) fn rings(from: u64, to: u64) -> Vec<(&'static str, State)> {
+    let count = RINGS
+        .iter()
+        .map(|at| {
+            // Rings at `at`, `at + RING_EVERY`, …: how many fall in (from, to].
+            let by = |secs: u64| (secs + RING_EVERY - at) / RING_EVERY;
+            by(to) - by(from)
+        })
+        .sum::<u64>();
+    (0..count)
+        .map(|_| {
+            (
+                DOORBELL_RING,
+                State::Event(EventState {
+                    event_type: "ring".into(),
+                }),
+            )
+        })
+        .collect()
+}
+
+pub(crate) async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
+    let entity = |unique_id: &str,
+                  name: Option<&str>,
+                  device: &str,
+                  capabilities: Capabilities,
+                  entity_category: Option<EntityCategory>|
+     -> Result<EntityDescription, ProtocolError> {
+        Ok(EntityDescription {
+            unique_id: id(unique_id)?,
+            name: name.map(Name::try_from).transpose()?,
+            device_unique_id: Some(id(device)?),
+            suggested_object_id: None,
+            capabilities,
+            entity_category,
+        })
+    };
+
+    ctx.describe_device(device(
+        LOCK,
+        "Demo front door lock",
+        "Virtual smart lock",
+        "Hallway",
+    )?)
+    .await?;
+    ctx.describe_entity(entity(
+        LOCK_LOCK,
+        None,
+        LOCK,
+        Capabilities::Lock(LockCapabilities::default()),
+        None,
+    )?)
+    .await?;
+    ctx.describe_entity(entity(
+        LOCK_AUTO,
+        Some("Lock again after"),
+        LOCK,
+        Capabilities::Number(NumberCapabilities {
+            min: 0.0,
+            max: 300.0,
+            step: 10.0,
+            unit: Some("s".into()),
+            device_class: Some(SensorClass::Duration),
+            mode: NumberMode::Box,
+        }),
+        Some(EntityCategory::Config),
+    )?)
+    .await?;
+
+    ctx.describe_device(device(
+        DOORBELL,
+        "Demo doorbell",
+        "Virtual doorbell",
+        "Hallway",
+    )?)
+    .await?;
+    ctx.describe_entity(entity(
+        DOORBELL_RING,
+        Some("Ring"),
+        DOORBELL,
+        Capabilities::Event(EventCapabilities {
+            event_types: vec!["ring".into()],
+            device_class: Some(EventClass::Doorbell),
+        }),
+        None,
+    )?)
+    .await?;
+    ctx.describe_entity(entity(
+        DOORBELL_MESSAGE,
+        Some("Screen message"),
+        DOORBELL,
+        Capabilities::Text(TextCapabilities {
+            min_length: 0,
+            max_length: 40,
+            pattern: None,
+            mode: TextMode::Text,
+        }),
+        None,
+    )?)
+    .await?;
+    ctx.describe_entity(entity(
+        DOORBELL_CHIME,
+        Some("Chime"),
+        DOORBELL,
+        Capabilities::Select(SelectCapabilities {
+            options: CHIMES.iter().map(|&c| c.into()).collect(),
+        }),
+        Some(EntityCategory::Config),
+    )?)
+    .await?;
+
+    ctx.describe_device(device(
+        BLIND,
+        "Demo living room blind",
+        "Virtual venetian blind",
+        "Living room",
+    )?)
+    .await?;
+    ctx.describe_entity(entity(
+        BLIND_COVER,
+        None,
+        BLIND,
+        Capabilities::Cover(CoverCapabilities {
+            device_class: Some(CoverClass::Blind),
+            position: true,
+            tilt: true,
+            stop: true,
+        }),
+        None,
+    )?)
+    .await?;
+    ctx.describe_entity(entity(
+        BLIND_CALIBRATE,
+        Some("Calibrate"),
+        BLIND,
+        Capabilities::Button(ButtonCapabilities::default()),
+        Some(EntityCategory::Config),
+    )?)
+    .await?;
+
+    ctx.describe_device(device(
+        FAN,
+        "Demo ceiling fan",
+        "Virtual ceiling fan",
+        "Living room",
+    )?)
+    .await?;
+    ctx.describe_entity(entity(
+        FAN_FAN,
+        None,
+        FAN,
+        Capabilities::Fan(FanCapabilities {
+            speed_count: FAN_SPEEDS,
+            oscillate: false,
+            direction: true,
+            preset_modes: vec!["breeze".into()],
+        }),
+        None,
+    )?)
+    .await?;
+
+    ctx.describe_device(device(
+        SHUTOFF,
+        "Demo water shut-off",
+        "Virtual water valve with leak alarm",
+        "Kitchen",
+    )?)
+    .await?;
+    ctx.describe_entity(entity(
+        SHUTOFF_VALVE,
+        Some("Main water"),
+        SHUTOFF,
+        Capabilities::Valve(ValveCapabilities {
+            device_class: Some(ValveClass::Water),
+            position: false,
+            stop: false,
+        }),
+        None,
+    )?)
+    .await?;
+    ctx.describe_entity(entity(
+        SHUTOFF_ALARM,
+        Some("Leak alarm"),
+        SHUTOFF,
+        Capabilities::Siren(SirenCapabilities {
+            tones: vec!["beep".into(), "alarm".into()],
+            volume: true,
+            duration: true,
+        }),
+        None,
+    )?)
+    .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use irori_protocol::types::{
+        FanPercentage, LockCode, NumberSetValue, SetPosition, SirenTurnOn,
+    };
+
+    use super::*;
+
+    /// What each entity is, as `describe` says.
+    fn capabilities() -> Vec<(&'static str, Capabilities)> {
+        vec![
+            (LOCK_LOCK, Capabilities::Lock(LockCapabilities::default())),
+            (
+                LOCK_AUTO,
+                Capabilities::Number(NumberCapabilities {
+                    min: 0.0,
+                    max: 300.0,
+                    step: 10.0,
+                    unit: None,
+                    device_class: None,
+                    mode: NumberMode::Box,
+                }),
+            ),
+            (
+                DOORBELL_CHIME,
+                Capabilities::Select(SelectCapabilities {
+                    options: CHIMES.iter().map(|&c| c.into()).collect(),
+                }),
+            ),
+            (
+                DOORBELL_MESSAGE,
+                Capabilities::Text(TextCapabilities {
+                    min_length: 0,
+                    max_length: 40,
+                    pattern: None,
+                    mode: TextMode::Text,
+                }),
+            ),
+            (
+                BLIND_COVER,
+                Capabilities::Cover(CoverCapabilities {
+                    device_class: None,
+                    position: true,
+                    tilt: true,
+                    stop: true,
+                }),
+            ),
+            (
+                FAN_FAN,
+                Capabilities::Fan(FanCapabilities {
+                    speed_count: FAN_SPEEDS,
+                    oscillate: false,
+                    direction: true,
+                    preset_modes: vec!["breeze".into()],
+                }),
+            ),
+            (
+                SHUTOFF_VALVE,
+                Capabilities::Valve(ValveCapabilities::default()),
+            ),
+            (
+                SHUTOFF_ALARM,
+                Capabilities::Siren(SirenCapabilities {
+                    tones: vec!["beep".into(), "alarm".into()],
+                    volume: true,
+                    duration: true,
+                }),
+            ),
+            (
+                DOORBELL_RING,
+                Capabilities::Event(EventCapabilities {
+                    event_types: vec!["ring".into()],
+                    device_class: None,
+                }),
+            ),
+        ]
+    }
+
+    /// Irori refuses a report that doesn't fit what the entity said it is; here that would only
+    /// be a line in the log, so every state is checked against its entity.
+    fn assert_fits(states: &[(&'static str, State)]) {
+        let caps = capabilities();
+        for (unique_id, state) in states {
+            let (_, cap) = caps
+                .iter()
+                .find(|(id, _)| id == unique_id)
+                .expect("described");
+            assert_eq!(cap.fits(state), Ok(()), "{unique_id}");
+        }
+    }
+
+    #[test]
+    fn every_state_fits_its_entity() {
+        let now = Instant::now();
+        let mut gadgets = Gadgets::new();
+        assert_fits(&gadgets.states());
+        for (unique_id, service) in [
+            (
+                BLIND_COVER,
+                Service::CoverSetPosition(SetPosition { position: 35 }),
+            ),
+            (BLIND_CALIBRATE, Service::ButtonPress),
+            (
+                FAN_FAN,
+                Service::FanSetPercentage(FanPercentage { percentage: 50 }),
+            ),
+            (
+                SHUTOFF_ALARM,
+                Service::SirenTurnOn(SirenTurnOn {
+                    duration: Some(10),
+                    ..SirenTurnOn::default()
+                }),
+            ),
+        ] {
+            let Some(Ok(state)) = gadgets.call(unique_id, &service, now) else {
+                panic!("{unique_id} takes {}", service.name());
+            };
+            assert_fits(&[state]);
+        }
+        for second in 0..20 {
+            assert_fits(&gadgets.tick(now + Duration::from_secs(second)));
+        }
+        assert_fits(&rings(0, 1000));
+    }
+
+    #[test]
+    fn the_lock_locks_itself_again_unless_told_not_to() {
+        let now = Instant::now();
+        let mut gadgets = Gadgets::new();
+        let unlock = Service::LockUnlock(LockCode::default());
+        gadgets.call(LOCK_LOCK, &unlock, now);
+        assert!(gadgets.tick(now + Duration::from_secs(29)).is_empty());
+        let relocked = gadgets.tick(now + Duration::from_secs(30));
+        assert_eq!(
+            relocked,
+            vec![(
+                LOCK_LOCK,
+                State::Lock(LockState {
+                    state: LockStatus::Locked
+                })
+            )]
+        );
+
+        let never = Service::NumberSetValue(NumberSetValue { value: 0.0 });
+        gadgets.call(LOCK_AUTO, &never, now);
+        gadgets.call(LOCK_LOCK, &unlock, now);
+        assert!(gadgets.tick(now + Duration::from_secs(3600)).is_empty());
+        assert_eq!(gadgets.lock, LockStatus::Unlocked);
+    }
+
+    #[test]
+    fn the_blind_takes_a_moment_and_calibrating_comes_back() {
+        let now = Instant::now();
+        let mut gadgets = Gadgets::new();
+        let Some(Ok((_, State::Cover(moving)))) = gadgets.call(
+            BLIND_COVER,
+            &Service::CoverSetPosition(SetPosition { position: 40 }),
+            now,
+        ) else {
+            panic!("the blind moves");
+        };
+        assert_eq!(
+            (moving.state, moving.position),
+            (OpenState::Closing, Some(100))
+        );
+        for _ in 0..3 {
+            gadgets.tick(now);
+        }
+        assert_eq!(gadgets.blind.state().state, OpenState::Open);
+        assert_eq!(gadgets.blind.position, 40);
+        assert!(gadgets.tick(now).is_empty(), "still once it's there");
+
+        gadgets.call(BLIND_CALIBRATE, &Service::ButtonPress, now);
+        let mut lowest = 100;
+        for _ in 0..10 {
+            gadgets.tick(now);
+            lowest = lowest.min(gadgets.blind.position);
+        }
+        assert_eq!((lowest, gadgets.blind.position), (0, 40));
+    }
+
+    #[test]
+    fn the_fan_lands_on_one_of_its_speeds() {
+        let now = Instant::now();
+        let mut gadgets = Gadgets::new();
+        gadgets.call(
+            FAN_FAN,
+            &Service::FanSetPercentage(FanPercentage { percentage: 50 }),
+            now,
+        );
+        assert!(gadgets.fan.on);
+        assert_eq!(gadgets.fan.percentage, Some(66));
+        gadgets.call(
+            FAN_FAN,
+            &Service::FanSetPercentage(FanPercentage { percentage: 0 }),
+            now,
+        );
+        assert!(!gadgets.fan.on);
+        assert_eq!(gadgets.fan.percentage, Some(66), "comes back on at it");
+    }
+
+    #[test]
+    fn the_alarm_stops_when_its_time_is_up() {
+        let now = Instant::now();
+        let mut gadgets = Gadgets::new();
+        let sound = Service::SirenTurnOn(SirenTurnOn {
+            tone: Some("beep".into()),
+            volume_level: None,
+            duration: Some(5),
+        });
+        gadgets.call(SHUTOFF_ALARM, &sound, now);
+        assert!(gadgets.alarm);
+        assert!(gadgets.tick(now + Duration::from_secs(4)).is_empty());
+        assert_eq!(gadgets.tick(now + Duration::from_secs(5)).len(), 1);
+        assert!(!gadgets.alarm);
+    }
+
+    #[test]
+    fn the_doorbell_rings_twice_every_so_often_and_not_at_the_start() {
+        assert!(rings(0, 0).is_empty());
+        assert!(rings(0, 59).is_empty());
+        assert_eq!(rings(58, 60).len(), 1);
+        assert_eq!(rings(58, 66).len(), 2);
+        assert_eq!(rings(0, 300).len(), 4);
+        assert!(rings(66, 209).is_empty());
+        assert_eq!(rings(209, 211).len(), 1);
+    }
+
+    #[test]
+    fn calls_for_the_other_demo_devices_pass_through() {
+        let mut gadgets = Gadgets::new();
+        assert!(
+            gadgets
+                .call("lamp-light", &Service::SwitchTurnOn, Instant::now())
+                .is_none()
+        );
+        assert!(matches!(
+            gadgets.call(BLIND_COVER, &Service::ValveOpen, Instant::now()),
+            Some(Err(_))
+        ));
+    }
+}

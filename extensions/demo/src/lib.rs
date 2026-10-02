@@ -4,11 +4,15 @@
 //! Study: a dimmable lamp and a plug that measures what it powers. Hallway: a ceiling light, two
 //! presence sensors, an illuminance sensor, and an mmWave with occupancy and target distance.
 //! Living room: an air monitor, a TV, and a window; and the front and back doors. A scene for
-//! designing automations.
+//! designing automations. Around the house: a front door lock that locks itself again, a
+//! doorbell, a blind that takes a moment to move, a ceiling fan, and a water shut-off with a leak
+//! alarm (`gadgets`).
 //!
 //! Everything moves the way it would over a day, but a day lasts a minute: dark until dawn, the
 //! house waking up, everyone out, back in the evening. Batteries run down from full to empty over
 //! that minute, then start again.
+
+mod gadgets;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -158,6 +162,7 @@ const CONTACTS: [(&str, &str, &str, &str, BinarySensorClass, &str); 3] = [
 const DAY_SECS: u64 = 60;
 async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
     describe(&ctx).await?;
+    gadgets::describe(&ctx).await?;
 
     let mut lamp = LightState {
         on: false,
@@ -189,6 +194,10 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
         })
         .collect();
     let mut plug_on = false;
+    let mut gadgets = gadgets::Gadgets::new();
+    for (entity, state) in gadgets.states() {
+        ctx.report_state(report(entity, Some(state), None)?);
+    }
     ctx.report_state(report(LAMP_LIGHT, Some(State::Light(lamp.clone())), None)?);
     ctx.report_state(report(
         HALL_LIGHT_ENTITY,
@@ -214,7 +223,12 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
                 };
                 let call = &incoming.call;
                 let caused_by = Some(call.context.id.clone());
-                let result = match (call.unique_id.as_str(), &call.service) {
+                let around = gadgets.call(
+                    call.unique_id.as_str(),
+                    &call.service,
+                    tokio::time::Instant::now(),
+                );
+                let result = if let Some(result) = around { result } else { match (call.unique_id.as_str(), &call.service) {
                     (LAMP_LIGHT, Service::LightTurnOn(data)) => {
                         apply_light(&mut lamp, Some(data));
                         Ok((LAMP_LIGHT, State::Light(lamp.clone())))
@@ -245,7 +259,7 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
                         call.unique_id,
                         call.service.name()
                     )),
-                };
+                } };
                 match result {
                     Ok((entity, state)) => {
                         incoming.reply(Ok(()));
@@ -258,6 +272,15 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
                 let secs = tick * config.sensor_interval_secs;
                 let hour = (secs % DAY_SECS) as f64 / DAY_SECS as f64 * 24.0;
                 report_sensors(&ctx, hour, secs, plug_on)?;
+                for (entity, state) in gadgets.tick(tokio::time::Instant::now()) {
+                    ctx.report_state(report(entity, Some(state), None)?);
+                }
+                if tick > 0 {
+                    let since = secs - config.sensor_interval_secs;
+                    for (entity, state) in gadgets::rings(since, secs) {
+                        ctx.report_state(report(entity, Some(state), None)?);
+                    }
+                }
                 tick += 1;
             }
         }
