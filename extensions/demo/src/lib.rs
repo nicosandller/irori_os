@@ -3,10 +3,11 @@
 //!
 //! Study: a dimmable lamp and a plug that measures what it powers. Hallway: a ceiling light, two
 //! presence sensors, an illuminance sensor, and an mmWave with occupancy and target distance.
-//! Living room: an air monitor, a TV, and a window; and the front and back doors. A scene for
+//! Living room: an air monitor and a window; and the front and back doors. A scene for
 //! designing automations. Around the house: a front door lock that locks itself again, a
-//! doorbell, a blind that takes a moment to move, a ceiling fan, a water shut-off with a leak
-//! alarm, a thermostat, a hot water tank and a dehumidifier (`gadgets`).
+//! doorbell, a blind that takes a moment to move, a ceiling fan, a TV on a one-minute script,
+//! a water shut-off with a leak alarm, a thermostat, a hot water tank and a dehumidifier
+//! (`gadgets`).
 //!
 //! Everything moves the way it would over a day, but a day lasts a minute: dark until dawn, the
 //! house waking up, everyone out, back in the evening. Batteries run down from full to empty over
@@ -99,7 +100,8 @@ const AIR_BATTERY: &str = "air-monitor-battery";
 const AIR_TEMPERATURE: &str = "air-monitor-temperature";
 const AIR_HUMIDITY: &str = "air-monitor-humidity";
 const AIR_CO2: &str = "air-monitor-co2";
-const TV: &str = "tv";
+/// The text sensor the TV used to be. Removed on start so a home that already has it doesn't keep
+/// both: describing an entity again never changes its kind. The player itself is a gadget.
 const TV_STATE: &str = "tv-state";
 const TV_AREA: &str = "tv-area-mmwave-sensor";
 const TV_AREA_OCCUPANCY: &str = "tv-area-mmwave-sensor-occupancy";
@@ -274,7 +276,9 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
                 report_sensors(&ctx, hour, secs, plug_on)?;
                 let room = living_temperature(hour);
                 let damp = humidity(hour);
-                for (entity, state) in gadgets.tick(tokio::time::Instant::now(), room, damp) {
+                for (entity, state) in
+                    gadgets.tick(tokio::time::Instant::now(), room, damp, secs)
+                {
                     ctx.report_state(report(entity, Some(state), None)?);
                 }
                 if tick > 0 {
@@ -381,13 +385,6 @@ fn report_sensors(
         ctx.report_state(flag(contact, open(contact, hour))?);
         ctx.report_state(number(battery_id, charge)?);
     }
-    ctx.report_state(report(
-        TV_STATE,
-        Some(State::Sensor(SensorState {
-            value: SensorValue::Text(tv(secs).into()),
-        })),
-        None,
-    )?);
     ctx.report_state(flag(TV_AREA_OCCUPANCY, watching(secs))?);
     Ok(())
 }
@@ -520,16 +517,6 @@ fn open(contact: &str, hour: f64) -> bool {
         _ => during(hour, &[(12.0, 14.5), (20.5, 21.4)]),
     }
 }
-
-/// The TV, a state a minute rather than following the day, so a trigger waiting for it to play
-/// for 20 seconds gets to fire: a show, a pause, more of it, the menu, then off.
-fn tv(secs: u64) -> &'static str {
-    const SHOW: [&str; 5] = ["playing", "paused", "playing", "idle", "off"];
-    SHOW[usize::try_from(secs / TV_SECS).unwrap_or(0) % SHOW.len()]
-}
-
-/// How long the TV stays in each state.
-const TV_SECS: u64 = 60;
 
 fn round2(n: f64) -> f64 {
     (n * 100.0).round() / 100.0
@@ -779,24 +766,9 @@ async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
         .await?;
     }
 
-    ctx.describe_device(device(TV, "Demo TV", "Virtual TV", "Living room")?)
-        .await?;
-    ctx.describe_entity(EntityDescription {
-        unique_id: id(TV_STATE)?,
-        name: Some(Name::try_from("State")?),
-        device_unique_id: Some(id(TV)?),
-        suggested_object_id: None,
-        // off, idle, playing or paused.
-        capabilities: Capabilities::Sensor(SensorCapabilities {
-            value_type: SensorValueType::Text,
-            device_class: None,
-            unit: None,
-            state_class: None,
-            options: Vec::new(),
-        }),
-        entity_category: None,
-    })
-    .await?;
+    // Missing on a fresh home; a home that already has the old sensor drops it.
+    // The player is described with the other gadgets, after this.
+    let _ = ctx.remove_entity(id(TV_STATE)?).await;
     Ok(())
 }
 
@@ -971,9 +943,16 @@ mod tests {
         }
         // The TV changes once a minute, through every state; the sofa every 3.5 minutes.
         for state in ["off", "idle", "playing", "paused"] {
-            assert!((0..300).any(|s| tv(s) == state), "{state}");
+            assert!((0..300).any(|s| gadgets::tv::word(s) == state), "{state}");
         }
-        assert_eq!((tv(0), tv(59), tv(60)), ("playing", "playing", "paused"));
+        assert_eq!(
+            (
+                gadgets::tv::word(0),
+                gadgets::tv::word(59),
+                gadgets::tv::word(60)
+            ),
+            ("playing", "playing", "paused")
+        );
         assert!(watching(0) && watching(209) && !watching(210) && watching(420));
         let co2s: Vec<f64> = hours.iter().map(|h| co2(*h)).collect();
         assert!(co2s.iter().any(|c| *c > 900.0) && co2s.iter().any(|c| *c < 500.0));

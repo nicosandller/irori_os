@@ -1,0 +1,19 @@
+[extension]
+id = "cast"
+name = "Google Cast"
+version = "0.1.0"
+irori = ">=0.7.0"
+description = "Google Cast receivers on the local network: Chromecast, speakers, and speaker groups."
+config_schema = "config.schema.json"
+icon = "icon.svg"
+
+[[contributes.protocol]]
+iot_class = "local_push"
+entity_kinds = ["media_player"]
+run = { command = "bin/irori-ext-cast" }
+
+# Discovery (mDNS) and the Cast socket (TLS port 8009) stay on the local network. There is no
+# Google account and no cloud call. A known host is checked when the settings are read: only a
+# local address is accepted.
+[permissions]
+lan = true

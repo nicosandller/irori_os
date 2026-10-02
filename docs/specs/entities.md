@@ -126,9 +126,10 @@ motion sensor are three entities.
 | `entity_category` | `config` \| `diagnostic` | no | One of the device's settings (a motion sensor's timeout) or diagnostics (its signal strength) rather than what it's for. Pages list these after the device's other entities. Home Assistant's names; set by the protocol |
 
 **Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`,
-`event`, `cover`, `lock`, `fan`, `valve`, `siren`, `climate`, `water_heater`, `humidifier`.
+`event`, `cover`, `lock`, `fan`, `valve`, `siren`, `climate`, `water_heater`, `humidifier`,
+`media_player`.
 **Next, in likely order:** `update`, `alarm_control_panel`, `date`, `time`, `datetime`,
-`media_player`, `vacuum`, `lawn_mower`, `remote`, `scene`, `device_tracker`. Adding a kind is an
+`vacuum`, `lawn_mower`, `remote`, `scene`, `device_tracker`. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
 
@@ -188,6 +189,8 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | `fan` | `speed_count` | integer | `0` | How many real speeds it has; 0 when its speed can't be set. Speeds go over the wire as percentages, as in Home Assistant |
 | | `oscillate`, `direction` | bool | `false` | Can swing; can turn the other way |
 | | `preset_modes` | up to 256 distinct strings | `[]` | Modes beyond its speed, e.g. `auto`, `sleep` |
+| `media_player` | `device_class` | `tv` \| `speaker` \| `receiver` | absent | |
+| | `volume`, `mute`, `seek`, `play_media`, `queue`, `turn_on`, `turn_off` | bool | `false` | Volume is 0–100. `seek` is a position in the current media. `play_media` plays a URL or another id. `queue` skips tracks. There is no toggle |
 
 **Temperatures are °C** in climate entities and water heaters, in their capabilities, state and services alike.
 A protocol converts from what a device speaks (°F, K) on the way in and back on the way out
@@ -297,6 +300,11 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | | `oscillating` | bool | no | When it can swing |
 | | `direction` | `forward` \| `reverse` | no | When it can turn either way |
 | | `preset_mode` | string | no | One of its `preset_modes`, when it's in one |
+| `media_player` | `state` | `off` \| `idle` \| `playing` \| `paused` \| `buffering` \| `standby` | yes | Its typed value, for rules (`text()`). `standby` is only when the device says the screen is standing by |
+| | `volume` | integer 0–100 | no | Only when it said volume can be set |
+| | `muted` | bool | no | Only when it can be muted |
+| | `title`, `artist`, `album`, `app`, `content_type` | string, 1–255 characters, not blank | no | What's playing, and which app |
+| | `duration`, `position` | seconds, finite, 0 or more | no | `position` only when it can seek. A position more than a second past `duration` is refused |
 
 **An `event`'s every report is something happening.** Two `double` presses of a remote in a row
 are two changes: each moves `last_changed` and is a change for anything watching, even though the

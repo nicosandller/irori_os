@@ -1,0 +1,17 @@
+{
+  "id": "media_player.living_room",
+  "protocol": "cast",
+  "unique_id": "aabbccddeeff00112233445566778899",
+  "name": "Living room",
+  "capabilities": {
+    "kind": "media_player",
+    "device_class": "tv",
+    "volume": true,
+    "mute": true,
+    "seek": true,
+    "play_media": true,
+    "queue": true,
+    "turn_on": true,
+    "turn_off": true
+  }
+}

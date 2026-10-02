@@ -13,6 +13,7 @@ use crate::kinds::fan::FanCapabilities;
 use crate::kinds::humidifier::HumidifierCapabilities;
 use crate::kinds::light::LightCapabilities;
 use crate::kinds::lock::LockCapabilities;
+use crate::kinds::media_player::MediaPlayerCapabilities;
 use crate::kinds::number::NumberCapabilities;
 use crate::kinds::select::SelectCapabilities;
 use crate::kinds::sensor::SensorCapabilities;
@@ -205,6 +206,7 @@ pub enum Capabilities {
     Climate(ClimateCapabilities),
     WaterHeater(WaterHeaterCapabilities),
     Humidifier(HumidifierCapabilities),
+    MediaPlayer(MediaPlayerCapabilities),
 }
 
 impl Capabilities {
@@ -227,6 +229,7 @@ impl Capabilities {
             Self::Climate(_) => EntityKind::Climate,
             Self::WaterHeater(_) => EntityKind::WaterHeater,
             Self::Humidifier(_) => EntityKind::Humidifier,
+            Self::MediaPlayer(_) => EntityKind::MediaPlayer,
         }
     }
 

@@ -71,6 +71,7 @@ COPY crates/irori-rules crates/irori-rules
 COPY crates/irori-flow-types crates/irori-flow-types
 COPY crates/irori-protocol crates/irori-protocol
 COPY crates/irori-ha-discovery crates/irori-ha-discovery
+COPY extensions/protocols/cast extensions/protocols/cast
 COPY extensions/protocols/mqtt extensions/protocols/mqtt
 COPY extensions/protocols/zigbee extensions/protocols/zigbee
 COPY crates/irori-ui crates/irori-ui
@@ -149,15 +150,18 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
        else \
          cargo build --locked --release \
            -p irori \
-           -p irori-protocol-demo -p irori-protocol-esphome -p irori-protocol-mqtt \
-           -p irori-protocol-zigbee -p irori-engine-automations \
+           -p irori-protocol-demo -p irori-protocol-esphome -p irori-protocol-cast \
+           -p irori-protocol-mqtt -p irori-protocol-zigbee -p irori-engine-automations \
          && cp /target/release/irori /irori \
-         && mkdir -p /official/demo/bin /official/esphome/bin /official/mqtt/bin /official/zigbee/bin \
-           /official/automations/bin \
+         && mkdir -p /official/demo/bin /official/esphome/bin /official/cast/bin /official/mqtt/bin \
+           /official/zigbee/bin /official/automations/bin \
          && cp extensions/demo/irori-extension.toml extensions/demo/icon.svg /official/demo/ \
          && cp /target/release/irori-ext-demo /official/demo/bin/ \
          && cp extensions/protocols/esphome/irori-extension.toml extensions/protocols/esphome/icon.svg /official/esphome/ \
          && cp /target/release/irori-ext-esphome /official/esphome/bin/ \
+         && cp extensions/protocols/cast/irori-extension.toml extensions/protocols/cast/config.schema.json \
+              extensions/protocols/cast/icon.svg /official/cast/ \
+         && cp /target/release/irori-ext-cast /official/cast/bin/ \
          && cp extensions/protocols/mqtt/irori-extension.toml extensions/protocols/mqtt/config.schema.json /official/mqtt/ \
          && cp /target/release/irori-ext-mqtt /official/mqtt/bin/ \
          && cp extensions/protocols/zigbee/irori-extension.toml extensions/protocols/zigbee/config.schema.json /official/zigbee/ \

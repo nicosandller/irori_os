@@ -27,6 +27,7 @@ const BANNED_IN_PROTOCOL_FREE: &[&str] = &[
     "irori-protocol-*",
     "irori-assist",
     // Protocol libraries belong in protocols.
+    "mdns-sd",
     "rumqttc",
     "rumqttd",
     "paho-mqtt",

@@ -49,6 +49,7 @@ impl Gadget for WaterShutoff {
                     position: false,
                     stop: false,
                 }),
+                suggested_object_id: None,
                 category: None,
             },
             Entity {
@@ -59,6 +60,7 @@ impl Gadget for WaterShutoff {
                     volume: true,
                     duration: true,
                 }),
+                suggested_object_id: None,
                 category: None,
             },
         ]
@@ -109,7 +111,7 @@ impl Gadget for WaterShutoff {
     }
 
     /// The alarm stops when its time is up.
-    fn tick(&mut self, now: Instant, _: Room) -> Vec<&'static str> {
+    fn tick(&mut self, now: Instant, _: Room, _: u64) -> Vec<&'static str> {
         if self.alarm_until.is_some_and(|until| now >= until) {
             self.alarm = false;
             self.alarm_until = None;
@@ -143,9 +145,13 @@ mod tests {
         shutoff.call(SHUTOFF_ALARM, &sound, now).expect("sounds");
         assert!(shutoff.alarm);
         super::super::assert_fits(&shutoff, &shutoff.states());
-        assert!(shutoff.tick(now + Duration::from_secs(4), ROOM).is_empty());
+        assert!(
+            shutoff
+                .tick(now + Duration::from_secs(4), ROOM, 0)
+                .is_empty()
+        );
         assert_eq!(
-            shutoff.tick(now + Duration::from_secs(5), ROOM),
+            shutoff.tick(now + Duration::from_secs(5), ROOM, 0),
             vec![SHUTOFF_ALARM]
         );
         assert!(!shutoff.alarm);

@@ -9,6 +9,7 @@ mod fan;
 mod humidifier;
 mod light;
 mod lock;
+mod media_player;
 mod number;
 mod opening;
 mod select;
@@ -22,6 +23,7 @@ pub(crate) use self::climate::climate_words;
 pub(crate) use self::fan::fan_words;
 pub(crate) use self::humidifier::humidifier_words;
 pub(crate) use self::lock::lock_words;
+pub(crate) use self::media_player::media_player_words;
 pub(crate) use self::number::unit_of;
 pub(crate) use self::opening::opening_words;
 pub(crate) use self::sensor::wording;
@@ -109,6 +111,9 @@ pub(super) fn control(
         }
         Capabilities::Humidifier(capabilities) => {
             humidifier::humidifier_control(entity, capabilities, value, offline, controls)
+        }
+        Capabilities::MediaPlayer(capabilities) => {
+            media_player::media_player_control(entity, capabilities, value, offline, controls)
         }
     }
 }

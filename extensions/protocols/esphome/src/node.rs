@@ -841,6 +841,7 @@ async fn command(
         }
         // The core only sends these to an entity of the kind, and ESPHome has none.
         EntityKind::Humidifier
+        | EntityKind::MediaPlayer
         | EntityKind::Sensor
         | EntityKind::BinarySensor
         | EntityKind::Event => Err(format!("ESPHome has no {kind} services")),

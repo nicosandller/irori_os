@@ -19,8 +19,8 @@ mod controls;
 
 use self::controls::control;
 pub(crate) use self::controls::{
-    climate_words, fan_words, fill, humidifier_words, lock_words, number, opening_words, unit_of,
-    water_heater_words, wording,
+    climate_words, fan_words, fill, humidifier_words, lock_words, media_player_words, number,
+    opening_words, unit_of, water_heater_words, wording,
 };
 
 /// What a row needs to show a command on its way and what came back from it.
@@ -1628,7 +1628,8 @@ fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyVi
         | Capabilities::Siren(_)
         | Capabilities::Climate(_)
         | Capabilities::WaterHeater(_)
-        | Capabilities::Humidifier(_) => view! {
+        | Capabilities::Humidifier(_)
+        | Capabilities::MediaPlayer(_) => view! {
             {control}
             <button
                 type="button"

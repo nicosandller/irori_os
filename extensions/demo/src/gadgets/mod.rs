@@ -1,8 +1,8 @@
 //! The demo's devices that do more than switch and measure: a front door lock that locks itself
 //! again, a doorbell with a chime and a screen, a living room blind that takes a moment to move,
-//! a ceiling fan, a water shut-off with a leak alarm, a thermostat, a hot water tank and a
-//! dehumidifier. Between them, one of every kind beyond lights, switches and sensors. Each is a
-//! [`Gadget`] in its own module.
+//! a ceiling fan, a TV on a one-minute script, a water shut-off with a leak alarm, a thermostat,
+//! a hot water tank and a dehumidifier. Between them, one of every kind beyond lights, switches
+//! and sensors. Each is a [`Gadget`] in its own module.
 
 mod blind;
 mod dehumidifier;
@@ -12,11 +12,12 @@ mod lock;
 mod shutoff;
 mod tank;
 mod thermostat;
+pub(super) mod tv;
 
 use tokio::time::Instant;
 
 use irori_protocol::types::{
-    Capabilities, EntityCategory, EntityDescription, Name, Service, State,
+    Capabilities, EntityCategory, EntityDescription, Name, ObjectId, Service, State,
 };
 use irori_protocol::{ProtocolContext, ProtocolError};
 
@@ -44,8 +45,9 @@ trait Gadget: Send {
         now: Instant,
     ) -> Result<&'static str, String>;
 
-    /// The entities that changed on their own by `now`, in `room`.
-    fn tick(&mut self, now: Instant, room: Room) -> Vec<&'static str>;
+    /// The entities that changed on their own by `now`, in `room`. `secs` is how long the demo
+    /// has been running on the sensor clock; the TV's script counts that.
+    fn tick(&mut self, now: Instant, room: Room, secs: u64) -> Vec<&'static str>;
 }
 
 /// A device, as `crate::device` takes it.
@@ -61,6 +63,8 @@ struct Entity {
     unique_id: &'static str,
     /// `None` when it's the device's main feature and takes the device's name.
     name: Option<&'static str>,
+    /// Set when the entity should keep a stable id, such as `demo_tv`.
+    suggested_object_id: Option<&'static str>,
     capabilities: Capabilities,
     category: Option<EntityCategory>,
 }
@@ -87,6 +91,7 @@ impl Gadgets {
                 Box::new(doorbell::Doorbell::new()),
                 Box::new(blind::Blind::new()),
                 Box::new(fan::CeilingFan::new()),
+                Box::new(tv::DemoTv::new()),
                 Box::new(thermostat::Thermostat::new()),
                 Box::new(dehumidifier::Dehumidifier::new()),
                 Box::new(tank::HotWaterTank::new()),
@@ -130,6 +135,7 @@ impl Gadgets {
         now: Instant,
         temperature: f64,
         humidity: f64,
+        secs: u64,
     ) -> Vec<(&'static str, State)> {
         let room = Room {
             temperature,
@@ -137,7 +143,7 @@ impl Gadgets {
         };
         let mut changed = Vec::new();
         for gadget in &mut self.all {
-            for entity in gadget.tick(now, room) {
+            for entity in gadget.tick(now, room, secs) {
                 changed.push(state_of(gadget.as_ref(), entity));
             }
         }
@@ -174,7 +180,10 @@ pub(crate) async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError>
                 unique_id: id(entity.unique_id)?,
                 name: entity.name.map(Name::try_from).transpose()?,
                 device_unique_id: Some(id(unique_id)?),
-                suggested_object_id: None,
+                suggested_object_id: entity
+                    .suggested_object_id
+                    .map(ObjectId::try_from)
+                    .transpose()?,
                 capabilities: entity.capabilities,
                 entity_category: entity.category,
             })
@@ -223,7 +232,7 @@ mod tests {
         };
         fits(&gadgets, &gadgets.states());
         for second in 0..20 {
-            let ticked = gadgets.tick(now + Duration::from_secs(second), 20.0, 50.0);
+            let ticked = gadgets.tick(now + Duration::from_secs(second), 20.0, 50.0, second);
             fits(&gadgets, &ticked);
         }
         fits(&gadgets, &rings(0, 1000));

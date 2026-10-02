@@ -456,7 +456,7 @@ fn entities(_board: &Board) -> Vec<EspHomeMessage> {
             supported_features: 1 | 2 | 4 | 16,
             ..Default::default()
         }),
-        // Irori has no media player kind yet: this shows as "Also has…".
+        // ESPHome doesn't map media_player, so this stays under "Also has…".
         EspHomeMessage::ListEntitiesMediaPlayerResponse(ListEntitiesMediaPlayerResponse {
             key: SPEAKER_KEY,
             name: "Speaker".to_owned(),

@@ -66,6 +66,7 @@ impl Gadget for HotWaterTank {
             unique_id: TANK_HEATER,
             name: None,
             capabilities: Capabilities::WaterHeater(capabilities()),
+            suggested_object_id: None,
             category: None,
         }]
     }
@@ -101,7 +102,7 @@ impl Gadget for HotWaterTank {
 
     /// A degree a reading towards its target while it's on; a little lost to the room while it
     /// isn't.
-    fn tick(&mut self, _: Instant, _: Room) -> Vec<&'static str> {
+    fn tick(&mut self, _: Instant, _: Room, _: u64) -> Vec<&'static str> {
         let water = self.state.current_temperature.unwrap_or(50.0);
         let heated = match (self.state.operation_mode, self.state.target_temperature) {
             (WaterHeaterMode::Off, _) => (water - 0.2).max(20.0),
@@ -130,12 +131,12 @@ mod tests {
     fn the_tank_heats_while_on_and_cools_while_off() {
         let now = Instant::now();
         let mut tank = HotWaterTank::new();
-        tank.tick(now, ROOM);
+        tank.tick(now, ROOM, 0);
         assert_eq!(tank.state.current_temperature, Some(51.0));
         tank.call(TANK_HEATER, &Service::WaterHeaterTurnOff, now)
             .expect("switches off");
         super::super::assert_fits(&tank, &tank.states());
-        tank.tick(now, ROOM);
+        tank.tick(now, ROOM, 0);
         super::super::assert_fits(&tank, &tank.states());
         assert_eq!(tank.state.current_temperature, Some(50.8));
         tank.call(TANK_HEATER, &Service::WaterHeaterTurnOn, now)

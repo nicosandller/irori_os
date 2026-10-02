@@ -285,6 +285,13 @@ manifest's `entity_kinds`.
 | `humidifier.turn_on`, `humidifier.turn_off` | none | `humidifier.toggle` resolves to one or the other |
 | `humidifier.set_humidity` | `humidity` %, within its `humidity` range | |
 | `humidifier.set_mode` | `mode`, one of its `modes` | |
+| `media_player.turn_on`, `media_player.turn_off` | none | Each needs its flag. There is no `media_player.toggle` |
+| `media_player.volume_set` | `volume` 0–100 | Needs `volume` |
+| `media_player.volume_mute` | `mute` bool | Needs `mute` |
+| `media_player.media_play`, `media_player.media_pause`, `media_player.media_play_pause`, `media_player.media_stop` | none | Always available. `media_play_pause` plays when it isn't playing and pauses when it is; the protocol decides from the last status |
+| `media_player.media_seek` | `position`, seconds, finite, 0 or more | Needs `seek` |
+| `media_player.media_next_track`, `media_player.media_previous_track` | none | Need `queue` |
+| `media_player.play_media` | `content_type` and `content_id`, each non-blank (up to 255 and 2048 characters); optional `title`, `artist`, `album`, `image_url` | Needs `play_media` |
 | `fan.turn_on` | `percentage` 1–100, `preset_mode`; both optional | `fan.toggle` resolves to `turn_on` or `turn_off` |
 | `fan.turn_off` | none | |
 | `fan.set_percentage` | `percentage` 0–100 | 0 turns it off. Needs a `speed_count` |

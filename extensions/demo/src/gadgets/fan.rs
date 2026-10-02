@@ -59,6 +59,7 @@ impl Gadget for CeilingFan {
                 direction: true,
                 preset_modes: vec!["breeze".into()],
             }),
+            suggested_object_id: None,
             category: None,
         }]
     }
@@ -102,7 +103,7 @@ impl Gadget for CeilingFan {
         Ok(FAN_FAN)
     }
 
-    fn tick(&mut self, _: Instant, _: Room) -> Vec<&'static str> {
+    fn tick(&mut self, _: Instant, _: Room, _: u64) -> Vec<&'static str> {
         Vec::new()
     }
 }

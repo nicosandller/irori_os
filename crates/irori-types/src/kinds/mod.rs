@@ -17,6 +17,7 @@ pub(crate) mod fan;
 pub(crate) mod humidifier;
 pub(crate) mod light;
 pub(crate) mod lock;
+pub(crate) mod media_player;
 pub(crate) mod number;
 pub(crate) mod opening;
 pub(crate) mod select;
@@ -31,6 +32,7 @@ use crate::{Capabilities, EntityKind, InvariantError, Service, ServiceName, Stat
 
 use self::climate::CLIMATE_MODES;
 use self::lock::LOCK_STATES;
+use self::media_player::PLAYBACK_STATES;
 use self::opening::{OPEN_STATES, OpeningCommand};
 use self::sensor::SensorValueType;
 use self::water_heater::OPERATION_MODES;
@@ -165,7 +167,8 @@ impl EntityKind {
             | Self::Select
             | Self::Text
             | Self::Button
-            | Self::Event => return None,
+            | Self::Event
+            | Self::MediaPlayer => return None,
         })
     }
 }
@@ -188,7 +191,8 @@ impl Capabilities {
             | Self::Valve(_)
             | Self::Lock(_)
             | Self::Climate(_)
-            | Self::WaterHeater(_) => ValueShape::Text,
+            | Self::WaterHeater(_)
+            | Self::MediaPlayer(_) => ValueShape::Text,
             Self::Sensor(sensor) => match sensor.value_type {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
@@ -208,6 +212,7 @@ impl Capabilities {
             Self::Lock(_) => Some(&LOCK_STATES),
             Self::Climate(_) => Some(&CLIMATE_MODES),
             Self::WaterHeater(_) => Some(&OPERATION_MODES),
+            Self::MediaPlayer(_) => Some(&PLAYBACK_STATES),
             _ => None,
         }
     }
@@ -233,6 +238,7 @@ impl Capabilities {
             (Self::Climate(caps), State::Climate(state)) => climate::fits(caps, state),
             (Self::Humidifier(caps), State::Humidifier(state)) => humidifier::fits(caps, state),
             (Self::WaterHeater(caps), State::WaterHeater(state)) => water_heater::fits(caps, state),
+            (Self::MediaPlayer(caps), State::MediaPlayer(state)) => media_player::fits(caps, state),
             _ => Ok(()),
         }
     }
@@ -261,6 +267,7 @@ impl Capabilities {
             Self::Climate(caps) => climate::supports_service(caps, service),
             Self::WaterHeater(caps) => water_heater::supports_service(caps, service),
             Self::Humidifier(caps) => humidifier::supports_service(caps, service),
+            Self::MediaPlayer(caps) => media_player::supports_service(caps, service),
             Self::Switch(_) | Self::Button(_) => Ok(()),
             Self::Sensor(_) | Self::BinarySensor(_) | Self::Event(_) => Ok(()),
         }
@@ -277,6 +284,7 @@ impl State {
             Self::Fan(state) => fan::primary(state),
             Self::Siren(state) => siren::primary(state),
             Self::Humidifier(state) => humidifier::primary(state),
+            Self::MediaPlayer(state) => media_player::primary(state),
             Self::Number(state) => number::primary(state),
             Self::Select(state) => select::primary(state),
             Self::Text(state) => text::primary(state),
@@ -326,6 +334,9 @@ impl State {
             EntityKind::Humidifier => {
                 State::Humidifier(humidifier::with_primary(previous!(Humidifier), value)?)
             }
+            EntityKind::MediaPlayer => {
+                State::MediaPlayer(media_player::with_primary(previous!(MediaPlayer), value)?)
+            }
             EntityKind::Button => return None,
         })
     }
@@ -356,6 +367,7 @@ impl Service {
             EntityKind::Climate => climate::service(name, data),
             EntityKind::WaterHeater => water_heater::service(name, data),
             EntityKind::Humidifier => humidifier::service(name, data),
+            EntityKind::MediaPlayer => media_player::service(name, data),
             EntityKind::Sensor | EntityKind::BinarySensor | EntityKind::Event => {
                 Err(not_mine(name))
             }
@@ -381,6 +393,9 @@ impl Service {
             Self::SirenTurnOn(data) => data.validate(),
             Self::ClimateSetTemperature(data) => data.validate(),
             Self::ClimateSetHumidity(data) | Self::HumidifierSetHumidity(data) => data.validate(),
+            Self::MediaPlayerVolumeSet(data) => data.validate(),
+            Self::MediaPlayerSeek(data) => data.validate(),
+            Self::MediaPlayerPlayMedia(data) => data.validate(),
             _ => Ok(()),
         }
     }
@@ -403,6 +418,7 @@ impl Service {
             EntityKind::Climate => climate::asks_for(self),
             EntityKind::WaterHeater => water_heater::asks_for(self),
             EntityKind::Humidifier => humidifier::asks_for(self),
+            EntityKind::MediaPlayer => media_player::asks_for(self),
             // A press leaves nothing for a toggle to go by.
             EntityKind::Button => None,
             EntityKind::Sensor | EntityKind::BinarySensor | EntityKind::Event => None,
@@ -438,6 +454,7 @@ impl ServiceName {
             EntityKind::Climate => climate::data_of(self),
             EntityKind::WaterHeater => water_heater::data_of(self),
             EntityKind::Humidifier => humidifier::data_of(self),
+            EntityKind::MediaPlayer => media_player::data_of(self),
             EntityKind::Sensor | EntityKind::BinarySensor | EntityKind::Event => Data::None,
         }
     }

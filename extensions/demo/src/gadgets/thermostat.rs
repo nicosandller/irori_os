@@ -85,6 +85,7 @@ impl Gadget for Thermostat {
             unique_id: THERMOSTAT_CLIMATE,
             name: None,
             capabilities: Capabilities::Climate(capabilities()),
+            suggested_object_id: None,
             category: None,
         }]
     }
@@ -131,7 +132,7 @@ impl Gadget for Thermostat {
     }
 
     /// Reads the room, and heats while it's below the target.
-    fn tick(&mut self, _: Instant, room: Room) -> Vec<&'static str> {
+    fn tick(&mut self, _: Instant, room: Room, _: u64) -> Vec<&'static str> {
         let before = self.state.clone();
         self.state.current_temperature = Some(room.temperature);
         self.state.hvac_action = Some(heating(&self.state, room.temperature));
@@ -160,13 +161,13 @@ mod tests {
     fn the_thermostat_heats_a_cold_room_and_comes_back_on_as_it_was() {
         let now = Instant::now();
         let mut thermostat = Thermostat::new();
-        thermostat.tick(now, room(19.0));
+        thermostat.tick(now, room(19.0), 0);
         super::super::assert_fits(&thermostat, &thermostat.states());
         assert_eq!(thermostat.state.hvac_action, Some(HvacAction::Heating));
-        thermostat.tick(now, room(22.0));
+        thermostat.tick(now, room(22.0), 0);
         assert_eq!(thermostat.state.hvac_action, Some(HvacAction::Idle));
         assert!(
-            thermostat.tick(now, room(22.0)).is_empty(),
+            thermostat.tick(now, room(22.0), 0).is_empty(),
             "nothing new to say"
         );
 

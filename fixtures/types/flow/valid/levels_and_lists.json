@@ -2,7 +2,7 @@
   "id": "tv_stopped_or_dusk",
   "name": "TV stopped or dusk",
   "nodes": {
-    "stopped": { "type": "trigger", "trigger": { "type": "state", "entity": "sensor.demo_tv_state", "to": ["paused", "idle", "off"], "for": "2s" } },
+    "stopped": { "type": "trigger", "trigger": { "type": "state", "entity": "media_player.demo_tv", "to": ["paused", "idle", "off"], "for": "2s" } },
     "got_dark": { "type": "trigger", "trigger": { "type": "state", "entity": "sensor.demo_luminosity_illuminance", "below": 600, "for": "30s" } },
     "on": { "type": "call", "service": "light.turn_on", "entity": "light.demo_tv_area_lights" }
   },

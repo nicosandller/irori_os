@@ -53,6 +53,7 @@ impl Gadget for Doorbell {
                     event_types: vec!["ring".into()],
                     device_class: Some(EventClass::Doorbell),
                 }),
+                suggested_object_id: None,
                 category: None,
             },
             Entity {
@@ -64,6 +65,7 @@ impl Gadget for Doorbell {
                     pattern: None,
                     mode: TextMode::Text,
                 }),
+                suggested_object_id: None,
                 category: None,
             },
             Entity {
@@ -72,6 +74,7 @@ impl Gadget for Doorbell {
                 capabilities: Capabilities::Select(SelectCapabilities {
                     options: CHIMES.iter().map(|&c| c.into()).collect(),
                 }),
+                suggested_object_id: None,
                 category: Some(EntityCategory::Config),
             },
         ]
@@ -115,7 +118,7 @@ impl Gadget for Doorbell {
     }
 
     /// Its rings come by the clock instead ([`rings`]).
-    fn tick(&mut self, _: Instant, _: Room) -> Vec<&'static str> {
+    fn tick(&mut self, _: Instant, _: Room, _: u64) -> Vec<&'static str> {
         Vec::new()
     }
 }

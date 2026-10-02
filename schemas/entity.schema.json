@@ -446,6 +446,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^media_player\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "media_player"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -1169,6 +1192,64 @@
             "kind",
             "humidity"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "device_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/MediaPlayerClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "media_player"
+            },
+            "mute": {
+              "description": "Can be muted.",
+              "type": "boolean",
+              "default": false
+            },
+            "play_media": {
+              "description": "Can be told to play a piece of media.",
+              "type": "boolean",
+              "default": false
+            },
+            "queue": {
+              "description": "Has a queue to skip through.",
+              "type": "boolean",
+              "default": false
+            },
+            "seek": {
+              "description": "Playback can jump to a position.",
+              "type": "boolean",
+              "default": false
+            },
+            "turn_off": {
+              "description": "Can be turned off.",
+              "type": "boolean",
+              "default": false
+            },
+            "turn_on": {
+              "description": "Can be turned on.",
+              "type": "boolean",
+              "default": false
+            },
+            "volume": {
+              "description": "Volume can be set, 0–100.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
@@ -1304,6 +1385,10 @@
         {
           "maxLength": 75,
           "pattern": "^humidifier\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 77,
+          "pattern": "^media_player\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -1376,6 +1461,15 @@
           "type": "string",
           "const": "auto"
         }
+      ]
+    },
+    "MediaPlayerClass": {
+      "description": "What kind of player it is.",
+      "type": "string",
+      "enum": [
+        "tv",
+        "speaker",
+        "receiver"
       ]
     },
     "Name": {
