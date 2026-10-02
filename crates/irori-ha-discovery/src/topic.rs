@@ -11,6 +11,19 @@ pub enum Component {
     Switch,
     Sensor,
     BinarySensor,
+    Number,
+    Select,
+    Text,
+    Button,
+    Event,
+    Cover,
+    Lock,
+    Fan,
+    Valve,
+    Siren,
+    Climate,
+    WaterHeater,
+    Humidifier,
 }
 
 impl Component {
@@ -20,6 +33,19 @@ impl Component {
             "switch" => Some(Self::Switch),
             "sensor" => Some(Self::Sensor),
             "binary_sensor" => Some(Self::BinarySensor),
+            "number" => Some(Self::Number),
+            "select" => Some(Self::Select),
+            "text" => Some(Self::Text),
+            "button" => Some(Self::Button),
+            "event" => Some(Self::Event),
+            "cover" => Some(Self::Cover),
+            "lock" => Some(Self::Lock),
+            "fan" => Some(Self::Fan),
+            "valve" => Some(Self::Valve),
+            "siren" => Some(Self::Siren),
+            "climate" => Some(Self::Climate),
+            "water_heater" => Some(Self::WaterHeater),
+            "humidifier" => Some(Self::Humidifier),
             _ => None,
         }
     }
@@ -32,6 +58,19 @@ impl fmt::Display for Component {
             Self::Switch => "switch",
             Self::Sensor => "sensor",
             Self::BinarySensor => "binary_sensor",
+            Self::Number => "number",
+            Self::Select => "select",
+            Self::Text => "text",
+            Self::Button => "button",
+            Self::Event => "event",
+            Self::Cover => "cover",
+            Self::Lock => "lock",
+            Self::Fan => "fan",
+            Self::Valve => "valve",
+            Self::Siren => "siren",
+            Self::Climate => "climate",
+            Self::WaterHeater => "water_heater",
+            Self::Humidifier => "humidifier",
         })
     }
 }
@@ -67,6 +106,20 @@ pub fn parse(topic: &str, discovery_prefix: &str) -> Option<DiscoveryTopic> {
     })
 }
 
+/// The component of a discovery config topic Irori has no entity kind for (`fan`, `cover`),
+/// when `topic` is one. `parse` returns `None` for these; this says which they are, so they can
+/// be listed on their device instead of disappearing (`docs/specs/protocols.md` §6.7).
+pub fn unsupported_component<'a>(topic: &'a str, discovery_prefix: &str) -> Option<&'a str> {
+    let rest = topic.strip_prefix(discovery_prefix)?.strip_prefix('/')?;
+    let rest = rest.strip_suffix("/config")?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    let component = match parts.as_slice() {
+        [component, object_id] | [component, _, object_id] if !object_id.is_empty() => *component,
+        _ => return None,
+    };
+    Component::parse(component).is_none().then_some(component)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,8 +142,21 @@ mod tests {
     }
 
     #[test]
+    fn an_unsupported_component_is_named() {
+        let named = |t| unsupported_component(t, "homeassistant");
+        assert_eq!(
+            named("homeassistant/vacuum/0x1234/robot/config"),
+            Some("vacuum")
+        );
+        assert_eq!(named("homeassistant/vacuum/robot/config"), Some("vacuum"));
+        assert_eq!(named("homeassistant/light/0x1234/light/config"), None);
+        assert_eq!(named("homeassistant/fan/0x1234/state"), None);
+        assert_eq!(named("other/fan/x/config"), None);
+    }
+
+    #[test]
     fn an_unsupported_component_or_wrong_shape_is_skipped_not_an_error() {
-        assert!(parse("homeassistant/climate/x/config", "homeassistant").is_none());
+        assert!(parse("homeassistant/vacuum/x/config", "homeassistant").is_none());
         assert!(parse("somethingelse/switch/x/config", "homeassistant").is_none());
         assert!(parse("homeassistant/switch/x/state", "homeassistant").is_none());
         assert!(parse("homeassistant/switch//config", "homeassistant").is_none());

@@ -1,0 +1,8 @@
+{
+  "unique_id": "t",
+  "name": "Long",
+  "capabilities": {
+    "kind": "text",
+    "max_length": 1000
+  }
+}

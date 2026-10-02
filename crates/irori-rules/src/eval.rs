@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use cel::{Context, FunctionContext, ResolveResult, Value};
-use irori_types::{Availability, EntityId, EntityState, SensorValue, State, Timestamp};
+use irori_types::{Availability, EntityId, EntityState, State, Timestamp, Typed};
 use serde::{Deserialize, Serialize};
 
 use crate::expr::{Compiled, compile};
@@ -50,15 +50,7 @@ impl Read {
 
 /// The plain value of a state: `true`, `21.5`, `"rinse"`.
 pub fn value_of(state: &State) -> serde_json::Value {
-    match state {
-        State::Light(light) => serde_json::Value::Bool(light.on),
-        State::Switch(switch) => serde_json::Value::Bool(switch.on),
-        State::BinarySensor(sensor) => serde_json::Value::Bool(sensor.on),
-        State::Sensor(sensor) => match &sensor.value {
-            SensorValue::Number(n) => serde_json::json!(n),
-            SensorValue::Text(text) => serde_json::Value::String(text.clone()),
-        },
-    }
+    state.primary().to_json()
 }
 
 /// A result and what it read on the way.
@@ -352,12 +344,10 @@ fn bind(context: &mut Context, snapshot: &Snapshot, reads: &Reads) {
             })
         };
 
-    let num = entity_fn("num", |state, id| match state {
-        State::Sensor(sensor) => match sensor.value {
-            SensorValue::Number(n) => Ok(Value::Float(n)),
-            SensorValue::Text(_) => Err(format!("num({id:?}): entity is text, not a number")),
-        },
-        _ => Err(format!(
+    let num = entity_fn("num", |state, id| match state.primary() {
+        Typed::Number(n) => Ok(Value::Float(n)),
+        Typed::Text(_) => Err(format!("num({id:?}): entity is text, not a number")),
+        Typed::Bool(_) => Err(format!(
             "num({id:?}): entity is on/off, not a number — use on({id:?})"
         )),
     });
@@ -365,24 +355,23 @@ fn bind(context: &mut Context, snapshot: &Snapshot, reads: &Reads) {
         num(ftx, id)
     });
 
-    let on = entity_fn("on", |state, id| match state {
-        State::Light(light) => Ok(Value::Bool(light.on)),
-        State::Switch(switch) => Ok(Value::Bool(switch.on)),
-        State::BinarySensor(sensor) => Ok(Value::Bool(sensor.on)),
-        State::Sensor(_) => Err(format!(
+    let on = entity_fn("on", |state, id| match state.primary() {
+        Typed::Bool(on) => Ok(Value::Bool(on)),
+        Typed::Number(_) => Err(format!(
             "on({id:?}): entity is a number, not on/off — use num({id:?})"
+        )),
+        Typed::Text(_) => Err(format!(
+            "on({id:?}): entity is text, not on/off — use text({id:?})"
         )),
     });
     context.add_function("on", move |ftx: &FunctionContext, id: Arc<String>| {
         on(ftx, id)
     });
 
-    let text = entity_fn("text", |state, id| match state {
-        State::Sensor(sensor) => match sensor.value {
-            SensorValue::Text(text) => Ok(Value::String(Arc::new(text))),
-            SensorValue::Number(_) => Err(format!("text({id:?}): entity is a number")),
-        },
-        _ => Err(format!("text({id:?}): entity is not a text sensor")),
+    let text = entity_fn("text", |state, id| match state.primary() {
+        Typed::Text(text) => Ok(Value::String(Arc::new(text))),
+        Typed::Number(_) => Err(format!("text({id:?}): entity is a number")),
+        Typed::Bool(_) => Err(format!("text({id:?}): entity is not a text sensor")),
     });
     context.add_function("text", move |ftx: &FunctionContext, id: Arc<String>| {
         text(ftx, id)
@@ -505,7 +494,9 @@ fn bind(context: &mut Context, snapshot: &Snapshot, reads: &Reads) {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use irori_types::{BinarySensorState, Context as Cause, ContextId, Origin, SensorState};
+    use irori_types::{
+        BinarySensorState, Context as Cause, ContextId, Origin, SensorState, SensorValue,
+    };
 
     fn at() -> Timestamp {
         "2026-09-29T20:00:00Z".parse().unwrap()
@@ -589,6 +580,29 @@ mod tests {
             eval.condition(&condition, &home(8.0, true)).result,
             Ok(true)
         );
+    }
+
+    #[test]
+    fn a_function_of_the_wrong_kind_says_which_one_fits() {
+        let mut snapshot = home(8.0, true);
+        let (id, washer) = state(
+            "sensor.washer_program",
+            State::Sensor(SensorState {
+                value: SensorValue::Text("rinse".into()),
+            }),
+            Availability::Available,
+        );
+        Arc::make_mut(&mut snapshot.states).insert(id, washer);
+        let mut eval = Evaluator::default();
+        let mut error = |expr| eval.boolean(expr, &snapshot).result.unwrap_err();
+        assert!(
+            error("on('sensor.washer_program')").contains(
+                r#"on("sensor.washer_program"): entity is text, not on/off — use text("sensor.washer_program")"#
+            )
+        );
+        assert!(error("num('binary_sensor.motion') < 1").contains(
+            r#"num("binary_sensor.motion"): entity is on/off, not a number — use on("binary_sensor.motion")"#
+        ));
     }
 
     #[test]

@@ -1,0 +1,14 @@
+{
+  "id": "sensor.hallway_signal",
+  "protocol": "mqtt",
+  "unique_id": "0x00158d0001a2b3c4_linkquality",
+  "name": "Hallway signal",
+  "device_id": "hallway_motion_sensor",
+  "capabilities": {
+    "kind": "sensor",
+    "value_type": "number",
+    "device_class": "signal_strength",
+    "unit": "dBm"
+  },
+  "entity_category": "diagnostic"
+}

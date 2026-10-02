@@ -1,0 +1,14 @@
+{
+  "id": "siren.hall",
+  "protocol": "esphome",
+  "unique_id": "a4:cf:12:34:56:80-siren-hall",
+  "name": "Hall siren",
+  "capabilities": {
+    "kind": "siren",
+    "tones": [
+      "alarm",
+      "chime"
+    ],
+    "volume": true
+  }
+}

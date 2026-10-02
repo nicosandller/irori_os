@@ -522,7 +522,7 @@ mod tests {
 
         for bad in [
             "hallway",
-            "fan.bedroom",
+            "vacuum.bedroom",
             "light.",
             "light.Hallway",
             "Light.hallway",
@@ -534,10 +534,10 @@ mod tests {
 
     #[test]
     fn error_messages_say_what_and_why() {
-        let e = EntityId::try_from("fan.bedroom").expect_err("unknown kind");
+        let e = EntityId::try_from("vacuum.bedroom").expect_err("unknown kind");
         assert_eq!(
             e.to_string(),
-            "invalid entity id \"fan.bedroom\": unknown kind before the `.` (expected one of: light, switch, sensor, binary_sensor)"
+            "invalid entity id \"vacuum.bedroom\": unknown kind before the `.` (expected one of: light, switch, sensor, binary_sensor)"
         );
     }
 

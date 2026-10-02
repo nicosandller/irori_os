@@ -55,8 +55,8 @@ What moves today, and where to find it.
 | Where | What | How |
 |---|---|---|
 | Every button | Eases into hover colours; gives a little (`scale: .97`) under a press. | `:where(button…)` base rule — zero specificity, so each button's own rules win. |
-| Toggle | Knob springs across, stretches while held, breathes while a command waits on the device (`.pending`). | `devices.rs` `knob`; CSS `.toggle`. |
-| Sliders | Drawn by the page: filled to the thumb (`--fill`), colour temperature as its colours; the thumb swells under the pointer; the label follows while dragging. | `devices.rs` `light_controls`, `floorplan.rs` inspector; CSS `input[type="range"]`. |
+| Toggle | Knob springs across, stretches while held, breathes while a command waits on the device (`.pending`). | `devices/controls/mod.rs` `knob`; CSS `.toggle`. |
+| Sliders | Drawn by the page: filled to the thumb (`--fill`), colour temperature as its colours; the thumb swells under the pointer; the label follows while dragging. | `devices/controls/light.rs` `light_controls`, `floorplan.rs` inspector; CSS `input[type="range"]`. |
 | Sidebar | The current page is a highlight that glides between entries; icons lean in on hover, the cog turns. | `glide.rs`; CSS `.glide`, `.sidebar > .glide`. |
 | Changing page | The page arrives from where it is in the sidebar — up from below for a page further down, down from above for one further up; between devices it crossfades. | `transition.rs` (View Transition API through the router); CSS `::view-transition-*`. |
 | List → device | The list slides aside and the device's name travels from its row into the heading; back reverses it. | `transition.rs`; only the opened device's name carries a transition name. |
@@ -64,7 +64,7 @@ What moves today, and where to find it.
 | Settings | Sections arrive one after another; a menu link glides to its section and flashes it. | `settings.rs` `jump`; CSS `.settings-section`. |
 | Live numbers | A reading counts to its new value and lifts or drops into place in ember, the way it went. | `count.rs`, for anything marked `data-n`. |
 | Device page history | The reading is the button — or pull it down; a drawer rolls down to its content; a number's day is a chart that draws itself in and then **grows with each new reading**, with a crosshair, a tooltip and arrow-key stepping. | `device.rs` `EntityRow`, `chart.rs`, `gesture.rs`; CSS `.unroll`, `.drawer`, `.chart-*`. |
-| Swiping a toggle | The knob follows the finger; let go past halfway and it switches, springing home from where it was let go. | `gesture.rs`, `devices.rs` `knob`. |
+| Swiping a toggle | The knob follows the finger; let go past halfway and it switches, springing home from where it was let go. | `gesture.rs`, `devices/controls/mod.rs` `knob`. |
 | Floorplan | Tools and floor highlight glide; the toolbar, pickers and inspector slide in; markers lean in, lift when held and settle with a bounce when put down; a lamp's pip warms up and rings once; the picked room and the line being drawn march. | `floorplan.rs`; CSS `.floorplan …`. |
 | Floorplan ambience | A lit light pools warm light, as bright as the light and clipped to its room's walls; a motion sensor ripples across its room while it senses someone; changing floor, the plan sinks away and the next floor comes down (or the reverse). | `floorplan/ambience.rs`, `transition.rs` `around`. |
 | Windows | A window rises into place while the page dims behind it. | `modal.rs`; CSS `.modal`, `.modal-backdrop`. |

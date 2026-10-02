@@ -98,6 +98,841 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "number.set_value"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/NumberSetValue"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "select.select_option"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/SelectOption"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "text.set_value"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/TextSetValue"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "button.press"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "cover.open"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "cover.close"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "cover.stop"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "cover.set_position"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/SetPosition"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "cover.set_tilt"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/SetTilt"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "lock.lock"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/LockCode"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "lock.unlock"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/LockCode"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "lock.open"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/LockCode"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "fan.turn_on"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/FanTurnOn"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "fan.turn_off"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "fan.set_percentage"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/FanPercentage"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "fan.oscillate"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/FanOscillate"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "fan.set_direction"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/FanSetDirection"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "fan.set_preset_mode"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/FanPresetMode"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "valve.open"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "valve.close"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "valve.stop"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "valve.set_position"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/SetPosition"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "siren.turn_on"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/SirenTurnOn"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "siren.turn_off"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "climate.set_hvac_mode"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ClimateHvacMode"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "climate.set_temperature"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ClimateSetTemperature"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "climate.set_humidity"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/SetHumidity"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "climate.set_fan_mode"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ClimateFanMode"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "climate.set_swing_mode"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ClimateSwingMode"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "climate.set_preset_mode"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ClimatePresetMode"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "climate.turn_on"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "climate.turn_off"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "water_heater.set_temperature"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/WaterHeaterSetTemperature"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "water_heater.set_operation_mode"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/WaterHeaterOperationMode"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "water_heater.turn_on"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "water_heater.turn_off"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "humidifier.turn_on"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "humidifier.turn_off"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "humidifier.set_humidity"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/SetHumidity"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "humidifier.set_mode"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/HumidifierMode"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
     }
   ],
   "required": [
@@ -106,6 +941,96 @@
     "context"
   ],
   "$defs": {
+    "ClimateFanMode": {
+      "description": "Data for `climate.set_fan_mode`.",
+      "type": "object",
+      "properties": {
+        "fan_mode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "fan_mode"
+      ]
+    },
+    "ClimateHvacMode": {
+      "description": "Data for `climate.set_hvac_mode`.",
+      "type": "object",
+      "properties": {
+        "hvac_mode": {
+          "$ref": "#/$defs/HvacMode"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "hvac_mode"
+      ]
+    },
+    "ClimatePresetMode": {
+      "description": "Data for `climate.set_preset_mode`.",
+      "type": "object",
+      "properties": {
+        "preset_mode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "preset_mode"
+      ]
+    },
+    "ClimateSetTemperature": {
+      "description": "Data for `climate.set_temperature`: a single target, or a range, in °C; optionally the mode\nto switch to at the same time.",
+      "type": "object",
+      "properties": {
+        "hvac_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HvacMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target_temp_high": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "target_temp_low": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "temperature": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ClimateSwingMode": {
+      "description": "Data for `climate.set_swing_mode`.",
+      "type": "object",
+      "properties": {
+        "swing_mode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "swing_mode"
+      ]
+    },
     "Context": {
       "description": "Why something happened. Every state change and service call carries one, so any change can\nbe traced back to its cause (`docs/specs/entities.md` §6).",
       "type": "object",
@@ -145,6 +1070,128 @@
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "FanDirection": {
+      "type": "string",
+      "enum": [
+        "forward",
+        "reverse"
+      ]
+    },
+    "FanOscillate": {
+      "description": "Data for `fan.oscillate`.",
+      "type": "object",
+      "properties": {
+        "oscillating": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "oscillating"
+      ]
+    },
+    "FanPercentage": {
+      "description": "Data for `fan.set_percentage`. 0 turns it off.",
+      "type": "object",
+      "properties": {
+        "percentage": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "percentage"
+      ]
+    },
+    "FanPresetMode": {
+      "description": "Data for `fan.set_preset_mode`.",
+      "type": "object",
+      "properties": {
+        "preset_mode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "preset_mode"
+      ]
+    },
+    "FanSetDirection": {
+      "description": "Data for `fan.set_direction`.",
+      "type": "object",
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/FanDirection"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "direction"
+      ]
+    },
+    "FanTurnOn": {
+      "description": "Data for `fan.turn_on`: optionally, the speed or mode to come on in.",
+      "type": "object",
+      "properties": {
+        "percentage": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 100,
+          "minimum": 1
+        },
+        "preset_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "HumidifierMode": {
+      "description": "Data for `humidifier.set_mode`.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ]
+    },
+    "HvacMode": {
+      "description": "What it's set to do: Home Assistant's modes.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "off",
+            "heat",
+            "cool",
+            "dry",
+            "fan_only"
+          ]
+        },
+        {
+          "description": "Heats or cools to stay within a range.",
+          "type": "string",
+          "const": "heat_cool"
+        },
+        {
+          "description": "Follows its own schedule or logic.",
+          "type": "string",
+          "const": "auto"
+        }
+      ]
     },
     "LightTurnOn": {
       "description": "Data for `light.turn_on`. Everything is optional: with no data, the light turns on at its\nlast brightness and color.",
@@ -201,6 +1248,34 @@
           "rgb"
         ]
       }
+    },
+    "LockCode": {
+      "description": "Data for `lock.lock`, `lock.unlock` and `lock.open`: the code, for a lock that needs one.\n\nIts `Debug` never shows the code, so a call that ends up in a log or an error message doesn't\ntake the code with it.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "NumberSetValue": {
+      "description": "Data for `number.set_value`.",
+      "type": "object",
+      "properties": {
+        "value": {
+          "description": "Within the number's `min` and `max`.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "value"
+      ]
     },
     "Origin": {
       "description": "Where a context started.",
@@ -304,6 +1379,20 @@
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
+    "SelectOption": {
+      "description": "Data for `select.select_option`.",
+      "type": "object",
+      "properties": {
+        "option": {
+          "description": "One of the select's options.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "option"
+      ]
+    },
     "ServiceName": {
       "description": "The name of a standard service: `<kind>.<action>`.",
       "type": "string",
@@ -311,7 +1400,145 @@
         "light.turn_on",
         "light.turn_off",
         "switch.turn_on",
-        "switch.turn_off"
+        "switch.turn_off",
+        "number.set_value",
+        "select.select_option",
+        "text.set_value",
+        "button.press",
+        "cover.open",
+        "cover.close",
+        "cover.stop",
+        "cover.set_position",
+        "cover.set_tilt",
+        "lock.lock",
+        "lock.unlock",
+        "lock.open",
+        "fan.turn_on",
+        "fan.turn_off",
+        "fan.set_percentage",
+        "fan.oscillate",
+        "fan.set_direction",
+        "fan.set_preset_mode",
+        "valve.open",
+        "valve.close",
+        "valve.stop",
+        "valve.set_position",
+        "siren.turn_on",
+        "siren.turn_off",
+        "climate.set_hvac_mode",
+        "climate.set_temperature",
+        "climate.set_humidity",
+        "climate.set_fan_mode",
+        "climate.set_swing_mode",
+        "climate.set_preset_mode",
+        "climate.turn_on",
+        "climate.turn_off",
+        "water_heater.set_temperature",
+        "water_heater.set_operation_mode",
+        "water_heater.turn_on",
+        "water_heater.turn_off",
+        "humidifier.turn_on",
+        "humidifier.turn_off",
+        "humidifier.set_humidity",
+        "humidifier.set_mode"
+      ]
+    },
+    "SetHumidity": {
+      "description": "Data for `climate.set_humidity` and `humidifier.set_humidity`, in %.",
+      "type": "object",
+      "properties": {
+        "humidity": {
+          "type": "number",
+          "format": "double",
+          "maximum": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "humidity"
+      ]
+    },
+    "SetPosition": {
+      "description": "Data for `cover.set_position` and `valve.set_position`.",
+      "type": "object",
+      "properties": {
+        "position": {
+          "description": "0 (closed) to 100 (open).",
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "position"
+      ]
+    },
+    "SetTilt": {
+      "description": "Data for `cover.set_tilt`.",
+      "type": "object",
+      "properties": {
+        "tilt": {
+          "description": "0 (closed) to 100 (open).",
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "tilt"
+      ]
+    },
+    "SirenTurnOn": {
+      "description": "Data for `siren.turn_on`: all optional.",
+      "type": "object",
+      "properties": {
+        "duration": {
+          "description": "How long to sound, in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "maximum": 86400,
+          "minimum": 1
+        },
+        "tone": {
+          "description": "One of its `tones`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "volume_level": {
+          "description": "0.0 (silent) to 1.0 (loudest).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "TextSetValue": {
+      "description": "Data for `text.set_value`.",
+      "type": "object",
+      "properties": {
+        "value": {
+          "description": "Within the text's `min_length` and `max_length`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "value"
       ]
     },
     "TokenId": {
@@ -334,6 +1561,56 @@
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "WaterHeaterMode": {
+      "description": "Home Assistant's operation modes.",
+      "type": "string",
+      "enum": [
+        "off",
+        "eco",
+        "electric",
+        "gas",
+        "heat_pump",
+        "high_demand",
+        "performance"
+      ]
+    },
+    "WaterHeaterOperationMode": {
+      "description": "Data for `water_heater.set_operation_mode`.",
+      "type": "object",
+      "properties": {
+        "operation_mode": {
+          "$ref": "#/$defs/WaterHeaterMode"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "operation_mode"
+      ]
+    },
+    "WaterHeaterSetTemperature": {
+      "description": "Data for `water_heater.set_temperature`, in °C; optionally the mode to switch to with it.",
+      "type": "object",
+      "properties": {
+        "operation_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WaterHeaterMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "temperature": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "temperature"
+      ]
     }
   }
 }

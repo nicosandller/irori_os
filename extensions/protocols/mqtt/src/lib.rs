@@ -44,10 +44,16 @@ struct Entity {
     /// splits on/off and brightness across two topics, so decoding one needs what the other last
     /// reported (`irori_ha_discovery::state::decode`'s own `previous` parameter).
     last_state: Option<State>,
+    /// The last state it reported while on, for a `turn_on` that goes back to it (a
+    /// thermostat's mode).
+    last_on: Option<State>,
 }
 
 #[derive(Debug, Default)]
 struct Registry {
+    /// What the broker's discovery configs offer that Irori has no entity kind for yet, listed
+    /// on their devices (`docs/specs/protocols.md` §6.7).
+    unmodeled: irori_ha_discovery::unmodeled::Tracker,
     entities: BTreeMap<UniqueId, Entity>,
     /// Which entity a discovery config topic described, so a later empty (retained-removed)
     /// payload on the same topic knows what to remove.
@@ -113,6 +119,17 @@ async fn apply(
     broker: &impl Publisher,
     ctx: &ProtocolContext,
 ) {
+    if let Some(component) =
+        topic::unsupported_component(&message.topic, &settings.discovery_prefix)
+    {
+        if registry
+            .unmodeled
+            .apply(&message.topic, component, &message.payload)
+        {
+            ctx.set_unmodeled(registry.unmodeled.list()).await;
+        }
+        return;
+    }
     if let Some(discovered) = topic::parse(&message.topic, &settings.discovery_prefix) {
         describe(discovered, &message, registry, broker, ctx).await;
         return;
@@ -153,11 +170,15 @@ async fn apply(
             ) {
                 Some(Ok(new_state)) => {
                     entity.last_state = Some(new_state.clone());
+                    if state::is_on(&new_state) {
+                        entity.last_on = Some(new_state.clone());
+                    }
                     ctx.report_state(StateReport {
                         unique_id,
                         state: Some(new_state),
                         attributes: BTreeMap::default(),
                         caused_by: None,
+                        replayed: message.retained,
                     });
                 }
                 Some(Err(why)) => {
@@ -180,6 +201,9 @@ async fn describe(
     ctx: &ProtocolContext,
 ) {
     if message.payload.is_empty() {
+        if registry.unmodeled.forget(&message.topic) {
+            ctx.set_unmodeled(registry.unmodeled.list()).await;
+        }
         if let Some(unique_id) = registry.config_topics.remove(&message.topic) {
             if let Some(old) = registry.entities.remove(&unique_id) {
                 deindex(&unique_id, &old.topics, registry);
@@ -190,10 +214,18 @@ async fn describe(
         }
         return;
     }
+    let component = discovered.component.to_string();
     let parsed = match discovery::parse(discovered.component, &message.payload) {
         Ok(parsed) => parsed,
         Err(why) => {
             tracing::warn!(topic = %message.topic, %why, "skipping a discovery config Irori can't use");
+            // Listed on its device with why, rather than gone without a word.
+            if registry
+                .unmodeled
+                .refuse(&message.topic, &component, &message.payload, &why)
+            {
+                ctx.set_unmodeled(registry.unmodeled.list()).await;
+            }
             return;
         }
     };
@@ -208,17 +240,27 @@ async fn describe(
     let entity_description = map::entity(&parsed, &discovered.object_id);
     if let Err(e) = ctx.describe_entity(entity_description).await {
         tracing::warn!(%unique_id, error = %e, "the core refused an entity");
+        if registry
+            .unmodeled
+            .refuse(&message.topic, &component, &message.payload, &e.to_string())
+        {
+            ctx.set_unmodeled(registry.unmodeled.list()).await;
+        }
         return;
+    }
+    // Used now: if it was listed as refused, it isn't any more.
+    if registry.unmodeled.forget(&message.topic) {
+        ctx.set_unmodeled(registry.unmodeled.list()).await;
     }
 
     // A redescribe (the same entity's discovery config firing again, e.g. Z2M republishing on
     // its own restart) must drop this entity's old topic-index entries first — otherwise a topic
     // it no longer uses keeps reporting for it, and one it still uses ends up listed twice.
-    let last_state = if let Some(old) = registry.entities.remove(&unique_id) {
+    let (last_state, last_on) = if let Some(old) = registry.entities.remove(&unique_id) {
         deindex(&unique_id, &old.topics, registry);
-        old.last_state
+        (old.last_state, old.last_on)
     } else {
-        None
+        (None, None)
     };
 
     for (topic, _) in state::topics_of(&unique_id, &parsed.topics) {
@@ -254,6 +296,7 @@ async fn describe(
         Entity {
             topics: parsed.topics,
             last_state,
+            last_on,
         },
     );
 }
@@ -295,7 +338,11 @@ async fn route(incoming: IncomingCall, registry: &Registry, broker: &impl Publis
         incoming.reply(Err(ServiceError::unavailable(why)));
         return;
     };
-    let messages = match state::encode(&entity.topics, &incoming.call.service) {
+    let messages = match state::encode_with(
+        &entity.topics,
+        &incoming.call.service,
+        entity.last_on.as_ref(),
+    ) {
         Ok(messages) => messages,
         Err(why) => {
             incoming.reply(Err(ServiceError::failed(why)));
@@ -321,6 +368,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
+    use irori_ha_discovery::discovery::LightTopics;
 
     /// One call to [`FakePublisher::publish`]: the topic, payload, and retain flag it was given.
     type Published = (String, Vec<u8>, bool);
@@ -358,6 +406,7 @@ mod tests {
         Message {
             topic: topic.to_owned(),
             payload: payload.to_vec(),
+            retained: false,
         }
     }
 
@@ -376,6 +425,7 @@ mod tests {
                     }
                     host::Op::SetHealth(_)
                     | host::Op::SetWaiting(_)
+                    | host::Op::SetUnmodeled(_)
                     | host::Op::SetAvailableActions(_) => {}
                     host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));
@@ -544,6 +594,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_component_irori_has_no_kind_for_is_listed_on_its_device() {
+        let (ctx, mut host) = host::connect();
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+        let topic = "homeassistant/vacuum/0x1234/robot/config";
+        let robot = br#"{"unique_id": "0x1234_robot", "name": "Robot",
+            "device": {"identifiers": ["0x1234"], "name": "Robot vacuum"}}"#;
+        apply(
+            message(topic, robot),
+            &settings(),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        let Some(host::Op::SetUnmodeled(listed)) = host.ops.recv().await else {
+            panic!("the vacuum should be listed");
+        };
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].platform.as_str(), "vacuum");
+        assert!(
+            registry.entities.is_empty(),
+            "and not described as an entity"
+        );
+
+        // Removed from the broker, it's off the list.
+        apply(
+            message(topic, b""),
+            &settings(),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        let Some(host::Op::SetUnmodeled(listed)) = host.ops.recv().await else {
+            panic!("the list should be sent again");
+        };
+        assert!(listed.is_empty());
+    }
+
+    /// A config of a kind Irori has that it can't use is listed with why, not dropped.
+    #[tokio::test]
+    async fn a_config_irori_cannot_use_is_listed_with_why() {
+        let (ctx, mut host) = host::connect();
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+        let topic = "homeassistant/number/panel/level/config";
+        let jinja = br#"{"unique_id": "level", "name": "Level", "command_topic": "panel/set",
+            "command_template": "{\"level\": {{ value * 10 }}}"}"#;
+        apply(
+            message(topic, jinja),
+            &settings(),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        let Some(host::Op::SetUnmodeled(listed)) = host.ops.recv().await else {
+            panic!("the number should be listed");
+        };
+        assert_eq!(listed[0].platform.as_str(), "number");
+        assert!(
+            listed[0]
+                .reason
+                .as_deref()
+                .is_some_and(|why| why.contains("command_template"))
+        );
+        apply(
+            message(topic, b""),
+            &settings(),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        let Some(host::Op::SetUnmodeled(listed)) = host.ops.recv().await else {
+            panic!("the list should be sent again");
+        };
+        assert!(listed.is_empty());
+    }
+
+    /// A retained message delivered on subscribing is what was last said, not news: an event's
+    /// report says so, so a remote's last press isn't pressed again on every reconnect.
+    #[tokio::test]
+    async fn a_retained_message_is_reported_as_a_replay() {
+        let (ctx, host) = host::connect();
+        let _drain = drain_ops(host.ops);
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+        let config_topic = "homeassistant/event/remote/config";
+        describe(
+            topic::parse(config_topic, "homeassistant").expect("valid"),
+            &message(
+                config_topic,
+                br#"{"unique_id": "remote_action", "name": "Remote", "state_topic": "remote/state",
+                    "event_types": ["single", "double"]}"#,
+            ),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        for retained in [true, false] {
+            apply(
+                Message {
+                    retained,
+                    ..message("remote/state", br#"{"event_type": "double"}"#)
+                },
+                &settings(),
+                &mut registry,
+                &publisher,
+                &ctx,
+            )
+            .await;
+        }
+        host.reports.ready().await;
+        let reports = host.reports.drain();
+        assert_eq!(
+            reports.iter().map(|r| r.replayed).collect::<Vec<_>>(),
+            [true, false]
+        );
+    }
+
+    #[tokio::test]
     async fn a_state_message_reports_to_the_core() {
         let (ctx, host) = host::connect();
         let _drain = drain_ops(host.ops);
@@ -587,7 +761,7 @@ mod tests {
         registry.entities.insert(
             unique_id.clone(),
             Entity {
-                topics: EntityTopics::LightDefault {
+                topics: EntityTopics::Light(LightTopics::Default {
                     state_topic: Some("t/POWER".to_owned()),
                     command_topic: "t/cmnd/POWER".to_owned(),
                     payload_on: "ON".to_owned(),
@@ -595,8 +769,9 @@ mod tests {
                     brightness_state_topic: Some("t/RESULT".to_owned()),
                     brightness_command_topic: Some("t/cmnd/Dimmer".to_owned()),
                     brightness_scale: 100,
-                },
+                }),
                 last_state: None,
+                last_on: None,
             },
         );
         registry
@@ -696,6 +871,7 @@ mod tests {
                     }
                     host::Op::SetHealth(_)
                     | host::Op::SetWaiting(_)
+                    | host::Op::SetUnmodeled(_)
                     | host::Op::SetAvailableActions(_) => {}
                     host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));
@@ -739,11 +915,12 @@ mod tests {
             registry.entities.insert(
                 UniqueId::try_from("0x0017880104e45520_light").expect("valid"),
                 Entity {
-                    topics: EntityTopics::LightJson {
+                    topics: EntityTopics::Light(LightTopics::Json {
                         state_topic: "zigbee2mqtt/Living room lamp".to_owned(),
                         command_topic: "zigbee2mqtt/Living room lamp/set".to_owned(),
-                    },
+                    }),
                     last_state: None,
+                    last_on: None,
                 },
             );
             registry

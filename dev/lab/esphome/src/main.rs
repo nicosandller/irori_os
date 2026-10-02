@@ -11,16 +11,37 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 
 use esphome_client::API_VERSION;
 use esphome_client::types::{
-    BinarySensorStateResponse, DeviceInfoResponse, EspHomeMessage, HelloResponse,
-    ListEntitiesBinarySensorResponse, ListEntitiesDoneResponse, ListEntitiesSensorResponse,
-    SensorStateResponse,
+    BinarySensorStateResponse, ClimateStateResponse, CoverStateResponse, DeviceInfoResponse,
+    EspHomeMessage, FanStateResponse, HelloResponse, ListEntitiesBinarySensorResponse,
+    ListEntitiesButtonResponse, ListEntitiesClimateResponse, ListEntitiesCoverResponse,
+    ListEntitiesDoneResponse, ListEntitiesFanResponse, ListEntitiesLockResponse,
+    ListEntitiesMediaPlayerResponse, ListEntitiesNumberResponse, ListEntitiesSelectResponse,
+    ListEntitiesSensorResponse, ListEntitiesSirenResponse, ListEntitiesTextResponse,
+    ListEntitiesValveResponse, LockStateResponse, NumberStateResponse, SelectStateResponse,
+    SensorStateResponse, SirenStateResponse, TextStateResponse, ValveStateResponse,
 };
+use esphome_client::types::{ListEntitiesWaterHeaterResponse, WaterHeaterStateResponse};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 const STATUS_KEY: u32 = 1;
 const SIGNAL_KEY: u32 = 2;
+/// Two settings and a part Irori can't model yet, so a board shows all three ways a device's
+/// entities appear: a slider, a box to type into, and "Also has…".
+const LED_KEY: u32 = 3;
+const INTERVAL_KEY: u32 = 4;
+const FAN_KEY: u32 = 5;
+const LED_MODE_KEY: u32 = 6;
+const MESSAGE_KEY: u32 = 7;
+const RESTART_KEY: u32 = 8;
+const BLIND_KEY: u32 = 9;
+const DOOR_KEY: u32 = 10;
+const SPEAKER_KEY: u32 = 11;
+const VALVE_KEY: u32 = 12;
+const SIREN_KEY: u32 = 13;
+const THERMOSTAT_KEY: u32 = 15;
+const WATER_HEATER_KEY: u32 = 16;
 /// 32 bytes. Printed at startup as base64 so the waiting-for-a-key panel has something to paste.
 const LAB_KEY: [u8; 32] = *b"irori-lab-esphome-key-32bytes!!!";
 
@@ -185,6 +206,109 @@ fn answers(message: EspHomeMessage, board: &Board) -> Vec<EspHomeMessage> {
         }
         EspHomeMessage::ListEntitiesRequest(_) => entities(board),
         EspHomeMessage::SubscribeStatesRequest(_) => states(board),
+        // The blind gets wherever it's sent at once, and says so; a stop leaves it where it is.
+        EspHomeMessage::CoverCommandRequest(request) if request.has_position => {
+            vec![EspHomeMessage::CoverStateResponse(CoverStateResponse {
+                key: request.key,
+                position: request.position,
+                ..Default::default()
+            })]
+        }
+        EspHomeMessage::ValveCommandRequest(request) if request.has_position => {
+            vec![EspHomeMessage::ValveStateResponse(ValveStateResponse {
+                key: request.key,
+                position: request.position,
+                ..Default::default()
+            })]
+        }
+        // The thermostat speaks °F, as some do, and takes what it's told. It keeps nothing, so a
+        // change of target answers in heat, and a change of mode at 70 °F.
+        EspHomeMessage::ClimateCommandRequest(request) => {
+            vec![EspHomeMessage::ClimateStateResponse(thermostat(
+                if request.has_mode { request.mode } else { 3 },
+                if request.has_target_temperature {
+                    request.target_temperature
+                } else {
+                    70.0
+                },
+            ))]
+        }
+        // The water heater takes what it's told, and keeps nothing: a new target answers in
+        // eco, and a new mode at 55 °C. Bit 1 of `has_fields` is the mode, 2 the target, 32 its
+        // switch; bit 1 of `state` is on.
+        EspHomeMessage::WaterHeaterCommandRequest(request) => {
+            let switched = request.has_fields & 32 != 0;
+            vec![EspHomeMessage::WaterHeaterStateResponse(water_heater(
+                if request.has_fields & 1 != 0 {
+                    request.mode
+                } else {
+                    1
+                },
+                if request.has_fields & 2 != 0 {
+                    request.target_temperature
+                } else {
+                    55.0
+                },
+                !switched || request.state & 2 != 0,
+            ))]
+        }
+        EspHomeMessage::SirenCommandRequest(request) => {
+            vec![EspHomeMessage::SirenStateResponse(SirenStateResponse {
+                key: request.key,
+                state: request.state,
+                ..Default::default()
+            })]
+        }
+        // The fan does what it's told and says so; a request carries only what it changes.
+        EspHomeMessage::FanCommandRequest(request) => {
+            vec![EspHomeMessage::FanStateResponse(FanStateResponse {
+                key: request.key,
+                state: request.state || request.has_speed_level,
+                speed_level: request.speed_level,
+                oscillating: request.oscillating,
+                ..Default::default()
+            })]
+        }
+        // The lock does what it's told: `LockCommand` 0 unlock, 1 lock, 2 open, answered with
+        // `LockState` 2 unlocked, 1 locked, 7 open.
+        EspHomeMessage::LockCommandRequest(request) => {
+            vec![EspHomeMessage::LockStateResponse(LockStateResponse {
+                key: request.key,
+                state: match request.command {
+                    0 => 2,
+                    2 => 7,
+                    _ => 1,
+                },
+                ..Default::default()
+            })]
+        }
+        // A real board would restart; this one just says so. A button reports nothing.
+        EspHomeMessage::ButtonCommandRequest(request) => {
+            println!("{}: button {} pressed", board.name, request.key);
+            Vec::new()
+        }
+        EspHomeMessage::TextCommandRequest(request) => {
+            vec![EspHomeMessage::TextStateResponse(TextStateResponse {
+                key: request.key,
+                state: request.state,
+                ..Default::default()
+            })]
+        }
+        EspHomeMessage::SelectCommandRequest(request) => {
+            vec![EspHomeMessage::SelectStateResponse(SelectStateResponse {
+                key: request.key,
+                state: request.state,
+                ..Default::default()
+            })]
+        }
+        // A real board answers by reporting the value it now has.
+        EspHomeMessage::NumberCommandRequest(request) => {
+            vec![EspHomeMessage::NumberStateResponse(NumberStateResponse {
+                key: request.key,
+                state: request.state,
+                ..Default::default()
+            })]
+        }
         EspHomeMessage::PingRequest(_) => {
             vec![EspHomeMessage::PingResponse(
                 esphome_client::types::PingResponse {},
@@ -221,10 +345,155 @@ fn entities(_board: &Board) -> Vec<EspHomeMessage> {
             unit_of_measurement: "dBm".to_owned(),
             device_class: "signal_strength".to_owned(),
             state_class: 1,
+            entity_category: 2, // diagnostic
+            ..Default::default()
+        }),
+        EspHomeMessage::ListEntitiesNumberResponse(ListEntitiesNumberResponse {
+            key: LED_KEY,
+            name: "LED brightness".to_owned(),
+            min_value: 0.0,
+            max_value: 100.0,
+            step: 1.0,
+            unit_of_measurement: "%".to_owned(),
+            mode: 2,            // slider
+            entity_category: 1, // config
+            ..Default::default()
+        }),
+        EspHomeMessage::ListEntitiesNumberResponse(ListEntitiesNumberResponse {
+            key: INTERVAL_KEY,
+            name: "Update interval".to_owned(),
+            min_value: 10.0,
+            max_value: 3600.0,
+            step: 10.0,
+            unit_of_measurement: "s".to_owned(),
+            device_class: "duration".to_owned(),
+            mode: 1,            // box
+            entity_category: 1, // config
+            ..Default::default()
+        }),
+        EspHomeMessage::ListEntitiesSelectResponse(ListEntitiesSelectResponse {
+            key: LED_MODE_KEY,
+            name: "LED mode".to_owned(),
+            options: vec![
+                "off".to_owned(),
+                "status".to_owned(),
+                "always on".to_owned(),
+            ],
+            entity_category: 1, // config
+            ..Default::default()
+        }),
+        EspHomeMessage::ListEntitiesTextResponse(ListEntitiesTextResponse {
+            key: MESSAGE_KEY,
+            name: "Display message".to_owned(),
+            max_length: 32,
+            ..Default::default()
+        }),
+        EspHomeMessage::ListEntitiesButtonResponse(ListEntitiesButtonResponse {
+            key: RESTART_KEY,
+            name: "Restart".to_owned(),
+            device_class: "restart".to_owned(),
+            entity_category: 1, // config
+            ..Default::default()
+        }),
+        EspHomeMessage::ListEntitiesCoverResponse(ListEntitiesCoverResponse {
+            key: BLIND_KEY,
+            name: "Window blind".to_owned(),
+            device_class: "blind".to_owned(),
+            supports_position: true,
+            supports_stop: true,
+            ..Default::default()
+        }),
+        EspHomeMessage::ListEntitiesLockResponse(ListEntitiesLockResponse {
+            key: DOOR_KEY,
+            name: "Door lock".to_owned(),
+            supports_open: true,
+            ..Default::default()
+        }),
+        EspHomeMessage::ListEntitiesFanResponse(ListEntitiesFanResponse {
+            key: FAN_KEY,
+            name: "Cooling fan".to_owned(),
+            supports_speed: true,
+            supported_speed_count: 3,
+            supports_oscillation: true,
+            ..Default::default()
+        }),
+        EspHomeMessage::ListEntitiesValveResponse(ListEntitiesValveResponse {
+            key: VALVE_KEY,
+            name: "Water valve".to_owned(),
+            device_class: "water".to_owned(),
+            ..Default::default()
+        }),
+        EspHomeMessage::ListEntitiesSirenResponse(ListEntitiesSirenResponse {
+            key: SIREN_KEY,
+            name: "Buzzer".to_owned(),
+            tones: vec!["beep".to_owned(), "alarm".to_owned()],
+            ..Default::default()
+        }),
+        EspHomeMessage::ListEntitiesClimateResponse(ListEntitiesClimateResponse {
+            key: THERMOSTAT_KEY,
+            name: "Thermostat".to_owned(),
+            supports_current_temperature: true,
+            supports_action: true,
+            // Off, cool, heat, auto.
+            supported_modes: vec![0, 2, 3, 6],
+            visual_min_temperature: 50.0,
+            visual_max_temperature: 86.0,
+            visual_target_temperature_step: 1.0,
+            // Home, away, eco.
+            supported_presets: vec![1, 2, 5],
+            temperature_unit: 1,
+            ..Default::default()
+        }),
+        EspHomeMessage::ListEntitiesWaterHeaterResponse(ListEntitiesWaterHeaterResponse {
+            key: WATER_HEATER_KEY,
+            name: "Hot water".to_owned(),
+            min_temperature: 40.0,
+            max_temperature: 65.0,
+            target_temperature_step: 1.0,
+            // Eco, performance.
+            supported_modes: vec![1, 3],
+            // Current temperature, target, modes, on and off.
+            supported_features: 1 | 2 | 4 | 16,
+            ..Default::default()
+        }),
+        // Irori has no media player kind yet: this shows as "Also has…".
+        EspHomeMessage::ListEntitiesMediaPlayerResponse(ListEntitiesMediaPlayerResponse {
+            key: SPEAKER_KEY,
+            name: "Speaker".to_owned(),
             ..Default::default()
         }),
         EspHomeMessage::ListEntitiesDoneResponse(ListEntitiesDoneResponse {}),
     ]
+}
+
+/// The thermostat in `mode` aiming for `target` °F, in a 68 °F room: heating while it's below.
+fn thermostat(mode: i32, target: f32) -> ClimateStateResponse {
+    let heating = mode == 3 && target > 68.0;
+    ClimateStateResponse {
+        key: THERMOSTAT_KEY,
+        mode,
+        current_temperature: 68.0,
+        target_temperature: target,
+        // `ClimateAction`: off, heating, idle.
+        action: match (mode, heating) {
+            (0, _) => 0,
+            (_, true) => 3,
+            _ => 4,
+        },
+        ..Default::default()
+    }
+}
+
+/// The water heater in `mode` aiming for `target` °C, its water at 52 °C.
+fn water_heater(mode: i32, target: f32, on: bool) -> WaterHeaterStateResponse {
+    WaterHeaterStateResponse {
+        key: WATER_HEATER_KEY,
+        mode,
+        current_temperature: 52.0,
+        target_temperature: target,
+        state: if on { 2 } else { 0 },
+        ..Default::default()
+    }
 }
 
 fn states(board: &Board) -> Vec<EspHomeMessage> {
@@ -238,6 +507,54 @@ fn states(board: &Board) -> Vec<EspHomeMessage> {
             key: SIGNAL_KEY,
             state: board.signal_dbm,
             missing_state: false,
+            ..Default::default()
+        }),
+        EspHomeMessage::NumberStateResponse(NumberStateResponse {
+            key: LED_KEY,
+            state: 40.0,
+            ..Default::default()
+        }),
+        EspHomeMessage::SirenStateResponse(SirenStateResponse {
+            key: SIREN_KEY,
+            state: false,
+            ..Default::default()
+        }),
+        EspHomeMessage::ClimateStateResponse(thermostat(3, 70.0)),
+        EspHomeMessage::WaterHeaterStateResponse(water_heater(1, 55.0, true)),
+        EspHomeMessage::ValveStateResponse(ValveStateResponse {
+            key: VALVE_KEY,
+            position: 1.0,
+            ..Default::default()
+        }),
+        EspHomeMessage::FanStateResponse(FanStateResponse {
+            key: FAN_KEY,
+            state: true,
+            speed_level: 1,
+            ..Default::default()
+        }),
+        EspHomeMessage::LockStateResponse(LockStateResponse {
+            key: DOOR_KEY,
+            state: 1,
+            ..Default::default()
+        }),
+        EspHomeMessage::CoverStateResponse(CoverStateResponse {
+            key: BLIND_KEY,
+            position: 0.6,
+            ..Default::default()
+        }),
+        EspHomeMessage::TextStateResponse(TextStateResponse {
+            key: MESSAGE_KEY,
+            state: "Hello from the lab".to_owned(),
+            ..Default::default()
+        }),
+        EspHomeMessage::SelectStateResponse(SelectStateResponse {
+            key: LED_MODE_KEY,
+            state: "status".to_owned(),
+            ..Default::default()
+        }),
+        EspHomeMessage::NumberStateResponse(NumberStateResponse {
+            key: INTERVAL_KEY,
+            state: 60.0,
             ..Default::default()
         }),
     ]

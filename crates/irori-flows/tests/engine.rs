@@ -83,6 +83,7 @@ fn entity(entity: &str, capabilities: Capabilities) -> Entity {
         device_id: None,
         area_id: None,
         capabilities,
+        entity_category: None,
     }
 }
 
@@ -99,6 +100,7 @@ fn registry() -> MapRegistry {
                     device_class: None,
                     unit: Some("lx".into()),
                     state_class: None,
+                    options: Vec::new(),
                 }),
             ),
             entity(

@@ -22,6 +22,10 @@
         }
       ]
     },
+    "replayed": {
+      "description": "The protocol is repeating what it last heard rather than hearing something new, e.g. a\nretained MQTT message delivered on (re)subscribing. For an `event`, whose every report is\nan occurrence, a replayed one sets the value without counting as something happening.",
+      "type": "boolean"
+    },
     "state": {
       "description": "The typed value, or `null` if the device doesn't know it (e.g. it just restarted). Must be\npresent even when `null`.",
       "anyOf": [
@@ -61,6 +65,92 @@
       "description": "A ULID: 26 characters, uppercase Crockford base32.",
       "type": "string",
       "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "FanDirection": {
+      "type": "string",
+      "enum": [
+        "forward",
+        "reverse"
+      ]
+    },
+    "HumidifierAction": {
+      "description": "What it's doing right now.",
+      "type": "string",
+      "enum": [
+        "off",
+        "humidifying",
+        "drying",
+        "idle"
+      ]
+    },
+    "HvacAction": {
+      "description": "What it's doing right now, which can differ from its mode: set to heat, but idle because\nthe room is warm enough.",
+      "type": "string",
+      "enum": [
+        "off",
+        "preheating",
+        "heating",
+        "cooling",
+        "drying",
+        "idle",
+        "fan",
+        "defrosting"
+      ]
+    },
+    "HvacMode": {
+      "description": "What it's set to do: Home Assistant's modes.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "off",
+            "heat",
+            "cool",
+            "dry",
+            "fan_only"
+          ]
+        },
+        {
+          "description": "Heats or cools to stay within a range.",
+          "type": "string",
+          "const": "heat_cool"
+        },
+        {
+          "description": "Follows its own schedule or logic.",
+          "type": "string",
+          "const": "auto"
+        }
+      ]
+    },
+    "LockStatus": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "locked",
+            "unlocked",
+            "locking",
+            "unlocking",
+            "open",
+            "opening"
+          ]
+        },
+        {
+          "description": "Stuck: it tried and couldn't finish.",
+          "type": "string",
+          "const": "jammed"
+        }
+      ]
+    },
+    "OpenState": {
+      "description": "Where something that opens and closes is: a cover's or a valve's.",
+      "type": "string",
+      "enum": [
+        "open",
+        "opening",
+        "closed",
+        "closing"
+      ]
     },
     "SensorValue": {
       "description": "A sensor reading: a finite number or text, matching the sensor's `value_type`.",
@@ -190,6 +280,398 @@
             "kind",
             "on"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "number"
+            },
+            "value": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "select"
+            },
+            "option": {
+              "description": "The choice it's on: one of its options.",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "option"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "text"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event_type": {
+              "description": "What happened last: one of its `event_types`.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "event"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "event_type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "cover"
+            },
+            "position": {
+              "description": "0 (closed) to 100 (open), when it can say.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            },
+            "state": {
+              "$ref": "#/$defs/OpenState"
+            },
+            "tilt": {
+              "description": "0 (closed) to 100 (open), for one whose slats tilt.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "lock"
+            },
+            "state": {
+              "$ref": "#/$defs/LockStatus"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "direction": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/FanDirection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "fan"
+            },
+            "on": {
+              "type": "boolean"
+            },
+            "oscillating": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "percentage": {
+              "description": "Its speed, 1-100, when it has speeds. Kept while off: the speed it comes back on at.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            },
+            "preset_mode": {
+              "description": "One of its `preset_modes`, when it's in one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "valve"
+            },
+            "position": {
+              "description": "0 (closed) to 100 (open), when it can say.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            },
+            "state": {
+              "$ref": "#/$defs/OpenState"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "siren"
+            },
+            "on": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "current_humidity": {
+              "description": "In %.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "current_temperature": {
+              "description": "The room's temperature, as it measures it, in °C.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "fan_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hvac_action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HvacAction"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "hvac_mode": {
+              "$ref": "#/$defs/HvacMode"
+            },
+            "kind": {
+              "type": "string",
+              "const": "climate"
+            },
+            "preset_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "swing_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target_humidity": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "target_temp_high": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "target_temp_low": {
+              "description": "In °C, for one that takes a range.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "target_temperature": {
+              "description": "In °C, for one that takes a single target.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "hvac_mode"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "current_temperature": {
+              "description": "The water's temperature, in °C.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "kind": {
+              "type": "string",
+              "const": "water_heater"
+            },
+            "operation_mode": {
+              "$ref": "#/$defs/WaterHeaterMode"
+            },
+            "target_temperature": {
+              "description": "In °C.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "operation_mode"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HumidifierAction"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "current_humidity": {
+              "description": "The room's humidity, as it measures it, in %.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "kind": {
+              "type": "string",
+              "const": "humidifier"
+            },
+            "mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "on": {
+              "type": "boolean"
+            },
+            "target_humidity": {
+              "description": "In %.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
+          ]
         }
       ]
     },
@@ -199,6 +681,19 @@
       "maxLength": 255,
       "minLength": 1,
       "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+    },
+    "WaterHeaterMode": {
+      "description": "Home Assistant's operation modes.",
+      "type": "string",
+      "enum": [
+        "off",
+        "eco",
+        "electric",
+        "gas",
+        "heat_pump",
+        "high_demand",
+        "performance"
+      ]
     }
   }
 }

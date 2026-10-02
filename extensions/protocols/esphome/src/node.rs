@@ -12,12 +12,13 @@ use std::time::Duration;
 use esphome_client::EspHomeClient;
 use esphome_client::error::ClientError;
 use esphome_client::types::{
-    EspHomeMessage, LightCommandRequest, ListEntitiesRequest, PingResponse, SubscribeStatesRequest,
-    SwitchCommandRequest,
+    EspHomeMessage, ListEntitiesRequest, PingResponse, SubscribeStatesRequest,
 };
+use irori_protocol::types::WaterHeaterMode;
+use irori_protocol::types::units::TemperatureUnit;
 use irori_protocol::types::{
-    Capabilities, ContextId, DeviceDescription, EntityDescription, LightCapabilities, Service,
-    StateReport, UniqueId,
+    Capabilities, ContextId, DeviceDescription, EntityDescription, EntityKind, HvacMode, State,
+    StateReport, UniqueId, Unmodeled,
 };
 use irori_protocol::{IncomingCall, ServiceError};
 use tokio::sync::mpsc;
@@ -52,6 +53,8 @@ pub enum Event {
         connection: Connection,
         device: Box<DeviceDescription>,
         entities: Vec<EntityDescription>,
+        /// What it has that Irori has no kind for yet, to be listed on it.
+        unmodeled: Vec<Unmodeled>,
     },
     /// A new value for one of the device's entities. Carries the connection that heard it, so
     /// a report queued by a connection that has since been replaced can't overwrite the state
@@ -266,10 +269,18 @@ async fn session(
         let device = handshake(&mut client).await?;
         let device_unique_id = map::device_id(&device).map_err(|e| e.to_string())?;
         let description = map::device(&device).map_err(|e| e.to_string())?;
-        let entities = list_entities(&mut client, &device_unique_id).await?;
-        Ok::<_, Opening>((client, device, device_unique_id, description, entities))
+        let (entities, unmodeled, units) = list_entities(&mut client, &device_unique_id).await?;
+        Ok::<_, Opening>((
+            client,
+            device,
+            device_unique_id,
+            description,
+            entities,
+            unmodeled,
+            units,
+        ))
     };
-    let (mut client, device, device_unique_id, description, entities) =
+    let (mut client, device, device_unique_id, description, entities, unmodeled, units) =
         match tokio::time::timeout(SETUP_TIMEOUT, opening).await {
             Ok(Ok(opened)) => opened,
             Ok(Err(Opening::Locked(why))) => return Ok(Ended::Locked(why)),
@@ -281,13 +292,17 @@ async fn session(
                 ));
             }
         };
-    let lights: HashMap<u32, LightCapabilities> = entities
-        .iter()
-        .filter_map(|(key, entity)| match &entity.capabilities {
-            Capabilities::Light(light) => Some((*key, light.clone())),
-            _ => None,
-        })
-        .collect();
+    // What each entity said it can do, so its reports are trimmed to that and its commands
+    // checked against it: a light's colours, a cover's position.
+    let mut learned = Known {
+        capabilities: entities
+            .iter()
+            .map(|(key, entity)| (*key, entity.capabilities.clone()))
+            .collect(),
+        units,
+        last_on: HashMap::new(),
+        heater_last_on: HashMap::new(),
+    };
     let by_key: HashMap<u32, UniqueId> = entities
         .iter()
         .map(|(key, entity)| (*key, entity.unique_id.clone()))
@@ -322,6 +337,7 @@ async fn session(
             connection,
             device: Box::new(description),
             entities: entities.into_iter().map(|(_, entity)| entity).collect(),
+            unmodeled,
         })
         .await;
     if sent.is_err() {
@@ -361,7 +377,7 @@ async fn session(
                         return Ok(Ended::Disconnected(format!("{address} said goodbye")));
                     }
                     message => {
-                        if let Some(report) = report(&message, &by_key, &lights, &mut commanded) {
+                        if let Some(report) = report(&message, &by_key, &mut learned, &mut commanded) {
                             let event = Event::Reported {
                                 connection,
                                 device: device_unique_id.clone(),
@@ -377,7 +393,7 @@ async fn session(
             call = calls.recv() => {
                 let Some(incoming) = call else { return Ok(Ended::Stopping) };
                 let key = by_unique_id.get(&incoming.call.unique_id).copied();
-                command(&mut client, incoming, key, &lights, &mut commanded).await;
+                command(&mut client, incoming, key, &learned, &mut commanded).await;
             }
             _ = quiet.tick() => {
                 if asked {
@@ -424,18 +440,50 @@ async fn handshake(
     }
 }
 
+/// What a connection knows about each entity beyond its description.
+struct Known {
+    /// What each entity said it can do, so its reports are trimmed to that and its commands
+    /// checked against it: a light's colours, a cover's position.
+    capabilities: HashMap<u32, Capabilities>,
+    units: Units,
+    /// Each climate entity's last mode other than `off`, for `turn_on` to go back to.
+    last_on: HashMap<u32, HvacMode>,
+    /// The same for each water heater.
+    heater_last_on: HashMap<u32, WaterHeaterMode>,
+}
+
+/// How each entity speaks, where Irori's model says otherwise: a thermostat in °F.
+#[derive(Debug, Default)]
+struct Units {
+    temperature: HashMap<u32, TemperatureUnit>,
+    climate_reads: HashMap<u32, map::climate::Reads>,
+    /// Water heaters that report the water's temperature.
+    reads_current: std::collections::HashSet<u32>,
+}
+
+impl Units {
+    fn temperature_of(&self, key: u32) -> TemperatureUnit {
+        self.temperature
+            .get(&key)
+            .copied()
+            .unwrap_or(TemperatureUnit::Celsius)
+    }
+}
+
 /// Everything the device has, of the kinds Irori models. Kinds it doesn't (fan, cover, climate,
 /// text sensors, …) are counted and mentioned once, not dropped silently.
 async fn list_entities(
     client: &mut EspHomeClient,
     device: &UniqueId,
-) -> Result<Vec<(u32, EntityDescription)>, String> {
+) -> Result<(Vec<(u32, EntityDescription)>, Vec<Unmodeled>, Units), String> {
     client
         .try_write(ListEntitiesRequest {})
         .await
         .map_err(|e| format!("can't ask the device what it has: {e}"))?;
 
     let mut entities = Vec::new();
+    let mut unmodeled = Vec::new();
+    let mut units = Units::default();
     let mut skipped = 0_usize;
     loop {
         let message = client
@@ -444,22 +492,131 @@ async fn list_entities(
             .map_err(|e| format!("the device stopped listing what it has: {e}"))?;
         let described = match &message {
             EspHomeMessage::ListEntitiesDoneResponse(_) => {
-                if skipped > 0 {
+                if !unmodeled.is_empty() || skipped > 0 {
                     tracing::info!(
                         device = %device,
+                        unmodeled = unmodeled.len(),
                         skipped,
-                        "left out entities of kinds Irori doesn't model yet \
-                         (fan, cover, climate, text sensors, and the rest)"
+                        "listed what Irori has no entity kind for yet on the device"
                     );
                 }
-                return Ok(entities);
+                return Ok((entities, unmodeled, units));
             }
-            EspHomeMessage::ListEntitiesLightResponse(e) => (e.key, map::light(device, e)),
-            EspHomeMessage::ListEntitiesSwitchResponse(e) => (e.key, map::switch(device, e)),
-            EspHomeMessage::ListEntitiesSensorResponse(e) => (e.key, map::sensor(device, e)),
-            EspHomeMessage::ListEntitiesBinarySensorResponse(e) => {
-                (e.key, map::binary_sensor(device, e))
+            EspHomeMessage::ListEntitiesLightResponse(e) => (
+                e.key,
+                "light",
+                e.name.clone(),
+                map::light::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesSwitchResponse(e) => (
+                e.key,
+                "switch",
+                e.name.clone(),
+                map::switch::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesSensorResponse(e) => (
+                e.key,
+                "sensor",
+                e.name.clone(),
+                map::sensor::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesNumberResponse(e) => (
+                e.key,
+                "number",
+                e.name.clone(),
+                map::number::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesSelectResponse(e) => (
+                e.key,
+                "select",
+                e.name.clone(),
+                map::select::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesTextResponse(e) => (
+                e.key,
+                "text",
+                e.name.clone(),
+                map::text::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesButtonResponse(e) => (
+                e.key,
+                "button",
+                e.name.clone(),
+                map::button::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesEventResponse(e) => (
+                e.key,
+                "event",
+                e.name.clone(),
+                map::event::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesCoverResponse(e) => (
+                e.key,
+                "cover",
+                e.name.clone(),
+                map::cover::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesLockResponse(e) => (
+                e.key,
+                "lock",
+                e.name.clone(),
+                map::lock::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesFanResponse(e) => {
+                (e.key, "fan", e.name.clone(), map::fan::describe(device, e))
             }
+            EspHomeMessage::ListEntitiesValveResponse(e) => (
+                e.key,
+                "valve",
+                e.name.clone(),
+                map::valve::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesSirenResponse(e) => (
+                e.key,
+                "siren",
+                e.name.clone(),
+                map::siren::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesClimateResponse(e) => {
+                units
+                    .temperature
+                    .insert(e.key, map::temperature_unit(e.temperature_unit));
+                units
+                    .climate_reads
+                    .insert(e.key, map::climate::Reads::of(e));
+                (
+                    e.key,
+                    "climate",
+                    e.name.clone(),
+                    map::climate::describe(device, e),
+                )
+            }
+            EspHomeMessage::ListEntitiesWaterHeaterResponse(e) => {
+                units
+                    .temperature
+                    .insert(e.key, map::temperature_unit(e.temperature_unit));
+                if map::water_heater::reads_current(e) {
+                    units.reads_current.insert(e.key);
+                }
+                (
+                    e.key,
+                    "water_heater",
+                    e.name.clone(),
+                    map::water_heater::describe(device, e),
+                )
+            }
+            EspHomeMessage::ListEntitiesTextSensorResponse(e) => (
+                e.key,
+                "text_sensor",
+                e.name.clone(),
+                map::sensor::describe_text(device, e),
+            ),
+            EspHomeMessage::ListEntitiesBinarySensorResponse(e) => (
+                e.key,
+                "binary_sensor",
+                e.name.clone(),
+                map::binary_sensor::describe(device, e),
+            ),
             EspHomeMessage::PingRequest(_) => {
                 client
                     .try_write(PingResponse {})
@@ -468,16 +625,31 @@ async fn list_entities(
                 continue;
             }
             // Between the request and `Done` a device sends nothing but entity listings, so
-            // anything else here is a kind this build doesn't model.
-            _ => {
-                skipped += 1;
+            // anything else here is a kind this build doesn't model: listed on the device, or
+            // only counted when it isn't an entity this build can name.
+            other => {
+                match map::unmodeled(device, other) {
+                    Some(entry) => unmodeled.push(entry),
+                    None => skipped += 1,
+                }
                 continue;
             }
         };
         match described {
-            (key, Ok(entity)) => entities.push((key, entity)),
-            // One unusable entity (an empty name, say) shouldn't cost us the whole device.
-            (_, Err(e)) => tracing::warn!(device = %device, error = %e, "skipping an entity"),
+            (key, _, _, Ok(entity)) => entities.push((key, entity)),
+            // One unusable entity (an empty name, say) shouldn't cost us the whole device, and
+            // shouldn't vanish either: it's listed on the device with why.
+            (_, platform, name, Err(e)) => {
+                tracing::warn!(device = %device, error = %e, "couldn't use an entity");
+                if let Ok(platform) = irori_protocol::types::ObjectId::try_from(platform) {
+                    unmodeled.push(Unmodeled {
+                        device_unique_id: Some(device.clone()),
+                        platform,
+                        name: irori_protocol::types::Name::try_from(name.trim()).ok(),
+                        reason: Some(e.to_string()),
+                    });
+                }
+            }
         }
     }
 }
@@ -486,17 +658,84 @@ async fn list_entities(
 fn report(
     message: &EspHomeMessage,
     by_key: &HashMap<u32, UniqueId>,
-    lights: &HashMap<u32, LightCapabilities>,
+    known: &mut Known,
     commanded: &mut HashMap<u32, VecDeque<(ContextId, Instant)>>,
 ) -> Option<StateReport> {
+    let capabilities = &known.capabilities;
     let (key, state) = match message {
-        EspHomeMessage::LightStateResponse(s) => {
-            let known = lights.get(&s.key)?;
-            (s.key, Some(map::light_state(s, known)))
+        EspHomeMessage::ClimateStateResponse(s) => {
+            let Some(Capabilities::Climate(caps)) = capabilities.get(&s.key) else {
+                return None;
+            };
+            let state = map::climate::state(
+                s,
+                caps,
+                known.units.temperature_of(s.key),
+                known
+                    .units
+                    .climate_reads
+                    .get(&s.key)
+                    .copied()
+                    .unwrap_or_default(),
+            );
+            if let Some(State::Climate(climate)) = &state
+                && climate.hvac_mode != HvacMode::Off
+            {
+                known.last_on.insert(s.key, climate.hvac_mode);
+            }
+            (s.key, state)
         }
-        EspHomeMessage::SwitchStateResponse(s) => (s.key, Some(map::switch_state(s))),
-        EspHomeMessage::BinarySensorStateResponse(s) => (s.key, Some(map::binary_sensor_state(s))),
-        EspHomeMessage::SensorStateResponse(s) => (s.key, map::sensor_state(s)),
+        EspHomeMessage::WaterHeaterStateResponse(s) => {
+            let Some(Capabilities::WaterHeater(caps)) = capabilities.get(&s.key) else {
+                return None;
+            };
+            let state = map::water_heater::state(
+                s,
+                caps,
+                known.units.temperature_of(s.key),
+                known.units.reads_current.contains(&s.key),
+            );
+            if let Some(State::WaterHeater(heater)) = &state
+                && heater.operation_mode != WaterHeaterMode::Off
+            {
+                known.heater_last_on.insert(s.key, heater.operation_mode);
+            }
+            (s.key, state)
+        }
+        EspHomeMessage::LightStateResponse(s) => {
+            let Some(Capabilities::Light(known)) = capabilities.get(&s.key) else {
+                return None;
+            };
+            (s.key, Some(map::light::state(s, known)))
+        }
+        EspHomeMessage::LockStateResponse(s) => (s.key, map::lock::state(s)),
+        EspHomeMessage::SirenStateResponse(s) => (s.key, Some(map::siren::state(s))),
+        EspHomeMessage::ValveStateResponse(s) => {
+            let Some(Capabilities::Valve(known)) = capabilities.get(&s.key) else {
+                return None;
+            };
+            (s.key, Some(map::valve::state(s, known)))
+        }
+        EspHomeMessage::FanStateResponse(s) => {
+            let Some(Capabilities::Fan(known)) = capabilities.get(&s.key) else {
+                return None;
+            };
+            (s.key, Some(map::fan::state(s, known)))
+        }
+        EspHomeMessage::CoverStateResponse(s) => {
+            let Some(Capabilities::Cover(known)) = capabilities.get(&s.key) else {
+                return None;
+            };
+            (s.key, Some(map::cover::state(s, known)))
+        }
+        EspHomeMessage::SwitchStateResponse(s) => (s.key, Some(map::switch::state(s))),
+        EspHomeMessage::BinarySensorStateResponse(s) => (s.key, Some(map::binary_sensor::state(s))),
+        EspHomeMessage::SensorStateResponse(s) => (s.key, map::sensor::state(s)),
+        EspHomeMessage::TextSensorStateResponse(s) => (s.key, map::sensor::text_state(s)),
+        EspHomeMessage::NumberStateResponse(s) => (s.key, map::number::state(s)),
+        EspHomeMessage::SelectStateResponse(s) => (s.key, map::select::state(s)),
+        EspHomeMessage::TextStateResponse(s) => (s.key, map::text::state(s)),
+        EspHomeMessage::EventResponse(e) => (e.key, Some(map::event::state(e))),
         _ => return None,
     };
     let unique_id = by_key.get(&key)?.clone();
@@ -505,6 +744,7 @@ fn report(
         state,
         attributes: std::collections::BTreeMap::new(),
         caused_by: caused_by(key, commanded),
+        replayed: false,
     })
 }
 
@@ -532,9 +772,10 @@ async fn command(
     client: &mut EspHomeClient,
     incoming: IncomingCall,
     key: Option<u32>,
-    lights: &HashMap<u32, LightCapabilities>,
+    known: &Known,
     commanded: &mut HashMap<u32, VecDeque<(ContextId, Instant)>>,
 ) {
+    let capabilities = &known.capabilities;
     let Some(key) = key else {
         // The core only sends calls for entities this device described, so this means the
         // device was reflashed between the two.
@@ -546,55 +787,63 @@ async fn command(
         return;
     };
     let context = incoming.call.context.id.clone();
-    let written = match &incoming.call.service {
-        Service::LightTurnOn(data) => {
-            let known = lights.get(&key);
-            let mut request = LightCommandRequest {
-                key,
-                has_state: true,
-                state: true,
-                ..Default::default()
+    let service = &incoming.call.service;
+    let kind = service.name().kind();
+    // The core checks the entity is of the service's kind before it gets here; this is the last
+    // guard, against a device reflashed in between.
+    if capabilities.get(&key).map(Capabilities::kind) != Some(kind) {
+        incoming.reply(Err(ServiceError::failed(format!(
+            "this entity isn't a {kind} on the device"
+        ))));
+        return;
+    }
+    let written = match kind {
+        EntityKind::Light => write(client, map::light::command(key, service)).await,
+        EntityKind::Switch => write(client, map::switch::command(key, service)).await,
+        EntityKind::Number => write(client, map::number::command(key, service)).await,
+        EntityKind::Select => write(client, map::select::command(key, service)).await,
+        EntityKind::Text => write(client, map::text::command(key, service)).await,
+        EntityKind::Button => write(client, map::button::command(key)).await,
+        EntityKind::Cover => write(client, map::cover::command(key, service)).await,
+        EntityKind::Valve => write(client, map::valve::command(key, service)).await,
+        EntityKind::Siren => write(client, map::siren::command(key, service)).await,
+        EntityKind::Lock => write(client, map::lock::command(key, service)).await,
+        EntityKind::Fan => {
+            let known = match capabilities.get(&key) {
+                Some(Capabilities::Fan(fan)) => Some(fan),
+                _ => None,
             };
-            if let Some(brightness) = data.brightness {
-                request.has_brightness = true;
-                request.brightness = map::to_fraction(brightness);
-            }
-            if let Some(kelvin) = data.color_temp_kelvin {
-                request.has_color_temperature = true;
-                request.color_temperature = map::mireds(kelvin);
-            }
-            if let Some([red, green, blue]) = data.rgb {
-                request.has_rgb = true;
-                request.red = map::to_fraction(red);
-                request.green = map::to_fraction(green);
-                request.blue = map::to_fraction(blue);
-            }
-            // The core checks capabilities before it gets here; this is the last guard.
-            if known.is_none() {
-                incoming.reply(Err(ServiceError::failed(
-                    "this entity isn't a light on the device".to_owned(),
-                )));
-                return;
-            }
-            client.try_write(request).await.map_err(|e| e.to_string())
+            write(client, map::fan::command(key, service, known)).await
         }
-        Service::LightTurnOff => client
-            .try_write(LightCommandRequest {
-                key,
-                has_state: true,
-                state: false,
-                ..Default::default()
-            })
+        EntityKind::Climate => {
+            let on_mode = match capabilities.get(&key) {
+                Some(Capabilities::Climate(caps)) => {
+                    caps.mode_to_turn_on(known.last_on.get(&key).copied())
+                }
+                _ => None,
+            };
+            let unit = known.units.temperature_of(key);
+            write(client, map::climate::command(key, service, unit, on_mode)).await
+        }
+        EntityKind::WaterHeater => {
+            let caps = match capabilities.get(&key) {
+                Some(Capabilities::WaterHeater(caps)) => Some(caps),
+                _ => None,
+            };
+            let on_mode =
+                caps.and_then(|caps| caps.mode_to_turn_on(known.heater_last_on.get(&key).copied()));
+            let unit = known.units.temperature_of(key);
+            write(
+                client,
+                map::water_heater::command(key, service, caps, unit, on_mode),
+            )
             .await
-            .map_err(|e| e.to_string()),
-        Service::SwitchTurnOn | Service::SwitchTurnOff => client
-            .try_write(SwitchCommandRequest {
-                key,
-                state: matches!(incoming.call.service, Service::SwitchTurnOn),
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| e.to_string()),
+        }
+        // The core only sends these to an entity of the kind, and ESPHome has none.
+        EntityKind::Humidifier
+        | EntityKind::Sensor
+        | EntityKind::BinarySensor
+        | EntityKind::Event => Err(format!("ESPHome has no {kind} services")),
     };
     match written {
         Ok(()) => {
@@ -612,12 +861,20 @@ async fn command(
     }
 }
 
+/// Sends one command to the device.
+async fn write<M>(client: &mut EspHomeClient, request: M) -> Result<(), String>
+where
+    M: Into<EspHomeMessage> + std::fmt::Debug,
+{
+    client.try_write(request).await.map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use irori_protocol::host::incoming_call;
     use irori_protocol::types::{
-        Capabilities, ColorTempRange, Context, ContextId, LightTurnOn, Origin, ServiceCall, State,
-        UniqueId, UserId,
+        Capabilities, ColorTempRange, Context, ContextId, LightTurnOn, Origin, Service,
+        ServiceCall, State, UniqueId, UserId,
     };
 
     use super::*;
@@ -694,7 +951,7 @@ mod tests {
             panic!("expected the device to arrive, got {event:?}");
         };
         assert_eq!(device.unique_id.as_str(), fake_device::MAC);
-        assert_eq!(entities.len(), 4);
+        assert_eq!(entities.len(), 5);
     }
 
     /// The wrong key isn't "unreachable": the device answered, and retrying with the same key
@@ -722,9 +979,12 @@ mod tests {
         let connection = Connection { id: 1, address };
         let task = tokio::spawn(run(connection, None, events_tx, calls_rx));
 
-        // What it has. The fake device also offers a fan, which Irori doesn't model yet.
+        // What it has. The fake device also offers a speaker, which Irori doesn't model yet.
         let Some(Event::Arrived {
-            device, entities, ..
+            device,
+            entities,
+            unmodeled,
+            ..
         }) = events.recv().await
         else {
             panic!("the device never introduced itself");
@@ -734,8 +994,19 @@ mod tests {
         assert_eq!(device.sw_version.as_deref(), Some("2026.8.2"));
         assert_eq!(
             entities.len(),
-            4,
-            "the fan should be left out: {entities:?}"
+            5,
+            "the speaker should be left out: {entities:?}"
+        );
+        // ...and listed on the device instead, so it isn't simply gone.
+        assert_eq!(unmodeled.len(), 1, "{unmodeled:?}");
+        assert_eq!(unmodeled[0].platform.as_str(), "media_player");
+        assert_eq!(
+            unmodeled[0].name.as_ref().map(|n| n.as_str()),
+            Some("Speaker")
+        );
+        assert_eq!(
+            unmodeled[0].device_unique_id.as_ref().map(|d| d.as_str()),
+            Some(fake_device::MAC)
         );
 
         let lamp = entities
@@ -766,7 +1037,7 @@ mod tests {
 
         // What it's doing.
         let mut reports = Vec::new();
-        while reports.len() < 4 {
+        while reports.len() < 5 {
             match events.recv().await {
                 Some(Event::Reported { report, .. }) => reports.push(*report),
                 other => panic!("expected a state report, got {other:?}"),
@@ -829,6 +1100,49 @@ mod tests {
                 "255 of 255"
             );
         }
+
+        // A setting: the number is set, and its new value comes back as the answer.
+        let timeout = entities
+            .iter()
+            .find(|e| matches!(e.capabilities, Capabilities::Number(_)))
+            .expect("the timeout is described");
+        assert_eq!(
+            reports
+                .iter()
+                .find(|r| r.unique_id == timeout.unique_id)
+                .and_then(|r| r.state.clone()),
+            Some(State::Number(irori_protocol::types::NumberState {
+                value: 60.0
+            }))
+        );
+        let (incoming, context, _answer) = call(
+            timeout.unique_id.as_str(),
+            Service::NumberSetValue(irori_protocol::types::NumberSetValue { value: 120.0 }),
+        );
+        calls_tx.send(incoming).await.expect("the task is running");
+        let mut answered = None;
+        for _ in 0..10 {
+            match events.recv().await {
+                Some(Event::Reported { report, .. }) if report.unique_id == timeout.unique_id => {
+                    answered = Some(*report);
+                    break;
+                }
+                Some(_) => continue,
+                None => break,
+            }
+        }
+        let answered = answered.expect("the timeout reported its new value");
+        assert_eq!(answered.caused_by, Some(context));
+        assert_eq!(
+            answered.state,
+            Some(State::Number(irori_protocol::types::NumberState {
+                value: 120.0
+            }))
+        );
+        assert_eq!(
+            commanded.lock().expect("not poisoned").numbers[0].state,
+            120.0
+        );
 
         // Stopping: dropping the command channel ends the task.
         drop(calls_tx);

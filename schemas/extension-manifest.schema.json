@@ -185,6 +185,71 @@
           "description": "A two-state reading, e.g. motion or a door contact.",
           "type": "string",
           "const": "binary_sensor"
+        },
+        {
+          "description": "A value set within a range, e.g. a timeout or a calibration offset.",
+          "type": "string",
+          "const": "number"
+        },
+        {
+          "description": "One choice out of a fixed list, e.g. a sensor's sensitivity or a heater's mode.",
+          "type": "string",
+          "const": "select"
+        },
+        {
+          "description": "A piece of text set by a person, e.g. a message for a display.",
+          "type": "string",
+          "const": "text"
+        },
+        {
+          "description": "Something to press, e.g. a restart button. It has no value.",
+          "type": "string",
+          "const": "button"
+        },
+        {
+          "description": "Something that happens, e.g. a remote's button pressed twice. Every report counts.",
+          "type": "string",
+          "const": "event"
+        },
+        {
+          "description": "Something that opens and closes, e.g. a blind or a garage door.",
+          "type": "string",
+          "const": "cover"
+        },
+        {
+          "description": "A lock, e.g. a front door's.",
+          "type": "string",
+          "const": "lock"
+        },
+        {
+          "description": "A fan: on or off, and often a speed, a swing and modes.",
+          "type": "string",
+          "const": "fan"
+        },
+        {
+          "description": "Lets water or gas through, or doesn't, e.g. a main shut-off.",
+          "type": "string",
+          "const": "valve"
+        },
+        {
+          "description": "Sounds an alarm: on or off, sometimes with a tone, volume and duration.",
+          "type": "string",
+          "const": "siren"
+        },
+        {
+          "description": "Heats or cools a room, e.g. a thermostat or an air conditioner.",
+          "type": "string",
+          "const": "climate"
+        },
+        {
+          "description": "A boiler or hot water tank.",
+          "type": "string",
+          "const": "water_heater"
+        },
+        {
+          "description": "A humidifier or dehumidifier.",
+          "type": "string",
+          "const": "humidifier"
         }
       ]
     },
@@ -219,6 +284,12 @@
               "type": "null"
             }
           ]
+        },
+        "entity_format": {
+          "description": "Which version of the entity format it reads, when it reads entities and states through\nthe API (an automation engine, its page). Left out, it's 1: what every extension built\nbefore formats existed reads. Irori sends it entities and states in that format, leaving\nout what the format doesn't have (`docs/specs/extensions.md` §5).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1
         },
         "icon": {
           "description": "A square SVG, relative to the package root, shown beside the extension and its devices so\nthey can be told apart at a glance. Always displayed as an image, never inlined into a\npage, so it can't run script. A built-in extension embeds the file as well\n(`Protocol::ICON`).",

@@ -155,6 +155,8 @@ pub struct AppInfo {
     pub entry: PackagePath,
     /// The API scopes it declared: what the shell's bridge may hand its page.
     pub api: Vec<ApiScope>,
+    /// The entity format its page reads, as its manifest says (`irori_types::format`).
+    pub entity_format: u32,
 }
 
 fn is_present<S: serde::Serializer>(
@@ -182,6 +184,10 @@ pub struct ExtensionOverview {
     /// §6.6). Empty while it isn't running: a list from a stopped protocol is out of date.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub waiting: Vec<Waiting>,
+    /// What it found that Irori has no entity kind for yet (`docs/specs/protocols.md` §6.7),
+    /// across its devices. Cleared when it stops, like `waiting`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unmodeled: Vec<irori_types::Unmodeled>,
     /// Which of its manifest-declared actions are usable right now, as the protocol itself
     /// says (`set_available_actions`). Empty by default, and cleared when it stops — same
     /// reasoning as `waiting`: a list from a stopped protocol is out of date.
@@ -823,6 +829,10 @@ impl Core {
                 self.set_waiting(extension, waiting);
                 return;
             }
+            Op::SetUnmodeled(unmodeled) => {
+                self.set_unmodeled(extension, unmodeled);
+                return;
+            }
             Op::SetAvailableActions(actions) => {
                 self.set_available_actions(extension, actions);
                 return;
@@ -949,6 +959,7 @@ impl Core {
                         rejected_reports: 0,
                         dropped_reports: 0,
                         waiting: Vec::new(),
+                        unmodeled: Vec::new(),
                         available_actions: Vec::new(),
                     },
                 );
@@ -972,6 +983,30 @@ impl Core {
                 return;
             }
             overview.waiting = waiting;
+            overview.status.clone()
+        };
+        self.publish(vec![Event::ExtensionStatusChanged {
+            extension_id: extension.clone(),
+            status,
+        }]);
+    }
+
+    /// Replaces what an extension says it found and Irori has no kind for. Like waiting, a
+    /// change is published as a status change.
+    pub(crate) fn set_unmodeled(
+        &self,
+        extension: &ExtensionId,
+        unmodeled: Vec<irori_types::Unmodeled>,
+    ) {
+        let status = {
+            let mut extensions = write(&self.0.extensions);
+            let Some(overview) = extensions.get_mut(extension) else {
+                return;
+            };
+            if overview.unmodeled == unmodeled {
+                return;
+            }
+            overview.unmodeled = unmodeled;
             overview.status.clone()
         };
         self.publish(vec![Event::ExtensionStatusChanged {
@@ -1017,6 +1052,7 @@ impl Core {
                             rejected_reports: 0,
                             dropped_reports: 0,
                             waiting: Vec::new(),
+                            unmodeled: Vec::new(),
                             available_actions: Vec::new(),
                         },
                     );

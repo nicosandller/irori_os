@@ -106,6 +106,7 @@ core's process.
 | Set availability | entity `unique_id`s, or a device `unique_id` for all its entities; `available` \| `unavailable` | §6.4 |
 | Set health | `running`, or `degraded` with a reason | §6.5 |
 | Set waiting | what it found but can't use until a person helps, replacing the last list | §6.6 |
+| Set unmodeled | what it found that Irori has no entity kind for yet, replacing the last list | §6.7 |
 | Handle service calls | receives `ServiceCall` (§7), replies with a result | For its own entities only |
 | Store small data | key (1–128 characters) → JSON value, up to 64 KB each; load, store, forget | Private to the protocol, kept across restarts of it and of Irori, in the data directory's database. E.g. pairing keys, a cloud token refresh, the value a helper was left at. Not for settings (a person's decisions go in the config directory) and not for history |
 | Log | leveled, structured log lines | Tagged with the protocol id |
@@ -147,6 +148,7 @@ Schemas: `schemas/device-description.schema.json`, `entity-description`, `state-
 | `device_unique_id` | `UniqueId` | if no name | The device it belongs to |
 | `suggested_object_id` | slug | no | The part after `.` in its entity id, when it's new. Otherwise derived from the names |
 | `capabilities` | `Capabilities` ([entities.md](entities.md) §4.4) | yes | `capabilities.kind` is the entity's kind, and must be one of the manifest's `entity_kinds` |
+| `entity_category` | `config` \| `diagnostic` | no | When it's one of the device's settings or diagnostics ([entities.md](entities.md) §4.4). Updated each time it's described |
 
 Describing an existing entity again updates its name and capabilities (a nameless entity follows
 its device's name); it never changes its kind or its id. A different kind needs a different
@@ -161,6 +163,7 @@ its device's name); it never changes its kind or its id. A different kind needs 
 | `state` | `State` ([entities.md](entities.md) §5.3), or `null` | yes, even when `null` | `null` when the device doesn't know (e.g. it just rebooted) |
 | `attributes` | map of `AttributeKey` → any JSON | no | Replaces all attributes; leave out to clear them |
 | `caused_by` | `ContextId` | no | The context of the service call this change answers |
+| `replayed` | bool | no, default `false` | The protocol is repeating what it last heard rather than hearing something new, e.g. a retained MQTT message delivered on (re)subscribing. For an `event` it means "not a press" ([entities.md](entities.md) §5.3); for anything else it changes nothing |
 
 The core turns a report into the entity's `EntityState`: it sets `last_reported`, updates
 `last_changed` and `last_updated` if something changed, and sets the context:
@@ -187,7 +190,7 @@ What the protocol says about itself, shown on the Extensions page:
 
 - `running`: everything's fine.
 - `degraded` + reason: working, with a problem worth showing. For example `2 of 5 devices
-  unreachable`, or `3 entities skipped: kinds not supported yet (select, number)`.
+  unreachable`. (What it found and has no kind for goes in its unmodeled list, §6.7, not here.)
 
 `starting`, `failed`, and `disabled` are set by the core ([extensions.md](extensions.md) §8).
 
@@ -218,6 +221,32 @@ sign-in (ROADMAP D12), an endpoint that wrote anything anywhere would let anyone
 rewrite anyone's settings. A secret, once given, is never sent back, and the protocol receives
 it on its next start (§3, step 6).
 
+### 6.7 Unmodeled
+
+What a protocol found that Irori has no entity kind for yet: a device's fan, its infrared
+blaster, a setting it exposes as a `number`. Like waiting (§6.6), the protocol sends the **whole
+list** whenever it changes, across all its devices, and the core clears it when the protocol
+stops. A separate operation rather than a field on `DeviceDescription`, because some protocols
+learn about a device's parts one message at a time (MQTT discovery publishes each component on
+its own topic).
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `device_unique_id` | `UniqueId` | no | The device it's on. Left out when it isn't on one |
+| `platform` | slug | yes | What the protocol calls this kind of thing (`fan`, `infrared`). Deliberately not an entity kind |
+| `name` | `Name` | no | |
+| `reason` | string | no | Why Irori can't use it, when it's a kind Irori has but this one couldn't be read or was refused: a command template that needs Jinja, a value the core turned down. Left out for a kind Irori doesn't have |
+
+A thing of a kind Irori has that it can't use is listed the same way, with its `reason`, rather
+than dropped with only a log line.
+
+These are **not entities**: no id, no state, nothing to call. The device's page lists them ("Also
+has Ceiling fan (fan), which Irori doesn't support yet"), and the extension's card lists those
+that aren't on a device in the home. Nothing is made up for them, because a kind is part of an
+entity's id ([entities.md](entities.md) §3) and a placeholder kind would have to change, breaking
+every rule that named it. When Irori gains the kind, the protocol describes the thing as an
+entity and leaves it off this list.
+
 ## 7. Service calls
 
 ### 7.1 Standard services
@@ -231,6 +260,37 @@ manifest's `entity_kinds`.
 | `light.turn_off` | none | |
 | `switch.turn_on` | none | |
 | `switch.turn_off` | none | |
+| `number.set_value` | `value`, a finite number within the number's `min`–`max` | |
+| `select.select_option` | `option`, one of the select's `options` | |
+| `text.set_value` | `value`, a string within the text's lengths | |
+| `button.press` | none | |
+| `cover.open`, `cover.close` | none | `cover.toggle` resolves to one of them: an open or opening cover closes |
+| `cover.stop` | none | Needs `stop` |
+| `cover.set_position` | `position` 0–100 | Needs `position` |
+| `cover.set_tilt` | `tilt` 0–100 | Needs `tilt` |
+| `lock.lock`, `lock.unlock` | `code`, optional | The code is required when the lock `requires_code`. `lock.toggle` unlocks a locked or locking lock and locks anything else |
+| `lock.open` | `code`, optional | Needs `open` |
+| `valve.open`, `valve.close`, `valve.stop`, `valve.set_position` | as the cover's | As a cover's, without tilt. `valve.toggle` closes an open or opening valve |
+| `siren.turn_on` | `tone` (one of its `tones`), `volume_level` 0.0–1.0, `duration` 1–86400 s; all optional | Each needs the siren to say it can. `siren.toggle` resolves to `turn_on` or `turn_off` |
+| `siren.turn_off` | none | |
+| `climate.set_hvac_mode` | `hvac_mode`, one of its `hvac_modes` | |
+| `climate.set_temperature` | `temperature`, or both `target_temp_low` and `target_temp_high` (low ≤ high), in °C within its `min_temp`–`max_temp`; optionally `hvac_mode` to switch to | A single target needs `target_temperature`; a range needs `target_temperature_range` |
+| `climate.set_humidity` | `humidity` %, within its `target_humidity` range | |
+| `climate.set_fan_mode`, `climate.set_swing_mode`, `climate.set_preset_mode` | `fan_mode`, `swing_mode`, `preset_mode`: one of its lists | |
+| `climate.turn_on` | none | Back to the last mode it was in other than `off` (the protocol remembers it), or its first mode that isn't. `climate.toggle` resolves to `turn_on` from `off`, `turn_off` from anything else |
+| `climate.turn_off` | none | Needs `off` among its modes. Its own power switch when it has one (MQTT's `power_command_topic`), otherwise the `off` mode |
+| `water_heater.set_temperature` | `temperature` in °C within its `min_temp`–`max_temp`; optionally `operation_mode` to switch to | Needs `target_temperature` |
+| `water_heater.set_operation_mode` | `operation_mode`, one of its `operation_modes` | |
+| `water_heater.turn_on`, `water_heater.turn_off` | none | Its own switch when it has one (`on_off`); otherwise the `off` mode, and back to the last mode other than `off`, as a climate entity. `water_heater.toggle` resolves to one or the other |
+| `humidifier.turn_on`, `humidifier.turn_off` | none | `humidifier.toggle` resolves to one or the other |
+| `humidifier.set_humidity` | `humidity` %, within its `humidity` range | |
+| `humidifier.set_mode` | `mode`, one of its `modes` | |
+| `fan.turn_on` | `percentage` 1–100, `preset_mode`; both optional | `fan.toggle` resolves to `turn_on` or `turn_off` |
+| `fan.turn_off` | none | |
+| `fan.set_percentage` | `percentage` 0–100 | 0 turns it off. Needs a `speed_count` |
+| `fan.oscillate` | `oscillating` bool | Needs `oscillate` |
+| `fan.set_direction` | `direction` `forward` \| `reverse` | Needs `direction` |
+| `fan.set_preset_mode` | `preset_mode`, one of its `preset_modes` | |
 
 `sensor` and `binary_sensor` have no services.
 

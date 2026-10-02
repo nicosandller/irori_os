@@ -1,5 +1,6 @@
 //! Parsing an HA MQTT Discovery config payload into what Irori needs: a device, an entity's
-//! capabilities, and the topics/schema to read and write it through.
+//! capabilities, and the topics/schema to read and write it through. Each component's own module
+//! under [`crate::kinds`] reads its part of the config; this reads what every one shares.
 //!
 //! Deliberately permissive: real payloads (Z2M, Tasmota, ESPHome-over-MQTT) carry many fields
 //! Irori doesn't use, and HA itself tolerates most of them being absent. This reads what it
@@ -7,14 +8,33 @@
 //! unexpected field never fails the whole entity — only a field this parser actually depends on
 //! being unusable does that, and always with a reason a person could act on.
 
-use irori_types::{
-    BinarySensorCapabilities, BinarySensorClass, Capabilities, ColorTempRange, LightCapabilities,
-    Name, SensorCapabilities, SensorClass, SensorValueType, StateClass, SwitchCapabilities,
-    SwitchClass, UniqueId,
-};
+use irori_types::{Capabilities, EntityCategory, EntityKind, Name, UniqueId};
 
-use crate::template::ValueTemplate;
+use crate::kinds::{
+    binary_sensor, button, climate, cover, event, fan, humidifier, light, lock, number, select,
+    sensor, siren, switch, text, valve, water_heater,
+};
+use crate::template::CommandTemplate;
 use crate::topic::Component;
+
+pub use crate::kinds::binary_sensor::BinarySensorTopics;
+pub use crate::kinds::button::ButtonTopics;
+pub use crate::kinds::climate::ClimateTopics;
+pub use crate::kinds::cover::CoverTopics;
+pub use crate::kinds::event::{EventSource, EventTopics};
+pub use crate::kinds::fan::FanTopics;
+pub use crate::kinds::humidifier::HumidifierTopics;
+pub use crate::kinds::light::LightTopics;
+pub use crate::kinds::lock::LockTopics;
+pub use crate::kinds::number::NumberTopics;
+pub use crate::kinds::opening::OpeningTopics;
+pub use crate::kinds::select::SelectTopics;
+pub use crate::kinds::sensor::SensorTopics;
+pub use crate::kinds::setting::{Power, Reading, Setting};
+pub use crate::kinds::siren::SirenTopics;
+pub use crate::kinds::switch::SwitchTopics;
+pub use crate::kinds::text::TextTopics;
+pub use crate::kinds::water_heater::WaterHeaterTopics;
 
 /// A device as HA discovery describes it. `unique_id` is the first of `device.identifiers`,
 /// HA's own permanent handle for the device (ROADMAP D31's same intent).
@@ -67,42 +87,53 @@ pub fn resolve(listeners: &[Listener], payload: &str) -> (Vec<UniqueId>, Vec<Uni
     (available, unavailable)
 }
 
-/// The topics and wire schema for one entity, once its kind is known.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The topics and wire schema for one entity, once its kind is known: each component's own,
+/// from its module under [`crate::kinds`].
+#[derive(Debug, Clone, PartialEq)]
 pub enum EntityTopics {
-    /// Z2M's `schema: "json"`: one topic each way, JSON body
-    /// `{state, brightness, color_temp, color: {r,g,b}}`.
-    LightJson {
-        state_topic: String,
-        command_topic: String,
-    },
-    /// The default/plain schema (Tasmota): separate topics per feature, plain-text payloads.
-    LightDefault {
-        state_topic: Option<String>,
-        command_topic: String,
-        payload_on: String,
-        payload_off: String,
-        brightness_state_topic: Option<String>,
-        brightness_command_topic: Option<String>,
-        /// The scale brightness is published/commanded in, e.g. Tasmota's 100. Irori's own
-        /// scale is 1-255; conversion happens in `state.rs`.
-        brightness_scale: u32,
-    },
-    Switch {
-        state_topic: Option<String>,
-        command_topic: String,
-        payload_on: String,
-        payload_off: String,
-    },
-    Sensor {
-        state_topic: String,
-        value_template: ValueTemplate,
-    },
-    BinarySensor {
-        state_topic: String,
-        payload_on: String,
-        payload_off: String,
-    },
+    Light(LightTopics),
+    Switch(SwitchTopics),
+    Sensor(SensorTopics),
+    BinarySensor(BinarySensorTopics),
+    Number(NumberTopics),
+    Select(SelectTopics),
+    Text(TextTopics),
+    Button(ButtonTopics),
+    Event(EventTopics),
+    /// Boxed: Home Assistant lets nearly every part of a cover vary.
+    Cover(Box<CoverTopics>),
+    Lock(Box<LockTopics>),
+    Fan(Box<FanTopics>),
+    Valve(Box<OpeningTopics>),
+    Siren(SirenTopics),
+    Climate(Box<ClimateTopics>),
+    WaterHeater(Box<WaterHeaterTopics>),
+    Humidifier(Box<HumidifierTopics>),
+}
+
+impl EntityTopics {
+    /// The kind of entity these are the topics of.
+    pub fn kind(&self) -> EntityKind {
+        match self {
+            Self::Light(_) => EntityKind::Light,
+            Self::Switch(_) => EntityKind::Switch,
+            Self::Sensor(_) => EntityKind::Sensor,
+            Self::BinarySensor(_) => EntityKind::BinarySensor,
+            Self::Number(_) => EntityKind::Number,
+            Self::Select(_) => EntityKind::Select,
+            Self::Text(_) => EntityKind::Text,
+            Self::Button(_) => EntityKind::Button,
+            Self::Event(_) => EntityKind::Event,
+            Self::Cover(_) => EntityKind::Cover,
+            Self::Lock(_) => EntityKind::Lock,
+            Self::Fan(_) => EntityKind::Fan,
+            Self::Valve(_) => EntityKind::Valve,
+            Self::Siren(_) => EntityKind::Siren,
+            Self::Climate(_) => EntityKind::Climate,
+            Self::WaterHeater(_) => EntityKind::WaterHeater,
+            Self::Humidifier(_) => EntityKind::Humidifier,
+        }
+    }
 }
 
 /// Everything Irori needs from one discovery config payload.
@@ -116,6 +147,8 @@ pub struct ParsedConfig {
     pub name: Option<Name>,
     pub device: Option<ParsedDevice>,
     pub capabilities: Capabilities,
+    /// HA's `entity_category`: one of the device's settings or diagnostics.
+    pub entity_category: Option<EntityCategory>,
     pub topics: EntityTopics,
     pub availability: Vec<AvailabilityTopic>,
 }
@@ -142,10 +175,23 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
 
     let availability = parse_availability(&root);
     let (capabilities, topics) = match component {
-        Component::Light => parse_light(&root)?,
-        Component::Switch => parse_switch(&root)?,
-        Component::Sensor => parse_sensor(&root)?,
-        Component::BinarySensor => parse_binary_sensor(&root)?,
+        Component::Light => light::parse(&root)?,
+        Component::Switch => switch::parse(&root)?,
+        Component::Sensor => sensor::parse(&root)?,
+        Component::BinarySensor => binary_sensor::parse(&root)?,
+        Component::Number => number::parse(&root)?,
+        Component::Select => select::parse(&root)?,
+        Component::Text => text::parse(&root)?,
+        Component::Button => button::parse(&root)?,
+        Component::Event => event::parse(&root)?,
+        Component::Cover => cover::parse(&root)?,
+        Component::Lock => lock::parse(&root)?,
+        Component::Fan => fan::parse(&root)?,
+        Component::Valve => valve::parse(&root)?,
+        Component::Siren => siren::parse(&root)?,
+        Component::Climate => climate::parse(&root)?,
+        Component::WaterHeater => water_heater::parse(&root)?,
+        Component::Humidifier => humidifier::parse(&root)?,
     };
 
     Ok(ParsedConfig {
@@ -153,24 +199,30 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         name,
         device,
         capabilities,
+        // Same names as Irori's; anything else is left out.
+        entity_category: str_field(&root, "entity_category").and_then(|c| match c {
+            "config" => Some(EntityCategory::Config),
+            "diagnostic" => Some(EntityCategory::Diagnostic),
+            _ => None,
+        }),
         topics,
         availability,
     })
 }
 
-fn str_field<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+pub(crate) fn str_field<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(serde_json::Value::as_str)
 }
 
-fn bool_field(value: &serde_json::Value, key: &str) -> bool {
+pub(crate) fn bool_field(value: &serde_json::Value, key: &str) -> bool {
     value.get(key).and_then(serde_json::Value::as_bool) == Some(true)
 }
 
-fn owned_str(value: &serde_json::Value, key: &str, default: &str) -> String {
+pub(crate) fn owned_str(value: &serde_json::Value, key: &str, default: &str) -> String {
     str_field(value, key).unwrap_or(default).to_owned()
 }
 
-fn parse_device(root: &serde_json::Value) -> Result<Option<ParsedDevice>, String> {
+pub(crate) fn parse_device(root: &serde_json::Value) -> Result<Option<ParsedDevice>, String> {
     let Some(device) = root.get("device") else {
         return Ok(None);
     };
@@ -251,217 +303,47 @@ fn parse_availability(root: &serde_json::Value) -> Vec<AvailabilityTopic> {
     }
 }
 
-fn parse_light(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
-    let modes: Vec<&str> = root
-        .get("supported_color_modes")
+/// The `command_topic` of an entity whose command is its value, and how to put the value in.
+///
+/// A `command_template` that does more than place the value would need Jinja, which Irori doesn't
+/// run (`docs/specs/protocols.md`): an entity that needs one is better refused than sent the
+/// wrong thing.
+pub(crate) fn plain_command(
+    root: &serde_json::Value,
+    what: &str,
+) -> Result<(String, CommandTemplate), String> {
+    let command_topic = str_field(root, "command_topic")
+        .ok_or_else(|| format!("{what} needs a `command_topic`"))?
+        .to_owned();
+    let template = CommandTemplate::parse(str_field(root, "command_template"), "value")
+        .map_err(|why| format!("`command_template`: {why}"))?;
+    Ok((command_topic, template))
+}
+
+/// A number from a discovery config, written as a number or (Zigbee2MQTT's `min_temp`) as text.
+pub(crate) fn number_field(root: &serde_json::Value, key: &str) -> Option<f64> {
+    match root.get(key)? {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(text) => text.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+pub(crate) fn string_list(root: &serde_json::Value, key: &str) -> Option<Vec<String>> {
+    root.get(key)
         .and_then(serde_json::Value::as_array)
-        .map(|items| items.iter().filter_map(serde_json::Value::as_str).collect())
-        .unwrap_or_default();
-    let has_mode = |m: &str| modes.contains(&m);
-    // Falls back to the legacy boolean flags when `supported_color_modes` is absent, which
-    // Tasmota's default schema still uses.
-    let brightness = if modes.is_empty() {
-        bool_field(root, "brightness")
-    } else {
-        has_mode("brightness")
-            || has_mode("color_temp")
-            || has_mode("rgb")
-            || has_mode("xy")
-            || has_mode("hs")
-    };
-    let supports_color_temp = if modes.is_empty() {
-        bool_field(root, "color_temp")
-    } else {
-        has_mode("color_temp")
-    };
-    // Irori has one generic "color" capability; xy/hs are both treated as it, same as `rgb`
-    // (documented simplification — see the crate's README).
-    let supports_rgb = if modes.is_empty() {
-        bool_field(root, "rgb")
-    } else {
-        has_mode("rgb") || has_mode("xy") || has_mode("hs")
-    };
-    let color_temp_kelvin = supports_color_temp
-        .then(|| color_temp_range(root))
-        .transpose()?;
-    let capabilities = Capabilities::Light(LightCapabilities {
-        brightness,
-        color_temp_kelvin,
-        rgb: supports_rgb,
-    });
-
-    let command_topic = str_field(root, "command_topic")
-        .ok_or("a light needs a `command_topic`")?
-        .to_owned();
-    let topics = if str_field(root, "schema") == Some("json") {
-        EntityTopics::LightJson {
-            state_topic: owned_str(root, "state_topic", &command_topic),
-            command_topic,
-        }
-    } else {
-        EntityTopics::LightDefault {
-            state_topic: str_field(root, "state_topic").map(str::to_owned),
-            command_topic,
-            payload_on: owned_str(root, "payload_on", "ON"),
-            payload_off: owned_str(root, "payload_off", "OFF"),
-            brightness_state_topic: str_field(root, "brightness_state_topic").map(str::to_owned),
-            brightness_command_topic: str_field(root, "brightness_command_topic")
-                .map(str::to_owned),
-            brightness_scale: root
-                .get("brightness_scale")
-                .and_then(serde_json::Value::as_u64)
-                .map(|n| n as u32)
-                .unwrap_or(255),
-        }
-    };
-    Ok((capabilities, topics))
-}
-
-/// `min_kelvin`/`max_kelvin` if HA's newer form is present; otherwise the older `min_mireds`/
-/// `max_mireds`, inverted (mireds and kelvin move opposite ways: `kelvin = 1_000_000 / mireds`),
-/// falling back to HA's own defaults (153-500 mireds, i.e. roughly 2000-6535 K) when neither is
-/// given at all but color temperature is still declared supported.
-fn color_temp_range(root: &serde_json::Value) -> Result<ColorTempRange, String> {
-    let as_u32 = |key: &str| {
-        root.get(key)
-            .and_then(serde_json::Value::as_u64)
-            .map(|n| n as u32)
-    };
-    let (min, max) = match (as_u32("min_kelvin"), as_u32("max_kelvin")) {
-        (Some(min), Some(max)) => (min, max),
-        _ => {
-            let min_mireds = as_u32("max_mireds").unwrap_or(500); // max mireds -> min kelvin
-            let max_mireds = as_u32("min_mireds").unwrap_or(153); // min mireds -> max kelvin
-            let mireds_to_kelvin = |m: u32| 1_000_000_u32.checked_div(m).unwrap_or(20000);
-            (mireds_to_kelvin(min_mireds), mireds_to_kelvin(max_mireds))
-        }
-    };
-    let clamp = |k: u32| k.clamp(1000, 20000) as u16;
-    let (min, max) = (clamp(min), clamp(max));
-    let range = if min <= max {
-        ColorTempRange { min, max }
-    } else {
-        ColorTempRange { min: max, max: min }
-    };
-    range.validate().map(|()| range).map_err(|e| e.to_string())
-}
-
-fn parse_switch(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
-    let device_class = str_field(root, "device_class").and_then(switch_class);
-    let command_topic = str_field(root, "command_topic")
-        .ok_or("a switch needs a `command_topic`")?
-        .to_owned();
-    Ok((
-        Capabilities::Switch(SwitchCapabilities { device_class }),
-        EntityTopics::Switch {
-            state_topic: str_field(root, "state_topic").map(str::to_owned),
-            command_topic,
-            payload_on: owned_str(root, "payload_on", "ON"),
-            payload_off: owned_str(root, "payload_off", "OFF"),
-        },
-    ))
-}
-
-fn parse_sensor(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
-    let state_topic = str_field(root, "state_topic")
-        .ok_or("a sensor needs a `state_topic`")?
-        .to_owned();
-    let device_class = str_field(root, "device_class").and_then(sensor_class);
-    let state_class = str_field(root, "state_class").and_then(|s| match s {
-        "measurement" => Some(StateClass::Measurement),
-        "total" => Some(StateClass::Total),
-        "total_increasing" => Some(StateClass::TotalIncreasing),
-        _ => None,
-    });
-    // A unit at all is the strongest signal this is a number, not text (HA has no separate
-    // "this sensor is numeric" flag) — Tasmota/Z2M numeric sensors always carry one.
-    let value_type = if str_field(root, "unit_of_measurement").is_some() || device_class.is_some() {
-        SensorValueType::Number
-    } else {
-        SensorValueType::Text
-    };
-    Ok((
-        Capabilities::Sensor(SensorCapabilities {
-            value_type,
-            device_class,
-            unit: str_field(root, "unit_of_measurement").map(str::to_owned),
-            state_class,
-        }),
-        EntityTopics::Sensor {
-            state_topic,
-            value_template: ValueTemplate::parse(str_field(root, "value_template")),
-        },
-    ))
-}
-
-fn parse_binary_sensor(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
-    let state_topic = str_field(root, "state_topic")
-        .ok_or("a binary_sensor needs a `state_topic`")?
-        .to_owned();
-    Ok((
-        Capabilities::BinarySensor(BinarySensorCapabilities {
-            device_class: str_field(root, "device_class").and_then(binary_sensor_class),
-        }),
-        EntityTopics::BinarySensor {
-            state_topic,
-            payload_on: owned_str(root, "payload_on", "ON"),
-            payload_off: owned_str(root, "payload_off", "OFF"),
-        },
-    ))
-}
-
-fn switch_class(text: &str) -> Option<SwitchClass> {
-    match text {
-        "outlet" => Some(SwitchClass::Outlet),
-        "switch" => Some(SwitchClass::Switch),
-        _ => None,
-    }
-}
-
-/// HA's own device-class strings, mapped to Irori's closed list (`docs/specs/entities.md` §4.4).
-/// Anything HA has that Irori doesn't is left absent, never an error (`docs/specs/entities.md`:
-/// "a protocol maps what it knows and leaves the rest absent").
-fn sensor_class(text: &str) -> Option<SensorClass> {
-    match text {
-        "temperature" => Some(SensorClass::Temperature),
-        "humidity" => Some(SensorClass::Humidity),
-        "illuminance" => Some(SensorClass::Illuminance),
-        "pressure" | "atmospheric_pressure" => Some(SensorClass::Pressure),
-        "power" => Some(SensorClass::Power),
-        "energy" => Some(SensorClass::Energy),
-        "voltage" => Some(SensorClass::Voltage),
-        "current" => Some(SensorClass::Current),
-        "battery" => Some(SensorClass::Battery),
-        // HA's string is `carbon_dioxide`, not `co2` — Irori's variant is named for the gas, not
-        // HA's exact spelling.
-        "carbon_dioxide" => Some(SensorClass::Co2),
-        "pm25" => Some(SensorClass::Pm25),
-        "signal_strength" => Some(SensorClass::SignalStrength),
-        "distance" => Some(SensorClass::Distance),
-        _ => None,
-    }
-}
-
-fn binary_sensor_class(text: &str) -> Option<BinarySensorClass> {
-    match text {
-        "motion" => Some(BinarySensorClass::Motion),
-        "occupancy" => Some(BinarySensorClass::Occupancy),
-        "door" => Some(BinarySensorClass::Door),
-        "window" => Some(BinarySensorClass::Window),
-        "moisture" => Some(BinarySensorClass::Moisture),
-        "smoke" => Some(BinarySensorClass::Smoke),
-        "gas" => Some(BinarySensorClass::Gas),
-        "vibration" => Some(BinarySensorClass::Vibration),
-        "plug" => Some(BinarySensorClass::Plug),
-        "connectivity" => Some(BinarySensorClass::Connectivity),
-        "problem" => Some(BinarySensorClass::Problem),
-        "battery" => Some(BinarySensorClass::Battery),
-        _ => None,
-    }
+        .map(|list| {
+            list.iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use irori_types::SwitchClass;
+
     #[test]
     fn two_entities_sharing_a_topic_are_each_read_by_their_own_words() {
         use super::{Listener, resolve};
@@ -497,26 +379,6 @@ mod tests {
         assert!(available.is_empty() && unavailable.is_empty());
     }
 
-    use super::*;
-
-    /// A Zigbee2MQTT-shaped light: JSON schema, modern `supported_color_modes`.
-    const Z2M_LIGHT: &str = r#"{
-        "unique_id": "0x0017880104e45520_light",
-        "device": {
-            "identifiers": ["0x0017880104e45520"],
-            "name": "Living room lamp",
-            "manufacturer": "Philips",
-            "model": "Hue color lamp"
-        },
-        "schema": "json",
-        "state_topic": "zigbee2mqtt/Living room lamp",
-        "command_topic": "zigbee2mqtt/Living room lamp/set",
-        "supported_color_modes": ["color_temp", "xy"],
-        "min_mireds": 153,
-        "max_mireds": 500,
-        "availability_topic": "zigbee2mqtt/bridge/state"
-    }"#;
-
     /// A Tasmota-shaped switch: default schema, plain on/off.
     const TASMOTA_SWITCH: &str = r#"{
         "unique_id": "tasmota_ABC123_switch",
@@ -530,36 +392,6 @@ mod tests {
         "payload_available": "Online",
         "payload_not_available": "Offline"
     }"#;
-
-    /// A Z2M sensor with a nested `value_template`.
-    const Z2M_SENSOR: &str = r#"{
-        "unique_id": "0x0017880104e45521_power",
-        "device": { "identifiers": ["0x0017880104e45521"], "name": "Plug" },
-        "device_class": "power",
-        "unit_of_measurement": "W",
-        "state_class": "measurement",
-        "state_topic": "zigbee2mqtt/Plug",
-        "value_template": "{{ value_json.power }}"
-    }"#;
-
-    #[test]
-    fn parses_a_z2m_json_schema_light() {
-        let parsed = parse(Component::Light, Z2M_LIGHT.as_bytes()).expect("valid");
-        assert_eq!(parsed.unique_id.as_str(), "0x0017880104e45520_light");
-        let device = parsed.device.expect("has a device");
-        assert_eq!(device.unique_id.as_str(), "0x0017880104e45520");
-        assert_eq!(device.manufacturer.as_deref(), Some("Philips"));
-        let Capabilities::Light(caps) = parsed.capabilities else {
-            panic!("expected light capabilities")
-        };
-        assert!(caps.rgb, "xy counts as rgb (documented simplification)");
-        let range = caps.color_temp_kelvin.expect("supports color temp");
-        assert_eq!(range.min, 2000); // from max_mireds 500
-        assert_eq!(range.max, 6535); // from min_mireds 153, rounded down by integer division
-        assert!(matches!(parsed.topics, EntityTopics::LightJson { .. }));
-        assert_eq!(parsed.availability.len(), 1);
-        assert_eq!(parsed.availability[0].payload_available, "online");
-    }
 
     #[test]
     fn parses_a_tasmota_switch_with_custom_availability_payloads() {
@@ -578,36 +410,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_a_sensor_with_a_nested_value_template_and_maps_device_class() {
-        let parsed = parse(Component::Sensor, Z2M_SENSOR.as_bytes()).expect("valid");
-        let Capabilities::Sensor(caps) = parsed.capabilities else {
-            panic!("expected sensor capabilities")
-        };
-        assert_eq!(caps.device_class, Some(SensorClass::Power));
-        assert_eq!(caps.unit.as_deref(), Some("W"));
-        let EntityTopics::Sensor { value_template, .. } = parsed.topics else {
-            panic!("expected sensor topics")
-        };
-        assert_eq!(
-            value_template,
-            ValueTemplate::JsonPath(vec!["power".to_owned()])
-        );
-    }
-
-    #[test]
     fn a_missing_unique_id_is_rejected_with_a_clear_reason() {
         let error = parse(Component::Switch, br#"{"name": "x", "command_topic": "t"}"#)
             .expect_err("no unique_id");
         assert!(error.contains("unique_id"));
-    }
-
-    #[test]
-    fn ha_carbon_dioxide_maps_to_irori_co2() {
-        assert_eq!(sensor_class("carbon_dioxide"), Some(SensorClass::Co2));
-        assert_eq!(
-            sensor_class("co2"),
-            None,
-            "HA never actually sends this spelling"
-        );
     }
 }

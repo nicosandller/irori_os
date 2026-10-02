@@ -55,6 +55,11 @@ impl ExtensionManifest {
     /// Checks the rules that span fields. Deserialization runs this; call it yourself when
     /// building a manifest in code.
     pub fn validate(&self) -> Result<(), InvariantError> {
+        if self.extension.entity_format == 0 {
+            return Err(InvariantError(
+                "entity_format starts at 1; leave it out for the first format".into(),
+            ));
+        }
         self.contributes.validate()?;
         self.permissions.validate()
     }
@@ -139,6 +144,16 @@ pub struct ExtensionInfo {
     /// (`Protocol::ICON`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<PackagePath>,
+    /// Which version of the entity format it reads, when it reads entities and states through
+    /// the API (an automation engine, its page). Left out, it's 1: what every extension built
+    /// before formats existed reads. Irori sends it entities and states in that format, leaving
+    /// out what the format doesn't have (`docs/specs/extensions.md` §5).
+    #[serde(
+        default = "crate::format::first",
+        skip_serializing_if = "crate::format::is_first"
+    )]
+    #[schemars(range(min = 1))]
+    pub entity_format: u32,
 }
 
 /// The `[contributes]` table: one list per contribution kind.

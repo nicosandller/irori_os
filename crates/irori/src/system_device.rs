@@ -121,7 +121,9 @@ async fn describe(ctx: &ProtocolContext, reading: &Reading) -> Result<(), Protoc
             device_class: reading.class,
             unit: reading.unit.map(str::to_owned),
             state_class: (!reading.text).then_some(StateClass::Measurement),
+            options: Vec::new(),
         }),
+        entity_category: None,
     })
     .await?;
     Ok(())
@@ -196,6 +198,7 @@ fn report(id: &str, value: SensorValue) -> Result<StateReport, ProtocolError> {
         state: Some(State::Sensor(SensorState { value })),
         attributes: Default::default(),
         caused_by: None,
+        replayed: false,
     })
 }
 

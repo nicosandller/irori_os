@@ -1,0 +1,14 @@
+{
+  "unique_id": "0x0211000000000009_action",
+  "name": "Action",
+  "device_unique_id": "0x0211000000000009",
+  "capabilities": {
+    "kind": "event",
+    "event_types": [
+      "single",
+      "double",
+      "hold"
+    ],
+    "device_class": "button"
+  }
+}

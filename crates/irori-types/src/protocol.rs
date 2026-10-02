@@ -10,11 +10,50 @@ use std::fmt;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
-use crate::num::{Num, whole};
-use crate::{
-    Attributes, Capabilities, Context, ContextId, EntityKind, InvariantError, Name, ObjectId,
-    State, UniqueId,
+use crate::kinds::climate::{
+    ClimateFanMode, ClimateHvacMode, ClimatePresetMode, ClimateSetTemperature, ClimateSwingMode,
+    SetHumidity,
 };
+use crate::kinds::cover::SetTilt;
+use crate::kinds::fan::{FanOscillate, FanPercentage, FanPresetMode, FanSetDirection, FanTurnOn};
+use crate::kinds::humidifier::HumidifierMode;
+use crate::kinds::light::LightTurnOn;
+use crate::kinds::lock::LockCode;
+use crate::kinds::number::NumberSetValue;
+use crate::kinds::opening::SetPosition;
+use crate::kinds::select::SelectOption;
+use crate::kinds::siren::SirenTurnOn;
+use crate::kinds::text::TextSetValue;
+use crate::kinds::water_heater::{WaterHeaterOperationMode, WaterHeaterSetTemperature};
+use crate::{
+    Attributes, Capabilities, Context, ContextId, EntityCategory, EntityKind, InvariantError, Name,
+    ObjectId, State, UniqueId,
+};
+
+/// Something a protocol found that Irori has no entity kind for yet: a device's fan, its
+/// infrared blaster. See `docs/specs/protocols.md` §6.7.
+///
+/// Not an entity: it has no id, no state, and nothing can be asked of it. It's listed on its
+/// device (or its extension, without one) so a person can see what's there and isn't supported,
+/// rather than a device that looks like it has less than it does. When Irori gains the kind, the
+/// protocol describes it as an entity instead, and it drops off this list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Unmodeled {
+    /// The device it's on, when it's on one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_unique_id: Option<UniqueId>,
+    /// What the protocol calls this kind of thing, e.g. `fan`, `infrared`. Deliberately not an
+    /// entity kind: it's one Irori doesn't have.
+    pub platform: ObjectId,
+    /// Its name, when the protocol knows one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<Name>,
+    /// Why Irori can't use it, when it's a kind Irori has but this one couldn't be read: its
+    /// command needs a template Irori doesn't run, say. Absent for a kind Irori doesn't have.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
 
 /// Something a protocol found but can't use yet, because it needs a person first: a device
 /// that wants an encryption key, one that has to be paired, an account that has to be signed in
@@ -190,6 +229,9 @@ pub struct EntityDescription {
     pub suggested_object_id: Option<ObjectId>,
     /// What it can do. `capabilities.kind` is the entity's kind.
     pub capabilities: Capabilities,
+    /// Whether it's one of the device's settings or diagnostics rather than something it's for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_category: Option<EntityCategory>,
 }
 
 #[derive(Deserialize)]
@@ -203,6 +245,8 @@ struct RawEntityDescription {
     #[serde(default)]
     suggested_object_id: Option<ObjectId>,
     capabilities: Capabilities,
+    #[serde(default)]
+    entity_category: Option<EntityCategory>,
 }
 
 impl<'de> Deserialize<'de> for EntityDescription {
@@ -214,6 +258,7 @@ impl<'de> Deserialize<'de> for EntityDescription {
             device_unique_id: raw.device_unique_id,
             suggested_object_id: raw.suggested_object_id,
             capabilities: raw.capabilities,
+            entity_category: raw.entity_category,
         };
         entity.validate().map_err(serde::de::Error::custom)?;
         Ok(entity)
@@ -259,6 +304,11 @@ pub struct StateReport {
     /// (e.g. the device confirmed a command). Otherwise the change is attributed to the device.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caused_by: Option<ContextId>,
+    /// The protocol is repeating what it last heard rather than hearing something new, e.g. a
+    /// retained MQTT message delivered on (re)subscribing. For an `event`, whose every report is
+    /// an occurrence, a replayed one sets the value without counting as something happening.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replayed: bool,
 }
 
 #[derive(Deserialize)]
@@ -272,6 +322,8 @@ struct RawStateReport {
     attributes: Attributes,
     #[serde(default)]
     caused_by: Option<ContextId>,
+    #[serde(default)]
+    replayed: bool,
 }
 
 impl<'de> Deserialize<'de> for StateReport {
@@ -282,6 +334,7 @@ impl<'de> Deserialize<'de> for StateReport {
             state: raw.state,
             attributes: raw.attributes,
             caused_by: raw.caused_by,
+            replayed: raw.replayed,
         };
         report.validate().map_err(serde::de::Error::custom)?;
         Ok(report)
@@ -289,6 +342,14 @@ impl<'de> Deserialize<'de> for StateReport {
 }
 
 impl StateReport {
+    /// Whether it reports something happening (an event's press) rather than a value: each one
+    /// counts, so none may stand in for another (`EntityKind::counts_every_report`).
+    pub fn is_occurrence(&self) -> bool {
+        self.state
+            .as_ref()
+            .is_some_and(|state| state.kind().counts_every_report())
+    }
+
     /// Deserialization runs this; call it yourself when building a report in code.
     pub fn validate(&self) -> Result<(), InvariantError> {
         match &self.state {
@@ -308,7 +369,7 @@ impl StateReport {
 ///
 /// There's no `entity_id`: that's the user's name for the entity and may change, while the
 /// protocol only ever uses its own `unique_id`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ServiceCall {
     /// Which entity, in the protocol's own terms.
     pub unique_id: UniqueId,
@@ -319,12 +380,56 @@ pub struct ServiceCall {
 
 /// A service and its data. The standard services of every entity kind; each protocol handles
 /// the ones for the kinds it provides.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// It serializes as its data alone (`null` for a service without any): the wire shape is
+/// [`ServiceCall`]'s, which names the service beside it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
 pub enum Service {
     LightTurnOn(LightTurnOn),
     LightTurnOff,
     SwitchTurnOn,
     SwitchTurnOff,
+    NumberSetValue(NumberSetValue),
+    SelectSelectOption(SelectOption),
+    TextSetValue(TextSetValue),
+    ButtonPress,
+    CoverOpen,
+    CoverClose,
+    CoverStop,
+    CoverSetPosition(SetPosition),
+    CoverSetTilt(SetTilt),
+    LockLock(LockCode),
+    LockUnlock(LockCode),
+    LockOpen(LockCode),
+    FanTurnOn(FanTurnOn),
+    FanTurnOff,
+    FanSetPercentage(FanPercentage),
+    FanOscillate(FanOscillate),
+    FanSetDirection(FanSetDirection),
+    FanSetPresetMode(FanPresetMode),
+    ValveOpen,
+    ValveClose,
+    ValveStop,
+    ValveSetPosition(SetPosition),
+    SirenTurnOn(SirenTurnOn),
+    SirenTurnOff,
+    ClimateSetHvacMode(ClimateHvacMode),
+    ClimateSetTemperature(ClimateSetTemperature),
+    ClimateSetHumidity(SetHumidity),
+    ClimateSetFanMode(ClimateFanMode),
+    ClimateSetSwingMode(ClimateSwingMode),
+    ClimateSetPresetMode(ClimatePresetMode),
+    ClimateTurnOn,
+    ClimateTurnOff,
+    WaterHeaterSetTemperature(WaterHeaterSetTemperature),
+    WaterHeaterSetOperationMode(WaterHeaterOperationMode),
+    WaterHeaterTurnOn,
+    WaterHeaterTurnOff,
+    HumidifierTurnOn,
+    HumidifierTurnOff,
+    HumidifierSetHumidity(SetHumidity),
+    HumidifierSetMode(HumidifierMode),
 }
 
 impl Service {
@@ -334,6 +439,46 @@ impl Service {
             Self::LightTurnOff => ServiceName::LightTurnOff,
             Self::SwitchTurnOn => ServiceName::SwitchTurnOn,
             Self::SwitchTurnOff => ServiceName::SwitchTurnOff,
+            Self::NumberSetValue(_) => ServiceName::NumberSetValue,
+            Self::SelectSelectOption(_) => ServiceName::SelectSelectOption,
+            Self::TextSetValue(_) => ServiceName::TextSetValue,
+            Self::ButtonPress => ServiceName::ButtonPress,
+            Self::CoverOpen => ServiceName::CoverOpen,
+            Self::CoverClose => ServiceName::CoverClose,
+            Self::CoverStop => ServiceName::CoverStop,
+            Self::CoverSetPosition(_) => ServiceName::CoverSetPosition,
+            Self::CoverSetTilt(_) => ServiceName::CoverSetTilt,
+            Self::LockLock(_) => ServiceName::LockLock,
+            Self::LockUnlock(_) => ServiceName::LockUnlock,
+            Self::LockOpen(_) => ServiceName::LockOpen,
+            Self::FanTurnOn(_) => ServiceName::FanTurnOn,
+            Self::FanTurnOff => ServiceName::FanTurnOff,
+            Self::FanSetPercentage(_) => ServiceName::FanSetPercentage,
+            Self::FanOscillate(_) => ServiceName::FanOscillate,
+            Self::FanSetDirection(_) => ServiceName::FanSetDirection,
+            Self::FanSetPresetMode(_) => ServiceName::FanSetPresetMode,
+            Self::ValveOpen => ServiceName::ValveOpen,
+            Self::ValveClose => ServiceName::ValveClose,
+            Self::ValveStop => ServiceName::ValveStop,
+            Self::ValveSetPosition(_) => ServiceName::ValveSetPosition,
+            Self::SirenTurnOn(_) => ServiceName::SirenTurnOn,
+            Self::SirenTurnOff => ServiceName::SirenTurnOff,
+            Self::ClimateSetHvacMode(_) => ServiceName::ClimateSetHvacMode,
+            Self::ClimateSetTemperature(_) => ServiceName::ClimateSetTemperature,
+            Self::ClimateSetHumidity(_) => ServiceName::ClimateSetHumidity,
+            Self::ClimateSetFanMode(_) => ServiceName::ClimateSetFanMode,
+            Self::ClimateSetSwingMode(_) => ServiceName::ClimateSetSwingMode,
+            Self::ClimateSetPresetMode(_) => ServiceName::ClimateSetPresetMode,
+            Self::ClimateTurnOn => ServiceName::ClimateTurnOn,
+            Self::ClimateTurnOff => ServiceName::ClimateTurnOff,
+            Self::WaterHeaterSetTemperature(_) => ServiceName::WaterHeaterSetTemperature,
+            Self::WaterHeaterSetOperationMode(_) => ServiceName::WaterHeaterSetOperationMode,
+            Self::WaterHeaterTurnOn => ServiceName::WaterHeaterTurnOn,
+            Self::WaterHeaterTurnOff => ServiceName::WaterHeaterTurnOff,
+            Self::HumidifierTurnOn => ServiceName::HumidifierTurnOn,
+            Self::HumidifierTurnOff => ServiceName::HumidifierTurnOff,
+            Self::HumidifierSetHumidity(_) => ServiceName::HumidifierSetHumidity,
+            Self::HumidifierSetMode(_) => ServiceName::HumidifierSetMode,
         }
     }
 }
@@ -349,14 +494,134 @@ pub enum ServiceName {
     SwitchTurnOn,
     #[serde(rename = "switch.turn_off")]
     SwitchTurnOff,
+    #[serde(rename = "number.set_value")]
+    NumberSetValue,
+    #[serde(rename = "select.select_option")]
+    SelectSelectOption,
+    #[serde(rename = "text.set_value")]
+    TextSetValue,
+    #[serde(rename = "button.press")]
+    ButtonPress,
+    #[serde(rename = "cover.open")]
+    CoverOpen,
+    #[serde(rename = "cover.close")]
+    CoverClose,
+    #[serde(rename = "cover.stop")]
+    CoverStop,
+    #[serde(rename = "cover.set_position")]
+    CoverSetPosition,
+    #[serde(rename = "cover.set_tilt")]
+    CoverSetTilt,
+    #[serde(rename = "lock.lock")]
+    LockLock,
+    #[serde(rename = "lock.unlock")]
+    LockUnlock,
+    #[serde(rename = "lock.open")]
+    LockOpen,
+    #[serde(rename = "fan.turn_on")]
+    FanTurnOn,
+    #[serde(rename = "fan.turn_off")]
+    FanTurnOff,
+    #[serde(rename = "fan.set_percentage")]
+    FanSetPercentage,
+    #[serde(rename = "fan.oscillate")]
+    FanOscillate,
+    #[serde(rename = "fan.set_direction")]
+    FanSetDirection,
+    #[serde(rename = "fan.set_preset_mode")]
+    FanSetPresetMode,
+    #[serde(rename = "valve.open")]
+    ValveOpen,
+    #[serde(rename = "valve.close")]
+    ValveClose,
+    #[serde(rename = "valve.stop")]
+    ValveStop,
+    #[serde(rename = "valve.set_position")]
+    ValveSetPosition,
+    #[serde(rename = "siren.turn_on")]
+    SirenTurnOn,
+    #[serde(rename = "siren.turn_off")]
+    SirenTurnOff,
+    #[serde(rename = "climate.set_hvac_mode")]
+    ClimateSetHvacMode,
+    #[serde(rename = "climate.set_temperature")]
+    ClimateSetTemperature,
+    #[serde(rename = "climate.set_humidity")]
+    ClimateSetHumidity,
+    #[serde(rename = "climate.set_fan_mode")]
+    ClimateSetFanMode,
+    #[serde(rename = "climate.set_swing_mode")]
+    ClimateSetSwingMode,
+    #[serde(rename = "climate.set_preset_mode")]
+    ClimateSetPresetMode,
+    #[serde(rename = "climate.turn_on")]
+    ClimateTurnOn,
+    #[serde(rename = "climate.turn_off")]
+    ClimateTurnOff,
+    #[serde(rename = "water_heater.set_temperature")]
+    WaterHeaterSetTemperature,
+    #[serde(rename = "water_heater.set_operation_mode")]
+    WaterHeaterSetOperationMode,
+    #[serde(rename = "water_heater.turn_on")]
+    WaterHeaterTurnOn,
+    #[serde(rename = "water_heater.turn_off")]
+    WaterHeaterTurnOff,
+    #[serde(rename = "humidifier.turn_on")]
+    HumidifierTurnOn,
+    #[serde(rename = "humidifier.turn_off")]
+    HumidifierTurnOff,
+    #[serde(rename = "humidifier.set_humidity")]
+    HumidifierSetHumidity,
+    #[serde(rename = "humidifier.set_mode")]
+    HumidifierSetMode,
 }
 
 impl ServiceName {
-    pub const ALL: [ServiceName; 4] = [
+    pub const ALL: &'static [ServiceName] = &[
         Self::LightTurnOn,
         Self::LightTurnOff,
         Self::SwitchTurnOn,
         Self::SwitchTurnOff,
+        Self::NumberSetValue,
+        Self::SelectSelectOption,
+        Self::TextSetValue,
+        Self::ButtonPress,
+        Self::CoverOpen,
+        Self::CoverClose,
+        Self::CoverStop,
+        Self::CoverSetPosition,
+        Self::CoverSetTilt,
+        Self::LockLock,
+        Self::LockUnlock,
+        Self::LockOpen,
+        Self::FanTurnOn,
+        Self::FanTurnOff,
+        Self::FanSetPercentage,
+        Self::FanOscillate,
+        Self::FanSetDirection,
+        Self::FanSetPresetMode,
+        Self::ValveOpen,
+        Self::ValveClose,
+        Self::ValveStop,
+        Self::ValveSetPosition,
+        Self::SirenTurnOn,
+        Self::SirenTurnOff,
+        Self::ClimateSetHvacMode,
+        Self::ClimateSetTemperature,
+        Self::ClimateSetHumidity,
+        Self::ClimateSetFanMode,
+        Self::ClimateSetSwingMode,
+        Self::ClimateSetPresetMode,
+        Self::ClimateTurnOn,
+        Self::ClimateTurnOff,
+        Self::WaterHeaterSetTemperature,
+        Self::WaterHeaterSetOperationMode,
+        Self::WaterHeaterTurnOn,
+        Self::WaterHeaterTurnOff,
+        Self::HumidifierTurnOn,
+        Self::HumidifierTurnOff,
+        Self::HumidifierSetHumidity,
+        Self::HumidifierSetMode,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -365,6 +630,46 @@ impl ServiceName {
             Self::LightTurnOff => "light.turn_off",
             Self::SwitchTurnOn => "switch.turn_on",
             Self::SwitchTurnOff => "switch.turn_off",
+            Self::NumberSetValue => "number.set_value",
+            Self::SelectSelectOption => "select.select_option",
+            Self::TextSetValue => "text.set_value",
+            Self::ButtonPress => "button.press",
+            Self::CoverOpen => "cover.open",
+            Self::CoverClose => "cover.close",
+            Self::CoverStop => "cover.stop",
+            Self::CoverSetPosition => "cover.set_position",
+            Self::CoverSetTilt => "cover.set_tilt",
+            Self::LockLock => "lock.lock",
+            Self::LockUnlock => "lock.unlock",
+            Self::LockOpen => "lock.open",
+            Self::FanTurnOn => "fan.turn_on",
+            Self::FanTurnOff => "fan.turn_off",
+            Self::FanSetPercentage => "fan.set_percentage",
+            Self::FanOscillate => "fan.oscillate",
+            Self::FanSetDirection => "fan.set_direction",
+            Self::FanSetPresetMode => "fan.set_preset_mode",
+            Self::ValveOpen => "valve.open",
+            Self::ValveClose => "valve.close",
+            Self::ValveStop => "valve.stop",
+            Self::ValveSetPosition => "valve.set_position",
+            Self::SirenTurnOn => "siren.turn_on",
+            Self::SirenTurnOff => "siren.turn_off",
+            Self::ClimateSetHvacMode => "climate.set_hvac_mode",
+            Self::ClimateSetTemperature => "climate.set_temperature",
+            Self::ClimateSetHumidity => "climate.set_humidity",
+            Self::ClimateSetFanMode => "climate.set_fan_mode",
+            Self::ClimateSetSwingMode => "climate.set_swing_mode",
+            Self::ClimateSetPresetMode => "climate.set_preset_mode",
+            Self::ClimateTurnOn => "climate.turn_on",
+            Self::ClimateTurnOff => "climate.turn_off",
+            Self::WaterHeaterSetTemperature => "water_heater.set_temperature",
+            Self::WaterHeaterSetOperationMode => "water_heater.set_operation_mode",
+            Self::WaterHeaterTurnOn => "water_heater.turn_on",
+            Self::WaterHeaterTurnOff => "water_heater.turn_off",
+            Self::HumidifierTurnOn => "humidifier.turn_on",
+            Self::HumidifierTurnOff => "humidifier.turn_off",
+            Self::HumidifierSetHumidity => "humidifier.set_humidity",
+            Self::HumidifierSetMode => "humidifier.set_mode",
         }
     }
 
@@ -373,12 +678,43 @@ impl ServiceName {
         match self {
             Self::LightTurnOn | Self::LightTurnOff => EntityKind::Light,
             Self::SwitchTurnOn | Self::SwitchTurnOff => EntityKind::Switch,
+            Self::NumberSetValue => EntityKind::Number,
+            Self::SelectSelectOption => EntityKind::Select,
+            Self::TextSetValue => EntityKind::Text,
+            Self::ButtonPress => EntityKind::Button,
+            Self::CoverOpen
+            | Self::CoverClose
+            | Self::CoverStop
+            | Self::CoverSetPosition
+            | Self::CoverSetTilt => EntityKind::Cover,
+            Self::LockLock | Self::LockUnlock | Self::LockOpen => EntityKind::Lock,
+            Self::FanTurnOn
+            | Self::FanTurnOff
+            | Self::FanSetPercentage
+            | Self::FanOscillate
+            | Self::FanSetDirection
+            | Self::FanSetPresetMode => EntityKind::Fan,
+            Self::ValveOpen | Self::ValveClose | Self::ValveStop | Self::ValveSetPosition => {
+                EntityKind::Valve
+            }
+            Self::SirenTurnOn | Self::SirenTurnOff => EntityKind::Siren,
+            Self::ClimateSetHvacMode
+            | Self::ClimateSetTemperature
+            | Self::ClimateSetHumidity
+            | Self::ClimateSetFanMode
+            | Self::ClimateSetSwingMode
+            | Self::ClimateSetPresetMode
+            | Self::ClimateTurnOn
+            | Self::ClimateTurnOff => EntityKind::Climate,
+            Self::WaterHeaterSetTemperature
+            | Self::WaterHeaterSetOperationMode
+            | Self::WaterHeaterTurnOn
+            | Self::WaterHeaterTurnOff => EntityKind::WaterHeater,
+            Self::HumidifierTurnOn
+            | Self::HumidifierTurnOff
+            | Self::HumidifierSetHumidity
+            | Self::HumidifierSetMode => EntityKind::Humidifier,
         }
-    }
-
-    /// Whether it takes `data`.
-    fn takes_data(self) -> bool {
-        matches!(self, Self::LightTurnOn)
     }
 }
 
@@ -429,19 +765,10 @@ fn json_type(value: &serde_json::Value) -> &'static str {
 
 impl Serialize for ServiceCall {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let data = match &self.service {
-            Service::LightTurnOn(data) if *data != LightTurnOn::default() => {
-                match serde_json::to_value(data).map_err(serde::ser::Error::custom)? {
-                    serde_json::Value::Object(map) => Some(map),
-                    _ => None,
-                }
-            }
-            _ => None,
-        };
         RawServiceCall {
             service: self.service.name(),
             unique_id: self.unique_id.clone(),
-            data,
+            data: self.service.data(),
             context: self.context.clone(),
         }
         .serialize(serializer)
@@ -452,20 +779,8 @@ impl<'de> Deserialize<'de> for ServiceCall {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error as _;
         let raw = RawServiceCall::deserialize(deserializer)?;
-        let name = raw.service;
-        let data = raw.data.unwrap_or_default();
-        if !name.takes_data() && !data.is_empty() {
-            return Err(D::Error::custom(format!("`{name}` takes no data")));
-        }
-        let service = match name {
-            ServiceName::LightTurnOn => Service::LightTurnOn(
-                LightTurnOn::deserialize(serde_json::Value::Object(data))
-                    .map_err(|e| D::Error::custom(format!("`{name}` data: {e}")))?,
-            ),
-            ServiceName::LightTurnOff => Service::LightTurnOff,
-            ServiceName::SwitchTurnOn => Service::SwitchTurnOn,
-            ServiceName::SwitchTurnOff => Service::SwitchTurnOff,
-        };
+        let service = Service::from_data(raw.service, raw.data.unwrap_or_default())
+            .map_err(D::Error::custom)?;
         let call = ServiceCall {
             unique_id: raw.unique_id,
             service,
@@ -479,10 +794,7 @@ impl<'de> Deserialize<'de> for ServiceCall {
 impl ServiceCall {
     /// Deserialization runs this; call it yourself when building a call in code.
     pub fn validate(&self) -> Result<(), InvariantError> {
-        match &self.service {
-            Service::LightTurnOn(data) => data.validate(),
-            _ => Ok(()),
-        }
+        self.service.validate()
     }
 }
 
@@ -494,12 +806,59 @@ impl JsonSchema for ServiceCall {
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let no_data = json_schema!({ "type": "object", "maxProperties": 0 });
         let light_turn_on = generator.subschema_for::<LightTurnOn>();
+        let number_set_value = generator.subschema_for::<NumberSetValue>();
+        let select_option = generator.subschema_for::<SelectOption>();
+        let text_set_value = generator.subschema_for::<TextSetValue>();
+        let set_position = generator.subschema_for::<SetPosition>();
+        let set_tilt = generator.subschema_for::<SetTilt>();
+        let lock_code = generator.subschema_for::<LockCode>();
+        let fan_turn_on = generator.subschema_for::<FanTurnOn>();
+        let fan_percentage = generator.subschema_for::<FanPercentage>();
+        let fan_oscillate = generator.subschema_for::<FanOscillate>();
+        let fan_direction = generator.subschema_for::<FanSetDirection>();
+        let fan_preset = generator.subschema_for::<FanPresetMode>();
+        let siren_turn_on = generator.subschema_for::<SirenTurnOn>();
+        let climate_mode = generator.subschema_for::<ClimateHvacMode>();
+        let climate_temperature = generator.subschema_for::<ClimateSetTemperature>();
+        let set_humidity = generator.subschema_for::<SetHumidity>();
+        let climate_fan = generator.subschema_for::<ClimateFanMode>();
+        let climate_swing = generator.subschema_for::<ClimateSwingMode>();
+        let climate_preset = generator.subschema_for::<ClimatePresetMode>();
+        let heater_temperature = generator.subschema_for::<WaterHeaterSetTemperature>();
+        let heater_mode = generator.subschema_for::<WaterHeaterOperationMode>();
+        let humidifier_mode = generator.subschema_for::<HumidifierMode>();
         // Per service: the shape of `data`.
         let rules: Vec<_> = ServiceName::ALL
             .iter()
             .map(|name| {
                 let data = match name {
                     ServiceName::LightTurnOn => light_turn_on.clone(),
+                    ServiceName::NumberSetValue => number_set_value.clone(),
+                    ServiceName::SelectSelectOption => select_option.clone(),
+                    ServiceName::TextSetValue => text_set_value.clone(),
+                    ServiceName::CoverSetPosition | ServiceName::ValveSetPosition => {
+                        set_position.clone()
+                    }
+                    ServiceName::CoverSetTilt => set_tilt.clone(),
+                    ServiceName::LockLock | ServiceName::LockUnlock | ServiceName::LockOpen => {
+                        lock_code.clone()
+                    }
+                    ServiceName::FanTurnOn => fan_turn_on.clone(),
+                    ServiceName::FanSetPercentage => fan_percentage.clone(),
+                    ServiceName::FanOscillate => fan_oscillate.clone(),
+                    ServiceName::FanSetDirection => fan_direction.clone(),
+                    ServiceName::FanSetPresetMode => fan_preset.clone(),
+                    ServiceName::SirenTurnOn => siren_turn_on.clone(),
+                    ServiceName::ClimateSetHvacMode => climate_mode.clone(),
+                    ServiceName::ClimateSetTemperature => climate_temperature.clone(),
+                    ServiceName::ClimateSetHumidity => set_humidity.clone(),
+                    ServiceName::ClimateSetFanMode => climate_fan.clone(),
+                    ServiceName::ClimateSetSwingMode => climate_swing.clone(),
+                    ServiceName::ClimateSetPresetMode => climate_preset.clone(),
+                    ServiceName::WaterHeaterSetTemperature => heater_temperature.clone(),
+                    ServiceName::WaterHeaterSetOperationMode => heater_mode.clone(),
+                    ServiceName::HumidifierSetHumidity => set_humidity.clone(),
+                    ServiceName::HumidifierSetMode => humidifier_mode.clone(),
                     _ => no_data.clone(),
                 };
                 json_schema!({
@@ -507,7 +866,11 @@ impl JsonSchema for ServiceCall {
                         "properties": { "service": { "const": name.as_str() } },
                         "required": ["service"],
                     },
-                    "then": { "properties": { "data": data } },
+                    "then": if name.requires_data() {
+                        json_schema!({ "properties": { "data": data }, "required": ["data"] })
+                    } else {
+                        json_schema!({ "properties": { "data": data } })
+                    },
                 })
             })
             .collect();
@@ -524,98 +887,6 @@ impl JsonSchema for ServiceCall {
             "additionalProperties": false,
             "allOf": rules,
         })
-    }
-}
-
-/// Data for `light.turn_on`. Everything is optional: with no data, the light turns on at its
-/// last brightness and color.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(transform = crate::schema::one_color_setting)]
-pub struct LightTurnOn {
-    /// 1-255. Needs a dimmable light.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1, max = 255))]
-    pub brightness: Option<u8>,
-    /// Needs color temperature support, within the light's range. Not together with `rgb`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1000, max = 20000))]
-    pub color_temp_kelvin: Option<u16>,
-    /// Needs RGB support. Not together with `color_temp_kelvin`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rgb: Option<[u8; 3]>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawLightTurnOn {
-    // Numbers as written, so the checks below can name the field (see `crate::num`).
-    #[serde(default)]
-    brightness: Option<Num>,
-    #[serde(default)]
-    color_temp_kelvin: Option<Num>,
-    #[serde(default)]
-    rgb: Option<[Num; 3]>,
-}
-
-impl<'de> Deserialize<'de> for LightTurnOn {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de::Error as _;
-        let raw = RawLightTurnOn::deserialize(deserializer)?;
-        if raw
-            .brightness
-            .is_some_and(|n| whole::<u8>("brightness", n, 0, 0).is_ok())
-        {
-            return Err(D::Error::custom(TURN_ON_BRIGHTNESS_ZERO));
-        }
-        let rgb = match raw.rgb {
-            Some([r, g, b]) => Some([
-                whole("rgb[0]", r, 0, 255).map_err(D::Error::custom)?,
-                whole("rgb[1]", g, 0, 255).map_err(D::Error::custom)?,
-                whole("rgb[2]", b, 0, 255).map_err(D::Error::custom)?,
-            ]),
-            None => None,
-        };
-        let data = LightTurnOn {
-            brightness: raw
-                .brightness
-                .map(|n| whole("brightness", n, 1, 255))
-                .transpose()
-                .map_err(D::Error::custom)?,
-            color_temp_kelvin: raw
-                .color_temp_kelvin
-                .map(|n| whole("color_temp_kelvin", n, 1000, 20000))
-                .transpose()
-                .map_err(D::Error::custom)?,
-            rgb,
-        };
-        data.validate().map_err(D::Error::custom)?;
-        Ok(data)
-    }
-}
-
-const TURN_ON_BRIGHTNESS_ZERO: &str =
-    "brightness 0 is invalid; brightness is 1-255 (use `light.turn_off` to turn a light off)";
-
-impl LightTurnOn {
-    /// Deserialization runs this; call it yourself when building the data in code.
-    pub fn validate(&self) -> Result<(), InvariantError> {
-        if self.brightness == Some(0) {
-            return Err(InvariantError(TURN_ON_BRIGHTNESS_ZERO.into()));
-        }
-        if let Some(kelvin) = self.color_temp_kelvin
-            && !(1000..=20000).contains(&kelvin)
-        {
-            return Err(InvariantError(format!(
-                "color_temp_kelvin {kelvin} is out of range; it must be from 1000 to 20000"
-            )));
-        }
-        if self.color_temp_kelvin.is_some() && self.rgb.is_some() {
-            return Err(InvariantError(
-                "set `color_temp_kelvin` or `rgb`, not both".into(),
-            ));
-        }
-        Ok(())
     }
 }
 

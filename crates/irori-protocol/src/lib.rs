@@ -7,7 +7,7 @@
 //!
 //! The other end of the context lives in the core ([`host`]); protocols never see it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use irori_types::{
     Availability, DeviceDescription, EntityDescription, ExtensionManifest, ServiceCall,
-    StateReport, UniqueId, Waiting,
+    StateReport, UniqueId, Unmodeled, Waiting,
 };
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
@@ -356,6 +356,14 @@ impl ProtocolContext {
         let _ = self.ops.send(host::Op::SetWaiting(waiting)).await;
     }
 
+    /// Says what it found that Irori has no entity kind for yet (spec §6.7): the whole list,
+    /// across all its devices, replacing the last one. Send an empty list when there's nothing.
+    ///
+    /// Like waiting, send it when it changes.
+    pub async fn set_unmodeled(&self, unmodeled: Vec<Unmodeled>) {
+        let _ = self.ops.send(host::Op::SetUnmodeled(unmodeled)).await;
+    }
+
     /// Says which of its manifest-declared actions are usable right now, replacing the last
     /// list — an empty list when none are (the default, until a protocol calls this). E.g. the
     /// `zigbee` protocol only offers `permit_join` once it's actually found a Z2M bridge.
@@ -424,10 +432,16 @@ impl ProtocolContext {
 /// memory even if a protocol reports for ever-new entities faster than the core keeps up.
 pub const MAX_PENDING_ENTITIES: usize = 4096;
 
-/// Pending state reports, one per entity: a newer report replaces an unread older one.
+/// How many of one entity's occurrences (an event's presses) can wait for the core. Past this
+/// the oldest is dropped, and counted like any other dropped report.
+pub const MAX_PENDING_OCCURRENCES: usize = 64;
+
+/// Pending state reports, per entity. For a value, a newer report replaces an unread older one:
+/// only the latest matters. For an occurrence (an event's press) each one counts, so they wait in
+/// order instead (`StateReport::is_occurrence`).
 #[derive(Debug, Default)]
 struct ReportQueue {
-    pending: Mutex<BTreeMap<UniqueId, StateReport>>,
+    pending: Mutex<BTreeMap<UniqueId, VecDeque<StateReport>>>,
     dropped: AtomicU64,
     ready: Notify,
 }
@@ -439,7 +453,16 @@ impl ReportQueue {
             if pending.len() >= MAX_PENDING_ENTITIES && !pending.contains_key(&report.unique_id) {
                 self.dropped.fetch_add(1, Ordering::Relaxed);
             } else {
-                pending.insert(report.unique_id.clone(), report);
+                let waiting = pending.entry(report.unique_id.clone()).or_default();
+                if report.is_occurrence() {
+                    if waiting.len() >= MAX_PENDING_OCCURRENCES {
+                        waiting.pop_front();
+                        self.dropped.fetch_add(1, Ordering::Relaxed);
+                    }
+                    waiting.push_back(report);
+                } else {
+                    *waiting = VecDeque::from([report]);
+                }
             }
         }
         // Wake the core for drops too, so it logs them even if nothing else is waiting.
@@ -456,20 +479,34 @@ impl ReportQueue {
     fn take(&self) -> Vec<StateReport> {
         std::mem::take(&mut *self.pending.lock().unwrap_or_else(PoisonError::into_inner))
             .into_values()
+            .flatten()
             .collect()
     }
 
     fn pop(&self) -> Option<StateReport> {
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pop_first()
-            .map(|(_, report)| report)
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut first = pending.first_entry()?;
+        let report = first.get_mut().pop_front();
+        if first.get().is_empty() {
+            first.remove();
+        }
+        report
     }
 
+    /// Puts a popped report back. A value goes back only if no newer one arrived meanwhile; an
+    /// occurrence always does, ahead of any that came after it.
     fn restore_if_absent(&self, report: StateReport) {
         let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
-        pending.entry(report.unique_id.clone()).or_insert(report);
+        if report.is_occurrence() {
+            pending
+                .entry(report.unique_id.clone())
+                .or_default()
+                .push_front(report);
+        } else {
+            pending
+                .entry(report.unique_id.clone())
+                .or_insert_with(|| VecDeque::from([report]));
+        }
     }
 }
 
@@ -671,6 +708,7 @@ pub mod host {
         SetAvailability(AvailabilityTarget, Availability, Reply),
         SetHealth(Health),
         SetWaiting(Vec<Waiting>),
+        SetUnmodeled(Vec<Unmodeled>),
         SetAvailableActions(Vec<String>),
         Load(
             String,
@@ -785,7 +823,55 @@ mod tests {
             state: Some(State::Switch(SwitchState { on })),
             attributes: BTreeMap::new(),
             caused_by: None,
+            replayed: false,
         }
+    }
+
+    fn press(unique_id: &str, event_type: &str) -> StateReport {
+        StateReport {
+            state: Some(State::Event(crate::types::EventState {
+                event_type: event_type.into(),
+            })),
+            ..report(unique_id, true)
+        }
+    }
+
+    /// A value can stand in for an older one; a press can't, so every one reaches the core in
+    /// order, up to a bound.
+    #[tokio::test]
+    async fn every_press_waits_its_turn_while_values_are_replaced() {
+        let (ctx, host) = host::connect();
+        ctx.report_state(press("remote", "single"));
+        ctx.report_state(press("remote", "double"));
+        ctx.report_state(report("plug", true));
+        ctx.report_state(report("plug", false));
+        let got: Vec<_> = host
+            .reports
+            .drain()
+            .into_iter()
+            .map(|r| (r.unique_id.to_string(), r.state))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("plug".to_owned(), report("plug", false).state),
+                ("remote".to_owned(), press("remote", "single").state),
+                ("remote".to_owned(), press("remote", "double").state),
+            ]
+        );
+
+        // A popped press put back goes ahead of those that came after it.
+        ctx.report_state(press("remote", "single"));
+        ctx.report_state(press("remote", "long"));
+        let first = host.reports.pop().expect("a press");
+        host.reports.restore_if_absent(first.clone());
+        assert_eq!(host.reports.drain(), [first, press("remote", "long")]);
+
+        for _ in 0..MAX_PENDING_OCCURRENCES + 3 {
+            ctx.report_state(press("remote", "single"));
+        }
+        assert_eq!(host.reports.drain().len(), MAX_PENDING_OCCURRENCES);
+        assert_eq!(host.reports.take_dropped(), 3);
     }
 
     #[tokio::test]

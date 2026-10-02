@@ -1,0 +1,1 @@
+option "auto" is listed twice

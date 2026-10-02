@@ -6,10 +6,10 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use irori_protocol::{AvailabilityTarget, Rejected};
 use irori_types::{
-    Area, AreaId, Availability, Capabilities, ColorMode, Context, ContextId, Device,
-    DeviceDescription, DeviceId, Entity, EntityDescription, EntityId, EntityKind, EntityState,
-    LightCapabilities, LightTurnOn, Name, Origin, Placement, ProtocolId, SLUG_MAX_LEN, SensorValue,
-    SensorValueType, Service, Settings, SettingsKey, State, StateReport, Timestamp, UniqueId,
+    Area, AreaId, Availability, Context, ContextId, Device, DeviceDescription, DeviceId, Entity,
+    EntityDescription, EntityId, EntityKind, EntityState, Name, Origin, Placement, ProtocolId,
+    SLUG_MAX_LEN, Service, ServiceName, Settings, SettingsKey, State, StateReport, Timestamp,
+    Typed, UniqueId,
 };
 
 use crate::Event;
@@ -60,9 +60,9 @@ pub(crate) struct Home {
     found: BTreeMap<DeviceId, Found>,
     /// Which found device each of their entities belongs to, to recognise what arrives for them.
     found_entities: HashMap<Key, DeviceId>,
-    /// What the core last told an entity to be, until the device reports back. `Toggle` uses it,
+    /// What the core last told an entity to be, until the device reports back. `toggle` uses it,
     /// so two toggles in a row don't both see the old value while the first is still in flight.
-    commanded: HashMap<EntityId, bool>,
+    commanded: HashMap<EntityId, Typed>,
     recent_calls: HashMap<ProtocolId, VecDeque<(ContextId, Timestamp)>>,
 }
 
@@ -102,7 +102,7 @@ pub struct HeldDevice {
 }
 
 /// A service call resolved to the protocol that handles it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Resolved {
     pub protocol: ProtocolId,
     pub unique_id: UniqueId,
@@ -223,6 +223,7 @@ impl Home {
                         state: state.state.clone(),
                         attributes: state.attributes.clone(),
                         caused_by: None,
+                        replayed: false,
                     },
                 );
             }
@@ -265,7 +266,9 @@ impl Home {
                     .unwrap_or_default(),
             );
         }
-        for report in found.reports.into_values() {
+        // What it last said, said again: not something happening now (an event's last press).
+        for mut report in found.reports.into_values() {
+            report.replayed = true;
             events.extend(
                 self.report_state(&protocol, report, stamp)
                     .unwrap_or_default(),
@@ -636,6 +639,7 @@ impl Home {
             let entity = self.entities.get_mut(&id).expect("keys and entities agree");
             entity.name = name;
             entity.capabilities = description.capabilities;
+            entity.entity_category = description.entity_category;
             entity.device_id = device_id;
             let mut events = if *entity == before {
                 vec![]
@@ -726,6 +730,7 @@ impl Home {
             device_id,
             area_id: None,
             capabilities: description.capabilities,
+            entity_category: description.entity_category,
         };
         let state = EntityState {
             entity_id: id.clone(),
@@ -937,7 +942,21 @@ impl Home {
         let old = self.states[&id].clone();
         // A clock that steps backwards never moves a timestamp back.
         let now = stamp.now.max(old.last_updated).max(old.last_reported);
-        let state_changed = old.state != report.state;
+        // An event's every report is something happening, even the same thing again. One the
+        // protocol is only repeating isn't: it sets the value and says nothing happened.
+        let occurrence = id.kind().counts_every_report();
+        if occurrence && report.replayed {
+            let mut new = old;
+            new.last_reported = now;
+            if new.state != report.state || new.attributes != report.attributes {
+                new.state = report.state;
+                new.attributes = report.attributes;
+                new.last_updated = now;
+            }
+            self.states.insert(id, new);
+            return Ok(vec![]);
+        }
+        let state_changed = old.state != report.state || (occurrence && report.state.is_some());
         let changed = state_changed || old.attributes != report.attributes;
         let mut new = old.clone();
         new.last_reported = now;
@@ -1081,49 +1100,42 @@ impl Home {
     // --- Services -------------------------------------------------------------------------
 
     /// Turns a request on an entity into the service call its protocol receives, checking
-    /// what the entity supports. Resolves `Toggle` from the current state.
+    /// what the entity supports. Resolves `toggle` from the current state.
     pub fn resolve(&self, entity_id: &EntityId, command: Command) -> Result<Resolved, CallError> {
         let entity = self
             .entities
             .get(entity_id)
             .ok_or_else(|| CallError::UnknownEntity(entity_id.clone()))?;
-        let is_on = || match self.commanded.get(entity_id) {
-            Some(on) => *on,
-            None => match self.states.get(entity_id).and_then(|s| s.state.as_ref()) {
-                Some(State::Light(light)) => light.on,
-                Some(State::Switch(switch)) => switch.on,
-                _ => false,
-            },
-        };
         let not_supported = |what: String| CallError::NotSupported(format!("`{entity_id}` {what}"));
-        let service = match (&entity.capabilities, command) {
-            (Capabilities::Light(_), Command::TurnOff) => Service::LightTurnOff,
-            (Capabilities::Light(_), Command::Toggle) if is_on() => Service::LightTurnOff,
-            (Capabilities::Light(_), Command::Toggle) => {
-                Service::LightTurnOn(LightTurnOn::default())
-            }
-            (Capabilities::Light(caps), Command::TurnOn(data)) => {
-                data.validate()
-                    .map_err(|e| CallError::NotSupported(e.to_string()))?;
-                light_supports(caps, &data).map_err(not_supported)?;
-                Service::LightTurnOn(data)
-            }
-            (Capabilities::Switch(_), Command::TurnOn(data)) if data != LightTurnOn::default() => {
-                return Err(not_supported(
-                    "is a switch; it takes no brightness or color".into(),
-                ));
-            }
-            (Capabilities::Switch(_), Command::TurnOn(_)) => Service::SwitchTurnOn,
-            (Capabilities::Switch(_), Command::TurnOff) => Service::SwitchTurnOff,
-            (Capabilities::Switch(_), Command::Toggle) if is_on() => Service::SwitchTurnOff,
-            (Capabilities::Switch(_), Command::Toggle) => Service::SwitchTurnOn,
-            (Capabilities::Sensor(_) | Capabilities::BinarySensor(_), _) => {
-                return Err(not_supported(format!(
-                    "is a {}; it has no services",
-                    entity.id.kind()
+        let kind = entity.id.kind();
+        if !kind.has_services() {
+            return Err(not_supported(format!("is a {kind}; it has no services")));
+        }
+        let name = if command.action == Command::TOGGLE {
+            if !command.data.is_empty() {
+                return Err(CallError::NotSupported(format!(
+                    "`{kind}.toggle` takes no data"
                 )));
             }
+            let current = self.commanded.get(entity_id).cloned().or_else(|| {
+                self.states
+                    .get(entity_id)
+                    .and_then(|s| s.state.as_ref())
+                    .map(State::primary)
+            });
+            kind.toggle(current.as_ref())
+                .ok_or_else(|| not_supported(format!("is a {kind}; it can't be toggled")))?
+        } else {
+            ServiceName::of(kind, &command.action).ok_or_else(|| {
+                not_supported(format!("is a {kind}; it has no `{}`", command.action))
+            })?
         };
+        let service = Service::from_data(name, command.data)
+            .map_err(|e| CallError::NotSupported(e.to_string()))?;
+        entity
+            .capabilities
+            .supports(&service)
+            .map_err(not_supported)?;
         Ok(Resolved {
             protocol: entity.protocol.clone(),
             unique_id: entity.unique_id.clone(),
@@ -1157,26 +1169,16 @@ impl Home {
         self.entities.get(entity_id).is_some_and(|entity| {
             entity.protocol == resolved.protocol
                 && entity.unique_id == resolved.unique_id
-                && match (&entity.capabilities, &resolved.service) {
-                    (Capabilities::Light(caps), Service::LightTurnOn(data)) => {
-                        light_supports(caps, data).is_ok()
-                    }
-                    (Capabilities::Light(_), Service::LightTurnOff)
-                    | (Capabilities::Switch(_), Service::SwitchTurnOn | Service::SwitchTurnOff) => {
-                        true
-                    }
-                    _ => false,
-                }
+                && entity.capabilities.supports(&resolved.service).is_ok()
         })
     }
 
     /// Remembers what an entity was just told to be, until it reports back.
     pub fn record_command(&mut self, entity_id: &EntityId, service: &Service) {
-        let on = match service {
-            Service::LightTurnOn(_) | Service::SwitchTurnOn => true,
-            Service::LightTurnOff | Service::SwitchTurnOff => false,
+        match service.asks_for() {
+            Some(value) => self.commanded.insert(entity_id.clone(), value),
+            None => self.commanded.remove(entity_id),
         };
-        self.commanded.insert(entity_id.clone(), on);
     }
 
     /// Remembers a call's context for [`CALL_WINDOW`], so a state report can say it was caused
@@ -1246,73 +1248,12 @@ fn device_context(protocol: &ProtocolId, stamp: &Stamp, parent: Option<ContextId
     }
 }
 
-fn light_supports(caps: &LightCapabilities, data: &LightTurnOn) -> Result<(), String> {
-    if data.brightness.is_some() && !caps.brightness {
-        return Err("isn't dimmable".into());
-    }
-    if let Some(kelvin) = data.color_temp_kelvin {
-        match caps.color_temp_kelvin {
-            None => return Err("doesn't support color temperature".into()),
-            Some(range) if !(range.min..=range.max).contains(&kelvin) => {
-                return Err(format!(
-                    "supports color temperatures from {} to {} K, not {kelvin} K",
-                    range.min, range.max
-                ));
-            }
-            Some(_) => {}
-        }
-    }
-    if data.rgb.is_some() && !caps.rgb {
-        return Err("doesn't support RGB color".into());
-    }
-    Ok(())
-}
-
 /// Whether a reported state fits the entity's kind and capabilities.
 fn fits(entity: &Entity, state: &State) -> Result<(), Rejected> {
-    let id = &entity.id;
-    let reject = |what: String| Err(Rejected(format!("state report for `{id}`: {what}")));
-    match (&entity.capabilities, state) {
-        (caps, state) if caps.kind() != state.kind() => reject(format!(
-            "it's a {}, but the report is for a {}",
-            caps.kind(),
-            state.kind()
-        )),
-        (Capabilities::Light(caps), State::Light(light)) => {
-            match light.color_mode {
-                Some(ColorMode::ColorTemp) if caps.color_temp_kelvin.is_none() => {
-                    return reject(
-                        "it's in color_temp mode, but doesn't support color temperature".into(),
-                    );
-                }
-                Some(ColorMode::Rgb) if !caps.rgb => {
-                    return reject("it's in rgb mode, but doesn't support RGB color".into());
-                }
-                _ => {}
-            }
-            let data = LightTurnOn {
-                brightness: light.brightness,
-                color_temp_kelvin: light.color_temp_kelvin,
-                rgb: light.rgb,
-            };
-            match light_supports(caps, &data) {
-                Ok(()) => Ok(()),
-                Err(what) => reject(format!("it {what}")),
-            }
-        }
-        (Capabilities::Sensor(caps), State::Sensor(sensor)) => {
-            match (caps.value_type, &sensor.value) {
-                (SensorValueType::Number, SensorValue::Text(text)) => reject(format!(
-                    "it reports numbers, but the value is text {text:?}"
-                )),
-                (SensorValueType::Text, SensorValue::Number(n)) => {
-                    reject(format!("it reports text, but the value is the number {n}"))
-                }
-                _ => Ok(()),
-            }
-        }
-        _ => Ok(()),
-    }
+    entity
+        .capabilities
+        .fits(state)
+        .map_err(|what| Rejected(format!("state report for `{}`: {what}", entity.id)))
 }
 
 /// Lowercase ASCII letters and digits in `_`-separated words, at most 64 characters. Other
@@ -1419,7 +1360,8 @@ fn unique_id_for(base: &str, fallback: &str, taken: impl Fn(&str) -> bool) -> St
 mod tests {
     use super::*;
     use irori_types::{
-        BinarySensorCapabilities, ColorTempRange, LightState, SensorCapabilities, SensorState,
+        BinarySensorCapabilities, Capabilities, ColorMode, ColorTempRange, LightCapabilities,
+        LightState, LightTurnOn, SensorCapabilities, SensorState, SensorValue, SensorValueType,
         SwitchCapabilities, SwitchState,
     };
 
@@ -1443,7 +1385,7 @@ mod tests {
         }
     }
 
-    const ALL: [EntityKind; 4] = EntityKind::ALL;
+    const ALL: &[EntityKind] = EntityKind::ALL;
 
     fn device(unique: &str, device_name: &str) -> DeviceDescription {
         DeviceDescription {
@@ -1470,6 +1412,7 @@ mod tests {
             device_unique_id: device.map(uid),
             suggested_object_id: None,
             capabilities: caps,
+            entity_category: None,
         }
     }
 
@@ -1490,6 +1433,7 @@ mod tests {
             state,
             attributes: BTreeMap::new(),
             caused_by: None,
+            replayed: false,
         }
     }
 
@@ -1510,7 +1454,7 @@ mod tests {
             .expect("device");
         home.describe_entity(
             &protocol(),
-            &ALL,
+            ALL,
             entity("lamp-light", None, Some("lamp"), dimmable()),
             &stamp(0),
         )
@@ -1635,7 +1579,7 @@ mod tests {
         restarted
             .describe_entity(
                 &protocol(),
-                &ALL,
+                ALL,
                 entity("lamp-light", None, Some("lamp"), dimmable()),
                 &stamp(0),
             )
@@ -1744,7 +1688,7 @@ mod tests {
             .expect("lamp");
         home.describe_entity(
             &protocol(),
-            &ALL,
+            ALL,
             entity("lamp-light", None, Some("lamp"), dimmable()),
             &stamp(0),
         )
@@ -1789,7 +1733,7 @@ mod tests {
         .expect("availability while found");
         assert!(home.devices.is_empty(), "still out of the home");
         assert!(
-            home.resolve(&lamp_id(), Command::Toggle).is_err(),
+            home.resolve(&lamp_id(), Command::toggle()).is_err(),
             "a found device's entity can't be commanded"
         );
 
@@ -1836,7 +1780,7 @@ mod tests {
             .expect("lamp");
         home.describe_entity(
             &protocol(),
-            &ALL,
+            ALL,
             entity("lamp-light", None, Some("lamp"), dimmable()),
             &stamp(0),
         )
@@ -1931,11 +1875,344 @@ mod tests {
     /// An entity named by its protocol, or by a person, has a name of its own and keeps it
     /// when the device is renamed.
     #[test]
+    fn an_entity_keeps_the_category_its_protocol_gives_it() {
+        let mut home = home_with_lamp();
+        let signal = || {
+            entity(
+                "lamp-signal",
+                Some("Signal"),
+                Some("lamp"),
+                Capabilities::Sensor(SensorCapabilities {
+                    value_type: SensorValueType::Number,
+                    device_class: None,
+                    unit: None,
+                    state_class: None,
+                    options: Vec::new(),
+                }),
+            )
+        };
+        let id = EntityId::try_from("sensor.demo_lamp_signal").expect("valid");
+        let described = EntityDescription {
+            entity_category: Some(irori_types::EntityCategory::Diagnostic),
+            ..signal()
+        };
+        home.describe_entity(&protocol(), ALL, described, &stamp(0))
+            .expect("entity");
+        assert_eq!(
+            home.entities[&id].entity_category,
+            Some(irori_types::EntityCategory::Diagnostic)
+        );
+
+        // Described again without one, it's an ordinary entity again.
+        home.describe_entity(&protocol(), ALL, signal(), &stamp(1))
+            .expect("entity");
+        assert_eq!(home.entities[&id].entity_category, None);
+    }
+
+    #[test]
+    fn a_fan_toggles_like_a_switch_and_keeps_its_speed() {
+        let mut home = home_with_lamp();
+        home.describe_entity(
+            &protocol(),
+            ALL,
+            entity(
+                "lamp-fan",
+                Some("Fan"),
+                Some("lamp"),
+                Capabilities::Fan(irori_types::FanCapabilities {
+                    speed_count: 3,
+                    ..Default::default()
+                }),
+            ),
+            &stamp(0),
+        )
+        .expect("entity");
+        let id = EntityId::try_from("fan.demo_lamp_fan").expect("valid");
+        assert!(matches!(
+            home.resolve(&id, Command::toggle())
+                .expect("toggles")
+                .service,
+            Service::FanTurnOn(_)
+        ));
+        assert_eq!(
+            home.resolve(
+                &id,
+                Command::with(
+                    "set_preset_mode",
+                    &irori_types::FanPresetMode {
+                        preset_mode: "turbo".into()
+                    }
+                )
+            )
+            .expect_err("no presets")
+            .to_string(),
+            "`fan.demo_lamp_fan` has no preset modes"
+        );
+    }
+
+    #[test]
+    fn a_lock_toggles_and_asks_for_the_code_it_needs() {
+        let mut home = home_with_lamp();
+        home.describe_entity(
+            &protocol(),
+            ALL,
+            entity(
+                "lamp-lock",
+                Some("Door"),
+                Some("lamp"),
+                Capabilities::Lock(irori_types::LockCapabilities {
+                    open: false,
+                    requires_code: true,
+                    code_format: None,
+                }),
+            ),
+            &stamp(0),
+        )
+        .expect("entity");
+        let id = EntityId::try_from("lock.demo_lamp_door").expect("valid");
+        let locked = StateReport {
+            unique_id: uid("lamp-lock"),
+            state: Some(State::Lock(irori_types::LockState {
+                state: irori_types::LockStatus::Locked,
+            })),
+            attributes: Default::default(),
+            caused_by: None,
+            replayed: false,
+        };
+        home.report_state(&protocol(), locked, &stamp(1))
+            .expect("fits");
+        assert_eq!(
+            home.resolve(&id, Command::toggle())
+                .expect_err("no code")
+                .to_string(),
+            "`lock.demo_lamp_door` needs a code"
+        );
+        let with_code = Command::with(
+            "unlock",
+            &irori_types::LockCode {
+                code: Some("1234".into()),
+            },
+        );
+        assert!(matches!(
+            home.resolve(&id, with_code).expect("unlocks").service,
+            Service::LockUnlock(_)
+        ));
+        assert!(
+            home.resolve(&id, Command::new("open")).is_err(),
+            "it can't open the door"
+        );
+    }
+
+    #[test]
+    fn a_cover_toggles_the_way_it_is_going_and_two_toggles_cancel_out() {
+        let mut home = home_with_lamp();
+        home.describe_entity(
+            &protocol(),
+            ALL,
+            entity(
+                "lamp-blind",
+                Some("Blind"),
+                Some("lamp"),
+                Capabilities::Cover(irori_types::CoverCapabilities::default()),
+            ),
+            &stamp(0),
+        )
+        .expect("entity");
+        let id = EntityId::try_from("cover.demo_lamp_blind").expect("valid");
+        let report = StateReport {
+            unique_id: uid("lamp-blind"),
+            state: Some(State::Cover(irori_types::CoverState {
+                state: irori_types::OpenState::Open,
+                position: None,
+                tilt: None,
+            })),
+            attributes: Default::default(),
+            caused_by: None,
+            replayed: false,
+        };
+        home.report_state(&protocol(), report, &stamp(1))
+            .expect("fits");
+        let first = home.resolve(&id, Command::toggle()).expect("toggles");
+        assert_eq!(first.service, Service::CoverClose);
+        home.record_command(&id, &first.service);
+        assert_eq!(
+            home.resolve(&id, Command::toggle())
+                .expect("toggles")
+                .service,
+            Service::CoverOpen,
+            "the second toggle undoes the first, not repeats it"
+        );
+        assert_eq!(
+            home.resolve(
+                &id,
+                Command::with("set_position", &irori_types::SetPosition { position: 50 })
+            )
+            .expect_err("no position")
+            .to_string(),
+            "`cover.demo_lamp_blind` can only open and close, not go part of the way"
+        );
+    }
+
+    #[test]
+    fn every_press_of_a_remote_happens_but_a_replay_does_not() {
+        let mut home = home_with_lamp();
+        home.describe_entity(
+            &protocol(),
+            ALL,
+            entity(
+                "lamp-remote",
+                Some("Remote"),
+                Some("lamp"),
+                Capabilities::Event(irori_types::EventCapabilities {
+                    event_types: vec!["single".into(), "double".into()],
+                    device_class: Some(irori_types::EventClass::Button),
+                }),
+            ),
+            &stamp(0),
+        )
+        .expect("entity");
+        let press = |event_type: &str, replayed: bool| StateReport {
+            unique_id: uid("lamp-remote"),
+            state: Some(State::Event(irori_types::EventState {
+                event_type: event_type.into(),
+            })),
+            attributes: Default::default(),
+            caused_by: None,
+            replayed,
+        };
+        let changes = |events: Vec<Event>| {
+            events
+                .iter()
+                .filter(|e| matches!(e, Event::StateChanged { .. }))
+                .count()
+        };
+        // Two double presses in a row are two presses.
+        let first = home
+            .report_state(&protocol(), press("double", false), &stamp(1))
+            .expect("fits");
+        let second = home
+            .report_state(&protocol(), press("double", false), &stamp(2))
+            .expect("fits");
+        assert_eq!((changes(first), changes(second)), (1, 1));
+
+        // The protocol repeating what it last heard (a reconnect) isn't a press: the value is
+        // taken, and nothing is said to have happened.
+        let replayed = home
+            .report_state(&protocol(), press("single", true), &stamp(3))
+            .expect("fits");
+        assert_eq!(changes(replayed), 0);
+        let id = EntityId::try_from("event.demo_lamp_remote").expect("valid");
+        assert_eq!(
+            home.state(&id).and_then(|s| s.state.clone()),
+            Some(State::Event(irori_types::EventState {
+                event_type: "single".into()
+            }))
+        );
+
+        // An event type it doesn't have is refused like any value that doesn't fit.
+        assert!(
+            home.report_state(&protocol(), press("triple", false), &stamp(4))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_button_is_pressed_and_never_has_a_value() {
+        let mut home = home_with_lamp();
+        home.describe_entity(
+            &protocol(),
+            ALL,
+            entity(
+                "lamp-identify",
+                Some("Identify"),
+                Some("lamp"),
+                Capabilities::Button(irori_types::ButtonCapabilities {
+                    device_class: Some(irori_types::ButtonClass::Identify),
+                }),
+            ),
+            &stamp(0),
+        )
+        .expect("entity");
+        let id = EntityId::try_from("button.demo_lamp_identify").expect("valid");
+        assert_eq!(
+            home.resolve(&id, Command::new("press"))
+                .expect("pressed")
+                .service,
+            Service::ButtonPress
+        );
+        assert!(home.resolve(&id, Command::toggle()).is_err());
+        assert_eq!(home.state(&id).and_then(|s| s.state.clone()), None);
+        // Whatever a protocol reports for it, a button has no state to be in.
+        let report = StateReport {
+            unique_id: uid("lamp-identify"),
+            state: Some(light(true, None)),
+            attributes: Default::default(),
+            caused_by: None,
+            replayed: false,
+        };
+        assert!(home.report_state(&protocol(), report, &stamp(1)).is_err());
+    }
+
+    #[test]
+    fn a_number_is_set_only_within_its_range() {
+        let mut home = home_with_lamp();
+        home.describe_entity(
+            &protocol(),
+            ALL,
+            entity(
+                "lamp-timeout",
+                Some("Timeout"),
+                Some("lamp"),
+                Capabilities::Number(irori_types::NumberCapabilities {
+                    min: 5.0,
+                    max: 600.0,
+                    step: 5.0,
+                    unit: Some("s".into()),
+                    device_class: None,
+                    mode: irori_types::NumberMode::Auto,
+                }),
+            ),
+            &stamp(0),
+        )
+        .expect("entity");
+        let id = EntityId::try_from("number.demo_lamp_timeout").expect("valid");
+        let set = |value: f64| {
+            home.resolve(
+                &id,
+                Command::with("set_value", &irori_types::NumberSetValue { value }),
+            )
+        };
+        assert_eq!(
+            set(120.0).expect("in range").service,
+            Service::NumberSetValue(irori_types::NumberSetValue { value: 120.0 })
+        );
+        assert_eq!(
+            set(900.0).expect_err("out of range").to_string(),
+            "`number.demo_lamp_timeout` goes from 5 to 600, not 900"
+        );
+        assert_eq!(
+            home.resolve(&id, Command::toggle())
+                .expect_err("not a toggle")
+                .to_string(),
+            "`number.demo_lamp_timeout` is a number; it can't be toggled"
+        );
+        // A report outside the range is refused too.
+        let report = StateReport {
+            unique_id: uid("lamp-timeout"),
+            state: Some(State::Number(irori_types::NumberState { value: 1.0 })),
+            attributes: Default::default(),
+            caused_by: None,
+            replayed: false,
+        };
+        assert!(home.report_state(&protocol(), report, &stamp(1)).is_err());
+    }
+
+    #[test]
     fn only_entities_without_a_name_of_their_own_follow_the_device() {
         let mut home = home_with_lamp();
         home.describe_entity(
             &protocol(),
-            &ALL,
+            ALL,
             entity(
                 "lamp-power",
                 Some("Power"),
@@ -1945,6 +2222,7 @@ mod tests {
                     device_class: None,
                     unit: None,
                     state_class: None,
+                    options: Vec::new(),
                 }),
             ),
             &stamp(0),
@@ -2126,7 +2404,7 @@ mod tests {
 
         home.describe_entity(
             &protocol(),
-            &ALL,
+            ALL,
             entity("lamp-light", None, Some("lamp"), dimmable()),
             &stamp(0),
         )
@@ -2200,7 +2478,7 @@ mod tests {
             .expect("device");
         home.describe_entity(
             &protocol(),
-            &ALL,
+            ALL,
             entity(
                 "sensor-motion",
                 Some("Motion"),
@@ -2227,7 +2505,7 @@ mod tests {
         let again = home
             .describe_entity(
                 &protocol(),
-                &ALL,
+                ALL,
                 entity("lamp-light", None, Some("lamp"), dimmable()),
                 &stamp(1),
             )
@@ -2238,7 +2516,7 @@ mod tests {
         let err = home
             .describe_entity(
                 &protocol(),
-                &ALL,
+                ALL,
                 entity(
                     "lamp-light",
                     None,
@@ -2275,7 +2553,7 @@ mod tests {
         let err = home
             .describe_entity(
                 &protocol(),
-                &ALL,
+                ALL,
                 entity("x", None, Some("missing"), dimmable()),
                 &stamp(0),
             )
@@ -2297,7 +2575,7 @@ mod tests {
         let err = home
             .describe_entity(
                 &other,
-                &ALL,
+                ALL,
                 entity("y", None, Some("hub"), dimmable()),
                 &stamp(0),
             )
@@ -2376,7 +2654,7 @@ mod tests {
 
         home.describe_entity(
             &protocol(),
-            &ALL,
+            ALL,
             entity(
                 "temp",
                 Some("Temperature"),
@@ -2386,6 +2664,7 @@ mod tests {
                     device_class: None,
                     unit: None,
                     state_class: None,
+                    options: Vec::new(),
                 }),
             ),
             &stamp(0),
@@ -2444,7 +2723,7 @@ mod tests {
         let not_dimmable = Capabilities::Light(LightCapabilities::default());
         home.describe_entity(
             &protocol(),
-            &ALL,
+            ALL,
             entity("lamp-light", None, Some("lamp"), not_dimmable.clone()),
             &stamp(2),
         )
@@ -2463,7 +2742,7 @@ mod tests {
         .expect("fits");
         home.describe_entity(
             &protocol(),
-            &ALL,
+            ALL,
             entity("lamp-light", None, Some("lamp"), not_dimmable),
             &stamp(4),
         )
@@ -2535,7 +2814,7 @@ mod tests {
 
         home.describe_entity(
             &protocol(),
-            &ALL,
+            ALL,
             entity("lamp-light", Some("Bulb"), Some("lamp"), dimmable()),
             &stamp(1),
         )
@@ -2635,12 +2914,12 @@ mod tests {
         .expect("fits");
 
         // First toggle: it's off, so turn it on.
-        let first = home.resolve(&lamp_id(), Command::Toggle).expect("light");
+        let first = home.resolve(&lamp_id(), Command::toggle()).expect("light");
         assert_eq!(first.service, Service::LightTurnOn(LightTurnOn::default()));
         home.record_command(&lamp_id(), &first.service);
 
         // Second toggle before the lamp has reported: it must undo the first, not repeat it.
-        let second = home.resolve(&lamp_id(), Command::Toggle).expect("light");
+        let second = home.resolve(&lamp_id(), Command::toggle()).expect("light");
         assert_eq!(second.service, Service::LightTurnOff);
         home.record_command(&lamp_id(), &second.service);
 
@@ -2652,7 +2931,7 @@ mod tests {
         )
         .expect("fits");
         assert_eq!(
-            home.resolve(&lamp_id(), Command::Toggle)
+            home.resolve(&lamp_id(), Command::toggle())
                 .expect("light")
                 .service,
             Service::LightTurnOff
@@ -2662,22 +2941,25 @@ mod tests {
     #[test]
     fn a_call_is_refused_when_the_entity_changed_underneath_it() {
         let mut home = home_with_lamp();
-        let resolved = home.resolve(&lamp_id(), Command::Toggle).expect("light");
+        let resolved = home.resolve(&lamp_id(), Command::toggle()).expect("light");
         assert!(home.still_dispatchable(&lamp_id(), &resolved));
 
         // The lamp is re-described without dimming, and the brightness it was asked for is gone.
         let bright = home
             .resolve(
                 &lamp_id(),
-                Command::TurnOn(LightTurnOn {
-                    brightness: Some(200),
-                    ..LightTurnOn::default()
-                }),
+                Command::with(
+                    "turn_on",
+                    &LightTurnOn {
+                        brightness: Some(200),
+                        ..LightTurnOn::default()
+                    },
+                ),
             )
             .expect("dimmable for now");
         home.describe_entity(
             &protocol(),
-            &ALL,
+            ALL,
             entity(
                 "lamp-light",
                 None,
@@ -2713,7 +2995,7 @@ mod tests {
         // The protocol restarts and describes it again: back online, and heard from.
         home.describe_entity(
             &protocol(),
-            &ALL,
+            ALL,
             entity("lamp-light", None, Some("lamp"), dimmable()),
             &stamp(30),
         )
@@ -2752,7 +3034,7 @@ mod tests {
     #[test]
     fn service_calls_are_checked_and_toggles_resolved() {
         let mut home = home_with_lamp();
-        let resolved = home.resolve(&lamp_id(), Command::Toggle).expect("light");
+        let resolved = home.resolve(&lamp_id(), Command::toggle()).expect("light");
         assert_eq!(
             resolved.service,
             Service::LightTurnOn(LightTurnOn::default())
@@ -2766,7 +3048,7 @@ mod tests {
         )
         .expect("fits");
         assert_eq!(
-            home.resolve(&lamp_id(), Command::Toggle)
+            home.resolve(&lamp_id(), Command::toggle())
                 .expect("light")
                 .service,
             Service::LightTurnOff
@@ -2777,7 +3059,7 @@ mod tests {
             ..LightTurnOn::default()
         };
         let err = home
-            .resolve(&lamp_id(), Command::TurnOn(too_warm))
+            .resolve(&lamp_id(), Command::with("turn_on", &too_warm))
             .expect_err("range");
         assert_eq!(
             err.to_string(),
@@ -2786,8 +3068,23 @@ mod tests {
 
         let unknown = EntityId::try_from("light.nope").expect("valid");
         assert!(matches!(
-            home.resolve(&unknown, Command::TurnOff),
+            home.resolve(&unknown, Command::turn_off()),
             Err(CallError::UnknownEntity(_))
         ));
+
+        // The action has to be one of the kind's, with the data its service takes.
+        let refusal = |command| home.resolve(&lamp_id(), command).expect_err("refused");
+        assert_eq!(
+            refusal(Command::new("open")).to_string(),
+            "`light.demo_lamp` is a light; it has no `open`"
+        );
+        assert_eq!(
+            refusal(Command::with("toggle", &too_warm)).to_string(),
+            "`light.toggle` takes no data"
+        );
+        assert_eq!(
+            refusal(Command::with("turn_off", &too_warm)).to_string(),
+            "`light.turn_off` takes no data"
+        );
     }
 }

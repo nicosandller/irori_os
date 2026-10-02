@@ -9,12 +9,14 @@
 
 pub mod bridge;
 pub mod discovery;
+pub mod kinds;
 pub mod map;
 pub mod state;
 pub mod template;
 pub mod topic;
+pub mod unmodeled;
 
 pub use discovery::{AvailabilityTopic, EntityTopics, ParsedConfig, ParsedDevice};
 pub use state::Publish;
-pub use template::ValueTemplate;
+pub use template::{CommandTemplate, ValueTemplate};
 pub use topic::{Component, DiscoveryTopic};

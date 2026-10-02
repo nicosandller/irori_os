@@ -1,0 +1,22 @@
+{
+  "id": "climate.bedroom_radiator",
+  "protocol": "zigbee",
+  "unique_id": "0x0011223344556677-climate",
+  "name": "Bedroom radiator",
+  "capabilities": {
+    "kind": "climate",
+    "hvac_modes": [
+      "off",
+      "heat",
+      "auto"
+    ],
+    "min_temp": 5,
+    "max_temp": 30,
+    "temp_step": 0.5,
+    "target_temperature": true,
+    "preset_modes": [
+      "eco",
+      "boost"
+    ]
+  }
+}

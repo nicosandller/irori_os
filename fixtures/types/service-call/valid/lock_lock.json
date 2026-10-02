@@ -1,0 +1,11 @@
+{
+  "service": "lock.lock",
+  "unique_id": "a4:cf:12:34:56:80-lock-door",
+  "context": {
+    "id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+    "origin": {
+      "type": "user",
+      "user_id": "nico"
+    }
+  }
+}

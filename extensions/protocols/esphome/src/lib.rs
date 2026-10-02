@@ -20,7 +20,9 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use irori_protocol::types::{Availability, Name, SecretRequest, UniqueId, Waiting};
+use irori_protocol::types::{
+    Availability, Name, ObjectId, SecretRequest, UniqueId, Unmodeled, Waiting,
+};
 use irori_protocol::{
     AvailabilityTarget, Health, IncomingCall, Protocol, ProtocolContext, ProtocolError,
     ServiceError,
@@ -78,6 +80,8 @@ struct Node {
     /// Its entities, so calls can be routed and so a device that comes back with fewer entities
     /// can have the old ones removed.
     entities: Vec<UniqueId>,
+    /// What it has that Irori has no entity kind for yet, as it last listed it.
+    unmodeled: Vec<Unmodeled>,
     /// Whether it's connected right now. Commands for a device that's away are refused rather
     /// than queued: by the time it reconnects, the caller has long since timed out, and acting
     /// on a minutes-old command would be worse than not acting at all.
@@ -146,6 +150,7 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
     let mut reported_health = Health::Running;
     ctx.set_health(reported_health.clone()).await;
     let mut reported_waiting: Vec<Waiting> = Vec::new();
+    let mut reported_unmodeled: Vec<Unmodeled> = Vec::new();
 
     let outcome = loop {
         tokio::select! {
@@ -185,6 +190,15 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
         if waiting != reported_waiting {
             ctx.set_waiting(waiting.clone()).await;
             reported_waiting = waiting;
+        }
+        let unmodeled: Vec<Unmodeled> = devices
+            .nodes
+            .values()
+            .flat_map(|node| node.unmodeled.iter().cloned())
+            .collect();
+        if unmodeled != reported_unmodeled {
+            ctx.set_unmodeled(unmodeled.clone()).await;
+            reported_unmodeled = unmodeled;
         }
     };
 
@@ -344,6 +358,7 @@ async fn apply(
             connection,
             device,
             entities,
+            unmodeled,
         } => {
             let device_id = device.unique_id.clone();
             let address = connection.address;
@@ -358,13 +373,26 @@ async fn apply(
             }
             ctx.describe_device(*device).await?;
             let mut described = Vec::new();
+            let mut unmodeled = unmodeled;
             for entity in entities {
                 let id = entity.unique_id.clone();
+                let (kind, name) = (entity.capabilities.kind(), entity.name.clone());
                 match ctx.describe_entity(entity).await {
                     Ok(()) => described.push(id),
-                    // One entity the core won't accept shouldn't cost us the whole device.
-                    Err(e) => tracing::warn!(device = %device_id, entity = %id, error = %e,
-                        "the core refused an entity"),
+                    // One entity the core won't accept shouldn't cost us the whole device, and
+                    // is listed on it with why rather than dropped.
+                    Err(e) => {
+                        tracing::warn!(device = %device_id, entity = %id, error = %e,
+                            "the core refused an entity");
+                        if let Ok(platform) = ObjectId::try_from(kind.domain()) {
+                            unmodeled.push(Unmodeled {
+                                device_unique_id: Some(device_id.clone()),
+                                platform,
+                                name,
+                                reason: Some(e.to_string()),
+                            });
+                        }
+                    }
                 }
             }
             // An entity that was there before and isn't now (the device was reflashed) goes.
@@ -441,6 +469,7 @@ async fn apply(
                     connection,
                     commands,
                     entities: described,
+                    unmodeled,
                     online: true,
                 },
             );
@@ -800,6 +829,7 @@ mod tests {
                     }
                     irori_protocol::host::Op::SetHealth(_)
                     | irori_protocol::host::Op::SetWaiting(_)
+                    | irori_protocol::host::Op::SetUnmodeled(_)
                     | irori_protocol::host::Op::SetAvailableActions(_) => {}
                     irori_protocol::host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));
@@ -856,6 +886,7 @@ mod tests {
             connection,
             device: Box::new(device.clone()),
             entities: Vec::new(),
+            unmodeled: Vec::new(),
         };
 
         // The core end isn't being drained here, so describing is done for its bookkeeping only;
@@ -923,6 +954,7 @@ mod tests {
                     }
                     irori_protocol::host::Op::SetHealth(_)
                     | irori_protocol::host::Op::SetWaiting(_)
+                    | irori_protocol::host::Op::SetUnmodeled(_)
                     | irori_protocol::host::Op::SetAvailableActions(_) => {}
                     irori_protocol::host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));
@@ -965,6 +997,7 @@ mod tests {
                     via_device_unique_id: None,
                 }),
                 entities: Vec::new(),
+                unmodeled: Vec::new(),
             }
         };
 
@@ -1035,6 +1068,7 @@ mod tests {
                     }
                     irori_protocol::host::Op::SetHealth(_)
                     | irori_protocol::host::Op::SetWaiting(_)
+                    | irori_protocol::host::Op::SetUnmodeled(_)
                     | irori_protocol::host::Op::SetAvailableActions(_) => {}
                     irori_protocol::host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));
@@ -1077,6 +1111,7 @@ mod tests {
                 via_device_unique_id: None,
             }),
             entities: Vec::new(),
+            unmodeled: Vec::new(),
         };
 
         apply(arrival(old), &ctx, &mut devices)

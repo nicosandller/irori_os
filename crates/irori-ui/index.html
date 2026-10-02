@@ -470,6 +470,20 @@
        light can set. The value a slider shows is the device's, not the last thing asked for. */
     .light-controls { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center;
                       gap: .3rem .9rem; padding: .2rem .1rem 0; }
+    .select-control { font: inherit; padding: .2rem .35rem; max-width: 12rem; }
+    .text-control { font: inherit; padding: .25rem .4rem; width: 12rem; }
+    .press { font: inherit; padding: .25rem .8rem; }
+    .cover-buttons { display: inline-flex; gap: .35rem; }
+    .lock-code { display: flex; flex-direction: column; gap: .3rem; margin: .8rem 0; }
+    .fan-swing { display: inline-flex; align-items: center; gap: .35rem; }
+    /* A thermostat's target, typed in, and what the room is now. */
+    .climate-target { display: inline-flex; align-items: center; gap: .3rem; color: var(--muted); }
+    .climate-target input { width: 4.5rem; font: inherit; padding: .25rem .4rem; text-align: right; }
+    .climate-now { color: var(--muted); font: .72rem var(--mono); }
+    /* A number typed in rather than dragged: a short box and its unit. */
+    .number-box { display: inline-flex; align-items: center; gap: .35rem; }
+    .number-box input { width: 6.5rem; font: inherit; padding: .25rem .4rem; text-align: right; }
+    .number-box .unit { color: var(--muted); font-size: .9rem; }
     .light-controls .dim { display: inline-flex; align-items: center; gap: .45rem;
                            font: .72rem var(--mono); color: var(--muted); }
     .light-controls .lv { min-width: 2.6rem; text-align: right; font-variant-numeric: tabular-nums; }
@@ -532,6 +546,8 @@
     .room-floor { display: block; color: var(--muted); font: .65rem var(--mono); letter-spacing: .08em;
                   text-transform: uppercase; }
     .room-card h3 { margin: 0 0 .4rem; font-size: .95rem; font-weight: 500; }
+    /* A device's settings and diagnostics, after what it's for. */
+    .entity-group { margin: 1.1rem 0 .3rem; font-size: .8rem; font-weight: 500; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
     .room-card ul { margin: 0; padding: 0; list-style: none; font-size: .875rem; }
     .room-card li { padding: .1rem 0; overflow-wrap: anywhere; }
     .room-card a { text-decoration: none; }

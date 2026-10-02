@@ -28,6 +28,17 @@
         }
       ]
     },
+    "entity_category": {
+      "description": "Whether it's one of the device's settings or diagnostics rather than something it's for.\nPages list these after the device's main entities.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EntityCategory"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "id": {
       "description": "`<kind>.<object_id>`. Its kind must match `capabilities.kind`.",
       "$ref": "#/$defs/EntityId"
@@ -136,6 +147,305 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^number\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "number"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^select\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "select"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^text\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "text"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^button\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "button"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^event\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "event"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^cover\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "cover"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^lock\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "lock"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^fan\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "fan"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^valve\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "valve"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^siren\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "siren"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^climate\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "climate"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^water_heater\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "water_heater"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^humidifier\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "humidifier"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -154,20 +464,59 @@
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
     "BinarySensorClass": {
+      "description": "What a binary sensor's `on` means: Home Assistant's binary sensor device classes, by the\nsame names.",
       "type": "string",
       "enum": [
-        "motion",
-        "occupancy",
-        "door",
-        "window",
-        "moisture",
-        "smoke",
-        "gas",
-        "vibration",
-        "plug",
+        "battery",
+        "battery_charging",
+        "carbon_monoxide",
+        "cold",
         "connectivity",
+        "door",
+        "garage_door",
+        "gas",
+        "glass_break",
+        "heat",
+        "light",
+        "lock",
+        "moisture",
+        "motion",
+        "moving",
+        "occupancy",
+        "opening",
+        "plug",
+        "power",
+        "presence",
         "problem",
-        "battery"
+        "running",
+        "safety",
+        "smoke",
+        "sound",
+        "tamper",
+        "update",
+        "vibration",
+        "window"
+      ]
+    },
+    "ButtonClass": {
+      "description": "What pressing it does, when that's one of Home Assistant's.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "restart"
+          ]
+        },
+        {
+          "description": "Makes the device show itself: a blink, a beep.",
+          "type": "string",
+          "const": "identify"
+        },
+        {
+          "description": "Installs an update the device has.",
+          "type": "string",
+          "const": "update"
+        }
       ]
     },
     "Capabilities": {
@@ -247,6 +596,14 @@
               "type": "string",
               "const": "sensor"
             },
+            "options": {
+              "description": "Every text it can report, when that's a fixed list (a washing machine's program, Home\nAssistant's `enum` sensors). Only for text; readings outside it are refused, and rules\ncomparing it with text it can never have are refused when saved.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256
+            },
             "state_class": {
               "description": "How numeric readings accumulate, for history and statistics.",
               "anyOf": [
@@ -298,6 +655,520 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "device_class": {
+              "description": "What it measures, from the same list as a sensor's.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SensorClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "number"
+            },
+            "max": {
+              "description": "The highest value it takes. Not below `min`.",
+              "type": "number",
+              "format": "double"
+            },
+            "min": {
+              "description": "The lowest value it takes.",
+              "type": "number",
+              "format": "double"
+            },
+            "mode": {
+              "description": "How a page should offer it.",
+              "$ref": "#/$defs/NumberMode"
+            },
+            "step": {
+              "description": "The smallest change that means anything, e.g. `0.5`. Above zero.",
+              "type": "number",
+              "format": "double"
+            },
+            "unit": {
+              "description": "Unit of the value, e.g. `s`, `°C`, `%`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "min",
+            "max",
+            "step"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "select"
+            },
+            "options": {
+              "description": "Every choice it has, at least one.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256,
+              "minItems": 1
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "options"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "text"
+            },
+            "max_length": {
+              "description": "The most characters it takes, at most 255.",
+              "type": "integer",
+              "format": "uint32",
+              "default": 255,
+              "maximum": 255,
+              "minimum": 0
+            },
+            "min_length": {
+              "description": "The fewest characters it takes.",
+              "type": "integer",
+              "format": "uint32",
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0
+            },
+            "mode": {
+              "description": "Whether it's a secret, which pages don't show.",
+              "$ref": "#/$defs/TextMode"
+            },
+            "pattern": {
+              "description": "A regular expression the text has to match, as the device says. The device checks it;\nIrori shows it to whoever is typing.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "device_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ButtonClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "button"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "device_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/EventClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "event_types": {
+              "description": "Everything it can report happening, at least one, e.g. `single`, `double`, `long`.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256,
+              "minItems": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "event"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "event_types"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "device_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CoverClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "cover"
+            },
+            "position": {
+              "description": "Can be sent to a position between open and closed, and says where it is.",
+              "type": "boolean",
+              "default": false
+            },
+            "stop": {
+              "description": "Can be stopped while it's moving.",
+              "type": "boolean",
+              "default": false
+            },
+            "tilt": {
+              "description": "Has slats that tilt, and says how far.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code_format": {
+              "description": "A regular expression the code matches, as the device says. The device checks it; pages\nshow it to whoever is typing.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "lock"
+            },
+            "open": {
+              "description": "Can open the door as well as unlock it, e.g. by pulling the latch.",
+              "type": "boolean",
+              "default": false
+            },
+            "requires_code": {
+              "description": "Needs a code to lock, unlock or open.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "direction": {
+              "description": "Can turn the other way.",
+              "type": "boolean",
+              "default": false
+            },
+            "kind": {
+              "type": "string",
+              "const": "fan"
+            },
+            "oscillate": {
+              "description": "Can swing from side to side.",
+              "type": "boolean",
+              "default": false
+            },
+            "preset_modes": {
+              "description": "Modes beyond its speed, e.g. `auto`, `sleep`, `breeze`.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256
+            },
+            "speed_count": {
+              "description": "How many speeds it has, 0 when its speed can't be set. Speeds are set and reported as a\npercentage; this says how many steps there really are.",
+              "type": "integer",
+              "format": "uint16",
+              "default": 0,
+              "maximum": 65535,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "device_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ValveClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "valve"
+            },
+            "position": {
+              "description": "Can be opened part of the way, and says how far.",
+              "type": "boolean",
+              "default": false
+            },
+            "stop": {
+              "description": "Can be stopped while it moves.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "duration": {
+              "description": "Can be told for how long.",
+              "type": "boolean",
+              "default": false
+            },
+            "kind": {
+              "type": "string",
+              "const": "siren"
+            },
+            "tones": {
+              "description": "The tones it can sound. Empty when there's no choice.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256
+            },
+            "volume": {
+              "description": "Can be told how loud.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "fan_modes": {
+              "description": "Its fan's modes, e.g. `auto`, `low`, `high`.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256
+            },
+            "hvac_modes": {
+              "description": "The modes it can be put in, at least one.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/HvacMode"
+              },
+              "minItems": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "climate"
+            },
+            "max_temp": {
+              "description": "The highest target it takes, in °C.",
+              "type": "number",
+              "format": "double"
+            },
+            "min_temp": {
+              "description": "The lowest target it takes, in °C.",
+              "type": "number",
+              "format": "double"
+            },
+            "preset_modes": {
+              "description": "Presets, e.g. `eco`, `away`, `boost`.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256
+            },
+            "swing_modes": {
+              "description": "How its louvres swing, e.g. `off`, `vertical`.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256
+            },
+            "target_humidity": {
+              "description": "Takes a target humidity, within this range in %.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HumidityRange"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "target_temperature": {
+              "description": "Takes one target temperature.",
+              "type": "boolean",
+              "default": false
+            },
+            "target_temperature_range": {
+              "description": "Takes a range: heat below the low end, cool above the high one.",
+              "type": "boolean",
+              "default": false
+            },
+            "temp_step": {
+              "description": "How finely a target can be set, in °C, e.g. 0.5.",
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "hvac_modes",
+            "min_temp",
+            "max_temp",
+            "temp_step"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "water_heater"
+            },
+            "max_temp": {
+              "description": "The highest target it takes, in °C.",
+              "type": "number",
+              "format": "double"
+            },
+            "min_temp": {
+              "description": "The lowest target it takes, in °C.",
+              "type": "number",
+              "format": "double"
+            },
+            "on_off": {
+              "description": "Has its own on and off, apart from its modes. While it's off its mode reads `off`, even\nwhen `off` isn't one of its `operation_modes`.",
+              "type": "boolean",
+              "default": false
+            },
+            "operation_modes": {
+              "description": "The modes it can be put in, at least one.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/WaterHeaterMode"
+              },
+              "minItems": 1
+            },
+            "target_temperature": {
+              "description": "Takes a target temperature.",
+              "type": "boolean",
+              "default": false
+            },
+            "temp_step": {
+              "description": "How finely a target can be set, in °C.",
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "operation_modes",
+            "min_temp",
+            "max_temp",
+            "temp_step"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "device_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HumidifierClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "humidity": {
+              "description": "The target humidities it takes, in %.",
+              "$ref": "#/$defs/HumidityRange"
+            },
+            "kind": {
+              "type": "string",
+              "const": "humidifier"
+            },
+            "modes": {
+              "description": "Modes, e.g. `normal`, `eco`, `sleep`.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "humidity"
+          ]
         }
       ]
     },
@@ -324,12 +1195,43 @@
         "max"
       ]
     },
+    "CoverClass": {
+      "description": "What it covers, when that's one of Home Assistant's.",
+      "type": "string",
+      "enum": [
+        "awning",
+        "blind",
+        "curtain",
+        "damper",
+        "door",
+        "garage",
+        "gate",
+        "shade",
+        "shutter",
+        "window"
+      ]
+    },
     "DeviceId": {
       "description": "Format of a slug (device id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
       "type": "string",
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "EntityCategory": {
+      "description": "What an entity is to its device, when it isn't what the device is for: a light's power-on\nbehaviour is a setting, its signal strength a diagnostic. Home Assistant's names.\nOrdered as pages list them: settings before diagnostics, and both after an entity with none.",
+      "oneOf": [
+        {
+          "description": "Changes how the device behaves, e.g. a motion sensor's timeout.",
+          "type": "string",
+          "const": "config"
+        },
+        {
+          "description": "Tells how the device is doing, e.g. its signal strength or firmware version.",
+          "type": "string",
+          "const": "diagnostic"
+        }
+      ]
     },
     "EntityId": {
       "description": "An entity id: `<kind>.<object_id>`, e.g. `light.hallway`. The object id uses lowercase letters a-z and digits in words separated by single `_`, 1-64 characters.",
@@ -350,6 +1252,129 @@
         {
           "maxLength": 78,
           "pattern": "^binary_sensor\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^number\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^select\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^text\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^button\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^event\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^cover\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^lock\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 68,
+          "pattern": "^fan\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^valve\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^siren\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 72,
+          "pattern": "^climate\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 77,
+          "pattern": "^water_heater\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 75,
+          "pattern": "^humidifier\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        }
+      ]
+    },
+    "EventClass": {
+      "description": "What kind of thing it reports happening, when that's one of Home Assistant's.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "doorbell",
+            "motion"
+          ]
+        },
+        {
+          "description": "A button being pressed: a remote's, a wall switch's.",
+          "type": "string",
+          "const": "button"
+        }
+      ]
+    },
+    "HumidifierClass": {
+      "type": "string",
+      "enum": [
+        "humidifier",
+        "dehumidifier"
+      ]
+    },
+    "HumidityRange": {
+      "type": "object",
+      "properties": {
+        "max": {
+          "type": "number",
+          "format": "double",
+          "maximum": 100,
+          "minimum": 0
+        },
+        "min": {
+          "type": "number",
+          "format": "double",
+          "maximum": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "min",
+        "max"
+      ]
+    },
+    "HvacMode": {
+      "description": "What it's set to do: Home Assistant's modes.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "off",
+            "heat",
+            "cool",
+            "dry",
+            "fan_only"
+          ]
+        },
+        {
+          "description": "Heats or cools to stay within a range.",
+          "type": "string",
+          "const": "heat_cool"
+        },
+        {
+          "description": "Follows its own schedule or logic.",
+          "type": "string",
+          "const": "auto"
         }
       ]
     },
@@ -360,6 +1385,15 @@
       "minLength": 1,
       "pattern": "^[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F]([^\\u0000-\\u001F\\u007F-\\u009F]*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F])?$"
     },
+    "NumberMode": {
+      "description": "How a page offers a number: a slider, a box to type in, or whichever suits the range.",
+      "type": "string",
+      "enum": [
+        "auto",
+        "slider",
+        "box"
+      ]
+    },
     "ProtocolId": {
       "description": "Format of a slug (protocol id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
       "type": "string",
@@ -368,21 +1402,78 @@
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
     "SensorClass": {
-      "type": "string",
-      "enum": [
-        "temperature",
-        "humidity",
-        "illuminance",
-        "pressure",
-        "power",
-        "energy",
-        "voltage",
-        "current",
-        "battery",
-        "co2",
-        "pm25",
-        "signal_strength",
-        "distance"
+      "description": "What a sensor measures: Home Assistant's sensor device classes, by the same names. A\nsensor whose readings come from a fixed list says so with `options` instead of a class.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "absolute_humidity",
+            "apparent_power",
+            "aqi",
+            "area",
+            "atmospheric_pressure",
+            "battery",
+            "blood_glucose_concentration",
+            "carbon_monoxide",
+            "conductivity",
+            "current",
+            "data_rate",
+            "data_size",
+            "date",
+            "distance",
+            "duration",
+            "energy",
+            "energy_distance",
+            "energy_storage",
+            "frequency",
+            "gas",
+            "humidity",
+            "illuminance",
+            "irradiance",
+            "moisture",
+            "monetary",
+            "nitrogen_dioxide",
+            "nitrogen_monoxide",
+            "nitrous_oxide",
+            "ozone",
+            "ph",
+            "pm1",
+            "pm10",
+            "pm25",
+            "pm4",
+            "power",
+            "power_factor",
+            "precipitation",
+            "precipitation_intensity",
+            "pressure",
+            "radon",
+            "reactive_energy",
+            "reactive_power",
+            "signal_strength",
+            "sound_pressure",
+            "speed",
+            "sulphur_dioxide",
+            "temperature",
+            "temperature_delta",
+            "timestamp",
+            "uptime",
+            "volatile_organic_compounds",
+            "volatile_organic_compounds_parts",
+            "voltage",
+            "volume",
+            "volume_flow_rate",
+            "volume_storage",
+            "water",
+            "weight",
+            "wind_direction",
+            "wind_speed"
+          ]
+        },
+        {
+          "description": "Carbon dioxide; Home Assistant's `carbon_dioxide`.",
+          "type": "string",
+          "const": "co2"
+        }
       ]
     },
     "SensorValueType": {
@@ -418,12 +1509,39 @@
         "switch"
       ]
     },
+    "TextMode": {
+      "type": "string",
+      "enum": [
+        "text",
+        "password"
+      ]
+    },
     "UniqueId": {
       "description": "Stable id assigned by the protocol (e.g. a Zigbee IEEE address). Unique within the protocol.",
       "type": "string",
       "maxLength": 255,
       "minLength": 1,
       "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+    },
+    "ValveClass": {
+      "type": "string",
+      "enum": [
+        "water",
+        "gas"
+      ]
+    },
+    "WaterHeaterMode": {
+      "description": "Home Assistant's operation modes.",
+      "type": "string",
+      "enum": [
+        "off",
+        "eco",
+        "electric",
+        "gas",
+        "heat_pump",
+        "high_demand",
+        "performance"
+      ]
     }
   }
 }

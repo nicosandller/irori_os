@@ -1,0 +1,16 @@
+{
+  "service": "climate.set_temperature",
+  "unique_id": "a4:cf:12:34:56:80-climate-9",
+  "data": {
+    "target_temp_low": 19,
+    "target_temp_high": 24,
+    "hvac_mode": "heat_cool"
+  },
+  "context": {
+    "id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+    "origin": {
+      "type": "user",
+      "user_id": "nico"
+    }
+  }
+}

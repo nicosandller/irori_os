@@ -1,0 +1,18 @@
+{
+  "unique_id": "a4:cf:12:34:56:80-water_heater-4",
+  "name": "Hot water tank",
+  "device_unique_id": "a4:cf:12:34:56:80",
+  "capabilities": {
+    "kind": "water_heater",
+    "operation_modes": [
+      "eco",
+      "heat_pump",
+      "performance"
+    ],
+    "min_temp": 40,
+    "max_temp": 65,
+    "temp_step": 0.5,
+    "target_temperature": true,
+    "on_off": true
+  }
+}

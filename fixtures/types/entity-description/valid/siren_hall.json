@@ -1,0 +1,13 @@
+{
+  "unique_id": "a4:cf:12:34:56:80-siren-hall",
+  "name": "Hall siren",
+  "device_unique_id": "a4:cf:12:34:56:80",
+  "capabilities": {
+    "kind": "siren",
+    "tones": [
+      "alarm",
+      "chime"
+    ],
+    "volume": true
+  }
+}

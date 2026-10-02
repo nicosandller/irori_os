@@ -123,10 +123,18 @@ motion sensor are three entities.
 | `device_id` | `DeviceId` | no | Entities without a device are allowed (e.g. a computed value) |
 | `area_id` | `AreaId` | no | **Overrides** the device's area. Effective area = `entity.area_id` ?? `device.area_id` |
 | `capabilities` | object tagged by `kind` | yes | What it can do; see below |
+| `entity_category` | `config` \| `diagnostic` | no | One of the device's settings (a motion sensor's timeout) or diagnostics (its signal strength) rather than what it's for. Pages list these after the device's other entities. Home Assistant's names; set by the protocol |
 
-**Kinds in v1:** `light`, `switch`, `sensor`, `binary_sensor`.
-**Next, in likely order:** `cover`, `climate`, `button`/`event`, `lock`. Adding a kind is an
-additive change: a new tag in `Capabilities` and `State`.
+**Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`,
+`event`, `cover`, `lock`, `fan`, `valve`, `siren`, `climate`, `water_heater`, `humidifier`.
+**Next, in likely order:** `update`, `alarm_control_panel`, `date`, `time`, `datetime`,
+`media_player`, `vacuum`, `lawn_mower`, `remote`, `scene`, `device_tracker`. Adding a kind is an
+additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
+data and checks, and a new tag in `Capabilities`, `State` and `Service`.
+
+Every kind has one **primary value** (`on`, a reading, a position…), a bool, number or text. It's
+what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [rules.md](rules.md)
+§5.1), so the rules engine and the editor work with a new kind without code of their own.
 
 **Capabilities by kind** (static facts; they don't change with state):
 
@@ -137,13 +145,61 @@ additive change: a new tag in `Capabilities` and `State`.
 | | `rgb` | bool | `false` | Supports RGB color |
 | `switch` | `device_class` | `outlet` \| `switch` | absent | |
 | `sensor` | `value_type` | `number` \| `text` | **required** | Rules are type-checked against it |
-| | `device_class` | `temperature` \| `humidity` \| `illuminance` \| `pressure` \| `power` \| `energy` \| `voltage` \| `current` \| `battery` \| `co2` \| `pm25` \| `signal_strength` \| `distance` | absent | |
+| | `device_class` | Home Assistant's sensor device classes, by the same names (`temperature`, `humidity`, `power`, `pm25`, `timestamp`, …; 61 in all, see the schema), except carbon dioxide, which is `co2`. HA's `enum` isn't a class here: a sensor reporting from a fixed list says so with `options` | absent | |
 | | `unit` | string | absent | E.g. `°C`, `lx`, `%`, `W`, `kWh` |
 | | `state_class` | `measurement` \| `total` \| `total_increasing` | absent | How values accumulate, for statistics |
-| `binary_sensor` | `device_class` | `motion` \| `occupancy` \| `door` \| `window` \| `moisture` \| `smoke` \| `gas` \| `vibration` \| `plug` \| `connectivity` \| `problem` \| `battery` | absent | Says what `on` means |
+| | `options` | list of up to 256 distinct, non-blank strings | absent | Only with `value_type: text`: every text it can report (HA's `enum` sensors). A reading outside it is refused, and rules comparing it with text it can never have are refused when saved |
+| `binary_sensor` | `device_class` | Home Assistant's binary sensor device classes, by the same names (`motion`, `occupancy`, `presence`, `door`, `garage_door`, `window`, `opening`, `lock`, …; 29 in all, see the schema) | absent | Says what `on` means, as in Home Assistant: a `lock` that's on is **unlocked**, a `battery` that's on is low |
+| `number` | `min`, `max` | finite numbers, `min ≤ max` | **required** | The range it takes. Values outside it are refused, reported or asked for |
+| | `step` | finite number above 0 | **required** | The smallest change that means anything; a hint for pages, not a rule |
+| | `unit` | string | absent | E.g. `s`, `°C`, `%` |
+| | `device_class` | as a sensor's | absent | What it measures |
+| | `mode` | `auto` \| `slider` \| `box` | `auto` | How a page offers it; `auto` is a slider for at most 256 steps, a box otherwise |
+| `select` | `options` | 1–256 distinct, non-blank strings | **required** | Every choice it has. Anything else is refused, reported or asked for, and rules are checked against it like a text sensor's options |
+| `text` | `min_length`, `max_length` | 0–255, `min ≤ max` | `0`, `255` | Characters, not bytes |
+| | `pattern` | regular expression | absent | The device's; it checks it, pages show it |
+| | `mode` | `text` \| `password` | `text` | A `password` is never shown by pages |
+| `button` | `device_class` | `identify` \| `restart` \| `update` | absent | What pressing it does |
+| `event` | `event_types` | 1–256 distinct, non-blank strings | **required** | Everything it can report happening, e.g. `single`, `double`, `hold` |
+| | `device_class` | `button` \| `doorbell` \| `motion` | absent | |
+| `cover` | `device_class` | `awning` \| `blind` \| `curtain` \| `damper` \| `door` \| `garage` \| `gate` \| `shade` \| `shutter` \| `window` | absent | |
+| | `position`, `tilt`, `stop` | bool | `false` | Can go to a position, has slats that tilt, can be stopped while moving |
+| `lock` | `open` | bool | `false` | Can open the door, not only unlock it |
+| | `requires_code` | bool | `false` | Locking, unlocking and opening need its code |
+| | `code_format` | regular expression | absent | The device's; pages show it |
+| `valve` | `device_class` | `water` \| `gas` | absent | |
+| | `position`, `stop` | bool | `false` | Opens part of the way; can be stopped |
+| `siren` | `tones` | up to 256 distinct strings | `[]` | The tones it can sound |
+| | `volume`, `duration` | bool | `false` | Can be told how loud; for how long |
+| `climate` | `hvac_modes` | 1 or more of `off` \| `heat` \| `cool` \| `heat_cool` \| `auto` \| `dry` \| `fan_only` | **required** | The modes it can be put in |
+| | `min_temp`, `max_temp` | °C, `min ≤ max` | **required** | The targets it takes |
+| | `temp_step` | °C above 0 | **required** | How finely a target can be set |
+| | `target_temperature` | bool | `false` | Takes one target |
+| | `target_temperature_range` | bool | `false` | Takes a range: heats below `target_temp_low`, cools above `target_temp_high` |
+| | `target_humidity` | `{ min, max }` in % | absent | Takes a target humidity in this range |
+| | `fan_modes`, `swing_modes`, `preset_modes` | up to 256 distinct strings each | `[]` | E.g. `auto`/`low`/`high`; `off`/`vertical`; `eco`/`away`/`boost` |
+| `water_heater` | `operation_modes` | 1 or more of `off` \| `eco` \| `electric` \| `gas` \| `heat_pump` \| `high_demand` \| `performance` | **required** | The modes it can be put in |
+| | `min_temp`, `max_temp`, `temp_step` | °C, as a climate entity's | **required** | |
+| | `target_temperature` | bool | `false` | Takes a target |
+| | `on_off` | bool | `false` | Has its own on and off apart from its modes. While switched off its mode reads `off`, even if `off` isn't among its modes |
+| `humidifier` | `device_class` | `humidifier` \| `dehumidifier` | absent | |
+| | `humidity` | `{ min, max }` in %, within 0–100 | **required** | The targets it takes |
+| | `modes` | up to 256 distinct strings | `[]` | E.g. `normal`, `eco`, `sleep` |
+| `fan` | `speed_count` | integer | `0` | How many real speeds it has; 0 when its speed can't be set. Speeds go over the wire as percentages, as in Home Assistant |
+| | `oscillate`, `direction` | bool | `false` | Can swing; can turn the other way |
+| | `preset_modes` | up to 256 distinct strings | `[]` | Modes beyond its speed, e.g. `auto`, `sleep` |
 
-Device classes are closed lists: a protocol maps what it knows and leaves the rest absent.
-New classes are additive.
+**Temperatures are °C** in climate entities and water heaters, in their capabilities, state and services alike.
+A protocol converts from what a device speaks (°F, K) on the way in and back on the way out
+(`irori_types::units`), so a rule comparing a thermostat's target with a temperature sensor never
+compares °F with °C. Pages show °C for now.
+
+**Unlocking and opening let someone in.** Pages ask before sending them, in a window that also
+takes the code a lock needs. A code travels with its call (`lock.unlock {code}`), is never shown
+in logs (its `Debug` hides it), and is never kept.
+
+Device classes are closed lists, matching Home Assistant's: a protocol maps what it knows (with
+`SensorClass::from_ha` and friends) and leaves the rest absent. New classes are additive.
 
 ### 4.5 Irori's own device
 
@@ -212,6 +268,45 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | `switch` | `on` | bool | yes | |
 | `sensor` | `value` | finite number or string | yes | Must match the entity's `value_type` (checked by the core, which has both) |
 | `binary_sensor` | `on` | bool | yes | Meaning depends on `device_class`: motion detected, door open, … |
+| `number` | `value` | finite number | yes | Within its `min`–`max` (checked by the core) |
+| `select` | `option` | string | yes | One of its `options` (checked by the core) |
+| `text` | `value` | string | yes | Within its `min_length`–`max_length` characters (checked by the core) |
+| `event` | `event_type` | string | yes | What happened last: one of its `event_types` (checked by the core) |
+| `cover` | `state` | `open` \| `opening` \| `closed` \| `closing` | yes | Its typed value, for rules (`text()`) |
+| | `position`, `tilt` | integer 0 (closed) – 100 (open) | no | Only when it said it has them |
+| `lock` | `state` | `locked` \| `unlocked` \| `locking` \| `unlocking` \| `jammed` \| `open` \| `opening` | yes | Its typed value, for rules |
+| `valve` | `state` | `open` \| `opening` \| `closed` \| `closing` | yes | Its typed value, as a cover's |
+| | `position` | integer 0–100 | no | When it opens part of the way |
+| `siren` | `on` | bool | yes | Sounding or not |
+| `climate` | `hvac_mode` | one of its `hvac_modes` | yes | Its typed value, for rules (`text()`) |
+| | `hvac_action` | `off` \| `preheating` \| `heating` \| `cooling` \| `drying` \| `idle` \| `fan` \| `defrosting` | no | What it's doing now, when it says: set to heat but idle in a warm room |
+| | `current_temperature` | °C | no | The room, as it measures it |
+| | `target_temperature` | °C | no | With `target_temperature` |
+| | `target_temp_low`, `target_temp_high` | °C | no | With `target_temperature_range` |
+| | `current_humidity`, `target_humidity` | % 0–100 | no | |
+| | `fan_mode`, `swing_mode`, `preset_mode` | string | no | One of its lists (checked by the core) |
+| `water_heater` | `operation_mode` | one of its `operation_modes`, or `off` | yes | Its typed value |
+| | `current_temperature` | °C | no | The water's |
+| | `target_temperature` | °C | no | |
+| `humidifier` | `on` | bool | yes | Its typed value |
+| | `target_humidity`, `current_humidity` | % 0–100 | no | |
+| | `mode` | string | no | One of its `modes` (checked by the core) |
+| | `action` | `off` \| `humidifying` \| `drying` \| `idle` | no | What it's doing now |
+| `fan` | `on` | bool | yes | Its typed value |
+| | `percentage` | integer 0–100 | no | Its speed, when it has speeds. Kept while off |
+| | `oscillating` | bool | no | When it can swing |
+| | `direction` | `forward` \| `reverse` | no | When it can turn either way |
+| | `preset_mode` | string | no | One of its `preset_modes`, when it's in one |
+
+**An `event`'s every report is something happening.** Two `double` presses of a remote in a row
+are two changes: each moves `last_changed` and is a change for anything watching, even though the
+value is the same. A report the protocol marks `replayed` ([protocols.md](protocols.md) §6.3), only
+repeating what it last heard, sets the value and is not a change. Protocols keep every press
+waiting for the core in order, rather than only the latest as for values.
+
+A `button` has **no state**: there is no `button` tag, and its `EntityState.state` is always
+`null`. For a button that means "has no value", not "unknown" (§5.2): pressing it is something it
+does, not something it is. Rules can't read or compare it (`on()`, a state trigger), only press it.
 
 **Brightness is 1–255**, not a percentage: that's what Zigbee and Home Assistant use, so no
 precision is lost converting. Services will accept `brightness_pct` for people (M0.3).
@@ -281,7 +376,7 @@ consumers; API versioning is part of the API spec (M0.5).
 | How protocol extensions create and update entries | [Protocol contract](protocols.md) §5–§6 |
 | How users rename entities or assign areas in files | Config spec (M0.7) |
 | Renaming an entity `id` and rewriting rules that use it | Open question 1 |
-| Hidden/disabled entities, icons, entity categories | Later, when the UI needs them |
+| Hidden/disabled entities, icons | Later, when the UI needs them. (Entity categories are in §4.4) |
 | Unit conversion and preferred units | Later; `unit` is informational for now |
 
 ## 9. Changes from the roadmap draft
@@ -304,8 +399,8 @@ Recorded as D20 in the ROADMAP decision log.
 1. **Entity renames.** When a user renames `light.hallway` to `light.hall_ceiling`, should the
    core rewrite rule files (they're the user's plain-text source of truth, D18), keep an alias,
    or refuse while rules reference it? Decide in M0.7 (config) with M0.3 (rules).
-2. **Text sensor values.** Should `text` sensors that report from a fixed set (e.g. a
-   washing machine program) declare their options in capabilities, so rules can check
-   `== 'rinse'` against them? Likely yes; decide with M0.3.
-3. **Units.** Free-form strings today. Before AI dashboards and statistics, decide whether to
-   restrict units per `device_class` and normalize (e.g. store °C, display °F).
+2. ~~**Text sensor values.**~~ Decided: a text sensor may list its `options` (§4.4), and rules are
+   checked against them.
+3. **Units.** Temperatures are decided: °C in the model, converted by protocols (§4.4). Other
+   units are free-form strings today. Before AI dashboards and statistics, decide whether to
+   restrict them per `device_class` and normalize them too.

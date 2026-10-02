@@ -79,10 +79,16 @@ struct Entity {
     /// `irori-protocol-mqtt`'s own `lib.rs` for why (`irori_ha_discovery::state::decode`'s
     /// `previous` parameter).
     last_state: Option<State>,
+    /// The last state it reported while on, for a `turn_on` that goes back to it (a
+    /// thermostat's mode).
+    last_on: Option<State>,
 }
 
 #[derive(Debug, Default)]
 struct Registry {
+    /// What the broker's discovery configs offer that Irori has no entity kind for yet, listed
+    /// on their devices (`docs/specs/protocols.md` §6.7).
+    unmodeled: irori_ha_discovery::unmodeled::Tracker,
     entities: BTreeMap<UniqueId, Entity>,
     config_topics: BTreeMap<String, UniqueId>,
     state_topics: BTreeMap<String, Vec<UniqueId>>,
@@ -285,6 +291,15 @@ async fn apply(
         }
         return;
     }
+    if let Some(component) = topic::unsupported_component(&message.topic, DISCOVERY_PREFIX) {
+        if registry
+            .unmodeled
+            .apply(&message.topic, component, &message.payload)
+        {
+            ctx.set_unmodeled(registry.unmodeled.list()).await;
+        }
+        return;
+    }
     if let Some(discovered) = topic::parse(&message.topic, DISCOVERY_PREFIX) {
         describe(discovered, &message, registry, client, ctx).await;
         return;
@@ -325,11 +340,15 @@ async fn apply(
             ) {
                 Some(Ok(new_state)) => {
                     entity.last_state = Some(new_state.clone());
+                    if state::is_on(&new_state) {
+                        entity.last_on = Some(new_state.clone());
+                    }
                     ctx.report_state(StateReport {
                         unique_id,
                         state: Some(new_state),
                         attributes: BTreeMap::default(),
                         caused_by: None,
+                        replayed: message.retained,
                     });
                 }
                 Some(Err(why)) => {
@@ -349,6 +368,9 @@ async fn describe(
     ctx: &ProtocolContext,
 ) {
     if message.payload.is_empty() {
+        if registry.unmodeled.forget(&message.topic) {
+            ctx.set_unmodeled(registry.unmodeled.list()).await;
+        }
         if let Some(unique_id) = registry.config_topics.remove(&message.topic) {
             if let Some(old) = registry.entities.remove(&unique_id) {
                 deindex(&unique_id, &old.topics, registry);
@@ -359,10 +381,18 @@ async fn describe(
         }
         return;
     }
+    let component = discovered.component.to_string();
     let parsed = match discovery::parse(discovered.component, &message.payload) {
         Ok(parsed) => parsed,
         Err(why) => {
             tracing::warn!(topic = %message.topic, %why, "skipping a discovery config Irori can't use");
+            // Listed on its device with why, rather than gone without a word.
+            if registry
+                .unmodeled
+                .refuse(&message.topic, &component, &message.payload, &why)
+            {
+                ctx.set_unmodeled(registry.unmodeled.list()).await;
+            }
             return;
         }
     };
@@ -377,18 +407,28 @@ async fn describe(
     let entity_description = map::entity(&parsed, &discovered.object_id);
     if let Err(e) = ctx.describe_entity(entity_description).await {
         tracing::warn!(%unique_id, error = %e, "the core refused an entity");
+        if registry
+            .unmodeled
+            .refuse(&message.topic, &component, &message.payload, &e.to_string())
+        {
+            ctx.set_unmodeled(registry.unmodeled.list()).await;
+        }
         return;
+    }
+    // Used now: if it was listed as refused, it isn't any more.
+    if registry.unmodeled.forget(&message.topic) {
+        ctx.set_unmodeled(registry.unmodeled.list()).await;
     }
 
     // A redescribe (the same entity's discovery config firing again, e.g. Zigbee2MQTT
     // republishing on its own restart) must drop this entity's old topic-index entries first —
     // otherwise a topic it no longer uses keeps reporting for it, and one it still uses ends up
     // listed twice.
-    let last_state = if let Some(old) = registry.entities.remove(&unique_id) {
+    let (last_state, last_on) = if let Some(old) = registry.entities.remove(&unique_id) {
         deindex(&unique_id, &old.topics, registry);
-        old.last_state
+        (old.last_state, old.last_on)
     } else {
-        None
+        (None, None)
     };
 
     for (topic, _) in state::topics_of(&unique_id, &parsed.topics) {
@@ -424,6 +464,7 @@ async fn describe(
         Entity {
             topics: parsed.topics,
             last_state,
+            last_on,
         },
     );
 }
@@ -463,7 +504,11 @@ async fn route(incoming: IncomingCall, registry: &Registry, client: &impl Publis
         incoming.reply(Err(ServiceError::unavailable(why)));
         return;
     };
-    let messages = match state::encode(&entity.topics, &incoming.call.service) {
+    let messages = match state::encode_with(
+        &entity.topics,
+        &incoming.call.service,
+        entity.last_on.as_ref(),
+    ) {
         Ok(messages) => messages,
         Err(why) => {
             incoming.reply(Err(ServiceError::failed(why)));
@@ -487,6 +532,7 @@ mod tests {
     use irori_types::{LightTurnOn, Service, ServiceCall};
 
     use super::*;
+    use irori_ha_discovery::discovery::LightTopics;
 
     type Published = (String, Vec<u8>, bool);
 
@@ -518,6 +564,7 @@ mod tests {
         Message {
             topic: topic.to_owned(),
             payload: payload.to_vec(),
+            retained: false,
         }
     }
 
@@ -534,6 +581,7 @@ mod tests {
                     }
                     host::Op::SetHealth(_)
                     | host::Op::SetWaiting(_)
+                    | host::Op::SetUnmodeled(_)
                     | host::Op::SetAvailableActions(_) => {}
                     host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));
@@ -700,7 +748,7 @@ mod tests {
         registry.entities.insert(
             unique_id.clone(),
             Entity {
-                topics: EntityTopics::LightDefault {
+                topics: EntityTopics::Light(LightTopics::Default {
                     state_topic: Some("t/POWER".to_owned()),
                     command_topic: "t/cmnd/POWER".to_owned(),
                     payload_on: "ON".to_owned(),
@@ -708,8 +756,9 @@ mod tests {
                     brightness_state_topic: Some("t/RESULT".to_owned()),
                     brightness_command_topic: Some("t/cmnd/Dimmer".to_owned()),
                     brightness_scale: 100,
-                },
+                }),
                 last_state: None,
+                last_on: None,
             },
         );
         registry
@@ -865,11 +914,12 @@ mod tests {
         registry.entities.insert(
             UniqueId::try_from("0x0017880104e45520_light").expect("valid"),
             Entity {
-                topics: EntityTopics::LightJson {
+                topics: EntityTopics::Light(LightTopics::Json {
                     state_topic: "zigbee2mqtt/Living room lamp".to_owned(),
                     command_topic: "zigbee2mqtt/Living room lamp/set".to_owned(),
-                },
+                }),
                 last_state: None,
+                last_on: None,
             },
         );
         let publisher = FakePublisher::default();

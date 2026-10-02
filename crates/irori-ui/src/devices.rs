@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use irori_types::{
     AreaId, Availability, BinarySensorCapabilities, BinarySensorClass, Capabilities, Device,
-    DeviceId, Entity, EntityId, EntityState, ExtensionId, LightCapabilities, LightState,
-    LightTurnOn, SensorCapabilities, SensorClass, SensorValue, State,
+    DeviceId, Entity, EntityId, EntityState, ExtensionId, LightTurnOn, SensorCapabilities,
+    SensorClass, SensorValue, State,
 };
 use leptos::ev;
 use leptos::prelude::*;
@@ -14,6 +14,14 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 
 use crate::api::Home;
+
+mod controls;
+
+use self::controls::control;
+pub(crate) use self::controls::{
+    climate_words, fan_words, fill, humidifier_words, lock_words, number, opening_words, unit_of,
+    water_heater_words, wording,
+};
 
 /// What a row needs to show a command on its way and what came back from it.
 #[derive(Debug, Clone, Copy)]
@@ -26,6 +34,9 @@ pub struct Controls {
     pub set_on: Callback<(EntityId, bool)>,
     /// Ask a light to come on with this brightness, color temperature or color.
     pub set_light: Callback<(EntityId, LightTurnOn)>,
+    /// Ask an entity for one of its kind's actions, with that action's data: a button's
+    /// `press`, a number's `set_value`, a cover's `set_position`.
+    pub act: Callback<(EntityId, &'static str, Option<serde_json::Value>)>,
 }
 
 /// One device and the entities it provides. `device` is `None` for entities that belong to no
@@ -109,9 +120,10 @@ pub fn groups(home: &Home, needle: &str) -> Vec<Group> {
     by_device
         .into_values()
         .map(|mut group| {
-            group
-                .entities
-                .sort_by(|(a, _), (b, _)| (&a.name, &a.id).cmp(&(&b.name, &b.id)));
+            group.entities.sort_by(|(a, _), (b, _)| {
+                // What the device is for first, then its settings and diagnostics.
+                (a.entity_category, &a.name, &a.id).cmp(&(b.entity_category, &b.name, &b.id))
+            });
             group
         })
         .collect()
@@ -1575,8 +1587,12 @@ fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyVi
     let expanded = move || open.get().to_string();
     let chevron = view! { <span class="unroll-mark" aria-hidden="true"></span> };
     let hint = view! { <span class="visually-hidden">" — last 24 hours"</span> };
+    // A button has nothing to remember from one day to the next.
+    if matches!(entity.capabilities, Capabilities::Button(_)) {
+        return control;
+    }
     match entity.capabilities {
-        Capabilities::Sensor(_) | Capabilities::BinarySensor(_) => view! {
+        Capabilities::Sensor(_) | Capabilities::BinarySensor(_) | Capabilities::Event(_) => view! {
             <button
                 type="button"
                 class="unroll reading-unroll"
@@ -1599,7 +1615,20 @@ fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyVi
             </button>
         }
         .into_any(),
-        Capabilities::Light(_) | Capabilities::Switch(_) => view! {
+        Capabilities::Light(_)
+        | Capabilities::Switch(_)
+        | Capabilities::Number(_)
+        | Capabilities::Select(_)
+        | Capabilities::Text(_)
+        | Capabilities::Button(_)
+        | Capabilities::Cover(_)
+        | Capabilities::Lock(_)
+        | Capabilities::Fan(_)
+        | Capabilities::Valve(_)
+        | Capabilities::Siren(_)
+        | Capabilities::Climate(_)
+        | Capabilities::WaterHeater(_)
+        | Capabilities::Humidifier(_) => view! {
             {control}
             <button
                 type="button"
@@ -1634,437 +1663,9 @@ fn pull(event: &ev::PointerEvent, open: RwSignal<bool>, toggle: Callback<()>) {
     }
 }
 
-fn control(
-    entity: &Entity,
-    state: Option<&EntityState>,
-    offline: bool,
-    controls: Controls,
-) -> AnyView {
-    let value = state.and_then(|s| s.state.as_ref());
-    match &entity.capabilities {
-        Capabilities::Light(capabilities) => light(entity, capabilities, value, offline, controls),
-        Capabilities::Switch(_) => switch(entity, value, offline, controls),
-        Capabilities::Sensor(capabilities) => sensor(capabilities, value),
-        Capabilities::BinarySensor(capabilities) => binary(capabilities.device_class, value),
-    }
-}
-
-fn switch(entity: &Entity, value: Option<&State>, offline: bool, controls: Controls) -> AnyView {
-    let on = match value {
-        Some(State::Switch(switch)) => Some(switch.on),
-        _ => None,
-    };
-    view! {
-        <>
-            {knob(entity, on, offline, controls)}
-        </>
-    }
-    .into_any()
-}
-
-/// A light: the current brightness beside the switch, and — while it's on — the sliders that
-/// set the level it comes back to, its color temperature or its color. The switch is what the
-/// entity is doing and the sliders are what a person is asking for, which is why the position a
-/// slider shows can sit between sends: the row follows the device once it reports back (M1.5's
-/// push will make that instant).
-fn light(
-    entity: &Entity,
-    capabilities: &LightCapabilities,
-    value: Option<&State>,
-    offline: bool,
-    controls: Controls,
-) -> AnyView {
-    let on = match value {
-        Some(State::Light(light)) => Some(light.on),
-        _ => None,
-    };
-    // Brightness and color are shown and changeable only while the light is on. A change here is
-    // `light.turn_on` with a level, which comes on (the demo's `apply_light` turns a lit light
-    // on at the level it asked for); a slider that switched the light on from a standing start
-    // would be a light that seemed off before it was touched.
-    let current = match value {
-        Some(State::Light(light)) if light.on => Some(light),
-        _ => None,
-    };
-    view! {
-        <>
-            {current.and_then(|l| l.brightness).map(reading)}
-            {knob(entity, on, offline, controls)}
-            {light_controls(entity, capabilities, current, offline, controls)}
-        </>
-    }
-    .into_any()
-}
-
-/// The level a light is at, as a percentage the page shows and its sliders work in. `div_ceil`
-/// keeps whole levels honest: 180 of 255 is 71%, not 70.
-fn brightness_pct(level: u8) -> u16 {
-    (u16::from(level) * 100).div_ceil(255)
-}
-
-/// The slider's percentage back to the 1-255 the `light.turn_on` data takes. Flooring keeps the
-/// round trip stable: a level the page shows as 71% sends back a level the page will also read
-/// as 71%, so the slider doesn't creep one notch per change.
-fn pct_to_brightness(pct: u16) -> u8 {
-    ((u32::from(pct.clamp(1, 100)) * 255 / 100) as u8).clamp(1, 255)
-}
-
-/// The color an `<input type="color">` gives, "#rrggbb", as the `[r, g, b]` the data takes.
-fn rgb_from_hex(hex: &str) -> Option<[u8; 3]> {
-    let hex = hex.strip_prefix('#').unwrap_or(hex);
-    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    let read = |from: usize| u8::from_str_radix(&hex[from..from + 2], 16).ok();
-    Some([read(0)?, read(2)?, read(4)?])
-}
-
-/// `[r, g, b]` back into the "#rrggbb" a color input wants.
-fn hex_from_rgb(rgb: [u8; 3]) -> String {
-    format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
-}
-
-/// The sliders that set a lit light's level and color: brightness when it can dim, color
-/// temperature within its range, and a color well when it has one. Each sends one `turn_on` with
-/// that one thing, keeping the level and color it already has.
-fn light_controls(
-    entity: &Entity,
-    capabilities: &LightCapabilities,
-    light: Option<&LightState>,
-    offline: bool,
-    controls: Controls,
-) -> AnyView {
-    let entity_id = entity.id.clone();
-    let Some(light) = light else {
-        return ().into_any();
-    };
-
-    let mut sub = Vec::new();
-    if capabilities.brightness {
-        let level = brightness_pct(light.brightness.unwrap_or(255));
-        let id = entity_id.clone();
-        let run = {
-            let id = id.clone();
-            move |pct| {
-                controls.set_light.run((
-                    id.clone(),
-                    LightTurnOn {
-                        brightness: Some(pct_to_brightness(pct)),
-                        ..Default::default()
-                    },
-                ))
-            }
-        };
-        // A command is one thing at a time per entity: while one is in flight the sliders stand
-        // still, so dragging can't pile up commands the device will chew through in its own order.
-        let disable = {
-            let entity_id = entity_id.clone();
-            move || offline || controls.busy.get().contains(&entity_id)
-        };
-        // Where the thumb is while it's being dragged: the label and the filled part of the track
-        // follow it, and only letting go sends anything. Starts at what the device reported, and
-        // does again whenever the device reports.
-        let dragged = RwSignal::new(level);
-        sub.push(
-            view! {
-                <label class="dim" title="Brightness">
-                    <span class="lv">{move || dragged.get()}%</span>
-                    <input
-                        type="range"
-                        min="1"
-                        max="100"
-                        step="1"
-                        aria-label={format!("Brightness for {}", entity.name)}
-                        prop:value=level.to_string()
-                        style:--fill=move || format!("{}%", fill(dragged.get(), 1, 100))
-                        disabled=disable
-                        on:input:target=move |ev| {
-                            if let Ok(pct) = ev.target().value().parse::<u16>() {
-                                dragged.set(pct);
-                            }
-                        }
-                        on:change:target=move |ev| {
-                            let pct = ev.target().value().parse::<u16>().unwrap_or(level);
-                            run(pct)
-                        }
-                    />
-                </label>
-            }
-            .into_any(),
-        );
-    }
-    if let Some(range) = capabilities.color_temp_kelvin {
-        let current = light
-            .color_temp_kelvin
-            .unwrap_or_else(|| range.min + (range.max - range.min) / 2);
-        let id = entity_id.clone();
-        let run = {
-            let id = id.clone();
-            move |kelvin| {
-                controls.set_light.run((
-                    id.clone(),
-                    LightTurnOn {
-                        color_temp_kelvin: Some(kelvin),
-                        ..Default::default()
-                    },
-                ))
-            }
-        };
-        let disable = {
-            let entity_id = entity_id.clone();
-            move || offline || controls.busy.get().contains(&entity_id)
-        };
-        let dragged = RwSignal::new(current);
-        sub.push(
-            view! {
-                <label class="dim" title="Color temperature">
-                    <span class="lv">{move || dragged.get()}K</span>
-                    // No fill here: the track is the colors themselves, warm to cool.
-                    <input
-                        type="range"
-                        class="kelvin"
-                        min=range.min.to_string()
-                        max=range.max.to_string()
-                        step="100"
-                        aria-label={format!("Color temperature for {}", entity.name)}
-                        prop:value=current.to_string()
-                        disabled=disable
-                        on:input:target=move |ev| {
-                            if let Ok(kelvin) = ev.target().value().parse::<u16>() {
-                                dragged.set(kelvin);
-                            }
-                        }
-                        on:change:target=move |ev| {
-                            let kelvin = ev.target().value().parse::<u16>().unwrap_or(current);
-                            run(kelvin)
-                        }
-                    />
-                </label>
-            }
-            .into_any(),
-        );
-    }
-    if capabilities.rgb {
-        let current = hex_from_rgb(light.rgb.unwrap_or([255, 255, 255]));
-        let id = entity_id.clone();
-        let run = {
-            let id = id.clone();
-            move |rgb| {
-                controls.set_light.run((
-                    id.clone(),
-                    LightTurnOn {
-                        rgb: Some(rgb),
-                        ..Default::default()
-                    },
-                ))
-            }
-        };
-        let disable = {
-            let entity_id = entity_id.clone();
-            move || offline || controls.busy.get().contains(&entity_id)
-        };
-        sub.push(
-            view! {
-                <label class="dim" title="Color">
-                    <input
-                        type="color"
-                        aria-label={format!("Color for {}", entity.name)}
-                        prop:value=current.clone()
-                        disabled=disable
-                        on:change:target=move |ev| {
-                            if let Some(rgb) = rgb_from_hex(&ev.target().value()) {
-                                run(rgb)
-                            }
-                        }
-                    />
-                </label>
-            }
-            .into_any(),
-        );
-    }
-    if sub.is_empty() {
-        return ().into_any();
-    }
-
-    view! {
-        <span class="light-controls">
-            {sub}
-        </span>
-    }
-    .into_any()
-}
-
-/// How far along a slider's track `value` sits, as a whole percentage — where its filled part
-/// ends. Any number type a slider holds: a light's level, a wall's thickness, a snap step.
-pub(crate) fn fill(value: impl Into<f64>, min: impl Into<f64>, max: impl Into<f64>) -> u16 {
-    let (value, min, max) = (value.into(), min.into(), max.into());
-    if max <= min {
-        return 100;
-    }
-    ((value.clamp(min, max) - min) * 100.0 / (max - min)).floor() as u16
-}
-
-fn reading(level: u8) -> impl IntoView {
-    view! {
-        <span class="reading">
-            <span class="n" data-n=brightness_pct(level).to_string()>
-                {brightness_pct(level).to_string()}
-            </span>
-            "%"
-        </span>
-    }
-}
-
-/// A switch showing what the entity is doing, not what was last clicked: it moves when the
-/// device reports back. A light that has never reported sits in between, and clicking turns it
-/// on.
-fn knob(entity: &Entity, on: Option<bool>, offline: bool, controls: Controls) -> impl IntoView {
-    let entity_id = entity.id.clone();
-    let busy = {
-        let entity_id = entity_id.clone();
-        move || controls.busy.get().contains(&entity_id)
-    };
-    let pending = busy.clone();
-    // What the click means is "I want it off", not "flip whatever it is now": the page sends the
-    // state the person asked for, so a second click on a stale row can't undo the first.
-    let wanted = !on.unwrap_or(false);
-    let click = {
-        let entity_id = entity_id.clone();
-        move |event: ev::MouseEvent| {
-            // A swipe already said what it wanted when it let go.
-            if !crate::gesture::swallow_click(&event) {
-                controls.set_on.run((entity_id.clone(), wanted));
-            }
-        }
-    };
-    // Swiped: whichever side the knob was let go on, if that's not where it already is.
-    let let_go = {
-        let entity_id = entity_id.clone();
-        move |event: ev::PointerEvent| {
-            if let Some(side) = crate::gesture::knob_up(&event)
-                && Some(side) != on
-            {
-                controls.set_on.run((entity_id.clone(), side));
-            }
-        }
-    };
-    let label = format!("Turn {} {}", entity.name, if wanted { "on" } else { "off" });
-    // A screen reader is told what the knob shows. `mixed` is how ARIA says "neither", which is
-    // what an entity that has never reported is: saying `false` would claim it's off.
-    let pressed = match on {
-        Some(true) => "true",
-        Some(false) => "false",
-        None => "mixed",
-    };
-    view! {
-        <button
-            type="button"
-            class="toggle"
-            class:unknown=on.is_none()
-            // Waiting on the device, as opposed to unable to reach it: both disable the switch,
-            // but only this one is going to change.
-            class:pending=pending
-            aria-label=label
-            aria-pressed=pressed
-            disabled=move || offline || busy()
-            on:click=click
-            on:pointerdown=|event| crate::gesture::knob_down(&event)
-            on:pointermove=|event| crate::gesture::knob_move(&event)
-            on:pointerup=let_go
-            on:pointercancel=|event| {
-                crate::gesture::knob_up(&event);
-            }
-        >
-            <span class="knob"></span>
-        </button>
-    }
-}
-
-fn sensor(capabilities: &SensorCapabilities, value: Option<&State>) -> AnyView {
-    let (reading, unit, counts) = match value {
-        Some(State::Sensor(sensor)) => {
-            let unit = capabilities.unit.clone().unwrap_or_default();
-            match &sensor.value {
-                SensorValue::Number(n) => (number(*n), unit, Some(n.to_string())),
-                SensorValue::Text(text) => (text.clone(), unit, None),
-            }
-        }
-        _ => (UNKNOWN.to_owned(), String::new(), None),
-    };
-    // A number counts to its next value as it changes (count.rs); words just change.
-    view! {
-        <span class="reading">
-            <span class="n" data-n=counts>{reading}</span>
-            <span class="unit">{(!unit.is_empty()).then(|| format!(" {unit}"))}</span>
-        </span>
-    }
-    .into_any()
-}
-
-fn binary(class: Option<BinarySensorClass>, value: Option<&State>) -> AnyView {
-    let on = match value {
-        Some(State::BinarySensor(sensor)) => Some(sensor.on),
-        _ => None,
-    };
-    let reading = on.map_or(UNKNOWN, |on| wording(class, on));
-    view! { <span class="reading" class:on=on.unwrap_or(false)>{reading}</span> }.into_any()
-}
-
-const UNKNOWN: &str = "unknown";
-
-/// What a binary sensor's `true` and `false` mean in words. Without a device class there's
-/// nothing better to say than on and off.
-pub(crate) fn wording(class: Option<BinarySensorClass>, on: bool) -> &'static str {
-    use BinarySensorClass::*;
-    match (class, on) {
-        (Some(Motion | Vibration), true) => "Motion",
-        (Some(Motion | Vibration), false) => "Still",
-        (Some(Occupancy), true) => "Detected",
-        (Some(Occupancy), false) => "Clear",
-        (Some(Door | Window), true) => "Open",
-        (Some(Door | Window), false) => "Closed",
-        (Some(Moisture), true) => "Wet",
-        (Some(Moisture), false) => "Dry",
-        (Some(Smoke), true) => "Smoke",
-        (Some(Gas), true) => "Gas",
-        (Some(Smoke | Gas), false) => "Clear",
-        (Some(Plug), true) => "Plugged in",
-        (Some(Plug), false) => "Unplugged",
-        (Some(Connectivity), true) => "Connected",
-        (Some(Connectivity), false) => "Disconnected",
-        (Some(Battery), true) => "Low",
-        (Some(Problem), true) => "Problem",
-        (Some(Problem | Battery), false) => "OK",
-        (None, true) => "On",
-        (None, false) => "Off",
-    }
-}
-
-/// A reading a person can read: whole numbers stay whole, the rest keep up to three decimals
-/// without trailing zeros. 22.299999999999997 is 22.3.
-pub(crate) fn number(n: f64) -> String {
-    if !n.is_finite() {
-        return UNKNOWN.to_owned();
-    }
-    let mut text = format!("{n:.3}");
-    if text.contains('.') {
-        text.truncate(text.trim_end_matches('0').trim_end_matches('.').len());
-    }
-    text
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn readings_are_readable() {
-        assert_eq!(number(22.299999999999997), "22.3");
-        assert_eq!(number(21.0), "21");
-        assert_eq!(number(-0.5), "-0.5");
-        assert_eq!(number(1234.56789), "1234.568");
-        assert_eq!(number(f64::NAN), UNKNOWN);
-    }
 
     fn entity_home() -> Home {
         let device = Device {
@@ -2091,6 +1692,7 @@ mod tests {
             capabilities: Capabilities::BinarySensor(BinarySensorCapabilities {
                 device_class: None,
             }),
+            entity_category: None,
         };
         Home {
             devices: vec![device],
@@ -2114,64 +1716,5 @@ mod tests {
         assert_eq!(groups(&home, "espressif").len(), 1);
         assert_eq!(groups(&home, "rd-03").len(), 1);
         assert!(groups(&home, "nowhere").is_empty());
-    }
-
-    /// The row shows a light's level as a percentage, and the slider turns that percentage back
-    /// into a level. The two must agree in both directions, or dimming would read one thing and
-    /// set another.
-    #[test]
-    fn a_light_round_trips_between_level_and_percentage() {
-        assert_eq!(brightness_pct(0), 0);
-        assert_eq!(brightness_pct(1), 1);
-        assert_eq!(brightness_pct(180), 71);
-        assert_eq!(brightness_pct(255), 100);
-        assert_eq!(pct_to_brightness(1), 2);
-        assert_eq!(pct_to_brightness(50), 127);
-        assert_eq!(pct_to_brightness(71), 181);
-        assert_eq!(pct_to_brightness(100), 255);
-        assert_eq!(pct_to_brightness(u16::MAX), 255, "a level can't exceed 255");
-        for pct in 1..=100 {
-            assert_eq!(
-                brightness_pct(pct_to_brightness(pct)),
-                pct,
-                "level for {pct}% must read back as {pct}%"
-            );
-        }
-    }
-
-    /// A slider's filled part ends where its thumb is, at either end of any range — and a value
-    /// outside the range, or a range with nothing in it, can't push the fill off the track.
-    #[test]
-    fn a_slider_fills_up_to_its_thumb() {
-        assert_eq!(fill(1, 1, 100), 0);
-        assert_eq!(fill(100, 1, 100), 100);
-        assert_eq!(fill(2700, 2000, 6500), 15);
-        assert_eq!(fill(9000, 2000, 6500), 100);
-        assert_eq!(fill(0, 2000, 6500), 0);
-        assert_eq!(fill(50, 50, 50), 100);
-    }
-
-    #[test]
-    fn colors_round_trip_between_the_page_and_the_light() {
-        assert_eq!(hex_from_rgb([255, 0, 128]), "#ff0080");
-        assert_eq!(hex_from_rgb([0, 0, 0]), "#000000");
-        assert_eq!(rgb_from_hex("#ff0080"), Some([255, 0, 128]));
-        assert_eq!(rgb_from_hex("ff0080"), Some([255, 0, 128]));
-        assert_eq!(
-            rgb_from_hex("FF00FF"),
-            Some([255, 0, 255]),
-            "upper case is a color too"
-        );
-        assert_eq!(
-            rgb_from_hex("#fff"),
-            None,
-            "short form isn't what the input gives"
-        );
-        assert_eq!(rgb_from_hex("#ff00"), None);
-        assert_eq!(rgb_from_hex("#gg0000"), None);
-        assert_eq!(rgb_from_hex(""), None);
-        for rgb in [[255, 255, 255], [12, 34, 56]] {
-            assert_eq!(rgb_from_hex(&hex_from_rgb(rgb)), Some(rgb));
-        }
     }
 }

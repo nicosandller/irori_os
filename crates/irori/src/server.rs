@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use irori_core::{CallError, Command, Core, Event, ExtensionHost, ExtensionOverview};
 use irori_types::{
     Area, AreaId, ContextId, Description, Device, DeviceId, Entity, EntityId, EntityState,
-    ExtensionId, Floor, FloorId, Floorplan, LightTurnOn, Name, Origin, Placement, UserId,
+    ExtensionId, Floor, FloorId, Floorplan, Name, Origin, Placement, UserId,
 };
 use tokio::sync::broadcast;
 
@@ -1521,18 +1521,11 @@ fn edit_failed(error: EditError) -> Response {
 #[serde(deny_unknown_fields)]
 struct CommandRequest {
     entity_id: EntityId,
-    command: CommandName,
-    /// Brightness or color, for `turn_on` on a light that supports them.
+    /// One of the entity's kind's actions (`turn_on`), or `toggle`.
+    command: String,
+    /// The action's data, e.g. brightness or color for a light's `turn_on`.
     #[serde(default)]
-    data: Option<LightTurnOn>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum CommandName {
-    TurnOn,
-    TurnOff,
-    Toggle,
+    data: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Asks an entity to do something and answers with its state once the protocol confirms, so
@@ -1541,16 +1534,9 @@ enum CommandName {
 /// There's no sign-in yet (ROADMAP D12, M1.5), so every command is attributed to one
 /// unauthenticated person; with accounts it becomes the user who clicked.
 async fn command(State(state): State<AppState>, Json(request): Json<CommandRequest>) -> Response {
-    let command = match (request.command, request.data) {
-        (CommandName::TurnOn, data) => Command::TurnOn(data.unwrap_or_default()),
-        (CommandName::TurnOff, None) => Command::TurnOff,
-        (CommandName::Toggle, None) => Command::Toggle,
-        (_, Some(_)) => {
-            return refused(
-                StatusCode::BAD_REQUEST,
-                "`data` is only for `turn_on`".to_owned(),
-            );
-        }
+    let command = Command {
+        action: request.command,
+        data: request.data.unwrap_or_default(),
     };
     let core = &state.0.core;
     let who = core.new_context(Origin::User {
@@ -1564,6 +1550,15 @@ async fn command(State(state): State<AppState>, Json(request): Json<CommandReque
         .await
     {
         Ok(()) => {
+            // Something with no value (a button) reports nothing to wait for.
+            let has_value = core
+                .entities()
+                .iter()
+                .find(|entity| entity.id == request.entity_id)
+                .is_some_and(|entity| entity.capabilities.primary_shape().is_some());
+            if !has_value {
+                return Json(core.state(&request.entity_id)).into_response();
+            }
             let settled = settled(changes, &request.entity_id, &who.id).await;
             Json(settled.or_else(|| core.state(&request.entity_id))).into_response()
         }
@@ -2209,7 +2204,7 @@ mod tests {
         .await?;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
-        // Brightness belongs to `turn_on`, and nowhere else.
+        // Brightness belongs to `turn_on`, and nowhere else: the refusal names the service.
         let (status, body) = post(
             core.clone(),
             "/api/dev/command",
@@ -2219,7 +2214,7 @@ mod tests {
         )
         .await?;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body["error"], "`data` is only for `turn_on`");
+        assert_eq!(body["error"], "`light.turn_off` takes no data");
 
         host.shutdown().await;
         Ok(())

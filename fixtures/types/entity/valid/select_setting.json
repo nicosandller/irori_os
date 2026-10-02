@@ -1,0 +1,15 @@
+{
+  "id": "select.presence_sensor_sensitivity",
+  "protocol": "zigbee",
+  "unique_id": "0x0211000000000002_sensitivity",
+  "name": "Sensitivity",
+  "capabilities": {
+    "kind": "select",
+    "options": [
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  "entity_category": "config"
+}

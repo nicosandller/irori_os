@@ -1,0 +1,13 @@
+{
+  "unique_id": "a4:cf:12:34:56:80-sensor-wifi_signal",
+  "name": "WiFi signal",
+  "device_unique_id": "a4:cf:12:34:56:80",
+  "capabilities": {
+    "kind": "sensor",
+    "value_type": "number",
+    "device_class": "signal_strength",
+    "unit": "dBm",
+    "state_class": "measurement"
+  },
+  "entity_category": "settings"
+}

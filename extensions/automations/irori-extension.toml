@@ -1,10 +1,15 @@
 [extension]
 id = "automations"
 name = "Automations"
-version = "0.1.0"
-irori = ">=0.0.0"
+version = "0.2.0"
+irori = ">=0.7.0"
+# 0.7.0 reads entity categories, text sensor options, the unmodeled list and entity formats.
 description = "Build automations as flows on a canvas, watch them run, and see why one didn't."
 icon = "icon.svg"
+# Built with the entities and states Irori writes now (`irori_types::format::ENTITY_FORMAT`).
+# Raise it when the engine and its page learn the kinds and fields a newer format adds; until
+# then Irori leaves those out of what it sends them. See docs/specs/automations.md §B6.
+entity_format = 2
 
 [[contributes.automation]]
 run = { command = "bin/irori-ext-automations" }

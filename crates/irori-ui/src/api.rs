@@ -126,6 +126,9 @@ pub struct Extension {
     /// What it found but can't use until someone helps, e.g. a device that needs its key.
     #[serde(default)]
     pub waiting: Vec<Waiting>,
+    /// What it found that Irori has no entity kind for yet, listed on its devices.
+    #[serde(default)]
+    pub unmodeled: Vec<irori_types::Unmodeled>,
     /// Whether it has an icon, at `/api/dev/extensions/<id>/icon.svg`.
     #[serde(default)]
     pub has_icon: bool,
@@ -151,6 +154,14 @@ pub struct AppInfo {
     /// The API scopes it declared: what the bridge may hand its page.
     #[serde(default)]
     pub api: Vec<String>,
+    /// The entity format its page reads; what it's handed is in that format
+    /// (`irori_types::format`). 1 for a page built before formats existed.
+    #[serde(default = "first_format")]
+    pub entity_format: u32,
+}
+
+fn first_format() -> u32 {
+    1
 }
 
 /// One entry of `/api/dev/apps`: a running extension's page and whether its files are there.
@@ -365,10 +376,10 @@ pub async fn fetch_home() -> Result<Home, String> {
 #[derive(Debug, Serialize)]
 struct CommandRequest<'a> {
     entity_id: &'a EntityId,
-    command: &'static str,
-    /// Brightness or color, for `turn_on` on a light that supports them.
+    command: &'a str,
+    /// The action's data: a light's brightness or color for `turn_on`, a number's value.
     #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<&'a LightTurnOn>,
+    data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -380,8 +391,8 @@ struct Refused {
 /// if it vanished meanwhile).
 async fn command(
     entity_id: &EntityId,
-    command: &'static str,
-    data: Option<&LightTurnOn>,
+    command: &str,
+    data: Option<serde_json::Value>,
 ) -> Result<Option<EntityState>, String> {
     let body = CommandRequest {
         entity_id,
@@ -419,7 +430,17 @@ pub async fn set_light(
     entity_id: &EntityId,
     data: &LightTurnOn,
 ) -> Result<Option<EntityState>, String> {
-    command(entity_id, "turn_on", Some(data)).await
+    command(entity_id, "turn_on", serde_json::to_value(data).ok()).await
+}
+
+/// Asks an entity for one of its kind's actions, with that action's data: a button's `press`, a
+/// number's `set_value {value}`, a cover's `set_position {position}`.
+pub async fn act(
+    entity_id: &EntityId,
+    action: &str,
+    data: Option<serde_json::Value>,
+) -> Result<Option<EntityState>, String> {
+    command(entity_id, action, data).await
 }
 
 // --- Areas, names, and where things live ------------------------------------------------

@@ -6,8 +6,8 @@
 //! entities belong to it.
 
 use irori_types::{
-    Area, AreaId, Availability, Capabilities, Device, Entity, EntityId, EntityState, Name,
-    SensorValue, State,
+    Area, AreaId, Availability, Capabilities, Device, Entity, EntityCategory, EntityId,
+    EntityState, Name, SensorValue, State,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -36,6 +36,8 @@ struct Shape {
     device: Option<Device>,
     areas: Vec<Area>,
     entities: Vec<Entity>,
+    /// What it has that Irori has no entity kind for yet, as its protocol says.
+    unmodeled: Vec<irori_types::Unmodeled>,
     /// Whether any device is known at all, for telling "no such device" from "nothing yet".
     any_devices: bool,
 }
@@ -111,10 +113,23 @@ fn shape_of(home: &Home, id: &str) -> Shape {
         .as_ref()
         .map(|device| of_device(home, device))
         .unwrap_or_default();
+    let unmodeled = device
+        .as_ref()
+        .map(|device| {
+            home.extensions
+                .iter()
+                .filter(|(id, _)| id.as_str() == device.protocol.as_str())
+                .flat_map(|(_, extension)| &extension.unmodeled)
+                .filter(|entry| entry.device_unique_id.as_ref() == Some(&device.unique_id))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
     Shape {
         device,
         areas: home.areas.clone(),
         entities,
+        unmodeled,
         any_devices: !home.devices.is_empty(),
     }
 }
@@ -157,6 +172,7 @@ fn page(
     let live = expect_context::<crate::Live>();
     let areas = shape.areas.clone();
     let entities = shape.entities.clone();
+    let also_has = also_has(&shape.unmodeled);
     let battery = battery_of(live, &entities);
     let subtitle = [device.manufacturer.clone(), device.model.clone()]
         .into_iter()
@@ -534,30 +550,87 @@ fn page(
             {if entities.is_empty() {
                 view! {
                     <p class="muted">
-                        "Nothing Irori can model yet. The device may provide kinds it doesn't "
-                        "know about, which are left out rather than guessed at."
+                        "Nothing Irori can model yet."
                     </p>
                 }
                 .into_any()
             } else {
-                entities
+                // What the device is for, then its settings and diagnostics under their own
+                // headings, as the protocol marked them.
+                let row = move |entity: Entity| {
+                    view! {
+                        <EntityRow
+                            entity=entity
+                            controls=controls
+                            trouble=trouble
+                            editing=editing
+                            draft=entity_draft
+                        />
+                    }
+                };
+                let (main, rest): (Vec<_>, Vec<_>) =
+                    entities.into_iter().partition(|e| e.entity_category.is_none());
+                let (settings, diagnostics): (Vec<_>, Vec<_>) = rest
                     .into_iter()
-                    .map(|entity| {
+                    .partition(|e| e.entity_category == Some(EntityCategory::Config));
+                let section = move |title: &'static str, group: Vec<Entity>| {
+                    (!group.is_empty()).then(|| {
                         view! {
-                            <EntityRow
-                                entity=entity
-                                controls=controls
-                                trouble=trouble
-                                editing=editing
-                                draft=entity_draft
-                            />
+                            <h3 class="entity-group">{title}</h3>
+                            {group.into_iter().map(row).collect_view()}
                         }
                     })
-                    .collect_view()
-                    .into_any()
+                };
+                view! {
+                    {main.into_iter().map(row).collect_view()}
+                    {section("Settings", settings)}
+                    {section("Diagnostics", diagnostics)}
+                }
+                .into_any()
             }}
+            {also_has.map(|text| view! { <p class="muted small">{text}</p> })}
         </section>
     }
+}
+
+/// What a device has that Irori has no entity kind for yet, in a sentence: "Also has a ceiling
+/// fan (fan) and 2 settings (number), which Irori doesn't support yet." Then, one by one, those
+/// of a kind it has that it couldn't use, and why. `None` when there's nothing.
+fn also_has(unmodeled: &[irori_types::Unmodeled]) -> Option<String> {
+    if unmodeled.is_empty() {
+        return None;
+    }
+    let mut by_platform: std::collections::BTreeMap<&str, Vec<&str>> = Default::default();
+    let mut refused = Vec::new();
+    for entry in unmodeled {
+        let platform = entry.platform.as_str();
+        let name = entry.name.as_ref().map(irori_types::Name::as_str);
+        match &entry.reason {
+            Some(why) => refused.push(match name {
+                Some(name) => format!("{name} ({}): {why}", platform.replace('_', " ")),
+                None => format!("a {}: {why}", platform.replace('_', " ")),
+            }),
+            None => by_platform.entry(platform).or_default().extend(name),
+        }
+    }
+    let items: Vec<String> = by_platform
+        .into_iter()
+        .map(|(platform, names)| match names.as_slice() {
+            [] => platform.replace('_', " "),
+            names => format!("{} ({})", names.join(", "), platform.replace('_', " ")),
+        })
+        .collect();
+    let mut said = Vec::new();
+    if !items.is_empty() {
+        said.push(format!(
+            "Also has {}, which Irori doesn't support yet.",
+            items.join("; ")
+        ));
+    }
+    if !refused.is_empty() {
+        said.push(format!("Couldn't use {}.", refused.join("; ")));
+    }
+    Some(said.join(" "))
 }
 
 /// One entity: its reading, and the name it can be given.
@@ -711,7 +784,7 @@ fn history_panel(
     // The row's reading as it is now, so a chart can grow with it.
     live: Memo<Option<EntityState>>,
 ) -> AnyView {
-    let numeric = matches!(entity.capabilities, Capabilities::Sensor(_));
+    let numeric = entity.capabilities.primary_shape() == Some(irori_types::ValueShape::Number);
     view! {
         <div class="history">
             {move || match history.get() {
@@ -768,11 +841,11 @@ fn readings(states: &[EntityState]) -> Option<Vec<chart::Reading>> {
 fn as_reading(state: &EntityState) -> Option<chart::Reading> {
     let value = match (state.availability, state.state.as_ref()) {
         (Availability::Unavailable, _) | (_, None) => f64::NAN,
-        (_, Some(State::Sensor(sensor))) => match sensor.value {
-            SensorValue::Number(value) => value,
-            SensorValue::Text(_) => return None,
+        // Whatever its kind, a number is a point on the chart.
+        (_, Some(state)) => match state.primary() {
+            irori_types::Typed::Number(value) => value,
+            _ => return None,
         },
-        (_, Some(_)) => return None,
     };
     Some(chart::Reading {
         at_ms: state.last_changed.as_jiff().as_millisecond() as f64,
@@ -790,10 +863,7 @@ fn charted(
     live: Memo<Option<EntityState>>,
 ) -> AnyView {
     let as_table = RwSignal::new(false);
-    let unit = match &entity.capabilities {
-        Capabilities::Sensor(capabilities) => capabilities.unit.clone().unwrap_or_default(),
-        _ => String::new(),
-    };
+    let unit = devices::unit_of(&entity.capabilities);
     let name = entity.name.to_string();
     let chart = view! {
         <chart::StepChart
@@ -867,7 +937,7 @@ fn table(entity: &Entity, states: Vec<EntityState>) -> AnyView {
     .into_any()
 }
 
-/// What a change meant, in the same words as its row uses (`devices.rs`). The table's cells are
+/// What a change meant, in the same words as its row uses (`devices/controls`). The table's cells are
 /// plain text, so the reading is a string rather than the row's spans.
 fn reading_of(entity: &Entity, state: &EntityState) -> String {
     let value = state.state.as_ref();
@@ -895,6 +965,46 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
         }
         (Capabilities::Switch(_), Some(State::Switch(switch))) => {
             if switch.on { "On" } else { "Off" }.to_owned()
+        }
+        (Capabilities::Button(_), _) => "—".to_owned(),
+        (Capabilities::Event(_), Some(State::Event(event))) => event.event_type.clone(),
+        (Capabilities::Cover(_), Some(State::Cover(cover))) => {
+            devices::opening_words(cover.opening())
+        }
+        (Capabilities::Lock(_), Some(State::Lock(lock))) => {
+            devices::lock_words(lock.state).to_owned()
+        }
+        (Capabilities::Fan(_), Some(State::Fan(fan))) => devices::fan_words(fan),
+        (Capabilities::Climate(_), Some(State::Climate(climate))) => {
+            devices::climate_words(climate)
+        }
+        (Capabilities::Humidifier(_), Some(State::Humidifier(humidifier))) => {
+            devices::humidifier_words(humidifier)
+        }
+        (Capabilities::WaterHeater(_), Some(State::WaterHeater(heater))) => {
+            devices::water_heater_words(heater)
+        }
+        (Capabilities::Siren(_), Some(State::Siren(siren))) => {
+            if siren.on { "Sounding" } else { "Quiet" }.to_owned()
+        }
+        (Capabilities::Valve(_), Some(State::Valve(valve))) => {
+            devices::opening_words(valve.opening())
+        }
+        (Capabilities::Select(_), Some(State::Select(select))) => select.option.clone(),
+        (Capabilities::Text(text), Some(State::Text(state))) => {
+            if text.mode == irori_types::TextMode::Password {
+                "Hidden".to_owned()
+            } else {
+                state.value.clone()
+            }
+        }
+        (Capabilities::Number(capabilities), Some(State::Number(number))) => {
+            let unit = capabilities
+                .unit
+                .as_ref()
+                .map(|u| format!(" {u}"))
+                .unwrap_or_default();
+            format!("{}{unit}", devices::number(number.value))
         }
         _ => "unknown".to_owned(),
     }
@@ -960,6 +1070,41 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn what_a_device_has_that_irori_cant_model_is_said_once() {
+        let entry = |platform: &str, name: Option<&str>| irori_types::Unmodeled {
+            device_unique_id: None,
+            platform: platform.parse().expect("slug"),
+            name: name.map(|n| n.parse().expect("name")),
+            reason: None,
+        };
+        assert_eq!(also_has(&[]), None);
+        let refused = irori_types::Unmodeled {
+            reason: Some("its command_template needs Jinja".into()),
+            ..entry("number", Some("Level"))
+        };
+        assert_eq!(
+            also_has(&[refused, entry("fan", None)]).as_deref(),
+            Some(
+                "Also has fan, which Irori doesn't support yet. \
+                 Couldn't use Level (number): its command_template needs Jinja."
+            )
+        );
+        assert_eq!(
+            also_has(&[
+                entry("number", Some("Timeout")),
+                entry("fan", Some("Ceiling fan")),
+                entry("number", Some("Sensitivity")),
+                entry("water_heater", None),
+            ])
+            .as_deref(),
+            Some(
+                "Also has Ceiling fan (fan); Timeout, Sensitivity (number); water heater, \
+                 which Irori doesn't support yet."
+            )
+        );
+    }
+
     fn device() -> Device {
         Device {
             id: "radar".parse().expect("a valid device id"),
@@ -992,6 +1137,7 @@ mod tests {
             capabilities: Capabilities::BinarySensor(BinarySensorCapabilities {
                 device_class: None,
             }),
+            entity_category: None,
         }
     }
 
@@ -1082,7 +1228,9 @@ mod tests {
                 device_class: None,
                 unit: Some("°C".to_owned()),
                 state_class: None,
+                options: Vec::new(),
             }),
+            entity_category: None,
         };
         let mut state = reading("2026-09-16T10:00:00Z", true);
         state.state = Some(State::Sensor(SensorState {

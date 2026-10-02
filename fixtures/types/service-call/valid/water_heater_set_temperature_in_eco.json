@@ -1,0 +1,15 @@
+{
+  "service": "water_heater.set_temperature",
+  "unique_id": "a4:cf:12:34:56:80-water_heater-4",
+  "data": {
+    "temperature": 50,
+    "operation_mode": "eco"
+  },
+  "context": {
+    "id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+    "origin": {
+      "type": "user",
+      "user_id": "nico"
+    }
+  }
+}

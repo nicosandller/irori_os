@@ -1,0 +1,10 @@
+{
+  "id": "valve.main_water",
+  "protocol": "esphome",
+  "unique_id": "a4:cf:12:34:56:80-valve-main",
+  "name": "Main water",
+  "capabilities": {
+    "kind": "valve",
+    "device_class": "water"
+  }
+}

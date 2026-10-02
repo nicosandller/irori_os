@@ -48,6 +48,7 @@ async fn describe_lamp(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
             color_temp_kelvin: None,
             rgb: false,
         }),
+        entity_category: None,
     })
     .await?;
     Ok(())
@@ -65,6 +66,7 @@ fn light(on: bool, brightness: Option<u8>, caused_by: Option<ContextId>) -> Stat
         })),
         attributes: BTreeMap::new(),
         caused_by,
+        replayed: false,
     }
 }
 
@@ -148,7 +150,7 @@ async fn devices_appear_and_commands_round_trip_with_their_context() {
     assert_eq!(core.devices().len(), 1);
 
     let context = user_context();
-    core.call_service(&lamp_id("lamp"), Command::Toggle, context.clone())
+    core.call_service(&lamp_id("lamp"), Command::toggle(), context.clone())
         .await
         .expect("toggle works");
     eventually("the lamp reports it's off", || {
@@ -170,10 +172,13 @@ async fn devices_appear_and_commands_round_trip_with_their_context() {
     let err = core
         .call_service(
             &lamp_id("lamp"),
-            Command::TurnOn(LightTurnOn {
-                rgb: Some([1, 2, 3]),
-                ..LightTurnOn::default()
-            }),
+            Command::with(
+                "turn_on",
+                &LightTurnOn {
+                    rgb: Some([1, 2, 3]),
+                    ..LightTurnOn::default()
+                },
+            ),
             user_context(),
         )
         .await
@@ -242,8 +247,8 @@ async fn two_toggles_at_once_cancel_each_other_out() {
     // off, then on again.
     let lamp = lamp_id("slow_lamp");
     let (first, second) = tokio::join!(
-        core.call_service(&lamp, Command::Toggle, user_context()),
-        core.call_service(&lamp, Command::Toggle, user_context()),
+        core.call_service(&lamp, Command::toggle(), user_context()),
+        core.call_service(&lamp, Command::toggle(), user_context()),
     );
     first.expect("first toggle");
     second.expect("second toggle");
@@ -300,7 +305,7 @@ async fn a_failed_command_doesnt_change_what_the_core_thinks() {
     // Both toggles see a lamp that's still on, so both try to turn it off.
     for _ in 0..2 {
         let err = core
-            .call_service(&lamp_id("broken_lamp"), Command::Toggle, user_context())
+            .call_service(&lamp_id("broken_lamp"), Command::toggle(), user_context())
             .await
             .expect_err("the lamp is unplugged");
         assert!(matches!(err, CallError::Unavailable(_)), "{err}");
@@ -520,8 +525,8 @@ async fn calls_time_out_and_health_is_shown() {
     // cover the wait as well, rather than ten seconds each.
     let lamp = lamp_id("silent");
     let (first, second) = tokio::join!(
-        core.call_service(&lamp, Command::TurnOff, user_context()),
-        core.call_service(&lamp, Command::TurnOff, user_context()),
+        core.call_service(&lamp, Command::turn_off(), user_context()),
+        core.call_service(&lamp, Command::turn_off(), user_context()),
     );
     assert_eq!(first.expect_err("no answer"), CallError::Timeout);
     assert_eq!(second.expect_err("no answer"), CallError::Timeout);
@@ -529,7 +534,7 @@ async fn calls_time_out_and_health_is_shown() {
     host.shutdown().await;
 
     let err = core
-        .call_service(&lamp_id("silent"), Command::TurnOff, user_context())
+        .call_service(&lamp_id("silent"), Command::turn_off(), user_context())
         .await
         .expect_err("stopped");
     assert!(matches!(err, CallError::NotRunning(_)), "{err}");
@@ -1037,6 +1042,58 @@ async fn new_settings_restart_only_their_own_extension_and_what_was_waiting_clea
 
     host.shutdown().await;
     assert_eq!(waiting(&core), 0);
+}
+
+/// Has something Irori has no entity kind for, and says so.
+struct Partial;
+
+impl Protocol for Partial {
+    type Config = NoSettings;
+    const MANIFEST: &'static str = PARTIAL_MANIFEST;
+    async fn run(_: NoSettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
+        ctx.set_unmodeled(vec![irori_protocol::types::Unmodeled {
+            device_unique_id: Some(uid("fan-box")),
+            platform: "fan".parse()?,
+            name: Some(Name::try_from("Ceiling fan")?),
+            reason: None,
+        }])
+        .await;
+        ctx.stopped().await;
+        Ok(())
+    }
+}
+const PARTIAL_MANIFEST: &str = r#"
+    [extension]
+    id = "partial"
+    name = "Partial"
+    version = "0.1.0"
+    irori = ">=0.0.0"
+
+    [[contributes.protocol]]
+    iot_class = "local_push"
+    entity_kinds = ["switch"]
+"#;
+
+/// What a protocol can't model is shown on it while it runs, and goes when it stops: a list from
+/// a stopped protocol is out of date, like what it was waiting for.
+#[tokio::test(start_paused = true)]
+async fn what_a_protocol_cant_model_is_listed_while_it_runs() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = start(&core, builtin::<Partial>().expect("valid"));
+    let unmodeled = |core: &Core| {
+        core.extensions()
+            .get(&ExtensionId::try_from("partial").expect("valid"))
+            .map(|overview| overview.unmodeled.clone())
+            .unwrap_or_default()
+    };
+    eventually("the fan is listed", || {
+        unmodeled(&core)
+            .first()
+            .is_some_and(|entry| entry.platform.as_str() == "fan")
+    })
+    .await;
+    host.shutdown().await;
+    assert!(unmodeled(&core).is_empty());
 }
 
 /// Needs a setting to exist at all: its `Config` has a field with no default, so its own

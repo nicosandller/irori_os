@@ -236,12 +236,15 @@ impl Service {
     }
 }
 
-/// A rule's service as the core's command: `brightness_pct` becomes `brightness`, and toggle
-/// takes no data.
+/// A rule's service as the core's command: the action after the dot, with `brightness_pct`
+/// turned into `brightness`. Toggle takes no data.
 pub fn command(
     service: RuleService,
     data: Option<&CallData>,
-) -> (WireCommand, Option<LightTurnOn>) {
+) -> (
+    WireCommand,
+    Option<serde_json::Map<String, serde_json::Value>>,
+) {
     let light = data.map(|CallData::Light(light)| LightTurnOn {
         brightness: light.brightness.or_else(|| {
             light.brightness_pct.map(|pct| {
@@ -252,12 +255,13 @@ pub fn command(
         color_temp_kelvin: light.color_temp_kelvin,
         rgb: light.rgb,
     });
-    match service {
-        RuleService::LightTurnOn => (WireCommand::TurnOn, light),
-        RuleService::SwitchTurnOn => (WireCommand::TurnOn, None),
-        RuleService::LightTurnOff | RuleService::SwitchTurnOff => (WireCommand::TurnOff, None),
-        RuleService::LightToggle | RuleService::SwitchToggle => (WireCommand::Toggle, None),
-    }
+    let data = match service {
+        RuleService::LightTurnOn => {
+            light.and_then(|light| irori_types::Service::LightTurnOn(light).data())
+        }
+        _ => None,
+    };
+    (service.action().to_owned(), data)
 }
 
 /// Runs the extension until the core says stop.

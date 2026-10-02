@@ -619,16 +619,28 @@ impl RuleService {
     }
 }
 
-impl fmt::Display for RuleService {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+impl RuleService {
+    pub fn as_str(self) -> &'static str {
+        match self {
             Self::LightTurnOn => "light.turn_on",
             Self::LightTurnOff => "light.turn_off",
             Self::LightToggle => "light.toggle",
             Self::SwitchTurnOn => "switch.turn_on",
             Self::SwitchTurnOff => "switch.turn_off",
             Self::SwitchToggle => "switch.toggle",
-        })
+        }
+    }
+
+    /// The part after the dot, which is what the core is asked for: `turn_on`, `toggle`.
+    pub fn action(self) -> &'static str {
+        let name = self.as_str();
+        name.split_once('.').map_or(name, |(_, action)| action)
+    }
+}
+
+impl fmt::Display for RuleService {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

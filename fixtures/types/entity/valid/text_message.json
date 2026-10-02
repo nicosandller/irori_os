@@ -1,0 +1,11 @@
+{
+  "id": "text.kitchen_display_message",
+  "protocol": "esphome",
+  "unique_id": "a4:cf:12:34:56:80-text-message",
+  "name": "Display message",
+  "capabilities": {
+    "kind": "text",
+    "min_length": 1,
+    "max_length": 32
+  }
+}

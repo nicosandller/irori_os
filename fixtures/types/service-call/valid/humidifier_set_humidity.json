@@ -1,0 +1,14 @@
+{
+  "service": "humidifier.set_humidity",
+  "unique_id": "basement-dehumidifier",
+  "data": {
+    "humidity": 45
+  },
+  "context": {
+    "id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+    "origin": {
+      "type": "user",
+      "user_id": "nico"
+    }
+  }
+}

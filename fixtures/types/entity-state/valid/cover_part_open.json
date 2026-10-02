@@ -1,0 +1,20 @@
+{
+  "entity_id": "cover.office_blind",
+  "availability": "available",
+  "state": {
+    "kind": "cover",
+    "state": "open",
+    "position": 40
+  },
+  "last_changed": "2026-09-15T22:04:12Z",
+  "last_updated": "2026-09-15T22:04:12Z",
+  "last_reported": "2026-09-15T22:04:12Z",
+  "context": {
+    "id": "01K5B2Q7M0N1P2Q3R4S5T6V7W8",
+    "parent_id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+    "origin": {
+      "type": "device",
+      "protocol": "esphome"
+    }
+  }
+}

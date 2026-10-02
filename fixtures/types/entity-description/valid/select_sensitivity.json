@@ -1,0 +1,14 @@
+{
+  "unique_id": "0x0211000000000002_sensitivity",
+  "name": "Sensitivity",
+  "device_unique_id": "0x0211000000000002",
+  "capabilities": {
+    "kind": "select",
+    "options": [
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  "entity_category": "config"
+}

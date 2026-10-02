@@ -1,14 +1,15 @@
 [extension]
 id = "esphome"
 name = "ESPHome"
-version = "0.3.1"
-irori = ">=0.0.0"
+version = "0.4.0"
+irori = ">=0.7.0"
+# 0.7.0 reads entity categories, text sensor options, the unmodeled list and entity formats.
 description = "Devices running ESPHome firmware, over ESPHome's native API."
 icon = "icon.svg"
 
 [[contributes.protocol]]
 iot_class = "local_push"
-entity_kinds = ["light", "switch", "sensor", "binary_sensor"]
+entity_kinds = ["light", "switch", "sensor", "binary_sensor", "number", "select", "text", "button", "event", "cover", "lock", "fan", "valve", "siren", "climate", "water_heater"]
 run = { command = "bin/irori-ext-esphome" }
 
 # Finding devices (mDNS) and talking to them (TCP 6053) happens entirely on the local network.

@@ -31,6 +31,7 @@ pub fn entity(parsed: &ParsedConfig, object_id_hint: &str) -> EntityDescription 
         device_unique_id: parsed.device.as_ref().map(|d| d.unique_id.clone()),
         suggested_object_id: ObjectId::try_from(object_id_hint).ok(),
         capabilities: parsed.capabilities.clone(),
+        entity_category: parsed.entity_category,
     }
 }
 

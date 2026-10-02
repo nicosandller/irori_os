@@ -1,14 +1,15 @@
 [extension]
 id = "mqtt"
 name = "MQTT"
-version = "0.3.1"
-irori = ">=0.0.0"
+version = "0.4.0"
+irori = ">=0.7.0"
+# 0.7.0 reads entity categories, text sensor options, the unmodeled list and entity formats.
 description = "Devices from an MQTT broker you already run, through Home Assistant MQTT Discovery: Tasmota, Zigbee2MQTT, ESPHome."
 config_schema = "config.schema.json"
 
 [[contributes.protocol]]
 iot_class = "local_push"
-entity_kinds = ["light", "switch", "sensor", "binary_sensor"]
+entity_kinds = ["light", "switch", "sensor", "binary_sensor", "number", "select", "text", "button", "event", "cover", "lock", "fan", "valve", "siren", "climate", "water_heater", "humidifier"]
 run = { command = "bin/irori-ext-mqtt" }
 
 # The broker address is typed in later, so it can't be listed under `network` the way a known

@@ -6,7 +6,7 @@
 
 use irori_flow_types::api::Severity;
 use irori_flow_types::{Amount, Flow, Node, NodeId};
-use irori_types::{EntityKind, SensorValueType};
+use irori_types::{EntityKind, ValueShape};
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
@@ -266,21 +266,13 @@ pub fn ValueInput(
     pick: impl Fn(Value) + Send + Sync + Clone + 'static,
 ) -> impl IntoView {
     let home = expect_context::<Home>();
-    let sensor_type = home.entities.with_untracked(|entities| {
-        entities
-            .iter()
-            .find(|e| e.id.as_str() == entity)
-            .and_then(|e| match &e.capabilities {
-                irori_types::Capabilities::Sensor(s) => Some(s.value_type),
-                _ => None,
-            })
-    });
+    let shape = home.value_shape(&entity);
     let now = entity.parse::<irori_types::EntityId>().ok().and_then(|id| {
         home.states
             .with_untracked(|states| states.get(&id).map(|s| model::state_words(s, &home)))
     });
-    match sensor_type {
-        Some(SensorValueType::Text) => {
+    match shape {
+        ValueShape::Text => {
             let shown = value.as_str().unwrap_or_default().to_owned();
             view! {
                 <TextValue entity=entity value=shown allow_any=allow_any
@@ -288,7 +280,7 @@ pub fn ValueInput(
             }
             .into_any()
         }
-        Some(_) => {
+        ValueShape::Number => {
             let shown = match &value {
                 Value::Null => String::new(),
                 other => other.to_string(),
@@ -314,7 +306,7 @@ pub fn ValueInput(
             }
             .into_any()
         }
-        None => {
+        ValueShape::Bool => {
             let shown = match value {
                 Value::Bool(true) => "on",
                 Value::Bool(false) => "off",
@@ -501,7 +493,7 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
                         <option value="toggle" selected=action == "toggle">"Toggle"</option>
                     </select>
                     <label>"What"</label>
-                    <EntityPicker value=entity_s kinds=vec![EntityKind::Light, EntityKind::Switch]
+                    <EntityPicker value=entity_s kinds=EntityKind::ALL.iter().copied().filter(|k| k.has_services()).collect()
                         pick=move |id| {
                             let action = action_now.clone();
                             edit_entity(Box::new(move |v: &mut Value| {

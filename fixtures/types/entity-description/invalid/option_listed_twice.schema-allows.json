@@ -1,0 +1,14 @@
+{
+  "unique_id": "washer-program",
+  "name": "Program",
+  "device_unique_id": "washer",
+  "capabilities": {
+    "kind": "sensor",
+    "value_type": "text",
+    "options": [
+      "wash",
+      "rinse",
+      "wash"
+    ]
+  }
+}

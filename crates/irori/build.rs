@@ -2,8 +2,8 @@
 //! triple, the commit, and when. The version comes from `irori-types` (`build.rs` there), so the
 //! CLI and the core's extension-compatibility check report the same one.
 //!
-//! The workspace version stays `0.0.0` between releases; the commit is what tells two development
-//! builds apart.
+//! Between releases every build is the next one's `-dev` (`0.7.0-dev`); the commit is what tells
+//! two development builds apart.
 
 use std::process::Command;
 

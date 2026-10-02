@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use cel::Program;
-use cel::common::ast::{Expr, IdedExpr, LiteralValue};
-use irori_types::{Capabilities, Entity, EntityId, SensorValueType};
+use cel::common::ast::{CallExpr, Expr, IdedExpr, LiteralValue};
+use irori_types::{Capabilities, Entity, EntityId, ValueShape};
 
 use crate::{
     Action, CallData, Condition, ExprString, LightCallData, Rule, RuleService, Trigger, TypedValue,
@@ -145,8 +145,7 @@ fn walk_triggers_one(
             }
             if (above.is_some() || below.is_some())
                 && let Some(found) = registry.entity(entity)
-                && !matches!(&found.capabilities, Capabilities::Sensor(s)
-                    if s.value_type == SensorValueType::Number)
+                && found.capabilities.primary_shape() != Some(ValueShape::Number)
             {
                 problems.push(problem(
                     here,
@@ -611,6 +610,9 @@ fn walk_ast(
                 *uses_clock = true;
             }
             check_arity(name, call.args.len())?;
+            if name == "_==_" || name == "_!=_" {
+                check_text_comparison(call, registry)?;
+            }
             if ENTITY_FNS.contains(&name) {
                 let Some(first) = call.args.first() else {
                     return Err(format!("{name}() needs a string literal entity id"));
@@ -710,18 +712,35 @@ fn check_fn_against_registry(
             "{name}(\"{id}\"): no such entity — check the entity id"
         ));
     };
+    let Some(shape) = entity.capabilities.primary_shape() else {
+        // `available()` and `unknown()` are about the entity, not a value, so they still apply.
+        return match name {
+            "num" | "text" | "on" | "brightness" => Err(format!(
+                "{name}(\"{id}\"): entity is a {}, which has no value to read",
+                entity.capabilities.kind()
+            )),
+            _ => Ok(()),
+        };
+    };
     match (name, &entity.capabilities) {
-        ("num", Capabilities::Sensor(s)) if s.value_type == SensorValueType::Number => Ok(()),
-        ("num", _) => Err(format!(
-            "num(\"{id}\"): entity is {}, not a numeric sensor — use on(\"{id}\")",
-            entity.capabilities.kind()
-        )),
-        ("text", Capabilities::Sensor(s)) if s.value_type == SensorValueType::Text => Ok(()),
+        ("num", _) if shape == ValueShape::Number => Ok(()),
+        ("num", _) => {
+            let instead = if shape == ValueShape::Text {
+                "text"
+            } else {
+                "on"
+            };
+            Err(format!(
+                "num(\"{id}\"): entity is {}, not a numeric sensor — use {instead}(\"{id}\")",
+                entity.capabilities.kind()
+            ))
+        }
+        ("text", _) if shape == ValueShape::Text => Ok(()),
         ("text", _) => Err(format!("text(\"{id}\"): entity is not a text sensor")),
-        (
-            "on",
-            Capabilities::Light(_) | Capabilities::Switch(_) | Capabilities::BinarySensor(_),
-        ) => Ok(()),
+        ("on", _) if shape == ValueShape::Bool => Ok(()),
+        ("on", _) if shape == ValueShape::Text => Err(format!(
+            "on(\"{id}\"): entity is text, not on/off — use text(\"{id}\")"
+        )),
         ("on", _) => Err(format!(
             "on(\"{id}\"): entity is a number, not on/off — use num(\"{id}\")"
         )),
@@ -828,35 +847,75 @@ fn check_state_match(
 }
 
 fn typed_value_fits(value: &TypedValue, entity: &Entity) -> Result<(), String> {
-    match (value, &entity.capabilities) {
-        (TypedValue::Null, _) => Ok(()),
-        (
-            TypedValue::Bool(_),
-            Capabilities::Light(_) | Capabilities::Switch(_) | Capabilities::BinarySensor(_),
-        ) => Ok(()),
-        (TypedValue::Bool(_), _) => Err(format!(
-            "`is` is a boolean, but {} is a {}",
+    let (shape, what) = match value {
+        TypedValue::Null => return Ok(()),
+        TypedValue::Bool(_) => (ValueShape::Bool, "a boolean"),
+        TypedValue::Number(_) => (ValueShape::Number, "a number"),
+        TypedValue::Text(_) => (ValueShape::Text, "a string"),
+    };
+    let Some(has) = entity.capabilities.primary_shape() else {
+        return Err(format!(
+            "{} is a {}, which has no value to compare",
             entity.id,
             entity.capabilities.kind()
-        )),
-        (TypedValue::Number(_), Capabilities::Sensor(s))
-            if s.value_type == SensorValueType::Number =>
-        {
-            Ok(())
+        ));
+    };
+    if has == shape {
+        match value {
+            TypedValue::Text(text) => text_can_be(entity, text),
+            _ => Ok(()),
         }
-        (TypedValue::Number(_), _) => Err(format!(
-            "`is` is a number, but {} is a {}",
+    } else {
+        Err(format!(
+            "`is` is {what}, but {} is a {}",
             entity.id,
             entity.capabilities.kind()
+        ))
+    }
+}
+
+/// Whether `entity` can ever report `text`: always, unless it lists its options.
+fn text_can_be(entity: &Entity, text: &str) -> Result<(), String> {
+    match entity.capabilities.text_options() {
+        Some(options) if !options.iter().any(|o| o == text) => Err(format!(
+            "{} is never {text:?}; it is one of: {}",
+            entity.id,
+            options.join(", ")
         )),
-        (TypedValue::Text(_), Capabilities::Sensor(s)) if s.value_type == SensorValueType::Text => {
-            Ok(())
+        _ => Ok(()),
+    }
+}
+
+/// `text('id') == 'x'` (either way round, or `!=`): `x` must be something the entity can say.
+/// The entity id in `text('id')`, if `expr` is that call.
+fn text_of(expr: &IdedExpr) -> Option<&str> {
+    match &expr.expr {
+        Expr::Call(inner) if crate::expr::author_name(inner.func_name.as_str()) == "text" => {
+            inner.args.first().and_then(string_literal)
         }
-        (TypedValue::Text(_), _) => Err(format!(
-            "`is` is a string, but {} is a {}",
-            entity.id,
-            entity.capabilities.kind()
-        )),
+        _ => None,
+    }
+}
+
+fn check_text_comparison(call: &CallExpr, registry: &impl RegistryView) -> Result<(), String> {
+    let [left, right] = call.args.as_slice() else {
+        return Ok(());
+    };
+    let (id, literal) = match (
+        text_of(left),
+        string_literal(right),
+        text_of(right),
+        string_literal(left),
+    ) {
+        (Some(id), Some(literal), _, _) | (_, _, Some(id), Some(literal)) => (id, literal),
+        _ => return Ok(()),
+    };
+    let Ok(entity_id) = id.parse::<EntityId>() else {
+        return Ok(());
+    };
+    match registry.entity(&entity_id) {
+        Some(entity) => text_can_be(entity, literal),
+        None => Ok(()),
     }
 }
 
@@ -928,8 +987,8 @@ impl crate::expr::Compiled {
 mod tests {
     use super::*;
     use irori_types::{
-        BinarySensorCapabilities, LightCapabilities, Name, SensorCapabilities, SwitchCapabilities,
-        UniqueId,
+        BinarySensorCapabilities, LightCapabilities, Name, SensorCapabilities, SensorValueType,
+        SwitchCapabilities, UniqueId,
     };
 
     fn entity(id: &str, capabilities: Capabilities) -> Entity {
@@ -942,6 +1001,7 @@ mod tests {
             device_id: None,
             area_id: None,
             capabilities,
+            entity_category: None,
         }
     }
 
@@ -959,6 +1019,7 @@ mod tests {
                     device_class: None,
                     unit: Some("lx".into()),
                     state_class: None,
+                    options: Vec::new(),
                 }),
             ),
             entity(
@@ -998,6 +1059,97 @@ mod tests {
     fn hallway_type_checks() {
         let problems = validate(&hallway_rule(), &hallway_registry());
         assert!(problems.is_empty(), "{problems:?}");
+    }
+
+    #[test]
+    fn a_text_sensor_is_pointed_at_text() {
+        let washer = entity(
+            "sensor.washer_program",
+            Capabilities::Sensor(SensorCapabilities {
+                value_type: SensorValueType::Text,
+                device_class: None,
+                unit: None,
+                state_class: None,
+                options: Vec::new(),
+            }),
+        );
+        let mut registry = hallway_registry();
+        registry.entities.insert(washer.id.clone(), washer.clone());
+        let check = |name| check_fn_against_registry(name, &washer.id, &registry);
+        assert_eq!(
+            check("num"),
+            Err(r#"num("sensor.washer_program"): entity is sensor, not a numeric sensor — use text("sensor.washer_program")"#.to_owned())
+        );
+        assert_eq!(
+            check("on"),
+            Err(r#"on("sensor.washer_program"): entity is text, not on/off — use text("sensor.washer_program")"#.to_owned())
+        );
+        assert_eq!(check("text"), Ok(()));
+    }
+
+    #[test]
+    fn a_button_has_no_value_to_read_or_compare() {
+        let restart = entity(
+            "button.board_restart",
+            Capabilities::Button(irori_types::ButtonCapabilities { device_class: None }),
+        );
+        let mut registry = hallway_registry();
+        registry
+            .entities
+            .insert(restart.id.clone(), restart.clone());
+        assert_eq!(
+            check_fn_against_registry("on", &restart.id, &registry),
+            Err(
+                r#"on("button.board_restart"): entity is a button, which has no value to read"#
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            check_fn_against_registry("available", &restart.id, &registry),
+            Ok(())
+        );
+        assert_eq!(
+            typed_value_fits(&TypedValue::Bool(true), &restart),
+            Err("button.board_restart is a button, which has no value to compare".to_owned())
+        );
+    }
+
+    #[test]
+    fn text_a_sensor_can_never_report_is_rejected() {
+        let washer = entity(
+            "sensor.washer_program",
+            Capabilities::Sensor(SensorCapabilities {
+                value_type: SensorValueType::Text,
+                device_class: None,
+                unit: None,
+                state_class: None,
+                options: vec!["wash".into(), "rinse".into()],
+            }),
+        );
+        let mut registry = hallway_registry();
+        registry.entities.insert(washer.id.clone(), washer.clone());
+        let problems_with = |expr: &str| {
+            let mut rule = hallway_rule();
+            if let Condition::Expr { expr: e } = &mut rule.conditions[0] {
+                *e = serde_json::from_value(serde_json::json!(expr)).unwrap();
+            }
+            validate(&rule, &registry)
+        };
+        assert!(problems_with("text('sensor.washer_program') == 'rinse'").is_empty());
+        for wrong in [
+            "text('sensor.washer_program') == 'spin'",
+            "'spin' != text('sensor.washer_program')",
+        ] {
+            let problems = problems_with(wrong);
+            assert!(
+                problems.iter().any(|p| p
+                    .reason
+                    .contains(r#"is never "spin"; it is one of: wash, rinse"#)),
+                "{wrong}: {problems:?}"
+            );
+        }
+        assert!(typed_value_fits(&TypedValue::Text("spin".into()), &washer).is_err());
+        assert!(typed_value_fits(&TypedValue::Text("wash".into()), &washer).is_ok());
     }
 
     #[test]

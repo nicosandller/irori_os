@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use irori_types::{
     Availability, ContextId, DeviceDescription, EntityDescription, EntityId, EntityState,
-    LightTurnOn, RunCommand, ServiceCall, StateReport, Timestamp, UniqueId, Waiting,
+    RunCommand, ServiceCall, StateReport, Timestamp, UniqueId, Unmodeled, Waiting,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -57,6 +57,9 @@ pub enum FromExt {
     },
     SetWaiting {
         waiting: Vec<Waiting>,
+    },
+    SetUnmodeled {
+        unmodeled: Vec<Unmodeled>,
     },
     SetAvailableActions {
         actions: Vec<String>,
@@ -112,9 +115,11 @@ pub enum FromExt {
     CallService {
         id: u64,
         entity_id: EntityId,
+        /// The action: `turn_on`, `set_value`, … or `toggle`, which the core resolves.
         command: WireCommand,
+        /// The action's data, as its service takes it (`docs/specs/protocols.md` §7.1).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        data: Option<LightTurnOn>,
+        data: Option<serde_json::Map<String, serde_json::Value>>,
         run_id: ContextId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_id: Option<ContextId>,
@@ -129,14 +134,11 @@ pub enum FromExt {
     },
 }
 
-/// What a `call_service` asks for: the same three commands a person has.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WireCommand {
-    TurnOn,
-    TurnOff,
-    Toggle,
-}
+/// What a `call_service` asks for: an action of the entity's kind, the part of a service name
+/// after the dot (`turn_on`), or `toggle`. The core checks it against the entity, so the wire
+/// doesn't need to know every kind's actions, and an engine built before a kind existed still
+/// talks to a core that has it.
+pub type WireCommand = String;
 
 /// A message from the host to the extension process.
 #[derive(Debug, Serialize, Deserialize)]
@@ -613,6 +615,7 @@ impl Pending {
             }
             Op::SetHealth(health) => Some(FromExt::SetHealth { health }),
             Op::SetWaiting(waiting) => Some(FromExt::SetWaiting { waiting }),
+            Op::SetUnmodeled(unmodeled) => Some(FromExt::SetUnmodeled { unmodeled }),
             Op::SetAvailableActions(actions) => Some(FromExt::SetAvailableActions { actions }),
             Op::Load(key, reply) => {
                 self.loads
@@ -818,6 +821,28 @@ mod tests {
     use super::*;
     use irori_types::PackagePath;
 
+    /// What an automations package built before kinds could take any action sends, byte for
+    /// byte: a core that reads any action must still read it, and write it back the same way.
+    #[test]
+    fn call_service_reads_and_writes_what_older_engines_send() {
+        for old in [
+            serde_json::json!({
+                "type": "call_service", "id": 1, "entity_id": "light.hall",
+                "command": "turn_on", "data": {"brightness": 153},
+                "run_id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+            }),
+            serde_json::json!({
+                "type": "call_service", "id": 2, "entity_id": "switch.plug",
+                "command": "toggle", "run_id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+                "parent_id": "01K5B2Q9A1B2C3D4E5F6G7H8JA",
+            }),
+        ] {
+            let msg: FromExt = serde_json::from_value(old.clone()).expect("an old engine's call");
+            assert!(matches!(msg, FromExt::CallService { .. }));
+            assert_eq!(serde_json::to_value(&msg).expect("ser"), old);
+        }
+    }
+
     #[test]
     fn hello_round_trips() {
         let msg = ToExt::Hello {
@@ -900,6 +925,7 @@ mod tests {
                 state: Some(State::Switch(SwitchState { on })),
                 attributes: Default::default(),
                 caused_by: None,
+                replayed: false,
             }
         }
 

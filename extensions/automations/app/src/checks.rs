@@ -4,7 +4,7 @@
 //! read, and an unavailable device counts the way a condition on it always has. A condition
 //! that isn't one of these is edited as an expression, or as JSON.
 
-use irori_types::{EntityId, SensorValueType};
+use irori_types::{EntityId, ValueShape};
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
@@ -170,12 +170,12 @@ impl Clause {
 
     /// A first check for `entity`, fitting what kind of thing it is.
     pub fn fresh(entity: &str, home: &Home) -> Self {
-        let test = match sensor_type(entity, home) {
-            Some(SensorValueType::Number) => Test::Num {
+        let test = match home.value_shape(entity) {
+            ValueShape::Number => Test::Num {
                 op: "<",
                 value: 30.0,
             },
-            Some(SensorValueType::Text) => Test::Text {
+            ValueShape::Text => Test::Text {
                 equal: true,
                 value: entity
                     .parse::<EntityId>()
@@ -183,7 +183,7 @@ impl Clause {
                     .and_then(|id| home.texts(&id).into_iter().next())
                     .unwrap_or_default(),
             },
-            None => Test::Flag(true),
+            ValueShape::Bool => Test::Flag(true),
         };
         Self {
             entity: entity.to_owned(),
@@ -255,18 +255,6 @@ impl Clause {
     }
 }
 
-fn sensor_type(entity: &str, home: &Home) -> Option<SensorValueType> {
-    home.entities.with_untracked(|entities| {
-        entities
-            .iter()
-            .find(|e| e.id.as_str() == entity)
-            .and_then(|e| match &e.capabilities {
-                irori_types::Capabilities::Sensor(s) => Some(s.value_type),
-                _ => None,
-            })
-    })
-}
-
 impl Checks {
     /// The checks a condition is, or `None` if it's more than checks can say.
     pub fn from_condition(condition: &Value) -> Option<Self> {
@@ -323,10 +311,7 @@ impl Checks {
         let entity = home.entities.with_untracked(|entities| {
             entities
                 .iter()
-                .find(|e| {
-                    matches!(&e.capabilities, irori_types::Capabilities::Sensor(s)
-                        if s.value_type == SensorValueType::Number)
-                })
+                .find(|e| e.capabilities.primary_shape() == Some(ValueShape::Number))
                 .or_else(|| entities.iter().find(|e| WATCHABLE.contains(&e.id.kind())))
                 .map(|e| e.id.to_string())
         });
@@ -574,16 +559,7 @@ fn test_input(
 
 /// A state's plain value, the way checks compare it: `true`, `21.5`, `"paused"`.
 fn irori_rules_value(state: &irori_types::State) -> Value {
-    use irori_types::{SensorValue, State};
-    match state {
-        State::Light(light) => json!(light.on),
-        State::Switch(switch) => json!(switch.on),
-        State::BinarySensor(sensor) => json!(sensor.on),
-        State::Sensor(sensor) => match &sensor.value {
-            SensorValue::Number(n) => json!(n),
-            SensorValue::Text(text) => json!(text),
-        },
-    }
+    state.primary().to_json()
 }
 
 #[cfg(test)]

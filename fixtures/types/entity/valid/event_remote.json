@@ -1,0 +1,15 @@
+{
+  "id": "event.bedroom_remote_action",
+  "protocol": "zigbee",
+  "unique_id": "0x0211000000000009_action",
+  "name": "Action",
+  "capabilities": {
+    "kind": "event",
+    "event_types": [
+      "single",
+      "double",
+      "hold"
+    ],
+    "device_class": "button"
+  }
+}

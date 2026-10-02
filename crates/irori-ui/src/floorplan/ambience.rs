@@ -52,7 +52,11 @@ pub fn sensing(home: &Home, device: &DeviceId) -> bool {
                 Capabilities::BinarySensor(sensor)
                     if matches!(
                         sensor.device_class,
-                        Some(BinarySensorClass::Motion | BinarySensorClass::Occupancy)
+                        Some(
+                            BinarySensorClass::Motion
+                                | BinarySensorClass::Occupancy
+                                | BinarySensorClass::Presence
+                        )
                     )
             )
         })

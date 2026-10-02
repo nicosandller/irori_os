@@ -1,0 +1,14 @@
+{
+  "service": "fan.turn_on",
+  "unique_id": "a4:cf:12:34:56:80-fan-purifier",
+  "data": {
+    "preset_mode": "sleep"
+  },
+  "context": {
+    "id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+    "origin": {
+      "type": "user",
+      "user_id": "nico"
+    }
+  }
+}

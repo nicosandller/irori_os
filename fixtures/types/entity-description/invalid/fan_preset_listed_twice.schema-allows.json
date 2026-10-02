@@ -1,0 +1,11 @@
+{
+  "unique_id": "f",
+  "name": "Fan",
+  "capabilities": {
+    "kind": "fan",
+    "preset_modes": [
+      "auto",
+      "auto"
+    ]
+  }
+}

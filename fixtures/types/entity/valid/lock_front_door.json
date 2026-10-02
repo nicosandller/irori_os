@@ -1,0 +1,12 @@
+{
+  "id": "lock.front_door",
+  "protocol": "esphome",
+  "unique_id": "a4:cf:12:34:56:80-lock-door",
+  "name": "Front door",
+  "capabilities": {
+    "kind": "lock",
+    "open": true,
+    "requires_code": true,
+    "code_format": "^\\d{4}$"
+  }
+}

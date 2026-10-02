@@ -161,9 +161,12 @@ A request outside the extension's declared scopes is answered with an error nami
 scope, e.g. `this extension didn't ask for services:call`. **Scopes are enforced here**, on every
 request.
 
-`call_service` takes what a person's command takes: `command` (`turn_on`, `turn_off`,
-`toggle`) and, for `turn_on`, `data` (`brightness` 1–255, `color_temp_kelvin`, `rgb`), resolved
-against the entity exactly as a command from the UI is ([protocols.md](protocols.md) §7.1).
+`call_service` takes what a person's command takes: `command`, one of the entity's kind's
+actions (the part of a service name after the dot: `turn_on`, `turn_off`) or `toggle`, and `data`
+as that service takes it (a light's `turn_on`: `brightness` 1–255, `color_temp_kelvin`, `rgb`),
+resolved against the entity exactly as a command from the UI is ([protocols.md](protocols.md)
+§7.1). The core checks `command` against the entity, not the wire, so an engine needs no update
+for a kind added after it was built.
 People-facing spellings such as `brightness_pct` are the engine's to convert. The core builds the call's context itself:
 `Origin::Automation { extension: <this extension>, run_id }`, with `parent_id` if given (the
 context of the state change that started the run). An engine can't claim to be another
@@ -253,7 +256,55 @@ A later version can add shared views — every engine's automations in one list,
 a device — through a small typed method set every engine answers (`automations.list`,
 `automations.for_entity`). Not in this version.
 
-### B6. Not in this spec
+### B6. Entity formats, and what the flows engine needs to support every kind
+
+An engine reads entities and states in the entity format its manifest declares
+([extensions.md](extensions.md) §5); Irori leaves out the kinds and fields that came later. An
+engine installed before Irori learned a kind keeps working: it doesn't see that kind until it's
+updated. The first-party engine declares format 2.
+
+Automations don't really need to know what kind of device something is. They need to know what
+kind of **value** it has, and what can be asked of it. Irori is adding every kind of device Home
+Assistant knows (`docs/specs/entities.md` §4.4). For the flows engine and its page to support all
+of them without changing for each one, it needs the following. Until then, raising its
+`entity_format` past a kind it can't handle would hand it entities it can't do anything useful
+with.
+
+1. **Read entities by value, not by kind.** Today the engine and its page parse entities with
+   `irori-types`' closed enums and refuse what they don't know. They should read what every entity
+   has: its id (as text), its value and that value's shape (on/off, number, text, or none), and
+   what's known about the value:
+   - its allowed values (`options`), its range and step, and its unit;
+   - whether every report counts as something happening, even an identical one (an `event`, a
+     button press);
+   - whether it has a value at all (a `button` doesn't).
+
+   `State::primary()` and `Capabilities::primary_shape()` are the start of this.
+2. **Call actions from a list, not a fixed set.** `RuleService` and `CallData` know only the light
+   and switch services. A blind's `set_position {position: 0–100}` or a select's
+   `select_option {option}` should come from a list of each entity's actions and their settings
+   (names, types, ranges, choices), checked when the flow is saved. Today the core checks each
+   service's data in `Service::from_data`. Data from a flow is parsed per service, not by its shape.
+3. **Trigger on happenings, not just changes.** A state trigger fires when the value changes.
+   Entities whose every report counts (remote buttons, doorbells) need a trigger that fires on
+   each one, ignoring what the protocol replays on reconnect.
+4. **Read more than the main value.** `num(id, 'field')` and `text(id, 'field')`, and `field` on
+   state triggers and conditions, for a blind's position or a thermostat's current temperature
+   ([rules.md](rules.md) amendment).
+5. **Compare units properly.** Temperatures are °C throughout the model; other units are as
+   reported, so comparing two numbers in different units is the author's to watch for until
+   units are normalised.
+6. **Make the editor's choices depend on what each entity offers**: entity pickers by value
+   shape and action list, value inputs by shape (a dropdown for options, a slider for a range),
+   and the hand-kept lists noted in the plan (`WATCHABLE`, the call node's fixed action list,
+   the templates' kind lists).
+7. **Keep secrets out of what it writes.** A lock's or an alarm's code travels with the call
+   (`lock.unlock {code}`). It must come from `secrets.toml` rather than sit in a flow file, and
+   it must not be copied into traces.
+8. **Skip what it doesn't understand** instead of failing. With 1–7 done, its `entity_format` can
+   follow Irori's own.
+
+### B7. Not in this spec
 
 | Topic | Where |
 |---|---|

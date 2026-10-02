@@ -1,0 +1,8 @@
+{
+  "unique_id": "s",
+  "name": "Mode",
+  "capabilities": {
+    "kind": "select",
+    "options": []
+  }
+}

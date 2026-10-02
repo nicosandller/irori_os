@@ -1,12 +1,17 @@
 //! Translating between an entity's wire topics/payloads and Irori's typed `State`/`Service`
-//! (`docs/specs/entities.md` §5.3, `docs/specs/protocols.md` §7).
+//! (`docs/specs/entities.md` §5.3, `docs/specs/protocols.md` §7). Each component's own module
+//! under [`crate::kinds`] does the reading and writing; this hands each entity to it.
 
-use irori_types::{
-    BinarySensorState, ColorMode, LightState, SensorState, SensorValue, Service, State,
-    SwitchState, UniqueId,
-};
+use irori_types::units::{TemperatureUnit, round_to};
+use irori_types::{HvacMode, Service, State, UniqueId, WaterHeaterMode};
 
 use crate::discovery::EntityTopics;
+use crate::kinds::setting::Reading;
+use crate::kinds::{
+    binary_sensor, button, climate, cover, event, fan, humidifier, light, lock, number, select,
+    sensor, siren, switch, text, valve, water_heater,
+};
+use crate::template::ValueTemplate;
 
 /// A message to publish: one entity's command can need more than one topic (the default light
 /// schema splits on/off and brightness across separate topics).
@@ -16,80 +21,197 @@ pub struct Publish {
     pub payload: Vec<u8>,
 }
 
+/// One incoming message, as a component reads it.
+#[derive(Debug, Clone, Copy)]
+pub struct Message<'a> {
+    pub topic: &'a str,
+    pub payload: &'a [u8],
+}
+
+impl Message<'_> {
+    /// Whether it came in on `topic`.
+    pub fn on(&self, topic: Option<&str>) -> bool {
+        topic == Some(self.topic)
+    }
+
+    /// Whether it came in on any of `readings`' topics.
+    pub fn on_any<'r>(&self, readings: impl IntoIterator<Item = &'r Reading>) -> bool {
+        readings
+            .into_iter()
+            .any(|reading| reading.topic == self.topic)
+    }
+
+    /// What it says through `reading`. `None` when it isn't on that reading's topic, or leaves
+    /// that value out (a radiator valve reporting its battery on the topic its settings share);
+    /// `Some(None)` when it says it, empty.
+    pub fn said(&self, reading: Option<&Reading>) -> Option<Option<String>> {
+        let reading = reading.filter(|reading| reading.topic == self.topic)?;
+        self.said_through(&reading.template)
+    }
+
+    /// What it says through `template`, whichever topic it came in on.
+    pub fn said_through(&self, template: &ValueTemplate) -> Option<Option<String>> {
+        Some(match template.extract(self.payload).ok()? {
+            serde_json::Value::Null => None,
+            serde_json::Value::String(text) => Some(text.trim().to_owned()),
+            other => Some(other.to_string()),
+        })
+    }
+
+    /// A number it says through `reading`, as [`Message::said`].
+    pub fn number(&self, reading: Option<&Reading>) -> Option<Option<f64>> {
+        self.said(reading)
+            .map(|said| said.and_then(|text| text.parse().ok()))
+    }
+
+    /// A temperature it says through `reading` in `unit`, as °C.
+    pub fn temperature(
+        &self,
+        reading: Option<&Reading>,
+        unit: TemperatureUnit,
+    ) -> Option<Option<f64>> {
+        self.number(reading)
+            .map(|said| said.map(|value| round_to(unit.to_celsius(value), 2)))
+    }
+}
+
+/// `field` as a message said it, when the message said it at all.
+pub(crate) fn update<T>(field: &mut Option<T>, said: Option<Option<T>>) {
+    if let Some(value) = said {
+        *field = value;
+    }
+}
+
 /// Decodes an incoming `(topic, payload)` against one entity's topics. `None` if `topic` isn't
 /// one this entity listens to at all (the caller tries other entities, or ignores it); `Some(Err)`
 /// if it matches but the payload can't be read — logged and dropped, never fatal to the protocol.
 ///
-/// `previous` is the entity's last-known state, if any. The default light schema splits on/off
-/// and brightness across two topics, so a report on either one alone is incomplete on its own —
-/// without merging in what the *other* topic last said, an on/off report would erase the
-/// remembered brightness, and a brightness report would force the light on even if it's off.
-/// Every other kind of report is already complete by itself, so `previous` only matters here.
+/// `previous` is the entity's last-known state, if any. A component whose state is spread over
+/// several topics (the default light schema's on/off and brightness, a thermostat's settings)
+/// gets only part of it in one message, and keeps the rest from `previous`.
 pub fn decode(
     topics: &EntityTopics,
     topic: &str,
     payload: &[u8],
     previous: Option<&State>,
 ) -> Option<Result<State, String>> {
-    let previous_light = match previous {
-        Some(State::Light(light)) => Some(light),
-        _ => None,
-    };
+    let message = Message { topic, payload };
     match topics {
-        EntityTopics::LightJson { state_topic, .. } if state_topic == topic => {
-            Some(decode_light_json(payload))
-        }
-        EntityTopics::LightDefault {
-            state_topic,
-            brightness_state_topic,
-            brightness_scale,
-            payload_on,
-            payload_off,
-            ..
-        } => {
-            if state_topic.as_deref() == Some(topic) {
-                Some(decode_light_default_on_off(
-                    payload,
-                    payload_on,
-                    payload_off,
-                    previous_light,
-                ))
-            } else if brightness_state_topic.as_deref() == Some(topic) {
-                Some(decode_light_default_brightness(
-                    payload,
-                    *brightness_scale,
-                    previous_light,
-                ))
-            } else {
-                None
-            }
-        }
-        EntityTopics::Switch {
-            state_topic,
-            payload_on,
-            payload_off,
-            ..
-        } if state_topic.as_deref() == Some(topic) => Some(
-            decode_on_off(payload, payload_on, payload_off)
-                .map(|on| State::Switch(SwitchState { on })),
-        ),
-        EntityTopics::Sensor {
-            state_topic,
-            value_template,
-        } if state_topic == topic => Some(decode_sensor(payload, value_template)),
-        EntityTopics::BinarySensor {
-            state_topic,
-            payload_on,
-            payload_off,
-        } if state_topic == topic => Some(
-            decode_on_off(payload, payload_on, payload_off)
-                .map(|on| State::BinarySensor(BinarySensorState { on })),
-        ),
-        _ => None,
+        EntityTopics::Light(topics) => light::decode(topics, message, previous),
+        EntityTopics::Switch(topics) => switch::decode(topics, message),
+        EntityTopics::Sensor(topics) => sensor::decode(topics, message),
+        EntityTopics::BinarySensor(topics) => binary_sensor::decode(topics, message),
+        EntityTopics::Number(topics) => number::decode(topics, message),
+        EntityTopics::Select(topics) => select::decode(topics, message),
+        EntityTopics::Text(topics) => text::decode(topics, message),
+        EntityTopics::Button(_) => None,
+        EntityTopics::Event(topics) => event::decode(topics, message),
+        EntityTopics::Cover(topics) => cover::decode(topics, message, previous),
+        EntityTopics::Valve(topics) => valve::decode(topics, message, previous),
+        EntityTopics::Lock(topics) => lock::decode(topics, message),
+        EntityTopics::Fan(topics) => fan::decode(topics, message, previous),
+        EntityTopics::Siren(topics) => siren::decode(topics, message),
+        EntityTopics::Climate(topics) => climate::decode(topics, message, previous),
+        EntityTopics::WaterHeater(topics) => water_heater::decode(topics, message, previous),
+        EntityTopics::Humidifier(topics) => humidifier::decode(topics, message, previous),
     }
 }
 
-fn decode_on_off(payload: &[u8], payload_on: &str, payload_off: &str) -> Result<bool, String> {
+/// [`encode`], for an entity whose `turn_on` goes back to how it was: `last_on` is the last
+/// state it reported while on (a thermostat's last mode other than `off`).
+pub fn encode_with(
+    topics: &EntityTopics,
+    service: &Service,
+    last_on: Option<&State>,
+) -> Result<Vec<Publish>, String> {
+    match topics {
+        EntityTopics::Climate(climate) => climate::encode(climate, service, last_on),
+        EntityTopics::WaterHeater(heater) => water_heater::encode(heater, service, last_on),
+        _ => encode(topics, service),
+    }
+}
+
+/// Whether `state` is one to go back to when the entity is turned on again: a thermostat in any
+/// mode but `off`.
+pub fn is_on(state: &State) -> bool {
+    match state {
+        State::Climate(climate) => climate.hvac_mode != HvacMode::Off,
+        State::WaterHeater(heater) => heater.operation_mode != WaterHeaterMode::Off,
+        _ => false,
+    }
+}
+
+/// Everything needed to publish a service call: the messages to send, in order (usually one;
+/// the default light schema sometimes needs two).
+pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, String> {
+    if service.name().kind() != topics.kind() {
+        return Err(format!("this entity has no `{}` service", service.name()));
+    }
+    match topics {
+        EntityTopics::Light(topics) => light::encode(topics, service),
+        EntityTopics::Switch(topics) => switch::encode(topics, service),
+        EntityTopics::Number(topics) => number::encode(topics, service),
+        EntityTopics::Select(topics) => select::encode(topics, service),
+        EntityTopics::Text(topics) => text::encode(topics, service),
+        EntityTopics::Button(topics) => button::encode(topics, service),
+        EntityTopics::Cover(topics) => cover::encode(topics, service),
+        EntityTopics::Valve(topics) => valve::encode(topics, service),
+        EntityTopics::Lock(topics) => lock::encode(topics, service),
+        EntityTopics::Fan(topics) => fan::encode(topics, service),
+        EntityTopics::Siren(topics) => siren::encode(topics, service),
+        EntityTopics::Climate(topics) => climate::encode(topics, service, None),
+        EntityTopics::WaterHeater(topics) => water_heater::encode(topics, service, None),
+        EntityTopics::Humidifier(topics) => humidifier::encode(topics, service),
+        EntityTopics::Sensor(_) | EntityTopics::BinarySensor(_) | EntityTopics::Event(_) => {
+            Err(format!("this entity has no `{}` service", service.name()))
+        }
+    }
+}
+
+/// Which entity `unique_id` a topic belongs to, out of a set an entity's own topics carry, for
+/// callers that keep a `topic -> unique_id` index rather than scanning every entity per message.
+pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, UniqueId)> {
+    let mut list: Vec<&str> = match topics {
+        EntityTopics::Light(topics) => topics.listens(),
+        EntityTopics::Switch(topics) => topics.state_topic.as_deref().into_iter().collect(),
+        EntityTopics::Sensor(topics) => vec![topics.state_topic.as_str()],
+        EntityTopics::BinarySensor(topics) => vec![topics.state_topic.as_str()],
+        EntityTopics::Number(topics) => topics.state_topic.as_deref().into_iter().collect(),
+        EntityTopics::Select(topics) => topics.state_topic.as_deref().into_iter().collect(),
+        EntityTopics::Text(topics) => topics.state_topic.as_deref().into_iter().collect(),
+        // Nothing to listen to: a press leaves no state.
+        EntityTopics::Button(_) => Vec::new(),
+        EntityTopics::Event(topics) => vec![topics.state_topic.as_str()],
+        EntityTopics::Lock(topics) => topics.state_topic.as_deref().into_iter().collect(),
+        EntityTopics::Siren(topics) => topics.state_topic.as_deref().into_iter().collect(),
+        EntityTopics::Cover(topics) => topics.listens(),
+        EntityTopics::Valve(topics) => topics.listens(),
+        EntityTopics::Fan(topics) => readings(topics.readings()),
+        EntityTopics::Climate(topics) => readings(topics.readings()),
+        EntityTopics::WaterHeater(topics) => readings(topics.readings()),
+        EntityTopics::Humidifier(topics) => readings(topics.readings()),
+    };
+    // A cover's state and position usually share one topic; it's listened to once.
+    list.sort_unstable();
+    list.dedup();
+    list.into_iter()
+        .map(|t| (t.to_owned(), unique_id.clone()))
+        .collect()
+}
+
+fn readings<'a>(readings: impl IntoIterator<Item = &'a Reading>) -> Vec<&'a str> {
+    readings
+        .into_iter()
+        .map(|reading| reading.topic.as_str())
+        .collect()
+}
+
+/// On or off, by the words this entity uses for each.
+pub(crate) fn decode_on_off(
+    payload: &[u8],
+    payload_on: &str,
+    payload_off: &str,
+) -> Result<bool, String> {
     let text = String::from_utf8_lossy(payload);
     let text = text.trim();
     if text == payload_on {
@@ -103,415 +225,65 @@ fn decode_on_off(payload: &[u8], payload_on: &str, payload_off: &str) -> Result<
     }
 }
 
-fn decode_light_default_on_off(
+/// The text an entity reported, through its value template.
+pub(crate) fn decode_text(
     payload: &[u8],
-    payload_on: &str,
-    payload_off: &str,
-    previous: Option<&LightState>,
-) -> Result<State, String> {
-    decode_on_off(payload, payload_on, payload_off).map(|on| {
-        State::Light(LightState {
-            on,
-            brightness: previous.and_then(|p| p.brightness),
-            color_mode: previous.and_then(|p| p.color_mode),
-            color_temp_kelvin: previous.and_then(|p| p.color_temp_kelvin),
-            rgb: previous.and_then(|p| p.rgb),
-        })
-    })
-}
-
-/// Brightness alone doesn't say on/off, so this merges in the entity's last-known `on` (and any
-/// other last-known fields) rather than assuming a value — `previous` is threaded all the way
-/// from the run loop's own per-entity last state (`docs/specs/protocols.md` §6.3: a report only
-/// carries what changed, so the pieces it doesn't carry come from what's already known).
-fn decode_light_default_brightness(
-    payload: &[u8],
-    scale: u32,
-    previous: Option<&LightState>,
-) -> Result<State, String> {
-    let text = String::from_utf8_lossy(payload);
-    let raw: f64 = text
-        .trim()
-        .parse()
-        .map_err(|_| format!("`{}` isn't a brightness number", text.trim()))?;
-    if raw <= 0.0 {
-        return Err(format!("brightness {raw} isn't positive"));
-    }
-    let scaled = ((raw / f64::from(scale)) * 255.0).round().clamp(1.0, 255.0) as u8;
-    Ok(State::Light(LightState {
-        on: previous.map(|p| p.on).unwrap_or(true), // no prior report: brightness > 0 implies on
-        brightness: Some(scaled),
-        color_mode: previous.and_then(|p| p.color_mode),
-        color_temp_kelvin: previous.and_then(|p| p.color_temp_kelvin),
-        rgb: previous.and_then(|p| p.rgb),
-    }))
-}
-
-fn decode_light_json(payload: &[u8]) -> Result<State, String> {
-    let body: serde_json::Value =
-        serde_json::from_slice(payload).map_err(|e| format!("light payload isn't JSON: {e}"))?;
-    let on = match body.get("state").and_then(serde_json::Value::as_str) {
-        Some("ON") => true,
-        Some("OFF") => false,
-        Some(other) => return Err(format!("`{other}` isn't a light state (ON/OFF)")),
-        None => return Err("light payload has no `state`".to_owned()),
-    };
-    let brightness = body
-        .get("brightness")
-        .and_then(serde_json::Value::as_u64)
-        .map(|b| b.clamp(1, 255) as u8);
-    let color_temp_kelvin = body
-        .get("color_temp")
-        .and_then(serde_json::Value::as_u64)
-        .filter(|m| *m > 0)
-        .map(|mireds| (1_000_000 / mireds).clamp(1000, 20000) as u16);
-    let (color_mode, rgb) = match body.get("color") {
-        Some(color) => match (
-            color.get("r").and_then(serde_json::Value::as_u64),
-            color.get("g").and_then(serde_json::Value::as_u64),
-            color.get("b").and_then(serde_json::Value::as_u64),
-        ) {
-            (Some(r), Some(g), Some(b)) => {
-                (Some(ColorMode::Rgb), Some([r as u8, g as u8, b as u8]))
-            }
-            _ => match (
-                color.get("x").and_then(serde_json::Value::as_f64),
-                color.get("y").and_then(serde_json::Value::as_f64),
-            ) {
-                (Some(x), Some(y)) => (Some(ColorMode::Rgb), Some(xy_to_rgb(x, y))),
-                _ => (None, None),
-            },
-        },
-        None => (color_temp_kelvin.map(|_| ColorMode::ColorTemp), None),
-    };
-    Ok(State::Light(LightState {
-        on,
-        brightness,
-        color_mode,
-        color_temp_kelvin,
-        rgb,
-    }))
-}
-
-/// CIE 1931 `(x, y)` chromaticity (what most Zigbee bulbs, including Hue-compatible ones, report
-/// their color as) to sRGB, assuming full brightness — Irori's own brightness field carries the
-/// level separately. The standard "Wide RGB D65" conversion Philips documents for Hue, and the
-/// one Z2M/HA themselves use.
-fn xy_to_rgb(x: f64, y: f64) -> [u8; 3] {
-    if y <= 0.0 {
-        return [0, 0, 0];
-    }
-    let z = 1.0 - x - y;
-    let big_y = 1.0;
-    let big_x = (big_y / y) * x;
-    let big_z = (big_y / y) * z;
-
-    let r = big_x * 1.656_492 - big_y * 0.354_851 - big_z * 0.255_038;
-    let g = -big_x * 0.707_196 + big_y * 1.655_397 + big_z * 0.036_152;
-    let b = big_x * 0.051_713 - big_y * 0.121_364 + big_z * 1.011_530;
-
-    let gamma = |c: f64| {
-        let c = if c <= 0.0031308 {
-            12.92 * c
-        } else {
-            1.055 * c.powf(1.0 / 2.4) - 0.055
-        };
-        (c.clamp(0.0, 1.0) * 255.0).round() as u8
-    };
-    [gamma(r), gamma(g), gamma(b)]
-}
-
-fn decode_sensor(
-    payload: &[u8],
-    value_template: &crate::template::ValueTemplate,
-) -> Result<State, String> {
-    let extracted = value_template.extract(payload)?;
-    let value = match &extracted {
-        serde_json::Value::Number(n) => n.as_f64().map(SensorValue::Number),
-        serde_json::Value::String(s) => s
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .map(SensorValue::Number)
-            .or_else(|| Some(SensorValue::Text(s.clone()))),
-        other => Some(SensorValue::Text(other.to_string())),
-    };
-    let value = value.ok_or("sensor value couldn't be read")?;
-    let state = State::Sensor(SensorState { value });
-    state.validate().map_err(|e| e.to_string())?;
-    Ok(state)
-}
-
-/// Everything needed to publish a service call: the messages to send, in order (usually one;
-/// the default light schema sometimes needs two).
-pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, String> {
-    match (topics, service) {
-        (EntityTopics::LightJson { command_topic, .. }, Service::LightTurnOff) => {
-            Ok(vec![json_publish(
-                command_topic,
-                &serde_json::json!({ "state": "OFF" }),
-            )])
-        }
-        (EntityTopics::LightJson { command_topic, .. }, Service::LightTurnOn(turn_on)) => {
-            let mut body = serde_json::json!({ "state": "ON" });
-            if let Some(brightness) = turn_on.brightness {
-                body["brightness"] = serde_json::json!(brightness);
-            }
-            if let Some(kelvin) = turn_on.color_temp_kelvin {
-                body["color_temp"] = serde_json::json!((1_000_000 / u32::from(kelvin)).max(1));
-            }
-            if let Some([r, g, b]) = turn_on.rgb {
-                body["color"] = serde_json::json!({ "r": r, "g": g, "b": b });
-            }
-            Ok(vec![json_publish(command_topic, &body)])
-        }
-        (
-            EntityTopics::LightDefault {
-                command_topic,
-                payload_off,
-                ..
-            },
-            Service::LightTurnOff,
-        ) => Ok(vec![text_publish(command_topic, payload_off)]),
-        (
-            EntityTopics::LightDefault {
-                command_topic,
-                payload_on,
-                brightness_command_topic,
-                brightness_scale,
-                ..
-            },
-            Service::LightTurnOn(turn_on),
-        ) => {
-            let mut messages = vec![text_publish(command_topic, payload_on)];
-            if let (Some(topic), Some(brightness)) = (brightness_command_topic, turn_on.brightness)
-            {
-                let scaled = ((f64::from(brightness) / 255.0) * f64::from(*brightness_scale))
-                    .round()
-                    .max(1.0);
-                messages.push(text_publish(topic, &format!("{scaled:.0}")));
-            }
-            Ok(messages)
-        }
-        (
-            EntityTopics::Switch {
-                command_topic,
-                payload_on,
-                ..
-            },
-            Service::SwitchTurnOn,
-        ) => Ok(vec![text_publish(command_topic, payload_on)]),
-        (
-            EntityTopics::Switch {
-                command_topic,
-                payload_off,
-                ..
-            },
-            Service::SwitchTurnOff,
-        ) => Ok(vec![text_publish(command_topic, payload_off)]),
-        _ => Err(format!("this entity has no `{}` service", service.name())),
+    value_template: &ValueTemplate,
+) -> Result<String, String> {
+    match value_template.extract(payload)? {
+        serde_json::Value::String(s) => Ok(s),
+        serde_json::Value::Null => Err("it reported nothing".to_owned()),
+        other => Ok(other.to_string()),
     }
 }
 
-fn json_publish(topic: &str, body: &serde_json::Value) -> Publish {
+/// A °C temperature as the device writes it: to a tenth in °F or K, `21` rather than `21.0`.
+pub(crate) fn device_temperature(unit: TemperatureUnit, celsius: f64) -> String {
+    number_text(round_to(unit.from_celsius(celsius), 1))
+}
+
+/// `120`, not `120.0`: a number as a person would type it.
+pub(crate) fn number_text(value: f64) -> String {
+    let text = value.to_string();
+    text.strip_suffix(".0").map_or(text.clone(), str::to_owned)
+}
+
+pub(crate) fn json_publish(topic: &str, body: &serde_json::Value) -> Publish {
     Publish {
         topic: topic.to_owned(),
         payload: serde_json::to_vec(body).expect("a json! body always serializes"),
     }
 }
 
-fn text_publish(topic: &str, payload: &str) -> Publish {
+pub(crate) fn text_publish(topic: &str, payload: &str) -> Publish {
     Publish {
         topic: topic.to_owned(),
         payload: payload.as_bytes().to_vec(),
     }
 }
 
-/// Which entity `unique_id` a topic belongs to, out of a set an entity's own topics carry, for
-/// callers that keep a `topic -> unique_id` index rather than scanning every entity per message.
-pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, UniqueId)> {
-    let mut list = Vec::new();
-    match topics {
-        EntityTopics::LightJson { state_topic, .. } => list.push(state_topic.clone()),
-        EntityTopics::LightDefault {
-            state_topic,
-            brightness_state_topic,
-            ..
-        } => {
-            list.extend(state_topic.clone());
-            list.extend(brightness_state_topic.clone());
-        }
-        EntityTopics::Switch { state_topic, .. } => list.extend(state_topic.clone()),
-        EntityTopics::Sensor { state_topic, .. } => list.push(state_topic.clone()),
-        EntityTopics::BinarySensor { state_topic, .. } => list.push(state_topic.clone()),
-    }
-    list.into_iter().map(|t| (t, unique_id.clone())).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use irori_types::LightTurnOn;
-
-    #[test]
-    fn decodes_a_z2m_json_light_with_rgb_color() {
-        let topics = EntityTopics::LightJson {
-            state_topic: "t/state".to_owned(),
-            command_topic: "t/set".to_owned(),
-        };
-        let payload = br#"{"state":"ON","brightness":128,"color":{"r":10,"g":20,"b":30}}"#;
-        let state = decode(&topics, "t/state", payload, None)
-            .expect("matches")
-            .expect("decodes");
-        assert_eq!(
-            state,
-            State::Light(LightState {
-                on: true,
-                brightness: Some(128),
-                color_mode: Some(ColorMode::Rgb),
-                color_temp_kelvin: None,
-                rgb: Some([10, 20, 30]),
-            })
-        );
-    }
-
-    #[test]
-    fn decodes_xy_color_into_rgb() {
-        let topics = EntityTopics::LightJson {
-            state_topic: "t/state".to_owned(),
-            command_topic: "t/set".to_owned(),
-        };
-        // Roughly a warm white; just checking it lands in a sane RGB region, not an exact triple.
-        let payload = br#"{"state":"ON","color":{"x":0.44,"y":0.40}}"#;
-        let state = decode(&topics, "t/state", payload, None)
-            .expect("matches")
-            .expect("decodes");
-        let State::Light(light) = state else {
-            panic!("expected light")
-        };
-        let [r, _g, b] = light.rgb.expect("converted from xy");
-        assert!(r > b, "a warm color should be redder than blue: {r} vs {b}");
-    }
+    use crate::discovery::{SensorTopics, SwitchTopics};
 
     #[test]
     fn an_unmatched_topic_is_none_not_an_error() {
-        let topics = EntityTopics::Switch {
+        let topics = EntityTopics::Switch(SwitchTopics {
             state_topic: Some("t/state".to_owned()),
             command_topic: "t/set".to_owned(),
             payload_on: "ON".to_owned(),
             payload_off: "OFF".to_owned(),
-        };
+        });
         assert!(decode(&topics, "unrelated/topic", b"ON", None).is_none());
     }
 
     #[test]
-    fn a_default_schema_light_publishes_two_messages_for_brightness() {
-        let topics = EntityTopics::LightDefault {
-            state_topic: Some("t/POWER".to_owned()),
-            command_topic: "t/cmnd/POWER".to_owned(),
-            payload_on: "ON".to_owned(),
-            payload_off: "OFF".to_owned(),
-            brightness_state_topic: Some("t/RESULT".to_owned()),
-            brightness_command_topic: Some("t/cmnd/Dimmer".to_owned()),
-            brightness_scale: 100,
-        };
-        let call = Service::LightTurnOn(LightTurnOn {
-            brightness: Some(128),
-            color_temp_kelvin: None,
-            rgb: None,
-        });
-        let messages = encode(&topics, &call).expect("encodes");
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].topic, "t/cmnd/POWER");
-        assert_eq!(messages[0].payload, b"ON");
-        assert_eq!(messages[1].topic, "t/cmnd/Dimmer");
-        // 128/255 * 100, rounded
-        assert_eq!(messages[1].payload, b"50");
-    }
-
-    #[test]
-    fn a_default_schema_brightness_report_keeps_the_previous_on_state() {
-        let topics = EntityTopics::LightDefault {
-            state_topic: Some("t/POWER".to_owned()),
-            command_topic: "t/cmnd/POWER".to_owned(),
-            payload_on: "ON".to_owned(),
-            payload_off: "OFF".to_owned(),
-            brightness_state_topic: Some("t/RESULT".to_owned()),
-            brightness_command_topic: Some("t/cmnd/Dimmer".to_owned()),
-            brightness_scale: 100,
-        };
-        let previous = State::Light(LightState {
-            on: true,
-            brightness: Some(10),
-            color_mode: Some(ColorMode::Rgb),
-            color_temp_kelvin: None,
-            rgb: Some([1, 2, 3]),
-        });
-        let state = decode(&topics, "t/RESULT", b"50", Some(&previous))
-            .expect("matches")
-            .expect("decodes");
-        assert_eq!(
-            state,
-            State::Light(LightState {
-                on: true,
-                brightness: Some(128), // 50/100 * 255, rounded
-                color_mode: Some(ColorMode::Rgb),
-                color_temp_kelvin: None,
-                rgb: Some([1, 2, 3]),
-            })
-        );
-    }
-
-    #[test]
-    fn a_default_schema_on_off_report_keeps_the_previous_brightness() {
-        let topics = EntityTopics::LightDefault {
-            state_topic: Some("t/POWER".to_owned()),
-            command_topic: "t/cmnd/POWER".to_owned(),
-            payload_on: "ON".to_owned(),
-            payload_off: "OFF".to_owned(),
-            brightness_state_topic: Some("t/RESULT".to_owned()),
-            brightness_command_topic: Some("t/cmnd/Dimmer".to_owned()),
-            brightness_scale: 100,
-        };
-        let previous = State::Light(LightState {
-            on: false,
-            brightness: Some(77),
-            color_mode: None,
-            color_temp_kelvin: None,
-            rgb: None,
-        });
-        let state = decode(&topics, "t/POWER", b"ON", Some(&previous))
-            .expect("matches")
-            .expect("decodes");
-        assert_eq!(
-            state,
-            State::Light(LightState {
-                on: true,
-                brightness: Some(77),
-                color_mode: None,
-                color_temp_kelvin: None,
-                rgb: None,
-            })
-        );
-    }
-
-    #[test]
-    fn a_json_light_turn_off_ignores_any_data() {
-        let topics = EntityTopics::LightJson {
-            state_topic: "t/state".to_owned(),
-            command_topic: "t/set".to_owned(),
-        };
-        let publish = encode(&topics, &Service::LightTurnOff).expect("encodes");
-        assert_eq!(publish.len(), 1);
-        assert_eq!(publish[0].payload, br#"{"state":"OFF"}"#);
-    }
-
-    #[test]
     fn a_service_the_entity_cant_do_is_a_named_error() {
-        let topics = EntityTopics::Sensor {
+        let topics = EntityTopics::Sensor(SensorTopics {
             state_topic: "t".to_owned(),
             value_template: crate::template::ValueTemplate::None,
-        };
+        });
         let error = encode(&topics, &Service::SwitchTurnOn).expect_err("sensors have no services");
         assert!(error.contains("switch.turn_on"));
     }

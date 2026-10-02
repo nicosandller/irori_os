@@ -1,1 +1,1 @@
-unknown variant `fan`
+unknown variant `vacuum`

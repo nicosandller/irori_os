@@ -2,7 +2,7 @@
 //! for a sensor with numbers, go below or above a level — and for how long. Irori itself is one
 //! of the things to watch: its own entities, and "starts up".
 
-use irori_types::{EntityId, SensorValueType};
+use irori_types::{EntityId, ValueShape};
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
@@ -66,18 +66,6 @@ fn write_values(trigger: &mut Value, values: Vec<Value>) {
     }
 }
 
-fn sensor_type(entity: &str, home: &Home) -> Option<SensorValueType> {
-    home.entities.with_untracked(|entities| {
-        entities
-            .iter()
-            .find(|e| e.id.as_str() == entity)
-            .and_then(|e| match &e.capabilities {
-                irori_types::Capabilities::Sensor(s) => Some(s.value_type),
-                _ => None,
-            })
-    })
-}
-
 /// The trigger's form. `trigger` is the node's `trigger`; `edit` changes it.
 #[component]
 pub fn TriggerForm(
@@ -105,9 +93,9 @@ pub fn TriggerForm(
                         return;
                     }
                     let hold = t.get("for").cloned();
-                    let fresh = match sensor_type(&id, &home) {
-                        Some(SensorValueType::Number) => json!({ "type": "state", "entity": id }),
-                        Some(SensorValueType::Text) => {
+                    let fresh = match home.value_shape(&id) {
+                        ValueShape::Number => json!({ "type": "state", "entity": id }),
+                        ValueShape::Text => {
                             let now = id.parse::<EntityId>().ok()
                                 .and_then(|id| home.texts(&id).into_iter().next());
                             match now {
@@ -115,7 +103,7 @@ pub fn TriggerForm(
                                 None => json!({ "type": "state", "entity": id }),
                             }
                         }
-                        None => json!({ "type": "state", "entity": id, "to": true }),
+                        ValueShape::Bool => json!({ "type": "state", "entity": id, "to": true }),
                     };
                     *t = fresh;
                     if let Some(hold) = hold {
@@ -146,10 +134,10 @@ fn state_form(
 ) -> AnyView {
     let hold = trigger["for"].as_str().unwrap_or_default().to_owned();
     let edit_hold = edit.clone();
-    let middle = match sensor_type(entity, &home) {
-        Some(SensorValueType::Number) => level_form(trigger, entity, edit),
-        Some(SensorValueType::Text) => text_values_form(trigger, entity, edit),
-        None => {
+    let middle = match home.value_shape(entity) {
+        ValueShape::Number => level_form(trigger, entity, edit),
+        ValueShape::Text => text_values_form(trigger, entity, edit),
+        ValueShape::Bool => {
             let to = trigger["to"].clone();
             view! {
                 <label>"Changes to"</label>

@@ -16,10 +16,54 @@ pub enum EntityKind {
     Sensor,
     /// A two-state reading, e.g. motion or a door contact.
     BinarySensor,
+    /// A value set within a range, e.g. a timeout or a calibration offset.
+    Number,
+    /// One choice out of a fixed list, e.g. a sensor's sensitivity or a heater's mode.
+    Select,
+    /// A piece of text set by a person, e.g. a message for a display.
+    Text,
+    /// Something to press, e.g. a restart button. It has no value.
+    Button,
+    /// Something that happens, e.g. a remote's button pressed twice. Every report counts.
+    Event,
+    /// Something that opens and closes, e.g. a blind or a garage door.
+    Cover,
+    /// A lock, e.g. a front door's.
+    Lock,
+    /// A fan: on or off, and often a speed, a swing and modes.
+    Fan,
+    /// Lets water or gas through, or doesn't, e.g. a main shut-off.
+    Valve,
+    /// Sounds an alarm: on or off, sometimes with a tone, volume and duration.
+    Siren,
+    /// Heats or cools a room, e.g. a thermostat or an air conditioner.
+    Climate,
+    /// A boiler or hot water tank.
+    WaterHeater,
+    /// A humidifier or dehumidifier.
+    Humidifier,
 }
 
 impl EntityKind {
-    pub const ALL: [EntityKind; 4] = [Self::Light, Self::Switch, Self::Sensor, Self::BinarySensor];
+    pub const ALL: &'static [EntityKind] = &[
+        Self::Light,
+        Self::Switch,
+        Self::Sensor,
+        Self::BinarySensor,
+        Self::Number,
+        Self::Select,
+        Self::Text,
+        Self::Button,
+        Self::Event,
+        Self::Cover,
+        Self::Lock,
+        Self::Fan,
+        Self::Valve,
+        Self::Siren,
+        Self::Climate,
+        Self::WaterHeater,
+        Self::Humidifier,
+    ];
 
     /// The domain string used in entity ids and service names.
     pub fn domain(self) -> &'static str {
@@ -28,11 +72,24 @@ impl EntityKind {
             Self::Switch => "switch",
             Self::Sensor => "sensor",
             Self::BinarySensor => "binary_sensor",
+            Self::Number => "number",
+            Self::Select => "select",
+            Self::Text => "text",
+            Self::Button => "button",
+            Self::Event => "event",
+            Self::Cover => "cover",
+            Self::Lock => "lock",
+            Self::Fan => "fan",
+            Self::Valve => "valve",
+            Self::Siren => "siren",
+            Self::Climate => "climate",
+            Self::WaterHeater => "water_heater",
+            Self::Humidifier => "humidifier",
         }
     }
 
     pub fn from_domain(domain: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|k| k.domain() == domain)
+        Self::ALL.iter().copied().find(|k| k.domain() == domain)
     }
 }
 

@@ -103,7 +103,7 @@ commands — so `cargo test` covers the whole conversation with no ESPHome insta
 |---|---|
 | `src/lib.rs` | discovery, and the one loop that talks to the core (its handle can't be shared) |
 | `src/node.rs` | one task per device: connect, list, subscribe, command, reconnect |
-| `src/map.rs` | ESPHome's model into Irori's: identity, capabilities, units, scales |
+| `src/map/` | ESPHome's model into Irori's, one module per entity type (`describe`, `state`, `command`); `mod.rs` has identity and units, `opening.rs` what covers and valves share |
 
 Identity is the device's **MAC address**, and an entity is that plus ESPHome's entity **key** (a
 hash of its object id, stable across reboots). The protocol's own `unique_id` field was removed

@@ -4,8 +4,23 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::num::{Num, whole};
-
+use crate::kinds::binary_sensor::BinarySensorCapabilities;
+use crate::kinds::button::ButtonCapabilities;
+use crate::kinds::climate::ClimateCapabilities;
+use crate::kinds::cover::CoverCapabilities;
+use crate::kinds::event::EventCapabilities;
+use crate::kinds::fan::FanCapabilities;
+use crate::kinds::humidifier::HumidifierCapabilities;
+use crate::kinds::light::LightCapabilities;
+use crate::kinds::lock::LockCapabilities;
+use crate::kinds::number::NumberCapabilities;
+use crate::kinds::select::SelectCapabilities;
+use crate::kinds::sensor::SensorCapabilities;
+use crate::kinds::siren::SirenCapabilities;
+use crate::kinds::switch::SwitchCapabilities;
+use crate::kinds::text::TextCapabilities;
+use crate::kinds::valve::ValveCapabilities;
+use crate::kinds::water_heater::WaterHeaterCapabilities;
 use crate::{
     AreaId, Description, DeviceId, EntityId, EntityKind, FloorId, InvariantError, Name, ProtocolId,
     UniqueId,
@@ -93,6 +108,24 @@ pub struct Entity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub area_id: Option<AreaId>,
     pub capabilities: Capabilities,
+    /// Whether it's one of the device's settings or diagnostics rather than something it's for.
+    /// Pages list these after the device's main entities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_category: Option<EntityCategory>,
+}
+
+/// What an entity is to its device, when it isn't what the device is for: a light's power-on
+/// behaviour is a setting, its signal strength a diagnostic. Home Assistant's names.
+/// Ordered as pages list them: settings before diagnostics, and both after an entity with none.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum EntityCategory {
+    /// Changes how the device behaves, e.g. a motion sensor's timeout.
+    Config,
+    /// Tells how the device is doing, e.g. its signal strength or firmware version.
+    Diagnostic,
 }
 
 #[derive(Deserialize)]
@@ -107,6 +140,8 @@ struct RawEntity {
     #[serde(default)]
     area_id: Option<AreaId>,
     capabilities: Capabilities,
+    #[serde(default)]
+    entity_category: Option<EntityCategory>,
 }
 
 impl<'de> Deserialize<'de> for Entity {
@@ -127,6 +162,7 @@ impl TryFrom<RawEntity> for Entity {
             device_id: raw.device_id,
             area_id: raw.area_id,
             capabilities: raw.capabilities,
+            entity_category: raw.entity_category,
         };
         entity.validate()?;
         Ok(entity)
@@ -156,6 +192,19 @@ pub enum Capabilities {
     Switch(SwitchCapabilities),
     Sensor(SensorCapabilities),
     BinarySensor(BinarySensorCapabilities),
+    Number(NumberCapabilities),
+    Select(SelectCapabilities),
+    Text(TextCapabilities),
+    Button(ButtonCapabilities),
+    Event(EventCapabilities),
+    Cover(CoverCapabilities),
+    Lock(LockCapabilities),
+    Fan(FanCapabilities),
+    Valve(ValveCapabilities),
+    Siren(SirenCapabilities),
+    Climate(ClimateCapabilities),
+    WaterHeater(WaterHeaterCapabilities),
+    Humidifier(HumidifierCapabilities),
 }
 
 impl Capabilities {
@@ -165,6 +214,19 @@ impl Capabilities {
             Self::Switch(_) => EntityKind::Switch,
             Self::Sensor(_) => EntityKind::Sensor,
             Self::BinarySensor(_) => EntityKind::BinarySensor,
+            Self::Number(_) => EntityKind::Number,
+            Self::Select(_) => EntityKind::Select,
+            Self::Text(_) => EntityKind::Text,
+            Self::Button(_) => EntityKind::Button,
+            Self::Event(_) => EntityKind::Event,
+            Self::Cover(_) => EntityKind::Cover,
+            Self::Lock(_) => EntityKind::Lock,
+            Self::Fan(_) => EntityKind::Fan,
+            Self::Valve(_) => EntityKind::Valve,
+            Self::Siren(_) => EntityKind::Siren,
+            Self::Climate(_) => EntityKind::Climate,
+            Self::WaterHeater(_) => EntityKind::WaterHeater,
+            Self::Humidifier(_) => EntityKind::Humidifier,
         }
     }
 
@@ -175,181 +237,17 @@ impl Capabilities {
                 color_temp_kelvin: Some(range),
                 ..
             }) => range.validate(),
+            Self::Sensor(sensor) => sensor.validate(),
+            Self::Number(number) => number.validate(),
+            Self::Select(select) => select.validate(),
+            Self::Text(text) => text.validate(),
+            Self::Event(event) => event.validate(),
+            Self::Fan(fan) => fan.validate(),
+            Self::Siren(siren) => siren.validate(),
+            Self::Climate(climate) => climate.validate(),
+            Self::WaterHeater(heater) => heater.validate(),
+            Self::Humidifier(humidifier) => humidifier.validate(),
             _ => Ok(()),
         }
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct LightCapabilities {
-    /// Supports dimming.
-    #[serde(default)]
-    pub brightness: bool,
-    /// Supports color temperature, within this range.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color_temp_kelvin: Option<ColorTempRange>,
-    /// Supports RGB color.
-    #[serde(default)]
-    pub rgb: bool,
-}
-
-/// Supported color temperatures in kelvin, `min` (warmest) to `max` (coolest).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ColorTempRange {
-    #[schemars(range(min = 1000, max = 20000))]
-    pub min: u16,
-    #[schemars(range(min = 1000, max = 20000))]
-    pub max: u16,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawColorTempRange {
-    // Wider than `u16` so out-of-range values get the range message, not "expected u16".
-    min: Num,
-    max: Num,
-}
-
-impl<'de> Deserialize<'de> for ColorTempRange {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let raw = RawColorTempRange::deserialize(deserializer)?;
-        use serde::de::Error as _;
-        let range = ColorTempRange {
-            min: whole("color_temp_kelvin.min", raw.min, 1000, 20000).map_err(D::Error::custom)?,
-            max: whole("color_temp_kelvin.max", raw.max, 1000, 20000).map_err(D::Error::custom)?,
-        };
-        range.validate().map_err(serde::de::Error::custom)?;
-        Ok(range)
-    }
-}
-
-impl ColorTempRange {
-    /// Deserialization runs this; call it yourself when building a range in code.
-    pub fn validate(self) -> Result<(), InvariantError> {
-        let valid = |k: u16| (1000..=20000).contains(&k);
-        if !valid(self.min) || !valid(self.max) {
-            return Err(InvariantError(format!(
-                "color temperature range {}-{} K must be within 1000-20000 K",
-                self.min, self.max
-            )));
-        }
-        if self.min > self.max {
-            return Err(InvariantError(format!(
-                "color temperature range has min {} K above max {} K",
-                self.min, self.max
-            )));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SwitchCapabilities {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device_class: Option<SwitchClass>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SwitchClass {
-    Outlet,
-    Switch,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SensorCapabilities {
-    /// Whether readings are numbers or text. Rules are type-checked against this.
-    pub value_type: SensorValueType,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device_class: Option<SensorClass>,
-    /// Unit of numeric readings, e.g. `°C`, `lx`, `%`, `W`, `kWh`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unit: Option<String>,
-    /// How numeric readings accumulate, for history and statistics.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_class: Option<StateClass>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SensorValueType {
-    Number,
-    Text,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SensorClass {
-    Temperature,
-    Humidity,
-    Illuminance,
-    Pressure,
-    Power,
-    Energy,
-    Voltage,
-    Current,
-    Battery,
-    Co2,
-    Pm25,
-    SignalStrength,
-    Distance,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum StateClass {
-    /// A current value, e.g. temperature.
-    Measurement,
-    /// A running total that can go up or down, e.g. net energy.
-    Total,
-    /// A counter that only increases, resetting occasionally, e.g. a meter reading.
-    TotalIncreasing,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct BinarySensorCapabilities {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device_class: Option<BinarySensorClass>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum BinarySensorClass {
-    Motion,
-    Occupancy,
-    Door,
-    Window,
-    Moisture,
-    Smoke,
-    Gas,
-    Vibration,
-    Plug,
-    Connectivity,
-    Problem,
-    Battery,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn color_temp_range_is_checked_when_deserialized_on_its_own() {
-        let inverted = serde_json::from_str::<ColorTempRange>(r#"{"min": 6500, "max": 2200}"#);
-        assert!(inverted.is_err_and(|e| e.to_string().contains("min 6500 K above max 2200 K")));
-
-        let via_capabilities = serde_json::from_str::<Capabilities>(
-            r#"{"kind": "light", "color_temp_kelvin": {"min": 500, "max": 2200}}"#,
-        );
-        assert!(via_capabilities.is_err_and(|e| {
-            e.to_string().contains(
-                "color_temp_kelvin.min 500 is out of range; it must be from 1000 to 20000",
-            )
-        }));
     }
 }

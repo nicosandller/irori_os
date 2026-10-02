@@ -9,6 +9,7 @@ use irori_flow_types::{
 };
 use irori_types::{
     BinarySensorClass, Capabilities, EntityId, EntityKind, EntityState, SensorValue, State,
+    ValueShape,
 };
 use leptos::prelude::WithUntracked;
 
@@ -161,16 +162,30 @@ pub fn port_label(node: &Node, port: Port) -> String {
 pub fn flag_words(class: Option<BinarySensorClass>) -> (&'static str, &'static str) {
     use BinarySensorClass::*;
     match class {
-        Some(Motion | Occupancy) => ("detected", "clear"),
+        Some(Motion | Occupancy | Presence) => ("detected", "clear"),
         Some(Vibration) => ("shaking", "still"),
-        Some(Door | Window) => ("open", "closed"),
+        Some(Door | GarageDoor | Window | Opening) => ("open", "closed"),
         Some(Moisture) => ("wet", "dry"),
         Some(Smoke) => ("smoke", "clear"),
         Some(Gas) => ("gas", "clear"),
+        Some(CarbonMonoxide) => ("carbon monoxide", "clear"),
+        Some(GlassBreak) => ("glass broken", "clear"),
+        Some(Sound) => ("sound", "quiet"),
+        Some(Tamper) => ("tampered", "clear"),
         Some(Plug) => ("plugged in", "unplugged"),
+        Some(Power) => ("powered", "without power"),
         Some(Connectivity) => ("connected", "disconnected"),
         Some(Battery) => ("low", "ok"),
+        Some(BatteryCharging) => ("charging", "not charging"),
+        Some(Cold) => ("cold", "normal"),
+        Some(Heat) => ("hot", "normal"),
+        Some(Light) => ("light", "dark"),
+        Some(Lock) => ("unlocked", "locked"),
+        Some(Moving) => ("moving", "stopped"),
+        Some(Running) => ("running", "stopped"),
         Some(Problem) => ("a problem", "ok"),
+        Some(Safety) => ("unsafe", "safe"),
+        Some(Update) => ("an update", "up to date"),
         None => ("on", "off"),
     }
 }
@@ -186,6 +201,18 @@ impl Home {
                     Capabilities::BinarySensor(b) => b.device_class,
                     _ => None,
                 })
+        })
+    }
+
+    /// What kind of value `entity` has: on/off, a number, or text. On/off when it isn't known,
+    /// since that's what a person picking a fresh entity most often means.
+    pub fn value_shape(&self, entity: &str) -> ValueShape {
+        self.entities.with_untracked(|entities| {
+            entities
+                .iter()
+                .find(|e| e.id.as_str() == entity)
+                .and_then(|e| e.capabilities.primary_shape())
+                .unwrap_or(ValueShape::Bool)
         })
     }
 
@@ -547,6 +574,42 @@ pub fn state_words(state: &EntityState, home: &Home) -> String {
             let (on, off) = home.flag_words(&state.entity_id);
             if s.on { on } else { off }.into()
         }
+        Some(State::Select(s)) => s.option.clone(),
+        Some(State::Text(t)) => t.value.clone(),
+        Some(State::Event(e)) => e.event_type.clone(),
+        Some(State::Lock(l)) => l.state.as_str().to_owned(),
+        Some(State::Valve(v)) => v.state.as_str().to_owned(),
+        Some(State::Siren(s)) => if s.on { "sounding" } else { "quiet" }.into(),
+        Some(State::Humidifier(h)) => match (h.on, h.target_humidity) {
+            (true, Some(target)) => format!("on {target}%"),
+            (true, None) => "on".into(),
+            (false, _) => "off".into(),
+        },
+        Some(State::WaterHeater(h)) => match h.target_temperature {
+            Some(target) => format!("{} {target}°", h.operation_mode.as_str()),
+            None => h.operation_mode.as_str().to_owned(),
+        },
+        Some(State::Climate(c)) => match c.target_temperature {
+            Some(target) => format!("{} {target}°", c.hvac_mode.as_str()),
+            None => c.hvac_mode.as_str().to_owned(),
+        },
+        Some(State::Fan(f)) => match (f.on, f.percentage) {
+            (true, Some(p)) => format!("on {p}%"),
+            (true, None) => "on".into(),
+            (false, _) => "off".into(),
+        },
+        Some(State::Cover(c)) => match c.position {
+            Some(position) => format!("{} {position}%", c.state.as_str()),
+            None => c.state.as_str().to_owned(),
+        },
+        // Not sent to this engine yet (it reads entity format 2), but a number reads as one.
+        Some(State::Number(n)) => {
+            if n.value.fract() == 0.0 {
+                format!("{:.0}", n.value)
+            } else {
+                format!("{:.1}", n.value)
+            }
+        }
         Some(State::Sensor(s)) => match &s.value {
             SensorValue::Number(n) => {
                 if n.fract() == 0.0 {
@@ -600,10 +663,7 @@ fn first_number_sensor(home: &Home) -> String {
     home.entities.with_untracked(|entities| {
         entities
             .iter()
-            .find(|entity| {
-                matches!(&entity.capabilities, irori_types::Capabilities::Sensor(s)
-                    if s.value_type == irori_types::SensorValueType::Number)
-            })
+            .find(|entity| entity.capabilities.primary_shape() == Some(ValueShape::Number))
             .map(|entity| entity.id.to_string())
             .unwrap_or_else(|| "sensor.choose_one".into())
     })
