@@ -44,6 +44,7 @@ config/
   devices.toml    what you have said about a device
   entities.toml   what you have said about an entity
   secrets.toml    keys, passwords, tokens — one table per extension
+  assistant.toml  which model answers, when one does (the key stays in secrets.toml)
   extensions/
     <id>.toml     an extension's settings that aren't secret
 ```
@@ -320,6 +321,34 @@ say would be a drawing rather than part of the home. Two limits, and they are th
   is kept rather than obeyed (§6).
 
 The save says how many devices it moved, so a write to a second file is never silent.
+
+### 3.8 `assistant.toml`
+
+Which model answers questions about the home. Absent means the assistant is off. The file is
+read by the assistant in the `irori` binary, not by the shared loader in `irori-config`, and a
+file that does not parse is logged and treated as absent.
+
+```toml
+mode = "off"            # "off", "local", or "cloud"
+
+[local]
+tag = "qwen3:1.7b"      # an Ollama library tag; this one is the default
+
+[cloud]
+preset = "openai"       # "openai", "anthropic", "grok", or "compatible"
+base_url = "https://api.openai.com/v1"
+model = ""
+```
+
+`local.tag` is a name Ollama already understands (`qwen3:1.7b`, or any other tag from the
+Ollama library). Irori does not ship the weights. It talks to an Ollama that is already
+listening on `127.0.0.1:11434`. A tag that is larger than the free memory on the machine can
+be downloaded and still not be used.
+
+`cloud` is an endpoint. `openai` and `grok` and `compatible` speak the OpenAI chat API.
+`anthropic` speaks Anthropic's. An empty `base_url` is filled from the preset (`compatible`
+has none). The API key is not in this file. It is `api_key` under `[assistant]` in
+`secrets.toml` (§3.4), written owner-only, and no request reads it back.
 
 ## 4. What a decision is attached to
 

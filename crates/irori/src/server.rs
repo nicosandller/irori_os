@@ -29,6 +29,8 @@ use crate::history::History;
 use crate::syslog;
 
 mod apps;
+#[cfg(feature = "assist")]
+mod assistant;
 
 /// Who commands are attributed to until there are accounts to attribute them to (M1.5).
 static UNAUTHENTICATED: LazyLock<UserId> =
@@ -113,7 +115,7 @@ fn boot_id() -> String {
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/api/health", get(health))
         // Unstable, for the UI and for trying things out until the real API (M0.5, M1.5) exists.
         // Everything the Devices page shows, in one response; the rest are the same data split up.
@@ -180,9 +182,20 @@ pub fn router(state: AppState) -> Router {
         // Their files. Not under `/apps/`: those addresses are the shell's own pages that show
         // them, and must reach the shell when reloaded.
         .route("/pages/{id}/", get(apps::index))
-        .route("/pages/{id}/{*path}", get(apps::file))
-        .fallback(get(ui::serve))
-        .with_state(state)
+        .route("/pages/{id}/{*path}", get(apps::file));
+    #[cfg(feature = "assist")]
+    let router = router
+        .route(
+            "/api/dev/assistant",
+            get(assistant::get).put(assistant::put),
+        )
+        .route("/api/dev/assistant/turns", post(assistant::turns))
+        .route("/api/dev/assistant/pull", post(assistant::pull))
+        .route(
+            "/api/dev/assistant/transcript/{scope}",
+            get(assistant::transcript).delete(assistant::clear),
+        );
+    router.fallback(get(ui::serve)).with_state(state)
 }
 
 /// Everything the Devices page shows, in one response: what exists, what it's doing, and how the
@@ -3681,5 +3694,185 @@ mod tests {
         assert_eq!(content_type.as_deref(), Some("text/html"));
         assert!(String::from_utf8(body)?.contains("IroriOS"));
         Ok(())
+    }
+
+    /// A cloud model is a URL and a key. The key is stored, never returned, and one view's
+    /// conversation stays out of another's. A reply that failed, or a page that left, is not kept.
+    #[cfg(feature = "assist")]
+    mod assistant {
+        use super::*;
+
+        async fn cloud() -> String {
+            let app = Router::new().route(
+                "/v1/chat/completions",
+                axum::routing::post(|Json(body): Json<serde_json::Value>| async move {
+                    if body["model"] == "broken" {
+                        return (StatusCode::BAD_GATEWAY, "the provider said no").into_response();
+                    }
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                        "data: {\"choices\":[{\"delta\":{\"content\":\"Hello from the model\"}}]}\n\ndata: [DONE]\n\n",
+                    )
+                        .into_response()
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("a local port");
+            let address = listener.local_addr().expect("the port it bound");
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.ok();
+            });
+            format!("http://{address}/v1")
+        }
+
+        fn configure(base: &str, model: &str) -> serde_json::Value {
+            serde_json::json!({
+                "mode": "cloud",
+                "preset": "compatible",
+                "base_url": base,
+                "model": model,
+                "api_key": "sk-test-key-should-not-leak",
+            })
+        }
+
+        async fn events(server: &Server, scope: &str, message: &str) -> anyhow::Result<String> {
+            let (status, bytes) = server
+                .send(
+                    Request::post("/api/dev/assistant/turns")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&serde_json::json!({
+                            "scope": scope,
+                            "message": message,
+                        }))?))?,
+                )
+                .await?;
+            assert_eq!(status, StatusCode::OK);
+            Ok(String::from_utf8(bytes)?)
+        }
+
+        #[tokio::test]
+        async fn a_cloud_chat_stays_in_its_view_and_the_key_stays_out() -> anyhow::Result<()> {
+            let base = cloud().await;
+            let server = Server::new(core())?;
+            let (status, body) = server
+                .json("PUT", "/api/dev/assistant", configure(&base, "test-model"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["ready"], true);
+            assert_eq!(body["credential"], "set");
+            assert!(
+                !body.to_string().contains("sk-test-key-should-not-leak"),
+                "the key came back on the status"
+            );
+            let file = std::fs::read_to_string(server.config_dir().join("assistant.toml"))?;
+            assert!(!file.contains("sk-test-key-should-not-leak"), "{file}");
+            assert!(file.contains("test-model"), "{file}");
+            let secrets = std::fs::read_to_string(server.config_dir().join("secrets.toml"))?;
+            assert!(secrets.contains("sk-test-key-should-not-leak"));
+
+            let general = events(&server, "general", "What is on?").await?;
+            assert!(general.contains("Hello from the model"), "{general}");
+            let automation = events(&server, "automation:kettle", "Why this one?").await?;
+            assert!(automation.contains("Hello from the model"), "{automation}");
+
+            let home = server.read("/api/dev/assistant/transcript/general").await?;
+            let flow = server
+                .read("/api/dev/assistant/transcript/automation:kettle")
+                .await?;
+            assert_eq!(home[0]["body"], "What is on?");
+            assert_eq!(home[1]["body"], "Hello from the model");
+            assert_eq!(flow[0]["body"], "Why this one?");
+            assert!(!flow.to_string().contains("What is on?"));
+
+            let (status, _) = server
+                .send(
+                    Request::delete("/api/dev/assistant/transcript/automation:kettle")
+                        .body(Body::empty())?,
+                )
+                .await?;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+            let flow = server
+                .read("/api/dev/assistant/transcript/automation:kettle")
+                .await?;
+            assert_eq!(flow, serde_json::json!([]));
+            let home = server.read("/api/dev/assistant/transcript/general").await?;
+            assert_eq!(home[1]["body"], "Hello from the model");
+
+            let (status, body) = server
+                .json(
+                    "PUT",
+                    "/api/dev/assistant",
+                    serde_json::json!({ "model": "broken" }),
+                )
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let failed = events(&server, "general", "Again").await?;
+            assert!(failed.contains("error"), "{failed}");
+            let home = server.read("/api/dev/assistant/transcript/general").await?;
+            assert_eq!(home.as_array().map(Vec::len), Some(2));
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn a_page_that_leaves_does_not_keep_the_reply() -> anyhow::Result<()> {
+            let base = cloud().await;
+            let server = Server::new(core())?;
+            let (status, body) = server
+                .json("PUT", "/api/dev/assistant", configure(&base, "test-model"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let db = crate::db::open(server.dir.path())?;
+            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            drop(rx);
+            crate::assistant::take_turn(
+                crate::assistant::Turn {
+                    core: &server.core,
+                    config: &server.config,
+                    history: &server.history,
+                    db: &db.path,
+                },
+                "general".into(),
+                "hello".into(),
+                tx,
+            )
+            .await;
+            let kept =
+                crate::assistant::transcript(&db.path, "general").map_err(anyhow::Error::msg)?;
+            assert!(kept.is_empty(), "{kept:?}");
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn a_local_model_is_not_ready_without_ollama() -> anyhow::Result<()> {
+            let server = Server::new(core())?;
+            let (status, body) = server
+                .json(
+                    "PUT",
+                    "/api/dev/assistant",
+                    serde_json::json!({ "mode": "local", "local_tag": "qwen3:1.7b" }),
+                )
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["ready"], false);
+            assert_eq!(body["ollama"], "down");
+            assert!(
+                body["detail"].as_str().unwrap_or("").contains("Ollama"),
+                "{body}"
+            );
+            let (status, bytes) = server
+                .send(
+                    Request::post("/api/dev/assistant/pull")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&serde_json::json!({
+                            "tag": "qwen3:1.7b",
+                        }))?))?,
+                )
+                .await?;
+            assert_eq!(status, StatusCode::OK);
+            let text = String::from_utf8(bytes)?;
+            assert!(text.contains("error"), "{text}");
+            Ok(())
+        }
     }
 }

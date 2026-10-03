@@ -1,10 +1,11 @@
 //! The Settings page: the instance itself, the home's arrangement, and the machine running it.
 //!
-//! Five sections, in the order someone setting a home up is likely to want them: is the instance
-//! I mean to run? the floors and areas that say what's where (a card that folds away until
-//! wanted)? the people allowed in (none yet); what it has been saying (the log, a window away);
-//! and the machine it all runs on. The last of these is asked for on demand rather than kept — a
-//! Settings check that cached could shrug at a disk that filled since the last look.
+//! Sections, in the order someone setting a home up is likely to want them: is the instance
+//! I mean to run? how the page moves? whether a model answers? the floors and areas that say
+//! what's where (a card that folds away until wanted)? the people allowed in (none yet); what it
+//! has been saying (the log, a window away); and the machine it all runs on. The last of these is
+//! asked for on demand rather than kept — a Settings check that cached could shrug at a disk
+//! that filled since the last look.
 
 use irori_types::{Area, AreaId, Device, DeviceId, Name};
 use leptos::ev;
@@ -32,6 +33,7 @@ fn jump(id: &'static str) -> impl Fn(ev::MouseEvent) {
 #[component]
 pub fn Settings() -> impl IntoView {
     let live = expect_context::<crate::Live>();
+    crate::assistant::watch_hash();
     let crate::Motion(motion) = expect_context::<crate::Motion>();
     let trouble = RwSignal::new(None::<String>);
     let adding = RwSignal::new(String::new());
@@ -204,6 +206,7 @@ pub fn Settings() -> impl IntoView {
         <nav class="settings-menu" aria-label="Sections of Settings">
             <button type="button" on:click=jump("instance")>"Instance"</button>
             <button type="button" on:click=jump("appearance")>"Appearance"</button>
+            <button type="button" on:click=jump("assistant")>"Assistant"</button>
             <button type="button" on:click=jump("floors-and-areas")>"Floors & areas"</button>
             <button type="button" on:click=jump("users")>"Users"</button>
             <button type="button" on:click=jump("logs")>"Logs"</button>
@@ -268,6 +271,8 @@ pub fn Settings() -> impl IntoView {
                  the system is set to reduce motion."
             </p>
         </section>
+
+        <crate::assistant::Section />
 
         // It folds, but starts open: this is where the home's arrangement is managed, so the
         // floors, the areas on them, and the unassigned devices are useful to see at once.

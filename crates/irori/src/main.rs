@@ -1,5 +1,7 @@
 //! `irori`: the single binary. Parses the CLI and wires the pieces together.
 
+#[cfg(feature = "assist")]
+mod assistant;
 mod banner;
 mod build_info;
 mod config;

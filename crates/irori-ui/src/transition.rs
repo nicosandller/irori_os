@@ -47,7 +47,9 @@ fn place(path: &str) -> Option<u8> {
         "/devices" => Some(2),
         path if is_device(path) => Some(2),
         "/extensions" => Some(3),
-        "/settings" => Some(4),
+        "/assistant" => Some(4),
+        path if path.starts_with("/assistant/") => Some(4),
+        "/settings" => Some(5),
         _ => None,
     }
 }

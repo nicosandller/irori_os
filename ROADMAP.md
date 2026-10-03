@@ -51,7 +51,7 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | X7 | Shadow mode | Run alongside HA on the same devices to validate Irori | - | X5 |
 | X8 | Extension SDKs & templates | `cargo generate` templates, Python package, docs | - | C17 |
 | X9 | App contributions | Pages under `/apps/<id>/` beyond the sidebar slot (config editor, log viewer, terminal); first slice is C31 | - | C17, C26, C31 |
-| X10 | AI providers | `irori-assist`: Anthropic, OpenAI-compatible, Ollama | - | |
+| X10 | AI providers | `irori-assist`: Anthropic, OpenAI-compatible, Ollama. Settings, per-view chat, and read-only tools are in; authoring and write tools are not | 🟠 | |
 | X11 | AI rule authoring | Natural language → validated flow; "why did/didn't this fire?" | - | X10, X19 |
 | X12 | Dashboards & cards | Sandboxed HTML dashboards with `irori.js` bridge, installable as extensions | - | C17 |
 | X13 | AI dashboards | Generate dashboards from a prompt | - | X10, X12 |
