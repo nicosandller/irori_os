@@ -18,7 +18,6 @@ One command, into `~/.irori`:
 
 ```sh
 curl -fsSL https://github.com/nicosandller/irori_os/releases/latest/download/install.sh | bash
-~/.irori/bin/irori run                     # http://127.0.0.1:8480
 ```
 
 It detects your OS and CPU, downloads the latest [release](https://github.com/nicosandller/irori_os/releases)
