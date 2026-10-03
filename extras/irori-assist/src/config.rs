@@ -199,8 +199,8 @@ mod tests {
 
     #[test]
     fn a_tag_with_a_space_is_refused() {
-        let error = AssistantFile::parse("[local]\ntag = \"qwen 3\"\n")
-            .expect_err("a space is not a tag");
+        let error =
+            AssistantFile::parse("[local]\ntag = \"qwen 3\"\n").expect_err("a space is not a tag");
         assert!(error.contains("Ollama tag"), "{error}");
     }
 
