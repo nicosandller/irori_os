@@ -248,6 +248,26 @@ impl Config {
         Ok(made)
     }
 
+    /// The config directory, for files this type doesn't own (`assistant.toml`).
+    #[cfg(feature = "assist")]
+    pub async fn dir(&self) -> std::path::PathBuf {
+        self.0.lock().await.dir().to_path_buf()
+    }
+
+    /// The assistant's API key, if one has been saved. Never for a response body.
+    #[cfg(feature = "assist")]
+    pub async fn assistant_key(&self) -> Option<String> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+        let Ok(id) = irori_types::ExtensionId::try_from("assistant") else {
+            return None;
+        };
+        match store.secrets().of(&id).get("api_key") {
+            Some(serde_json::Value::String(key)) if !key.is_empty() => Some(key.clone()),
+            _ => None,
+        }
+    }
+
     /// Writes one extension's settings file and its secrets, then tells the core once.
     ///
     /// [`Self::edit_extension`] and [`Self::edit_secrets`] each tell the core, and the core

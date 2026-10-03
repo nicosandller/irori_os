@@ -10,7 +10,7 @@ use irori_ui_kit::message::{Hello, Reply, Request, TOKENS, Theme, VERSION, scope
 use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_router::hooks::{use_location, use_params_map};
+use leptos_router::hooks::{use_location, use_navigate, use_params_map};
 use web_sys::wasm_bindgen::JsCast;
 
 use crate::{Live, Motion, api};
@@ -40,6 +40,8 @@ fn rest_of(pathname: &str, id: &str) -> String {
 fn Frame(id: String) -> impl IntoView {
     let live = expect_context::<Live>();
     let motion = expect_context::<Motion>();
+    let assistant = expect_context::<crate::Assistant>();
+    let navigate = use_navigate();
     let location = use_location();
 
     let app = {
@@ -233,6 +235,21 @@ fn Frame(id: String) -> impl IntoView {
                     let result = api::app_rpc(&id, &method, params).await;
                     post(&Reply::answer(request.id, result));
                 }),
+                // The sandboxed editor can't open the shell's chat, so it asks and this end goes.
+                "assistant" => {
+                    let flow = request.args["id"].as_str().unwrap_or_default().trim();
+                    let ready = assistant
+                        .0
+                        .get_untracked()
+                        .is_some_and(|status| status.ready);
+                    let dest = if ready && !flow.is_empty() {
+                        format!("/assistant/automation/{flow}")
+                    } else {
+                        "/settings#assistant".to_owned()
+                    };
+                    navigate(&dest, Default::default());
+                    post(&Reply::answer(request.id, Ok(serde_json::Value::Null)));
+                }
                 "navigate" => {
                     let path = request.args["path"]
                         .as_str()

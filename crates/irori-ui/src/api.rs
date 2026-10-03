@@ -854,6 +854,158 @@ pub async fn entity_history(entity_id: &EntityId) -> Result<Vec<EntityState>, St
         .map_err(|e| format!("Irori sent something this page can't read: {e}"))
 }
 
+/// Whether a model can answer, and the fields the Settings card edits. The key itself is absent.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AssistantStatus {
+    pub ready: bool,
+    pub mode: String,
+    pub model: Option<String>,
+    pub detail: String,
+    pub credential: String,
+    pub local_tag: String,
+    pub library: String,
+    pub library_index: String,
+    pub ollama: String,
+    #[serde(default)]
+    pub pulled: Vec<PulledModel>,
+    pub preset: String,
+    pub base_url: String,
+    pub cloud_model: String,
+    pub cloud: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct PulledModel {
+    pub name: String,
+    pub size: u64,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AssistantMessage {
+    pub role: String,
+    pub body: String,
+}
+
+pub async fn fetch_assistant() -> Result<AssistantStatus, String> {
+    let response = Request::get("/api/dev/assistant")
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        return match checked(response).await {
+            Err(reason) => Err(reason),
+            Ok(()) => Err("the server refused without a reason".into()),
+        };
+    }
+    response.json().await.map_err(unreachable)
+}
+
+pub async fn save_assistant(body: &serde_json::Value) -> Result<AssistantStatus, String> {
+    let response = Request::put("/api/dev/assistant")
+        .json(body)
+        .map_err(|error| error.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        return match checked(response).await {
+            Err(reason) => Err(reason),
+            Ok(()) => Err("the server refused without a reason".into()),
+        };
+    }
+    response.json().await.map_err(unreachable)
+}
+
+pub async fn assistant_transcript(scope: &str) -> Result<Vec<AssistantMessage>, String> {
+    let response = Request::get(&format!(
+        "/api/dev/assistant/transcript/{}",
+        encode_scope(scope)
+    ))
+    .send()
+    .await
+    .map_err(unreachable)?;
+    if !response.ok() {
+        return match checked(response).await {
+            Err(reason) => Err(reason),
+            Ok(()) => Err("the server refused without a reason".into()),
+        };
+    }
+    response.json().await.map_err(unreachable)
+}
+
+pub async fn assistant_clear(scope: &str) -> Result<(), String> {
+    let response = Request::delete(&format!(
+        "/api/dev/assistant/transcript/{}",
+        encode_scope(scope)
+    ))
+    .send()
+    .await
+    .map_err(unreachable)?;
+    checked(response).await
+}
+
+/// The whole reply, once the stream has finished. The button waits; the tokens are still events.
+pub async fn assistant_ask(scope: &str, message: &str) -> Result<String, String> {
+    let response = Request::post("/api/dev/assistant/turns")
+        .json(&serde_json::json!({ "scope": scope, "message": message }))
+        .map_err(|error| error.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    let status = response.status();
+    let text = response.text().await.map_err(unreachable)?;
+    if !(200..300).contains(&status) {
+        return Err(format!("Irori refused that ({status})"));
+    }
+    read_stream(&text)
+}
+
+/// Pulls an Ollama tag. The string is the last progress line. A failure stays a failure.
+pub async fn assistant_pull(tag: &str) -> Result<String, String> {
+    let response = Request::post("/api/dev/assistant/pull")
+        .json(&serde_json::json!({ "tag": tag }))
+        .map_err(|error| error.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    let status = response.status();
+    let text = response.text().await.map_err(unreachable)?;
+    if !(200..300).contains(&status) {
+        return Err(format!("Irori refused that ({status})"));
+    }
+    read_stream(&text)
+}
+
+fn encode_scope(scope: &str) -> String {
+    scope.replace(':', "%3A")
+}
+
+fn read_stream(text: &str) -> Result<String, String> {
+    let mut answer = String::new();
+    for line in text.lines() {
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(data.trim()) else {
+            continue;
+        };
+        if let Some(error) = value.get("error").and_then(|error| error.as_str()) {
+            return Err(error.to_owned());
+        }
+        if let Some(delta) = value.get("delta").and_then(|delta| delta.as_str()) {
+            if let Ok(inner) = serde_json::from_str::<serde_json::Value>(delta)
+                && let Some(status) = inner.get("status").and_then(|status| status.as_str())
+            {
+                answer = status.to_owned();
+                continue;
+            }
+            answer.push_str(delta);
+        }
+    }
+    Ok(answer)
+}
+
 #[cfg(test)]
 mod tests {
     use irori_types::{Availability, Context, Origin, State, SwitchState, Timestamp};

@@ -305,6 +305,16 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                     {status}
                     <span class="grow"></span>
                     {move || ed.message.get().map(|m| view! { <span class="muted" style="font-size:.85rem">{m}</span> })}
+                    {move || (!ed.is_new.get()).then(|| view! {
+                        <button class="btn" title="Ask about this automation" on:click=move |_| {
+                            let id = ed.id();
+                            spawn_local(async move {
+                                let _ = crate::bridge()
+                                    .call("assistant", serde_json::json!({ "id": id }))
+                                    .await;
+                            });
+                        }>"Ask"</button>
+                    })}
                     <button class="btn" on:click=move |_| { ed.tab.set(Tab::Test); if !right_open.get_untracked() { flip(right_open, RIGHT_KEY); } }>"Test"</button>
                     <button class="btn primary" disabled=move || !ed.dirty() on:click=move |_| save()>
                         {move || if ed.dirty() { "Save" } else { "Saved" }}

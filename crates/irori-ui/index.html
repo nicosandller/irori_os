@@ -1550,6 +1550,22 @@
       .modal-backdrop { padding: 0; align-items: flex-end; }
       .modal { max-width: none; height: 100%; border-radius: 0; border: none; }
     }
+
+    /* Ask stays clickable before a model is ready: quiet, not disabled. */
+    button.ask-quiet { color: var(--muted); border-color: var(--line); background: transparent; }
+    .chat { display: grid; gap: .75rem; max-width: 40rem; }
+    .chat-turn { margin: 0; padding: .6rem .75rem; border: 1px solid var(--line);
+                 border-radius: .4rem; white-space: pre-wrap; }
+    .chat-turn.mine { background: var(--sunk); }
+    .assistant-form select { padding: .45rem .6rem; font: inherit; color: var(--fg);
+                             background: var(--card); border: 1px solid var(--line);
+                             border-radius: .4rem; }
+    .assistant-models { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap;
+                        gap: .4rem; }
+    .assistant-models button { font: .85rem var(--mono); }
+    .assistant-progress { font: .8rem var(--mono); color: var(--muted); }
+    .assistant-check { display: flex; align-items: center; gap: .45rem; }
+    .assistant-check span { letter-spacing: 0; text-transform: none; font: inherit; color: var(--fg); }
   </style>
 </head>
 <body></body>
