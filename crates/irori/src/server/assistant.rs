@@ -26,7 +26,7 @@ pub async fn get(State(state): State<AppState>) -> Json<assistant::Status> {
 }
 
 pub async fn put(State(state): State<AppState>, Json(body): Json<serde_json::Value>) -> Response {
-    match assistant::save(&state.0.config, &state.0.core, &body).await {
+    match assistant::save(&state.0.config, &state.0.core, data_dir(&state), &body).await {
         Ok(_) => Json(assistant::read_status(turn(&state), data_dir(&state)).await).into_response(),
         Err(error) => refused(StatusCode::BAD_REQUEST, error),
     }
@@ -104,7 +104,14 @@ pub async fn unload(State(state): State<AppState>, Json(body): Json<Pull>) -> Re
 }
 
 async fn hold(state: &AppState, tag: &str, load: bool) -> Response {
-    match assistant::hold(data_dir(state), tag, load).await {
+    // Loading a model is choosing it: it becomes the one in use, in place of a cloud model
+    // or another local one. Unloading leaves the choice alone.
+    let done = if load {
+        assistant::choose(&state.0.config, data_dir(state), tag).await
+    } else {
+        assistant::hold(data_dir(state), tag, false).await
+    };
+    match done {
         Ok(()) => Json(assistant::read_status(turn(state), data_dir(state)).await).into_response(),
         Err(error) => refused(StatusCode::BAD_REQUEST, error),
     }

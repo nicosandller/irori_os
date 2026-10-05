@@ -218,18 +218,6 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             let restart = Arc::new(Notify::new());
             let restarting = Arc::new(AtomicBool::new(false));
 
-            // The Ollama Irori installed for a local model, if there is one, comes up with the
-            // server. Nothing waits on it: the assistant says "not ready" until it answers.
-            #[cfg(feature = "assist")]
-            {
-                let data = data.clone();
-                tokio::spawn(async move {
-                    if let Err(error) = ollama::start(&data).await {
-                        tracing::warn!(%error, "the local model's Ollama did not start");
-                    }
-                });
-            }
-
             let listener = bind_with_fallback(bind, bind_fallback)
                 .await
                 .with_context(|| format!("failed to listen on {bind}"))?;
@@ -268,6 +256,15 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // and moving a moment later.
             let settings = config::Config::open(store, &problems, &core);
             tokio::spawn(settings.clone().watch(core.clone()));
+            // The Ollama Irori installed for a local model, if there is one, comes up with the
+            // server, and the model in use is loaded again. Nothing waits on it: the assistant
+            // says "not ready" until it is.
+            #[cfg(feature = "assist")]
+            {
+                let settings = settings.clone();
+                let data = data.clone();
+                tokio::spawn(async move { assistant::wake(&settings, &data).await });
+            }
             // Helpers and Irori's own device are core to Irori, not installable extensions: they
             // run every time, in-process, and never appear on the Extensions page.
             let builtins = vec![

@@ -35,8 +35,9 @@ const QUIET: Duration = Duration::from_secs(300);
 /// and on a Pi that reading alone takes minutes.
 const QUIET_LOCAL: Duration = Duration::from_secs(900);
 const WENT_QUIET: &str = "the model stopped answering";
-/// How long Ollama keeps a model loaded after it was last used or asked for.
-const KEEP_LOADED: &str = "30m";
+/// How long Ollama keeps a model loaded after it was last used: until it is told to let go.
+/// Loaded is what "ready" means for a local model, so it must not lapse on its own.
+const KEEP_LOADED: i64 = -1;
 /// How much earlier conversation a local model is sent. Its whole context is
 /// [`LOCAL_CONTEXT`] tokens, and the picture of the home takes about half.
 const LOCAL_HISTORY_BYTES: usize = 3_000;
@@ -128,7 +129,10 @@ async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
     let fits = active
         .map(|model| irori_assist::local_fits(model.needs, memory_free, model.loaded))
         .unwrap_or(false);
-    let local_ready = file.mode == Mode::Local && ollama_up && active.is_some() && fits;
+    // A local model is ready when it is in memory. Downloaded is not enough: the first
+    // question would otherwise wait on a load that may not fit, or take minutes.
+    let is_loaded = active.is_some_and(|model| model.loaded);
+    let local_ready = file.mode == Mode::Local && ollama_up && is_loaded;
     let cloud = cloud_ready(&file, has_key);
     let ready = local_ready || cloud;
     let detail = if ready {
@@ -149,6 +153,10 @@ async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
             Mode::Local if active.is_none() => {
                 format!("Download {} to this machine.", file.local.tag)
             }
+            Mode::Local if fits => format!(
+                "{} is downloaded but not loaded. Load it to use it.",
+                file.local.tag
+            ),
             Mode::Local => {
                 let needs = active.map(|model| model.needs).unwrap_or(0);
                 format!(
@@ -191,7 +199,12 @@ async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
     }
 }
 
-pub async fn save(config: &Config, core: &Core, body: &Value) -> Result<AssistantFile, String> {
+pub async fn save(
+    config: &Config,
+    core: &Core,
+    data_dir: &Path,
+    body: &Value,
+) -> Result<AssistantFile, String> {
     let mut file = load_file(&config.dir().await);
     let before = (file.mode, file.local.tag.clone());
     if let Some(mode) = body.get("mode").and_then(|value| value.as_str()) {
@@ -229,21 +242,21 @@ pub async fn save(config: &Config, core: &Core, body: &Value) -> Result<Assistan
     }
     let file = file.validated()?;
     write_file(&config.dir().await, &file)?;
-    // The model that stops being the one in use gives its memory back now, not in half an
-    // hour: two of them don't fit on a small machine.
-    if before.0 == Mode::Local && (file.mode != Mode::Local || file.local.tag != before.1) {
-        let tag = before.1;
-        tokio::spawn(async move {
-            let _ = client()
-                .post(format!("{OLLAMA}/api/generate"))
-                .timeout(Duration::from_secs(10))
-                .json(&json!({ "model": tag, "keep_alive": 0 }))
-                .send()
-                .await;
-        });
+    // The model that stops being the one in use gives its memory back now: two of them
+    // don't fit on a small machine.
+    if before.0 == Mode::Local
+        && (file.mode != Mode::Local || file.local.tag != before.1)
+        && loaded().await.contains(&before.1)
+    {
+        let _ = hold(data_dir, &before.1, false).await;
     }
     if let Some(key) = body.get("api_key").and_then(|value| value.as_str()) {
         set_key(config, core, key).await?;
+    }
+    // Choosing a downloaded model is asking to use it, so it is loaded. If it won't fit, the
+    // card says it is not loaded, and Load says why.
+    if file.mode == Mode::Local && (before.0 != Mode::Local || file.local.tag != before.1) {
+        let _ = hold(data_dir, &file.local.tag, true).await;
     }
     Ok(file)
 }
@@ -399,7 +412,33 @@ pub async fn pull(config: &Config, data_dir: &Path, tag: &str, tx: mpsc::Sender<
     if let Ok(file) = file.validated() {
         let _ = write_file(&config.dir().await, &file);
     }
+    // Downloaded and chosen, it is loaded too, so it is ready when the bar finishes.
+    let line = json!({ "status": "loading the model" });
+    let _ = tx.send(ChatEvent::Delta(line.to_string())).await;
+    if let Err(error) = hold(data_dir, tag, true).await {
+        let _ = tx.send(ChatEvent::Error(error)).await;
+        return;
+    }
     let _ = tx.send(ChatEvent::Done).await;
+}
+
+/// Brings the local model back after a start: Irori's Ollama, then the model in use, when
+/// that is how the assistant is set. Nothing waits on it.
+pub async fn wake(config: &Config, data_dir: &Path) {
+    match ollama::start(data_dir).await {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            tracing::warn!(%error, "the local model's Ollama did not start");
+            return;
+        }
+    }
+    let file = load_file(&config.dir().await);
+    if file.mode == Mode::Local
+        && let Err(error) = hold(data_dir, &file.local.tag, true).await
+    {
+        tracing::warn!(tag = %file.local.tag, %error, "the local model was not loaded");
+    }
 }
 
 /// The tail of `turns` that fits in `bytes`, whole turns only and never starting on an answer.
@@ -422,6 +461,7 @@ fn recent(turns: &[Remembered], bytes: usize) -> &[Remembered] {
 /// Loads a downloaded model into memory ahead of the first question, or lets it go.
 pub async fn hold(data_dir: &Path, tag: &str, load: bool) -> Result<(), String> {
     let tag = model_tag(tag);
+    let free_before = crate::host_info::read(data_dir).memory_free();
     if load {
         let models = tags()
             .await
@@ -454,12 +494,57 @@ pub async fn hold(data_dir: &Path, tag: &str, load: bool) -> Result<(), String> 
         .await
         .map_err(|_| "Ollama isn't running on this machine.".to_owned())?;
     if response.status().is_success() {
-        return Ok(());
+        // Ollama answers before it has finished letting go, and the status read next must
+        // not catch the model half out.
+        for _ in 0..40 {
+            if loaded().await.contains(&tag) == load {
+                if !load {
+                    given_back(data_dir, free_before).await;
+                }
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        return Err(if load {
+            format!("{tag} was asked to load and isn't in memory.")
+        } else {
+            format!("{tag} was asked to unload and is still in memory.")
+        });
     }
     let status = response.status();
     let said = response.text().await.unwrap_or_default();
     tracing::warn!(%tag, %status, said = %scrub(&said, ""), "the local model would not load");
     Err(explained(&format!("the model refused ({status}): {said}")))
+}
+
+/// Waits, briefly, for the memory an unloaded model held to show up as free. The system
+/// takes a moment to count it, and a reading taken before then says there is no room for the
+/// model that just left.
+async fn given_back(data_dir: &Path, free_before: u64) {
+    for _ in 0..12 {
+        let free = crate::host_info::read(data_dir).memory_free();
+        if free >= free_before.saturating_add(256 * 1024 * 1024) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Loads a downloaded model and makes it the one the assistant uses, whatever it was set to
+/// before. Any other model in memory is let go first, so the room it held counts.
+pub async fn choose(config: &Config, data_dir: &Path, tag: &str) -> Result<(), String> {
+    let tag = model_tag(tag);
+    for other in loaded().await {
+        if other != tag {
+            let _ = hold(data_dir, &other, false).await;
+        }
+    }
+    hold(data_dir, &tag, true).await?;
+    let dir = config.dir().await;
+    let mut file = load_file(&dir);
+    file.mode = Mode::Local;
+    file.local.tag = tag;
+    write_file(&dir, &file.validated()?)
 }
 
 /// Deletes a downloaded model. The one in use going turns the assistant off.

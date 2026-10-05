@@ -523,6 +523,8 @@ pub fn Section() -> impl IntoView {
     let busy = RwSignal::new(false);
     let progress = RwSignal::new(None::<Progress>);
     let removing = RwSignal::new(false);
+    // The model being loaded or unloaded right now, which on a small machine takes a while.
+    let holding = RwSignal::new(None::<String>);
     let log_open = expect_context::<ModelLog>().0;
     let trouble = RwSignal::new(None::<String>);
 
@@ -575,7 +577,14 @@ pub fn Section() -> impl IntoView {
                     Err(error) => trouble.set(Some(error)),
                 }
                 removing.set(false);
+                holding.set(None);
                 busy.set(false);
+                // Memory a model let go of is counted a moment later. Look once more, so the
+                // bar and what fits are not judged on the reading from before.
+                gloo_timers::future::sleep(std::time::Duration::from_secs(2)).await;
+                if let Ok(status) = api::fetch_assistant().await {
+                    assistant.0.try_set(Some(status));
+                }
             });
         };
     let save = move |body: serde_json::Value| {
@@ -786,16 +795,25 @@ pub fn Section() -> impl IntoView {
                         {move || status().filter(|status| !status.pulled.is_empty()).map(|status| {
                             view! {
                                 <ul class="assistant-models">
-                                    {status.pulled.into_iter().map(|pulled| {
+                                    {status.pulled.clone().into_iter().map(|pulled| {
+                                        let held_by_others: u64 = status
+                                            .pulled
+                                            .iter()
+                                            .filter(|other| other.loaded && other.name != pulled.name)
+                                            .map(|other| other.needs)
+                                            .sum();
                                         let live = pulled.active && status.mode == "local";
-                                        let using = pulled.name.clone();
                                         let deleting = pulled.name.clone();
-                                        let holding = pulled.name.clone();
+                                        let held = pulled.name.clone();
+                                        let label = pulled.name.clone();
                                         let loaded = pulled.loaded;
                                         // Loaded, it fits by being there. Otherwise it needs
                                         // what it takes, and some left for the machine.
+                                        // Loading it lets go of any other, so their
+                                        // memory counts as room too.
                                         let room = loaded
-                                            || pulled.needs + 200 * 1024 * 1024 <= status.memory_free;
+                                            || pulled.needs + 200 * 1024 * 1024
+                                                <= status.memory_free + held_by_others;
                                         view! {
                                             <li class:live=live>
                                                 <span class="name">
@@ -812,30 +830,29 @@ pub fn Section() -> impl IntoView {
                                                 </span>
                                                 <button type="button" class="quiet-button"
                                                     disabled=move || busy.get() || (!loaded && !room)
-                                                    on:click=move |_| {
-                                                        let tag = holding.clone();
-                                                        change(Box::pin(async move {
-                                                            api::assistant_hold(&tag, !loaded).await
-                                                        }));
+                                                    on:click={
+                                                        let tag = held.clone();
+                                                        move |_| {
+                                                            let tag = tag.clone();
+                                                            holding.set(Some(tag.clone()));
+                                                            change(Box::pin(async move {
+                                                                api::assistant_hold(&tag, !loaded).await
+                                                            }));
+                                                        }
                                                     }>
-                                                    {if loaded { "Unload" } else { "Load" }}
+                                                    {move || {
+                                                        let now = holding.get().as_deref() == Some(label.as_str());
+                                                        match (now, loaded) {
+                                                            (true, true) => "Unloading…",
+                                                            (true, false) => "Loading…",
+                                                            (false, true) => "Unload",
+                                                            (false, false) => "Load",
+                                                        }
+                                                    }}
                                                 </button>
-                                                {if live {
-                                                    view! { <span class="in-use-word">"in use"</span> }
-                                                        .into_any()
-                                                } else {
-                                                    view! {
-                                                        <button type="button" class="quiet-button"
-                                                            disabled=move || busy.get()
-                                                            on:click=move |_| save(serde_json::json!({
-                                                                "mode": "local",
-                                                                "local_tag": using.clone(),
-                                                            }))>
-                                                            "Use"
-                                                        </button>
-                                                    }
-                                                    .into_any()
-                                                }}
+                                                {live.then(|| view! {
+                                                    <span class="in-use-word">"in use"</span>
+                                                })}
                                                 <button type="button" class="quiet-button danger"
                                                     disabled=move || busy.get()
                                                     on:click=move |_| {
@@ -1002,6 +1019,8 @@ fn progress_words(status: &str) -> String {
         "Downloading the model".to_owned()
     } else if status.starts_with("verifying") {
         "Checking the download".to_owned()
+    } else if status.starts_with("loading") {
+        "Loading the model into memory".to_owned()
     } else if status == "success" {
         "Done".to_owned()
     } else {
