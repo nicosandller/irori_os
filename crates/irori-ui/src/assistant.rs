@@ -509,7 +509,7 @@ enum Side {
     Cloud,
 }
 
-/// The Settings card. Always there; a model is optional. Folded until it is wanted.
+/// What the Assistant row of Settings opens to. Always there; a model is optional.
 #[component]
 pub fn Section() -> impl IntoView {
     let assistant = expect_context::<Assistant>();
@@ -624,21 +624,10 @@ pub fn Section() -> impl IntoView {
     let ollama_up = move || status().is_some_and(|status| status.ollama == "up");
 
     view! {
-        <details class="card settings-section assistant-card" id="assistant" style="--i: 2">
-            <summary>
-                "Assistant"
-                {move || status().map(|status| {
-                    let (words, set) = match (status.mode.as_str(), status.ready, status.model) {
-                        ("off", _, _) => ("not set".to_owned(), false),
-                        (_, true, Some(model)) => (model, true),
-                        _ => ("not ready".to_owned(), false),
-                    };
-                    view! { <span class="assistant-state" class:set=set>{words}</span> }
-                })}
-            </summary>
+        <div class="assistant-card">
             <p class="muted small">
                 "Answers questions about your home, from a model on this machine or a cloud API. \
-                 It reads; it never switches anything. Until one is ready, Ask opens this card."
+                 It reads; it never switches anything. Until one is ready, Ask opens this row."
             </p>
             {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
             <div
@@ -996,8 +985,25 @@ pub fn Section() -> impl IntoView {
                     </button>
                 </p>
             })}
-        </details>
+        </div>
     }
+}
+
+/// How the assistant stands, for the heading of its row in Settings: the model that answers,
+/// or that none does yet.
+pub fn state() -> AnyView {
+    let assistant = expect_context::<Assistant>();
+    (move || {
+        assistant.0.get().map(|status| {
+            let (words, set) = match (status.mode.as_str(), status.ready, status.model) {
+                ("off", _, _) => ("not set".to_owned(), false),
+                (_, true, Some(model)) => (model, true),
+                _ => ("not ready".to_owned(), false),
+            };
+            view! { <span class:set=set>{words}</span> }
+        })
+    })
+    .into_any()
 }
 
 /// Seconds as a short clock: `8 s`, `1:05`.
@@ -1049,24 +1055,6 @@ fn preset_url(preset: &str) -> Option<&'static str> {
         "grok" => Some("https://api.x.ai/v1"),
         _ => None,
     }
-}
-
-/// Opens the assistant card and scrolls to it when the address says `#assistant`.
-pub fn watch_hash() {
-    let location = use_location();
-    Effect::new(move |_| {
-        let hash = location.hash.get();
-        if hash == "#assistant" || hash == "assistant" {
-            let Some(section) = document().get_element_by_id("assistant") else {
-                return;
-            };
-            // It is folded until wanted, and this is it being wanted.
-            let _ = section.set_attribute("open", "");
-            section.scroll_into_view();
-            let again = section.get_attribute("data-flash").as_deref() == Some("a");
-            let _ = section.set_attribute("data-flash", if again { "b" } else { "a" });
-        }
-    });
 }
 
 #[cfg(test)]

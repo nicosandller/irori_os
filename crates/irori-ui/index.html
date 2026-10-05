@@ -146,7 +146,8 @@
        travelling the first time, and fades out where nothing is chosen. */
     .glide { position: absolute; top: 0; z-index: 0; pointer-events: none; opacity: 0;
              transition: transform var(--dur-base) var(--ease-out),
-                         height var(--dur-base) var(--ease-out), opacity var(--dur-fast); }
+                         height var(--dur-base) var(--ease-out),
+                         width var(--dur-base) var(--ease-out), opacity var(--dur-fast); }
     .glide[data-shown] { opacity: 1; }
     .glide:not([data-placed]) { transition: opacity var(--dur-fast); }
 
@@ -211,35 +212,109 @@
            border-radius: .4rem; cursor: pointer; }
     .add:hover { border-color: var(--ember); color: var(--ember); }
 
-    /* The two ways of reading the list. */
-    .switcher { display: flex; border: 1px solid var(--line); border-radius: .4rem;
-                overflow: hidden; }
-    .switcher button { padding: .35rem .7rem; font: inherit; font-size: .85rem;
-                       color: var(--muted); background: transparent; border: none;
-                       cursor: pointer; }
+    /* One of a few ways of reading something. Where the row has a highlight of its own
+       (segmented.rs), that slides to the chosen one rather than each button drawing its own. */
+    .switcher { position: relative; display: flex; border: 1px solid var(--line);
+                border-radius: .4rem; overflow: hidden; }
+    .switcher button { position: relative; z-index: 1; padding: .35rem .7rem; font: inherit;
+                       font-size: .85rem; color: var(--muted); background: transparent;
+                       border: none; cursor: pointer; transition: color var(--dur-fast); }
     .switcher button.chosen { color: var(--fg); background: var(--sunk); }
     .switcher button:hover { color: var(--fg); }
+    .switcher > .glide { top: 0; bottom: 0; left: 0; background: var(--sunk); }
+    .switcher:has(> .glide) button.chosen { background: transparent; }
 
-    /* A device per row: what it is, not what it's doing. */
+    /* A row that folds open (fold.rs): a heading that is one button — chevron, icon, title,
+       how it stands — with whatever acts on the row beside it, and a drawer underneath. */
+    .fold-row { border-bottom: 1px solid var(--line); }
+    .fold-row:last-child { border-bottom: none; }
+    .fold-head { display: flex; align-items: center; }
+    .fold-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: .6rem;
+                   padding: .55rem .8rem; font: inherit; color: var(--fg); text-align: left;
+                   background: transparent; border: none; cursor: pointer;
+                   transition: background-color var(--dur-fast); }
+    .fold-toggle:active { scale: 1; }
+    .fold-toggle:focus-visible { outline: 2px solid var(--ember); outline-offset: -2px; }
+    .fold-title { font-weight: 500; overflow-wrap: anywhere; }
+    .fold-state { color: var(--muted); font: .72rem var(--mono); letter-spacing: .04em; }
+    .fold-state .set { color: var(--ember); }
+    .fold-actions { display: flex; align-items: center; gap: .25rem; padding-right: .6rem; }
+    .chevron { flex: none; width: .5rem; height: .5rem; margin: 0 .2rem 0 .1rem;
+               border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
+               rotate: -45deg;
+               transition: rotate var(--dur-base) var(--ease-spring),
+                           translate var(--dur-base) var(--ease-out),
+                           border-color var(--dur-fast); }
+    .fold-row.open > .fold-head .chevron { rotate: 45deg; translate: 0 -.12rem; }
+    .fold-toggle:hover .chevron { border-color: var(--ember); }
+
+    /* The Devices and Entities lists (devices/tables.rs): groups that fold, and compact rows on
+       one grid so every group's columns line up. A row sits further in than its group's name:
+       the group is the heading, and what's under it reads as under it. */
+    .list-bar { display: flex; align-items: center; gap: .6rem; margin: 0 0 .75rem; }
+    .list-bar-label { color: var(--muted); font: .65rem var(--mono); letter-spacing: .08em;
+                      text-transform: uppercase; }
+    .list-bar .switcher button { padding: .25rem .65rem; font-size: .8rem; }
     .table-scroll { overflow-x: auto; margin-bottom: 1.5rem; border: 1px solid var(--line);
                     border-radius: .5rem; background: var(--card); }
-    table.devices { width: 100%; border-collapse: collapse; font-size: .9rem; }
-    table.devices th, table.devices td { padding: .6rem .8rem; text-align: left;
-                                         border-bottom: 1px solid var(--line);
-                                         white-space: nowrap; }
-    table.devices thead th { color: var(--muted); font: .65rem var(--mono);
-                             letter-spacing: .08em; text-transform: uppercase;
-                             font-weight: 400; }
-    table.devices tbody tr:last-child th, table.devices tbody tr:last-child td {
-        border-bottom: none; }
-    table.devices tbody tr:hover { background: var(--sunk); }
-    table.devices th[scope="row"] { font-weight: 500; }
-    table.devices th[scope="row"] .id { display: block; color: var(--muted);
-                                        font: .7rem var(--mono); }
-    table.devices th[scope="row"] a { color: inherit; text-decoration: none; }
-    table.devices th[scope="row"] a:hover { color: var(--ember); }
-    table.devices .number, table.devices .battery { font-variant-numeric: tabular-nums;
-                                                    text-align: right; }
+    .grouped .fold-head { background: var(--sunk); }
+    .grouped .fold-toggle:hover { background: var(--line); }
+    .device-list .grouped-inner { min-width: 44rem; }
+    .device-list { --cols: 1.25rem minmax(10rem, 2.2fr) minmax(5rem, 1.2fr) minmax(5rem, 1.2fr)
+                           minmax(5rem, 1.4fr) 4.5rem 4.5rem; }
+    .device-list.by-area, .device-list.by-make {
+        --cols: 1.25rem minmax(10rem, 2.2fr) minmax(5rem, 1.2fr) minmax(5rem, 1.4fr)
+                4.5rem 4.5rem; }
+    /* No icon column here, so the row itself starts where a device's name would: further in
+       than any group's name, icon or no icon. */
+    .entity-list .line { padding-left: 5rem; }
+    .entity-list { --cols: minmax(9rem, 1.3fr) minmax(5rem, .8fr) minmax(0, 1.5fr); }
+    .entity-list.by-device { --cols: minmax(9rem, 1fr) minmax(0, 1.3fr); }
+    .line { display: grid; grid-template-columns: var(--cols); align-items: center;
+            column-gap: 1rem; padding: .45rem .8rem .45rem 2.75rem; font-size: .9rem;
+            border-bottom: 1px solid var(--line); }
+    .line.columns { padding-top: .5rem; padding-bottom: .5rem; color: var(--muted);
+                    font: .65rem var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .lines { border-top: 1px solid var(--line); }
+    .lines > .line:last-child { border-bottom: none; }
+    .device-line { transition: background-color var(--dur-fast); }
+    .device-line:hover { background: var(--sunk); }
+    .cell { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cell.icon-col { overflow: visible; line-height: 0; }
+    .cell.name-col { font-weight: 500; }
+    .cell.name-col a { transition: color var(--dur-fast); }
+    .cell.name-col a:hover { color: var(--ember); }
+    .cell.name-col .description { display: block; overflow: hidden; text-overflow: ellipsis;
+                                  color: var(--muted); font-size: .8rem; font-weight: 400; }
+    .cell.room { color: var(--muted); }
+    .cell.number, .cell.battery { font-variant-numeric: tabular-nums; text-align: right; }
+    /* An entity: its row, and the drawer its last 24 hours rolls down in. */
+    .entity-block { border-bottom: 1px solid var(--line); }
+    .entity-block:last-child { border-bottom: none; }
+    .entity-block > .line { border-bottom: none; }
+    .entity-line .of-device { color: var(--muted); }
+    .entity-line .control { display: flex; flex-wrap: wrap; align-items: center;
+                            justify-content: flex-end; gap: .25rem 1rem; overflow: visible;
+                            white-space: normal; }
+    .entity-line .control .light-controls { order: 2; justify-content: flex-end; }
+    .entity-line .control .why { order: 3; text-align: right; }
+    .entity-line.offline .name, .entity-line.offline .reading,
+    .entity-line.offline .reading.on { color: var(--muted); }
+    .entity-block > .drawer { background: var(--bg); }
+    @media (max-width: 720px) {
+      .entity-list .line { grid-template-columns: 1fr; row-gap: .3rem; padding-left: 4.4rem; }
+      .entity-line .of-device { display: none; }
+      .entity-line .control { justify-content: flex-start; }
+    }
+    /* Regrouping (tables.rs): each row that is on show travels from where it was to where it
+       now belongs, and the headings change behind them. Rows in a folded group stay put —
+       pictured, they would fly out of a group that isn't showing them. */
+    html[data-nav="regroup"]::view-transition-old(page),
+    html[data-nav="place"]::view-transition-old(page) { animation: none; display: none; }
+    html[data-nav="regroup"]::view-transition-new(page),
+    html[data-nav="place"]::view-transition-new(page) { animation: none; }
+    html[data-nav="regroup"] .fold-row.open .device-line,
+    html[data-nav="regroup"] .fold-row.open .entity-block { view-transition-name: var(--vt); }
 
     .crumb { margin: 0 0 .5rem; font-size: .85rem; }
     .crumb a { color: var(--muted); text-decoration: none; }
@@ -395,13 +470,6 @@
     /* Once, when something goes wrong: a banner stays put while the trouble does, and a new
        reason only changes its words. */
     @keyframes drop-in { from { opacity: 0; transform: translateY(-4px); } }
-
-    .device { margin-bottom: 1.5rem; border: 1px solid var(--line); border-radius: .5rem;
-              background: var(--card); overflow: hidden; }
-    .device > h2 { margin: 0; padding: .7rem 1rem; font-size: .95rem; font-weight: 500;
-                   border-bottom: 1px solid var(--line); display: flex; align-items: baseline;
-                   gap: .6rem; }
-    .device > h2 .model { color: var(--muted); font: .7rem var(--mono); }
 
     .entity { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem 1rem;
               padding: .7rem 1rem; border-bottom: 1px solid var(--line); }
@@ -568,18 +636,11 @@
     .room-card a { color: inherit; text-decoration: none; }
     .room-card a:hover { color: var(--ember); }
 
-    .room-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .75rem;
-                 margin-bottom: .5rem; }
-    .room-head h2 { margin: 0; }
     .room-actions { margin-left: auto; display: flex; gap: .5rem; }
     .room-devices { margin: 0; padding: 0; list-style: none; }
     .room-devices li { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem;
                        padding: .35rem 0; border-bottom: 1px solid var(--line); }
     .room-devices li:last-child { border-bottom: none; }
-    .room-devices .grip { display: inline-grid; place-items: center; align-self: center;
-        width: 1.4rem; height: 1.4rem; border: 1px solid var(--line); border-radius: .3rem;
-        color: var(--muted); }
-    .room-devices .grip svg { width: .75rem; height: .75rem; display: block; }
 
     /* Renaming, and choosing a room: small forms that sit inside a heading or a card. */
     .inline-form { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
@@ -614,7 +675,6 @@
        the way the device table does it, rather than a link that is ember all the time. */
     a.row-link { color: inherit; text-decoration: none; transition: color var(--dur-fast); }
     a.row-link:hover { color: var(--ember); }
-    table.devices .room { color: var(--muted); }
 
     /* A device's entity, with the name it can be given underneath its reading. */
     .entity-row { border-bottom: 1px solid var(--line); }
@@ -731,28 +791,12 @@
                          white-space: nowrap; }
     .history-note { margin: 0; padding: .5rem .75rem; }
 
-    /* The device table, grouped by protocol: a header row per group that folds it away. */
-    table.devices .icon-col { width: 2.25rem; padding-right: 0; }
+    /* A protocol's icon, or its initial. */
     .protocol-icon { display: inline-block; width: 20px; height: 20px; vertical-align: middle;
                         flex: none; }
     .protocol-icon.letter { display: inline-grid; place-items: center; border-radius: 4px;
                                background: var(--sunk); color: var(--muted);
                                font: 600 .7rem/1 var(--mono); }
-    table.devices .group-head th { padding: 0; background: var(--sunk); }
-    table.devices .group-head button { display: flex; align-items: center; gap: .6rem; width: 100%;
-                                       padding: .55rem .8rem; font: inherit; color: var(--fg);
-                                       text-align: left; background: transparent; border: none;
-                                       cursor: pointer; }
-    table.devices .group-head button:hover { background: var(--line); }
-    table.devices .group-name { font-weight: 500; }
-    .chevron { width: .5rem; height: .5rem; border-right: 2px solid var(--muted);
-               border-bottom: 2px solid var(--muted); transform: rotate(45deg);
-               margin: 0 .2rem .2rem .1rem; flex: none;
-               transition: transform var(--dur-base) var(--ease-out), margin var(--dur-base) var(--ease-out); }
-    .group.folded .chevron { transform: rotate(-45deg); margin-bottom: 0; }
-    .group.folded tr:not(.group-head) { display: none; }
-    table.devices th[scope="row"] .description { display: block; color: var(--muted);
-                                                 font-size: .8rem; font-weight: 400; }
     .description-lede { margin: -.5rem 0 .25rem; }
     .about-form { display: grid; gap: .75rem; }
     .about-form label { display: grid; gap: .25rem; }
@@ -784,44 +828,10 @@
                      cursor: pointer; }
     .danger-button:hover { border-color: #b4342c; }
     details.ignored { margin-top: 1.5rem; }
-    details.floors summary { cursor: pointer; font-weight: 500; list-style: none; }
-    details.floors summary::-webkit-details-marker { display: none; }
-    details.floors summary::marker { display: none; }
-    details.floors summary::before { content: "▾"; margin-right: .5rem; color: var(--ember); }
-    details.floors:not([open]) summary::before { content: "▸"; }
-    details.floors .inline-form { margin-top: .5rem; }
-    .settings-section > .room-head { margin-top: 1.25rem; }
     .inline-form input.level { width: 5rem; }
-    .floor-heading { margin: 1.75rem 0 .75rem; color: var(--muted); font: 500 .75rem var(--mono);
-                     letter-spacing: .08em; text-transform: uppercase; }
-    .chevron { display: inline-grid; place-items: center; width: 1.25rem; height: 1.25rem;
-               padding: 0; margin: 0 .25rem 0 0; border: 1px solid transparent;
-               border-radius: .4rem; background: none; color: var(--muted); cursor: pointer;
-               font-size: .75rem; line-height: 1; }
-    .chevron:hover { border-color: var(--line); color: var(--ember); }
-    .floor-group .room-actions { gap: .25rem; }
-    .room-actions button.icon-button { display: inline-flex; align-items: center;
-        justify-content: center; width: 1.75rem; height: 1.75rem; padding: 0; margin-left: 0;
-        appearance: none; line-height: 0; border: 1px solid var(--line); border-radius: .4rem;
-        background: transparent; color: var(--fg); cursor: pointer; }
-    .room-actions button.icon-button:hover { border-color: var(--ember); color: var(--ember); }
-    .room-actions button.icon-button.solid { background: var(--ember); border-color: var(--ember);
-        color: var(--card); }
-    .room-actions button.icon-button.solid:hover { background: #ab4717; border-color: #ab4717;
-        color: var(--card); }
-    .room-actions button.icon-button.delete { background: #b4342c; border-color: #b4342c;
-        color: var(--card); }
-    .room-actions button.icon-button.delete:hover { background: #982b24; border-color: #982b24;
-        color: var(--card); }
-    .room-actions button.icon-button svg { width: 1rem; height: 1rem; display: block; }
     .inline-form .add.solid { background: var(--ember); border-color: var(--ember);
         color: var(--card); }
     .inline-form .add.solid:hover { background: #ab4717; border-color: #ab4717; color: var(--card); }
-    .room-devices li[draggable="true"] { cursor: grab; }
-    .room-devices li[draggable="true"]:active { cursor: grabbing; }
-    .room-devices.drop-zone { min-height: 1.5rem; border-radius: .4rem; }
-    .room-devices.drop-zone.armed { outline: 2px dashed var(--ember); outline-offset: 3px; }
-    .room-devices.drop-zone.armed li { border-bottom-color: transparent; }
     details.ignored summary { cursor: pointer; font-weight: 500; }
 
     .empty { color: var(--muted); }
@@ -854,23 +864,159 @@
     .start-rule { width: 9rem; border-bottom: 1px solid var(--fg); opacity: .45; }
     .start-tag { color: var(--muted); font-size: .95rem; }
 
-    /* Settings: the in-page menu, and the sections it scrolls to. */
-    .settings-menu { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1.5rem; }
-    .settings-menu button { padding: .3rem .7rem; font: .8rem var(--mono); letter-spacing: .05em;
-                            color: var(--muted); background: transparent; cursor: pointer;
-                            border: 1px solid var(--line); border-radius: .4rem;
-                            transition: color var(--dur-fast), border-color var(--dur-fast),
-                                        background-color var(--dur-fast); }
-    .settings-menu button:hover { color: var(--fg); border-color: var(--ember); }
-    .settings-section { scroll-margin-top: 1rem;
-                        animation: rise var(--dur-base) var(--ease-out) backwards;
-                        animation-delay: calc(var(--i, 0) * 45ms); }
-    /* Where a menu link landed: one ember ring, fading. */
-    .settings-section[data-flash="a"] { animation: flash-a 900ms var(--ease-out); }
-    .settings-section[data-flash="b"] { animation: flash-b 900ms var(--ease-out); }
-    @keyframes flash-a { from { box-shadow: 0 0 0 3px rgba(196, 85, 43, .5); } }
-    @keyframes flash-b { from { box-shadow: 0 0 0 3px rgba(196, 85, 43, .5); } }
-    .settings-section > .inline-form { margin-top: .75rem; }
+    /* Settings (settings.rs): one table. Each row is a fold — an icon, a name, how it stands
+       — and what it opens to sits under the name, in from the icon. */
+    .icon { display: block; flex: none; width: 1rem; height: 1rem; }
+    .settings-table { margin-bottom: 1.5rem; border: 1px solid var(--line); border-radius: .5rem;
+                      background: var(--card); overflow: hidden; }
+    .settings-table > .fold-row { scroll-margin-top: 1rem; }
+    .settings-table > .fold-row > .fold-head > .fold-toggle { gap: .7rem; padding: .8rem 1rem; }
+    .settings-table > .fold-row > .fold-head > .fold-toggle:hover { background: var(--sunk); }
+    .settings-table > .fold-row > .fold-head .icon {
+        width: 1.15rem; height: 1.15rem; color: var(--muted);
+        transition: color var(--dur-base) var(--ease-out); }
+    .settings-table > .fold-row.open > .fold-head .icon { color: var(--ember); }
+    .settings-table > .fold-row > .fold-head .chevron { order: 9; margin: 0 .2rem 0 auto; }
+    .settings-table > .fold-row > .drawer > .drawer-inner > * { margin: .1rem 1rem 1.1rem 2.85rem; }
+    .setting { display: flex; align-items: flex-start; gap: 1rem; }
+    .setting-words { flex: 1; min-width: 0; }
+    .setting-name { font-weight: 500; }
+    .setting p { margin: .15rem 0 0; }
+    .log-view .log-bar { margin-top: 0; }
+    /* Facts: what something is, as a list of names and values. */
+    .facts { display: grid; grid-template-columns: max-content 1fr; gap: .3rem 1.25rem; margin: 0; }
+    .facts dt { color: var(--muted); font: .7rem/1.8 var(--mono); letter-spacing: .08em;
+                text-transform: uppercase; }
+    .facts dd { margin: 0; font-family: var(--mono); font-size: .85rem; overflow-wrap: anywhere; }
+    .facts dd .muted { font-family: var(--sans); }
+
+    /* The machine (machine.rs): a meter for each thing that fills up. The bar grows to its
+       figure when the machine answers and moves when the figure does; opened, a meter says
+       what is behind the figure and draws its last day. */
+    .machine { display: grid; gap: 1rem; }
+    .meters { border: 1px solid var(--line); border-radius: .5rem; overflow: hidden; }
+    .meter { border-bottom: 1px solid var(--line); }
+    .meter:last-child { border-bottom: none; }
+    .meter-head { display: grid; align-items: center; gap: .75rem; width: 100%;
+                  grid-template-columns: 1.15rem 6rem 2.6rem minmax(4rem, 1fr) minmax(0, max-content) auto;
+                  padding: .6rem .8rem; font: inherit; color: var(--fg); text-align: left;
+                  background: transparent; border: none; cursor: pointer;
+                  transition: background-color var(--dur-fast); }
+    .meter-head:hover, .meter.open .meter-head { background: var(--sunk); }
+    .meter-head:active { scale: 1; }
+    .meter-head:focus-visible { outline: 2px solid var(--ember); outline-offset: -2px; }
+    .meter-icon { color: var(--muted); }
+    .meter-icon .icon { width: 1.15rem; height: 1.15rem; }
+    .meter-name { font-weight: 500; }
+    .meter-figure { font: .85rem var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+    .meter-bar { display: block; height: .45rem; border-radius: 1rem; background: var(--line);
+                 overflow: hidden; }
+    .meter-fill { display: block; height: 100%; border-radius: inherit; background: var(--ember);
+                  transform-origin: left center; scale: 0 1;
+                  transition: scale var(--dur-expressive) var(--ease-emphasized),
+                              background-color var(--dur-base); }
+    .meter-bar.high .meter-fill { background: var(--error); }
+    .meter-words { color: var(--muted); font: .72rem var(--mono); white-space: nowrap;
+                   overflow: hidden; text-overflow: ellipsis; }
+    .meter.open .unroll-mark { rotate: 225deg; margin-top: .25rem; }
+    .meter-more { display: grid; gap: .75rem; padding: .75rem .8rem .9rem 2.7rem; }
+    .volumes { display: grid; gap: .45rem; margin: 0; padding: 0; list-style: none; }
+    .volumes li { display: grid; align-items: center; gap: .75rem; font: .8rem var(--mono);
+                  grid-template-columns: minmax(6rem, 1.2fr) minmax(4rem, 1fr) max-content; }
+    .volume-mount { display: flex; align-items: center; gap: .4rem; overflow-wrap: anywhere; }
+    .volume-words { color: var(--muted); }
+    @media (max-width: 720px) {
+      .settings-table > .fold-row > .drawer > .drawer-inner > * { margin-left: 1rem; }
+      .meter-head { grid-template-columns: 1.15rem 1fr max-content auto; }
+      .meter-head .meter-bar { grid-row: 2; grid-column: 1 / -1; }
+      .meter-words { display: none; }
+      .meter-more { padding-left: .8rem; }
+    }
+
+    /* Floors and areas (places.rs): a floor folds, its areas are rows, an area's devices are
+       chips. A chip is dragged onto an area and an area, by its grip, onto a floor; only what
+       is under the pointer lights up, and what was dropped travels to where it landed. */
+    .places { display: grid; gap: .6rem; }
+    .places-note { margin: 0; }
+    .floor { border: 1px solid var(--line); border-radius: .5rem; overflow: hidden;
+             transition: border-color var(--dur-fast), box-shadow var(--dur-fast); }
+    .floor .fold-row { border-bottom: none; }
+    .floor .fold-head { background: var(--sunk); }
+    .floor .fold-toggle:hover { background: var(--line); }
+    .places.dragging-area .floor { border-style: dashed; }
+    .floor.over { border-style: solid; border-color: var(--ember);
+                  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ember) 30%, transparent); }
+    .places .area { padding: .55rem .8rem .65rem; border-top: 1px solid var(--line);
+            transition: background-color var(--dur-fast), box-shadow var(--dur-fast),
+                        opacity var(--dur-fast); }
+    .places.dragging-device .area, .places.dragging-device .unassigned .chips {
+        outline: 1px dashed var(--line); outline-offset: -3px; }
+    .area.over, .unassigned .chips.over {
+        background: color-mix(in srgb, var(--ember) 10%, transparent);
+        box-shadow: inset 2px 0 0 var(--ember); }
+    .area.dragged, .chip-device.dragged { opacity: .4; }
+    .area-head { display: flex; align-items: center; gap: .6rem; min-height: 1.75rem; }
+    .area-name { font-weight: 500; }
+    .area-head .fold-actions { margin-left: auto; padding-right: 0; }
+    .grip { display: inline-grid; place-items: center; flex: none; width: 1.3rem; height: 1.3rem;
+            border-radius: .3rem; color: var(--muted); cursor: grab;
+            transition: color var(--dur-fast), background-color var(--dur-fast); }
+    .grip:hover { color: var(--fg); background: var(--sunk); }
+    .grip:active { cursor: grabbing; }
+    .grip .icon { width: .8rem; height: .8rem; }
+    .chips { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; min-height: 1.9rem;
+             margin: .4rem 0 0; padding: 0; list-style: none; border-radius: .4rem;
+             transition: background-color var(--dur-fast), box-shadow var(--dur-fast); }
+    .chip-device { display: inline-flex; align-items: center; gap: .15rem;
+                   padding: .15rem .65rem .15rem .2rem; font-size: .85rem; cursor: grab;
+                   background: var(--bg); border: 1px solid var(--line); border-radius: 1rem;
+                   transition: border-color var(--dur-fast), translate var(--dur-fast) var(--ease-out),
+                               opacity var(--dur-fast); }
+    .chip-device:hover { border-color: var(--muted); translate: 0 -1px; }
+    .chip-device:active { cursor: grabbing; }
+    .chip-device .grip { width: 1.1rem; height: 1.1rem; cursor: inherit; background: none; }
+    .unassigned { padding: .55rem .8rem .65rem; border: 1px solid var(--line); border-radius: .5rem; }
+    /* The composer: a quiet call that opens, where the new thing will appear, into a field. */
+    .namer-call { display: inline-flex; align-items: center; gap: .4rem;
+                     padding: .3rem .65rem .3rem .45rem; font: inherit; font-size: .85rem;
+                     color: var(--muted); background: transparent; cursor: pointer;
+                     border: 1px dashed var(--line); border-radius: .4rem;
+                     transition: color var(--dur-fast), border-color var(--dur-fast); }
+    .namer-call:hover, .namer.open .namer-call { color: var(--ember);
+                                                          border-color: var(--ember); }
+    .namer-plus { transition: rotate var(--dur-base) var(--ease-spring); }
+    .namer.open .namer-plus { rotate: 45deg; }
+    .namer-plus .icon { width: .9rem; height: .9rem; }
+    .namer-form { padding: .5rem 0 .15rem; }
+    .namer-form input[type="text"] { flex: 1 1 10rem; min-width: 0; }
+    .namer .why { margin: .2rem 0 0; }
+    .areas > .namer { padding: 0 .8rem; }
+    .areas > .namer:has(.namer-call) { padding: .5rem .8rem; border-top: 1px solid var(--line); }
+    .stepper { display: inline-flex; align-items: center; border: 1px solid var(--line);
+               border-radius: .4rem; overflow: hidden; background: var(--card); }
+    .inline-form .stepper button { padding: .3rem .65rem; border: none; border-radius: 0; }
+    .stepper output { min-width: 4.4rem; text-align: center; font: .8rem var(--mono); }
+    /* A small button that is only an icon. Remove asks once more before it does anything:
+       pressed, it widens into the question. */
+    .icon-button { display: inline-flex; align-items: center; justify-content: center;
+                   min-width: 1.75rem; height: 1.75rem; padding: 0; font: inherit;
+                   color: var(--muted); background: transparent; cursor: pointer;
+                   border: 1px solid transparent; border-radius: .4rem;
+                   transition: color var(--dur-fast), border-color var(--dur-fast),
+                               background-color var(--dur-fast), padding var(--dur-base) var(--ease-out); }
+    .icon-button:hover { color: var(--fg); border-color: var(--line); }
+    .icon-button .icon { width: .95rem; height: .95rem; }
+    .icon-button.delete:hover { color: #b4342c; border-color: #b4342c; }
+    .asking-words { max-width: 0; overflow: hidden; opacity: 0; font-size: .8rem;
+                    white-space: nowrap;
+                    transition: max-width var(--dur-base) var(--ease-out),
+                                opacity var(--dur-base), margin var(--dur-base) var(--ease-out); }
+    .icon-button.delete.asking { padding: 0 .55rem; color: #fff; background: #b4342c;
+                                 border-color: #b4342c; }
+    .icon-button.asking .asking-words { max-width: 5rem; margin-left: .35rem; opacity: 1; }
+    html[data-nav="place"] .floor .fold-row.open .area,
+    html[data-nav="place"] .floor .fold-row.open .chip-device,
+    html[data-nav="place"] .unassigned .chip-device { view-transition-name: var(--vt); }
 
     /* The Floorplan: a canvas that takes the whole page, with its controls floating over it.
        Everything drawn is in centimetres of the home; only the transform on each group turns
@@ -1476,8 +1622,8 @@
     .log-count { min-width: 1.2rem; padding: 0 .3rem; font: .65rem/1.4 var(--mono);
                  text-align: center; color: var(--card); background: var(--muted);
                  border-radius: 1rem; }
-    .log-filter button:nth-child(2) .log-count { background: var(--warn); }
-    .log-filter button:nth-child(3) .log-count { background: var(--error); }
+    .log-filter button:nth-of-type(2) .log-count { background: var(--warn); }
+    .log-filter button:nth-of-type(3) .log-count { background: var(--error); }
     .log-filter button .log-count.none { color: var(--muted); background: transparent; }
     .log-search { flex: 1 1 10rem; min-width: 0; padding: .35rem .6rem; font: inherit;
                   font-size: .85rem; color: var(--fg); background: var(--card);
@@ -1663,15 +1809,6 @@
     @keyframes send-wait { 50% { translate: 0 -.18rem; opacity: .5; } }
 
     /* The Settings card. It folds like the others, and says beside its name how it is set. */
-    details.assistant-card > summary { cursor: pointer; font-weight: 500; list-style: none;
-                                       display: flex; align-items: baseline; gap: .6rem; }
-    details.assistant-card > summary::-webkit-details-marker { display: none; }
-    details.assistant-card > summary::before { content: "▸"; color: var(--ember);
-                                               transition: rotate var(--dur-base) var(--ease-out); }
-    details.assistant-card[open] > summary::before { rotate: 90deg; }
-    details.assistant-card[open] > summary { margin-bottom: .6rem; }
-    .assistant-state { font: .72rem var(--mono); letter-spacing: .04em; color: var(--muted); }
-    .assistant-state.set { color: var(--ember); }
     .assistant-card .modes { position: relative; display: grid; grid-template-columns: 1fr 1fr;
                              padding: 4px; margin: .9rem 0 1rem; background: var(--sunk);
                              border: 1px solid var(--line); border-radius: 999px; }

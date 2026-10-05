@@ -43,10 +43,10 @@ cd crates/irori-ui && trunk serve --open # the page on 8080, API proxied to 8480
 |---|---|
 | **Floorplan** (`/floorplan`) | The home as a drawing, a floor at a time, with the devices live on it: a lamp that's on glows, and clicking one switches it. A picker on the right says which floor, and the floor below shows faintly while you draw so an upstairs can be lined up with what holds it up. **Edit** (top right) puts a toolbar over the same canvas — walls, doors, windows, rooms, devices — and becomes **Save** and **Cancel**. Whatever is picked up gets a panel for the numbers that can't be dragged: a wall's thickness, an opening's width. Points land on a 10 cm grid, or on a step of your own; the grid drawn under the plan **is** that step, with heavier lines every metre, so what you see is where a point can go. Rooms are traced with corners that prefer the walls to the grid, and a device drawn standing in a room is put in that room in Settings when the plan is saved. Undo and redo (⌘Z, ⇧⌘Z) go back a move at a time. The canvas is the whole view; scroll to zoom, drag the empty plan to move around. |
 | **Start** (`/`) | What IroriOS is: the wordmark the terminal prints when `irori serve` runs, and how many devices, entities and extensions it is looking after. |
-| **Devices** (`/devices`) | Two ways to read the same home, remembered per browser: **Entities** groups everything by the device it came from, with switches; **Devices** is a row per device — what brought it in, make, model, battery, how many entities, and which area it's in. **Add device** explains where devices come from — every installed extension, what it's for, and what it can provide — because nothing is typed in by hand yet. |
+| **Devices** (`/devices`) | Two ways to read the same home, remembered per browser, both as compact rows in groups that fold: **Devices** is a row per device — make, model, battery, how many entities, and which area it's in — grouped by protocol, area or make; **Entities** is a row per entity with its control and its last 24 hours a click away, grouped by device, area, kind or protocol. **Add device** explains where devices come from — every installed extension, what it's for, and what it can provide — because nothing is typed in by hand yet. |
 | **A device** (`/devices/<id>`) | One device: which extension brought it in, what that extension knows it as (the MAC address, for ESPHome), make, model, firmware, hardware, battery, what it's reached through, and every entity it provides with its controls. Its name, description and area are yours to decide. |
 | **Extensions** (`/extensions`) | Official extensions from this repo (protocols, Demo, Helpers). Install copies a package into the instance and starts it; uninstall deletes the package and the devices it brought in. |
-| **Settings** (`/settings`) | The instance itself (version, uptime, database, features), **Appearance** (whether the page animates), the home's arrangement (**Areas** and **Floors**, the same places the Rooms page used to manage), **Users** (none yet — there's nothing to sign in with), **Logs** (what Irori has said since it started, and each extension's own output tagged with the extension, behind **Show log**), and **System**: the machine running the instance — host, operating system, kernel, CPU, memory, and the disk its data sits on, asked again on demand rather than kept. |
+| **Settings** (`/settings`) | One table: each row is a section that says how it stands beside its name and opens in place. **System** (the instance — version, uptime, database, features — and the machine under it, with a meter each for memory, disk, processor and temperature that opens to what is using it and its last day), **Appearance** (whether the page animates), **Assistant** (which model answers), **Floors and areas** (the home's arrangement, made and rearranged by dragging), **Users** (none yet — there's nothing to sign in with) and **Logs** (what Irori has said since it started, with each extension's own output tagged with the extension). |
 
 Routing is client-side (`leptos_router`), so the binary serves the app for any path that isn't a
 file, and the app decides what to show.
@@ -62,8 +62,8 @@ file, and the app decides what to show.
 - Marks unreachable entities offline, keeping their last known value, and refuses to switch them.
 - Says why a command was refused, under the row it belongs to.
 - Filters by entity name, entity id, device name, area or make.
-- Makes the areas and floors of the home in **Settings**: name them, put them on floors, and a
-  device's own page is where it's placed.
+- Makes the areas and floors of the home in **Settings**: name them where they'll appear, drag
+  an area onto another floor and a device into an area. A device's own page places it too.
 - Draws the home in **Floorplan**, a floor at a time: walls in runs that snap to the corners
   already there (right-click or Escape ends a run), doors and windows cut into those walls, the
   rooms of the home traced out as shapes, and devices put where they are. Corners weld, so
@@ -77,9 +77,9 @@ file, and the app decides what to show.
   it moved; a device deliberately in no room is left alone.
 - Lists the extensions behind it all, with their status and any reports they lost.
 - Shows what Irori and its extensions have said, in one window that keeps itself up to date:
-  **View log** on an extension's card for that extension's own output, and **Show log** in the
-  **Logs** section of Settings for the core's own log, which carries each extension's lines too,
-  tagged with the extension they came from.
+  **View log** on an extension's card for that extension's own output, in a window, and the
+  **Logs** row of Settings for the core's own log, in place, which carries each extension's
+  lines too, tagged with the extension they came from.
 
 **Not yet:** users and signing in, automations, history beyond a device's last 24 hours, and
 installing the firmware update whose version the device page shows (ROADMAP M1.8, D30). The

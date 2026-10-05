@@ -136,17 +136,17 @@ fn shape_of(home: &Home, id: &str) -> Shape {
 
 /// The device's entities, in the order the list pages use them.
 fn of_device(home: &Home, device: &Device) -> Vec<Entity> {
-    devices::groups(home, "")
-        .into_iter()
-        .find(|group| group.device.as_ref().is_some_and(|d| d.id == device.id))
-        .map(|group| {
-            group
-                .entities
-                .into_iter()
-                .map(|(entity, _)| entity)
-                .collect()
-        })
-        .unwrap_or_default()
+    let mut entities: Vec<Entity> = home
+        .entities
+        .iter()
+        .filter(|entity| entity.device_id.as_ref() == Some(&device.id))
+        .cloned()
+        .collect();
+    // What the device is for first, then its settings and diagnostics.
+    entities.sort_by(|a, b| {
+        (a.entity_category, &a.name, &a.id).cmp(&(b.entity_category, &b.name, &b.id))
+    });
+    entities
 }
 
 /// The device's name and description while they're being edited. Made once, above what redraws,
@@ -696,34 +696,11 @@ fn EntityRow(
     };
     let row = entity.clone();
 
-    // The rolled-up "last 24 hours", opened from the row's own reading. Fetched once, the
-    // first time it's opened, and kept: reopening shows the same day it loaded, which is honest
-    // about what was on file then.
-    let open = RwSignal::new(false);
-    let history = RwSignal::new(None::<Result<Vec<EntityState>, String>>);
-    let fetching = RwSignal::new(false);
-    let toggle = {
-        let id = id.clone();
-        move |()| {
-            let id = id.clone();
-            if !open.get_untracked()
-                && !fetching.get_untracked()
-                && history.get_untracked().is_none()
-            {
-                fetching.set(true);
-                spawn_local(async move {
-                    let result = api::entity_history(&id).await;
-                    fetching.set(false);
-                    history.set(Some(result));
-                });
-            }
-            open.update(|open| *open = !*open);
-        }
-    };
-    let unroll = devices::Unroll {
-        open,
-        toggle: Callback::new(toggle),
-    };
+    // The rolled-up "last 24 hours", opened from the row's own reading.
+    let histories = crate::history::Histories::new();
+    let unroll = histories.unroll(&id);
+    let open = unroll.open;
+    let history = histories.day(&id);
 
     view! {
         <div class="entity-row">
@@ -766,7 +743,7 @@ fn EntityRow(
             // Always there, rolled up or down, so it can roll both ways; `inert` while rolled
             // up, so nobody tabs into what they can't see.
             <div class="drawer" class:open=move || open.get() inert=move || (!open.get()).then_some("")>
-                <div class="drawer-inner">{history_panel(entity, history, state)}</div>
+                <div class="drawer-inner">{history_panel(entity, history, state.into())}</div>
             </div>
         </div>
     }
@@ -777,11 +754,11 @@ fn EntityRow(
 /// words — is the table, newest first, in its own scroll so a sensor that changed a hundred
 /// times doesn't stretch the page. "As much as available" is what it says: the server keeps
 /// what happened while it's been running, and the long view is the recorder's job (M1.3).
-fn history_panel(
+pub(crate) fn history_panel(
     entity: Entity,
-    history: RwSignal<Option<Result<Vec<EntityState>, String>>>,
+    history: ArcRwSignal<crate::history::Day>,
     // The row's reading as it is now, so a chart can grow with it.
-    live: Memo<Option<EntityState>>,
+    live: Signal<Option<EntityState>>,
 ) -> AnyView {
     let numeric = entity.capabilities.primary_shape() == Some(irori_types::ValueShape::Number);
     view! {
@@ -859,7 +836,7 @@ fn charted(
     entity: &Entity,
     numbers: Vec<chart::Reading>,
     states: Vec<EntityState>,
-    live: Memo<Option<EntityState>>,
+    live: Signal<Option<EntityState>>,
 ) -> AnyView {
     let as_table = RwSignal::new(false);
     let unit = devices::unit_of(&entity.capabilities);
@@ -876,24 +853,12 @@ fn charted(
     let table = table(entity, states);
     view! {
         <div class="history-head">
-            <div class="switcher" role="group" aria-label="Show as">
-                <button
-                    type="button"
-                    class:chosen=move || !as_table.get()
-                    aria-pressed=move || (!as_table.get()).to_string()
-                    on:click=move |_| as_table.set(false)
-                >
-                    "Chart"
-                </button>
-                <button
-                    type="button"
-                    class:chosen=move || as_table.get()
-                    aria-pressed=move || as_table.get().to_string()
-                    on:click=move |_| as_table.set(true)
-                >
-                    "Table"
-                </button>
-            </div>
+            {crate::segmented::segmented(
+                "Show as",
+                vec![(false, "Chart"), (true, "Table")],
+                as_table.into(),
+                move |table| as_table.set(table),
+            )}
         </div>
         // Both drawn once and kept, so switching is instant and loses nothing. Coming back to
         // the chart draws its line in again — the same day, arriving again.

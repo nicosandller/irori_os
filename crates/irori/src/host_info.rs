@@ -8,7 +8,10 @@
 use std::path::Path;
 
 use serde::Serialize;
-use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
+use sysinfo::{
+    CpuRefreshKind, Disks, MemoryRefreshKind, ProcessRefreshKind, ProcessesToUpdate, RefreshKind,
+    System,
+};
 
 /// What the System menu in Settings shows about the machine running Irori.
 #[derive(Debug, Serialize)]
@@ -28,14 +31,30 @@ pub struct HostView {
     pub cpu: String,
     /// The number of physical cores.
     pub cpu_cores: usize,
+    /// Every core the OS schedules on, hyperthreads included: what a load average is read against.
+    pub cpu_logical: usize,
+    /// How many processes wanted a core, averaged over the last one, five and fifteen minutes.
+    /// All zero where the OS keeps no such count.
+    pub load_average: [f64; 3],
     /// RAM, in bytes.
     pub memory_total: u64,
     pub memory_used: u64,
+    /// What Irori's own process holds of it.
+    pub process_memory: u64,
+    /// Swap: memory moved out to disk to make room. Zero total on a machine without any.
+    pub swap_total: u64,
+    pub swap_used: u64,
     /// How long the machine has been up. Measured in what the OS reports, not Irori's own uptime,
     /// which is the "Uptime" row on the Instance card.
     pub uptime_secs: u64,
     /// The filesystem that holds the instance's data: the volume the data directory is on.
     pub disk: DiskView,
+    /// Every volume mounted on the machine, the data's among them, by mount point.
+    pub disks: Vec<DiskView>,
+    /// Where the instance keeps its data.
+    pub data_dir: String,
+    /// The database on disk, with what it has yet to fold in (its write-ahead log).
+    pub database_bytes: u64,
 }
 
 /// One disk: enough for "is the volume getting full?" without implying anything finer.
@@ -50,11 +69,22 @@ pub struct DiskView {
 
 /// Reads the machine, given where the instance keeps its data so the right volume is reported.
 pub fn read(data: &Path) -> HostView {
-    let system = System::new_with_specifics(
+    let mut system = System::new_with_specifics(
         RefreshKind::nothing()
             .with_memory(MemoryRefreshKind::everything())
             .with_cpu(CpuRefreshKind::everything()),
     );
+    // Just this process, and just its memory: listing every process is the slow bit of the OS
+    // this module stays away from.
+    let process_memory = sysinfo::get_current_pid().map_or(0, |pid| {
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            false,
+            ProcessRefreshKind::nothing().with_memory(),
+        );
+        system.process(pid).map_or(0, sysinfo::Process::memory)
+    });
+    let load = System::load_average();
     let cpu = system.cpus().first().map_or_else(String::new, |cpu| {
         let brand = cpu.brand().trim();
         // "Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz" keeps more than the model itself: the clock
@@ -67,12 +97,8 @@ pub fn read(data: &Path) -> HostView {
             .to_owned()
     });
     let cpu_cores = System::physical_core_count().unwrap_or(0);
-    // In a container the machine's memory is not what Irori has: the container's own limit
-    // is, and that is the number to show and to plan a model against.
-    let (memory_total, memory_used) = match allowance(Path::new("/sys/fs/cgroup")) {
-        Some((limit, used)) if limit < system.total_memory() => (limit, used),
-        _ => (system.total_memory(), system.used_memory()),
-    };
+    let (memory_total, memory_used) = memory(&system);
+    let disks = Disks::new_with_refreshed_list();
 
     HostView {
         host: System::host_name(),
@@ -82,10 +108,18 @@ pub fn read(data: &Path) -> HostView {
         arch: std::env::consts::ARCH,
         cpu,
         cpu_cores,
+        cpu_logical: system.cpus().len(),
+        load_average: [load.one, load.five, load.fifteen],
         memory_total,
         memory_used,
+        process_memory,
+        swap_total: system.total_swap(),
+        swap_used: system.used_swap(),
         uptime_secs: System::uptime(),
-        disk: data_disk(data).unwrap_or(DiskView {
+        disks: volumes(&disks, data_disk(&disks, data)),
+        data_dir: data.parent().unwrap_or(data).to_string_lossy().into_owned(),
+        database_bytes: database_bytes(data),
+        disk: data_disk(&disks, data).unwrap_or(DiskView {
             // Without a disk to answer, the row says so rather than guessing at a number.
             mount: String::new(),
             total: 0,
@@ -93,6 +127,59 @@ pub fn read(data: &Path) -> HostView {
             used: 0,
         }),
     }
+}
+
+/// The memory there is and how much of it is in use. In a container the machine's memory is not
+/// what Irori has: the container's own limit is, and that is the number to show, to chart and
+/// to plan a model against.
+pub fn memory(system: &System) -> (u64, u64) {
+    match allowance(Path::new("/sys/fs/cgroup")) {
+        Some((limit, used)) if limit < system.total_memory() => (limit, used),
+        _ => (system.total_memory(), system.used_memory()),
+    }
+}
+
+/// The database file and the two SQLite keeps beside it in WAL mode. A file that isn't there
+/// counts for nothing.
+fn database_bytes(database: &Path) -> u64 {
+    let beside = |suffix: &str| {
+        let mut name = database.as_os_str().to_owned();
+        name.push(suffix);
+        std::path::PathBuf::from(name)
+    };
+    [database.to_path_buf(), beside("-wal"), beside("-shm")]
+        .iter()
+        .filter_map(|file| std::fs::metadata(file).ok())
+        .filter(|meta| meta.is_file())
+        .map(|meta| meta.len())
+        .sum()
+}
+
+/// The volumes worth showing: ones with a size, mounted on a directory, each filesystem once
+/// however many places it is mounted. The data's volume stands for its filesystem under the
+/// mount it was found by; any other goes by its shortest mount.
+fn volumes(disks: &Disks, data: Option<DiskView>) -> Vec<DiskView> {
+    let mut views: Vec<DiskView> = disks
+        .iter()
+        .filter(|disk| disk.total_space() > 0)
+        .filter(|disk| std::fs::metadata(disk.mount_point()).is_ok_and(|meta| meta.is_dir()))
+        .map(disk_view)
+        .collect();
+    views.sort_by(|a, b| (a.mount.len(), &a.mount).cmp(&(b.mount.len(), &b.mount)));
+    if let Some(data) = data {
+        views.insert(0, data);
+    }
+    let mut seen = Vec::new();
+    views.retain(|view| {
+        let same = (view.total, view.available);
+        if seen.contains(&same) {
+            return false;
+        }
+        seen.push(same);
+        true
+    });
+    views.sort_by(|a, b| a.mount.cmp(&b.mount));
+    views
 }
 
 /// This process group's memory limit and how much of it is in use, when it has a limit
@@ -122,9 +209,7 @@ fn fsid(path: &Path) -> Option<u64> {
 /// The volume the data directory is on, as "how full is it?": by filesystem id when one
 /// matches, otherwise by the longest mount the (canonicalized) path falls under. `None` when
 /// nothing matches, so the caller can say so rather than guess.
-fn data_disk(data: &Path) -> Option<DiskView> {
-    let disks = Disks::new_with_refreshed_list();
-
+fn data_disk(disks: &Disks, data: &Path) -> Option<DiskView> {
     // The id is the honest answer: macOS's `/Users` is a firmlink into `/System/Volumes/Data`,
     // and not even `canonicalize` resolves firmlinks, so a path under `/Users` still lexically
     // sits inside "/" — the wrong volume to answer "how full?" with. The writable Data volume
@@ -190,5 +275,29 @@ mod tests {
         std::fs::write(dir.path().join("memory.max"), "max\n")?;
         assert_eq!(allowance(dir.path()), None);
         Ok(())
+    }
+
+    #[test]
+    fn the_database_is_weighed_with_its_write_ahead_log() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let database = dir.path().join("irori.db");
+        assert_eq!(database_bytes(&database), 0);
+        std::fs::write(&database, [0; 100])?;
+        std::fs::write(dir.path().join("irori.db-wal"), [0; 40])?;
+        std::fs::write(dir.path().join("irori.db-shm"), [0; 2])?;
+        assert_eq!(database_bytes(&database), 142);
+        Ok(())
+    }
+
+    #[test]
+    fn the_machine_says_what_else_is_using_it() {
+        let host = read(Path::new("."));
+        assert!(host.cpu_logical >= host.cpu_cores);
+        assert!(host.process_memory > 0, "this process holds some memory");
+        assert!(
+            host.disks.iter().all(|disk| disk.total > 0),
+            "{:?}",
+            host.disks
+        );
     }
 }
