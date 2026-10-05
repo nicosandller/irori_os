@@ -10,10 +10,17 @@ license.workspace = true
 [features]
 # Barebones default build (ROADMAP D17). Official extensions are packages, not cargo features.
 # `--no-default-features` must still build, start, and serve the API.
-default = ["ui"]
+default = ["ui", "assist"]
 ui = ["dep:rust-embed", "dep:mime_guess"]
-# Opt-in, never in the default build (ROADMAP D13).
-assist = ["dep:irori-assist"]
+# The assistant control plane: settings, chat, and provider clients. Weights and Ollama stay
+# downloaded, not compiled in. `--no-default-features` still builds without it.
+assist = [
+    "dep:irori-assist",
+    "dep:reqwest",
+    "dep:tokio-stream",
+    "dep:futures-util",
+    "dep:sha2",
+]
 
 [dependencies]
 irori-config.workspace = true
@@ -22,6 +29,11 @@ irori-helpers.workspace = true
 irori-protocol.workspace = true
 irori-types.workspace = true
 irori-assist = { workspace = true, optional = true }
+futures-util = { version = "0.3.32", default-features = false, features = ["std"], optional = true }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "stream", "rustls-tls"], optional = true }
+tokio-stream = { version = "0.1.17", features = ["sync"], optional = true }
+# The checksum of the Ollama release Irori downloads on request (ollama.rs).
+sha2 = { workspace = true, optional = true }
 
 anyhow.workspace = true
 axum.workspace = true

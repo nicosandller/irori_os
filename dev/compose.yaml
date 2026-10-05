@@ -2,7 +2,7 @@
 name: irori-dev
 
 services:
-  # irori running like it would on a Pi: linux/arm64, static binary, small memory, one CPU's worth.
+  # irori running like it would on a Pi 4 with 4 GB: linux/arm64, static binary, one CPU's worth.
   pi:
     build:
       context: ..
@@ -21,9 +21,10 @@ services:
       IRORI_LAB: ${IRORI_LAB:-}
     volumes:
       - pi-data:/var/lib/irori
-    # One Apple Silicon core is roughly a whole Pi 4's CPU throughput; 1 GB is the smallest Pi 4.
+    # One Apple Silicon core is roughly a whole Pi 4's CPU throughput, all four of its cores
+    # together. 4 GB is the Pi 4 most people have; 1g is the smallest one made.
     cpus: ${IRORI_PI_CPUS:-1}
-    mem_limit: ${IRORI_PI_MEMORY:-1g}
+    mem_limit: ${IRORI_PI_MEMORY:-4g}
     stop_grace_period: 10s
 
   # Cargo inside Linux arm64, against the live source tree. Only runs on demand.

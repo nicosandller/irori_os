@@ -183,9 +183,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM debian:${DEBIAN_RELEASE}-slim AS pi
 ARG LAB=0
 # python3 is only there for the lab coordinator. setpriv (util-linux) drops to the
-# irori user in every mode.
+# irori user in every mode. zstd is what tar needs to unpack Ollama's release, when the
+# assistant is asked to install it.
 RUN apt-get update \
-    && packages="curl ca-certificates util-linux" \
+    && packages="curl ca-certificates util-linux zstd" \
     && if [ "$LAB" = "1" ]; then packages="$packages python3"; fi \
     && apt-get install -y --no-install-recommends $packages \
     && rm -rf /var/lib/apt/lists/*

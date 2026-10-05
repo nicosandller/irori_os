@@ -1,11 +1,11 @@
 //! What the page asks (`docs/specs/flows.md` §8).
 
-use irori_flow_types::Flow;
 use irori_flow_types::api::{
     Armed, Backtest, FlowDetail, FlowSummary, Holding, Live, Problem, Saved, Severity, TestRequest,
     Timeline,
 };
 use irori_flow_types::trace::{RunRecord, TestKind};
+use irori_flow_types::{Flow, Node};
 use irori_flows::{sim, validate};
 use irori_types::{ContextId, RuleId, Timestamp};
 use serde::Deserialize;
@@ -52,6 +52,51 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
                 "file": p.file, "reason": p.reason,
             })).collect::<Vec<_>>(),
         })),
+        // A short reading of one flow for the assistant. The core never opens the flow file.
+        "flow.brief" => {
+            let ById { id } = params(raw)?;
+            let flow = service
+                .store
+                .flow(&id)
+                .cloned()
+                .ok_or_else(|| format!("there's no flow `{id}`"))?;
+            let problems = validate::check(&flow, &service.registry);
+            let last = service.store.runs(&id).into_iter().next();
+            let mut text = format!(
+                "{} is {}.\n",
+                flow.name,
+                if flow.enabled { "on" } else { "off" }
+            );
+            match &last {
+                Some(run) if run.finished_at.is_some() => text.push_str("The last run finished.\n"),
+                Some(_) => text.push_str("The last run did not finish.\n"),
+                None => text.push_str("It has not run.\n"),
+            }
+            for (node_id, node) in &flow.nodes {
+                let kind = match node {
+                    Node::Trigger { .. } => "trigger",
+                    Node::Gate { .. } => "check",
+                    Node::Switch { .. } => "choose",
+                    Node::Call { .. } => "call",
+                    Node::Set { .. } => "set",
+                    Node::Delay { .. } => "wait",
+                    Node::Wait { .. } => "wait until",
+                    Node::Join { .. } => "join",
+                    Node::Stop { .. } => "stop",
+                };
+                text.push_str(&format!("- {node_id}: {kind}\n"));
+            }
+            if !problems.is_empty() {
+                text.push_str(&format!("{} problem(s) to fix.\n", problems.len()));
+            }
+            let text: String = text.chars().take(4_000).collect();
+            answer(json!({
+                "text": text,
+                "name": flow.name,
+                "enabled": flow.enabled,
+                "problems": problems.len(),
+            }))
+        }
         "flows.get" => {
             let ById { id } = params(raw)?;
             let flow = service

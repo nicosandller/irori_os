@@ -116,10 +116,6 @@ up() {
   if [[ "$lab" -eq 1 ]]; then
     export IRORI_LAB=1
     export IRORI_LAB_BUILD=1
-    # Zigbee2MQTT's Node runtime does not fit in the default 1 GB.
-    if [[ -z "${IRORI_PI_MEMORY:-}" ]]; then
-      export IRORI_PI_MEMORY=2g
-    fi
   else
     unset IRORI_LAB
     export IRORI_LAB_BUILD=0
@@ -239,8 +235,8 @@ case "$cmd" in
     ;;
   restart)
     # `--lab` is only an environment variable of the command that started the
-    # container. A bare restart would recreate it without the emulators and
-    # with the 1 GB default, while Zigbee2MQTT is still installed in the volume.
+    # container. A bare restart would recreate it without the emulators, while
+    # Zigbee2MQTT is still installed in the volume.
     if [[ $# -eq 0 ]] && previous_lab; then
       echo "Keeping lab mode. \`dev/pi up\` without --lab leaves it."
       set -- --lab

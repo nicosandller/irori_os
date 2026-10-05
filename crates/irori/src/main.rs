@@ -1,5 +1,7 @@
 //! `irori`: the single binary. Parses the CLI and wires the pieces together.
 
+#[cfg(feature = "assist")]
+mod assistant;
 mod banner;
 mod build_info;
 mod config;
@@ -7,6 +9,8 @@ mod db;
 mod extensions;
 mod history;
 mod host_info;
+#[cfg(feature = "assist")]
+mod ollama;
 mod packages;
 mod serial;
 mod server;
@@ -252,6 +256,15 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // and moving a moment later.
             let settings = config::Config::open(store, &problems, &core);
             tokio::spawn(settings.clone().watch(core.clone()));
+            // The Ollama Irori installed for a local model, if there is one, comes up with the
+            // server, and the model in use is loaded again. Nothing waits on it: the assistant
+            // says "not ready" until it is.
+            #[cfg(feature = "assist")]
+            {
+                let settings = settings.clone();
+                let data = data.clone();
+                tokio::spawn(async move { assistant::wake(&settings, &data).await });
+            }
             // Helpers and Irori's own device are core to Irori, not installable extensions: they
             // run every time, in-process, and never appear on the Extensions page.
             let builtins = vec![

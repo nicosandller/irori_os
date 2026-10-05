@@ -1550,6 +1550,201 @@
       .modal-backdrop { padding: 0; align-items: flex-end; }
       .modal { max-width: none; height: 100%; border-radius: 0; border: none; }
     }
+
+    /* The assistant. Ask stays clickable before a model is ready: quiet, not disabled. */
+    button.ask { display: inline-flex; align-items: center; gap: .35rem; }
+    button.ask .spark { width: .85rem; height: .85rem; color: var(--ember);
+                        transition: rotate var(--dur-expressive) var(--ease-spring),
+                                    scale var(--dur-base) var(--ease-spring); }
+    button.ask:hover .spark { rotate: 90deg; scale: 1.15; }
+    button.ask.on { border-color: var(--ember); color: var(--ember); }
+    button.ask-quiet, button.ask-quiet .spark { color: var(--muted); }
+    button.ask-quiet { border-color: var(--line); background: transparent; }
+
+    /* The chat window an Ask opens: under its button, growing out of the corner nearest it. */
+    .ask-pop { position: fixed; z-index: 25; top: var(--top); right: var(--right);
+               width: min(26rem, calc(100vw - 1.5rem));
+               height: min(34rem, calc(100vh - var(--top) - .75rem));
+               transform-origin: top right;
+               animation: ask-open var(--dur-expressive) var(--ease-emphasized) backwards; }
+    @keyframes ask-open { from { opacity: 0; scale: .92; translate: 0 -.5rem; } }
+    .ask-pop .chat { height: 100%; box-shadow: 0 .75rem 2.5rem rgba(28, 23, 20, .22),
+                                               0 .1rem .4rem rgba(28, 23, 20, .12); }
+    @media (max-width: 720px) {
+      /* On a phone it is a sheet from the bottom, whichever button asked. */
+      .ask-pop { top: auto; right: 0; bottom: 0; width: 100%; height: min(34rem, 80vh);
+                 transform-origin: bottom center; animation-name: ask-sheet; }
+      .ask-pop .chat { border-radius: 1rem 1rem 0 0; }
+      @keyframes ask-sheet { from { translate: 0 100%; } }
+    }
+    .chat-page { height: min(42rem, calc(100vh - 9rem)); max-width: 44rem; }
+    .chat-page .chat { height: 100%; }
+
+    .chat { display: flex; flex-direction: column; min-height: 0; background: var(--card);
+            border: 1px solid var(--line); border-radius: 1rem; overflow: hidden; }
+    .chat-head { display: flex; align-items: center; gap: .5rem; padding: .6rem .6rem .6rem .9rem;
+                 border-bottom: 1px solid var(--line); }
+    .chat-head .spark { flex: none; width: .9rem; height: .9rem; color: var(--ember); }
+    .chat-title { flex: 1; min-width: 0; font-weight: 500; font-size: .92rem; overflow: hidden;
+                  text-overflow: ellipsis; white-space: nowrap; }
+    .chat-clear, .chat-close { flex: none; padding: .2rem .55rem; font: inherit; font-size: .8rem;
+                               color: var(--muted); background: transparent; cursor: pointer;
+                               border: 1px solid transparent; border-radius: .4rem; }
+    .chat-close { width: 1.8rem; height: 1.8rem; padding: 0; font-size: 1.2rem; line-height: 1; }
+    .chat-clear:hover:not(:disabled), .chat-close:hover { color: var(--ember);
+                                                          border-color: var(--line); }
+    .chat-clear:disabled { opacity: .4; cursor: default; }
+
+    .chat-log { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
+                gap: .9rem; padding: 1rem .9rem; overscroll-behavior: contain; }
+    .chat-empty { margin: auto 1rem; text-align: center; color: var(--muted); font-size: .9rem; }
+    .turn { max-width: 100%; animation: turn-in var(--dur-layout) var(--ease-out) backwards; }
+    @keyframes turn-in { from { opacity: 0; translate: 0 .4rem; } }
+    .turn p { margin: 0; }
+    /* What was asked sits in a bubble on the right; the answer is the page talking, and
+       needs no box. */
+    .turn.mine { align-self: flex-end; max-width: 85%; padding: .5rem .8rem; background: var(--sunk);
+                 border-radius: 1.1rem 1.1rem .3rem 1.1rem; white-space: pre-wrap;
+                 overflow-wrap: anywhere; transform-origin: bottom right;
+                 animation: said var(--dur-layout) var(--ease-spring) backwards; }
+    @keyframes said { from { opacity: 0; scale: .9; translate: 0 .4rem; } }
+    .turn.theirs { align-self: stretch; padding: 0 .15rem; overflow-wrap: anywhere; }
+    .turn.writing { animation: none; }
+    .rich { display: grid; gap: .55rem; font-size: .95rem; line-height: 1.55; }
+    .rich p { white-space: pre-wrap; }
+    .rich strong { font-weight: 600; }
+    .rich-heading { font-weight: 600; }
+    .rich-item { display: grid; grid-template-columns: 1.1rem 1fr; gap: .1rem; }
+    .rich-mark { color: var(--ember); font: .85em/1.8 var(--mono); }
+    .rich-code { margin: 0; padding: .6rem .7rem; overflow-x: auto; background: var(--sunk);
+                 border-radius: .5rem; font: .8rem/1.5 var(--mono); }
+    /* A value or a state: the thing the answer is about, set apart from the words around it. */
+    .rich code.value { padding: .08em .42em; font: 500 .84em var(--mono); color: var(--ember);
+                       background: color-mix(in srgb, var(--ember) 11%, transparent);
+                       border: 1px solid color-mix(in srgb, var(--ember) 26%, transparent);
+                       border-radius: .4em; white-space: nowrap; }
+    .chat-phase { display: flex; align-items: center; gap: .5rem; color: var(--muted);
+                  font-size: .82rem; }
+    .dots { display: inline-flex; gap: .22rem; }
+    .dots i { width: .38rem; height: .38rem; border-radius: 50%; background: var(--ember);
+              animation: dot 1.1s ease-in-out infinite; }
+    .dots i:nth-child(2) { animation-delay: .15s; }
+    .dots i:nth-child(3) { animation-delay: .3s; }
+    @keyframes dot { 0%, 60%, 100% { opacity: .3; translate: 0 0; }
+                     30% { opacity: 1; translate: 0 -.22rem; } }
+    .chat-trouble { margin: 0; padding: .5rem .7rem; font-size: .85rem; color: var(--error);
+                    border: 1px solid color-mix(in srgb, var(--error) 40%, transparent);
+                    border-radius: .6rem; animation: drop-in var(--dur-base) var(--ease-out); }
+
+    /* The box to ask in: one rounded field, with the send button inside it on the right. */
+    .composer { display: flex; align-items: flex-end; gap: .4rem; margin: 0 .7rem .7rem;
+                padding: .35rem .35rem .35rem .85rem; background: var(--bg);
+                border: 1px solid var(--line); border-radius: 1.25rem;
+                transition: border-color var(--dur-base) var(--ease-out),
+                            box-shadow var(--dur-base) var(--ease-out); }
+    .composer:focus-within { border-color: var(--ember);
+                             box-shadow: 0 0 0 3px color-mix(in srgb, var(--ember) 16%, transparent); }
+    .composer textarea { flex: 1; min-width: 0; max-height: 8rem; padding: .35rem 0; resize: none;
+                         font: inherit; font-size: .95rem; line-height: 1.4; color: var(--fg);
+                         background: transparent; border: none; outline: none;
+                         field-sizing: content; }
+    .composer textarea::placeholder { color: var(--muted); }
+    .send { flex: none; display: grid; place-items: center; width: 2.1rem; height: 2.1rem;
+            padding: 0; color: #fff; background: var(--ember); border: none; border-radius: 50%;
+            cursor: pointer;
+            transition: scale var(--dur-base) var(--ease-spring),
+                        background-color var(--dur-base) var(--ease-out),
+                        opacity var(--dur-base) var(--ease-out); }
+    .send svg { width: 1.05rem; height: 1.05rem; }
+    .send:hover:not(:disabled) { scale: 1.08; }
+    .send:active:not(:disabled) { scale: .92; }
+    .send:disabled { background: var(--line); color: var(--muted); cursor: default; }
+    .send.busy svg { animation: send-wait 1s var(--ease-out) infinite; }
+    @keyframes send-wait { 50% { translate: 0 -.18rem; opacity: .5; } }
+
+    /* The Settings card. It folds like the others, and says beside its name how it is set. */
+    details.assistant-card > summary { cursor: pointer; font-weight: 500; list-style: none;
+                                       display: flex; align-items: baseline; gap: .6rem; }
+    details.assistant-card > summary::-webkit-details-marker { display: none; }
+    details.assistant-card > summary::before { content: "▸"; color: var(--ember);
+                                               transition: rotate var(--dur-base) var(--ease-out); }
+    details.assistant-card[open] > summary::before { rotate: 90deg; }
+    details.assistant-card[open] > summary { margin-bottom: .6rem; }
+    .assistant-state { font: .72rem var(--mono); letter-spacing: .04em; color: var(--muted); }
+    .assistant-state.set { color: var(--ember); }
+    .assistant-card .modes { position: relative; display: grid; grid-template-columns: 1fr 1fr;
+                             padding: 4px; margin: .9rem 0 1rem; background: var(--sunk);
+                             border: 1px solid var(--line); border-radius: 999px; }
+    .assistant-card .modes-thumb { position: absolute; top: 4px; bottom: 4px; left: 4px;
+                                   width: calc((100% - 8px) / 2); border-radius: 999px;
+                                   background: var(--card); translate: calc(var(--at) * 100%) 0;
+                                   box-shadow: 0 1px 3px rgb(0 0 0 / .14);
+                                   transition: translate var(--dur-expressive) var(--ease-spring); }
+    .assistant-card .modes button { position: relative; z-index: 1; display: flex;
+                                    align-items: center; justify-content: center; gap: .4rem;
+                                    padding: .5rem .3rem; font: inherit; font-size: .9rem;
+                                    font-weight: 500; color: var(--muted); background: none;
+                                    border: 0; border-radius: 999px; cursor: pointer;
+                                    transition: color var(--dur-base) var(--ease-out); }
+    .assistant-card .modes button.on { color: var(--fg); }
+    .assistant-card .modes button:not(.on):hover { color: var(--fg); }
+    .in-use { width: .45rem; height: .45rem; border-radius: 50%; background: var(--ember); }
+    .assistant-card .mode-body { animation: rise var(--dur-layout) var(--ease-out) backwards; }
+    .assistant-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+    .assistant-actions.end { justify-content: flex-end; }
+    .assistant-card button.primary { padding: .45rem .9rem; font: inherit; font-size: .9rem;
+                                     font-weight: 500; color: #fff; background: var(--ember);
+                                     border: 1px solid var(--ember); border-radius: .4rem;
+                                     cursor: pointer; }
+    .assistant-card button.primary:disabled { opacity: .6; cursor: progress; }
+    .quiet-button.danger:hover:not(:disabled) { color: #b4342c; border-color: #b4342c; }
+    .assistant-progress { display: grid; gap: .3rem; font: .78rem var(--mono); color: var(--muted);
+                          animation: drop-in var(--dur-base) var(--ease-out); }
+    .assistant-progress .bar { height: .4rem; overflow: hidden; background: var(--sunk);
+                               border-radius: 999px; }
+    .assistant-progress .bar span { display: block; height: 100%; background: var(--ember);
+                                    border-radius: 999px;
+                                    transition: width var(--dur-expressive) var(--ease-out); }
+    /* No total yet: a band that keeps moving, so it reads as working and not as stuck. */
+    .assistant-progress.unknown .bar span { width: 35% !important;
+                                            animation: sweep 1.2s ease-in-out infinite alternate; }
+    @keyframes sweep { from { translate: -100% 0; } to { translate: 290% 0; } }
+    .assistant-models { list-style: none; margin: 0; padding: 0; display: grid; gap: .35rem; }
+    .assistant-models li { display: flex; align-items: center; gap: .6rem; padding: .4rem .6rem;
+                           border: 1px solid var(--line); border-radius: .5rem;
+                           font-size: .85rem; letter-spacing: 0; text-transform: none;
+                           transition: border-color var(--dur-base) var(--ease-out); }
+    .assistant-models li.live { border-color: var(--ember); }
+    .assistant-models li > * { letter-spacing: 0; text-transform: none; }
+    .assistant-models .name { flex: 1; min-width: 0; font-family: var(--mono);
+                              overflow-wrap: anywhere; }
+    .in-use-word { font: .72rem var(--mono); color: var(--ember); }
+    .assistant-models .loaded { margin-left: .5rem; padding: .05rem .4rem; font: .68rem var(--mono);
+                                color: var(--ember); border-radius: 999px;
+                                background: color-mix(in srgb, var(--ember) 12%, transparent);
+                                animation: pop var(--dur-layout) var(--ease-spring) backwards; }
+    .assistant-models .needs { font: .75rem var(--mono); }
+    .assistant-models .needs.tight { color: var(--warn); }
+    .assistant-memory { display: grid; gap: .3rem; font: .75rem var(--mono); color: var(--muted); }
+    .assistant-memory .bar { height: .3rem; overflow: hidden; background: var(--sunk);
+                             border-radius: 999px; }
+    .assistant-memory .bar span { display: block; height: 100%; background: var(--muted);
+                                  border-radius: 999px;
+                                  transition: width var(--dur-expressive) var(--ease-out); }
+    .assistant-ollama { display: grid; gap: .6rem; padding-bottom: .9rem;
+                        border-bottom: 1px solid var(--line); }
+    .assistant-ollama-state { margin: 0; font-size: .9rem; }
+    .assistant-card .field { display: grid; gap: .25rem; }
+    .assistant-card .field > span { color: var(--muted); font: .7rem var(--mono);
+                                    letter-spacing: .08em; }
+    .chat-waited { font: .75rem var(--mono); opacity: .8; }
+    .chat-slow { color: var(--muted); font-size: .8rem;
+                 animation: drop-in var(--dur-base) var(--ease-out); }
+    .chat-trouble p { margin: 0; }
+    .chat-trouble-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
+    .assistant-detail { margin: 0; font-size: .85rem; color: var(--warn); }
+    .assistant-detail.ok { color: var(--muted); }
+    .assistant-off { margin: 1rem 0 0; padding-top: .8rem; border-top: 1px solid var(--line); }
   </style>
 </head>
 <body></body>

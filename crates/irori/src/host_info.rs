@@ -67,8 +67,12 @@ pub fn read(data: &Path) -> HostView {
             .to_owned()
     });
     let cpu_cores = System::physical_core_count().unwrap_or(0);
-    let memory_total = system.total_memory();
-    let memory_used = system.used_memory();
+    // In a container the machine's memory is not what Irori has: the container's own limit
+    // is, and that is the number to show and to plan a model against.
+    let (memory_total, memory_used) = match allowance(Path::new("/sys/fs/cgroup")) {
+        Some((limit, used)) if limit < system.total_memory() => (limit, used),
+        _ => (system.total_memory(), system.used_memory()),
+    };
 
     HostView {
         host: System::host_name(),
@@ -89,6 +93,23 @@ pub fn read(data: &Path) -> HostView {
             used: 0,
         }),
     }
+}
+
+/// This process group's memory limit and how much of it is in use, when it has a limit
+/// (cgroup v2). Files the kernel is only caching are not counted as used: it gives them up
+/// when memory is asked for.
+fn allowance(cgroup: &Path) -> Option<(u64, u64)> {
+    let read = |name: &str| std::fs::read_to_string(cgroup.join(name)).ok();
+    let limit: u64 = read("memory.max")?.trim().parse().ok()?;
+    let current: u64 = read("memory.current")?.trim().parse().ok()?;
+    let cached = read("memory.stat")
+        .and_then(|stat| {
+            stat.lines()
+                .find_map(|line| line.strip_prefix("file "))
+                .and_then(|bytes| bytes.trim().parse::<u64>().ok())
+        })
+        .unwrap_or(0);
+    Some((limit, current.saturating_sub(cached).min(limit)))
 }
 
 /// The id of the filesystem a path is on, as the OS numbers them. Equal ids mean the same
@@ -150,5 +171,24 @@ fn disk_view(disk: &sysinfo::Disk) -> DiskView {
         total,
         available,
         used: total.saturating_sub(available),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_containers_limit_is_the_memory_there_is() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        assert_eq!(allowance(dir.path()), None);
+        std::fs::write(dir.path().join("memory.max"), "1073741824\n")?;
+        std::fs::write(dir.path().join("memory.current"), "900000000\n")?;
+        std::fs::write(dir.path().join("memory.stat"), "anon 1\nfile 800000000\n")?;
+        assert_eq!(allowance(dir.path()), Some((1_073_741_824, 100_000_000)));
+        // No limit set reads "max", and then the machine's own memory is the answer.
+        std::fs::write(dir.path().join("memory.max"), "max\n")?;
+        assert_eq!(allowance(dir.path()), None);
+        Ok(())
     }
 }

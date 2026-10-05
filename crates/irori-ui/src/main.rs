@@ -8,6 +8,7 @@
 
 mod api;
 mod app_frame;
+mod assistant;
 mod chart;
 mod choices;
 mod count;
@@ -19,6 +20,7 @@ mod gesture;
 mod glide;
 mod log_window;
 mod modal;
+mod rich;
 mod settings;
 mod settings_form;
 mod start;
@@ -55,6 +57,10 @@ pub struct Live {
     pub trouble: RwSignal<Option<String>>,
 }
 
+/// Whether a model can answer. `None` until the first look, which hides the sidebar entry.
+#[derive(Debug, Clone, Copy)]
+pub struct Assistant(pub RwSignal<Option<api::AssistantStatus>>);
+
 /// Whether the page animates: switches that spring, sliders that swell, the Live dot breathing.
 /// On unless Settings turned it off. The system's own "reduce motion" wins over this either way —
 /// that's CSS, and needs nothing from here.
@@ -74,6 +80,11 @@ fn App() -> impl IntoView {
         trouble: RwSignal::new(None),
     };
     provide_context(live);
+    let assistant = RwSignal::new(None);
+    provide_context(Assistant(assistant));
+    provide_context(assistant::Asking(RwSignal::new(None)));
+    let model_log = RwSignal::new(false);
+    provide_context(assistant::ModelLog(model_log));
 
     let busy = RwSignal::new(BTreeSet::new());
     let failures = RwSignal::new(BTreeMap::new());
@@ -137,6 +148,13 @@ fn App() -> impl IntoView {
                 && let Ok(health) = api::fetch_health().await
             {
                 live.health.set(Some(health));
+            }
+            // Same slow cadence: a model being ready changes rarely, and a chat must not
+            // wait on the two-second home poll.
+            if ticks.is_multiple_of(HEALTH_EVERY)
+                && let Ok(status) = api::fetch_assistant().await
+            {
+                assistant.set(Some(status));
             }
             ticks = ticks.wrapping_add(1);
             gloo_timers::future::sleep(REFRESH).await;
@@ -213,6 +231,16 @@ fn App() -> impl IntoView {
                             })
                             .collect_view()}
                         <AppLinks />
+                        {move || assistant.get().is_some_and(|status| status.ready).then(|| view! {
+                            <A href="/assistant" attr:title="Assistant">
+                                <svg viewBox="0 0 24 24" aria-hidden="true">
+                                    <path d="M5 6.5h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H9l-4 3v-3H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z"
+                                        fill="none" stroke="currentColor" stroke-width="1.8"
+                                        stroke-linejoin="round" />
+                                </svg>
+                                <span class="label">"Assistant"</span>
+                            </A>
+                        })}
                     </nav>
                     <div class="sidebar-bottom">
                         <A href="/settings" attr:class="settings-link" attr:title="Settings">
@@ -235,6 +263,14 @@ fn App() -> impl IntoView {
                 </aside>
 
                 <Page live=live />
+                <assistant::Popover />
+                // Over everything, the chat window included: it is opened from inside one.
+                {move || model_log.get().then(|| view! {
+                    <log_window::LogWindow
+                        source=log_window::Source::Model
+                        on_close=move || model_log.set(false)
+                    />
+                })}
             </div>
         </Router>
     }
@@ -261,6 +297,7 @@ fn Page(live: Live) -> impl IntoView {
                 <Route path=path!("/devices") view=devices::Devices />
                 <Route path=path!("/devices/:id") view=device::DevicePage />
                 <Route path=path!("/extensions") view=extensions::Extensions />
+                <Route path=path!("/assistant") view=assistant::Page />
                 <Route path=path!("/settings") view=settings::Settings />
                 <Route path=path!("/apps/:id") view=app_frame::AppPage />
                 <Route path=path!("/apps/:id/*rest") view=app_frame::AppPage />

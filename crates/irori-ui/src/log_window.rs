@@ -33,6 +33,8 @@ pub enum Source {
     Extension(String),
     /// Irori's own log: the tail of what this instance has written since it started.
     System,
+    /// The local model's: what the Ollama Irori installed has written since it last started.
+    Model,
 }
 
 impl Source {
@@ -40,6 +42,7 @@ impl Source {
         match self {
             Source::Extension(id) => crate::api::fetch_extension_log(id).await,
             Source::System => crate::api::fetch_system_log().await,
+            Source::Model => crate::api::fetch_model_log().await,
         }
     }
 
@@ -66,6 +69,13 @@ impl Source {
                  terminal, or the service log of a container or a systemd unit.",
                 "Nothing yet. Irori shows what it has logged, and how much there is depends on \
                  the level set by --log-level or [server] log_level in irori.toml.",
+            ),
+            Source::Model => (
+                "Model log".to_owned(),
+                "What the Ollama on this machine has said since it last started, oldest first: \
+                 a model loading, how much memory it asked for, and why it stopped if it did. \
+                 The whole of it is ollama.log in Irori's data directory.",
+                "Nothing yet. Ollama writes here once it has started and been asked for a model.",
             ),
         }
     }
