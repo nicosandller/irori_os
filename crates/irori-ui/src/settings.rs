@@ -185,6 +185,9 @@ pub fn Settings() -> impl IntoView {
         <div class="page-head">
             <h1>"Settings"</h1>
             <div class="page-actions">
+                // The same Ask as a device's page has, about the whole home. Before a model is
+                // ready it opens the Assistant card below, which is on this page.
+                <crate::assistant::Ask scope="general".to_owned() title="your home".to_owned() />
                 <button
                     type="button"
                     // Disabled while a restart is under way, and until the first health says which
