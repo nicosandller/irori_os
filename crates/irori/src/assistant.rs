@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use futures_util::StreamExt as _;
 use irori_assist::{
-    AnthropicParser, AssistantFile, BriefLine, CloudPreset, DEFAULT_TAG, Mode, OllamaParser,
+    AnthropicParser, AssistantFile, BriefLine, CloudPreset, DEFAULT_TAG, Lines, Mode, OllamaParser,
     OpenAiParser, Piece, Role, ToolCall, Turn as Remembered, anthropic_tools, assemble,
     cloud_ready, device_brief, execute_round, home_brief, library_page, openai_tools,
 };
@@ -25,6 +25,10 @@ const OLLAMA: &str = "http://127.0.0.1:11434";
 const ASSISTANT: &str = "assistant";
 /// Sent internally when the page has gone. It is not shown, and the turn is not stored.
 const CLIENT_LEFT: &str = "client left";
+/// How long a model or a download may say nothing before it is given up on. Long, because a
+/// small machine can take minutes to load a model before the first word.
+const QUIET: Duration = Duration::from_secs(300);
+const WENT_QUIET: &str = "the model stopped answering";
 
 /// What the Settings page and the sidebar need. The key itself is never in here.
 #[derive(Debug, Serialize)]
@@ -213,14 +217,13 @@ pub async fn pull(config: &Config, tag: &str, tx: mpsc::Sender<ChatEvent>) {
         return;
     }
     let client = client();
-    let response = client
+    let request = client
         .post(format!("{OLLAMA}/api/pull"))
         .json(&json!({ "model": tag, "stream": true }))
-        .send()
-        .await;
-    let response = match response {
-        Ok(response) if response.status().is_success() => response,
-        Ok(response) => {
+        .send();
+    let response = match waited(&tx, request).await {
+        Ok(Ok(response)) if response.status().is_success() => response,
+        Ok(Ok(response)) => {
             let _ = tx
                 .send(ChatEvent::Error(format!(
                     "Ollama refused the download ({}).",
@@ -229,7 +232,8 @@ pub async fn pull(config: &Config, tag: &str, tx: mpsc::Sender<ChatEvent>) {
                 .await;
             return;
         }
-        Err(_) => {
+        Err(error) if error == CLIENT_LEFT => return,
+        Ok(Err(_)) | Err(_) => {
             let _ = tx
                 .send(ChatEvent::Error(
                     "Ollama isn't running on this machine, so there's nowhere to download the model."
@@ -240,18 +244,23 @@ pub async fn pull(config: &Config, tag: &str, tx: mpsc::Sender<ChatEvent>) {
         }
     };
     let mut stream = response.bytes_stream();
+    let mut lines = Lines::default();
     let mut failed = false;
-    while let Some(chunk) = stream.next().await {
-        let Ok(chunk) = chunk else {
-            failed = true;
-            break;
+    loop {
+        let chunk = match waited(&tx, stream.next()).await {
+            Ok(Some(Ok(chunk))) => chunk,
+            Ok(None) => break,
+            Err(error) if error == CLIENT_LEFT => return,
+            Ok(Some(Err(_))) | Err(_) => {
+                failed = true;
+                break;
+            }
         };
-        let text = String::from_utf8_lossy(&chunk);
-        for line in text.lines() {
+        for line in lines.push(&chunk) {
             if line.is_empty() {
                 continue;
             }
-            let Ok(value) = serde_json::from_str::<Value>(line) else {
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
             if let Some(error) = value.get("error").and_then(|error| error.as_str()) {
@@ -311,7 +320,7 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
             return;
         }
     };
-    let mut turns = match load_turns(env.db, &scope) {
+    let turns = match load_turns(env.db, &scope) {
         Ok(turns) => turns,
         Err(error) => {
             let _ = tx.send(ChatEvent::Error(error)).await;
@@ -327,28 +336,43 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
         }
     };
     let mut rounds = 0u8;
-    let text = loop {
+    // Everything the page was sent, so what is remembered is what was read.
+    let mut text = String::new();
+    loop {
         if tx.is_closed() {
             return;
         }
         let with_tools = execute_round(rounds);
         match complete(&provider, &conversation, with_tools, &tx).await {
-            Ok(Outcome::Text(text)) => break text,
-            Ok(Outcome::Tools(calls)) if with_tools => {
+            Ok(Outcome::Text(said)) => {
+                text.push_str(&said);
+                break;
+            }
+            Ok(Outcome::Tools { said, calls }) => {
+                // A model often says a word before it reaches for a tool. The page already has
+                // it, so the answer carries on below it.
+                if !said.trim().is_empty() {
+                    text.push_str(&said);
+                    text.push_str("\n\n");
+                    if tx.send(ChatEvent::Delta("\n\n".into())).await.is_err() {
+                        return;
+                    }
+                    conversation.items.push(Item::Assistant(said));
+                }
                 for call in calls {
                     let result = run_tool(&env, &call);
                     conversation.tool(&call, &result);
                 }
                 rounds += 1;
             }
-            Ok(Outcome::Tools(_)) => break String::new(),
             Err(error) if error == CLIENT_LEFT => return,
             Err(error) => {
                 let _ = tx.send(ChatEvent::Error(scrub(&error, &key))).await;
                 return;
             }
         }
-    };
+    }
+    let text = text.trim_end().to_owned();
     if tx.is_closed() {
         return;
     }
@@ -358,21 +382,17 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
             .await;
         return;
     }
-    irori_assist::append_capped(
-        &mut turns,
+    let said = [
         Remembered {
             role: Role::User,
             body: message,
         },
-    );
-    irori_assist::append_capped(
-        &mut turns,
         Remembered {
             role: Role::Assistant,
             body: text,
         },
-    );
-    if let Err(error) = store_turns(env.db, &scope, &turns) {
+    ];
+    if let Err(error) = store_turns(env.db, &scope, said) {
         let _ = tx.send(ChatEvent::Error(error)).await;
         return;
     }
@@ -381,7 +401,11 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
 
 enum Outcome {
     Text(String),
-    Tools(Vec<ToolCall>),
+    /// The model wants tools run. `said` is whatever it wrote first, already sent to the page.
+    Tools {
+        said: String,
+        calls: Vec<ToolCall>,
+    },
 }
 
 enum Provider {
@@ -517,7 +541,9 @@ async fn complete(
             (client.post(format!("{OLLAMA}/api/chat")).json(&body), "")
         }
     };
-    let response = request.send().await.map_err(|error| error.to_string())?;
+    let response = waited(tx, request.send())
+        .await?
+        .map_err(|error| error.to_string())?;
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
@@ -529,13 +555,11 @@ async fn complete(
     let mut stream = response.bytes_stream();
     let mut text = String::new();
     let mut parts = Vec::new();
-    let mut forwarding = false;
     let mut openai = OpenAiParser::default();
     let mut ollama = OllamaParser::default();
     let mut anthropic = AnthropicParser::default();
-    while let Some(chunk) = stream.next().await {
+    while let Some(chunk) = waited(tx, stream.next()).await? {
         let chunk = chunk.map_err(|error| error.to_string())?;
-        let chunk = String::from_utf8_lossy(&chunk);
         let pieces: Vec<Piece> = match provider {
             Provider::OpenAi { .. } => openai.push(&chunk),
             Provider::Ollama { .. } => ollama.push(&chunk),
@@ -544,12 +568,9 @@ async fn complete(
         for piece in pieces {
             match piece {
                 Piece::Text(delta) => {
-                    if parts.is_empty() {
-                        forwarding = true;
-                        text.push_str(&delta);
-                        if tx.send(ChatEvent::Delta(delta)).await.is_err() {
-                            return Err(CLIENT_LEFT.to_owned());
-                        }
+                    text.push_str(&delta);
+                    if tx.send(ChatEvent::Delta(delta)).await.is_err() {
+                        return Err(CLIENT_LEFT.to_owned());
                     }
                 }
                 Piece::Tool {
@@ -557,26 +578,33 @@ async fn complete(
                     id,
                     name,
                     arguments,
-                } => {
-                    if !forwarding {
-                        parts.push((index, id, name, arguments));
-                    }
-                }
+                } => parts.push((index, id, name, arguments)),
                 Piece::Done => {}
             }
         }
     }
-    if !parts.is_empty() && !forwarding {
-        return Ok(Outcome::Tools(assemble(
-            &parts
-                .iter()
-                .map(|(index, id, name, arguments)| {
-                    (*index, id.clone(), name.clone(), arguments.clone())
-                })
-                .collect::<Vec<_>>(),
-        )));
+    // Tools asked for on the round that wasn't offered any are ignored: the words stand.
+    let calls = if with_tools {
+        assemble(&parts)
+    } else {
+        Vec::new()
+    };
+    if calls.is_empty() {
+        Ok(Outcome::Text(text))
+    } else {
+        Ok(Outcome::Tools { said: text, calls })
     }
-    Ok(Outcome::Text(text))
+}
+
+/// Waits for `work`, but not past the page leaving or the far end going quiet.
+async fn waited<T>(
+    tx: &mpsc::Sender<ChatEvent>,
+    work: impl Future<Output = T>,
+) -> Result<T, String> {
+    tokio::select! {
+        _ = tx.closed() => Err(CLIENT_LEFT.to_owned()),
+        done = tokio::time::timeout(QUIET, work) => done.map_err(|_| WENT_QUIET.to_owned()),
+    }
 }
 
 fn openai_messages(conversation: &Conversation) -> Vec<Value> {
@@ -851,6 +879,7 @@ async fn tags() -> Result<Vec<RemoteModel>, ()> {
 
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 }
@@ -922,6 +951,9 @@ fn check_scope(scope: &str) -> Result<(), String> {
 
 fn open_db(db: &Path) -> Result<rusqlite::Connection, String> {
     let conn = rusqlite::Connection::open(db).map_err(|error| error.to_string())?;
+    // The rest of the app writes this file too. Wait for it instead of failing at once.
+    conn.busy_timeout(Duration::from_secs(5))
+        .map_err(|error| error.to_string())?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS assistant_message (
             scope TEXT NOT NULL,
@@ -957,22 +989,68 @@ fn load_turns(db: &Path, scope: &str) -> Result<Vec<Remembered>, String> {
     Ok(turns)
 }
 
-fn store_turns(db: &Path, scope: &str, turns: &[Remembered]) -> Result<(), String> {
+/// Adds one exchange to `scope` and drops what no longer fits.
+///
+/// The scope is read again here, under the write lock, so an exchange that finished while this
+/// one was waiting on the model is kept. Rows that stay keep their `created_at`, which is what
+/// [`trim_global`] goes by.
+fn store_turns(db: &Path, scope: &str, said: [Remembered; 2]) -> Result<(), String> {
     let mut conn = open_db(db)?;
-    let tx = conn.transaction().map_err(|error| error.to_string())?;
-    tx.execute("DELETE FROM assistant_message WHERE scope = ?1", [scope])
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|error| error.to_string())?;
+    let mut seqs = Vec::new();
+    let mut turns = Vec::new();
+    {
+        let mut statement = tx
+            .prepare("SELECT seq, role, body FROM assistant_message WHERE scope = ?1 ORDER BY seq")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([scope], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?;
+        for row in rows {
+            let (seq, role, body) = row.map_err(|error| error.to_string())?;
+            let Some(role) = Role::parse(&role) else {
+                continue;
+            };
+            seqs.push(seq);
+            turns.push(Remembered { role, body });
+        }
+    }
+    let had = turns.len();
+    let next = seqs.last().map_or(0, |seq| seq + 1);
+    let added = said.len();
+    for turn in said {
+        irori_assist::append_capped(&mut turns, turn);
+    }
+    // `append_capped` only drops from the front, so what is left is the tail of old and new.
+    let dropped = had + added - turns.len();
+    match seqs.get(dropped) {
+        Some(first_kept) => tx.execute(
+            "DELETE FROM assistant_message WHERE scope = ?1 AND seq < ?2",
+            (scope, first_kept),
+        ),
+        None => tx.execute("DELETE FROM assistant_message WHERE scope = ?1", [scope]),
+    }
+    .map_err(|error| error.to_string())?;
     let created = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
-    for (seq, turn) in turns.iter().enumerate() {
+    let kept_old = had.saturating_sub(dropped);
+    for (n, turn) in turns[kept_old..].iter().enumerate() {
         tx.execute(
             "INSERT INTO assistant_message (scope, seq, role, body, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             (
                 scope,
-                seq as i64,
+                next + n as i64,
                 turn.role.as_str(),
                 turn.body.as_str(),
                 format!("{created:020}"),
@@ -1075,4 +1153,84 @@ pub async fn take_turn(
     tx: mpsc::Sender<ChatEvent>,
 ) {
     answer(turn.env(), scope, message, tx).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn exchange(ask: &str, reply: &str) -> [Remembered; 2] {
+        [
+            Remembered {
+                role: Role::User,
+                body: ask.to_owned(),
+            },
+            Remembered {
+                role: Role::Assistant,
+                body: reply.to_owned(),
+            },
+        ]
+    }
+
+    fn stamps(db: &Path, scope: &str) -> anyhow::Result<Vec<String>> {
+        let conn = open_db(db).map_err(anyhow::Error::msg)?;
+        let mut statement =
+            conn.prepare("SELECT created_at FROM assistant_message WHERE scope = ?1 ORDER BY seq")?;
+        let rows = statement.query_map([scope], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    fn store(db: &Path, ask: &str, reply: &str) -> anyhow::Result<()> {
+        store_turns(db, "general", exchange(ask, reply)).map_err(anyhow::Error::msg)
+    }
+
+    fn kept(db: &Path) -> anyhow::Result<Vec<Remembered>> {
+        load_turns(db, "general").map_err(anyhow::Error::msg)
+    }
+
+    #[test]
+    fn an_exchange_is_added_to_what_is_there_and_not_written_over_it() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = dir.path().join("irori.db");
+        // Both of these read the scope while it was empty, as two overlapping asks would.
+        store(&db, "one", "first")?;
+        store(&db, "two", "second")?;
+        let bodies: Vec<String> = kept(&db)?.into_iter().map(|turn| turn.body).collect();
+        assert_eq!(bodies, ["one", "first", "two", "second"]);
+        Ok(())
+    }
+
+    #[test]
+    fn older_turns_keep_the_time_they_were_said() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = dir.path().join("irori.db");
+        store(&db, "one", "first")?;
+        let before = stamps(&db, "general")?;
+        std::thread::sleep(Duration::from_millis(5));
+        store(&db, "two", "second")?;
+        let after = stamps(&db, "general")?;
+        assert_eq!(after[..2], before[..]);
+        assert!(after[2] > before[1]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_full_view_drops_its_oldest_turns() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = dir.path().join("irori.db");
+        for n in 0..irori_assist::LIMIT_MESSAGES {
+            store(&db, &format!("ask {n}"), "reply")?;
+        }
+        let turns = kept(&db)?;
+        assert_eq!(turns.len(), irori_assist::LIMIT_MESSAGES);
+        assert_eq!(
+            turns[0].body,
+            format!("ask {}", irori_assist::LIMIT_MESSAGES / 2)
+        );
+        store(&db, "big", &"x".repeat(irori_assist::LIMIT_BYTES + 10))?;
+        let turns = kept(&db)?;
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].body.len(), irori_assist::LIMIT_BYTES);
+        Ok(())
+    }
 }

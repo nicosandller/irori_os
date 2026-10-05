@@ -14,6 +14,8 @@ pub use config::{
     AssistantFile, CloudPreset, DEFAULT_TAG, Mode, cloud_ready, library_page, local_fits,
 };
 pub use prompt::{BriefLine, device_brief, home_brief};
-pub use stream::{AnthropicParser, OllamaParser, OpenAiParser, Piece};
-pub use tools::{TOOL_ROUNDS, ToolCall, anthropic_tools, assemble, execute_round, openai_tools};
+pub use stream::{AnthropicParser, Lines, OllamaParser, OpenAiParser, Piece};
+pub use tools::{
+    LIMIT_CALLS, TOOL_ROUNDS, ToolCall, anthropic_tools, assemble, execute_round, openai_tools,
+};
 pub use transcript::{LIMIT_BYTES, LIMIT_GLOBAL_BYTES, LIMIT_MESSAGES, Role, Turn, append_capped};

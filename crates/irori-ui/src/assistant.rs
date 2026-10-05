@@ -11,6 +11,17 @@ use leptos_router::hooks::{use_location, use_navigate};
 use crate::Assistant;
 use crate::api::{self, AssistantStatus};
 
+/// Where Ask goes: the chat at `path` when a model is ready and there is a chat to open, and
+/// the Settings card otherwise.
+pub fn destination(assistant: Assistant, path: Option<String>) -> String {
+    let ready = assistant
+        .0
+        .get_untracked()
+        .is_some_and(|status| status.ready);
+    path.filter(|_| ready)
+        .unwrap_or_else(|| "/settings#assistant".to_owned())
+}
+
 /// Opens the chat for `path` when a model is ready, and Settings otherwise.
 #[component]
 pub fn Ask(path: String) -> impl IntoView {
@@ -23,13 +34,7 @@ pub fn Ask(path: String) -> impl IntoView {
             class:ask-quiet=quiet
             title="Ask"
             on:click=move |_| {
-                let ready = assistant.0.get_untracked().is_some_and(|status| status.ready);
-                let dest = if ready {
-                    path.clone()
-                } else {
-                    "/settings#assistant".to_owned()
-                };
-                navigate(&dest, Default::default());
+                navigate(&destination(assistant, Some(path.clone())), Default::default());
             }
         >
             "Ask"

@@ -3709,6 +3709,22 @@ mod tests {
                     if body["model"] == "broken" {
                         return (StatusCode::BAD_GATEWAY, "the provider said no").into_response();
                     }
+                    // Says a word, then reaches for a tool; answers once the tool has reported.
+                    if body["model"] == "looks-first" {
+                        let looked = body["messages"]
+                            .as_array()
+                            .is_some_and(|messages| messages.iter().any(|m| m["role"] == "tool"));
+                        let stream = if looked {
+                            "data: {\"choices\":[{\"delta\":{\"content\":\"Nothing is on.\"}}]}\n\ndata: [DONE]\n\n"
+                        } else {
+                            "data: {\"choices\":[{\"delta\":{\"content\":\"Let me check.\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"list_devices\",\"arguments\":\"{}\"}}]}}]}\n\ndata: [DONE]\n\n"
+                        };
+                        return (
+                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                            stream,
+                        )
+                            .into_response();
+                    }
                     (
                         [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
                         "data: {\"choices\":[{\"delta\":{\"content\":\"Hello from the model\"}}]}\n\ndata: [DONE]\n\n",
@@ -3811,6 +3827,22 @@ mod tests {
             assert!(failed.contains("error"), "{failed}");
             let home = server.read("/api/dev/assistant/transcript/general").await?;
             assert_eq!(home.as_array().map(Vec::len), Some(2));
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn a_tool_asked_for_after_a_few_words_is_still_run() -> anyhow::Result<()> {
+            let base = cloud().await;
+            let server = Server::new(core())?;
+            let (status, body) = server
+                .json("PUT", "/api/dev/assistant", configure(&base, "looks-first"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let reply = events(&server, "general", "What is on?").await?;
+            assert!(reply.contains("Let me check."), "{reply}");
+            assert!(reply.contains("Nothing is on."), "{reply}");
+            let home = server.read("/api/dev/assistant/transcript/general").await?;
+            assert_eq!(home[1]["body"], "Let me check.\n\nNothing is on.");
             Ok(())
         }
 

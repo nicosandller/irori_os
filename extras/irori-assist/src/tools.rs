@@ -81,10 +81,18 @@ pub fn anthropic_tools() -> Value {
     ])
 }
 
-/// Joins streamed tool fragments that share an index into one call each.
+/// The highest fragment index [`assemble`] reads, plus one. The index is the provider's word,
+/// and Anthropic counts every block of the answer, so this is roomier than the tool list.
+pub const LIMIT_CALLS: usize = 16;
+
+/// Joins streamed tool fragments that share an index into one call each. A fragment whose
+/// index is past [`LIMIT_CALLS`] is dropped.
 pub fn assemble(parts: &[(usize, Option<String>, Option<String>, String)]) -> Vec<ToolCall> {
     let mut calls: Vec<ToolCall> = Vec::new();
     for (index, id, name, arguments) in parts {
+        if *index >= LIMIT_CALLS {
+            continue;
+        }
         if calls.len() <= *index {
             calls.resize(
                 index + 1,
@@ -143,6 +151,41 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "get_device");
         assert_eq!(calls[0].arguments, "{\"id\":\"lamp\"}");
+    }
+
+    #[test]
+    fn a_call_after_a_block_of_text_is_still_found() {
+        let calls = assemble(&[
+            (
+                1,
+                Some("a".into()),
+                Some("list_devices".into()),
+                String::new(),
+            ),
+            (1, None, None, "{}".into()),
+        ]);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "list_devices");
+    }
+
+    #[test]
+    fn an_absurd_index_is_dropped_instead_of_allocated() {
+        let calls = assemble(&[
+            (
+                usize::MAX,
+                Some("a".into()),
+                Some("get_device".into()),
+                "{}".into(),
+            ),
+            (
+                0,
+                Some("b".into()),
+                Some("list_devices".into()),
+                String::new(),
+            ),
+        ]);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "list_devices");
     }
 
     #[test]

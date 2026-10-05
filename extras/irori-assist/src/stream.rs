@@ -1,7 +1,8 @@
 //! One provider's bytes, in whatever size they arrived, turned into text or a tool call.
 //!
 //! A chunk may split a line in half. Each parser keeps the unfinished tail and only reads a
-//! line once it has the newline.
+//! line once it has the newline. The tail is kept as bytes, so a character cut in half by a
+//! chunk boundary is whole again by the time it is read.
 
 /// What one complete event was.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,20 +19,22 @@ pub enum Piece {
     Done,
 }
 
+/// Bytes as they arrive, handed back one whole line at a time.
+///
+/// It keeps bytes, not text: a chunk may also end halfway through a character, and decoding
+/// that half on its own would spoil it.
 #[derive(Debug, Default)]
-struct Buf {
-    pending: String,
+pub struct Lines {
+    pending: Vec<u8>,
 }
 
-impl Buf {
-    fn push_lines(&mut self, chunk: &str) -> Vec<String> {
-        self.pending.push_str(chunk);
+impl Lines {
+    pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
+        self.pending.extend_from_slice(chunk);
         let mut lines = Vec::new();
-        while let Some(at) = self.pending.find('\n') {
-            let mut line = self.pending.drain(..=at).collect::<String>();
-            if line.ends_with('\n') {
-                line.pop();
-            }
+        while let Some(at) = self.pending.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = self.pending.drain(..=at).collect();
+            let mut line = String::from_utf8_lossy(&line[..at]).into_owned();
             if line.ends_with('\r') {
                 line.pop();
             }
@@ -44,13 +47,13 @@ impl Buf {
 /// OpenAI-compatible chat completions, `stream: true`.
 #[derive(Debug, Default)]
 pub struct OpenAiParser {
-    buf: Buf,
+    buf: Lines,
 }
 
 impl OpenAiParser {
-    pub fn push(&mut self, chunk: &str) -> Vec<Piece> {
+    pub fn push(&mut self, chunk: impl AsRef<[u8]>) -> Vec<Piece> {
         let mut pieces = Vec::new();
-        for line in self.buf.push_lines(chunk) {
+        for line in self.buf.push(chunk.as_ref()) {
             let Some(data) = line.strip_prefix("data:") else {
                 continue;
             };
@@ -92,13 +95,13 @@ impl OpenAiParser {
 /// Ollama's own `/api/chat` stream: one JSON object per line.
 #[derive(Debug, Default)]
 pub struct OllamaParser {
-    buf: Buf,
+    buf: Lines,
 }
 
 impl OllamaParser {
-    pub fn push(&mut self, chunk: &str) -> Vec<Piece> {
+    pub fn push(&mut self, chunk: impl AsRef<[u8]>) -> Vec<Piece> {
         let mut pieces = Vec::new();
-        for line in self.buf.push_lines(chunk) {
+        for line in self.buf.push(chunk.as_ref()) {
             if line.is_empty() {
                 continue;
             }
@@ -139,15 +142,15 @@ impl OllamaParser {
 /// Anthropic's `/v1/messages` stream.
 #[derive(Debug, Default)]
 pub struct AnthropicParser {
-    buf: Buf,
+    buf: Lines,
     /// The event name from the line above the data line.
     event: String,
 }
 
 impl AnthropicParser {
-    pub fn push(&mut self, chunk: &str) -> Vec<Piece> {
+    pub fn push(&mut self, chunk: impl AsRef<[u8]>) -> Vec<Piece> {
         let mut pieces = Vec::new();
-        for line in self.buf.push_lines(chunk) {
+        for line in self.buf.push(chunk.as_ref()) {
             if let Some(name) = line.strip_prefix("event:") {
                 self.event = name.trim().to_owned();
                 continue;
@@ -208,6 +211,19 @@ mod tests {
         );
         let pieces = parser.push("tent\":\"Hi\"}}]}\n\ndata: [DONE]\n");
         assert_eq!(pieces, vec![Piece::Text("Hi".into()), Piece::Done]);
+    }
+
+    #[test]
+    fn a_character_split_across_chunks_arrives_whole() {
+        let line = "{\"message\":{\"content\":\"café 🙂\"},\"done\":false}\n".as_bytes();
+        let cut = line.len() - 20;
+        assert!(std::str::from_utf8(&line[..cut]).is_err());
+        let mut parser = OllamaParser::default();
+        assert!(parser.push(&line[..cut]).is_empty());
+        assert_eq!(
+            parser.push(&line[cut..]),
+            vec![Piece::Text("café 🙂".into())]
+        );
     }
 
     #[test]

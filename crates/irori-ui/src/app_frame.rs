@@ -238,15 +238,8 @@ fn Frame(id: String) -> impl IntoView {
                 // The sandboxed editor can't open the shell's chat, so it asks and this end goes.
                 "assistant" => {
                     let flow = request.args["id"].as_str().unwrap_or_default().trim();
-                    let ready = assistant
-                        .0
-                        .get_untracked()
-                        .is_some_and(|status| status.ready);
-                    let dest = if ready && !flow.is_empty() {
-                        format!("/assistant/automation/{flow}")
-                    } else {
-                        "/settings#assistant".to_owned()
-                    };
+                    let path = (!flow.is_empty()).then(|| format!("/assistant/automation/{flow}"));
+                    let dest = crate::assistant::destination(assistant, path);
                     navigate(&dest, Default::default());
                     post(&Reply::answer(request.id, Ok(serde_json::Value::Null)));
                 }
