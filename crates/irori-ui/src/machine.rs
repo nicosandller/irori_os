@@ -77,6 +77,7 @@ pub fn Panel(#[prop(into)] open: Signal<bool>) -> impl IntoView {
                 Some(Err(why)) => Some(view! { <p class="why">{why}</p> }),
                 _ => None,
             }}
+            {move || facts(live.health.get(), machine.get())}
             <div class="meters">
                 {meter(
                     Meter {
@@ -167,7 +168,6 @@ pub fn Panel(#[prop(into)] open: Signal<bool>) -> impl IntoView {
                     })
                 }}
             </div>
-            {move || facts(live.health.get(), machine.get())}
         </div>
     }
 }

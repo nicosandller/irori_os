@@ -24,6 +24,19 @@ pub enum Icon {
     Disk,
     Processor,
     Temperature,
+    // Saving and putting away what was being typed.
+    Check,
+    Close,
+    Gear,
+    // A player's buttons.
+    Play,
+    Pause,
+    Stop,
+    Previous,
+    Next,
+    Power,
+    Volume,
+    Muted,
 }
 
 /// What's drawn inside the icon's 24 × 24 box. Written here and nowhere else, so it's safe to
@@ -79,6 +92,30 @@ fn drawing(icon: Icon) -> &'static str {
         ),
         Icon::Temperature => {
             r#"<path d="M14 14.8V5a2 2 0 0 0-4 0v9.8a4 4 0 1 0 4 0Z"/><path d="M12 9v8"/>"#
+        }
+        Icon::Check => r#"<path d="M5 12.5l4.5 4.5L19 7.5"/>"#,
+        Icon::Close => r#"<path d="M6 6l12 12M18 6 6 18"/>"#,
+        Icon::Gear => concat!(
+            r#"<circle cx="12" cy="12" r="3"/>"#,
+            r#"<path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1"#,
+            r#"M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>"#,
+        ),
+        Icon::Play => r#"<path d="M8 5.5v13l10.5-6.500Z" fill="currentColor"/>"#,
+        Icon::Pause => r#"<path d="M9 5.500v13M15 5.500v13" stroke-width="2.600"/>"#,
+        Icon::Stop => {
+            r#"<rect x="6.500" y="6.500" width="11" height="11" rx="1.500" fill="currentColor"/>"#
+        }
+        Icon::Previous => {
+            r#"<path d="M18 6v12l-8.500-6Z" fill="currentColor"/><path d="M6.500 6v12"/>"#
+        }
+        Icon::Next => r#"<path d="M6 6v12l8.500-6Z" fill="currentColor"/><path d="M17.500 6v12"/>"#,
+        Icon::Power => r#"<path d="M12 3.500v8"/><path d="M7.050 6.500a7 7 0 1 0 9.900 0"/>"#,
+        Icon::Volume => concat!(
+            r#"<path d="M4 9.500h3l4.500-4v13l-4.500-4H4Z"/>"#,
+            r#"<path d="M15.500 9a4 4 0 0 1 0 6M18 6.500a7.500 7.500 0 0 1 0 11"/>"#,
+        ),
+        Icon::Muted => {
+            r#"<path d="M4 9.500h3l4.500-4v13l-4.500-4H4Z"/><path d="m16 9.500 5 5M21 9.500l-5 5"/>"#
         }
     }
 }

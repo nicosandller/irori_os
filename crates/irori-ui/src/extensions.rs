@@ -23,6 +23,10 @@ pub fn Extensions() -> impl IntoView {
     // An extension with full access to the machine doesn't install on the first click. This is
     // the one waiting for that approval.
     let confirm_install = RwSignal::new(None::<String>);
+    // Which extension's whole story is open: a card says what fits, and this is the rest.
+    let more_open = RwSignal::new(None::<String>);
+    // The extensions whose own log has an error in it, for the mark on their log button.
+    let log_errors = RwSignal::new(std::collections::BTreeSet::<String>::new());
 
     let reload = move || {
         spawn_local(async move {
@@ -36,6 +40,35 @@ pub fn Extensions() -> impl IntoView {
         });
     };
     reload();
+
+    // Looked for when the page opens and whenever what's installed changes — not with every
+    // refresh of the catalog, which while something installs is once a second.
+    let installed = Memo::new(move |_| {
+        catalog.with(|catalog| {
+            catalog
+                .iter()
+                .filter(|entry| entry.installed)
+                .map(|entry| entry.id.clone())
+                .collect::<Vec<_>>()
+        })
+    });
+    Effect::new(move |_| {
+        for id in installed.get() {
+            spawn_local(async move {
+                let Ok(lines) = api::fetch_extension_log(&id).await else {
+                    return;
+                };
+                let (_, _, errors) = crate::log_window::tally(&lines);
+                log_errors.update(|marked| {
+                    if errors > 0 {
+                        marked.insert(id);
+                    } else {
+                        marked.remove(&id);
+                    }
+                });
+            });
+        }
+    });
 
     // The categories actually present, in the order the catalog lists them, so a quick filter
     // never offers a choice that would show nothing.
@@ -134,6 +167,8 @@ pub fn Extensions() -> impl IntoView {
                                         settings_open,
                                         log_open,
                                         confirm_install,
+                                        more_open,
+                                        log_errors,
                                     )
                                 })
                                 .collect_view()
@@ -165,6 +200,50 @@ pub fn Extensions() -> impl IntoView {
                             reload();
                         }
                     />
+                </crate::modal::Modal>
+            })
+        }}
+
+        // Everything a card had no room for: the whole description, what access it has, how it
+        // is faring and why, and what it found that Irori can't use yet.
+        {move || {
+            let id = more_open.get()?;
+            let entry = catalog.get().into_iter().find(|entry| entry.id == id)?;
+            let unmodeled = unplaced_unmodeled(&id);
+            let log_id = id.clone();
+            Some(view! {
+                <crate::modal::Modal title=entry.name.clone() on_close=move || more_open.set(None)>
+                    <div class="ext-more">
+                        <p class="muted small">
+                            {category_label(&entry.category)}" · "{entry.version.clone()}
+                            {entry.state.clone().map(|state| format!(" · {}", state.replace('_', " ")))}
+                        </p>
+                        <p>{entry.description.clone()}</p>
+                        {entry.full_access.then(|| view! {
+                            <p class="ext-access">
+                                "Full access to this machine: it can download and run other "
+                                "programs, the same as a terminal."
+                            </p>
+                        })}
+                        {entry.reason.clone().map(|why| view! {
+                            <p class="why">{why}</p>
+                            {entry.installed.then(|| view! {
+                                <p>
+                                    <button
+                                        type="button"
+                                        class="quiet-button"
+                                        on:click=move |_| {
+                                            more_open.set(None);
+                                            log_open.set(Some(log_id.clone()));
+                                        }
+                                    >
+                                        "View log"
+                                    </button>
+                                </p>
+                            })}
+                        })}
+                        {unmodeled.map(|text| view! { <p class="muted small">{text}</p> })}
+                    </div>
                 </crate::modal::Modal>
             })
         }}
@@ -220,6 +299,10 @@ pub fn Extensions() -> impl IntoView {
     }
 }
 
+/// One extension: what it is in a couple of lines, and its buttons. Every card is the same
+/// height whatever its extension has to say; the rest is behind "Show more". What's wrong with
+/// one isn't written on its card — the mark on its log button says there is something to read.
+#[allow(clippy::too_many_arguments)]
 fn card(
     entry: CatalogEntry,
     busy: RwSignal<Option<String>>,
@@ -228,14 +311,16 @@ fn card(
     settings_open: RwSignal<Option<String>>,
     log_open: RwSignal<Option<String>>,
     confirm_install: RwSignal<Option<String>>,
+    more_open: RwSignal<Option<String>>,
+    log_errors: RwSignal<std::collections::BTreeSet<String>>,
 ) -> impl IntoView {
     let id = entry.id.clone();
     let id_busy = id.clone();
     let id_click = id.clone();
     let id_gear = id.clone();
     let id_log = id.clone();
-    let id_log_btn = id.clone();
-    let id_unmodeled = id.clone();
+    let id_more = id.clone();
+    let id_marked = id.clone();
     let installed = entry.installed;
     let full_access = entry.full_access;
     let running = entry.state.as_deref() == Some("running");
@@ -243,6 +328,9 @@ fn card(
     // the way out is the very button next to this.
     let needs_setup = entry.state.as_deref() == Some("needs_setup");
     let schema = entry.config_schema.clone();
+    // Irori's own word that something went wrong, or an error in what the extension wrote.
+    let failing = entry.reason.is_some();
+    let troubled = move || failing || log_errors.with(|marked| marked.contains(&id_marked));
     // A `Memo` rather than a plain closure: it's `Copy`, so the same check can be read from the
     // button's `disabled`, its progress bar, and its label without cloning the id three times.
     let is_busy = Memo::new(move |_| busy.get().as_deref() == Some(id_busy.as_str()));
@@ -259,36 +347,22 @@ fn card(
                     <span class="muted small">{entry.version.clone()}</span>
                 </div>
             </div>
-            {entry.state.clone().map(|state| view! {
-                <span class="state" class:ok=running class:wants-setup=needs_setup>
-                    {state.replace('_', " ")}
-                </span>
-            })}
+            <div class="ext-standing">
+                {entry.state.clone().map(|state| view! {
+                    <span class="state" class:ok=running class:wants-setup=needs_setup>
+                        {state.replace('_', " ")}
+                    </span>
+                })}
+                {full_access.then(|| view! { <span class="chip quiet ext-full">"full access"</span> })}
+            </div>
             <p class="muted ext-description">{entry.description.clone()}</p>
-            {full_access.then(|| view! {
-                <p class="ext-access">"Full access to this machine."</p>
-            })}
-            // The reason, and a way to the whole of what the extension said — one line rarely
-            // covers a crash, and the alternative is a terminal the person may not have open.
-            {entry.reason.clone().map(|why| {
-                let id_log = id_log.clone();
-                view! {
-                    <p class="why">
-                        {why}
-                        {installed.then(|| view! {
-                            " "
-                            <button
-                                type="button"
-                                class="quiet-button"
-                                on:click=move |_| log_open.set(Some(id_log.clone()))
-                            >
-                                "View log"
-                            </button>
-                        })}
-                    </p>
-                }
-            })}
-            {move || unplaced_unmodeled(&id_unmodeled).map(|text| view! { <p class="muted small">{text}</p> })}
+            <button
+                type="button"
+                class="quiet-button ext-more-button"
+                on:click=move |_| more_open.set(Some(id_more.clone()))
+            >
+                "Show more"
+            </button>
             <div class="ext-actions">
                 {if installed {
                     view! {
@@ -339,22 +413,37 @@ fn card(
                             title=if needs_setup { "Set it up" } else { "Settings" }
                             on:click=move |_| settings_open.set(Some(id_gear.clone()))
                         >
-                            {if needs_setup { "Set it up" } else { "⚙" }}
+                            {if needs_setup {
+                                "Set it up".into_any()
+                            } else {
+                                crate::icons::icon(crate::icons::Icon::Gear)
+                            }}
                         </button>
                     }
                 })}
-                // Only when nothing is wrong: a failing card already links to the log from its
-                // reason line, which is where the eye already is.
-                {(installed && entry.reason.is_none()).then(|| {
+                // The same button on every installed extension, in the same place, whether or
+                // not anything is wrong. When something is, it carries a mark.
+                {installed.then(|| {
+                    let label = troubled.clone();
+                    let title = troubled.clone();
+                    let marked = troubled.clone();
                     view! {
                         <button
                             type="button"
-                            class="ext-settings-btn"
-                            aria-label="Log"
-                            title="What this extension has said for itself"
-                            on:click=move |_| log_open.set(Some(id_log_btn.clone()))
+                            class="ext-settings-btn ext-log-btn"
+                            class:troubled=troubled
+                            aria-label=move || if label() { "Log — it has errors" } else { "Log" }
+                            title=move || {
+                                if title() {
+                                    "Something went wrong: read what this extension said"
+                                } else {
+                                    "What this extension has said for itself"
+                                }
+                            }
+                            on:click=move |_| log_open.set(Some(id_log.clone()))
                         >
-                            "☰"
+                            {crate::icons::icon(crate::icons::Icon::Logs)}
+                            <span class="ext-mark" aria-hidden="true" hidden=move || !marked()>"!"</span>
                         </button>
                     }
                 })}

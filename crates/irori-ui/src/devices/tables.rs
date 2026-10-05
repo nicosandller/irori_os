@@ -334,16 +334,22 @@ fn entity_row(line: EntityLine, by: EntitiesBy, travels: bool, histories: Histor
     // A button has nothing to remember from one day to the next.
     let has_history = !matches!(entity.capabilities, Capabilities::Button(_));
     let unroll = has_history.then(|| histories.unroll(&id));
-    let control = {
-        let entity = entity.clone();
-        move || {
-            let state = state.get();
-            let offline = offline.get();
-            super::unrolling(
-                &entity,
-                super::control(&entity, state.as_ref(), offline, controls),
-                unroll,
-            )
+    // A player, a lock or a cover is drawn once and follows its state; everything else is
+    // drawn again from each reading.
+    let control = match super::kept(&entity, state.into(), offline.into(), controls) {
+        Some(kept) => super::unrolling(&entity, kept, unroll),
+        None => {
+            let entity = entity.clone();
+            (move || {
+                let state = state.get();
+                let offline = offline.get();
+                super::unrolling(
+                    &entity,
+                    super::control(&entity, state.as_ref(), offline, controls),
+                    unroll,
+                )
+            })
+            .into_any()
         }
     };
     let drawer = unroll.map(|unroll| {

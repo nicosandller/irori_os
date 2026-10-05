@@ -21,6 +21,7 @@ mod gesture;
 mod glide;
 mod history;
 mod icons;
+mod inline;
 mod log_window;
 mod machine;
 mod modal;

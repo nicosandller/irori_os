@@ -19,11 +19,11 @@ mod controls;
 mod grouping;
 mod tables;
 
-use self::controls::control;
 pub(crate) use self::controls::{
     climate_words, fan_words, fill, humidifier_words, lock_words, media_player_words, number,
     opening_words, unit_of, water_heater_words, wording,
 };
+pub(crate) use self::controls::{control, kept};
 
 /// What a row needs to show a command on its way and what came back from it.
 #[derive(Debug, Clone, Copy)]
@@ -424,13 +424,6 @@ fn AddToggle(#[prop(into)] on_added: Callback<()>) -> impl IntoView {
 /// A device's battery, if one of its entities reports one: a percentage from a battery sensor,
 /// or low/ok from a battery binary sensor. `None` when it doesn't have one, which is most
 /// mains-powered things.
-pub fn battery(entities: &[(Entity, Option<EntityState>)]) -> Option<String> {
-    entities
-        .iter()
-        .find_map(|(entity, state)| battery_reading(entity, state.as_ref()?))
-}
-
-/// The same, for a device in the home as it stands.
 fn battery_of(home: &Home, device: &DeviceId) -> Option<String> {
     home.entities
         .iter()
@@ -1251,38 +1244,10 @@ pub struct Unroll {
     pub toggle: Callback<()>,
 }
 
-pub fn row(
-    entity: Entity,
-    state: Option<EntityState>,
-    controls: Controls,
-    unroll: Option<Unroll>,
-) -> AnyView {
-    let offline = state
-        .as_ref()
-        .is_some_and(|s| s.availability == Availability::Unavailable);
-    let failure = {
-        let id = entity.id.clone();
-        move || controls.failures.get().get(&id).cloned()
-    };
-    let (id, full_id) = (entity.id.to_string(), entity.id.to_string());
-    view! {
-        <div class="entity" class:offline=offline>
-            <span class="names">
-                <span class="name">{entity.name.to_string()}</span>
-                <span class="id" title=full_id>{id}</span>
-            </span>
-            {offline.then(|| view! { <span class="badge">"offline"</span> })}
-            {unrolling(&entity, control(&entity, state.as_ref(), offline, controls), unroll)}
-            {move || failure().map(|why| view! { <p class="why">{why}</p> })}
-        </div>
-    }
-    .into_any()
-}
-
 /// The call to open a row's history, where the eye already is. A reading *is* the thing to ask
 /// about, so for sensors the reading itself is the button; a light or switch's control is for
 /// switching, so there the button is the chevron beside it.
-fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyView {
+pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyView {
     let Some(Unroll { open, toggle }) = unroll else {
         return control;
     };

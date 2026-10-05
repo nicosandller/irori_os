@@ -7,7 +7,7 @@
 
 use irori_types::{
     Area, AreaId, Availability, Capabilities, Device, Entity, EntityCategory, EntityId,
-    EntityState, Name, SensorValue, State,
+    EntityState, SensorValue, State,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -48,13 +48,12 @@ pub fn DevicePage() -> impl IntoView {
     let controls = expect_context::<Controls>();
     let params = use_params_map();
     let trouble = RwSignal::new(None::<String>);
-    // Created here, once, rather than inside what redraws: an open rename box has to survive a
-    // reading arriving underneath it.
-    let renaming = RwSignal::new(false);
-    let draft = RwSignal::new(String::new());
-    let description_draft = RwSignal::new(String::new());
-    let entity_draft = RwSignal::new(String::new());
-    let editing = RwSignal::new(None::<EntityId>);
+    // Created here, once, rather than inside what redraws: a field being typed in has to
+    // survive a reading arriving underneath it.
+    let editing = Editing {
+        field: RwSignal::new(None),
+        draft: RwSignal::new(String::new()),
+    };
 
     // Once a device is ignored it has no page any more: go back to the list, which says where it went.
     let navigate = leptos_router::hooks::use_navigate();
@@ -79,21 +78,7 @@ pub fn DevicePage() -> impl IntoView {
                 shape.any_devices,
             )
             .into_any(),
-            Some(device) => page(
-                device,
-                shape,
-                leave,
-                controls,
-                trouble,
-                Drafts {
-                    editing: renaming,
-                    name: draft,
-                    description: description_draft,
-                },
-                editing,
-                entity_draft,
-            )
-            .into_any(),
+            Some(device) => page(device, shape, leave, controls, trouble, editing).into_any(),
         }
     }
 }
@@ -149,31 +134,51 @@ fn of_device(home: &Home, device: &Device) -> Vec<Entity> {
     entities
 }
 
-/// The device's name and description while they're being edited. Made once, above what redraws,
-/// so live readings can't throw away what's being typed (ROADMAP D33).
-#[derive(Debug, Clone, Copy)]
-struct Drafts {
-    editing: RwSignal<bool>,
-    name: RwSignal<String>,
-    description: RwSignal<String>,
+/// Which of the things on this page that are a person's to decide is being changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Field {
+    Name,
+    Description,
+    Area,
+    Entity(EntityId),
 }
 
-#[allow(clippy::too_many_arguments)]
+/// What's being changed, and what has been typed for it. One at a time: opening another puts
+/// the first away. Made once, above what redraws, so live readings can't throw away what's
+/// being typed (ROADMAP D33).
+#[derive(Debug, Clone, Copy)]
+struct Editing {
+    field: RwSignal<Option<Field>>,
+    draft: RwSignal<String>,
+}
+
+impl Editing {
+    fn is(self, field: &Field) -> bool {
+        self.field.with(|open| open.as_ref() == Some(field))
+    }
+
+    fn open(self, field: Field, starting_from: &str) {
+        self.draft.set(starting_from.to_owned());
+        self.field.set(Some(field));
+    }
+
+    fn close(self) {
+        self.field.set(None);
+    }
+}
+
 fn page(
     device: Device,
     shape: Shape,
     leave: Callback<()>,
     controls: Controls,
     trouble: RwSignal<Option<String>>,
-    drafts: Drafts,
-    editing: RwSignal<Option<EntityId>>,
-    entity_draft: RwSignal<String>,
+    editing: Editing,
 ) -> impl IntoView {
     let live = expect_context::<crate::Live>();
     let areas = shape.areas.clone();
     let entities = shape.entities.clone();
     let also_has = also_has(&shape.unmodeled);
-    let battery = battery_of(live, &entities);
     let subtitle = [device.manufacturer.clone(), device.model.clone()]
         .into_iter()
         .flatten()
@@ -196,20 +201,25 @@ fn page(
         }
     };
 
-    let Drafts {
-        editing: renaming,
-        name: draft,
-        description: description_draft,
-    } = drafts;
-    // One name and one description, saved together: there is no second name anywhere to fall
-    // back to or keep in step (ROADMAP D36).
-    let save = {
+    // One name and one description: there is no second name anywhere to fall back to or keep
+    // in step (ROADMAP D36). Each is saved on its own, where it's shown.
+    let rename = {
         let edit = edit.clone();
         move || {
-            let Some(name) = named(draft.get(), trouble) else {
+            let Some(name) = named(editing.draft.get_untracked(), trouble) else {
                 return;
             };
-            let typed = description_draft.get();
+            editing.close();
+            edit(DeviceEdit {
+                name: Some(Some(name)),
+                ..DeviceEdit::default()
+            });
+        }
+    };
+    let describe = {
+        let edit = edit.clone();
+        move || {
+            let typed = editing.draft.get_untracked();
             let description = match typed.trim() {
                 "" => None,
                 text => match irori_types::Description::try_from(text) {
@@ -220,9 +230,8 @@ fn page(
                     }
                 },
             };
-            renaming.set(false);
+            editing.close();
             edit(DeviceEdit {
-                name: Some(Some(name)),
                 description: Some(description),
                 ..DeviceEdit::default()
             });
@@ -244,6 +253,7 @@ fn page(
                     }
                 },
             };
+            editing.close();
             edit(DeviceEdit {
                 area: Some(area),
                 ..DeviceEdit::default()
@@ -276,19 +286,12 @@ fn page(
         }
     };
     let what = device.name.to_string();
-    let start = {
-        let name = device.name.to_string();
-        let description = device
-            .description
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_default();
-        move |_| {
-            draft.set(name.clone());
-            description_draft.set(description.clone());
-            renaming.set(true);
-        }
-    };
+    let name = device.name.to_string();
+    let description = device
+        .description
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
     let in_room = device.area_id.clone();
     let suggested = device.suggested_area.clone();
     // The area to say as plain text, until "Edit" turns it into the picker.
@@ -333,18 +336,27 @@ fn page(
         <div class="page-head">
             // The same name the list's link had, so the name travels up from the row it was.
             <h1 style=crate::transition::device_name(device.id.as_ref())>
-                {device.name.to_string()}
+                {{
+                    let (shown, from) = (name.clone(), name.clone());
+                    crate::inline::editable(
+                        format!("Rename {name}"),
+                        "What to call it",
+                        Signal::derive(move || editing.is(&Field::Name)),
+                        editing.draft,
+                        move || shown.clone().into_any(),
+                        move || editing.open(Field::Name, &from),
+                        rename,
+                        move || editing.close(),
+                    )
+                }}
             </h1>
             <div class="page-actions">
-                // The two things a person decides about a device, kept as buttons rather than a
-                // section: Edit opens the fields below; Remove takes it out of the home.
                 // Ask is quiet until a model is ready, and still a button: a disabled control
                 // would swallow the click that opens Settings.
                 <crate::assistant::Ask
                     scope=format!("device:{}", device.id)
                     title=device.name.to_string()
                 />
-                <button type="button" on:click=start>"Edit"</button>
                 <button type="button" class="danger-button" on:click=move |_| confirming.set(true)>
                     "Remove"
                 </button>
@@ -385,60 +397,35 @@ fn page(
                 </crate::modal::Modal>
             }
         })}
-        {device
-            .description
-            .as_ref()
-            .map(|description| view! { <p class="description-lede">{description.to_string()}</p> })}
+        <p class="description-lede">
+            {{
+                let (shown, from) = (description.clone(), description.clone());
+                crate::inline::editable(
+                    "Change the description".to_owned(),
+                    "What it's for, or where exactly it is",
+                    Signal::derive(move || editing.is(&Field::Description)),
+                    editing.draft,
+                    move || {
+                        if shown.is_empty() {
+                            view! { <span class="muted">"No description"</span> }.into_any()
+                        } else {
+                            shown.clone().into_any()
+                        }
+                    },
+                    move || editing.open(Field::Description, &from),
+                    describe,
+                    move || editing.close(),
+                )
+            }}
+        </p>
         <p class="lede">{subtitle}</p>
 
         {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
 
-        // One card for the device itself: what it is, where it is, and — while "Edit" is open —
-        // the name, description and area that are a person's to decide.
+        // One card for the device itself: what it is and where it is. The area is the one thing
+        // here that is a person's to decide, and it's changed on its own row.
         <section class="card">
             <h2>"Device information"</h2>
-            {move || {
-                renaming.get().then(|| {
-                    let save = save.clone();
-                    view! {
-                        <form
-                            class="about-form"
-                            on:submit=move |ev| {
-                                ev.prevent_default();
-                                save();
-                            }
-                        >
-                            <label>
-                                <span>"Name"</span>
-                                <input
-                                    type="text"
-                                    prop:value=draft
-                                    on:input:target=move |ev| draft.set(ev.target().value())
-                                />
-                            </label>
-                            <label>
-                                <span>"Description"</span>
-                                <textarea
-                                    rows="2"
-                                    placeholder="What it's for, or where exactly it is"
-                                    prop:value=description_draft
-                                    on:input:target=move |ev| description_draft.set(ev.target().value())
-                                ></textarea>
-                            </label>
-                            <p class="muted small">
-                                "This is the device's only name and description: everywhere Irori "
-                                "shows it, and in the config files, it's this."
-                            </p>
-                            <div class="inline-form">
-                                <button type="submit" class="add">"Save"</button>
-                                <button type="button" on:click=move |_| renaming.set(false)>
-                                    "Cancel"
-                                </button>
-                            </div>
-                        </form>
-                    }
-                })
-            }}
             <dl>
                 // One id, the same one as in this page's address and in the config files. It's
                 // made from the protocol and its permanent handle, so it never changes.
@@ -447,13 +434,14 @@ fn page(
                 <dt>"Through"</dt>
                 <dd>{device.protocol.to_string()}</dd>
                 <dt>"Area"</dt>
-                // The area is a reading until "Edit" is open, when it becomes the picker: the
-                // page says where a device is without offering to move it by mistake.
-                <dd>
+                // The area is a reading until its pencil is pressed, when it becomes the picker
+                // in the same place: the page says where a device is without offering to move
+                // it by mistake. Picking one saves it and puts the picker away.
+                <dd class="area-field">
                     {{
                         let areas = areas.clone();
                         move || {
-                            if renaming.get() {
+                            if editing.is(&Field::Area) {
                                 let move_to = move_to.clone();
                                 let mut options = vec![(
                                     NOWHERE.to_owned(),
@@ -481,14 +469,32 @@ fn page(
                                         || false,
                                         move_to,
                                     )}
+                                    <button
+                                        type="button"
+                                        class="icon-button"
+                                        aria-label="Leave it where it is"
+                                        title="Leave it where it is"
+                                        on:click=move |_| editing.close()
+                                    >
+                                        {crate::icons::icon(crate::icons::Icon::Close)}
+                                    </button>
                                 }
                                 .into_any()
-                        } else {
-                            view! {
-                                {room_name.clone().unwrap_or_else(|| "Unassigned".to_owned())}
+                            } else {
+                                view! {
+                                    {room_name.clone().unwrap_or_else(|| "Unassigned".to_owned())}
+                                    <button
+                                        type="button"
+                                        class="icon-button pencil"
+                                        aria-label="Move it to another area"
+                                        title="Move it to another area"
+                                        on:click=move |_| editing.open(Field::Area, "")
+                                    >
+                                        {crate::icons::icon(crate::icons::Icon::Edit)}
+                                    </button>
+                                }
+                                .into_any()
                             }
-                            .into_any()
-                        }
                         }
                     }}
                 </dd>
@@ -507,10 +513,6 @@ fn page(
                 {device.hw_version.clone().map(|version| view! {
                     <dt>"Hardware"</dt>
                     <dd>{version}</dd>
-                })}
-                {move || battery.get().map(|level| view! {
-                    <dt>"Battery"</dt>
-                    <dd>{level}</dd>
                 })}
                 {device.via_device_id.clone().map(|via| view! {
                     <dt>"Reached through"</dt>
@@ -563,7 +565,6 @@ fn page(
                             controls=controls
                             trouble=trouble
                             editing=editing
-                            draft=entity_draft
                         />
                     }
                 };
@@ -632,39 +633,51 @@ fn also_has(unmodeled: &[irori_types::Unmodeled]) -> Option<String> {
     Some(said.join(" "))
 }
 
-/// One entity: its reading, and the name it can be given.
+/// One entity: its name, which can be changed where it stands, its control, and its last 24
+/// hours.
 ///
-/// The reading is the only reactive part. Keeping the rename box out of it is what lets you
-/// finish typing a name while a presence sensor reports every second underneath.
+/// The name and the control are drawn apart. Keeping the field out of what follows the reading
+/// is what lets you finish typing a name while a presence sensor reports every second
+/// underneath.
 #[component]
 fn EntityRow(
     entity: Entity,
     controls: Controls,
     trouble: RwSignal<Option<String>>,
-    editing: RwSignal<Option<EntityId>>,
-    draft: RwSignal<String>,
+    editing: Editing,
 ) -> impl IntoView {
     let live = expect_context::<crate::Live>();
     let id = entity.id.clone();
     let state = {
         let id = id.clone();
         Memo::new(move |_| {
-            live.home
-                .get()
-                .states
-                .iter()
-                .find(|state| state.entity_id == id)
-                .cloned()
+            live.home.with(|home| {
+                home.states
+                    .iter()
+                    .find(|state| state.entity_id == id)
+                    .cloned()
+            })
         })
     };
+    let offline = Memo::new(move |_| {
+        state.with(|state| {
+            state
+                .as_ref()
+                .is_some_and(|state| state.availability == Availability::Unavailable)
+        })
+    });
 
-    let send = {
+    let field = Field::Entity(id.clone());
+    let rename = {
         let id = id.clone();
-        move |name: Option<Name>| {
+        move || {
+            let Some(name) = named(editing.draft.get_untracked(), trouble) else {
+                return;
+            };
             let id = id.clone();
-            editing.set(None);
+            editing.close();
             spawn_local(async move {
-                match api::rename_entity(&id, name).await {
+                match api::rename_entity(&id, Some(name)).await {
                     Ok(()) => {
                         trouble.set(None);
                         crate::refresh(live);
@@ -674,77 +687,81 @@ fn EntityRow(
             });
         }
     };
-    let save = {
-        let send = send.clone();
-        move || {
-            if let Some(name) = named(draft.get(), trouble) {
-                send(Some(name));
-            }
-        }
+    let name = entity.name.to_string();
+    let renaming = {
+        let field = field.clone();
+        Signal::derive(move || editing.is(&field))
     };
-    let start = {
-        let id = id.clone();
-        let name = entity.name.to_string();
-        move |_| {
-            draft.set(name.clone());
-            editing.set(Some(id.clone()));
-        }
+    let names = {
+        let (shown, from) = (name.clone(), name.clone());
+        crate::inline::editable(
+            format!("Rename {name}"),
+            "What to call it",
+            renaming,
+            editing.draft,
+            move || view! { <span class="name">{shown.clone()}</span> }.into_any(),
+            move || editing.open(field.clone(), &from),
+            rename,
+            move || editing.close(),
+        )
     };
-    let being_edited = {
-        let id = id.clone();
-        move || editing.get().as_ref() == Some(&id)
-    };
-    let row = entity.clone();
 
-    // The rolled-up "last 24 hours", opened from the row's own reading.
+    // The rolled-up "last 24 hours", opened from the row's own reading. A button has nothing
+    // to remember from one day to the next.
     let histories = crate::history::Histories::new();
-    let unroll = histories.unroll(&id);
-    let open = unroll.open;
+    let unroll =
+        (!matches!(entity.capabilities, Capabilities::Button(_))).then(|| histories.unroll(&id));
     let history = histories.day(&id);
+    // A player, a lock or a cover is drawn once and follows its state; everything else is
+    // drawn again from each reading.
+    let control = match devices::kept(&entity, state.into(), offline.into(), controls) {
+        Some(kept) => devices::unrolling(&entity, kept, unroll),
+        None => {
+            let entity = entity.clone();
+            (move || {
+                let state = state.get();
+                devices::unrolling(
+                    &entity,
+                    devices::control(&entity, state.as_ref(), offline.get(), controls),
+                    unroll,
+                )
+            })
+            .into_any()
+        }
+    };
+    let failure = {
+        let id = id.clone();
+        move || {
+            controls
+                .failures
+                .with(|failures| failures.get(&id).cloned())
+        }
+    };
+    let shown_id = id.to_string();
 
     view! {
         <div class="entity-row">
-            {move || devices::row(row.clone(), state.get(), controls, Some(unroll))}
-            <div class="entity-name">
-                {move || {
-                    if being_edited() {
-                        let save = save.clone();
-                        view! {
-                            <form
-                                class="inline-form"
-                                on:submit=move |ev| {
-                                    ev.prevent_default();
-                                    save();
-                                }
-                            >
-                                <input
-                                    type="text"
-                                    aria-label="What to call this entity"
-                                    prop:value=draft
-                                    on:input:target=move |ev| draft.set(ev.target().value())
-                                />
-                                <button type="submit" class="add">"Save"</button>
-                                <button type="button" on:click=move |_| editing.set(None)>
-                                    "Cancel"
-                                </button>
-                            </form>
-                        }
-                        .into_any()
-                    } else {
-                        view! {
-                            <button type="button" class="quiet-button" on:click=start.clone()>
-                                "Rename"
-                            </button>
-                        }
-                        .into_any()
-                    }
-                }}
+            <div class="entity" class:offline=move || offline.get()>
+                <span class="names">
+                    {names}
+                    <span class="id" title=shown_id.clone()>{shown_id.clone()}</span>
+                </span>
+                {move || offline.get().then(|| view! { <span class="badge">"offline"</span> })}
+                {control}
+                {move || failure().map(|why| view! { <p class="why">{why}</p> })}
             </div>
             // Always there, rolled up or down, so it can roll both ways; `inert` while rolled
             // up, so nobody tabs into what they can't see.
-            <div class="drawer" class:open=move || open.get() inert=move || (!open.get()).then_some("")>
-                <div class="drawer-inner">{history_panel(entity, history, state.into())}</div>
-            </div>
+            {unroll.map(|unroll| {
+                let open = unroll.open;
+                view! {
+                    <div class="drawer" class:open=move || open.get() inert=move || (!open.get()).then_some("")>
+                        <div class="drawer-inner">
+                            {history_panel(entity.clone(), history.clone(), state.into())}
+                        </div>
+                    </div>
+                }
+            })}
         </div>
     }
 }
@@ -984,29 +1001,6 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
 fn clock_time(at: irori_types::Timestamp) -> String {
     let text = at.to_string();
     text.get(11..19).map(str::to_owned).unwrap_or(text)
-}
-
-/// A device's battery, from whichever of its entities reports one.
-///
-/// A reading like any other, so it follows the readings rather than the page's shape: a battery
-/// level that arrives after the page is drawn — or drops overnight — has to show up.
-fn battery_of(live: crate::Live, entities: &[Entity]) -> Memo<Option<String>> {
-    let entities = entities.to_vec();
-    Memo::new(move |_| {
-        let home = live.home.get();
-        let with_state: Vec<_> = entities
-            .iter()
-            .map(|entity| {
-                let state = home
-                    .states
-                    .iter()
-                    .find(|state| state.entity_id == entity.id)
-                    .cloned();
-                (entity.clone(), state)
-            })
-            .collect();
-        devices::battery(&with_state)
-    })
 }
 
 /// A device id that isn't here: either mistyped, or one that has gone away since the link was

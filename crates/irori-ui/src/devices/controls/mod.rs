@@ -34,8 +34,9 @@ use leptos::ev;
 use leptos::prelude::*;
 
 use crate::devices::Controls;
+use crate::icons::{Icon, icon};
 
-pub(super) fn control(
+pub(crate) fn control(
     entity: &Entity,
     state: Option<&EntityState>,
     offline: bool,
@@ -64,39 +65,15 @@ pub(super) fn control(
             button::button_control(entity, capabilities.device_class, offline, controls)
         }
         Capabilities::Event(_) => event::happened(state),
-        Capabilities::Cover(capabilities) => {
-            let current = match value {
-                Some(State::Cover(cover)) => Some(cover),
-                _ => None,
-            };
-            opening::opening_control(
-                entity,
-                capabilities.opening(),
-                current.map(CoverState::opening),
-                capabilities
-                    .tilt
-                    .then(|| current.and_then(|cover| cover.tilt)),
-                offline,
-                controls,
-            )
-        }
-        Capabilities::Valve(capabilities) => {
-            let current = match value {
-                Some(State::Valve(valve)) => Some(valve.opening()),
-                _ => None,
-            };
-            opening::opening_control(
-                entity,
-                capabilities.opening(),
-                current,
-                None,
-                offline,
-                controls,
-            )
-        }
-        Capabilities::Lock(capabilities) => {
-            lock::lock_control(entity, capabilities, value, offline, controls)
-        }
+        // These three are drawn once and follow a state that changes (`kept`); here the
+        // state is whatever it was when this was called.
+        Capabilities::Cover(_) | Capabilities::Valve(_) | Capabilities::Lock(_) => kept(
+            entity,
+            Signal::stored(state.cloned()),
+            Signal::stored(offline),
+            controls,
+        )
+        .unwrap_or_else(|| ().into_any()),
         Capabilities::Fan(capabilities) => {
             fan::fan_control(entity, capabilities, value, offline, controls)
         }
@@ -112,10 +89,124 @@ pub(super) fn control(
         Capabilities::Humidifier(capabilities) => {
             humidifier::humidifier_control(entity, capabilities, value, offline, controls)
         }
-        Capabilities::MediaPlayer(capabilities) => {
-            media_player::media_player_control(entity, capabilities, value, offline, controls)
-        }
+        Capabilities::MediaPlayer(_) => kept(
+            entity,
+            Signal::stored(state.cloned()),
+            Signal::stored(offline),
+            controls,
+        )
+        .unwrap_or_else(|| ().into_any()),
     }
+}
+
+/// The control of a kind whose buttons depend on what it's doing — a player, a lock, a cover
+/// or a valve — drawn once and kept up to date through `state`, rather than drawn again with
+/// every reading. That is what lets a button give way to another in place, a padlock's shackle
+/// lift, and a slider stay under the finger dragging it. `None` for every other kind, which
+/// [`control`] draws from the reading it's given.
+pub(crate) fn kept(
+    entity: &Entity,
+    state: Signal<Option<EntityState>>,
+    offline: Signal<bool>,
+    controls: Controls,
+) -> Option<AnyView> {
+    let value =
+        Signal::derive(move || state.with(|state| state.as_ref().and_then(|s| s.state.clone())));
+    match &entity.capabilities {
+        Capabilities::Cover(capabilities) => {
+            let cover = Signal::derive(move || match value.get() {
+                Some(State::Cover(cover)) => Some(cover),
+                _ => None,
+            });
+            Some(opening::opening_control(
+                entity,
+                capabilities.opening(),
+                Signal::derive(move || cover.get().as_ref().map(CoverState::opening)),
+                capabilities
+                    .tilt
+                    .then(|| Signal::derive(move || cover.get().and_then(|cover| cover.tilt))),
+                offline,
+                controls,
+            ))
+        }
+        Capabilities::Valve(capabilities) => Some(opening::opening_control(
+            entity,
+            capabilities.opening(),
+            Signal::derive(move || match value.get() {
+                Some(State::Valve(valve)) => Some(valve.opening()),
+                _ => None,
+            }),
+            None,
+            offline,
+            controls,
+        )),
+        Capabilities::Lock(capabilities) => Some(lock::lock_control(
+            entity,
+            capabilities,
+            value,
+            offline,
+            controls,
+        )),
+        Capabilities::MediaPlayer(capabilities) => Some(media_player::media_player_control(
+            entity,
+            capabilities,
+            value,
+            offline,
+            controls,
+        )),
+        Capabilities::Light(_)
+        | Capabilities::Switch(_)
+        | Capabilities::Sensor(_)
+        | Capabilities::BinarySensor(_)
+        | Capabilities::Number(_)
+        | Capabilities::Select(_)
+        | Capabilities::Text(_)
+        | Capabilities::Button(_)
+        | Capabilities::Event(_)
+        | Capabilities::Fan(_)
+        | Capabilities::Siren(_)
+        | Capabilities::Climate(_)
+        | Capabilities::WaterHeater(_)
+        | Capabilities::Humidifier(_) => None,
+    }
+}
+
+/// A button that is an icon. Where it means two things by turns — play and pause, mute and
+/// unmute — it holds both drawings and `alt` says which shows, so one gives way to the other in
+/// place.
+pub(super) fn glyph(
+    (first, second): (Icon, Icon),
+    alt: Signal<bool>,
+    label: Signal<String>,
+    disable: Signal<bool>,
+    on_click: impl Fn() + 'static,
+) -> AnyView {
+    view! {
+        <button
+            type="button"
+            class="press glyph"
+            class:alt=move || alt.get()
+            aria-label=move || label.get()
+            title=move || label.get()
+            disabled=move || disable.get()
+            on:click=move |_| on_click()
+        >
+            <span class="glyph-first">{icon(first)}</span>
+            {(first != second).then(|| view! { <span class="glyph-second">{icon(second)}</span> })}
+        </button>
+    }
+    .into_any()
+}
+
+/// Something that is only there while `shown`: it folds away to nothing rather than vanishing,
+/// and what's beside it closes up. Tucked away, it can't be tabbed to or pressed.
+pub(super) fn tuck(inside: AnyView, shown: Signal<bool>) -> AnyView {
+    view! {
+        <span class="tuck" class:in=move || shown.get() inert=move || (!shown.get()).then_some("")>
+            <span class="tuck-inner">{inside}</span>
+        </span>
+    }
+    .into_any()
 }
 
 /// How far along a slider's track `value` sits, as a whole percentage — where its filled part

@@ -67,6 +67,9 @@ What moves today, and where to find it.
 | Entity list history | The same drawer as a device's page, on every row of the Entities list. It stays down, and its chart stays drawn, while readings arrive. Regrouped, the drawer is still down and its day is not asked for again, though the chart draws its line in once more. | `history.rs`, `devices/tables.rs` `entity_row`, `device.rs` `history_panel`. |
 | System meters | A bar grows to its figure when the machine answers and moves when the figure does; turns red when nearly full; opens, like any drawer, to what's behind the figure and its last day as a chart. | `machine.rs` `meter`; CSS `.meter-fill` (a transition on `scale`). |
 | Floors and areas | "Add area" opens where the area will appear, its plus turning to a cross; Remove widens into "Remove?" before it does anything; while something is dragged, only what is under the pointer lights up, a folded floor opens when lingered over, and what was dropped travels to where it landed. | `places.rs`; CSS `.namer`, `.icon-button.asking`, `.over`, `html[data-nav="place"]`. |
+| Controls that follow what a thing is doing | A player, a lock, a cover or a valve only offers what makes sense now, and its row is drawn once and kept, so the change happens in place: Play turns into Pause, Stop and the volume fold away when it's off, Lock gives way to Unlock, a padlock's shackle lifts and drops (works up and down while the bolt moves, shakes once if it jams). | `devices/controls/mod.rs` `kept`, `glyph`, `tuck`; `media_player.rs`, `lock.rs`, `opening.rs`; CSS `.tuck`, `.glyph`, `.padlock`. |
+| Changing a name where it stands | A pencil beside a name, quiet until its row is pointed at; pressed, the name becomes a field in the same place with its own tick and cross, rising in once. | `inline.rs`; CSS `.editable`, `.pencil`, `.inline-edit`. |
+| Extension cards | A card lifts a little under the pointer; its gear leans; a mark sits on the log button when the log has an error in it. | `extensions.rs` `card`; CSS `.ext-card`, `.ext-settings-btn`, `.ext-mark`. |
 | Choices | A mode, a tone, an area: buttons in a row, the chosen one sunk with an ember edge. Hover and press are the button's. | `choices.rs`; CSS `.choices`. |
 | Live numbers | A reading counts to its new value and lifts or drops into place in ember, the way it went. | `count.rs`, for anything marked `data-n`. |
 | Device page history | The reading is the button — or pull it down; a drawer rolls down to its content; a number's day is a chart that draws itself in and then **grows with each new reading**, with a crosshair, a tooltip and arrow-key stepping. | `device.rs` `EntityRow`, `chart.rs`, `gesture.rs`; CSS `.unroll`, `.drawer`, `.chart-*`. |
@@ -93,6 +96,15 @@ replay every couple of seconds. So:
   fixed markup, a panel that opens on Edit, a banner that appears when trouble starts.
 - **Use `animation-fill-mode: backwards`**, not `both`, for entrances: once it has played, an
   entrance shouldn't hold `transform` or `opacity` over the element's own hover styles.
+
+### A control that changes shape is drawn once
+
+Most controls are drawn again from each reading, which is fine for a reading and a switch.
+One whose buttons depend on what the thing is doing can't be: a button that is drawn again
+can't turn into another, and a slider drawn again leaves the finger. Those go through `kept`
+(`devices/controls/mod.rs`): drawn once, with the state arriving as a signal, and everything
+that changes is a class or an attribute that flips. A button that only sometimes applies is
+wrapped in `tuck`, which folds it to nothing and makes it `inert`, rather than being left out.
 
 ### Move with the individual properties
 
