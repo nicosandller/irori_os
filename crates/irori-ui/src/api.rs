@@ -1010,6 +1010,26 @@ pub async fn assistant_pull(tag: &str, mut on: impl FnMut(Progress)) -> Result<(
     .await
 }
 
+/// Installs and starts Irori's own Ollama, with no model. `on` hears how far along it is.
+pub async fn assistant_install(mut on: impl FnMut(Progress)) -> Result<(), String> {
+    stream(
+        "/api/dev/assistant/install",
+        &serde_json::json!({}),
+        |event| {
+            if let Streamed::Delta(line) = event
+                && let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
+            {
+                on(Progress {
+                    status: value["status"].as_str().unwrap_or_default().to_owned(),
+                    completed: value["completed"].as_u64().unwrap_or(0),
+                    total: value["total"].as_u64().unwrap_or(0),
+                });
+            }
+        },
+    )
+    .await
+}
+
 pub async fn assistant_forget(tag: &str) -> Result<AssistantStatus, String> {
     let response = Request::post("/api/dev/assistant/forget")
         .json(&serde_json::json!({ "tag": tag }))

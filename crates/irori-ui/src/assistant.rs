@@ -582,7 +582,9 @@ pub fn Section() -> impl IntoView {
         change(Box::pin(async move { api::save_assistant(&body).await }));
     };
 
-    let download = move |_| {
+    // Installing Ollama alone (`with_model` false), or downloading a model, which installs
+    // Ollama first when it is missing.
+    let fetch = move |with_model: bool| {
         if busy.get_untracked() {
             return;
         }
@@ -591,7 +593,11 @@ pub fn Section() -> impl IntoView {
         progress.set(Some(Progress::default()));
         let tag = local_tag.get_untracked();
         spawn_local(async move {
-            let pulled = api::assistant_pull(&tag, |step| progress.set(Some(step))).await;
+            let pulled = if with_model {
+                api::assistant_pull(&tag, |step| progress.set(Some(step))).await
+            } else {
+                api::assistant_install(|step| progress.set(Some(step))).await
+            };
             if let Err(error) = pulled {
                 trouble.set(Some(error));
             }
@@ -654,6 +660,83 @@ pub fn Section() -> impl IntoView {
             {move || match side.get() {
                 Side::Local => view! {
                     <div class="mode-body about-form">
+                        // Ollama first: it is what runs a model, so it comes before there is
+                        // a model to download or load.
+                        <div class="assistant-ollama">
+                            <div class="field">
+                                <span>"OLLAMA"</span>
+                                <p class="assistant-ollama-state">
+                                    {move || {
+                                        let (up, managed) = status()
+                                            .map_or((false, false), |status| {
+                                                (status.ollama == "up", status.managed)
+                                            });
+                                        match (up, managed) {
+                                            (true, true) => "Installed by Irori, and running.",
+                                            (true, false) => {
+                                                "Running. It was installed outside Irori, so it is \
+                                                 yours to remove."
+                                            }
+                                            (false, true) => "Installed by Irori, but not running.",
+                                            (false, false) => {
+                                                "Not installed. Irori can put it in its own folder; \
+                                                 nothing else on the machine is touched."
+                                            }
+                                        }
+                                    }}
+                                </p>
+                            </div>
+                            <div class="assistant-actions">
+                                {move || {
+                                    let (up, managed) = status().map_or((false, false), |status| {
+                                        (status.ollama == "up", status.managed)
+                                    });
+                                    (!up).then(|| view! {
+                                        <button type="button" class="primary"
+                                            disabled=move || busy.get()
+                                            on:click=move |_| fetch(false)>
+                                            {move || match (progress.get().is_some(), managed) {
+                                                (true, _) => "Working…",
+                                                (false, true) => "Start Ollama",
+                                                (false, false) => "Install Ollama",
+                                            }}
+                                        </button>
+                                    })
+                                }}
+                                {move || status().is_some_and(|status| status.managed).then_some({
+                                    move || if removing.get() {
+                                        view! {
+                                            <span class="small">
+                                                "Remove Ollama and every model it downloaded?"
+                                            </span>
+                                            <button type="button" class="danger-button"
+                                                disabled=move || busy.get()
+                                                on:click=move |_| change(Box::pin(api::assistant_uninstall()))>
+                                                "Uninstall"
+                                            </button>
+                                            <button type="button" class="quiet-button"
+                                                on:click=move |_| removing.set(false)>
+                                                "Keep it"
+                                            </button>
+                                        }
+                                        .into_any()
+                                    } else {
+                                        view! {
+                                            <button type="button" class="quiet-button"
+                                                on:click=move |_| log_open.set(true)>
+                                                "Model log"
+                                            </button>
+                                            <button type="button" class="quiet-button danger"
+                                                disabled=move || busy.get()
+                                                on:click=move |_| removing.set(true)>
+                                                "Uninstall Ollama"
+                                            </button>
+                                        }
+                                        .into_any()
+                                    }
+                                })}
+                            </div>
+                        </div>
                         <label>
                             <span>"MODEL"</span>
                             <input
@@ -674,19 +757,13 @@ pub fn Section() -> impl IntoView {
                             " and it works the same. The default, qwen3:1.7b, is about 1.4 GB."
                         </p>
                         <div class="assistant-actions">
-                            <button type="button" class="primary" disabled=move || busy.get()
-                                on:click=download>
-                                {move || match (progress.get().is_some(), ollama_up()) {
-                                    (true, _) => "Working…",
-                                    (false, true) => "Download",
-                                    (false, false) => "Install and download",
-                                }}
+                            <button type="button" class="primary"
+                                disabled=move || busy.get() || !ollama_up()
+                                on:click=move |_| fetch(true)>
+                                {move || if progress.get().is_some() { "Working…" } else { "Download" }}
                             </button>
                             {move || (!ollama_up()).then(|| view! {
-                                <span class="muted small">
-                                    "Ollama isn't on this machine yet. This puts it in Irori's \
-                                     own folder, then downloads the model."
-                                </span>
+                                <span class="muted small">"Install Ollama above first."</span>
                             })}
                         </div>
                         {move || progress.get().map(|step| {
@@ -793,40 +870,6 @@ pub fn Section() -> impl IntoView {
                         })}
                         {move || status().filter(|status| status.mode == "local").map(|status| {
                             view! { <p class="assistant-detail" class:ok=status.ready>{status.detail}</p> }
-                        })}
-                        {move || status().is_some_and(|status| status.managed).then(|| view! {
-                            <div class="assistant-actions end">
-                                {move || if removing.get() {
-                                    view! {
-                                        <span class="small">
-                                            "Remove Ollama and every model it downloaded?"
-                                        </span>
-                                        <button type="button" class="danger-button"
-                                            disabled=move || busy.get()
-                                            on:click=move |_| change(Box::pin(api::assistant_uninstall()))>
-                                            "Uninstall"
-                                        </button>
-                                        <button type="button" class="quiet-button"
-                                            on:click=move |_| removing.set(false)>
-                                            "Keep it"
-                                        </button>
-                                    }
-                                    .into_any()
-                                } else {
-                                    view! {
-                                        <button type="button" class="quiet-button"
-                                            on:click=move |_| log_open.set(true)>
-                                            "Model log"
-                                        </button>
-                                        <button type="button" class="quiet-button danger"
-                                            disabled=move || busy.get()
-                                            on:click=move |_| removing.set(true)>
-                                            "Uninstall Ollama"
-                                        </button>
-                                    }
-                                    .into_any()
-                                }}
-                            </div>
                         })}
                     </div>
                 }

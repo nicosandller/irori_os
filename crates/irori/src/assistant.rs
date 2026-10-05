@@ -261,18 +261,13 @@ pub fn clear(db: &Path, scope: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Pulls `tag` through the local Ollama and remembers it as the on-device model. With no
-/// Ollama on the machine, Irori's own is installed and started first.
-pub async fn pull(config: &Config, data_dir: &Path, tag: &str, tx: mpsc::Sender<ChatEvent>) {
-    let tag = model_tag(tag);
-    let tag = tag.as_str();
-    if tag.is_empty() {
-        let _ = tx
-            .send(ChatEvent::Error("Name the model to download.".into()))
-            .await;
-        return;
+/// Makes sure an Ollama is answering: Irori's own is installed if none is on the machine,
+/// and started if it isn't running. Progress and failure go to `tx`.
+async fn ready_ollama(data_dir: &Path, tx: &mpsc::Sender<ChatEvent>) -> bool {
+    if ollama::listening().await {
+        return true;
     }
-    if !ollama::listening().await {
+    {
         if !ollama::installed(data_dir) {
             let free = crate::host_info::read(data_dir).disk.available;
             let mut last = 0u64;
@@ -291,13 +286,13 @@ pub async fn pull(config: &Config, data_dir: &Path, tag: &str, tx: mpsc::Sender<
             };
             if let Err(error) = ollama::install(data_dir, free, &mut report).await {
                 let _ = tx.send(ChatEvent::Error(error)).await;
-                return;
+                return false;
             }
         }
         let line = json!({ "status": "starting Ollama" });
         let _ = tx.send(ChatEvent::Delta(line.to_string())).await;
         match ollama::start(data_dir).await {
-            Ok(true) => {}
+            Ok(true) => true,
             Ok(false) => {
                 let _ = tx
                     .send(ChatEvent::Error(
@@ -305,13 +300,36 @@ pub async fn pull(config: &Config, data_dir: &Path, tag: &str, tx: mpsc::Sender<
                             .into(),
                     ))
                     .await;
-                return;
+                false
             }
             Err(error) => {
                 let _ = tx.send(ChatEvent::Error(error)).await;
-                return;
+                false
             }
         }
+    }
+}
+
+/// Installs and starts Irori's own Ollama, without downloading a model.
+pub async fn install(data_dir: &Path, tx: mpsc::Sender<ChatEvent>) {
+    if ready_ollama(data_dir, &tx).await {
+        let _ = tx.send(ChatEvent::Done).await;
+    }
+}
+
+/// Pulls `tag` through the local Ollama and remembers it as the on-device model. With no
+/// Ollama on the machine, Irori's own is installed and started first.
+pub async fn pull(config: &Config, data_dir: &Path, tag: &str, tx: mpsc::Sender<ChatEvent>) {
+    let tag = model_tag(tag);
+    let tag = tag.as_str();
+    if tag.is_empty() {
+        let _ = tx
+            .send(ChatEvent::Error("Name the model to download.".into()))
+            .await;
+        return;
+    }
+    if !ready_ollama(data_dir, &tx).await {
+        return;
     }
     let client = client();
     let request = client

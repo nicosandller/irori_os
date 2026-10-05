@@ -76,6 +76,15 @@ pub async fn pull(State(state): State<AppState>, Json(body): Json<Pull>) -> impl
     events(rx)
 }
 
+pub async fn install(State(state): State<AppState>) -> impl IntoResponse {
+    let (tx, rx) = mpsc::channel(32);
+    let data = data_dir(&state).to_owned();
+    tokio::spawn(async move {
+        assistant::install(&data, tx).await;
+    });
+    events(rx)
+}
+
 /// Deletes one downloaded model. A body, not a path: a tag has colons and slashes in it.
 pub async fn forget(State(state): State<AppState>, Json(body): Json<Pull>) -> Response {
     match assistant::forget(&state.0.config, &body.tag).await {

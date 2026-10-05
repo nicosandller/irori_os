@@ -192,6 +192,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/dev/assistant/turns", post(assistant::turns))
         .route("/api/dev/assistant/pull", post(assistant::pull))
         .route("/api/dev/assistant/forget", post(assistant::forget))
+        .route("/api/dev/assistant/install", post(assistant::install))
         .route("/api/dev/assistant/uninstall", post(assistant::uninstall))
         .route("/api/dev/assistant/log", get(assistant::model_log))
         .route("/api/dev/assistant/load", post(assistant::load))

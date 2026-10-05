@@ -325,11 +325,15 @@ pub async fn uninstall(data_dir: &Path) -> Result<(), String> {
             && runs_from(pid.trim(), &dir(&data_dir))
         {
             // Started by an earlier run of this server, which a restart replaces in place.
-            let _ = std::process::Command::new("kill")
-                .arg(pid.trim())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            // Signalled directly: a small image has no `kill` program to ask.
+            if let Some(pid) = pid
+                .trim()
+                .parse::<i32>()
+                .ok()
+                .and_then(rustix::process::Pid::from_raw)
+            {
+                let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+            }
         }
         let _ = std::fs::remove_file(pid_file(&data_dir));
         let _ = std::fs::remove_file(log_file(&data_dir));
@@ -341,7 +345,16 @@ pub async fn uninstall(data_dir: &Path) -> Result<(), String> {
         }
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())??;
+    // Gone from the disk is not the same as stopped. One left running would answer on the
+    // port with nothing behind it, and look like an Ollama that needs no installing.
+    for _ in 0..20 {
+        if !listening().await {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    Err("Ollama's files are deleted, but it is still running. Restart Irori's machine or container to stop it.".to_owned())
 }
 
 /// Whether process `pid` is a program from inside `dir`. The number in the pid file can
