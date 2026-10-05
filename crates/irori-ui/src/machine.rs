@@ -16,7 +16,7 @@ use irori_types::{Entity, EntityId, SensorValue, State};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::api::{self, Disk, Health, System};
+use crate::api::{self, Disk, Health, Process, System, Usage};
 use crate::history::Histories;
 use crate::icons::{Icon, icon};
 
@@ -38,6 +38,23 @@ pub fn state(health: Option<&Health>) -> String {
 pub fn Panel(#[prop(into)] open: Signal<bool>) -> impl IntoView {
     let live = expect_context::<crate::Live>();
     let system = RwSignal::new(None::<Result<System, String>>);
+    // What is using it: asked for only while a meter is open to show it, since finding out
+    // means watching every process for a moment. `None` until the first answer; an older core,
+    // which can't say, leaves it there.
+    let usage = RwSignal::new(None::<Usage>);
+    let looking = RwSignal::new(0u32);
+    let ask_usage = move || {
+        if !open.get_untracked() || looking.get_untracked() == 0 {
+            return;
+        }
+        spawn_local(async move {
+            if let Ok(answer) = api::fetch_usage().await
+                && usage.with_untracked(|shown| shown.as_ref() != Some(&answer))
+            {
+                usage.set(Some(answer));
+            }
+        });
+    };
     let ask = move || {
         if !open.get_untracked() {
             return;
@@ -49,10 +66,16 @@ pub fn Panel(#[prop(into)] open: Signal<bool>) -> impl IntoView {
                 system.set(Some(answer));
             }
         });
+        ask_usage();
     };
     Effect::new(move |_| {
         open.track();
         ask();
+    });
+    // The first meter to open asks straight away rather than waiting for the next round.
+    Effect::new(move |_| {
+        looking.track();
+        ask_usage();
     });
     let handle = set_interval_with_handle(ask, EVERY).ok();
     on_cleanup(move || {
@@ -86,6 +109,7 @@ pub fn Panel(#[prop(into)] open: Signal<bool>) -> impl IntoView {
                         sensor: "sensor.irori_memory",
                     },
                     histories,
+                    looking,
                     Signal::derive(move || {
                         machine.with(|machine| {
                             machine.as_ref().and_then(|m| share(m.memory_used, m.memory_total))
@@ -98,7 +122,7 @@ pub fn Panel(#[prop(into)] open: Signal<bool>) -> impl IntoView {
                             })
                         })
                     }),
-                    move || machine.get().map(|machine| memory_breakdown(&machine)),
+                    move || machine.get().map(|machine| memory_breakdown(&machine, usage.get().as_ref())),
                 )}
                 {meter(
                     Meter {
@@ -107,6 +131,7 @@ pub fn Panel(#[prop(into)] open: Signal<bool>) -> impl IntoView {
                         sensor: "sensor.irori_disk",
                     },
                     histories,
+                    looking,
                     Signal::derive(move || {
                         machine.with(|machine| {
                             machine.as_ref().and_then(|m| share(m.disk.used, m.disk.total))
@@ -123,7 +148,7 @@ pub fn Panel(#[prop(into)] open: Signal<bool>) -> impl IntoView {
                             })
                         })
                     }),
-                    move || machine.get().map(|machine| disk_breakdown(&machine)),
+                    move || machine.get().map(|machine| disk_breakdown(&machine, usage.get().as_ref())),
                 )}
                 {meter(
                     Meter {
@@ -132,13 +157,14 @@ pub fn Panel(#[prop(into)] open: Signal<bool>) -> impl IntoView {
                         sensor: "sensor.irori_cpu",
                     },
                     histories,
+                    looking,
                     Signal::derive(move || reading(live, "sensor.irori_cpu").map(|n| n / 100.0)),
                     Signal::derive(move || {
                         machine.with(|machine| {
                             machine.as_ref().filter(|m| m.cpu_cores > 0).map(cores)
                         })
                     }),
-                    move || machine.get().map(|machine| processor_breakdown(&machine)),
+                    move || machine.get().map(|machine| processor_breakdown(&machine, usage.get().as_ref())),
                 )}
                 // Only on a machine that says how warm it is: a Raspberry Pi does, a Mac doesn't.
                 {move || {
@@ -155,6 +181,7 @@ pub fn Panel(#[prop(into)] open: Signal<bool>) -> impl IntoView {
                                 sensor: "sensor.irori_temperature",
                             },
                             histories,
+                            looking,
                             // Of the 85 °C a Pi starts holding itself back at.
                             Signal::derive(move || {
                                 reading(live, "sensor.irori_temperature").map(|c| c / 85.0)
@@ -185,6 +212,8 @@ struct Meter {
 fn meter<Breakdown>(
     meter: Meter,
     histories: Histories,
+    // How many meters are open, which is whether anybody is looking at what's using the machine.
+    looking: RwSignal<u32>,
     // How full, from 0 to 1. `None` until the machine has said.
     full: Signal<Option<f64>>,
     words: Signal<Option<String>>,
@@ -215,7 +244,15 @@ where
             {
                 histories.ask(id);
             }
-            open.update(|open| *open = !*open);
+            let opening = !open.get_untracked();
+            looking.update(|looking| {
+                *looking = if opening {
+                    *looking + 1
+                } else {
+                    looking.saturating_sub(1)
+                }
+            });
+            open.set(opening);
         }
     };
     let now = {
@@ -282,7 +319,7 @@ where
 
 /// Where the memory is: in use, still free, how much of it is Irori's own, and what has been
 /// pushed out to disk.
-fn memory_breakdown(machine: &System) -> AnyView {
+fn memory_breakdown(machine: &System, usage: Option<&Usage>) -> AnyView {
     let free = machine.memory_total.saturating_sub(machine.memory_used);
     view! {
         <dl class="facts">
@@ -301,12 +338,31 @@ fn memory_breakdown(machine: &System) -> AnyView {
                 </dd>
             })}
         </dl>
+        {using(
+            "Using the most",
+            usage.map(|usage| {
+                let mut processes: Vec<&Process> = usage.processes.iter().collect();
+                processes.sort_by_key(|process| std::cmp::Reverse(process.memory));
+                processes
+                    .into_iter()
+                    .filter(|process| process.memory > 0)
+                    .take(ROWS)
+                    .map(|process| Row {
+                        name: process.name.clone(),
+                        own: process.own,
+                        part: share(process.memory, machine.memory_total).unwrap_or(0.0),
+                        words: bytes(process.memory),
+                    })
+                    .collect()
+            }),
+            "Nothing is holding any memory worth a row.",
+        )}
     }
     .into_any()
 }
 
 /// Every volume with how full it is, and how much of the data's volume is Irori's database.
-fn disk_breakdown(machine: &System) -> AnyView {
+fn disk_breakdown(machine: &System, usage: Option<&Usage>) -> AnyView {
     // An older core names only the data's volume.
     let volumes: Vec<Disk> = if machine.disks.is_empty() {
         vec![machine.disk.clone()]
@@ -352,12 +408,35 @@ fn disk_breakdown(machine: &System) -> AnyView {
                 })}
             </dl>
         })}
+        {using(
+            "What Irori keeps there",
+            usage.map(|usage| {
+                usage
+                    .storage
+                    .iter()
+                    .take(ROWS + 1)
+                    .map(|stored| Row {
+                        name: stored.name.clone(),
+                        own: false,
+                        // Against the biggest, so the list reads as a comparison: against the
+                        // whole disk, everything Irori keeps is a sliver.
+                        part: share(
+                            stored.bytes,
+                            usage.storage.iter().map(|s| s.bytes).max().unwrap_or(0),
+                        )
+                        .unwrap_or(0.0),
+                        words: bytes(stored.bytes),
+                    })
+                    .collect()
+            }),
+            "Nothing yet.",
+        )}
     }
     .into_any()
 }
 
 /// How much is being asked of the processor: the load, against the cores there are to carry it.
-fn processor_breakdown(machine: &System) -> AnyView {
+fn processor_breakdown(machine: &System, usage: Option<&Usage>) -> AnyView {
     let [one, five, fifteen] = machine.load_average;
     let has_load = one > 0.0 || five > 0.0 || fifteen > 0.0;
     view! {
@@ -374,6 +453,73 @@ fn processor_breakdown(machine: &System) -> AnyView {
                 </dd>
             })}
         </dl>
+        {using(
+            "Busiest just now",
+            usage.map(|usage| {
+                let mut processes: Vec<&Process> = usage.processes.iter().collect();
+                processes.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
+                processes
+                    .into_iter()
+                    .filter(|process| process.cpu >= 0.1)
+                    .take(ROWS)
+                    .map(|process| Row {
+                        name: process.name.clone(),
+                        own: process.own,
+                        part: f64::from(process.cpu / 100.0).clamp(0.0, 1.0),
+                        words: format!("{:.1}%", process.cpu),
+                    })
+                    .collect()
+            }),
+            "Nothing is busy right now.",
+        )}
+    }
+    .into_any()
+}
+
+/// How many rows of what's using something are worth showing.
+const ROWS: usize = 8;
+
+/// One thing using some of what a meter measures.
+struct Row {
+    name: String,
+    /// Irori itself, which gets a word saying so.
+    own: bool,
+    /// How much of it, 0 to 1, for the bar.
+    part: f64,
+    words: String,
+}
+
+/// What is using it, biggest first: a name, a bar, a figure. `None` is not having been told
+/// yet, which reads as looking rather than as nothing.
+fn using(title: &'static str, rows: Option<Vec<Row>>, empty: &'static str) -> AnyView {
+    view! {
+        <div class="using">
+            <h4 class="using-title">{title}</h4>
+            {match rows {
+                None => view! { <p class="muted small">"Looking…"</p> }.into_any(),
+                Some(rows) if rows.is_empty() => view! { <p class="muted small">{empty}</p> }.into_any(),
+                Some(rows) => view! {
+                    <ul class="volumes">
+                        {rows
+                            .into_iter()
+                            .map(|row| view! {
+                                <li>
+                                    <span class="volume-mount">
+                                        {row.name}
+                                        {row.own.then(|| view! { <span class="chip quiet">"Irori"</span> })}
+                                    </span>
+                                    <span class="meter-bar">
+                                        <span class="meter-fill" style=format!("scale: {:.4} 1", row.part)></span>
+                                    </span>
+                                    <span class="volume-words">{row.words}</span>
+                                </li>
+                            })
+                            .collect_view()}
+                    </ul>
+                }
+                .into_any(),
+            }}
+        </div>
     }
     .into_any()
 }

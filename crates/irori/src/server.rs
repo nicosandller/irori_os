@@ -135,6 +135,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/dev/history/{entity_id}", get(entity_history))
         .route("/api/dev/system", get(host_info))
+        .route("/api/dev/system/usage", get(usage))
         .route("/api/dev/system/log", get(system_log))
         .route("/api/dev/serial-ports", get(serial_ports))
         .route("/api/dev/restart", post(restart))
@@ -245,6 +246,20 @@ async fn home(State(state): State<AppState>) -> Json<HomeView> {
 /// filled or a machine that was swapped out from under it.
 async fn host_info(State(state): State<AppState>) -> Json<crate::host_info::HostView> {
     Json(crate::host_info::read(&state.0.db.path))
+}
+
+/// What is using the machine: the heaviest processes, and what the data directory is made of.
+/// Slower than `host_info` — it watches every process for a moment — so the page asks for it
+/// only while a meter is open, and it runs off the async runtime.
+async fn usage(State(state): State<AppState>) -> Json<crate::usage::UsageView> {
+    let database = state.0.db.path.clone();
+    let view = tokio::task::spawn_blocking(move || crate::usage::read(&database))
+        .await
+        .unwrap_or_else(|_| crate::usage::UsageView {
+            processes: Vec::new(),
+            storage: Vec::new(),
+        });
+    Json(view)
 }
 
 /// Serial devices plugged into this machine right now, for a settings field the schema marks
@@ -1917,6 +1932,21 @@ mod tests {
             json["disk"]["total"].as_u64().unwrap_or(0) > 0,
             "the volume with the data should report its size: {json}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_says_what_is_running_and_what_is_kept() -> anyhow::Result<()> {
+        let (status, _, body) = get("/api/dev/system/usage").await?;
+        assert_eq!(status, StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(&body)?;
+        assert!(
+            json["processes"]
+                .as_array()
+                .is_some_and(|all| !all.is_empty()),
+            "something is always running: {json}"
+        );
+        assert!(json["storage"].is_array(), "{json}");
         Ok(())
     }
 

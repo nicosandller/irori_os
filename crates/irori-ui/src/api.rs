@@ -321,6 +321,50 @@ pub struct Disk {
     pub used: u64,
 }
 
+/// What is using the machine, from `/api/dev/system/usage`: the heaviest processes, and what
+/// Irori's data directory is made of. Slower to gather than [`System`], so it's asked for only
+/// while a meter is open.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct Usage {
+    #[serde(default)]
+    pub processes: Vec<Process>,
+    #[serde(default)]
+    pub storage: Vec<Stored>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Process {
+    pub name: String,
+    #[serde(default)]
+    pub pid: u32,
+    #[serde(default)]
+    pub memory: u64,
+    /// Its share of the whole machine's processor, 0–100.
+    #[serde(default)]
+    pub cpu: f32,
+    /// Whether it is Irori itself.
+    #[serde(default)]
+    pub own: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Stored {
+    pub name: String,
+    pub bytes: u64,
+}
+
+pub async fn fetch_usage() -> Result<Usage, String> {
+    let url = "/api/dev/system/usage";
+    let response = Request::get(url).send().await.map_err(unreachable)?;
+    if !response.ok() {
+        return Err(format!("{url} answered {}", response.status()));
+    }
+    response
+        .json::<Usage>()
+        .await
+        .map_err(|e| format!("Irori sent something this page can't read: {e}"))
+}
+
 pub async fn fetch_system() -> Result<System, String> {
     let response = Request::get(SYSTEM_URL).send().await.map_err(unreachable)?;
     if !response.ok() {

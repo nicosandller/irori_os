@@ -67,6 +67,27 @@
     .shell[data-motion="off"] *::after { animation: none !important; transition: none !important; }
     body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 var(--sans); }
 
+    /* Every box that is typed in looks the same wherever it is: the page's own colours, a thin
+       line, an ember ring while it has the cursor. Zero specificity, so a place that needs a
+       different size or font just says so. */
+    :where(input:not([type="range"], [type="checkbox"], [type="radio"], [type="color"]),
+           textarea) {
+        padding: .3rem .5rem; font: inherit; font-size: .9rem; color: var(--fg);
+        background: var(--bg); border: 1px solid var(--line); border-radius: .4rem;
+        transition: border-color var(--dur-fast); }
+    :where(input:not([type="range"], [type="checkbox"], [type="radio"], [type="color"]),
+           textarea):hover:not(:disabled, :focus) { border-color: var(--muted); }
+    :where(input:not([type="range"], [type="checkbox"], [type="radio"], [type="color"]),
+           textarea):focus { outline: 2px solid var(--ember); outline-offset: -1px; }
+    :where(input, textarea)::placeholder { color: var(--muted); opacity: .8; }
+    :where(input, textarea):disabled { opacity: .55; cursor: not-allowed; }
+    /* A number is typed, or nudged with the arrow keys: the browser's own little arrows are
+       the operating system's, and take a third of a box this size. */
+    input[type="number"] { appearance: textfield; -moz-appearance: textfield;
+                           font-variant-numeric: tabular-nums; }
+    input[type="number"]::-webkit-inner-spin-button,
+    input[type="number"]::-webkit-outer-spin-button { appearance: none; margin: 0; }
+
     /* Changing page (src/transition.rs says which change it is, as `data-nav` on <html>). The
        shell stays put — its sidebar highlight glides on its own — and the page moves: up from
        below for a page further down the sidebar, down from above for one further up, sideways
@@ -577,8 +598,8 @@
         color: var(--fg); background: var(--sunk); border-color: var(--ember); }
     .choices button:focus-visible, button.press:focus-visible {
         outline: 2px solid var(--ember); outline-offset: 2px; }
-    .text-control { font: inherit; padding: .25rem .4rem; width: 12rem; }
-    .media-url { width: min(22rem, 100%); }
+    .text-control { width: 12rem; padding: .2rem .5rem; font-size: .85rem; }
+    .media-url { flex: 1 1 12rem; width: auto; max-width: 22rem; min-width: 0; }
     .cover-buttons { display: inline-flex; flex-wrap: wrap; align-items: center; }
     /* A button that is only there while it makes sense (controls `tuck`): it folds away to
        nothing and what's beside it closes up, rather than a row of buttons that don't apply. */
@@ -615,11 +636,11 @@
     .fan-swing { display: inline-flex; align-items: center; gap: .35rem; }
     /* A thermostat's target, typed in, and what the room is now. */
     .climate-target { display: inline-flex; align-items: center; gap: .3rem; color: var(--muted); }
-    .climate-target input { width: 4.5rem; font: inherit; padding: .25rem .4rem; text-align: right; }
+    .climate-target input { width: 3.4rem; padding: .2rem .4rem; text-align: right; }
     .climate-now { color: var(--muted); font: .72rem var(--mono); }
     /* A number typed in rather than dragged: a short box and its unit. */
     .number-box { display: inline-flex; align-items: center; gap: .35rem; }
-    .number-box input { width: 6.5rem; font: inherit; padding: .25rem .4rem; text-align: right; }
+    .number-box input { width: 4.6rem; padding: .2rem .4rem; text-align: right; }
     .number-box .unit { color: var(--muted); font-size: .9rem; }
     .light-controls .dim { display: inline-flex; align-items: center; gap: .45rem;
                            font: .72rem var(--mono); color: var(--muted); }
@@ -875,6 +896,12 @@
                                background: var(--sunk); color: var(--muted);
                                font: 600 .7rem/1 var(--mono); }
     .description-lede { margin: -.5rem 0 .25rem; }
+    /* A form of labelled fields, one under another: the Assistant's, in Settings. */
+    .about-form { display: grid; gap: .75rem; }
+    .about-form label { display: grid; gap: .25rem; }
+    .about-form label > span { color: var(--muted); font: .7rem var(--mono); letter-spacing: .08em;
+                               text-transform: uppercase; }
+    .about-form input, .about-form textarea { padding: .45rem .6rem; resize: vertical; }
 
     /* Found, and waiting for a person: a key to paste, a code to enter. */
     .waiting { border-color: var(--ember); }
@@ -993,6 +1020,12 @@
                   grid-template-columns: minmax(6rem, 1.2fr) minmax(4rem, 1fr) max-content; }
     .volume-mount { display: flex; align-items: center; gap: .4rem; overflow-wrap: anywhere; }
     .volume-words { color: var(--muted); }
+    .using { display: grid; gap: .4rem; }
+    .using-title { margin: 0; color: var(--muted); font: .7rem var(--mono); letter-spacing: .08em;
+                   text-transform: uppercase; font-weight: 400; }
+    .using p { margin: 0; }
+    .using .volumes li { grid-template-columns: minmax(6rem, 1.2fr) minmax(4rem, 1fr) 4.5rem; }
+    .using .volume-words { text-align: right; }
     @media (max-width: 720px) {
       .settings-table > .fold-row > .drawer > .drawer-inner > * { margin-left: 1rem; }
       .meter-head { grid-template-columns: 1.15rem 1fr max-content auto; }
