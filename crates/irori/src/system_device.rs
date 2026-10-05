@@ -179,7 +179,7 @@ async fn run(mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
                         ctx.report_state(number("memory", round1(used))?);
                     }
                     if let Some(dir) = DATA_DIR.get() {
-                        let disk = crate::host_info::read(dir).disk;
+                        let disk = crate::host_info::disk(dir);
                         if disk.total > 0 {
                             ctx.report_state(number("disk", round1(disk.used as f64 / disk.total as f64 * 100.0))?);
                         }

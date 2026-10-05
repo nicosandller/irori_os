@@ -332,13 +332,18 @@ pub fn Section() -> impl IntoView {
     };
 
     // Something dragged that stays over a folded floor opens it, so it can be dropped inside.
+    // Each stay is its own: coming back to a floor starts the wait again, and the wait an
+    // earlier visit started can't open it early.
+    let stay = StoredValue::new(0u32);
     Effect::new(move |_| {
+        let this = stay.get_value().wrapping_add(1);
+        stay.set_value(this);
         let Some(floor) = places.lingering.get() else {
             return;
         };
         set_timeout(
             move || {
-                if places.lingering.get_untracked().as_ref() == Some(&floor) {
+                if stay.get_value() == this {
                     places.folded.update(|folded| {
                         folded.remove(&floor);
                     });

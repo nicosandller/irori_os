@@ -58,13 +58,16 @@ pub struct HostView {
 }
 
 /// One disk: enough for "is the volume getting full?" without implying anything finer.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DiskView {
     /// Where the volume is mounted, e.g. "/" or "/System/Volumes/Data".
     pub mount: String,
     pub total: u64,
     pub available: u64,
     pub used: u64,
+    /// The device it's on, as the OS names it, for telling one pool of space from another.
+    #[serde(skip)]
+    device: String,
 }
 
 /// Reads the machine, given where the instance keeps its data so the right volume is reported.
@@ -99,6 +102,7 @@ pub fn read(data: &Path) -> HostView {
     let cpu_cores = System::physical_core_count().unwrap_or(0);
     let (memory_total, memory_used) = memory(&system);
     let disks = Disks::new_with_refreshed_list();
+    let on = data_disk(&disks, data);
 
     HostView {
         host: System::host_name(),
@@ -116,16 +120,10 @@ pub fn read(data: &Path) -> HostView {
         swap_total: system.total_swap(),
         swap_used: system.used_swap(),
         uptime_secs: System::uptime(),
-        disks: volumes(&disks, data_disk(&disks, data)),
+        disks: volumes(&disks, on.clone()),
         data_dir: data.parent().unwrap_or(data).to_string_lossy().into_owned(),
         database_bytes: database_bytes(data),
-        disk: data_disk(&disks, data).unwrap_or(DiskView {
-            // Without a disk to answer, the row says so rather than guessing at a number.
-            mount: String::new(),
-            total: 0,
-            available: 0,
-            used: 0,
-        }),
+        disk: on.unwrap_or_else(no_disk),
     }
 }
 
@@ -155,6 +153,37 @@ fn database_bytes(database: &Path) -> u64 {
         .sum()
 }
 
+/// The volume the data is on, and nothing else: what Irori's own disk reading is made from,
+/// every half minute, without asking the machine everything Settings shows.
+pub fn disk(data: &Path) -> DiskView {
+    data_disk(&Disks::new_with_refreshed_list(), data).unwrap_or_else(no_disk)
+}
+
+/// Without a disk to answer, the row says so rather than guessing at a number.
+fn no_disk() -> DiskView {
+    DiskView {
+        mount: String::new(),
+        total: 0,
+        available: 0,
+        used: 0,
+        device: String::new(),
+    }
+}
+
+/// A device's name without the part that says which slice of it: `/dev/disk3s5` and
+/// `/dev/disk3s1` are both `/dev/disk3`, `/dev/nvme0n1p2` is `/dev/nvme0n1`, `/dev/sda1` is
+/// `/dev/sda`. A name with no number on the end (`overlay`, `tmpfs`) is itself.
+fn family(device: &str) -> &str {
+    let whole = device.trim_end_matches(|c: char| c.is_ascii_digit());
+    if whole.len() == device.len() {
+        return device;
+    }
+    match whole.strip_suffix(['s', 'p']) {
+        Some(disk) if disk.ends_with(|c: char| c.is_ascii_digit()) => disk,
+        _ => whole,
+    }
+}
+
 /// The volumes worth showing: ones with a size, mounted on a directory, each filesystem once
 /// however many places it is mounted. The data's volume stands for its filesystem under the
 /// mount it was found by; any other goes by its shortest mount.
@@ -169,9 +198,12 @@ fn volumes(disks: &Disks, data: Option<DiskView>) -> Vec<DiskView> {
     if let Some(data) = data {
         views.insert(0, data);
     }
+    // One pool of space, however it's mounted: the same device (or volumes carved from one,
+    // which share its free space) reporting the same numbers. Two disks that merely happen to
+    // be as full as each other are different devices, and both stay.
     let mut seen = Vec::new();
     views.retain(|view| {
-        let same = (view.total, view.available);
+        let same = (family(&view.device).to_owned(), view.total, view.available);
         if seen.contains(&same) {
             return false;
         }
@@ -256,6 +288,7 @@ fn disk_view(disk: &sysinfo::Disk) -> DiskView {
         total,
         available,
         used: total.saturating_sub(available),
+        device: disk.name().to_string_lossy().into_owned(),
     }
 }
 
@@ -299,5 +332,15 @@ mod tests {
             "{:?}",
             host.disks
         );
+    }
+
+    #[test]
+    fn slices_of_one_device_are_one_family() {
+        assert_eq!(family("/dev/disk3s5"), "/dev/disk3");
+        assert_eq!(family("/dev/disk3s1"), "/dev/disk3");
+        assert_eq!(family("/dev/nvme0n1p2"), "/dev/nvme0n1");
+        assert_eq!(family("/dev/sda1"), "/dev/sda");
+        assert_ne!(family("/dev/sda1"), family("/dev/sdb1"));
+        assert_eq!(family("overlay"), "overlay");
     }
 }
