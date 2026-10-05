@@ -26,6 +26,11 @@ pub struct AskAt {
     right: f64,
 }
 
+/// Whether the local model's log window is open. Kept by the shell, so a chat and the
+/// Settings card open the same one and it is drawn over both.
+#[derive(Debug, Clone, Copy)]
+pub struct ModelLog(pub RwSignal<bool>);
+
 /// Which chat window is open, if one is. One at a time, shared by every Ask on the page.
 #[derive(Debug, Clone, Copy)]
 pub struct Asking(pub RwSignal<Option<AskAt>>);
@@ -205,6 +210,7 @@ impl Phase {
         match self {
             Self::Thinking => "Thinking",
             Self::Looking(tool) => match tool.as_str() {
+                "queued" => "Waiting for the model to finish another answer",
                 "list_devices" => "Looking around the home",
                 "get_device" => "Checking a device",
                 "recent_states" => "Reading recent values",
@@ -229,8 +235,21 @@ pub fn Chat(
     // The answer so far, while it is being written.
     let writing = RwSignal::new(String::new());
     let trouble = RwSignal::new(None::<String>);
+    // The question a failed answer was for, so it can be asked again without typing it.
+    let unanswered = RwSignal::new(None::<String>);
+    // Seconds since the question was sent.
+    let waited = RwSignal::new(0u32);
     let log = NodeRef::<leptos::html::Div>::new();
     let scope = StoredValue::new(scope);
+    let assistant = expect_context::<Assistant>();
+    let model_log = expect_context::<ModelLog>();
+    // Ollama's own log, when the model is on this machine and Irori runs its Ollama.
+    let has_log = move || {
+        assistant
+            .0
+            .get()
+            .is_some_and(|status| status.mode == "local" && status.managed)
+    };
 
     spawn_local(async move {
         match api::assistant_transcript(&scope.get_value()).await {
@@ -268,8 +287,17 @@ pub fn Chat(
         draft.set(String::new());
         asking.set(true);
         trouble.set(None);
+        unanswered.set(None);
         writing.set(String::new());
         phase.set(Phase::Thinking);
+        waited.set(0);
+        // A model on a small machine can take minutes. The count says it is still going.
+        spawn_local(async move {
+            while asking.try_get_untracked() == Some(true) {
+                gloo_timers::future::sleep(std::time::Duration::from_secs(1)).await;
+                waited.try_update(|seconds| *seconds += 1);
+            }
+        });
         messages.update(|turns| {
             turns.push(api::AssistantMessage {
                 role: "user".to_owned(),
@@ -301,6 +329,7 @@ pub fn Chat(
                 }
                 Err(error) => {
                     trouble.try_set(Some(error));
+                    unanswered.try_set(Some(text.clone()));
                     // A reply that failed isn't kept, and neither is its question.
                     if let Ok(turns) = api::assistant_transcript(&scope).await {
                         messages.try_set(turns);
@@ -334,6 +363,16 @@ pub fn Chat(
             <header class="chat-head">
                 <Spark />
                 <span class="chat-title">{title}</span>
+                {move || has_log().then(|| view! {
+                    <button
+                        type="button"
+                        class="chat-clear"
+                        title="What the model on this machine has said"
+                        on:click=move |_| model_log.0.set(true)
+                    >
+                        "Log"
+                    </button>
+                })}
                 <button
                     type="button"
                     class="chat-clear"
@@ -385,10 +424,44 @@ pub fn Chat(
                         <p class="chat-phase" aria-live="polite">
                             <span class="dots"><i></i><i></i><i></i></span>
                             {move || phase.get().words()}
+                            {move || {
+                                let seconds = waited.get();
+                                (seconds >= 5).then(|| view! {
+                                    <span class="chat-waited">{clock(seconds)}</span>
+                                })
+                            }}
                         </p>
+                        {move || {
+                            (waited.get() >= 20 && phase.get() == Phase::Thinking).then(|| view! {
+                                <p class="chat-slow">
+                                    "A model on this machine reads the whole question before it \
+                                     says a word, which can take a few minutes on a small one."
+                                </p>
+                            })
+                        }}
                     </div>
                 })}
-                {move || trouble.get().map(|why| view! { <p class="chat-trouble">{why}</p> })}
+                {move || trouble.get().map(|why| view! {
+                    <div class="chat-trouble">
+                        <p>{why}</p>
+                        <div class="chat-trouble-actions">
+                            {move || unanswered.get().map(|question| view! {
+                                <button type="button" class="quiet-button" on:click=move |_| {
+                                    draft.set(question.clone());
+                                    send.run(());
+                                }>
+                                    "Ask again"
+                                </button>
+                            })}
+                            {move || has_log().then(|| view! {
+                                <button type="button" class="quiet-button"
+                                    on:click=move |_| model_log.0.set(true)>
+                                    "See the model log"
+                                </button>
+                            })}
+                        </div>
+                    </div>
+                })}
             </div>
             <form
                 class="composer"
@@ -450,6 +523,7 @@ pub fn Section() -> impl IntoView {
     let busy = RwSignal::new(false);
     let progress = RwSignal::new(None::<Progress>);
     let removing = RwSignal::new(false);
+    let log_open = expect_context::<ModelLog>().0;
     let trouble = RwSignal::new(None::<String>);
 
     let apply = move |status: &AssistantStatus| {
@@ -639,10 +713,36 @@ pub fn Section() -> impl IntoView {
                                         let live = pulled.active && status.mode == "local";
                                         let using = pulled.name.clone();
                                         let deleting = pulled.name.clone();
+                                        let holding = pulled.name.clone();
+                                        let loaded = pulled.loaded;
+                                        // Loaded, it fits by being there. Otherwise it needs
+                                        // what it takes, and some left for the machine.
+                                        let room = loaded
+                                            || pulled.needs + 200 * 1024 * 1024 <= status.memory_free;
                                         view! {
                                             <li class:live=live>
-                                                <span class="name">{pulled.name.clone()}</span>
-                                                <span class="muted">{size(pulled.size)}</span>
+                                                <span class="name">
+                                                    {pulled.name.clone()}
+                                                    {loaded.then(|| view! {
+                                                        <span class="loaded" title="In memory now">
+                                                            "loaded"
+                                                        </span>
+                                                    })}
+                                                </span>
+                                                <span class="muted needs" class:tight=!room
+                                                    title="Memory it takes once loaded">
+                                                    {format!("needs {}", size(pulled.needs))}
+                                                </span>
+                                                <button type="button" class="quiet-button"
+                                                    disabled=move || busy.get() || (!loaded && !room)
+                                                    on:click=move |_| {
+                                                        let tag = holding.clone();
+                                                        change(Box::pin(async move {
+                                                            api::assistant_hold(&tag, !loaded).await
+                                                        }));
+                                                    }>
+                                                    {if loaded { "Unload" } else { "Load" }}
+                                                </button>
                                                 {if live {
                                                     view! { <span class="in-use-word">"in use"</span> }
                                                         .into_any()
@@ -673,6 +773,22 @@ pub fn Section() -> impl IntoView {
                                         }
                                     }).collect_view()}
                                 </ul>
+                                {(status.memory_total > 0).then(|| {
+                                    let used = status.memory_total.saturating_sub(status.memory_free);
+                                    let part = used as f64 / status.memory_total as f64 * 100.0;
+                                    view! {
+                                        <div class="assistant-memory">
+                                            <div class="bar"><span style=format!("width: {part:.1}%")></span></div>
+                                            <span>
+                                                {format!(
+                                                    "{} of memory free, of {}",
+                                                    size(status.memory_free),
+                                                    size(status.memory_total)
+                                                )}
+                                            </span>
+                                        </div>
+                                    }
+                                })}
                             }
                         })}
                         {move || status().filter(|status| status.mode == "local").map(|status| {
@@ -698,6 +814,10 @@ pub fn Section() -> impl IntoView {
                                     .into_any()
                                 } else {
                                     view! {
+                                        <button type="button" class="quiet-button"
+                                            on:click=move |_| log_open.set(true)>
+                                            "Model log"
+                                        </button>
                                         <button type="button" class="quiet-button danger"
                                             disabled=move || busy.get()
                                             on:click=move |_| removing.set(true)>
@@ -725,24 +845,29 @@ pub fn Section() -> impl IntoView {
                         }
                         save(body);
                     }>
-                        <label>
+                        <div class="field">
                             <span>"PROVIDER"</span>
-                            <select
-                                prop:value=move || preset.get()
-                                on:change=move |event| {
-                                    let next = event_target_value(&event);
+                            {crate::choices::choices(
+                                "Provider",
+                                [
+                                    ("openai", "OpenAI"),
+                                    ("anthropic", "Anthropic"),
+                                    ("grok", "Grok"),
+                                    ("compatible", "OpenAI-compatible"),
+                                ]
+                                .into_iter()
+                                .map(|(value, words)| (value.to_owned(), words.to_owned()))
+                                .collect(),
+                                move || Some(preset.get()),
+                                move || busy.get(),
+                                move |next| {
                                     if let Some(url) = preset_url(&next) {
                                         base_url.set(url.to_owned());
                                     }
                                     preset.set(next);
-                                }
-                            >
-                                <option value="openai">"OpenAI"</option>
-                                <option value="anthropic">"Anthropic"</option>
-                                <option value="grok">"Grok"</option>
-                                <option value="compatible">"OpenAI-compatible"</option>
-                            </select>
-                        </label>
+                                },
+                            )}
+                        </div>
                         <label>
                             <span>"ENDPOINT"</span>
                             <input
@@ -812,6 +937,15 @@ pub fn Section() -> impl IntoView {
                 </p>
             })}
         </details>
+    }
+}
+
+/// Seconds as a short clock: `8 s`, `1:05`.
+fn clock(seconds: u32) -> String {
+    if seconds < 60 {
+        format!("{seconds} s")
+    } else {
+        format!("{}:{:02}", seconds / 60, seconds % 60)
     }
 }
 

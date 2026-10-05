@@ -64,6 +64,42 @@ fn pid_file(data_dir: &Path) -> PathBuf {
     data_dir.join("ollama.pid")
 }
 
+/// Where Irori's Ollama writes what it says. A file, not a pipe: a restart replaces this
+/// process in place, and an Ollama left writing into a pipe nobody holds would be killed for it.
+fn log_file(data_dir: &Path) -> PathBuf {
+    data_dir.join("ollama.log")
+}
+
+/// How much of Ollama's output is kept. Past this the file is started again.
+const LOG_MAX: u64 = 4 * 1024 * 1024;
+/// How many lines the Settings page is shown.
+const LOG_LINES: usize = 400;
+
+/// The last things Irori's Ollama said, oldest first. Its line for every request it served
+/// is left out: Irori asks it what it has every few seconds, and those would be all there is.
+pub fn log(data_dir: &Path) -> Vec<String> {
+    let path = log_file(data_dir);
+    if std::fs::metadata(&path).is_ok_and(|file| file.len() > LOG_MAX) {
+        // Ollama appends, so emptying the file under it is safe: its next line starts it again.
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path);
+    }
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !line.starts_with("[GIN]"))
+        .collect();
+    lines[lines.len().saturating_sub(LOG_LINES)..]
+        .iter()
+        .map(|line| (*line).to_owned())
+        .collect()
+}
+
 /// Linux releases keep the binary under `bin/`. The macOS one has it at the top.
 fn binary(data_dir: &Path) -> Option<PathBuf> {
     let dir = dir(data_dir);
@@ -236,13 +272,30 @@ pub async fn start(data_dir: &Path) -> Result<bool, String> {
     let Some(binary) = binary(data_dir) else {
         return Ok(false);
     };
+    // What it says goes to a file the Settings page reads. Without it, a model that dies
+    // while loading leaves nothing to read.
+    // It starts empty each time, and both of Ollama's outputs append to it.
+    let _ = std::fs::File::create(log_file(data_dir));
+    let output = || {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(log_file(data_dir))
+            .map_or_else(|_| Stdio::null(), Stdio::from)
+    };
     let child = std::process::Command::new(&binary)
         .arg("serve")
         .env("OLLAMA_HOST", HOST)
         .env("OLLAMA_MODELS", dir(data_dir).join("models"))
+        // One model, one question at a time: this is a small machine, and Irori asks in turn.
+        .env("OLLAMA_MAX_LOADED_MODELS", "1")
+        .env("OLLAMA_NUM_PARALLEL", "1")
+        // The model's server keeps every finished prompt in memory, up to 8 GB by default,
+        // to save reading it again. Irori's prompts carry the home as it is now, so they are
+        // rarely the same twice, and that memory is the model's own to load into.
+        .env("LLAMA_ARG_CACHE_RAM", "0")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(output())
+        .stderr(output())
         .spawn()
         .map_err(|error| format!("Ollama wouldn't start ({error})."))?;
     let _ = std::fs::write(pid_file(data_dir), child.id().to_string());
@@ -279,6 +332,7 @@ pub async fn uninstall(data_dir: &Path) -> Result<(), String> {
                 .status();
         }
         let _ = std::fs::remove_file(pid_file(&data_dir));
+        let _ = std::fs::remove_file(log_file(&data_dir));
         let _ = std::fs::remove_dir_all(data_dir.join("ollama.installing"));
         match std::fs::remove_dir_all(dir(&data_dir)) {
             Ok(()) => Ok(()),
@@ -293,6 +347,10 @@ pub async fn uninstall(data_dir: &Path) -> Result<(), String> {
 /// Whether process `pid` is a program from inside `dir`. The number in the pid file can
 /// outlive the Ollama it was written for, and by then belong to anything.
 fn runs_from(pid: &str, dir: &Path) -> bool {
+    // Linux says it directly, and a small image may have no `ps` to ask.
+    if let Ok(program) = std::fs::read_link(format!("/proc/{pid}/exe")) {
+        return program.starts_with(dir);
+    }
     std::process::Command::new("ps")
         .args(["-p", pid, "-o", "command="])
         .stderr(Stdio::null())
@@ -329,6 +387,11 @@ mod tests {
     async fn removing_what_was_never_installed_is_fine() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         assert!(!installed(dir.path()));
+        std::fs::write(
+            log_file(dir.path()),
+            "[GIN] 200 GET /api/tags\nloading model\n\nsignal: killed\n",
+        )?;
+        assert_eq!(log(dir.path()), ["loading model", "signal: killed"]);
         // A pid left behind names a process that is not Irori's Ollama: this test. It stays.
         std::fs::write(pid_file(dir.path()), std::process::id().to_string())?;
         assert!(!runs_from(

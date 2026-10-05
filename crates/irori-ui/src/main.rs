@@ -83,6 +83,8 @@ fn App() -> impl IntoView {
     let assistant = RwSignal::new(None);
     provide_context(Assistant(assistant));
     provide_context(assistant::Asking(RwSignal::new(None)));
+    let model_log = RwSignal::new(false);
+    provide_context(assistant::ModelLog(model_log));
 
     let busy = RwSignal::new(BTreeSet::new());
     let failures = RwSignal::new(BTreeMap::new());
@@ -262,6 +264,13 @@ fn App() -> impl IntoView {
 
                 <Page live=live />
                 <assistant::Popover />
+                // Over everything, the chat window included: it is opened from inside one.
+                {move || model_log.get().then(|| view! {
+                    <log_window::LogWindow
+                        source=log_window::Source::Model
+                        on_close=move || model_log.set(false)
+                    />
+                })}
             </div>
         </Router>
     }

@@ -346,7 +346,8 @@ page is accepted and stored as the tag it is the page of. Irori does not ship th
 Ollama. It talks to the Ollama listening on `127.0.0.1:11434`. If none is, Settings can
 install one: Ollama's own release, checked against its published checksum, unpacked into
 `ollama/` in the data directory and run from there as `ollama serve` on this machine only,
-with its models in the same directory. Uninstalling removes that directory. An Ollama you
+with its models in the same directory. What it says goes to `ollama.log` beside it, which
+Settings shows as the model log. Uninstalling removes that directory. An Ollama you
 installed yourself is used as it is and never removed. Unpacking needs `tar`, and `zstd` on
 Linux. A tag that is larger than the free memory on the machine can be downloaded and still
 not be used.

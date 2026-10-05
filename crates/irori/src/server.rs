@@ -193,6 +193,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/dev/assistant/pull", post(assistant::pull))
         .route("/api/dev/assistant/forget", post(assistant::forget))
         .route("/api/dev/assistant/uninstall", post(assistant::uninstall))
+        .route("/api/dev/assistant/log", get(assistant::model_log))
+        .route("/api/dev/assistant/load", post(assistant::load))
+        .route("/api/dev/assistant/unload", post(assistant::unload))
         .route(
             "/api/dev/assistant/transcript/{scope}",
             get(assistant::transcript).delete(assistant::clear),

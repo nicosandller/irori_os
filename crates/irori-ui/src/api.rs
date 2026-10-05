@@ -728,6 +728,11 @@ pub async fn fetch_system_log() -> Result<Vec<String>, String> {
     fetch_log("/api/dev/system/log").await
 }
 
+/// What the Ollama Irori installed has said lately.
+pub async fn fetch_model_log() -> Result<Vec<String>, String> {
+    fetch_log("/api/dev/assistant/log").await
+}
+
 /// Either log. The same `{"lines": [...]}` shape by design, so one window reads both, and always
 /// a 200, so a log with nothing in it is an empty list rather than an error.
 async fn fetch_log(path: &str) -> Result<Vec<String>, String> {
@@ -875,6 +880,11 @@ pub struct AssistantStatus {
     pub base_url: String,
     pub cloud_model: String,
     pub cloud: bool,
+    /// Memory a model could be loaded into right now, and how much the machine has.
+    #[serde(default)]
+    pub memory_free: u64,
+    #[serde(default)]
+    pub memory_total: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -882,6 +892,12 @@ pub struct PulledModel {
     pub name: String,
     pub size: u64,
     pub active: bool,
+    /// Whether it is in memory now.
+    #[serde(default)]
+    pub loaded: bool,
+    /// About how much memory it takes once loaded.
+    #[serde(default)]
+    pub needs: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -996,6 +1012,28 @@ pub async fn assistant_pull(tag: &str, mut on: impl FnMut(Progress)) -> Result<(
 
 pub async fn assistant_forget(tag: &str) -> Result<AssistantStatus, String> {
     let response = Request::post("/api/dev/assistant/forget")
+        .json(&serde_json::json!({ "tag": tag }))
+        .map_err(|error| error.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        return match checked(response).await {
+            Err(reason) => Err(reason),
+            Ok(()) => Err("the server refused without a reason".into()),
+        };
+    }
+    response.json().await.map_err(unreachable)
+}
+
+/// Loads a downloaded model into memory, or lets it go.
+pub async fn assistant_hold(tag: &str, load: bool) -> Result<AssistantStatus, String> {
+    let url = if load {
+        "/api/dev/assistant/load"
+    } else {
+        "/api/dev/assistant/unload"
+    };
+    let response = Request::post(url)
         .json(&serde_json::json!({ "tag": tag }))
         .map_err(|error| error.to_string())?
         .send()

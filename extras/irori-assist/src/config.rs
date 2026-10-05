@@ -5,8 +5,39 @@ use serde::{Deserialize, Serialize};
 /// The on-device tag a new install offers. Qwen3 1.7B, Q4_K_M, about 1.4 GB, Apache-2.0.
 pub const DEFAULT_TAG: &str = "qwen3:1.7b";
 
-/// Extra free memory a pulled model needs beyond its file, for the cache beside the weights.
-const HEADROOM: u64 = 400 * 1024 * 1024;
+/// How much conversation a local model is given room for, in tokens. Asked for by name on
+/// every request, so what is estimated here is what Ollama sets aside.
+pub const LOCAL_CONTEXT: u64 = 4096;
+
+/// Memory left for the rest of the machine once a model is loaded.
+const HEADROOM: u64 = 200 * 1024 * 1024;
+/// The working buffers a loaded model keeps besides its weights and its context.
+const WORKING: u64 = 64 * 1024 * 1024;
+
+/// The numbers in a model's own description that decide how much memory its context takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shape {
+    pub layers: u64,
+    pub kv_heads: u64,
+    pub key_length: u64,
+    pub value_length: u64,
+}
+
+/// What a model takes once loaded: its weights, the memory of the conversation, and its
+/// working buffers. The conversation's part is one key and one value per token, layer and
+/// head, two bytes a number. Without the model's shape, a fifth of the weights and half a
+/// gigabyte stand in for it.
+pub fn local_needs(weight_bytes: u64, shape: Option<Shape>) -> u64 {
+    let context = match shape {
+        Some(shape) => LOCAL_CONTEXT
+            .saturating_mul(shape.layers)
+            .saturating_mul(shape.kv_heads)
+            .saturating_mul(shape.key_length + shape.value_length)
+            .saturating_mul(2),
+        None => weight_bytes / 5 + 512 * 1024 * 1024,
+    };
+    weight_bytes.saturating_add(context).saturating_add(WORKING)
+}
 
 /// Which way the assistant is meant to answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -152,9 +183,10 @@ pub fn cloud_ready(file: &AssistantFile, has_key: bool) -> bool {
         && !file.cloud.base_url.is_empty()
 }
 
-/// Whether a pulled model can be served. `weight_bytes` is what Ollama reported for the tag.
-pub fn local_fits(weight_bytes: u64, memory_free: u64) -> bool {
-    weight_bytes > 0 && memory_free.saturating_add(1) > weight_bytes.saturating_add(HEADROOM)
+/// Whether a model that `needs` this much can be loaded into `memory_free`. One that is
+/// already loaded fits by being there: the memory it holds is why less is free.
+pub fn local_fits(needs: u64, memory_free: u64, loaded: bool) -> bool {
+    loaded || (needs > 0 && memory_free >= needs.saturating_add(HEADROOM))
 }
 
 /// The name Ollama pulls, from whatever was pasted: a tag as it is, and a model's page as the
@@ -262,11 +294,33 @@ mod tests {
     }
 
     #[test]
-    fn a_model_fits_when_free_memory_covers_the_weights_and_a_cache() {
-        let weight = 1_400_000_000;
-        assert!(!local_fits(weight, weight));
-        assert!(local_fits(weight, weight + HEADROOM));
-        assert!(!local_fits(0, u64::MAX));
+    fn a_model_fits_when_free_memory_covers_what_it_needs_and_some_room() {
+        let needs = 1_900_000_000;
+        assert!(!local_fits(needs, needs, false));
+        assert!(local_fits(needs, needs + HEADROOM, false));
+        assert!(!local_fits(0, u64::MAX, false));
+    }
+
+    #[test]
+    fn a_loaded_model_fits_however_little_is_left() {
+        // A 4 GB Pi with qwen3:1.7b loaded: 1.66 GB free, which is less than it needs.
+        let needs = local_needs(1_359_293_444, None);
+        assert!(!local_fits(needs, 1_660_000_000, false));
+        assert!(local_fits(needs, 1_660_000_000, true));
+    }
+
+    #[test]
+    fn the_estimate_is_what_ollama_reports_once_loaded() {
+        // qwen3:1.7b: 28 layers, 8 heads, 128 + 128 a head. Ollama says 1,882,424,605 loaded.
+        let shape = Shape {
+            layers: 28,
+            kv_heads: 8,
+            key_length: 128,
+            value_length: 128,
+        };
+        let needs = local_needs(1_359_293_444, Some(shape));
+        assert_eq!(needs, 1_359_293_444 + 448 * 1024 * 1024 + WORKING);
+        assert!(needs.abs_diff(1_882_424_605) < 32 * 1024 * 1024, "{needs}");
     }
 
     #[test]

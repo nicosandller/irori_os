@@ -9,9 +9,10 @@ use std::time::Duration;
 
 use futures_util::StreamExt as _;
 use irori_assist::{
-    AnthropicParser, AssistantFile, BriefLine, CloudPreset, DEFAULT_TAG, Lines, Mode, OllamaParser,
-    OpenAiParser, Piece, Role, ToolCall, Turn as Remembered, anthropic_tools, assemble,
-    cloud_ready, device_brief, execute_round, home_brief, library_page, model_tag, openai_tools,
+    AnthropicParser, AssistantFile, BriefLine, CloudPreset, DEFAULT_TAG, LOCAL_CONTEXT, Lines,
+    Mode, OllamaParser, OpenAiParser, Piece, Role, Shape, ToolCall, Turn as Remembered,
+    anthropic_tools, assemble, cloud_ready, device_brief, execute_round, home_brief, library_page,
+    model_tag, openai_tools,
 };
 use irori_core::Core;
 use irori_types::{Availability, DeviceId, EntityId, EntityState, ExtensionId};
@@ -30,7 +31,19 @@ const CLIENT_LEFT: &str = "client left";
 /// How long a model or a download may say nothing before it is given up on. Long, because a
 /// small machine can take minutes to load a model before the first word.
 const QUIET: Duration = Duration::from_secs(300);
+/// The same, for a model on this machine. It says nothing at all while it reads the question,
+/// and on a Pi that reading alone takes minutes.
+const QUIET_LOCAL: Duration = Duration::from_secs(900);
 const WENT_QUIET: &str = "the model stopped answering";
+/// How long Ollama keeps a model loaded after it was last used or asked for.
+const KEEP_LOADED: &str = "30m";
+/// How much earlier conversation a local model is sent. Its whole context is
+/// [`LOCAL_CONTEXT`] tokens, and the picture of the home takes about half.
+const LOCAL_HISTORY_BYTES: usize = 3_000;
+
+/// One question at a time for the model on this machine. Ollama would queue a second one
+/// anyway; holding it here lets the page say so, and keeps its wait off the clock.
+static LOCAL_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// What the Settings page and the sidebar need. The key itself is never in here.
 #[derive(Debug, Serialize)]
@@ -53,6 +66,9 @@ pub struct Status {
     pub cloud_model: String,
     /// Whether a cloud answer leaves the house.
     pub cloud: bool,
+    /// Memory a model could be loaded into right now, and how much the machine has.
+    pub memory_free: u64,
+    pub memory_total: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -60,6 +76,10 @@ pub struct Pulled {
     pub name: String,
     pub size: u64,
     pub active: bool,
+    /// Whether Ollama has it in memory now.
+    pub loaded: bool,
+    /// About how much memory it takes once loaded.
+    pub needs: u64,
 }
 
 #[derive(Debug)]
@@ -85,10 +105,28 @@ async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
         Ok(models) => (true, models),
         Err(_) => (false, Vec::new()),
     };
-    let memory_free = crate::host_info::read(data_dir).memory_free();
-    let active = pulled.iter().find(|model| model.name == file.local.tag);
+    let host = crate::host_info::read(data_dir);
+    let memory_free = host.memory_free();
+    let in_memory = if ollama_up {
+        loaded().await
+    } else {
+        Vec::new()
+    };
+    let mut models = Vec::new();
+    for model in pulled {
+        let needs = irori_assist::local_needs(model.size, shape(&model).await);
+        models.push(Pulled {
+            active: model.name == file.local.tag,
+            loaded: in_memory.contains(&model.name),
+            name: model.name,
+            size: model.size,
+            needs,
+        });
+    }
+    let pulled = models;
+    let active = pulled.iter().find(|model| model.active);
     let fits = active
-        .map(|model| irori_assist::local_fits(model.size, memory_free))
+        .map(|model| irori_assist::local_fits(model.needs, memory_free, model.loaded))
         .unwrap_or(false);
     let local_ready = file.mode == Mode::Local && ollama_up && active.is_some() && fits;
     let cloud = cloud_ready(&file, has_key);
@@ -112,11 +150,11 @@ async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
                 format!("Download {} to this machine.", file.local.tag)
             }
             Mode::Local => {
-                let size = active.map(|model| model.size).unwrap_or(0);
+                let needs = active.map(|model| model.needs).unwrap_or(0);
                 format!(
-                    "{} needs more free memory than this machine has (the model is {}, about {} free).",
+                    "{} takes about {} of memory once loaded, and {} is free. Free some, or use a smaller model.",
                     file.local.tag,
-                    bytes(size),
+                    bytes(needs),
                     bytes(memory_free)
                 )
             }
@@ -143,14 +181,9 @@ async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
         library_index: "https://ollama.com/library",
         ollama: if ollama_up { "up" } else { "down" },
         managed: ollama::installed(data_dir),
-        pulled: pulled
-            .into_iter()
-            .map(|model| Pulled {
-                active: model.name == file.local.tag,
-                name: model.name,
-                size: model.size,
-            })
-            .collect(),
+        pulled,
+        memory_free,
+        memory_total: host.memory_total,
         preset: file.cloud.preset,
         base_url: file.cloud.base_url,
         cloud_model: file.cloud.model,
@@ -160,6 +193,7 @@ async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
 
 pub async fn save(config: &Config, core: &Core, body: &Value) -> Result<AssistantFile, String> {
     let mut file = load_file(&config.dir().await);
+    let before = (file.mode, file.local.tag.clone());
     if let Some(mode) = body.get("mode").and_then(|value| value.as_str()) {
         file.mode = match mode {
             "off" => Mode::Off,
@@ -195,6 +229,19 @@ pub async fn save(config: &Config, core: &Core, body: &Value) -> Result<Assistan
     }
     let file = file.validated()?;
     write_file(&config.dir().await, &file)?;
+    // The model that stops being the one in use gives its memory back now, not in half an
+    // hour: two of them don't fit on a small machine.
+    if before.0 == Mode::Local && (file.mode != Mode::Local || file.local.tag != before.1) {
+        let tag = before.1;
+        tokio::spawn(async move {
+            let _ = client()
+                .post(format!("{OLLAMA}/api/generate"))
+                .timeout(Duration::from_secs(10))
+                .json(&json!({ "model": tag, "keep_alive": 0 }))
+                .send()
+                .await;
+        });
+    }
     if let Some(key) = body.get("api_key").and_then(|value| value.as_str()) {
         set_key(config, core, key).await?;
     }
@@ -271,7 +318,7 @@ pub async fn pull(config: &Config, data_dir: &Path, tag: &str, tx: mpsc::Sender<
         .post(format!("{OLLAMA}/api/pull"))
         .json(&json!({ "model": tag, "stream": true }))
         .send();
-    let response = match waited(&tx, request).await {
+    let response = match waited(&tx, QUIET, request).await {
         Ok(Ok(response)) if response.status().is_success() => response,
         Ok(Ok(response)) => {
             let _ = tx
@@ -297,7 +344,7 @@ pub async fn pull(config: &Config, data_dir: &Path, tag: &str, tx: mpsc::Sender<
     let mut lines = Lines::default();
     let mut failed = false;
     loop {
-        let chunk = match waited(&tx, stream.next()).await {
+        let chunk = match waited(&tx, QUIET, stream.next()).await {
             Ok(Some(Ok(chunk))) => chunk,
             Ok(None) => break,
             Err(error) if error == CLIENT_LEFT => return,
@@ -335,6 +382,66 @@ pub async fn pull(config: &Config, data_dir: &Path, tag: &str, tx: mpsc::Sender<
         let _ = write_file(&config.dir().await, &file);
     }
     let _ = tx.send(ChatEvent::Done).await;
+}
+
+/// The tail of `turns` that fits in `bytes`, whole turns only and never starting on an answer.
+fn recent(turns: &[Remembered], bytes: usize) -> &[Remembered] {
+    let mut start = turns.len();
+    let mut total = 0usize;
+    while start > 0 && total + turns[start - 1].body.len() <= bytes {
+        start -= 1;
+        total += turns[start].body.len();
+    }
+    if turns
+        .get(start)
+        .is_some_and(|turn| turn.role == Role::Assistant)
+    {
+        start += 1;
+    }
+    &turns[start.min(turns.len())..]
+}
+
+/// Loads a downloaded model into memory ahead of the first question, or lets it go.
+pub async fn hold(data_dir: &Path, tag: &str, load: bool) -> Result<(), String> {
+    let tag = model_tag(tag);
+    if load {
+        let models = tags()
+            .await
+            .map_err(|()| "Ollama isn't running on this machine.".to_owned())?;
+        let model = models
+            .iter()
+            .find(|model| model.name == tag)
+            .ok_or_else(|| format!("{tag} hasn't been downloaded."))?;
+        let needs = irori_assist::local_needs(model.size, shape(model).await);
+        let free = crate::host_info::read(data_dir).memory_free();
+        let already = loaded().await.contains(&tag);
+        if !irori_assist::local_fits(needs, free, already) {
+            return Err(format!(
+                "{tag} takes about {} of memory once loaded, and {} is free.",
+                bytes(needs),
+                bytes(free)
+            ));
+        }
+    }
+    let mut body =
+        json!({ "model": tag, "keep_alive": if load { json!(KEEP_LOADED) } else { json!(0) } });
+    if load {
+        body["options"] = json!({ "num_ctx": LOCAL_CONTEXT });
+    }
+    let response = client()
+        .post(format!("{OLLAMA}/api/generate"))
+        .timeout(QUIET)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "Ollama isn't running on this machine.".to_owned())?;
+    if response.status().is_success() {
+        return Ok(());
+    }
+    let status = response.status();
+    let said = response.text().await.unwrap_or_default();
+    tracing::warn!(%tag, %status, said = %scrub(&said, ""), "the local model would not load");
+    Err(explained(&format!("the model refused ({status}): {said}")))
 }
 
 /// Deletes a downloaded model. The one in use going turns the assistant off.
@@ -417,7 +524,6 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
             return;
         }
     };
-    let mut conversation = Conversation::from_turns(&system, &turns, &message);
     let provider = match provider_for(&file, &key) {
         Ok(provider) => provider,
         Err(error) => {
@@ -425,8 +531,39 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
             return;
         }
     };
+    let earlier = if provider.local() {
+        recent(&turns, LOCAL_HISTORY_BYTES)
+    } else {
+        &turns[..]
+    };
+    // A small model on this machine is not offered the tools. It asks for the list it was
+    // just given, then again, and never gets to the answer. The picture of the home is
+    // already in front of it, and leaving the tools out is fewer words for it to read.
+    let system = if provider.local() {
+        format!(
+            "{system}There are no tools in this conversation. Answer from what is written above, \
+             and say so when it isn't there.\n"
+        )
+    } else {
+        system
+    };
+    let mut conversation = Conversation::from_turns(&system, earlier, &message);
+    let _turn = if provider.local() {
+        match LOCAL_TURN.try_lock() {
+            Ok(turn) => Some(turn),
+            Err(_) => {
+                let _ = tx.send(ChatEvent::Step("queued".into())).await;
+                tokio::select! {
+                    _ = tx.closed() => return,
+                    turn = LOCAL_TURN.lock() => Some(turn),
+                }
+            }
+        }
+    } else {
+        None
+    };
     let mut rounds = 0u8;
-    let mut tools_work = true;
+    let mut tools_work = !provider.local();
     // Everything the page was sent, so what is remembered is what was read.
     let mut text = String::new();
     loop {
@@ -466,7 +603,10 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
                 tools_work = false;
             }
             Err(error) => {
-                let _ = tx.send(ChatEvent::Error(scrub(&error, &key))).await;
+                // In Irori's own log too, so the reason outlives the chat it was shown in.
+                let error = scrub(&error, &key);
+                tracing::warn!(%scope, %error, "the assistant's model failed");
+                let _ = tx.send(ChatEvent::Error(explained(&error))).await;
                 return;
             }
         }
@@ -522,6 +662,16 @@ enum Provider {
         model: String,
         think: bool,
     },
+}
+
+impl Provider {
+    fn local(&self) -> bool {
+        matches!(self, Self::Ollama { .. })
+    }
+
+    fn quiet(&self) -> Duration {
+        if self.local() { QUIET_LOCAL } else { QUIET }
+    }
 }
 
 fn provider_for(file: &AssistantFile, key: &str) -> Result<Provider, String> {
@@ -631,6 +781,8 @@ async fn complete(
                 "stream": true,
                 "messages": ollama_messages(conversation),
             });
+            body["options"] = json!({ "num_ctx": LOCAL_CONTEXT });
+            body["keep_alive"] = json!(KEEP_LOADED);
             if *think {
                 body["think"] = json!(false);
             }
@@ -640,7 +792,8 @@ async fn complete(
             (client.post(format!("{OLLAMA}/api/chat")).json(&body), "")
         }
     };
-    let response = waited(tx, request.send())
+    let quiet = provider.quiet();
+    let response = waited(tx, quiet, request.send())
         .await?
         .map_err(|error| error.to_string())?;
     if !response.status().is_success() {
@@ -657,7 +810,7 @@ async fn complete(
     let mut openai = OpenAiParser::default();
     let mut ollama = OllamaParser::default();
     let mut anthropic = AnthropicParser::default();
-    while let Some(chunk) = waited(tx, stream.next()).await? {
+    while let Some(chunk) = waited(tx, quiet, stream.next()).await? {
         let chunk = chunk.map_err(|error| error.to_string())?;
         let pieces: Vec<Piece> = match provider {
             Provider::OpenAi { .. } => openai.push(&chunk),
@@ -698,11 +851,12 @@ async fn complete(
 /// Waits for `work`, but not past the page leaving or the far end going quiet.
 async fn waited<T>(
     tx: &mpsc::Sender<ChatEvent>,
+    quiet: Duration,
     work: impl Future<Output = T>,
 ) -> Result<T, String> {
     tokio::select! {
         _ = tx.closed() => Err(CLIENT_LEFT.to_owned()),
-        done = tokio::time::timeout(QUIET, work) => done.map_err(|_| WENT_QUIET.to_owned()),
+        done = tokio::time::timeout(quiet, work) => done.map_err(|_| WENT_QUIET.to_owned()),
     }
 }
 
@@ -978,6 +1132,75 @@ async fn tags() -> Result<Vec<RemoteModel>, ()> {
         .collect())
 }
 
+/// The names of the models Ollama has in memory right now.
+async fn loaded() -> Vec<String> {
+    let Ok(response) = client()
+        .get(format!("{OLLAMA}/api/ps"))
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+    else {
+        return Vec::new();
+    };
+    let Ok(value) = response.json::<Value>().await else {
+        return Vec::new();
+    };
+    value["models"]
+        .as_array()
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(|model| model["name"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The numbers that decide a model's memory, from its own description. Asked of Ollama once
+/// per download and remembered: a model's shape does not change.
+async fn shape(model: &RemoteModel) -> Option<Shape> {
+    static KNOWN: std::sync::Mutex<Vec<(String, u64, Shape)>> = std::sync::Mutex::new(Vec::new());
+    let known = |name: &str, size: u64| {
+        KNOWN.lock().ok().and_then(|known| {
+            known
+                .iter()
+                .find(|(n, s, _)| n == name && *s == size)
+                .map(|(_, _, shape)| *shape)
+        })
+    };
+    if let Some(shape) = known(&model.name, model.size) {
+        return Some(shape);
+    }
+    let value: Value = client()
+        .post(format!("{OLLAMA}/api/show"))
+        .timeout(Duration::from_secs(5))
+        .json(&json!({ "model": model.name }))
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    let info = &value["model_info"];
+    let family = info["general.architecture"].as_str()?;
+    let number = |key: &str| info[format!("{family}.{key}")].as_u64();
+    let layers = number("block_count")?;
+    let heads = number("attention.head_count")?;
+    let kv_heads = number("attention.head_count_kv").unwrap_or(heads);
+    // A model that doesn't say how long a head's key is splits its width evenly across them.
+    let width = number("embedding_length").and_then(|width| width.checked_div(heads));
+    let shape = Shape {
+        layers,
+        kv_heads,
+        key_length: number("attention.key_length").or(width)?,
+        value_length: number("attention.value_length").or(width)?,
+    };
+    if let Ok(mut known) = KNOWN.lock() {
+        known.push((model.name.clone(), model.size, shape));
+    }
+    Some(shape)
+}
+
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
@@ -1223,6 +1446,27 @@ impl MemoryFree for crate::host_info::HostView {
     }
 }
 
+/// A provider's failure, in words a person can act on where Irori knows what it means.
+fn explained(error: &str) -> String {
+    if error == WENT_QUIET {
+        return "The model took too long to start answering and was given up on. A model on a \
+                small machine can need minutes just to read the question. Ask again, try a \
+                smaller model, or use a cloud model."
+            .to_owned();
+    }
+    if error.contains("signal: killed")
+        || error.contains("out of memory")
+        || error.contains("process has terminated")
+    {
+        return "The model was stopped while it was loading, which nearly always means the \
+                machine ran out of memory for it. Give the machine (or its container) more \
+                memory, or download a smaller model. Ollama's own log is under Settings, \
+                Assistant, Model log."
+            .to_owned();
+    }
+    error.to_owned()
+}
+
 /// The pieces a turn needs. Split out so the HTTP layer stays thin.
 pub struct Turn<'a> {
     pub core: &'a Core,
@@ -1256,9 +1500,48 @@ pub async fn take_turn(
     answer(turn.env(), scope, message, tx).await
 }
 
+/// What Irori's own Ollama has said lately. Empty when the Ollama here isn't Irori's.
+pub fn model_log(data_dir: &Path) -> Vec<String> {
+    ollama::log(data_dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_local_model_is_sent_only_the_end_of_a_long_conversation() {
+        let said = |role, body: &str| Remembered {
+            role,
+            body: body.to_owned(),
+        };
+        let turns = [
+            said(Role::User, &"a".repeat(40)),
+            said(Role::Assistant, &"b".repeat(40)),
+            said(Role::User, "second"),
+            said(Role::Assistant, "answer"),
+        ];
+        assert_eq!(recent(&turns, 1_000).len(), 4);
+        // The first answer would fit, but not its question, so neither is sent.
+        let kept = recent(&turns, 60);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].body, "second");
+        assert!(recent(&turns, 3).is_empty());
+    }
+
+    #[test]
+    fn a_model_that_went_quiet_is_explained() {
+        assert!(explained(WENT_QUIET).contains("too long"));
+    }
+
+    #[test]
+    fn a_killed_model_is_explained_as_memory() {
+        let said = explained(
+            "the model refused (500 Internal Server Error): {\"error\":\"llama-server process has terminated: signal: killed\"}",
+        );
+        assert!(said.contains("memory"), "{said}");
+        assert_eq!(explained("no such model"), "no such model");
+    }
 
     fn exchange(ask: &str, reply: &str) -> [Remembered; 2] {
         [

@@ -86,6 +86,26 @@ pub async fn forget(State(state): State<AppState>, Json(body): Json<Pull>) -> Re
     }
 }
 
+pub async fn load(State(state): State<AppState>, Json(body): Json<Pull>) -> Response {
+    hold(&state, &body.tag, true).await
+}
+
+pub async fn unload(State(state): State<AppState>, Json(body): Json<Pull>) -> Response {
+    hold(&state, &body.tag, false).await
+}
+
+async fn hold(state: &AppState, tag: &str, load: bool) -> Response {
+    match assistant::hold(data_dir(state), tag, load).await {
+        Ok(()) => Json(assistant::read_status(turn(state), data_dir(state)).await).into_response(),
+        Err(error) => refused(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+/// What Irori's own Ollama has said lately, in the shape the log window reads.
+pub async fn model_log(State(state): State<AppState>) -> Response {
+    Json(serde_json::json!({ "lines": assistant::model_log(data_dir(&state)) })).into_response()
+}
+
 pub async fn uninstall(State(state): State<AppState>) -> Response {
     match assistant::uninstall(&state.0.config, data_dir(&state)).await {
         Ok(()) => {

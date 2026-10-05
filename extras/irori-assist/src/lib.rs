@@ -11,7 +11,8 @@ mod tools;
 mod transcript;
 
 pub use config::{
-    AssistantFile, CloudPreset, DEFAULT_TAG, Mode, cloud_ready, library_page, local_fits, model_tag,
+    AssistantFile, CloudPreset, DEFAULT_TAG, LOCAL_CONTEXT, Mode, Shape, cloud_ready, library_page,
+    local_fits, local_needs, model_tag,
 };
 pub use prompt::{BriefLine, device_brief, home_brief};
 pub use stream::{AnthropicParser, Lines, OllamaParser, OpenAiParser, Piece};

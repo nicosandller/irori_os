@@ -11,7 +11,7 @@ approving it.
 | Binary | static musl `irori` | the same kind of static musl `irori`, built in the container |
 | Runs as | unprivileged `irori` user | unprivileged `irori` user |
 | Data | `/var/lib/irori` | `/var/lib/irori` (Docker volume, survives restarts) |
-| Resources | 4 cores, 1–8 GB | 1 CPU, 1 GB (configurable, see below) |
+| Resources | 4 cores, 1–8 GB | 1 CPU, 4 GB, like a 4 GB Pi 4 (configurable, see below) |
 
 ## Prerequisites
 
@@ -153,21 +153,21 @@ Set these environment variables when running `dev/pi up`:
 | Variable | Default | Meaning |
 |---|---|---|
 | `IRORI_PORT` | `8480` | Host port (always bound to `127.0.0.1`) |
-| `IRORI_PI_CPUS` | `1` | CPU limit. One Apple Silicon core is roughly a whole Pi 4's CPU throughput. |
-| `IRORI_PI_MEMORY` | `1g` | Memory limit. Use `512m` to stress-test, `4g` for a bigger Pi. |
+| `IRORI_PI_CPUS` | `1` | CPU limit. One Apple Silicon core is roughly a whole Pi 4's CPU throughput, all four cores together. |
+| `IRORI_PI_MEMORY` | `4g` | Memory limit. Use `1g` for the smallest Pi 4, `512m` to stress-test, `8g` for the biggest. |
 
 ```sh
 IRORI_PI_MEMORY=512m IRORI_PORT=9000 dev/pi up
 ```
 
-Colima's default VM has 2 CPUs and 2–4 GB. Limits above that fail to start; raise them with
-`colima start --cpu 4 --memory 8`.
+Colima's default VM has 2 CPUs and 2–4 GB. A limit above what the VM has fails to start; raise
+the VM with `colima start --cpu 4 --memory 8`.
 
 ## Lab devices
 
 `dev/pi up --lab` is the same Pi, plus stand-ins for the hardware the container cannot see.
-The emulator binary is built only into that image. It raises the memory limit to 2 GB
-(Zigbee2MQTT needs it) unless `IRORI_PI_MEMORY` is already set.
+The emulator binary is built only into that image. Zigbee2MQTT needs about 2 GB, so a lab
+does not fit under `IRORI_PI_MEMORY=1g`.
 `dev/pi restart` with no flags keeps that mode. `dev/pi up` without `--lab` leaves it.
 
 The first time the Zigbee extension starts, it downloads Node and installs Zigbee2MQTT into
