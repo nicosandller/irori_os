@@ -340,10 +340,16 @@ base_url = "https://api.openai.com/v1"
 model = ""
 ```
 
-`local.tag` is a name Ollama already understands (`qwen3:1.7b`, or any other tag from the
-Ollama library). Irori does not ship the weights. It talks to an Ollama that is already
-listening on `127.0.0.1:11434`. A tag that is larger than the free memory on the machine can
-be downloaded and still not be used.
+`local.tag` is a name Ollama already understands (`qwen3:1.7b`, any other tag from the
+Ollama library, or `hf.co/<user>/<repo>` for a GGUF on Hugging Face). The address of a model's
+page is accepted and stored as the tag it is the page of. Irori does not ship the weights or
+Ollama. It talks to the Ollama listening on `127.0.0.1:11434`. If none is, Settings can
+install one: Ollama's own release, checked against its published checksum, unpacked into
+`ollama/` in the data directory and run from there as `ollama serve` on this machine only,
+with its models in the same directory. Uninstalling removes that directory. An Ollama you
+installed yourself is used as it is and never removed. Unpacking needs `tar`, and `zstd` on
+Linux. A tag that is larger than the free memory on the machine can be downloaded and still
+not be used.
 
 `cloud` is an endpoint. `openai` and `grok` and `compatible` speak the OpenAI chat API.
 `anthropic` speaks Anthropic's. An empty `base_url` is filled from the preset (`compatible`

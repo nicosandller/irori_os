@@ -191,6 +191,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/dev/assistant/turns", post(assistant::turns))
         .route("/api/dev/assistant/pull", post(assistant::pull))
+        .route("/api/dev/assistant/forget", post(assistant::forget))
+        .route("/api/dev/assistant/uninstall", post(assistant::uninstall))
         .route(
             "/api/dev/assistant/transcript/{scope}",
             get(assistant::transcript).delete(assistant::clear),
@@ -3709,6 +3711,14 @@ mod tests {
                     if body["model"] == "broken" {
                         return (StatusCode::BAD_GATEWAY, "the provider said no").into_response();
                     }
+                    // A model that was never taught tools, and says so the way Ollama does.
+                    if body["model"] == "no-tools" && !body["tools"].is_null() {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            "{\"error\":\"no-tools does not support tools\"}",
+                        )
+                            .into_response();
+                    }
                     // Says a word, then reaches for a tool; answers once the tool has reported.
                     if body["model"] == "looks-first" {
                         let looked = body["messages"]
@@ -3843,6 +3853,20 @@ mod tests {
             assert!(reply.contains("Nothing is on."), "{reply}");
             let home = server.read("/api/dev/assistant/transcript/general").await?;
             assert_eq!(home[1]["body"], "Let me check.\n\nNothing is on.");
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn a_model_without_tools_is_asked_again_without_them() -> anyhow::Result<()> {
+            let base = cloud().await;
+            let server = Server::new(core())?;
+            let (status, body) = server
+                .json("PUT", "/api/dev/assistant", configure(&base, "no-tools"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let reply = events(&server, "general", "What is on?").await?;
+            assert!(reply.contains("Hello from the model"), "{reply}");
+            assert!(!reply.contains("error"), "{reply}");
             Ok(())
         }
 

@@ -9,6 +9,7 @@ use irori_flow_types::trace::RunRecord;
 use irori_flow_types::{Flow, NodeId};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use wasm_bindgen::JsCast as _;
 
 use crate::{Home, Route, api, canvas, go, inspector, model, panels};
 
@@ -306,11 +307,21 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                     <span class="grow"></span>
                     {move || ed.message.get().map(|m| view! { <span class="muted" style="font-size:.85rem">{m}</span> })}
                     {move || (!ed.is_new.get()).then(|| view! {
-                        <button class="btn" title="Ask about this automation" on:click=move |_| {
+                        <button class="btn" title="Ask about this automation" on:click=move |event| {
                             let id = ed.id();
+                            // The shell draws the chat, outside this frame, so it is told
+                            // where the button is.
+                            let rect = event
+                                .current_target()
+                                .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                                .map(|button| button.get_bounding_client_rect())
+                                .map(|rect| serde_json::json!({
+                                    "bottom": rect.bottom(),
+                                    "right": rect.right(),
+                                }));
                             spawn_local(async move {
                                 let _ = crate::bridge()
-                                    .call("assistant", serde_json::json!({ "id": id }))
+                                    .call("assistant", serde_json::json!({ "id": id, "rect": rect }))
                                     .await;
                             });
                         }>"Ask"</button>

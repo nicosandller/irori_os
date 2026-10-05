@@ -866,6 +866,9 @@ pub struct AssistantStatus {
     pub library: String,
     pub library_index: String,
     pub ollama: String,
+    /// Whether the Ollama here is the one Irori installed, and so can remove.
+    #[serde(default)]
+    pub managed: bool,
     #[serde(default)]
     pub pulled: Vec<PulledModel>,
     pub preset: String,
@@ -945,65 +948,168 @@ pub async fn assistant_clear(scope: &str) -> Result<(), String> {
     checked(response).await
 }
 
-/// The whole reply, once the stream has finished. The button waits; the tokens are still events.
-pub async fn assistant_ask(scope: &str, message: &str) -> Result<String, String> {
-    let response = Request::post("/api/dev/assistant/turns")
-        .json(&serde_json::json!({ "scope": scope, "message": message }))
-        .map_err(|error| error.to_string())?
-        .send()
-        .await
-        .map_err(unreachable)?;
-    let status = response.status();
-    let text = response.text().await.map_err(unreachable)?;
-    if !(200..300).contains(&status) {
-        return Err(format!("Irori refused that ({status})"));
-    }
-    read_stream(&text)
+/// One thing a streamed answer said on its way.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Streamed {
+    /// More of the answer.
+    Delta(String),
+    /// The model has gone to look something up. The tool's name.
+    Step(String),
+    Failed(String),
+    Done,
 }
 
-/// Pulls an Ollama tag. The string is the last progress line. A failure stays a failure.
-pub async fn assistant_pull(tag: &str) -> Result<String, String> {
-    let response = Request::post("/api/dev/assistant/pull")
+/// Where a download has got to. `total` is 0 while it isn't known.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Progress {
+    pub status: String,
+    pub completed: u64,
+    pub total: u64,
+}
+
+/// Asks, and hands each piece of the answer to `on` as it arrives.
+pub async fn assistant_ask(
+    scope: &str,
+    message: &str,
+    on: impl FnMut(Streamed),
+) -> Result<(), String> {
+    let body = serde_json::json!({ "scope": scope, "message": message });
+    stream("/api/dev/assistant/turns", &body, on).await
+}
+
+/// Installs Ollama if it is missing, then pulls a tag. `on` hears how far along it is.
+pub async fn assistant_pull(tag: &str, mut on: impl FnMut(Progress)) -> Result<(), String> {
+    let body = serde_json::json!({ "tag": tag });
+    stream("/api/dev/assistant/pull", &body, |event| {
+        if let Streamed::Delta(line) = event
+            && let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
+        {
+            on(Progress {
+                status: value["status"].as_str().unwrap_or_default().to_owned(),
+                completed: value["completed"].as_u64().unwrap_or(0),
+                total: value["total"].as_u64().unwrap_or(0),
+            });
+        }
+    })
+    .await
+}
+
+pub async fn assistant_forget(tag: &str) -> Result<AssistantStatus, String> {
+    let response = Request::post("/api/dev/assistant/forget")
         .json(&serde_json::json!({ "tag": tag }))
         .map_err(|error| error.to_string())?
         .send()
         .await
         .map_err(unreachable)?;
-    let status = response.status();
-    let text = response.text().await.map_err(unreachable)?;
-    if !(200..300).contains(&status) {
-        return Err(format!("Irori refused that ({status})"));
+    if !response.ok() {
+        return match checked(response).await {
+            Err(reason) => Err(reason),
+            Ok(()) => Err("the server refused without a reason".into()),
+        };
     }
-    read_stream(&text)
+    response.json().await.map_err(unreachable)
+}
+
+pub async fn assistant_uninstall() -> Result<AssistantStatus, String> {
+    let response = Request::post("/api/dev/assistant/uninstall")
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        return match checked(response).await {
+            Err(reason) => Err(reason),
+            Ok(()) => Err("the server refused without a reason".into()),
+        };
+    }
+    response.json().await.map_err(unreachable)
 }
 
 fn encode_scope(scope: &str) -> String {
     scope.replace(':', "%3A")
 }
 
-fn read_stream(text: &str) -> Result<String, String> {
-    let mut answer = String::new();
-    for line in text.lines() {
-        let Some(data) = line.strip_prefix("data:") else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(data.trim()) else {
-            continue;
-        };
-        if let Some(error) = value.get("error").and_then(|error| error.as_str()) {
-            return Err(error.to_owned());
+/// Posts `body` and reads the reply as it arrives, not once it has all arrived: that is what
+/// lets the page show an answer being written.
+async fn stream(
+    url: &str,
+    body: &serde_json::Value,
+    mut on: impl FnMut(Streamed),
+) -> Result<(), String> {
+    use web_sys::js_sys::{Reflect, Uint8Array};
+    use web_sys::wasm_bindgen::{JsCast as _, JsValue};
+
+    let response = Request::post(url)
+        .json(body)
+        .map_err(|error| error.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    let status = response.status();
+    if !(200..300).contains(&status) {
+        return Err(format!("Irori refused that ({status})"));
+    }
+    let Some(body) = response.body() else {
+        return Err("Irori answered with nothing.".to_owned());
+    };
+    let reader: web_sys::ReadableStreamDefaultReader = body.get_reader().unchecked_into();
+    let lost = |_| "The answer stopped early.".to_owned();
+    let mut events = Events::default();
+    loop {
+        let chunk = wasm_bindgen_futures::JsFuture::from(reader.read())
+            .await
+            .map_err(lost)?;
+        let done = Reflect::get(&chunk, &JsValue::from_str("done"))
+            .ok()
+            .and_then(|done| done.as_bool())
+            .unwrap_or(true);
+        if done {
+            return Err("The answer stopped early.".to_owned());
         }
-        if let Some(delta) = value.get("delta").and_then(|delta| delta.as_str()) {
-            if let Ok(inner) = serde_json::from_str::<serde_json::Value>(delta)
-                && let Some(status) = inner.get("status").and_then(|status| status.as_str())
-            {
-                answer = status.to_owned();
-                continue;
+        let Ok(value) = Reflect::get(&chunk, &JsValue::from_str("value")) else {
+            continue;
+        };
+        for event in events.push(&Uint8Array::new(&value).to_vec()) {
+            match event {
+                Streamed::Failed(why) => return Err(why),
+                Streamed::Done => return Ok(()),
+                event => on(event),
             }
-            answer.push_str(delta);
         }
     }
-    Ok(answer)
+}
+
+/// The server's events, out of bytes in whatever size they came. The tail of an unfinished
+/// line is kept as bytes, so a character cut by a chunk boundary is whole when it is read.
+#[derive(Debug, Default)]
+struct Events {
+    pending: Vec<u8>,
+}
+
+impl Events {
+    fn push(&mut self, chunk: &[u8]) -> Vec<Streamed> {
+        self.pending.extend_from_slice(chunk);
+        let mut events = Vec::new();
+        while let Some(at) = self.pending.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = self.pending.drain(..=at).collect();
+            let line = String::from_utf8_lossy(&line);
+            let Some(data) = line.trim_end().strip_prefix("data:") else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(data.trim()) else {
+                continue;
+            };
+            if let Some(error) = value["error"].as_str() {
+                events.push(Streamed::Failed(error.to_owned()));
+            } else if let Some(delta) = value["delta"].as_str() {
+                events.push(Streamed::Delta(delta.to_owned()));
+            } else if let Some(step) = value["step"].as_str() {
+                events.push(Streamed::Step(step.to_owned()));
+            } else if value["done"] == true {
+                events.push(Streamed::Done);
+            }
+        }
+        events
+    }
 }
 
 #[cfg(test)]
@@ -1048,6 +1154,37 @@ mod tests {
         assert_eq!(
             home.states[0].state,
             Some(State::Switch(SwitchState { on: true }))
+        );
+    }
+
+    #[test]
+    fn events_are_read_whole_however_the_bytes_were_cut() {
+        let text = "data: {\"delta\":\"café\"}\n\ndata: {\"step\":\"list_devices\"}\n\n\
+                    data: {\"delta\":\" 🙂\"}\n\ndata: {\"done\":true}\n\n"
+            .as_bytes();
+        for cut in 1..text.len() {
+            let mut events = Events::default();
+            let mut got = events.push(&text[..cut]);
+            got.extend(events.push(&text[cut..]));
+            assert_eq!(
+                got,
+                vec![
+                    Streamed::Delta("café".into()),
+                    Streamed::Step("list_devices".into()),
+                    Streamed::Delta(" 🙂".into()),
+                    Streamed::Done,
+                ],
+                "cut at {cut}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failure_is_an_event_of_its_own() {
+        let mut events = Events::default();
+        assert_eq!(
+            events.push(b"data: {\"error\":\"no model\"}\n"),
+            vec![Streamed::Failed("no model".into())]
         );
     }
 }

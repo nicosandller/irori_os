@@ -49,6 +49,11 @@ web-sys = { version = "0.3", features = [
     "MessageEvent",
     "History",
     "CssStyleDeclaration",
+    # An answer read as it is written (api.rs), and the chat keeping its newest line in view.
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "HtmlElement",
+    "KeyboardEvent",
 ] }
 # Already in the bundle transitively (leptos uses it); this is only so the copy button can await
 # the promise the clipboard API returns — no size cost of its own.

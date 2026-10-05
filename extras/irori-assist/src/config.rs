@@ -113,10 +113,12 @@ impl AssistantFile {
 
     /// Fills an empty cloud URL from the preset, and refuses a blank or oversized tag.
     pub fn validated(mut self) -> Result<Self, String> {
-        let tag = self.local.tag.trim().to_owned();
-        if tag.is_empty() || tag.len() > 128 || tag.chars().any(|c| c.is_whitespace() || c == '/') {
+        let tag = model_tag(&self.local.tag);
+        let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/');
+        if tag.is_empty() || tag.len() > 128 || !tag.chars().all(plain) {
             return Err(
-                "a local model is an Ollama tag such as qwen3:1.7b, with no spaces".to_owned(),
+                "a local model is an Ollama tag such as qwen3:1.7b, or the address of its page"
+                    .to_owned(),
             );
         }
         self.local.tag = tag;
@@ -155,9 +157,39 @@ pub fn local_fits(weight_bytes: u64, memory_free: u64) -> bool {
     weight_bytes > 0 && memory_free.saturating_add(1) > weight_bytes.saturating_add(HEADROOM)
 }
 
+/// The name Ollama pulls, from whatever was pasted: a tag as it is, and a model's page as the
+/// tag it is the page of. `https://ollama.com/library/qwen3:1.7b` is `qwen3:1.7b`, and
+/// `https://huggingface.co/someone/some-GGUF` is `hf.co/someone/some-GGUF`.
+pub fn model_tag(pasted: &str) -> String {
+    let text = pasted.trim();
+    let text = text
+        .strip_prefix("https://")
+        .or_else(|| text.strip_prefix("http://"))
+        .unwrap_or(text);
+    let text = text.split(['?', '#']).next().unwrap_or(text);
+    let text = text.trim_end_matches('/');
+    let text = text.strip_prefix("www.").unwrap_or(text);
+    if let Some(rest) = text.strip_prefix("ollama.com/library/") {
+        return rest.to_owned();
+    }
+    if let Some(rest) = text.strip_prefix("ollama.com/") {
+        return rest.to_owned();
+    }
+    if let Some(rest) = text.strip_prefix("huggingface.co/") {
+        return format!("hf.co/{rest}");
+    }
+    text.to_owned()
+}
+
 /// The library page for a tag: `qwen3:1.7b` → the model card that includes that tag.
 pub fn library_page(tag: &str) -> String {
-    format!("https://ollama.com/library/{tag}")
+    if tag.starts_with("hf.co/") {
+        format!("https://{tag}")
+    } else if tag.contains('/') {
+        format!("https://ollama.com/{tag}")
+    } else {
+        format!("https://ollama.com/library/{tag}")
+    }
 }
 
 #[cfg(test)]
@@ -202,6 +234,31 @@ mod tests {
         let error =
             AssistantFile::parse("[local]\ntag = \"qwen 3\"\n").expect_err("a space is not a tag");
         assert!(error.contains("Ollama tag"), "{error}");
+    }
+
+    #[test]
+    fn a_pasted_page_address_is_the_tag_it_is_the_page_of() {
+        assert_eq!(model_tag(" qwen3:1.7b "), "qwen3:1.7b");
+        assert_eq!(
+            model_tag("https://ollama.com/library/gemma3:1b"),
+            "gemma3:1b"
+        );
+        assert_eq!(
+            model_tag("https://ollama.com/someone/tiny:latest/"),
+            "someone/tiny:latest"
+        );
+        assert_eq!(
+            model_tag("https://huggingface.co/bartowski/SmolLM2-GGUF?show=1"),
+            "hf.co/bartowski/SmolLM2-GGUF"
+        );
+        let file =
+            AssistantFile::parse("[local]\ntag = \"https://ollama.com/library/gemma3:1b\"\n")
+                .expect("a page address is a tag");
+        assert_eq!(file.local.tag, "gemma3:1b");
+        assert_eq!(
+            library_page("hf.co/bartowski/SmolLM2-GGUF"),
+            "https://hf.co/bartowski/SmolLM2-GGUF"
+        );
     }
 
     #[test]

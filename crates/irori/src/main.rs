@@ -9,6 +9,8 @@ mod db;
 mod extensions;
 mod history;
 mod host_info;
+#[cfg(feature = "assist")]
+mod ollama;
 mod packages;
 mod serial;
 mod server;
@@ -215,6 +217,18 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // is how the Settings page's Restart button works (crates/irori/src/server.rs).
             let restart = Arc::new(Notify::new());
             let restarting = Arc::new(AtomicBool::new(false));
+
+            // The Ollama Irori installed for a local model, if there is one, comes up with the
+            // server. Nothing waits on it: the assistant says "not ready" until it answers.
+            #[cfg(feature = "assist")]
+            {
+                let data = data.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = ollama::start(&data).await {
+                        tracing::warn!(%error, "the local model's Ollama did not start");
+                    }
+                });
+            }
 
             let listener = bind_with_fallback(bind, bind_fallback)
                 .await

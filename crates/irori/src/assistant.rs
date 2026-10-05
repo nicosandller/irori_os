@@ -1,7 +1,8 @@
 //! The assistant's files, its remembered conversations, and the call out to a model.
 //!
-//! Weights are not in this binary. A local model is an Ollama tag served by an Ollama already
-//! listening on `127.0.0.1:11434`. A cloud model is an endpoint and a key kept in `secrets.toml`.
+//! Weights are not in this binary. A local model is an Ollama tag served by the Ollama
+//! listening on `127.0.0.1:11434`: one the person installed, or the one Irori downloads on
+//! request (`ollama.rs`). A cloud model is an endpoint and a key kept in `secrets.toml`.
 
 use std::path::Path;
 use std::time::Duration;
@@ -10,7 +11,7 @@ use futures_util::StreamExt as _;
 use irori_assist::{
     AnthropicParser, AssistantFile, BriefLine, CloudPreset, DEFAULT_TAG, Lines, Mode, OllamaParser,
     OpenAiParser, Piece, Role, ToolCall, Turn as Remembered, anthropic_tools, assemble,
-    cloud_ready, device_brief, execute_round, home_brief, library_page, openai_tools,
+    cloud_ready, device_brief, execute_round, home_brief, library_page, model_tag, openai_tools,
 };
 use irori_core::Core;
 use irori_types::{Availability, DeviceId, EntityId, EntityState, ExtensionId};
@@ -20,6 +21,7 @@ use tokio::sync::mpsc;
 
 use crate::config::{Config, EditError};
 use crate::history::History;
+use crate::ollama;
 
 const OLLAMA: &str = "http://127.0.0.1:11434";
 const ASSISTANT: &str = "assistant";
@@ -43,6 +45,8 @@ pub struct Status {
     pub library: String,
     pub library_index: &'static str,
     pub ollama: &'static str,
+    /// Whether the Ollama on this machine is the one Irori installed, and so can remove.
+    pub managed: bool,
     pub pulled: Vec<Pulled>,
     pub preset: CloudPreset,
     pub base_url: String,
@@ -61,6 +65,8 @@ pub struct Pulled {
 #[derive(Debug)]
 pub enum ChatEvent {
     Delta(String),
+    /// The model has gone to look something up. The tool's name.
+    Step(String),
     Error(String),
     Done,
 }
@@ -100,7 +106,7 @@ async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
         match file.mode {
             Mode::Off => "Choose a model on this machine, or a cloud API.".to_owned(),
             Mode::Local if !ollama_up => format!(
-                "Ollama isn't running on this machine. Install it from https://ollama.com/download so it listens on 127.0.0.1:11434, then download {DEFAULT_TAG}, or use a cloud API."
+                "Ollama isn't running on this machine yet. Install and download puts it here along with {DEFAULT_TAG}."
             ),
             Mode::Local if active.is_none() => {
                 format!("Download {} to this machine.", file.local.tag)
@@ -136,6 +142,7 @@ async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
         local_tag: file.local.tag.clone(),
         library_index: "https://ollama.com/library",
         ollama: if ollama_up { "up" } else { "down" },
+        managed: ollama::installed(data_dir),
         pulled: pulled
             .into_iter()
             .map(|model| Pulled {
@@ -207,14 +214,57 @@ pub fn clear(db: &Path, scope: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Pulls `tag` through the local Ollama and remembers it as the on-device model.
-pub async fn pull(config: &Config, tag: &str, tx: mpsc::Sender<ChatEvent>) {
-    let tag = tag.trim();
+/// Pulls `tag` through the local Ollama and remembers it as the on-device model. With no
+/// Ollama on the machine, Irori's own is installed and started first.
+pub async fn pull(config: &Config, data_dir: &Path, tag: &str, tx: mpsc::Sender<ChatEvent>) {
+    let tag = model_tag(tag);
+    let tag = tag.as_str();
     if tag.is_empty() {
         let _ = tx
             .send(ChatEvent::Error("Name the model to download.".into()))
             .await;
         return;
+    }
+    if !ollama::listening().await {
+        if !ollama::installed(data_dir) {
+            let free = crate::host_info::read(data_dir).disk.available;
+            let mut last = 0u64;
+            let mut report = |done: u64, total: u64| {
+                // A line every couple of megabytes is plenty for a progress bar.
+                if done - last >= 2 * 1024 * 1024 || done == total {
+                    last = done;
+                    let line = json!({
+                        "status": "installing Ollama",
+                        "completed": done,
+                        "total": total,
+                    });
+                    let _ = tx.try_send(ChatEvent::Delta(line.to_string()));
+                }
+                !tx.is_closed()
+            };
+            if let Err(error) = ollama::install(data_dir, free, &mut report).await {
+                let _ = tx.send(ChatEvent::Error(error)).await;
+                return;
+            }
+        }
+        let line = json!({ "status": "starting Ollama" });
+        let _ = tx.send(ChatEvent::Delta(line.to_string())).await;
+        match ollama::start(data_dir).await {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = tx
+                    .send(ChatEvent::Error(
+                        "Ollama isn't running on this machine, so there's nowhere to download the model."
+                            .into(),
+                    ))
+                    .await;
+                return;
+            }
+            Err(error) => {
+                let _ = tx.send(ChatEvent::Error(error)).await;
+                return;
+            }
+        }
     }
     let client = client();
     let request = client
@@ -287,6 +337,46 @@ pub async fn pull(config: &Config, tag: &str, tx: mpsc::Sender<ChatEvent>) {
     let _ = tx.send(ChatEvent::Done).await;
 }
 
+/// Deletes a downloaded model. The one in use going turns the assistant off.
+pub async fn forget(config: &Config, tag: &str) -> Result<(), String> {
+    let tag = model_tag(tag);
+    let response = client()
+        .delete(format!("{OLLAMA}/api/delete"))
+        .timeout(Duration::from_secs(30))
+        .json(&json!({ "model": tag }))
+        .send()
+        .await
+        .map_err(|_| "Ollama isn't running on this machine.".to_owned())?;
+    if !response.status().is_success() && response.status() != reqwest::StatusCode::NOT_FOUND {
+        return Err(format!(
+            "Ollama refused to delete it ({}).",
+            response.status()
+        ));
+    }
+    let dir = config.dir().await;
+    let mut file = load_file(&dir);
+    if file.mode == Mode::Local && file.local.tag == tag {
+        file.mode = Mode::Off;
+        write_file(&dir, &file)?;
+    }
+    Ok(())
+}
+
+/// Removes the Ollama Irori installed, and every model it downloaded.
+pub async fn uninstall(config: &Config, data_dir: &Path) -> Result<(), String> {
+    if !ollama::installed(data_dir) {
+        return Err("This Ollama wasn't installed by Irori, so it is yours to remove.".to_owned());
+    }
+    ollama::uninstall(data_dir).await?;
+    let dir = config.dir().await;
+    let mut file = load_file(&dir);
+    if file.mode == Mode::Local {
+        file.mode = Mode::Off;
+        write_file(&dir, &file)?;
+    }
+    Ok(())
+}
+
 async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<ChatEvent>) {
     if let Err(error) = check_scope(&scope) {
         let _ = tx.send(ChatEvent::Error(error)).await;
@@ -336,13 +426,14 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
         }
     };
     let mut rounds = 0u8;
+    let mut tools_work = true;
     // Everything the page was sent, so what is remembered is what was read.
     let mut text = String::new();
     loop {
         if tx.is_closed() {
             return;
         }
-        let with_tools = execute_round(rounds);
+        let with_tools = tools_work && execute_round(rounds);
         match complete(&provider, &conversation, with_tools, &tx).await {
             Ok(Outcome::Text(said)) => {
                 text.push_str(&said);
@@ -360,12 +451,20 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
                     conversation.items.push(Item::Assistant(said));
                 }
                 for call in calls {
+                    if tx.send(ChatEvent::Step(call.name.clone())).await.is_err() {
+                        return;
+                    }
                     let result = run_tool(&env, &call);
                     conversation.tool(&call, &result);
                 }
                 rounds += 1;
             }
             Err(error) if error == CLIENT_LEFT => return,
+            // A small local model may not take tools at all. It still has the picture of the
+            // home in its prompt, so it is asked again without them.
+            Err(error) if with_tools && error.contains("does not support tools") => {
+                tools_work = false;
+            }
             Err(error) => {
                 let _ = tx.send(ChatEvent::Error(scrub(&error, &key))).await;
                 return;
@@ -741,7 +840,9 @@ fn run_tool(env: &Env<'_>, call: &ToolCall) -> String {
 async fn system_prompt(env: &Env<'_>, scope: &str) -> Result<String, String> {
     let mut prompt = String::from(
         "You are Irori's assistant. Talk about this home in plain words. \
-         You can read devices and recent values. You cannot change them.\n",
+         You can read devices and recent values. You cannot change them. \
+         Keep answers short. Put every value or state you report in backticks, like `on` or \
+         `21.5 °C`, and use **bold** for a device's name. Short lists are fine.\n",
     );
     if scope == "general" {
         prompt.push_str(&home_brief(&lines(env.core, None)));

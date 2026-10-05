@@ -340,7 +340,10 @@ fn page(
                 // section: Edit opens the fields below; Remove takes it out of the home.
                 // Ask is quiet until a model is ready, and still a button: a disabled control
                 // would swallow the click that opens Settings.
-                <crate::assistant::Ask path=format!("/assistant/device/{}", device.id) />
+                <crate::assistant::Ask
+                    scope=format!("device:{}", device.id)
+                    title=device.name.to_string()
+                />
                 <button type="button" on:click=start>"Edit"</button>
                 <button type="button" class="danger-button" on:click=move |_| confirming.set(true)>
                     "Remove"

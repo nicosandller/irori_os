@@ -20,6 +20,7 @@ mod gesture;
 mod glide;
 mod log_window;
 mod modal;
+mod rich;
 mod settings;
 mod settings_form;
 mod start;
@@ -81,6 +82,7 @@ fn App() -> impl IntoView {
     provide_context(live);
     let assistant = RwSignal::new(None);
     provide_context(Assistant(assistant));
+    provide_context(assistant::Asking(RwSignal::new(None)));
 
     let busy = RwSignal::new(BTreeSet::new());
     let failures = RwSignal::new(BTreeMap::new());
@@ -259,6 +261,7 @@ fn App() -> impl IntoView {
                 </aside>
 
                 <Page live=live />
+                <assistant::Popover />
             </div>
         </Router>
     }
@@ -286,7 +289,6 @@ fn Page(live: Live) -> impl IntoView {
                 <Route path=path!("/devices/:id") view=device::DevicePage />
                 <Route path=path!("/extensions") view=extensions::Extensions />
                 <Route path=path!("/assistant") view=assistant::Page />
-                <Route path=path!("/assistant/:kind/:id") view=assistant::Page />
                 <Route path=path!("/settings") view=settings::Settings />
                 <Route path=path!("/apps/:id") view=app_frame::AppPage />
                 <Route path=path!("/apps/:id/*rest") view=app_frame::AppPage />

@@ -69,10 +69,30 @@ pub struct Pull {
 pub async fn pull(State(state): State<AppState>, Json(body): Json<Pull>) -> impl IntoResponse {
     let (tx, rx) = mpsc::channel(32);
     let config = state.0.config.clone();
+    let data = data_dir(&state).to_owned();
     tokio::spawn(async move {
-        assistant::pull(&config, &body.tag, tx).await;
+        assistant::pull(&config, &data, &body.tag, tx).await;
     });
     events(rx)
+}
+
+/// Deletes one downloaded model. A body, not a path: a tag has colons and slashes in it.
+pub async fn forget(State(state): State<AppState>, Json(body): Json<Pull>) -> Response {
+    match assistant::forget(&state.0.config, &body.tag).await {
+        Ok(()) => {
+            Json(assistant::read_status(turn(&state), data_dir(&state)).await).into_response()
+        }
+        Err(error) => refused(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+pub async fn uninstall(State(state): State<AppState>) -> Response {
+    match assistant::uninstall(&state.0.config, data_dir(&state)).await {
+        Ok(()) => {
+            Json(assistant::read_status(turn(&state), data_dir(&state)).await).into_response()
+        }
+        Err(error) => refused(StatusCode::BAD_REQUEST, error),
+    }
 }
 
 pub async fn transcript(State(state): State<AppState>, Path(scope): Path<String>) -> Response {
@@ -111,6 +131,7 @@ fn events(
         let data = match event {
             ChatEvent::Delta(text) => serde_json::json!({ "delta": text }),
             ChatEvent::Error(text) => serde_json::json!({ "error": text }),
+            ChatEvent::Step(tool) => serde_json::json!({ "step": tool }),
             ChatEvent::Done => serde_json::json!({ "done": true }),
         };
         Ok(Event::default().data(data.to_string()))

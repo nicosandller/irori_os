@@ -41,6 +41,7 @@ fn Frame(id: String) -> impl IntoView {
     let live = expect_context::<Live>();
     let motion = expect_context::<Motion>();
     let assistant = expect_context::<crate::Assistant>();
+    let asking = expect_context::<crate::assistant::Asking>();
     let navigate = use_navigate();
     let location = use_location();
 
@@ -235,12 +236,32 @@ fn Frame(id: String) -> impl IntoView {
                     let result = api::app_rpc(&id, &method, params).await;
                     post(&Reply::answer(request.id, result));
                 }),
-                // The sandboxed editor can't open the shell's chat, so it asks and this end goes.
+                // The sandboxed editor can't draw outside its frame, so it says where its
+                // Ask button is and the shell opens the chat under it.
                 "assistant" => {
                     let flow = request.args["id"].as_str().unwrap_or_default().trim();
-                    let path = (!flow.is_empty()).then(|| format!("/assistant/automation/{flow}"));
-                    let dest = crate::assistant::destination(assistant, path);
-                    navigate(&dest, Default::default());
+                    let scope = (!flow.is_empty()).then(|| format!("automation:{flow}"));
+                    // The button's edges are measured inside the frame. Where the frame is on
+                    // the page turns them into edges on the page.
+                    let (left, top, right) = frame
+                        .get_untracked()
+                        .map(|frame| {
+                            let rect = frame.get_bounding_client_rect();
+                            (rect.left(), rect.top(), rect.right())
+                        })
+                        .unwrap_or_default();
+                    let edge = |name: &str| request.args["rect"][name].as_f64();
+                    let bottom = top + edge("bottom").unwrap_or(48.0);
+                    let right = edge("right").map_or(right - 16.0, |edge| left + edge);
+                    crate::assistant::ask(
+                        assistant,
+                        asking,
+                        &navigate,
+                        scope,
+                        "this automation".to_owned(),
+                        bottom,
+                        right,
+                    );
                     post(&Reply::answer(request.id, Ok(serde_json::Value::Null)));
                 }
                 "navigate" => {
