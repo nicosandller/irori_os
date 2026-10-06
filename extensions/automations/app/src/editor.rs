@@ -307,7 +307,7 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                     <span class="grow"></span>
                     {move || ed.message.get().map(|m| view! { <span class="muted" style="font-size:.85rem">{m}</span> })}
                     {move || (!ed.is_new.get()).then(|| view! {
-                        <button class="btn" title="Ask about this automation" on:click=move |event| {
+                        <button class="btn ask" title="Ask about this automation" on:click=move |event| {
                             let id = ed.id();
                             // The shell draws the chat, outside this frame, so it is told
                             // where the button is.
@@ -324,7 +324,14 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                                     .call("assistant", serde_json::json!({ "id": id, "rect": rect }))
                                     .await;
                             });
-                        }>"Ask"</button>
+                        }>
+                            // The same spark as every other Ask in Irori.
+                            <svg class="spark" viewBox="0 0 24 24" aria-hidden="true">
+                                <path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"
+                                    fill="currentColor" />
+                            </svg>
+                            "Ask"
+                        </button>
                     })}
                     <button class="btn" on:click=move |_| { ed.tab.set(Tab::Test); if !right_open.get_untracked() { flip(right_open, RIGHT_KEY); } }>"Test"</button>
                     <button class="btn primary" disabled=move || !ed.dirty() on:click=move |_| save()>

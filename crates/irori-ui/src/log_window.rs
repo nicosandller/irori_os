@@ -492,13 +492,47 @@ pub fn tally(lines: &[String]) -> (usize, usize, usize) {
     (lines.len(), count(Weight::Warn), count(Weight::Error))
 }
 
+/// The newest line of a log that is an error, if it has one: what an error mark on the way to
+/// the log stands for, and so what clearing the mark has to remember having seen.
+pub fn last_error(lines: &[String]) -> Option<&str> {
+    lines
+        .iter()
+        .rev()
+        .find(|raw| parse(raw).weight() == Weight::Error)
+        .map(String::as_str)
+}
+
 /// A log in a window of its own, over the page: an extension's, or the local model's.
+///
+/// `on_clear` is given when the way here carried an error mark: the window then offers to
+/// clear it, for an error that has been read and dealt with.
 #[component]
-pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl IntoView {
+pub fn LogWindow(
+    source: Source,
+    #[prop(into)] on_close: Callback<()>,
+    #[prop(optional, into)] on_clear: Option<Callback<()>>,
+) -> impl IntoView {
     let (title, note, _) = source.say();
+    let cleared = RwSignal::new(false);
     view! {
         <crate::modal::Modal title=title on_close=on_close wide=true>
-            <p class="muted small">{note}</p>
+            <div class="log-note">
+                <p class="muted small">{note}</p>
+                {on_clear.map(|on_clear| view! {
+                    <button
+                        type="button"
+                        class="quiet-button"
+                        disabled=move || cleared.get()
+                        title="Takes the mark off this extension's log button until a new error arrives"
+                        on:click=move |_| {
+                            cleared.set(true);
+                            on_clear.run(());
+                        }
+                    >
+                        {move || if cleared.get() { "Error cleared" } else { "Clear error" }}
+                    </button>
+                })}
+            </div>
             <LogView source=source />
         </crate::modal::Modal>
     }

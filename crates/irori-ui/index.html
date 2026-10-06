@@ -66,6 +66,8 @@
     .shell[data-motion="off"] *, .shell[data-motion="off"] *::before,
     .shell[data-motion="off"] *::after { animation: none !important; transition: none !important; }
     body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 var(--sans); }
+    /* Hidden means hidden, whatever an element's own rule says its display is. */
+    [hidden] { display: none !important; }
 
     /* Every box that is typed in looks the same wherever it is: the page's own colours, a thin
        line, an ember ring while it has the cursor. Zero specificity, so a place that needs a
@@ -978,6 +980,8 @@
     .setting-name { font-weight: 500; }
     .setting p { margin: .15rem 0 0; }
     .log-view .log-bar { margin-top: 0; }
+    .log-note { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem; margin: 0 0 .6rem; }
+    .log-note p { flex: 1 1 16rem; margin: 0; }
     /* Facts: what something is, as a list of names and values. */
     .facts { display: grid; grid-template-columns: max-content 1fr; gap: .3rem 1.25rem; margin: 0; }
     .facts dt { color: var(--muted); font: .7rem/1.8 var(--mono); letter-spacing: .08em;
