@@ -768,6 +768,10 @@ async fn edit_device(
     }
 }
 
+/// How many seconds after an unpair went unanswered to keep watching for it happening anyway.
+/// As long as the Zigbee extension keeps an unanswered unpair itself.
+const LATE_UNPAIR_CHECKS: u32 = 120;
+
 /// Removes a device from the home: its name, room, entities, floorplan spot and history go, and
 /// it's back among what its protocol has found, to be added again from "+ Add device" if wanted
 /// (`docs/specs/config.md` §3.2).
@@ -811,6 +815,27 @@ async fn remove_device(
     {
         tracing::warn!(device = %id, %why, "removed from the home without being unpaired");
     } else if let Err(why) = unpaired {
+        // Giving up on the answer isn't the network giving up on the request. If it lets the
+        // device go after all, the protocol takes it out of the core, and what Irori wrote
+        // down about it would be left behind with no device to remove it through. So for a
+        // while longer this watches for it going, and tidies up then.
+        if in_home && matches!(why, irori_core::CallActionError::Timeout) {
+            let (state, id, owned) = (state.clone(), id.clone(), owned.clone());
+            tokio::spawn(async move {
+                let core = &state.0.core;
+                for _ in 0..LATE_UNPAIR_CHECKS {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    let gone = !core.devices().iter().any(|device| device.id == id)
+                        && !core.held_devices().iter().any(|device| device.id == id);
+                    if gone {
+                        if let Err(e) = state.0.config.forget_unpaired(core, &id, owned).await {
+                            tracing::warn!(device = %id, error = ?e, "couldn't forget a device unpaired late");
+                        }
+                        return;
+                    }
+                }
+            });
+        }
         #[derive(Debug, Serialize)]
         struct UnpairFailed {
             error: String,
