@@ -222,6 +222,18 @@ pub(crate) fn owned_str(value: &serde_json::Value, key: &str, default: &str) -> 
     str_field(value, key).unwrap_or(default).to_owned()
 }
 
+/// `key` as the word a device reports: text as it is, and `true`, `false` or a number written
+/// out. Zigbee2MQTT's on and off for a sensor are whatever the device sends, often not text.
+pub(crate) fn word_field(value: &serde_json::Value, key: &str, default: &str) -> String {
+    match value.get(key) {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(word @ (serde_json::Value::Bool(_) | serde_json::Value::Number(_))) => {
+            word.to_string()
+        }
+        _ => default.to_owned(),
+    }
+}
+
 pub(crate) fn parse_device(root: &serde_json::Value) -> Result<Option<ParsedDevice>, String> {
     let Some(device) = root.get("device") else {
         return Ok(None);

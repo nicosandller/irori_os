@@ -38,6 +38,8 @@ pub struct Choice {
     pub label: String,
     /// Smaller, beside the label: an entity's id, its state now.
     pub detail: String,
+    /// What it's part of, read before the label: the device an entity belongs to.
+    pub group: String,
 }
 
 impl Choice {
@@ -46,6 +48,21 @@ impl Choice {
             value: value.into(),
             label: label.into(),
             detail: String::new(),
+            group: String::new(),
+        }
+    }
+
+    pub fn group(mut self, group: impl Into<String>) -> Self {
+        self.group = group.into();
+        self
+    }
+
+    /// The label as one line of text, what it's part of first.
+    fn whole(&self) -> String {
+        if self.group.is_empty() {
+            self.label.clone()
+        } else {
+            format!("{} – {}", self.group, self.label)
         }
     }
 
@@ -58,6 +75,7 @@ impl Choice {
         let query = query.to_lowercase();
         query.split_whitespace().all(|word| {
             self.label.to_lowercase().contains(word)
+                || self.group.to_lowercase().contains(word)
                 || self.value.to_lowercase().contains(word)
                 || self.detail.to_lowercase().contains(word)
         })
@@ -105,10 +123,21 @@ pub fn Combo(
         choices.with(|all| {
             all.iter()
                 .find(|c| c.value == v)
-                .map(|c| c.label.clone())
+                .map(Choice::whole)
                 .unwrap_or(v)
         })
     };
+    // The picked one's two parts, when it has two: drawn over the field so that a long device
+    // name is what gets cut short, where the field's own text would lose its end, the name.
+    let current_parts = move || {
+        let v = value.get();
+        choices.with(|all| {
+            all.iter()
+                .find(|c| c.value == v && !c.group.is_empty())
+                .map(|c| (c.group.clone(), c.label.clone()))
+        })
+    };
+    let parted = move || !open.get() && current_parts().is_some();
     let current_detail = move || {
         let v = value.get();
         choices.with(|all| all.iter().find(|c| c.value == v).map(|c| c.detail.clone()))
@@ -143,6 +172,7 @@ pub fn Combo(
                 type="text"
                 node_ref=input
                 class="combo-input"
+                class:parted=parted
                 autocomplete="off"
                 spellcheck="false"
                 placeholder=placeholder
@@ -191,6 +221,13 @@ pub fn Combo(
                     }
                 }
             />
+            {move || parted().then(current_parts).flatten().map(|(group, name)| view! {
+                <span class="combo-shown" aria-hidden="true">
+                    <span class="combo-group">{group}</span>
+                    <span class="combo-sep">"–"</span>
+                    <span class="combo-name">{name}</span>
+                </span>
+            })}
             {move || (!open.get()).then(|| current_detail().filter(|d| !d.is_empty()).map(|d| view! {
                 <span class="combo-detail">{d}</span>
             }))}
@@ -229,7 +266,15 @@ pub fn Combo(
                                 }
                                 on:pointerenter=move |_| active.set(i)
                             >
-                                <span class="combo-label">{marked(&choice.label, &q)}</span>
+                                <span class="combo-label">
+                                    // The part that gives way when the two don't fit: the
+                                    // device is the same down a run of rows, the name isn't.
+                                    {(!choice.group.is_empty()).then(|| view! {
+                                        <span class="combo-group">{marked(&choice.group, &q)}</span>
+                                        <span class="combo-sep" aria-hidden="true">"–"</span>
+                                    })}
+                                    <span class="combo-name">{marked(&choice.label, &q)}</span>
+                                </span>
                                 {(!choice.detail.is_empty()).then(|| view! {
                                     <span class="combo-option-detail">{marked(&choice.detail, &q)}</span>
                                 })}

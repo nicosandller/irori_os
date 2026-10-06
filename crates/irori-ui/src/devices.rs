@@ -1284,6 +1284,9 @@ fn ProtocolActions(
                     let id = id.clone();
                     let action_id = action.id.clone();
                     let seconds = action.seconds;
+                    // One that opens for a while is confirmed by the extension, and waited for.
+                    let timed = seconds.is_some();
+                    let asked_of = extension.name.clone();
                     let is_busy = Memo::new({
                         let action_id = action_id.clone();
                         move |_| sending.get().as_deref() == Some(action_id.as_str())
@@ -1338,6 +1341,8 @@ fn ProtocolActions(
                             type="button"
                             class="add"
                             class:join-open=is_open
+                            class:join-waiting=is_busy
+                            aria-busy=move || is_busy.get().to_string()
                             disabled=move || sending.get().is_some()
                             aria-label=move || if is_open.get() {
                                 format!(
@@ -1351,6 +1356,7 @@ fn ProtocolActions(
                                 let id = id.clone();
                                 let action_id = action_id.clone();
                                 let closing_it = is_open.get_untracked();
+                                let asked_of = asked_of.clone();
                                 sending.set(Some(action_id.clone()));
                                 spawn_local(async move {
                                     let asked = if closing_it {
@@ -1359,16 +1365,21 @@ fn ProtocolActions(
                                         crate::api::trigger_action(&id, &action_id).await
                                     };
                                     match asked {
+                                        // Asked for, not yet so: the button keeps turning
+                                        // until the extension says the network really is
+                                        // open (or shut), which is also where the time left
+                                        // comes from. Zigbee takes a moment over it.
+                                        Ok(()) if timed => {
+                                            trouble.set(None);
+                                            if !confirmed(live, &id, &action_id, !closing_it).await {
+                                                trouble.set(Some(format!(
+                                                    "{asked_of} hasn't said it {} yet. It may still do so.",
+                                                    if closing_it { "closed" } else { "opened" },
+                                                )));
+                                            }
+                                        }
                                         Ok(()) => {
                                             trouble.set(None);
-                                            // Closed here straight away; opening waits for the
-                                            // extension to say so, which is where the time
-                                            // left comes from.
-                                            if closing_it {
-                                                closing.update(|closing| {
-                                                    closing.remove(&action_id);
-                                                });
-                                            }
                                             crate::refresh(live);
                                         }
                                         Err(why) => trouble.set(Some(why)),
@@ -1377,7 +1388,13 @@ fn ProtocolActions(
                                 });
                             }
                         >
-                            {move || if is_open.get() {
+                            {move || if is_open.get() && is_busy.get() {
+                                view! {
+                                    <span class="join-wait" aria-hidden="true"></span>
+                                    "Closing…"
+                                }
+                                    .into_any()
+                            } else if is_open.get() {
                                 view! {
                                     <svg class="join-ring" viewBox="0 0 24 24" aria-hidden="true">
                                         <circle class="join-ring-track" cx="12" cy="12" r="9" />
@@ -1400,7 +1417,11 @@ fn ProtocolActions(
                                 }
                                     .into_any()
                             } else if is_busy.get() {
-                                "Working…".into_any()
+                                view! {
+                                    <span class="join-wait" aria-hidden="true"></span>
+                                    {if timed { "Opening…" } else { "Working…" }}
+                                }
+                                    .into_any()
                             } else {
                                 label.clone().into_any()
                             }}
@@ -1412,6 +1433,35 @@ fn ProtocolActions(
         </div>
     }
         .into_any()
+}
+
+/// Waits for an extension to say its action is open (or no longer is), reading the home again
+/// until it does. `false` when it hasn't within [`CONFIRM_WITHIN`]: asked, but not confirmed.
+async fn confirmed(live: crate::Live, id: &ExtensionId, action_id: &str, open: bool) -> bool {
+    /// Zigbee2MQTT answers in well under a second on a healthy stick; this is for a slow one.
+    const CONFIRM_WITHIN: std::time::Duration = std::time::Duration::from_secs(8);
+    const EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+    let mut waited = std::time::Duration::ZERO;
+    loop {
+        if let Ok(fetched) = crate::api::fetch_home().await {
+            let is_open = fetched
+                .extensions
+                .iter()
+                .find(|(known, _)| *known == id)
+                .is_some_and(|(_, extension)| extension.open_actions.contains_key(action_id));
+            if fetched != live.home.get_untracked() {
+                live.home.set(fetched);
+            }
+            if is_open == open {
+                return true;
+            }
+        }
+        if waited >= CONFIRM_WITHIN {
+            return false;
+        }
+        gloo_timers::future::sleep(EVERY).await;
+        waited += EVERY;
+    }
 }
 
 /// Plain words for an `iot_class`: where the device's brain is and what it needs.

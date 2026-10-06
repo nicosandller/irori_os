@@ -55,7 +55,11 @@ beside the binary (`IRORI_OFFICIAL_PACKAGES` or `/usr/share/irori/extensions`), 
 this repo (`cargo build`, only when this isn't the binary the release workflow built, and cargo
 is on its PATH), or a GitHub release of this repo — a distributed release always takes this last
 path, the same as a machine with no checkout at all. Uninstall stops the process, removes its
-devices, and deletes the package. A third-party tarball URL uses the same machinery
+devices, and deletes the package. Update (the same request with `"update": true`, offered on
+the page when the catalog's version isn't the installed one) stops the process, replaces the
+package and starts it again: its devices, settings and `extension-data` are untouched, and what
+the old package had that the new one doesn't (what it downloaded for itself) is carried over.
+Updating Irori doesn't update installed extensions. A third-party tarball URL uses the same machinery
 (`POST /api/dev/extensions/install`); how those URLs are discovered is later.
 
 How packages are signed is still Phase 3 (ROADMAP §8.1).

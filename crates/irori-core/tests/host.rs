@@ -1372,3 +1372,97 @@ async fn stored_values_outlast_a_restart_and_have_a_size_limit() {
     assert!(refused.contains("at most"), "{refused}");
     host.shutdown().await;
 }
+
+/// Updating swaps the package and starts the new one. What the old package had fetched for
+/// itself (Zigbee's Node.js and Zigbee2MQTT sit in its package directory) comes along, and a
+/// plain install of something that's already there is still refused.
+#[cfg(unix)]
+#[tokio::test]
+async fn updating_replaces_the_package_and_keeps_what_it_fetched_for_itself() {
+    use std::os::unix::fs::PermissionsExt;
+
+    fn write_package(dir: &std::path::Path, version: &str, says: &str) {
+        std::fs::create_dir_all(dir.join("bin")).expect("made the package dir");
+        std::fs::write(
+            dir.join("irori-extension.toml"),
+            format!(
+                r#"
+                    [extension]
+                    id = "loud"
+                    name = "Loud"
+                    version = "{version}"
+                    irori = ">=0.0.0"
+
+                    [[contributes.protocol]]
+                    iot_class = "local_push"
+                    entity_kinds = ["light"]
+                    run = {{ command = "bin/prog" }}
+                "#
+            ),
+        )
+        .expect("wrote the manifest");
+        let program = dir.join("bin/prog");
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\necho \"{says}\" >&2\nexit 1\n"),
+        )
+        .expect("wrote the program");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .expect("made it executable");
+    }
+
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let package = packages_dir.path().join("loud");
+    write_package(&package, "0.1.0", "this is the old one");
+    std::fs::create_dir_all(package.join("runtime")).expect("made its own folder");
+    std::fs::write(package.join("runtime/node"), "fetched").expect("wrote what it fetched");
+
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("starts");
+    eventually("the old one runs", || {
+        matches!(
+            status(&core, "loud"),
+            Some(ExtensionStatus::Failed { reason, .. }) if reason.contains("the old one")
+        )
+    })
+    .await;
+
+    let stage = packages_dir.path().join("download-1");
+    write_package(&stage, "0.2.0", "this is the new one");
+    assert!(
+        host.install_package(stage.clone())
+            .is_err_and(|why| why.contains("already")),
+        "a plain install doesn't replace what's there"
+    );
+
+    let id = host.update_package(stage.clone()).await.expect("updates");
+    assert_eq!(id.as_str(), "loud");
+    eventually("the new one runs", || {
+        matches!(
+            status(&core, "loud"),
+            Some(ExtensionStatus::Failed { reason, .. }) if reason.contains("the new one")
+        )
+    })
+    .await;
+    let manifest =
+        std::fs::read_to_string(package.join("irori-extension.toml")).expect("has a manifest");
+    assert!(manifest.contains("0.2.0"), "{manifest}");
+    assert_eq!(
+        std::fs::read_to_string(package.join("runtime/node")).expect("still there"),
+        "fetched"
+    );
+    let left: Vec<_> = std::fs::read_dir(packages_dir.path())
+        .expect("readable")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .collect();
+    assert_eq!(left, vec![std::ffi::OsString::from("loud")], "{left:?}");
+
+    host.shutdown().await;
+}

@@ -1,7 +1,7 @@
 [extension]
 id = "zigbee"
 name = "Zigbee"
-version = "0.3.0"
+version = "0.3.1"
 irori = ">=0.9.0"
 # 0.9.0 unpairs a device when it is removed, and knows how long an action stays open.
 description = "Zigbee devices through a USB dongle. Brings its own Zigbee2MQTT and broker: the MQTT extension isn't needed."

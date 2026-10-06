@@ -1403,6 +1403,9 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                     official: true,
                     full_access: item.full_access,
                     installed: overview.is_some(),
+                    installed_version: overview
+                        .and_then(|o| o.info.as_ref())
+                        .map(|info| info.version.to_string()),
                     icon,
                     state: overview.map(|o| match &o.status {
                         irori_core::ExtensionStatus::Disabled => "disabled",
@@ -1458,6 +1461,10 @@ struct CatalogEntry {
     /// access to this machine" and install is refused until that is approved.
     full_access: bool,
     installed: bool,
+    /// The version that's running, which `version` (the one Install would fetch) can be ahead
+    /// of: nothing updates an installed extension when Irori itself is updated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    installed_version: Option<String>,
     icon: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     state: Option<&'static str>,
@@ -1476,6 +1483,9 @@ struct CatalogEntry {
 struct InstallApproval {
     #[serde(default)]
     approve_full_access: bool,
+    /// Replace the version that's installed, keeping its devices, settings and data.
+    #[serde(default)]
+    update: bool,
 }
 
 async fn install_official(
@@ -1492,6 +1502,9 @@ async fn install_official(
     // There are no accounts yet (the server's own note at the top of this file), so this cannot
     // check that the approver is the owner. It can refuse a request that never acknowledged the
     // warning. The page collects that acknowledgement; this is what stops anything else.
+    let update = approval
+        .as_ref()
+        .is_some_and(|Json(approval)| approval.update);
     let approved = approval.is_some_and(|Json(approval)| approval.approve_full_access);
     if item.full_access && !approved {
         return refused(StatusCode::CONFLICT, full_access_refusal(&id));
@@ -1518,7 +1531,14 @@ async fn install_official(
         let _ = std::fs::remove_dir_all(&stage);
         return refused(status, why);
     }
-    match state.0.host.install_package(stage.clone()) {
+    // An update replaces what's installed and starts it again; a plain install still refuses
+    // one that's already there, which is what makes a double-click harmless.
+    let placed = if update {
+        state.0.host.update_package(stage.clone()).await
+    } else {
+        state.0.host.install_package(stage.clone())
+    };
+    match placed {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(why) => {
             let _ = std::fs::remove_dir_all(&stage);
