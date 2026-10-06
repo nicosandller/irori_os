@@ -898,9 +898,18 @@ pub async fn fetch_serial_ports() -> Result<Vec<String>, String> {
     response.json().await.map_err(unreachable)
 }
 
-pub async fn install_extension(id: &str, approve_full_access: bool) -> Result<(), String> {
+/// Installs an extension, or with `update` replaces the version that's installed, keeping its
+/// devices, settings and data.
+pub async fn install_extension(
+    id: &str,
+    approve_full_access: bool,
+    update: bool,
+) -> Result<(), String> {
     let response = Request::post(&format!("/api/dev/extensions/{id}/install"))
-        .json(&serde_json::json!({ "approve_full_access": approve_full_access }))
+        .json(&serde_json::json!({
+            "approve_full_access": approve_full_access,
+            "update": update,
+        }))
         .map_err(|e| e.to_string())?
         .send()
         .await

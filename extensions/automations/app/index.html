@@ -130,8 +130,18 @@
     .combo-label { font-size: .92rem; display: flex; align-items: baseline; gap: .35rem; min-width: 0; }
     .combo-group, .combo-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .combo-group { flex: 0 1000 auto; min-width: 3.5rem; }
-    .combo-name { flex: 0 1 auto; min-width: 0; }
+    /* The name keeps its whole width until the device is down to its last few letters. */
+    .combo-name { flex: none; max-width: calc(100% - 4.4rem); }
+    .combo-name:only-child { max-width: 100%; }
     .combo-sep { flex: none; color: var(--muted); }
+    /* The picked one, drawn over the field in the same two parts: the field keeps its text for
+       a screen reader and for selecting, and shows this instead. */
+    .combo-input.parted { color: transparent; }
+    .combo-shown { position: absolute; left: calc(.75rem + 1px); top: 50%; translate: 0 -50%;
+      right: min(calc(2.6rem + var(--detail-chars, 0) * .45rem), calc(45% + 2.6rem));
+      display: flex; align-items: baseline; gap: .35rem; min-width: 0; pointer-events: none;
+      font-size: .95rem; }
+    @container (max-width: 13rem) { .combo-shown { right: 2.4rem; } }
     .combo-option-detail { font-size: .75rem; color: var(--muted); font-family: var(--mono);
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .combo-list mark { background: color-mix(in srgb, var(--ember) 25%, transparent); color: inherit;

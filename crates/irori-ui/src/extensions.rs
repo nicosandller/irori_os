@@ -24,6 +24,8 @@ pub fn Extensions() -> impl IntoView {
     // An extension with full access to the machine doesn't install on the first click. This is
     // the one waiting for that approval.
     let confirm_install = RwSignal::new(None::<String>);
+    let updating = Updating(RwSignal::new(None::<String>));
+    provide_context(updating);
     // Which extension's whole story is open: a card says what fits, and this is the rest.
     let more_open = RwSignal::new(None::<String>);
     // The newest error in each extension's own log, for the mark on its log button.
@@ -325,9 +327,16 @@ pub fn Extensions() -> impl IntoView {
             let entry = catalog.get().into_iter().find(|entry| entry.id == id)?;
             let name = entry.name.clone();
             let id_install = id.clone();
+            // The same question for a newer version of one that's installed: it's new code
+            // being given the same reach.
+            let (what, verb) = if entry.installed {
+                (Do::Update, "Update")
+            } else {
+                (Do::Install, "Install")
+            };
             Some(view! {
                 <crate::modal::Modal
-                    title=format!("Install {name}?")
+                    title=format!("{verb} {name}?")
                     on_close=move || confirm_install.set(None)
                 >
                     <p>
@@ -335,7 +344,7 @@ pub fn Extensions() -> impl IntoView {
                         " has "
                         <strong>"full access to this machine"</strong>
                         ". It can download and run other programs, the same as a terminal. "
-                        "Install it only if that is what you want."
+                        {format!("{verb} it only if that is what you want.")}
                     </p>
                     <div class="ext-actions">
                         <button
@@ -350,10 +359,10 @@ pub fn Extensions() -> impl IntoView {
                             class="add solid"
                             on:click=move |_| {
                                 confirm_install.set(None);
-                                act(id_install.clone(), true, busy, catalog, trouble, true);
+                                act(id_install.clone(), what, busy, catalog, trouble, true, updating);
                             }
                         >
-                            "Install"
+                            {verb}
                         </button>
                     </div>
                 </crate::modal::Modal>
@@ -384,6 +393,7 @@ fn card(
     let id_gear = id.clone();
     let id_log = id.clone();
     let id_more = id.clone();
+    let id_update = id.clone();
     let id_marked = id.clone();
     let installed = entry.installed;
     let full_access = entry.full_access;
@@ -403,6 +413,11 @@ fn card(
     // A `Memo` rather than a plain closure: it's `Copy`, so the same check can be read from the
     // button's `disabled`, its progress bar, and its label without cloning the id three times.
     let is_busy = Memo::new(move |_| busy.get().as_deref() == Some(id_busy.as_str()));
+    let updating = expect_context::<Updating>();
+    let id_updating = id.clone();
+    let is_updating = Memo::new(move |_| {
+        is_busy.get() && updating.0.get().as_deref() == Some(id_updating.as_str())
+    });
 
     view! {
         <section class="ext-card">
@@ -439,11 +454,11 @@ fn card(
                             type="button"
                             class="danger ext-btn"
                             disabled=move || is_busy.get()
-                            on:click=move |_| act(id_click.clone(), false, busy, catalog, trouble, false)
+                            on:click=move |_| act(id_click.clone(), Do::Uninstall, busy, catalog, trouble, false, updating)
                         >
-                            {move || is_busy.get().then(|| view! { <span class="bar" aria-hidden="true"></span> })}
+                            {move || (is_busy.get() && !is_updating.get()).then(|| view! { <span class="bar" aria-hidden="true"></span> })}
                             <span class="label">
-                                {move || if is_busy.get() { "Uninstalling…" } else { "Uninstall" }}
+                                {move || if is_busy.get() && !is_updating.get() { "Uninstalling…" } else { "Uninstall" }}
                             </span>
                         </button>
                     }
@@ -458,7 +473,7 @@ fn card(
                                 if full_access {
                                     confirm_install.set(Some(id.clone()));
                                 } else {
-                                    act(id.clone(), true, busy, catalog, trouble, false);
+                                    act(id.clone(), Do::Install, busy, catalog, trouble, false, updating);
                                 }
                             }
                         >
@@ -470,6 +485,29 @@ fn card(
                     }
                         .into_any()
                 }}
+                {outdated(&entry).then(|| {
+                    let id = id_update.clone();
+                    view! {
+                        <button
+                            type="button"
+                            class="add ext-btn"
+                            disabled=move || is_busy.get()
+                            title="Replaces this version with the newer one. Its devices, settings and data stay."
+                            on:click=move |_| {
+                                if full_access {
+                                    confirm_install.set(Some(id.clone()));
+                                } else {
+                                    act(id.clone(), Do::Update, busy, catalog, trouble, false, updating);
+                                }
+                            }
+                        >
+                            {move || is_updating.get().then(|| view! { <span class="bar" aria-hidden="true"></span> })}
+                            <span class="label">
+                                {move || if is_updating.get() { "Updating…" } else { "Update" }}
+                            </span>
+                        </button>
+                    }
+                })}
                 {(installed && schema.is_some()).then(|| {
                     // An extension that can't start until someone fills a setting in says so
                     // in words: a gear next to "needs setup" is a puzzle, not an instruction.
@@ -572,20 +610,38 @@ const SETTLE_POLL: Duration = Duration::from_secs(1);
 /// button forever. Its own state badge keeps showing what's going on either way.
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
+/// The extension being updated, if one is: its card says "Updating…", not "Uninstalling…".
+#[derive(Debug, Clone, Copy)]
+struct Updating(RwSignal<Option<String>>);
+
+/// What a card's button asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Do {
+    Install,
+    /// Replace the installed version with the catalog's, keeping everything else.
+    Update,
+    Uninstall,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn act(
     id: String,
-    install: bool,
+    what: Do,
     busy: RwSignal<Option<String>>,
     catalog: RwSignal<Vec<CatalogEntry>>,
     trouble: RwSignal<Option<String>>,
     approve_full_access: bool,
+    updating: Updating,
 ) {
+    // Which of its buttons says it's working: read by the card, which is drawn again each
+    // time the catalog is.
+    updating.0.set((what == Do::Update).then(|| id.clone()));
     busy.set(Some(id.clone()));
     spawn_local(async move {
-        let result = if install {
-            api::install_extension(&id, approve_full_access).await
-        } else {
-            api::uninstall_extension(&id).await
+        let result = match what {
+            Do::Install => api::install_extension(&id, approve_full_access, false).await,
+            Do::Update => api::install_extension(&id, approve_full_access, true).await,
+            Do::Uninstall => api::uninstall_extension(&id).await,
         };
         match result {
             Ok(()) => {
@@ -662,8 +718,16 @@ fn unplaced_unmodeled(id: &str) -> Option<String> {
     })
 }
 
+/// Whether a newer version than the one installed is there to update to.
+fn outdated(entry: &CatalogEntry) -> bool {
+    entry
+        .installed_version
+        .as_ref()
+        .is_some_and(|installed| *installed != entry.version)
+}
+
 /// The version to show for an extension: the one running, and the newer one when the catalog
-/// has moved on. An installed extension stays as it was installed until it's installed again.
+/// has moved on. An installed extension stays as it was until it's updated.
 fn version_words(entry: &CatalogEntry) -> String {
     match &entry.installed_version {
         Some(installed) if *installed != entry.version => {

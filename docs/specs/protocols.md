@@ -120,8 +120,8 @@ directory, which uninstalling deletes whole — right for a manifest and a binar
 anything underneath them. So the host also gives it `IRORI_EXTENSION_DATA`: an absolute path to
 `$DATA/extension-data/<id>`, created before the process starts, for what has to outlive the
 package. Zigbee is the case that makes this matter — Zigbee2MQTT's network key and pairing table
-live in a directory of its own, and losing them strands every paired device — and an upgrade
-today *is* an uninstall and a reinstall. Small values belong in the storage above instead; this
+live in a directory of its own, and losing them strands every paired device. An update
+(`extensions.md`) replaces the package and leaves this directory alone. Small values belong in the storage above instead; this
 is for a subprocess's own files, which Irori can't hold for it.
 
 ### 5.1 Actions, and unpairing

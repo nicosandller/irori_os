@@ -127,6 +127,17 @@ pub fn Combo(
                 .unwrap_or(v)
         })
     };
+    // The picked one's two parts, when it has two: drawn over the field so that a long device
+    // name is what gets cut short, where the field's own text would lose its end, the name.
+    let current_parts = move || {
+        let v = value.get();
+        choices.with(|all| {
+            all.iter()
+                .find(|c| c.value == v && !c.group.is_empty())
+                .map(|c| (c.group.clone(), c.label.clone()))
+        })
+    };
+    let parted = move || !open.get() && current_parts().is_some();
     let current_detail = move || {
         let v = value.get();
         choices.with(|all| all.iter().find(|c| c.value == v).map(|c| c.detail.clone()))
@@ -161,6 +172,7 @@ pub fn Combo(
                 type="text"
                 node_ref=input
                 class="combo-input"
+                class:parted=parted
                 autocomplete="off"
                 spellcheck="false"
                 placeholder=placeholder
@@ -209,6 +221,13 @@ pub fn Combo(
                     }
                 }
             />
+            {move || parted().then(current_parts).flatten().map(|(group, name)| view! {
+                <span class="combo-shown" aria-hidden="true">
+                    <span class="combo-group">{group}</span>
+                    <span class="combo-sep">"–"</span>
+                    <span class="combo-name">{name}</span>
+                </span>
+            })}
             {move || (!open.get()).then(|| current_detail().filter(|d| !d.is_empty()).map(|d| view! {
                 <span class="combo-detail">{d}</span>
             }))}

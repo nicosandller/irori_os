@@ -215,6 +215,58 @@ impl ExtensionHost {
         Ok(id)
     }
 
+    /// Replaces an installed extension's package with the one staged in `dir` and starts it
+    /// again. Nothing else is touched: its devices, its settings and what it keeps under
+    /// `extension-data` are as they were, which is the difference from uninstalling and
+    /// installing again.
+    ///
+    /// What the old package had and the new one doesn't is carried over. That is what the
+    /// extension fetched for itself once it ran (Zigbee's Node.js and Zigbee2MQTT), which
+    /// would otherwise be downloaded again on every update.
+    pub async fn update_package(&self, dir: PathBuf) -> Result<ExtensionId, String> {
+        let manifest = read_package_manifest(&dir)?;
+        let id = manifest.extension.id.clone();
+        let home = self.inner.packages_dir.join(id.as_str());
+        if !home.is_dir() {
+            return Err(format!("`{id}` isn't installed"));
+        }
+        let task = {
+            let mut running = self
+                .inner
+                .running
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            running.remove(&id).map(|r| {
+                let _ = r.removed.send(true);
+                r.task
+            })
+        };
+        if let Some(task) = task {
+            let _ = task.await;
+        }
+        // Out of the way under a name that's never read as a package, so a failure halfway
+        // leaves the old one to put back.
+        let old = dir.with_extension("old");
+        std::fs::rename(&home, &old)
+            .map_err(|e| format!("couldn't move the old {} aside: {e}", home.display()))?;
+        if let Err(e) = std::fs::rename(&dir, &home) {
+            let _ = std::fs::rename(&old, &home);
+            let _ = self.spawn_package(home);
+            return Err(format!("couldn't move {dir:?} into place: {e}"));
+        }
+        if let Ok(entries) = std::fs::read_dir(&old) {
+            for entry in entries.filter_map(Result::ok) {
+                let kept = home.join(entry.file_name());
+                if !kept.exists() {
+                    let _ = std::fs::rename(entry.path(), kept);
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&old);
+        self.spawn_package(home)?;
+        Ok(id)
+    }
+
     /// Stops the extension, removes its devices, forgets it, and deletes its package directory.
     pub async fn uninstall(&self, id: &ExtensionId) -> Result<(), String> {
         let task = {
