@@ -776,7 +776,8 @@ async fn edit_device(
 /// then it's gone altogether rather than found: it has to join again to come back. That one can
 /// be removed while it's only found, too, which is the way to undo pairing the wrong thing. If
 /// the unpair is refused nothing else is touched, and the answer says `unpair_failed` so the
-/// page can offer `?force=true`.
+/// page can offer `?force=true`. Forced, a device in the home leaves it whatever its network
+/// says, so removing never becomes impossible.
 async fn remove_device(
     State(state): State<AppState>,
     Path(id): Path<DeviceId>,
@@ -799,7 +800,17 @@ async fn remove_device(
     }
     // Read before the unpair: afterwards the core no longer knows what the device had.
     let owned = core.device_entity_keys(&id).unwrap_or_default();
-    if let Err(why) = core.unpair_device(&id, force).await {
+    let unpaired = core.unpair_device(&id, force).await;
+    // Removing a device from the home always has a way through. Forced, it leaves the home
+    // even when its network can't be asked at all — the extension stopped, the dongle
+    // unplugged — which is exactly when someone wants to clear devices out. It's then found
+    // again if its protocol still knows it, as any removed device used to be.
+    if let Err(why) = &unpaired
+        && force
+        && in_home
+    {
+        tracing::warn!(device = %id, %why, "removed from the home without being unpaired");
+    } else if let Err(why) = unpaired {
         #[derive(Debug, Serialize)]
         struct UnpairFailed {
             error: String,
@@ -810,6 +821,21 @@ async fn remove_device(
             code: "unpair_failed",
         };
         return (StatusCode::CONFLICT, Json(failed)).into_response();
+    }
+    if !in_home {
+        // Only found, so there was nothing of Irori's to remove: unpairing was the whole job.
+        // Still there means its protocol had nothing to unpair (Zigbee's own controller).
+        let still = core.held_devices().iter().any(|device| device.id == id);
+        return if still {
+            refused(
+                StatusCode::CONFLICT,
+                "It isn't a device that pairs, so there's nothing to unpair. It stays listed \
+                 here until it's added."
+                    .to_owned(),
+            )
+        } else {
+            StatusCode::NO_CONTENT.into_response()
+        };
     }
     match state.0.config.forget_unpaired(core, &id, owned).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -3173,7 +3199,7 @@ mod tests {
             _: MeshSettings,
             mut ctx: irori_protocol::ProtocolContext,
         ) -> Result<(), irori_protocol::ProtocolError> {
-            for device in ["bulb", "sleepy"] {
+            for device in ["bulb", "sleepy", "stuck", "hub"] {
                 ctx.describe_device(irori_types::DeviceDescription {
                     unique_id: device.parse()?,
                     name: device.parse()?,
@@ -3211,6 +3237,18 @@ mod tests {
                     {
                         unpair.reply(Err("it didn't answer".into()));
                     }
+                    // The network can't be reached for this one at all, forced or not.
+                    irori_protocol::Incoming::Unpair(unpair)
+                        if unpair.unique_id.as_str() == "stuck" =>
+                    {
+                        unpair.reply(Err("the radio is unplugged".into()));
+                    }
+                    // The network itself: nothing to unpair, said as done, and left alone.
+                    irori_protocol::Incoming::Unpair(unpair)
+                        if unpair.unique_id.as_str() == "hub" =>
+                    {
+                        unpair.reply(Ok(()));
+                    }
                     irori_protocol::Incoming::Unpair(unpair) => {
                         ctx.remove_device(unpair.unique_id.clone()).await?;
                         unpair.reply(Ok(()));
@@ -3238,7 +3276,7 @@ mod tests {
         )
         .map_err(anyhow::Error::msg)?;
         for _ in 0..500 {
-            let ready = core.held_devices().len() + core.devices().len() == 2
+            let ready = core.held_devices().len() + core.devices().len() == 4
                 && core
                     .extensions()
                     .values()
@@ -3314,7 +3352,7 @@ mod tests {
         let core = core();
         let server = Server::new(core.clone())?;
         let host = mesh_on(&core).await?;
-        assert_eq!(core.held_devices().len(), 2, "found, and not in the home");
+        assert_eq!(core.held_devices().len(), 4, "found, and not in the home");
 
         let (status, body) = server
             .json(
@@ -3337,6 +3375,52 @@ mod tests {
             .await?;
         assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
         assert!(!known(&core, "mesh_sleepy"));
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Removing from the home never becomes impossible. A device whose network can't be asked
+    /// at all still leaves the home when forced, and the network's own controller, which has
+    /// nothing to unpair, is removed like any device used to be: both are found again.
+    #[tokio::test]
+    async fn a_device_can_always_be_removed_from_the_home() -> anyhow::Result<()> {
+        let (core, host) = mesh().await?;
+        let server = Server::new(core.clone())?;
+        let in_home = |id: &str| core.devices().iter().any(|device| device.id.as_str() == id);
+        let found = |id: &str| {
+            core.held_devices()
+                .iter()
+                .any(|device| device.id.as_str() == id)
+        };
+        let remove = |path: &'static str| server.json("DELETE", path, serde_json::Value::Null);
+
+        let (status, body) = remove("/api/dev/devices/mesh_stuck").await?;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["code"], "unpair_failed");
+        assert!(in_home("mesh_stuck"));
+        let (status, body) = remove("/api/dev/devices/mesh_stuck?force=true").await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        assert!(!in_home("mesh_stuck") && found("mesh_stuck"));
+        // Only found now, there's nothing left that forcing could do for it.
+        let (status, body) = remove("/api/dev/devices/mesh_stuck?force=true").await?;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+        let (status, body) = remove("/api/dev/devices/mesh_hub").await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        assert!(!in_home("mesh_hub") && found("mesh_hub"));
+        let (status, body) = remove("/api/dev/devices/mesh_hub").await?;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|why| why.contains("nothing to unpair"))
+        );
+        let written = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(
+            !written.contains("mesh_hub") && !written.contains("mesh_stuck"),
+            "{written}"
+        );
 
         host.shutdown().await;
         Ok(())

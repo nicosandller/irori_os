@@ -388,19 +388,27 @@ fn check_home(
                 entity,
                 data,
             } => {
-                // A worked-out number stands in as one from its field's range. The entity's own
-                // range can be narrower, so a stand-in may be refused only for where it is:
-                // what's asked is wrong when every stand-in is.
+                // A worked-out number stands in as three different ones from its field's
+                // range. The entity's own range can be narrower (this lamp's colour
+                // temperatures against any lamp's), and a stand-in refused for where it
+                // happens to be says nothing about the flow: that refusal names the number, so
+                // it differs between the three. What all three are told alike is real.
                 let mut found = match data {
                     None => irori_rules::check_call("call", *service, entity, None, registry),
-                    Some(data) => data
-                        .shapes(*service)
-                        .iter()
-                        .map(|shape| {
-                            irori_rules::check_call("call", *service, entity, Some(shape), registry)
-                        })
-                        .min_by_key(Vec::len)
-                        .unwrap_or_default(),
+                    Some(data) => {
+                        let [low, middle, high] = data.shapes(*service).map(|shape| {
+                            irori_rules::check_call(
+                                "call",
+                                *service,
+                                entity,
+                                Some(&shape),
+                                registry,
+                            )
+                        });
+                        low.into_iter()
+                            .filter(|problem| middle.contains(problem) && high.contains(problem))
+                            .collect()
+                    }
                 };
                 for (field, expr) in data.iter().flat_map(irori_flow_types::FlowCallData::exprs) {
                     let reason = match irori_rules::inspect(expr, registry, vars) {

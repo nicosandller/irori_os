@@ -319,8 +319,9 @@ impl FlowCallData {
     ///
     /// Three of them, standing in low, in the middle and high. A service's own range can be
     /// wider than the entity's (any light's colour temperature against this lamp's), so a
-    /// stand-in may be refused by the entity for being where it is; what's asked is only wrong
-    /// if every one of them is.
+    /// stand-in may be refused by the entity only for where it happens to be. That refusal
+    /// names the number; one that is about what's asked at all ("isn't dimmable") reads the
+    /// same for all three, and that is the one to believe.
     pub fn shapes(&self, service: RuleService) -> [CallData; 3] {
         [0.0, 0.5, 1.0].map(|along| {
             CallData(
@@ -390,18 +391,17 @@ fn bring_in(value: f64, field: Option<NumberField>) -> f64 {
     field.max.map_or(value, |max| value.min(max))
 }
 
-/// A number from a field's range, `along` of the way from its low end to its high end.
+/// A number from a field's range, `along` of the way from its low end to its high end. Where
+/// the range has no far end to go towards, a different number for each `along` all the same:
+/// whoever compares what the stand-ins were told relies on their differing.
 fn stand_in(field: Option<NumberField>, along: f64) -> serde_json::Value {
-    let (min, max) = match field {
-        Some(field) => match (field.min, field.max) {
-            (Some(min), Some(max)) => (min, max),
-            (Some(min), None) => (min, min),
-            (None, Some(max)) => (max, max),
-            (None, None) => (1.0, 1.0),
-        },
-        None => (1.0, 1.0),
+    let (min, max) = field.map_or((None, None), |field| (field.min, field.max));
+    let value = match (min, max) {
+        (Some(min), Some(max)) if max > min => min + (max - min) * along,
+        (Some(end), _) | (None, Some(end)) => end + along * 2.0,
+        (None, None) => 1.0 + along * 2.0,
     };
-    number(bring_in(min + (max - min) * along, field))
+    number(bring_in(value, field))
 }
 
 /// A number as a person writes it: `58`, `57.5`.

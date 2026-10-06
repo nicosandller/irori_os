@@ -104,10 +104,11 @@ pub fn RemoveDevice(
                         <div class="confirm-refused" role="alert">
                             <p><strong>"It's still paired. "</strong>{why}</p>
                             <p class="muted small">
-                                {format!("Or remove it anyway: {again} forgets it without the \
-                                          device agreeing. The device still thinks it's paired, \
-                                          so it may need a factory reset before it joins a \
-                                          network again.")}
+                                {format!("Or remove it anyway: it leaves your home, and {again} \
+                                          forgets it without the device agreeing, if {again} can \
+                                          be reached. The device still thinks it's paired, so it \
+                                          may need a factory reset before it joins a network \
+                                          again.")}
                             </p>
                         </div>
                     }

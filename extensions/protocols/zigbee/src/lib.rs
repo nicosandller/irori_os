@@ -322,7 +322,11 @@ async fn unpair(incoming: IncomingUnpair, registry: &mut Registry, client: &impl
     let ieee = match bridge::ieee_address(incoming.unique_id.as_str()) {
         Ok(ieee) => ieee.to_owned(),
         Err(why) => {
-            incoming.reply(Err(format!("This can't be unpaired: {why}.")));
+            // The controller, or a group: not something that paired, so there's nothing to
+            // unpair and nothing to refuse. Answered as done without it being removed here,
+            // which leaves removing it what it always was: out of the home, and found again.
+            tracing::debug!(device = %incoming.unique_id, %why, "nothing to unpair");
+            incoming.reply(Ok(()));
             return;
         }
     };
@@ -1287,7 +1291,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_controller_itself_is_never_unpaired() {
+    async fn the_controller_has_nothing_to_unpair_and_zigbee2mqtt_is_not_asked() {
         let publisher = FakePublisher::default();
         let mut registry = Registry::default();
 
@@ -1299,8 +1303,9 @@ mod tests {
         )
         .await;
 
-        let why = answer.await.expect("answered").expect_err("refused");
-        assert!(why.contains("controller"), "{why}");
+        // Done, with nothing asked of the network: removing the controller from the home
+        // must not be something that can never succeed.
+        assert_eq!(answer.await.expect("answered"), Ok(()));
         assert!(publisher.published.lock().expect("not poisoned").is_empty());
     }
 

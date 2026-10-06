@@ -1269,3 +1269,51 @@ fn a_press_is_not_something_to_check_or_wait_for_and_a_blind_is_asked_only_what_
         assert!(refused.to_string().contains(said), "{service}: {refused}");
     }
 }
+
+/// A lamp takes a narrower band of colour temperatures than lights in general. A temperature
+/// worked out when the call runs can't be checked against it beforehand, and mustn't be
+/// refused for where a stand-in happened to fall; a lamp with no colour temperature at all
+/// still is.
+#[test]
+fn a_worked_out_setting_is_not_refused_for_where_a_stand_in_falls() {
+    const LAMP: &str = "light.reading_lamp";
+    let with_lamp = |color_temp_kelvin| {
+        let mut home = registry();
+        home.entities.insert(
+            id(LAMP),
+            entity(
+                LAMP,
+                Capabilities::Light(irori_types::LightCapabilities {
+                    brightness: true,
+                    color_temp_kelvin,
+                    rgb: false,
+                }),
+            ),
+        );
+        home
+    };
+    let warm = flow(serde_json::json!({
+        "id": "warm", "name": "Warm",
+        "nodes": {
+            "t": { "type": "trigger", "trigger": { "type": "state", "entity": MOTION, "to": true } },
+            "on": { "type": "call", "service": "light.turn_on", "entity": LAMP,
+                    "data": { "color_temp_kelvin": { "expr": format!("2200 + num('{LUX}')") } } }
+        },
+        "wires": [["t", "on"]]
+    }));
+
+    let narrow = with_lamp(Some(irori_types::ColorTempRange {
+        min: 2200,
+        max: 4000,
+    }));
+    let problems = validate::check(&warm, &narrow);
+    assert!(problems.is_empty(), "{problems:#?}");
+
+    let problems = validate::check(&warm, &with_lamp(None));
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.message.contains("color temperature")),
+        "{problems:#?}"
+    );
+}
