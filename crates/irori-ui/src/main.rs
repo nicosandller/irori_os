@@ -26,6 +26,7 @@ mod log_window;
 mod machine;
 mod modal;
 mod places;
+mod removal;
 mod rich;
 mod segmented;
 mod settings;

@@ -505,6 +505,10 @@
               "type": "null"
             }
           ]
+        },
+        "unpairs": {
+          "description": "Whether removing one of its devices also has to take the device off a network the\nprotocol keeps (`docs/specs/protocols.md` §5) — a Zigbee device stays paired until the\nnetwork lets it go. With this set, removing a device asks the protocol to unpair it\nfirst, and the device is gone rather than back among what was found.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false,

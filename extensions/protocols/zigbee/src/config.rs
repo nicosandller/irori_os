@@ -24,7 +24,10 @@ pub fn generate(
     existing_advanced: Option<&str>,
 ) -> Result<String, String> {
     let mut yaml = String::new();
-    yaml.push_str("homeassistant:\n  enabled: true\n");
+    // `experimental_event_entities` is what makes a button or a remote usable at all: without
+    // it Zigbee2MQTT announces a press only as a Home Assistant device trigger, which isn't an
+    // entity, and the device arrives with a battery level and nothing to press.
+    yaml.push_str("homeassistant:\n  enabled: true\n  experimental_event_entities: true\n");
     yaml.push_str(&format!(
         "mqtt:\n  server: \"mqtt://127.0.0.1:{broker_port}\"\n  base_topic: \"{}\"\n",
         escape(base_topic)
@@ -183,6 +186,13 @@ mod tests {
     fn generates_the_minimal_config_with_only_a_serial_port() {
         let yaml = generate(&settings(), 17_883, "zigbee2mqtt", None).expect("generates");
         assert!(yaml.contains("server: \"mqtt://127.0.0.1:17883\""));
+        // What makes a button's presses arrive as an entity at all.
+        assert!(
+            yaml.starts_with(
+                "homeassistant:\n  enabled: true\n  experimental_event_entities: true\n"
+            ),
+            "{yaml}"
+        );
         assert!(yaml.contains("base_topic: \"zigbee2mqtt\""));
         assert!(yaml.contains("port: \"/dev/ttyUSB0\""));
         assert!(yaml.contains("adapter: ember"));

@@ -462,7 +462,18 @@ clock, not on `std::thread::sleep` and not on tokio's time without going through
 | `data` | object | no | Closed per service; unknown keys rejected |
 | `on_error` | `stop` \| `continue` | no | Default `stop` |
 
-**Services a rule may name** (HA-familiar, D14). `sensor` and `binary_sensor` have none.
+**Services a rule may name** (HA-familiar, D14): every standard service of every kind
+([protocols.md](protocols.md) §7.1), and `<kind>.toggle` for each kind that can be toggled.
+`sensor`, `binary_sensor` and `event` have none. The engine doesn't keep its own list: a kind
+Irori learns can be called without the engine changing.
+
+`data` is the service's own fields, checked twice. When the rule is read: a field the service
+doesn't have, a field it can't do without, a number outside the service's range. When it's
+checked against the home: whether this entity can do it (a blind with no slats can't be tilted).
+A `code` (a lock's) is refused for now: a rule file is no place to keep one
+([automations.md](automations.md) §B6.7).
+
+The light and switch services, with what the rule format adds for people:
 
 | Service | `data` | Notes |
 |---|---|---|

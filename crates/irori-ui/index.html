@@ -1659,11 +1659,53 @@
     .add-one.done .add-one-check { stroke-dashoffset: 0;
         transition: stroke-dashoffset var(--dur-expressive) var(--ease-spring); }
 
+    /* A timed action that's open (Zigbee's permit join): the button is its own countdown. A ring
+       drains as the time goes, the time left is written beside it, and pressing closes it early
+       — which hovering says, by swapping the words. The ring's own motion is a quarter-second
+       ease between the readings of the clock, so it glides rather than ticks; with motion off it
+       steps, and the written time says the same thing. */
+    .add.join-open { display: inline-flex; align-items: center; gap: .5rem; padding-left: .55rem;
+                     color: var(--ember); border-color: var(--ember);
+                     background: color-mix(in srgb, var(--ember) 9%, var(--card)); }
+    .add.join-open:hover { background: color-mix(in srgb, var(--ember) 16%, var(--card)); }
+    .join-ring { flex: none; width: 1.25rem; height: 1.25rem; rotate: -90deg;
+                 animation: join-ring-in var(--dur-layout) var(--ease-spring) both; }
+    .join-ring circle { fill: none; stroke-width: 2.5; }
+    .join-ring-track { stroke: color-mix(in srgb, var(--ember) 22%, transparent); }
+    .join-ring-left { stroke: var(--ember); stroke-linecap: round; stroke-dasharray: 1;
+                      transition: stroke-dashoffset calc(var(--dur-base) * 1.4) linear; }
+    @keyframes join-ring-in { from { scale: .3; opacity: 0; } }
+    /* Both wordings share one cell, so the button is as wide as the longer and doesn't jump. */
+    .join-words { display: inline-grid; animation: join-words-in var(--dur-layout) var(--ease-emphasized) both; }
+    .join-words > span { grid-area: 1 / 1; text-align: left; white-space: nowrap;
+                         transition: opacity var(--dur-fast) var(--ease-out),
+                                     translate var(--dur-base) var(--ease-out); }
+    .join-word-close { opacity: 0; translate: 0 .35em; }
+    .add.join-open:is(:hover, :focus-visible) .join-word-open { opacity: 0; translate: 0 -.35em; }
+    .add.join-open:is(:hover, :focus-visible) .join-word-close { opacity: 1; translate: 0; }
+    .join-time { min-width: 2.2em; font: .85rem var(--mono); font-variant-numeric: tabular-nums;
+                 text-align: right; }
+    @keyframes join-words-in { from { opacity: 0; translate: -.4em 0; } }
+    /* A finger can't hover: there the button always says what a press does. */
+    @media (hover: none) {
+      .join-word-open { display: none; }
+      .join-word-close { opacity: 1; translate: 0; }
+    }
+
+    /* Found, but paired by mistake: a quiet way out beside Add. */
+    .unpair-one { flex: none; padding: .3rem .55rem; font-size: .8rem; }
+
+    /* What a refused unpair said, and what removing it anyway means. */
+    .confirm-refused { margin: .2rem 0 .6rem; padding: .6rem .75rem; background: var(--sunk);
+                       border-left: 3px solid var(--ember); border-radius: .3rem; }
+    .confirm-refused p:last-child { margin-bottom: 0; }
+
     /* Nothing found yet: it's listening, and a ring breathing out from the middle says so. */
     .listening-empty { display: flex; flex-direction: column; align-items: center; gap: .3rem;
                        padding: 1.2rem 1rem; text-align: center; border: 1px dashed var(--line);
                        border-radius: .5rem; }
     .listening-empty p { margin: 0; }
+    .listening-empty.closed { padding-block: 1rem; }
     .listening-ring { position: relative; width: .7rem; height: .7rem; margin-bottom: .4rem;
                       border-radius: 50%; background: var(--ember); }
     .listening-ring::after { content: ""; position: absolute; inset: 0; border-radius: 50%;

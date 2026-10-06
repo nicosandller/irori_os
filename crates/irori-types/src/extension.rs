@@ -295,6 +295,12 @@ pub struct ProtocolContribution {
     /// that at runtime, `set_available_actions`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<ProtocolAction>,
+    /// Whether removing one of its devices also has to take the device off a network the
+    /// protocol keeps (`docs/specs/protocols.md` §5) — a Zigbee device stays paired until the
+    /// network lets it go. With this set, removing a device asks the protocol to unpair it
+    /// first, and the device is gone rather than back among what was found.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unpairs: bool,
 }
 
 impl ProtocolContribution {

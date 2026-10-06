@@ -40,6 +40,10 @@ use home::{Home, Stamp};
 /// How long a service call may take before the caller gets [`CallError::Timeout`].
 pub const SERVICE_CALL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long an unpair may take. Longer than a service call: the protocol waits for the device
+/// itself to answer, and a network gives a device several seconds to do it.
+pub const UNPAIR_TIMEOUT: Duration = Duration::from_secs(25);
+
 /// How long an extension's page waits for its engine to answer. Longer than a service call: a
 /// backtest replays a day of history (`docs/specs/automations.md` §B3).
 pub const APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -138,6 +142,10 @@ pub struct ExtensionInfo {
     /// `ExtensionOverview::available_actions`). Empty for an extension with none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<irori_types::ProtocolAction>,
+    /// Whether removing one of its devices unpairs it from the protocol's own network (the
+    /// manifest's `unpairs`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unpairs: bool,
     /// Its page in the sidebar, if it has one (`docs/specs/automations.md` §B3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<AppInfo>,
@@ -193,6 +201,19 @@ pub struct ExtensionOverview {
     /// reasoning as `waiting`: a list from a stopped protocol is out of date.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub available_actions: Vec<String>,
+    /// Its timed actions that are open right now (`set_action_open`), each with how long is
+    /// left as of when this was read. Worked out on reading, never stored: what's stored is
+    /// when each closes.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub open_actions: BTreeMap<String, OpenAction>,
+}
+
+/// A timed action that's open: Zigbee's network accepting new devices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct OpenAction {
+    /// How long until it closes on its own, counted from when this was answered. A length
+    /// rather than a time of day, so a browser whose clock is off still counts down right.
+    pub closes_in_ms: u64,
 }
 
 /// A stored value's key: 1–128 characters, no control characters.
@@ -299,6 +320,9 @@ struct Shared {
     /// itself, not resolved through an entity the way a service call is (D25 makes the two ids
     /// equal in practice, but this table's key says what it's actually keyed by).
     action_links: RwLock<HashMap<ExtensionId, mpsc::Sender<IncomingAction>>>,
+    /// When each extension's open actions close (`set_action_open`). On this process's own
+    /// monotonic clock: the extension says how long is left, not what time it thinks it is.
+    action_windows: RwLock<HashMap<ExtensionId, BTreeMap<String, std::time::Instant>>>,
     /// Running engines that have a page, keyed by extension id: where the page's questions go.
     app_links: RwLock<HashMap<ExtensionId, mpsc::Sender<AppCall>>>,
     /// Where `history:read` is answered from; nothing until the binary provides it.
@@ -379,6 +403,7 @@ impl Core {
             events: broadcast::channel(EVENT_BUFFER).0,
             links: RwLock::default(),
             action_links: RwLock::default(),
+            action_windows: RwLock::default(),
             app_links: RwLock::default(),
             history: RwLock::default(),
             config_dir: RwLock::default(),
@@ -432,7 +457,23 @@ impl Core {
     }
 
     pub fn extensions(&self) -> BTreeMap<ExtensionId, ExtensionOverview> {
-        read(&self.0.extensions).clone()
+        let mut extensions = read(&self.0.extensions).clone();
+        let now = std::time::Instant::now();
+        for (extension, windows) in read(&self.0.action_windows).iter() {
+            let Some(overview) = extensions.get_mut(extension) else {
+                continue;
+            };
+            for (action, closes) in windows {
+                let left = closes.saturating_duration_since(now);
+                if !left.is_zero() {
+                    let closes_in_ms = u64::try_from(left.as_millis()).unwrap_or(u64::MAX);
+                    overview
+                        .open_actions
+                        .insert(action.clone(), OpenAction { closes_in_ms });
+                }
+            }
+        }
+        extensions
     }
 
     /// An extension's icon, if it has one.
@@ -735,12 +776,62 @@ impl Core {
         extension: &ExtensionId,
         action_id: &str,
     ) -> Result<(), CallActionError> {
+        let asked = irori_protocol::host::incoming_action(action_id.to_owned());
+        self.ask(extension, asked, SERVICE_CALL_TIMEOUT).await
+    }
+
+    /// Asks an extension to end early an action it said is open: close Zigbee's network
+    /// before its minute is up.
+    pub async fn stop_action(
+        &self,
+        extension: &ExtensionId,
+        action_id: &str,
+    ) -> Result<(), CallActionError> {
+        let asked = irori_protocol::host::incoming_stop(action_id.to_owned());
+        self.ask(extension, asked, SERVICE_CALL_TIMEOUT).await
+    }
+
+    /// Whether removing this device has to unpair it: its protocol's manifest says `unpairs`.
+    pub fn unpairs(&self, id: &DeviceId) -> bool {
+        let Some((protocol, _)) = read(&self.0.home).device_key(id) else {
+            return false;
+        };
+        read(&self.0.extensions)
+            .iter()
+            .any(|(extension, overview)| {
+                extension.as_str() == protocol.as_str()
+                    && overview.info.as_ref().is_some_and(|info| info.unpairs)
+            })
+    }
+
+    /// Asks a device's protocol to take it off its network (`docs/specs/protocols.md` §5), for
+    /// a device in the home or one only found. The protocol removes the device itself once the
+    /// network has let it go. `force` drops it without the device agreeing, for one that
+    /// doesn't answer.
+    pub async fn unpair_device(&self, id: &DeviceId, force: bool) -> Result<(), CallActionError> {
+        let (protocol, unique_id) = read(&self.0.home)
+            .device_key(id)
+            .ok_or_else(|| CallActionError::Failed(format!("there's no device `{id}`")))?;
+        let extension = ExtensionId::try_from(protocol.as_str())
+            .map_err(|e| CallActionError::Failed(e.to_string()))?;
+        let asked = irori_protocol::host::incoming_unpair(unique_id, force);
+        self.ask(&extension, asked, UNPAIR_TIMEOUT).await
+    }
+
+    async fn ask(
+        &self,
+        extension: &ExtensionId,
+        (incoming, result): (
+            IncomingAction,
+            tokio::sync::oneshot::Receiver<Result<(), String>>,
+        ),
+        wait: Duration,
+    ) -> Result<(), CallActionError> {
         let sender = read(&self.0.action_links)
             .get(extension)
             .cloned()
             .ok_or_else(|| CallActionError::NotRunning(extension.clone()))?;
-        let (incoming, result) = irori_protocol::host::incoming_action(action_id.to_owned());
-        let deadline = tokio::time::Instant::now() + SERVICE_CALL_TIMEOUT;
+        let deadline = tokio::time::Instant::now() + wait;
         let sent = tokio::time::timeout_at(deadline, sender.send(incoming)).await;
         if !matches!(sent, Ok(Ok(()))) {
             return Err(match sent {
@@ -835,6 +926,10 @@ impl Core {
             }
             Op::SetAvailableActions(actions) => {
                 self.set_available_actions(extension, actions);
+                return;
+            }
+            Op::SetActionOpen(action, remaining) => {
+                self.set_action_open(extension, &action, remaining);
                 return;
             }
             Op::SetHealth(health) => {
@@ -943,6 +1038,8 @@ impl Core {
 
     fn unlink_action(&self, extension: &ExtensionId) {
         write(&self.0.action_links).remove(extension);
+        // A stopped protocol's open window is out of date, like its available actions.
+        write(&self.0.action_windows).remove(extension);
     }
 
     /// Records what an extension is, before it starts. Called once per extension by the host.
@@ -961,6 +1058,7 @@ impl Core {
                         waiting: Vec::new(),
                         unmodeled: Vec::new(),
                         available_actions: Vec::new(),
+                        open_actions: BTreeMap::new(),
                     },
                 );
             }
@@ -1015,6 +1113,46 @@ impl Core {
         }]);
     }
 
+    /// Records that one of an extension's actions is open for `remaining` more, or closed.
+    /// `None` for the action closes every one of the extension's, for when it stops.
+    pub(crate) fn set_action_open(
+        &self,
+        extension: &ExtensionId,
+        action: &str,
+        remaining: Option<Duration>,
+    ) {
+        {
+            let mut windows = write(&self.0.action_windows);
+            match remaining.filter(|left| !left.is_zero()) {
+                Some(left) => {
+                    windows
+                        .entry(extension.clone())
+                        .or_default()
+                        .insert(action.to_owned(), std::time::Instant::now() + left);
+                }
+                None => {
+                    let had = windows
+                        .get_mut(extension)
+                        .is_some_and(|open| open.remove(action).is_some());
+                    if !had {
+                        return;
+                    }
+                }
+            }
+        }
+        // Said like a status change, which is what tells the page to read the extension again.
+        let Some(status) = read(&self.0.extensions)
+            .get(extension)
+            .map(|overview| overview.status.clone())
+        else {
+            return;
+        };
+        self.publish(vec![Event::ExtensionStatusChanged {
+            extension_id: extension.clone(),
+            status,
+        }]);
+    }
+
     /// Replaces which of an extension's declared actions are usable right now.
     pub(crate) fn set_available_actions(&self, extension: &ExtensionId, actions: Vec<String>) {
         let status = {
@@ -1054,6 +1192,7 @@ impl Core {
                             waiting: Vec::new(),
                             unmodeled: Vec::new(),
                             available_actions: Vec::new(),
+                            open_actions: BTreeMap::new(),
                         },
                     );
                     true

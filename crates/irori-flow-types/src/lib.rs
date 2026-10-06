@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub use irori_rules::{
-    AvailabilityWanted, CallData, CompactDuration, Condition, ExprString, LightCallData,
-    LimitedMode, Mode, NamedMode, RuleService, StopReason, Trigger, TypedValue, Values, WaitUntil,
+    AvailabilityWanted, CallData, CompactDuration, Condition, ExprString, LimitedMode, Mode,
+    NamedMode, NumberField, RuleService, StopReason, Trigger, TypedValue, Values, WaitUntil,
 };
 
 /// Most nodes in a flow.
@@ -259,27 +259,36 @@ pub enum Node {
     },
 }
 
-/// A light's settings in a call: each number either written down, or worked out from an
-/// expression when the call runs (`{"expr": "var('level')"}`), rounded and brought into range.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct FlowCallData {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub brightness: Option<Amount<u8>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub brightness_pct: Option<Amount<u8>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color_temp_kelvin: Option<Amount<u16>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rgb: Option<[u8; 3]>,
+/// A call's settings, by the service's own field names: each either written down, or (for a
+/// number) worked out from an expression when the call runs (`{"expr": "var('level')"}`),
+/// rounded and brought into the field's range.
+///
+/// Which fields there are is the service's to say: a light's `brightness_pct`, a blind's
+/// `position`, a thermostat's `temperature`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct FlowCallData(pub BTreeMap<String, Amount>);
+
+/// One setting of a call: fixed, or worked out when the call runs.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Amount {
+    Worked(Worked),
+    Fixed(serde_json::Value),
 }
 
-/// A number in a call's settings: fixed, or worked out when the call runs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub enum Amount<T> {
-    Fixed(T),
-    Worked(Worked),
+impl<'de> Deserialize<'de> for Amount {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        // An object with `expr` is an expression and nothing else: one with more in it is a
+        // mistake to say so about, not a setting's own value to pass along.
+        if value.get("expr").is_some() {
+            return serde_json::from_value(value)
+                .map(Self::Worked)
+                .map_err(serde::de::Error::custom);
+        }
+        Ok(Self::Fixed(value))
+    }
 }
 
 /// An expression giving a number, e.g. `var('level')` or `round(num('sensor.lux') / 10)`.
@@ -289,53 +298,44 @@ pub struct Worked {
     pub expr: ExprString,
 }
 
-impl From<LightCallData> for FlowCallData {
-    fn from(light: LightCallData) -> Self {
-        Self {
-            brightness: light.brightness.map(Amount::Fixed),
-            brightness_pct: light.brightness_pct.map(Amount::Fixed),
-            color_temp_kelvin: light.color_temp_kelvin.map(Amount::Fixed),
-            rgb: light.rgb,
-        }
-    }
-}
-
 impl FlowCallData {
-    /// The worked-out settings, by field name.
-    pub fn exprs(&self) -> Vec<(&'static str, &ExprString)> {
-        fn worked<'a, T>(
-            field: &'static str,
-            amount: Option<&'a Amount<T>>,
-        ) -> Option<(&'static str, &'a ExprString)> {
-            match amount {
-                Some(Amount::Worked(w)) => Some((field, &w.expr)),
-                _ => None,
-            }
-        }
-        [
-            worked("brightness", self.brightness.as_ref()),
-            worked("brightness_pct", self.brightness_pct.as_ref()),
-            worked("color_temp_kelvin", self.color_temp_kelvin.as_ref()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
+    pub fn get(&self, field: &str) -> Option<&Amount> {
+        self.0.get(field)
     }
 
-    /// The settings as the service sees them, with any worked-out number standing in as one in
-    /// range: enough to check what's asked of the light before anything runs.
-    pub fn shape(&self) -> CallData {
-        fn fixed<T: Copy>(amount: Option<&Amount<T>>, stand_in: T) -> Option<T> {
-            amount.map(|amount| match amount {
-                Amount::Fixed(n) => *n,
-                Amount::Worked(_) => stand_in,
+    /// The worked-out settings, by field name.
+    pub fn exprs(&self) -> Vec<(&str, &ExprString)> {
+        self.0
+            .iter()
+            .filter_map(|(field, amount)| match amount {
+                Amount::Worked(w) => Some((field.as_str(), &w.expr)),
+                Amount::Fixed(_) => None,
             })
-        }
-        CallData::Light(LightCallData {
-            brightness: fixed(self.brightness.as_ref(), 255),
-            brightness_pct: fixed(self.brightness_pct.as_ref(), 100),
-            color_temp_kelvin: fixed(self.color_temp_kelvin.as_ref(), 2700),
-            rgb: self.rgb,
+            .collect()
+    }
+
+    /// The settings as the service sees them, with every worked-out number standing in as one
+    /// from its field's range: enough to check what's asked before anything runs.
+    ///
+    /// Three of them, standing in low, in the middle and high. A service's own range can be
+    /// wider than the entity's (any light's colour temperature against this lamp's), so a
+    /// stand-in may be refused by the entity only for where it happens to be. That refusal
+    /// names the number; one that is about what's asked at all ("isn't dimmable") reads the
+    /// same for all three, and that is the one to believe.
+    pub fn shapes(&self, service: RuleService) -> [CallData; 3] {
+        [0.0, 0.5, 1.0].map(|along| {
+            CallData(
+                self.0
+                    .iter()
+                    .map(|(field, amount)| {
+                        let value = match amount {
+                            Amount::Fixed(value) => value.clone(),
+                            Amount::Worked(_) => stand_in(service.number_field(field), along),
+                        };
+                        (field.clone(), value)
+                    })
+                    .collect(),
+            )
         })
     }
 
@@ -343,76 +343,65 @@ impl FlowCallData {
     /// field's range, and a note for each worked-out one ("brightness_pct 57.5 → 58").
     pub fn resolve(
         &self,
+        service: RuleService,
         mut eval: impl FnMut(&ExprString) -> Result<f64, String>,
     ) -> Result<(CallData, Vec<String>), String> {
         let mut notes = Vec::new();
-        let mut work = |field, amount, low, high| {
-            worked_out(field, amount, (low, high), &mut eval, &mut notes)
-        };
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // rounded, in range
-        let light = LightCallData {
-            brightness: work(
-                "brightness",
-                self.brightness.as_ref().map(Amount::widen),
-                1.0,
-                255.0,
-            )?
-            .map(|n| n as u8),
-            brightness_pct: work(
-                "brightness_pct",
-                self.brightness_pct.as_ref().map(Amount::widen),
-                1.0,
-                100.0,
-            )?
-            .map(|n| n as u8),
-            color_temp_kelvin: work(
-                "color_temp_kelvin",
-                self.color_temp_kelvin.as_ref().map(Amount::widen),
-                1000.0,
-                20000.0,
-            )?
-            .map(|n| n as u16),
-            rgb: self.rgb,
-        };
-        Ok((CallData::Light(light), notes))
-    }
-}
-
-impl<T: Copy + Into<f64>> Amount<T> {
-    fn widen(&self) -> Amount<f64> {
-        match self {
-            Self::Fixed(n) => Amount::Fixed((*n).into()),
-            Self::Worked(w) => Amount::Worked(w.clone()),
+        let mut data = serde_json::Map::new();
+        for (field, amount) in &self.0 {
+            let value = match amount {
+                Amount::Fixed(value) => value.clone(),
+                Amount::Worked(w) => {
+                    let value = eval(&w.expr).map_err(|e| format!("{field}: {e}"))?;
+                    if !value.is_finite() {
+                        return Err(format!("{field}: `{}` isn't a number", w.expr.as_str()));
+                    }
+                    let kept = bring_in(value, service.number_field(field));
+                    notes.push(if kept == value {
+                        format!("{field} {}", trim(kept))
+                    } else {
+                        format!("{field} {} → {}", trim(value), trim(kept))
+                    });
+                    number(kept)
+                }
+            };
+            data.insert(field.clone(), value);
         }
+        Ok((CallData(data), notes))
     }
 }
 
-/// One setting's number: as written, or worked out, rounded and brought into `range`.
-fn worked_out(
-    field: &str,
-    amount: Option<Amount<f64>>,
-    (low, high): (f64, f64),
-    eval: &mut impl FnMut(&ExprString) -> Result<f64, String>,
-    notes: &mut Vec<String>,
-) -> Result<Option<f64>, String> {
-    let Some(amount) = amount else {
-        return Ok(None);
-    };
-    let w = match amount {
-        Amount::Fixed(n) => return Ok(Some(n)),
-        Amount::Worked(w) => w,
-    };
-    let value = eval(&w.expr).map_err(|e| format!("{field}: {e}"))?;
-    if !value.is_finite() {
-        return Err(format!("{field}: `{}` isn't a number", w.expr.as_str()));
-    }
-    let kept = value.round().clamp(low, high);
-    notes.push(if kept == value {
-        format!("{field} {}", trim(kept))
+/// A number as JSON: whole when it is, so a field that takes whole numbers reads it.
+fn number(n: f64) -> serde_json::Value {
+    #[allow(clippy::cast_possible_truncation)] // whole, and far inside an i64
+    if n.fract() == 0.0 && n.abs() < 1e15 {
+        serde_json::Value::from(n as i64)
     } else {
-        format!("{field} {} → {}", trim(value), trim(kept))
-    });
-    Ok(Some(kept))
+        serde_json::Value::from(n)
+    }
+}
+
+/// `value` rounded if its field takes whole numbers, and brought into the field's range.
+fn bring_in(value: f64, field: Option<NumberField>) -> f64 {
+    let Some(field) = field else {
+        return value;
+    };
+    let value = if field.integer { value.round() } else { value };
+    let value = field.min.map_or(value, |min| value.max(min));
+    field.max.map_or(value, |max| value.min(max))
+}
+
+/// A number from a field's range, `along` of the way from its low end to its high end. Where
+/// the range has no far end to go towards, a different number for each `along` all the same:
+/// whoever compares what the stand-ins were told relies on their differing.
+fn stand_in(field: Option<NumberField>, along: f64) -> serde_json::Value {
+    let (min, max) = field.map_or((None, None), |field| (field.min, field.max));
+    let value = match (min, max) {
+        (Some(min), Some(max)) if max > min => min + (max - min) * along,
+        (Some(end), _) | (None, Some(end)) => end + along * 2.0,
+        (None, None) => 1.0 + along * 2.0,
+    };
+    number(bring_in(value, field))
 }
 
 /// A number as a person writes it: `58`, `57.5`.
@@ -446,10 +435,25 @@ impl Node {
                 cases.iter().try_for_each(|case| case.validate(0))
             }
             Self::Call { service, data, .. } => {
+                if data.is_some() && !service.takes_data() {
+                    return Err(inv(format!("{service} does not take data")));
+                }
                 for (field, expr) in data.iter().flat_map(FlowCallData::exprs) {
                     expr.validate().map_err(|e| inv(format!("{field}: {e}")))?;
+                    // An expression gives a number, so only a field that takes one can be
+                    // worked out.
+                    if service.number_field(field).is_none() {
+                        return Err(inv(format!(
+                            "{field} can't be worked out: {service} has no number called that"
+                        )));
+                    }
                 }
-                service.validate_data(data.as_ref().map(FlowCallData::shape).as_ref())
+                match data {
+                    // The same answer wherever a worked-out number stands in, as far as the
+                    // service alone can tell; the middle is as good as any.
+                    Some(data) => service.validate_data(Some(&data.shapes(*service)[1])),
+                    None => service.validate_data(None),
+                }
             }
             Self::Set { expr, .. } => expr.validate(),
             Self::Delay { hold } => hold.require_positive("for"),
@@ -716,16 +720,29 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(data.exprs().len(), 1);
-        let (resolved, notes) = data.resolve(|_| Ok(57.5)).unwrap();
-        let CallData::Light(light) = resolved;
-        assert_eq!(light.brightness_pct, Some(58));
+        let on: RuleService = "light.turn_on".parse().unwrap();
+        let (resolved, notes) = data.resolve(on, |_| Ok(57.5)).unwrap();
+        assert_eq!(resolved.0["brightness_pct"], 58);
         assert_eq!(notes, ["brightness_pct 57.5 → 58"]);
         // Out of range is brought into it, and says so.
-        let (resolved, notes) = data.resolve(|_| Ok(140.0)).unwrap();
-        let CallData::Light(light) = resolved;
-        assert_eq!(light.brightness_pct, Some(100));
+        let (resolved, notes) = data.resolve(on, |_| Ok(140.0)).unwrap();
+        assert_eq!(resolved.0["brightness_pct"], 100);
         assert_eq!(notes, ["brightness_pct 140 → 100"]);
-        assert!(data.resolve(|_| Ok(f64::NAN)).is_err());
+        assert!(data.resolve(on, |_| Ok(f64::NAN)).is_err());
+
+        // Any kind's number, each in its own range: a blind's position is 0 to 100, and a
+        // thermostat's temperature isn't rounded.
+        let position: FlowCallData =
+            serde_json::from_value(serde_json::json!({ "position": { "expr": "1" } })).unwrap();
+        let set: RuleService = "cover.set_position".parse().unwrap();
+        let (resolved, _) = position.resolve(set, |_| Ok(-4.2)).unwrap();
+        assert_eq!(resolved.0["position"], 0);
+        let warm: FlowCallData =
+            serde_json::from_value(serde_json::json!({ "temperature": { "expr": "1" } })).unwrap();
+        let heat: RuleService = "climate.set_temperature".parse().unwrap();
+        let (resolved, notes) = warm.resolve(heat, |_| Ok(20.5)).unwrap();
+        assert_eq!(resolved.0["temperature"], 20.5);
+        assert_eq!(notes, ["temperature 20.5"]);
         assert!(
             serde_json::from_value::<FlowCallData>(serde_json::json!({
                 "brightness_pct": { "expr": "1", "extra": true }

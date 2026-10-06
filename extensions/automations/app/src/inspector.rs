@@ -5,8 +5,9 @@
 //! value the engine wouldn't take can't get into the draft; the form says why instead.
 
 use irori_flow_types::api::Severity;
-use irori_flow_types::{Amount, Flow, Node, NodeId};
+use irori_flow_types::{Amount, Flow, Node, NodeId, RuleService};
 use irori_types::{EntityKind, ValueShape};
+use irori_types::{FieldShape, ServiceName};
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
@@ -343,16 +344,281 @@ pub fn ValueInput(
     }
 }
 
-pub const WATCHABLE: [EntityKind; 5] = [
-    EntityKind::BinarySensor,
-    EntityKind::Switch,
-    EntityKind::Light,
-    EntityKind::Sensor,
-    EntityKind::MediaPlayer,
-];
+/// What a trigger can watch: anything with a value, or that reports something happening. That
+/// is every kind but a button, which is only ever pressed from here and has nothing to say.
+pub fn watchable() -> Vec<EntityKind> {
+    EntityKind::ALL
+        .iter()
+        .copied()
+        .filter(|kind| *kind != EntityKind::Button)
+        .collect()
+}
 
-/// The call form writes `{kind}.turn_on`, `turn_off`, or `toggle`, which lights and switches have.
-const CALLABLE: [EntityKind; 2] = [EntityKind::Light, EntityKind::Switch];
+/// What a check or a wait can ask about: something with a value that lasts. A remote's press
+/// happens and is over, so it starts a flow and can't be asked what it "is".
+pub fn lasting() -> Vec<EntityKind> {
+    watchable()
+        .into_iter()
+        .filter(|kind| !kind.counts_every_report())
+        .collect()
+}
+
+/// What a call can act on: every kind with something to ask of it.
+fn callable() -> Vec<EntityKind> {
+    EntityKind::ALL
+        .iter()
+        .copied()
+        .filter(|kind| kind.has_services())
+        .collect()
+}
+
+/// A service's action as a person says it: `set_position` is "Set position".
+pub fn action_words(action: &str) -> String {
+    let words = action.replace('_', " ");
+    let mut letters = words.chars();
+    match letters.next() {
+        Some(first) => first.to_uppercase().chain(letters).collect(),
+        None => words,
+    }
+}
+
+/// What a call starts with when its service is picked: the fields it can't do without, each
+/// at something sensible. `None` when it needs none.
+fn starting_data(service: RuleService, entity: Option<&irori_types::Entity>) -> Option<Value> {
+    let RuleService::Named(name) = service else {
+        return None;
+    };
+    let mut data = serde_json::Map::new();
+    for field in name.fields().iter().filter(|field| field.required) {
+        let value = match &field.shape {
+            FieldShape::Number { min, max, .. } => match (min, max) {
+                // Half way: a blind sent to "position" is most often being tried out.
+                (Some(min), Some(max)) => json!(((min + max) / 2.0).round()),
+                (Some(min), None) => json!(min),
+                _ => json!(0),
+            },
+            FieldShape::Bool => json!(true),
+            FieldShape::Choice(words) => json!(words.first().cloned().unwrap_or_default()),
+            FieldShape::Text => json!(
+                entity
+                    .and_then(|entity| own_words(entity, name))
+                    .and_then(|words| words.first().cloned())
+                    .unwrap_or_default()
+            ),
+            FieldShape::Other => continue,
+        };
+        data.insert(field.name.clone(), value);
+    }
+    (!data.is_empty()).then_some(Value::Object(data))
+}
+
+/// The entity's own list for a service's text field, where it has one: a select's options.
+fn own_words(entity: &irori_types::Entity, name: ServiceName) -> Option<Vec<String>> {
+    match (&entity.capabilities, name) {
+        (irori_types::Capabilities::Select(select), ServiceName::SelectSelectOption) => {
+            Some(select.options.clone())
+        }
+        _ => None,
+    }
+}
+
+/// Whether a call lets something or someone in, for the form to say so before it's wired to a
+/// trigger anyone can set off.
+fn opens_something(service: RuleService, entity: Option<&irori_types::Entity>) -> bool {
+    let way_in = entity.is_some_and(|entity| match &entity.capabilities {
+        irori_types::Capabilities::Cover(cover) => matches!(
+            cover.device_class,
+            Some(
+                irori_types::CoverClass::Garage
+                    | irori_types::CoverClass::Door
+                    | irori_types::CoverClass::Gate
+            )
+        ),
+        irori_types::Capabilities::Lock(_) => true,
+        _ => false,
+    });
+    way_in
+        && !matches!(
+            service,
+            RuleService::Named(
+                ServiceName::LockLock | ServiceName::CoverClose | ServiceName::CoverStop
+            )
+        )
+}
+
+/// A change to a node, as its form hands it to the editor.
+type Change = Box<dyn FnOnce(&mut Value)>;
+
+/// The settings of a call, one input per field of its service: a blind's position, a
+/// thermostat's temperature and mode, a fan's direction. Drawn from what the service says it
+/// takes, so a kind Irori learns later has a form without this page knowing it.
+///
+/// A field the service can do without is left out of the call while its input is empty. A
+/// number can be worked out when the call runs instead of written down.
+#[component]
+fn SettingFields(
+    service: RuleService,
+    entity: Option<irori_types::Entity>,
+    /// The call's `data` as it's written, `null` when it has none.
+    data: Value,
+    edit: impl Fn(Change) + Clone + Send + Sync + 'static,
+) -> impl IntoView {
+    let RuleService::Named(name) = service else {
+        return ().into_any();
+    };
+    // A code is a secret, and a flow is a file people share: it isn't asked for here.
+    let fields: Vec<_> = name
+        .fields()
+        .iter()
+        .filter(|field| field.name != "code" && field.shape != FieldShape::Other)
+        .cloned()
+        .collect();
+    if fields.is_empty() {
+        return ().into_any();
+    }
+    // Writes one field, and drops `data` altogether once nothing is left in it.
+    let write = move |edit: &dyn Fn(Change), field: String, value: Value| {
+        edit(Box::new(move |v: &mut Value| {
+            set(v, &["data", field.as_str()], value);
+            if v["data"].as_object().is_some_and(serde_json::Map::is_empty) {
+                v.as_object_mut().map(|o| o.remove("data"));
+            }
+        }));
+    };
+    fields
+        .into_iter()
+        .map(|field| {
+            let now = data.get(&field.name).cloned().unwrap_or(Value::Null);
+            let worked = now.get("expr").and_then(Value::as_str).map(str::to_owned);
+            let label = if field.required {
+                action_words(&field.name)
+            } else {
+                format!("{} (optional)", action_words(&field.name))
+            };
+            let hint = field.description.clone();
+            let key = field.name.clone();
+            let optional = !field.required;
+            let input = match &field.shape {
+                FieldShape::Number { min, max, integer } => {
+                    let (edit_how, edit_number, edit_expr) = (edit.clone(), edit.clone(), edit.clone());
+                    let (key_how, key_number, key_expr) = (key.clone(), key.clone(), key.clone());
+                    let fixed = now.as_f64();
+                    let start = fixed.or(*min).unwrap_or(0.0);
+                    let range = match (min, max) {
+                        (Some(min), Some(max)) => format!("{min} to {max}"),
+                        (Some(min), None) => format!("{min} or more"),
+                        (None, Some(max)) => format!("up to {max}"),
+                        (None, None) => String::new(),
+                    };
+                    let step = if *integer { "1" } else { "0.5" };
+                    view! {
+                        <div class="row">
+                            <select on:change=move |e| {
+                                let value = if event_target_value(&e) == "expr" {
+                                    json!({ "expr": start.to_string() })
+                                } else {
+                                    json!(start)
+                                };
+                                write(&edit_how, key_how.clone(), value);
+                            }>
+                                <option value="fixed" selected=worked.is_none()>"a fixed number"</option>
+                                <option value="expr" selected=worked.is_some()>"worked out"</option>
+                            </select>
+                            {match worked.clone() {
+                                None => view! {
+                                    <input type="number" class="grow" step=step
+                                        min=min.map(|n| n.to_string()) max=max.map(|n| n.to_string())
+                                        placeholder=if optional { "leave as it is" } else { "" }
+                                        prop:value=fixed.map(|n| n.to_string()).unwrap_or_default()
+                                        on:change=move |e| {
+                                            let text = event_target_value(&e);
+                                            let value = text.trim().parse::<f64>().map_or(Value::Null, |n| json!(n));
+                                            write(&edit_number, key_number.clone(), value);
+                                        } />
+                                }.into_any(),
+                                Some(expr) => view! {
+                                    <div class="grow">
+                                        <ExprInput value=expr
+                                            commit=move |text| write(&edit_expr, key_expr.clone(), json!({ "expr": text })) />
+                                    </div>
+                                }.into_any(),
+                            }}
+                        </div>
+                        {(!range.is_empty()).then(|| view! {
+                            <p class="muted" style="font-size:.8rem">
+                                {if worked.is_some() {
+                                    format!("Worked out when the call runs, and kept {range}.")
+                                } else {
+                                    format!("From {range}.")
+                                }}
+                            </p>
+                        })}
+                    }
+                    .into_any()
+                }
+                FieldShape::Bool => {
+                    let edit = edit.clone();
+                    let chosen = now.as_bool();
+                    view! {
+                        <select on:change=move |e| {
+                            let value = match event_target_value(&e).as_str() {
+                                "yes" => json!(true),
+                                "no" => json!(false),
+                                _ => Value::Null,
+                            };
+                            write(&edit, key.clone(), value);
+                        }>
+                            {optional.then(|| view! { <option value="" selected=chosen.is_none()>"leave as it is"</option> })}
+                            <option value="yes" selected=chosen == Some(true)>"yes"</option>
+                            <option value="no" selected=chosen == Some(false)>"no"</option>
+                        </select>
+                    }
+                    .into_any()
+                }
+                FieldShape::Choice(_) | FieldShape::Text => {
+                    // A fixed list of the service's, or the entity's own (a select's options).
+                    let words = match &field.shape {
+                        FieldShape::Choice(words) => Some(words.clone()),
+                        _ => entity.as_ref().and_then(|entity| own_words(entity, name)),
+                    };
+                    let chosen = now.as_str().unwrap_or_default().to_owned();
+                    let edit = edit.clone();
+                    match words {
+                        Some(words) => view! {
+                            <select on:change=move |e| {
+                                let text = event_target_value(&e);
+                                let value = if text.is_empty() { Value::Null } else { json!(text) };
+                                write(&edit, key.clone(), value);
+                            }>
+                                {optional.then(|| view! { <option value="" selected=chosen.is_empty()>"leave as it is"</option> })}
+                                {words.into_iter().map(|word| view! {
+                                    <option value=word.clone() selected=word == chosen>{word.replace('_', " ")}</option>
+                                }).collect_view()}
+                            </select>
+                        }
+                        .into_any(),
+                        None => view! {
+                            <input type="text" prop:value=chosen
+                                placeholder=if optional { "leave as it is" } else { "" }
+                                on:change=move |e| {
+                                    let text = event_target_value(&e).trim().to_owned();
+                                    let value = if text.is_empty() { Value::Null } else { json!(text) };
+                                    write(&edit, key.clone(), value);
+                                } />
+                        }
+                        .into_any(),
+                    }
+                }
+                FieldShape::Other => ().into_any(),
+            };
+            view! {
+                <label title=hint>{label}</label>
+                {input}
+            }
+        })
+        .collect_view()
+        .into_any()
+}
 
 /// A node's form, in the node itself when it's open on the canvas.
 #[component]
@@ -452,18 +718,19 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
                 }.into_any()
             }
             Node::Call { service, entity, data } => {
-                let action = match service.to_string().split('.').nth(1).unwrap_or("turn_on") {
-                    "turn_off" => "turn_off",
-                    "toggle" => "toggle",
-                    _ => "turn_on",
-                };
+                let action = service.action();
+                let found = home.entities.with_untracked(|es| es.iter().find(|e| e.id == entity).cloned());
+                // What can be asked of it: its own kind's services, whatever kind that is.
+                let offered = RuleService::all_of(entity.kind());
+                let warn = opens_something(service, found.as_ref());
+                let is_light_on = matches!(service, RuleService::Named(ServiceName::LightTurnOn));
                 let entity_s = entity.to_string();
                 let dimmable = home.entities.with_untracked(|es| es.iter().any(|e| e.id == entity
                     && matches!(&e.capabilities, irori_types::Capabilities::Light(l) if l.brightness)));
-                let level = data.as_ref().and_then(|d| d.brightness_pct.clone());
+                let level = data.as_ref().and_then(|d| d.get("brightness_pct").cloned());
                 let has_pct = level.is_some();
                 let pct = match &level {
-                    Some(Amount::Fixed(n)) => *n,
+                    Some(Amount::Fixed(n)) => n.as_u64().unwrap_or(100),
                     _ => 100,
                 };
                 // The flow's calculations, for a brightness worked out by one of them.
@@ -481,33 +748,68 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
                 let edit_entity = edit.clone();
                 let edit_action = edit.clone();
                 let edit_pct = edit.clone();
+                let edit_fields = edit.clone();
                 let action_now = action.to_owned();
+                let (for_action, for_fields) = (found.clone(), found.clone());
+                let settings = data.as_ref().and_then(|d| serde_json::to_value(d).ok()).unwrap_or(Value::Null);
                 view! {
+                    <label>"What"</label>
+                    <EntityPicker value=entity_s kinds=callable()
+                        pick=move |id| {
+                            let action = action_now.clone();
+                            let home = home;
+                            edit_entity(Box::new(move |v: &mut Value| {
+                                let Ok(picked) = id.parse::<irori_types::EntityId>() else { return };
+                                let was = v["entity"].as_str().and_then(|e| e.split('.').next()).map(str::to_owned);
+                                let kind = picked.kind();
+                                // The same thing asked of the new one, where it has it; else
+                                // the first thing it can be asked.
+                                let service = RuleService::of(kind, &action)
+                                    .or_else(|| RuleService::all_of(kind).into_iter().next());
+                                let Some(service) = service else { return };
+                                v["entity"] = json!(id);
+                                v["service"] = json!(service.to_string());
+                                // Settings are a kind's own: another kind's mean nothing here.
+                                if was.as_deref() != Some(kind.domain()) || service.action() != action {
+                                    let entity = home.entities.with_untracked(|es| es.iter().find(|e| e.id == picked).cloned());
+                                    match starting_data(service, entity.as_ref()) {
+                                        Some(data) => v["data"] = data,
+                                        None => { v.as_object_mut().map(|o| o.remove("data")); }
+                                    }
+                                }
+                            }));
+                        } />
                     <label>"Do"</label>
                     <select on:change=move |e| {
                         let action = event_target_value(&e);
+                        let entity = for_action.clone();
                         edit_action(Box::new(move |v: &mut Value| {
-                            let domain = v["entity"].as_str().and_then(|e| e.split('.').next()).unwrap_or("light").to_owned();
-                            v["service"] = json!(format!("{domain}.{action}"));
-                            if action != "turn_on" { v.as_object_mut().map(|o| o.remove("data")); }
+                            let kind = v["entity"].as_str().and_then(|e| e.split('.').next())
+                                .and_then(EntityKind::from_domain);
+                            let Some(service) = kind.and_then(|kind| RuleService::of(kind, &action)) else { return };
+                            v["service"] = json!(service.to_string());
+                            match starting_data(service, entity.as_ref()) {
+                                Some(data) => v["data"] = data,
+                                None => { v.as_object_mut().map(|o| o.remove("data")); }
+                            }
                         }));
                     }>
-                        <option value="turn_on" selected=action == "turn_on">"Turn on"</option>
-                        <option value="turn_off" selected=action == "turn_off">"Turn off"</option>
-                        <option value="toggle" selected=action == "toggle">"Toggle"</option>
+                        {offered.iter().map(|one| view! {
+                            <option value=one.action() selected=one.action() == action>
+                                {action_words(one.action())}
+                            </option>
+                        }).collect_view()}
                     </select>
-                    <label>"What"</label>
-                    <EntityPicker value=entity_s kinds=CALLABLE.to_vec()
-                        pick=move |id| {
-                            let action = action_now.clone();
-                            edit_entity(Box::new(move |v: &mut Value| {
-                                let domain = id.split('.').next().unwrap_or("light").to_owned();
-                                v["entity"] = json!(id);
-                                v["service"] = json!(format!("{domain}.{action}"));
-                                if domain != "light" { v.as_object_mut().map(|o| o.remove("data")); }
-                            }));
-                        } />
-                    {(dimmable && action == "turn_on").then(move || {
+                    {warn.then(|| view! {
+                        <p class="call-warning" role="note">
+                            "This lets something or someone in. Whatever starts this flow does it too: "
+                            "a button anyone can press, or a sensor anyone can set off."
+                        </p>
+                    })}
+                    {(!is_light_on).then(|| view! {
+                        <SettingFields service=service entity=for_fields data=settings edit=edit_fields />
+                    })}
+                    {(dimmable && is_light_on).then(move || {
                         let edit_check = edit_pct.clone();
                         view! {
                             <label class="check">
@@ -655,7 +957,7 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
                         }.into_any()
                     } else {
                         view! {
-                            <EntityPicker value=entity kinds=WATCHABLE.to_vec()
+                            <EntityPicker value=entity kinds=lasting()
                                 pick=move |id| f2(&["until", "entity"], json!(id)) />
                             <label>"Is"</label>
                             <ValueInput entity=entity_for_value value=is allow_any=false

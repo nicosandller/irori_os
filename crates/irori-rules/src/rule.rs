@@ -571,132 +571,246 @@ pub struct Target {
     pub entity: EntityId,
 }
 
-/// Services a rule may name. Includes `toggle`, which the core resolves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// A service a rule may name: any standard service of any kind (`cover.set_position`,
+/// `lock.lock`), or `<kind>.toggle`, which the core resolves from what the entity is doing.
+///
+/// Written as text, `<kind>.<action>`. Which services there are isn't listed here: it's
+/// whatever [`irori_types::ServiceName`] holds, so a kind Irori learns can be called from a rule
+/// without this crate changing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleService {
-    #[serde(rename = "light.turn_on")]
-    LightTurnOn,
-    #[serde(rename = "light.turn_off")]
-    LightTurnOff,
-    #[serde(rename = "light.toggle")]
-    LightToggle,
-    #[serde(rename = "switch.turn_on")]
-    SwitchTurnOn,
-    #[serde(rename = "switch.turn_off")]
-    SwitchTurnOff,
-    #[serde(rename = "switch.toggle")]
-    SwitchToggle,
+    Named(irori_types::ServiceName),
+    Toggle(irori_types::EntityKind),
 }
+
+/// The action the core resolves itself.
+const TOGGLE: &str = "toggle";
 
 impl RuleService {
     /// The kind of entity this service acts on.
     pub fn kind(self) -> irori_types::EntityKind {
         match self {
-            Self::LightTurnOn | Self::LightTurnOff | Self::LightToggle => {
-                irori_types::EntityKind::Light
-            }
-            Self::SwitchTurnOn | Self::SwitchTurnOff | Self::SwitchToggle => {
-                irori_types::EntityKind::Switch
-            }
-        }
-    }
-
-    pub fn validate_data(self, data: Option<&CallData>) -> Result<(), InvariantError> {
-        match (self, data) {
-            (Self::LightTurnOn | Self::LightToggle, Some(CallData::Light(light))) => {
-                light.validate()
-            }
-            (Self::LightTurnOn | Self::LightToggle, None) => Ok(()),
-            (
-                Self::LightTurnOff | Self::SwitchTurnOn | Self::SwitchTurnOff | Self::SwitchToggle,
-                Some(_),
-            ) => Err(inv(format!("{self} does not take data"))),
-            (
-                Self::LightTurnOff | Self::SwitchTurnOn | Self::SwitchTurnOff | Self::SwitchToggle,
-                None,
-            ) => Ok(()),
-        }
-    }
-}
-
-impl RuleService {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::LightTurnOn => "light.turn_on",
-            Self::LightTurnOff => "light.turn_off",
-            Self::LightToggle => "light.toggle",
-            Self::SwitchTurnOn => "switch.turn_on",
-            Self::SwitchTurnOff => "switch.turn_off",
-            Self::SwitchToggle => "switch.toggle",
+            Self::Named(name) => name.kind(),
+            Self::Toggle(kind) => kind,
         }
     }
 
     /// The part after the dot, which is what the core is asked for: `turn_on`, `toggle`.
     pub fn action(self) -> &'static str {
-        let name = self.as_str();
-        name.split_once('.').map_or(name, |(_, action)| action)
+        match self {
+            Self::Named(name) => name.action(),
+            Self::Toggle(_) => TOGGLE,
+        }
     }
+
+    /// The service of `kind` called `action`, if that kind has it.
+    pub fn of(kind: irori_types::EntityKind, action: &str) -> Option<Self> {
+        if action == TOGGLE {
+            return kind.toggle(None).map(|_| Self::Toggle(kind));
+        }
+        irori_types::ServiceName::of(kind, action).map(Self::Named)
+    }
+
+    /// Everything that can be asked of a `kind`, `toggle` last.
+    pub fn all_of(kind: irori_types::EntityKind) -> Vec<Self> {
+        kind.services()
+            .map(Self::Named)
+            .chain(kind.toggle(None).map(|_| Self::Toggle(kind)))
+            .collect()
+    }
+
+    /// Checks `data` against what this service takes, as far as that can be told without
+    /// knowing the entity: a field it doesn't have, a number out of the service's own range, a
+    /// field it can't do without.
+    /// Whether it takes `data` at all: a light's `turn_on` does, its `turn_off` doesn't. A
+    /// toggle takes what its kind's `turn_on` takes.
+    pub fn takes_data(self) -> bool {
+        match self {
+            Self::Named(name) => name.takes_data(),
+            Self::Toggle(kind) => irori_types::ServiceName::of(kind, "turn_on")
+                .is_some_and(irori_types::ServiceName::takes_data),
+        }
+    }
+
+    pub fn validate_data(self, data: Option<&CallData>) -> Result<(), InvariantError> {
+        if data.is_some() && !self.takes_data() {
+            return Err(inv(format!("{self} does not take data")));
+        }
+        if data.is_some_and(|data| data.0.contains_key("code")) {
+            // `docs/specs/automations.md` §B6.7: a code belongs in `secrets.toml`, and a rule
+            // file is something people put in git.
+            return Err(inv(format!(
+                "{self} can't carry a `code` yet: a rule file is no place to keep one"
+            )));
+        }
+        self.service(data).map(|_| ())
+    }
+
+    /// The service with its data, as the core takes it. `None` for a toggle, which is resolved
+    /// to a service only when it runs.
+    ///
+    /// A light's `brightness_pct` is this crate's own convenience, worked into `brightness`
+    /// here; a toggle's data is checked as the kind's `turn_on` would be.
+    pub fn service(
+        self,
+        data: Option<&CallData>,
+    ) -> Result<Option<irori_types::Service>, InvariantError> {
+        let mut data = data.map(|data| data.0.clone()).unwrap_or_default();
+        let name = match self {
+            Self::Named(name) => name,
+            Self::Toggle(kind) => {
+                if data.is_empty() {
+                    return Ok(None);
+                }
+                let on = irori_types::ServiceName::of(kind, "turn_on")
+                    .filter(|on| on.takes_data())
+                    .ok_or_else(|| inv(format!("{self} does not take data")))?;
+                brightness_from_pct(on, &mut data)?;
+                irori_types::Service::from_data(on, data)?.validate()?;
+                return Ok(None);
+            }
+        };
+        brightness_from_pct(name, &mut data)?;
+        let service = irori_types::Service::from_data(name, data)?;
+        service.validate()?;
+        Ok(Some(service))
+    }
+
+    /// The range a field's number has to be in, and whether it's whole numbers only: what a
+    /// worked-out setting is rounded and brought into. `None` for a field that isn't a number,
+    /// or that this service doesn't have.
+    pub fn number_field(self, field: &str) -> Option<NumberField> {
+        let name = match self {
+            Self::Named(name) => name,
+            Self::Toggle(kind) => irori_types::ServiceName::of(kind, "turn_on")?,
+        };
+        if name == irori_types::ServiceName::LightTurnOn {
+            // The light's own ranges, which its schema leaves to its `validate`.
+            let (min, max) = match field {
+                "brightness" => (1.0, 255.0),
+                BRIGHTNESS_PCT => (1.0, 100.0),
+                "color_temp_kelvin" => (1000.0, 20000.0),
+                _ => return None,
+            };
+            return Some(NumberField {
+                min: Some(min),
+                max: Some(max),
+                integer: true,
+            });
+        }
+        match name.field(field)?.shape {
+            irori_types::FieldShape::Number { min, max, integer } => {
+                Some(NumberField { min, max, integer })
+            }
+            _ => None,
+        }
+    }
+}
+
+/// A numeric field of a service's data.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NumberField {
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub integer: bool,
+}
+
+/// A light's brightness as a percentage, which rules may write instead of 1–255.
+pub const BRIGHTNESS_PCT: &str = "brightness_pct";
+
+/// Turns a light's `brightness_pct` into the `brightness` its service takes.
+fn brightness_from_pct(
+    name: irori_types::ServiceName,
+    data: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), InvariantError> {
+    if name != irori_types::ServiceName::LightTurnOn {
+        return Ok(());
+    }
+    let Some(pct) = data.remove(BRIGHTNESS_PCT) else {
+        return Ok(());
+    };
+    if data.contains_key("brightness") {
+        return Err(inv("not both `brightness` and `brightness_pct`; pick one"));
+    }
+    let pct = pct
+        .as_u64()
+        .filter(|pct| (1..=100).contains(pct))
+        .ok_or_else(|| inv("brightness_pct must be from 1 to 100"))?;
+    let scaled = ((pct * 255 + 50) / 100).clamp(1, 255);
+    data.insert("brightness".into(), scaled.into());
+    Ok(())
 }
 
 impl fmt::Display for RuleService {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+        write!(f, "{}.{}", self.kind().domain(), self.action())
     }
 }
 
-/// Closed `data` object for a call. Unknown keys are rejected by the inner structs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub enum CallData {
-    Light(LightCallData),
-}
+impl std::str::FromStr for RuleService {
+    type Err = InvariantError;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct LightCallData {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1, max = 255))]
-    pub brightness: Option<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1, max = 100))]
-    pub brightness_pct: Option<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1000, max = 20000))]
-    pub color_temp_kelvin: Option<u16>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rgb: Option<[u8; 3]>,
-}
-
-impl LightCallData {
-    fn validate(&self) -> Result<(), InvariantError> {
-        if self.brightness.is_some() && self.brightness_pct.is_some() {
-            return Err(inv("not both `brightness` and `brightness_pct`; pick one"));
-        }
-        if let Some(brightness) = self.brightness
-            && !(1..=255).contains(&brightness)
-        {
-            return Err(inv(
-                "brightness must be from 1 to 255; off is light.turn_off",
-            ));
-        }
-        if let Some(pct) = self.brightness_pct
-            && !(1..=100).contains(&pct)
-        {
-            return Err(inv("brightness_pct must be from 1 to 100"));
-        }
-        if let Some(kelvin) = self.color_temp_kelvin
-            && !(1000..=20000).contains(&kelvin)
-        {
-            return Err(inv("color_temp_kelvin must be from 1000 to 20000"));
-        }
-        if self.color_temp_kelvin.is_some() && self.rgb.is_some() {
-            return Err(inv(
-                "not both `color_temp_kelvin` and `rgb`; pick one color setting",
-            ));
-        }
-        Ok(())
+    fn from_str(text: &str) -> Result<Self, InvariantError> {
+        let unknown = || inv(format!("there's no service `{text}`"));
+        let (domain, action) = text.split_once('.').ok_or_else(unknown)?;
+        let kind = irori_types::EntityKind::from_domain(domain).ok_or_else(unknown)?;
+        Self::of(kind, action).ok_or_else(|| {
+            if action == TOGGLE {
+                inv(format!("a {kind} can't be toggled"))
+            } else {
+                unknown()
+            }
+        })
     }
 }
+
+impl Serialize for RuleService {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for RuleService {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = std::borrow::Cow::<'de, str>::deserialize(deserializer)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for RuleService {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "RuleService".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        let mut names: Vec<String> = irori_types::ServiceName::ALL
+            .iter()
+            .map(|name| Self::Named(*name))
+            .chain(
+                irori_types::ServiceName::ALL
+                    .iter()
+                    .map(|name| name.kind())
+                    .filter(|kind| kind.toggle(None).is_some())
+                    .map(Self::Toggle),
+            )
+            .map(|service| service.to_string())
+            .collect();
+        names.sort();
+        names.dedup();
+        json_schema!({
+            "description": "A service a rule may name: `<kind>.<action>`. Includes `toggle`, which the core resolves.",
+            "type": "string",
+            "enum": names,
+        })
+    }
+}
+
+/// A call's `data`: the service's own fields, by name. What each service takes is the
+/// service's to say ([`RuleService::validate_data`]); a light's may also give
+/// `brightness_pct`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct CallData(pub serde_json::Map<String, serde_json::Value>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]

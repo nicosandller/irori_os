@@ -104,6 +104,26 @@ a room) is the same decision — that device is in the home. Earlier versions of
 `added = true` for every device already in the home, so a home kept its devices across the change
 to adding them by hand.
 
+**Removing** a device takes everything Irori keeps of it out of these files: its row here, its
+entities' rows, and its spot on the floorplan. The device goes back to being found, listed under
+**+ Add device**.
+
+A device whose protocol keeps a network of its own is different (Zigbee;
+[protocols.md](protocols.md) §5.1). Leaving it paired would leave it on the network, still
+talking, and offered again as if it were new. So removing it unpairs it first:
+
+- If the network lets it go, it is gone altogether. It has to be paired again to come back.
+- If the device doesn't answer, nothing is removed and the page says why. A battery device is
+  asleep most of the time, so this is common. The page then offers to remove it anyway, which
+  drops it from the network's records without the device agreeing. That device may need a factory
+  reset before it will pair again.
+- Such a device can also be unpaired while it's only found, which is how to undo pairing the
+  wrong thing.
+- Removing from the home never becomes impossible. Removed anyway, a device leaves the home even
+  when its network can't be asked at all (the extension stopped, the dongle unplugged); it is
+  then found again if its protocol still knows it. The network's own controller has nothing to
+  unpair, so removing it is only ever removing it from the home.
+
 `ignored = true` is from when a device could be ignored rather than removed. A row that says it
 still reads, so the rest of the file isn't refused, but that device is simply not in the home:
 it's listed as found, to be added if wanted, and Irori drops the row the next time it writes the

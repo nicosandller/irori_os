@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::Home;
 use crate::checks::TextValue;
-use crate::inspector::{EntityPicker, ValueInput, WATCHABLE};
+use crate::inspector::{EntityPicker, ValueInput, watchable};
 use crate::widgets::Choice;
 
 type Edit = Box<dyn FnOnce(&mut Value)>;
@@ -83,7 +83,7 @@ pub fn TriggerForm(
     let edit_what = edit.clone();
     let what = view! {
         <label>"What"</label>
-        <EntityPicker value=picked kinds=WATCHABLE.to_vec()
+        <EntityPicker value=picked kinds=watchable()
             extra=vec![Choice::new(STARTS_UP, "Irori starts up").detail("Irori")]
             pick=move |id: String| {
                 let home = home;
@@ -106,7 +106,10 @@ pub fn TriggerForm(
                         ValueShape::Bool => json!({ "type": "state", "entity": id, "to": true }),
                     };
                     *t = fresh;
-                    if let Some(hold) = hold {
+                    // A press happens and is over: there's nothing for it to stay as.
+                    if let Some(hold) = hold
+                        && !happens(&id)
+                    {
                         t["for"] = hold;
                     }
                 }));
@@ -126,12 +129,29 @@ pub fn TriggerForm(
     view! { {what} {body} }
 }
 
+/// Whether an entity reports things happening (a button's presses) rather than a value that
+/// lasts. Every one of those starts the flow, the same one twice included.
+fn happens(entity: &str) -> bool {
+    entity
+        .parse::<EntityId>()
+        .is_ok_and(|id| id.kind().counts_every_report())
+}
+
 fn state_form(
     trigger: &Value,
     entity: &str,
     edit: impl Fn(Edit) + Clone + Send + Sync + 'static,
     home: Home,
 ) -> AnyView {
+    if happens(entity) {
+        return view! {
+            {text_values_form(trigger, entity, edit)}
+            <p class="muted" style="font-size:.8rem">
+                "Starts the flow every time it happens, the same one twice in a row included."
+            </p>
+        }
+        .into_any();
+    }
     let hold = trigger["for"].as_str().unwrap_or_default().to_owned();
     let edit_hold = edit.clone();
     let middle = match home.value_shape(entity) {
@@ -196,8 +216,14 @@ fn text_values_form(
         })
         .collect_view();
     let empty = values.is_empty();
+    let label = match (happens(entity), empty) {
+        (true, true) => "When it reports (anything, until you pick which)",
+        (true, false) => "When it reports any of",
+        (false, true) => "Changes to (any change, until you pick values)",
+        (false, false) => "Changes to any of",
+    };
     view! {
-        <label>{if empty { "Changes to (any change, until you pick values)" } else { "Changes to any of" }}</label>
+        <label>{label}</label>
         <div class="value-chips">{chips}</div>
         <TextValue entity=entity.to_owned() value=String::new()
             pick=move |text: String| {

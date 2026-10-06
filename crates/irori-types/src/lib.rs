@@ -21,6 +21,7 @@ mod protocol;
 mod registry;
 mod release_version;
 mod schema;
+mod service_fields;
 mod settings;
 mod state;
 mod time;
@@ -83,6 +84,7 @@ pub use protocol::{
 };
 pub use registry::{Area, Capabilities, Device, Entity, EntityCategory, Floor};
 pub use schema::{SchemaDoc, schemas};
+pub use service_fields::{FieldShape, ServiceField};
 pub use settings::{
     DeviceSettings, EntitySettings, ExtensionSettings, Placement, SecretError, Settings,
     SettingsKey,

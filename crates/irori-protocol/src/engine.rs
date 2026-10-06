@@ -308,7 +308,8 @@ where
                 | ToExt::Reply { .. }
                 | ToExt::Loaded { .. }
                 | ToExt::ServiceCall { .. }
-                | ToExt::ActionCall { .. } => continue,
+                | ToExt::ActionCall { .. }
+                | ToExt::UnpairDevice { .. } => continue,
             };
             if in_tx.send(incoming).is_err() {
                 return;

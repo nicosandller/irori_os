@@ -282,12 +282,9 @@
       ]
     },
     "CallData": {
-      "description": "Closed `data` object for a call. Unknown keys are rejected by the inner structs.",
-      "anyOf": [
-        {
-          "$ref": "#/$defs/LightCallData"
-        }
-      ]
+      "description": "A call's `data`: the service's own fields, by name. What each service takes is the\nservice's to say ([`RuleService::validate_data`]); a light's may also give\n`brightness_pct`.",
+      "type": "object",
+      "additionalProperties": true
     },
     "ChooseOption": {
       "type": "object",
@@ -636,53 +633,6 @@
       "maxLength": 512,
       "minLength": 1
     },
-    "LightCallData": {
-      "type": "object",
-      "properties": {
-        "brightness": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint8",
-          "maximum": 255,
-          "minimum": 1
-        },
-        "brightness_pct": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint8",
-          "maximum": 100,
-          "minimum": 1
-        },
-        "color_temp_kelvin": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint16",
-          "maximum": 20000,
-          "minimum": 1000
-        },
-        "rgb": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "integer",
-            "format": "uint8",
-            "maximum": 255,
-            "minimum": 0
-          },
-          "maxItems": 3,
-          "minItems": 3
-        }
-      },
-      "additionalProperties": false
-    },
     "LimitedMode": {
       "oneOf": [
         {
@@ -781,15 +731,75 @@
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
     "RuleService": {
-      "description": "Services a rule may name. Includes `toggle`, which the core resolves.",
+      "description": "A service a rule may name: `<kind>.<action>`. Includes `toggle`, which the core resolves.",
       "type": "string",
       "enum": [
-        "light.turn_on",
-        "light.turn_off",
+        "button.press",
+        "climate.set_fan_mode",
+        "climate.set_humidity",
+        "climate.set_hvac_mode",
+        "climate.set_preset_mode",
+        "climate.set_swing_mode",
+        "climate.set_temperature",
+        "climate.toggle",
+        "climate.turn_off",
+        "climate.turn_on",
+        "cover.close",
+        "cover.open",
+        "cover.set_position",
+        "cover.set_tilt",
+        "cover.stop",
+        "cover.toggle",
+        "fan.oscillate",
+        "fan.set_direction",
+        "fan.set_percentage",
+        "fan.set_preset_mode",
+        "fan.toggle",
+        "fan.turn_off",
+        "fan.turn_on",
+        "humidifier.set_humidity",
+        "humidifier.set_mode",
+        "humidifier.toggle",
+        "humidifier.turn_off",
+        "humidifier.turn_on",
         "light.toggle",
-        "switch.turn_on",
+        "light.turn_off",
+        "light.turn_on",
+        "lock.lock",
+        "lock.open",
+        "lock.toggle",
+        "lock.unlock",
+        "media_player.media_next_track",
+        "media_player.media_pause",
+        "media_player.media_play",
+        "media_player.media_play_pause",
+        "media_player.media_previous_track",
+        "media_player.media_seek",
+        "media_player.media_stop",
+        "media_player.play_media",
+        "media_player.turn_off",
+        "media_player.turn_on",
+        "media_player.volume_mute",
+        "media_player.volume_set",
+        "number.set_value",
+        "select.select_option",
+        "siren.toggle",
+        "siren.turn_off",
+        "siren.turn_on",
+        "switch.toggle",
         "switch.turn_off",
-        "switch.toggle"
+        "switch.turn_on",
+        "text.set_value",
+        "valve.close",
+        "valve.open",
+        "valve.set_position",
+        "valve.stop",
+        "valve.toggle",
+        "water_heater.set_operation_mode",
+        "water_heater.set_temperature",
+        "water_heater.toggle",
+        "water_heater.turn_off",
+        "water_heater.turn_on"
       ]
     },
     "StopReason": {

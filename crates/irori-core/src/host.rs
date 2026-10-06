@@ -553,6 +553,7 @@ async fn supervise(
             icon: builtin.icon.map(str::to_owned),
             config_schema: Some(builtin.config_schema.clone()),
             actions: contribution.actions.clone(),
+            unpairs: contribution.unpairs,
             app: None,
             engine: false,
         },
@@ -945,6 +946,7 @@ async fn supervise_package(
                 icon: read_icon(&dir, &manifest),
                 config_schema: None,
                 actions: Vec::new(),
+                unpairs: false,
                 app,
                 engine: false,
             },
@@ -1014,6 +1016,7 @@ async fn supervise_package(
             actions: contribution
                 .map(|contribution| contribution.actions.clone())
                 .unwrap_or_default(),
+            unpairs: contribution.is_some_and(|contribution| contribution.unpairs),
             app: app.clone(),
             engine: manifest.is_engine(),
         },
@@ -1282,9 +1285,20 @@ async fn pump_process(
             Some(incoming) = actions.recv() => {
                 let id = next_action;
                 next_action += 1;
-                let action_id = incoming.action_id.clone();
+                let message = match incoming.unpairing() {
+                    Some((unique_id, force)) => ToExt::UnpairDevice {
+                        id,
+                        unique_id: unique_id.clone(),
+                        force,
+                    },
+                    None => ToExt::ActionCall {
+                        id,
+                        action_id: incoming.action_id.clone(),
+                        stop: incoming.stop,
+                    },
+                };
                 pending_actions.insert(id, incoming);
-                if let Err(reason) = ExtProcess::send_on(stdin, &ToExt::ActionCall { id, action_id }).await {
+                if let Err(reason) = ExtProcess::send_on(stdin, &message).await {
                     return Outcome::Ended(reason);
                 }
             }
@@ -1435,6 +1449,19 @@ async fn apply_from_ext(
         }
         FromExt::SetAvailableActions { actions } => {
             core.apply_op(extension, protocol, kinds, Op::SetAvailableActions(actions));
+            Ok(())
+        }
+        FromExt::SetActionOpen {
+            action_id,
+            closes_in_ms,
+        } => {
+            let remaining = closes_in_ms.map(std::time::Duration::from_millis);
+            core.apply_op(
+                extension,
+                protocol,
+                kinds,
+                Op::SetActionOpen(action_id, remaining),
+            );
             Ok(())
         }
         FromExt::Load { key, .. } => {

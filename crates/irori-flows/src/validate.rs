@@ -388,9 +388,28 @@ fn check_home(
                 entity,
                 data,
             } => {
-                let shape = data.as_ref().map(irori_flow_types::FlowCallData::shape);
-                let mut found =
-                    irori_rules::check_call("call", *service, entity, shape.as_ref(), registry);
+                // A worked-out number stands in as three different ones from its field's
+                // range. The entity's own range can be narrower (this lamp's colour
+                // temperatures against any lamp's), and a stand-in refused for where it
+                // happens to be says nothing about the flow: that refusal names the number, so
+                // it differs between the three. What all three are told alike is real.
+                let mut found = match data {
+                    None => irori_rules::check_call("call", *service, entity, None, registry),
+                    Some(data) => {
+                        let [low, middle, high] = data.shapes(*service).map(|shape| {
+                            irori_rules::check_call(
+                                "call",
+                                *service,
+                                entity,
+                                Some(&shape),
+                                registry,
+                            )
+                        });
+                        low.into_iter()
+                            .filter(|problem| middle.contains(problem) && high.contains(problem))
+                            .collect()
+                    }
+                };
                 for (field, expr) in data.iter().flat_map(irori_flow_types::FlowCallData::exprs) {
                     let reason = match irori_rules::inspect(expr, registry, vars) {
                         Ok(inspected)

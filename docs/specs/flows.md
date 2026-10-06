@@ -92,9 +92,14 @@ Unknown fields are rejected everywhere.
 
 #### 2.2.1 Settings worked out when the call runs
 
-Each number in a light's `data` (`brightness`, `brightness_pct`, `color_temp_kelvin`) is either
-written down or an object `{ "expr": "…" }`: an expression giving a number, worked out from the
-home as it is when the call runs. Typically it reads a calculation made earlier in the run:
+A call names any standard service of any kind (`cover.set_position`, `climate.set_temperature`,
+`select.select_option`; [rules.md](rules.md) §"Services a rule may name"), and its `data` is that
+service's own fields.
+
+Each number in a call's `data` (a light's `brightness_pct`, a blind's `position`, a thermostat's
+`temperature`) is either written down or an object `{ "expr": "…" }`: an expression giving a
+number, worked out from the home as it is when the call runs. Typically it reads a calculation
+made earlier in the run:
 
 ```json
 "level": { "type": "set", "name": "level", "expr": "round(clamp(70 - num('sensor.demo_luminosity_illuminance') / 600 * 25, 45, 70))" },
@@ -104,8 +109,11 @@ home as it is when the call runs. Typically it reads a calculation made earlier 
 
 - It's checked like any other expression (§4): it must give a number, every `var()` it reads must
   be set on every path to the call, and what it reads is part of what the flow watches.
-- The result is rounded and brought into the field's range (1–100 for `brightness_pct`); the
-  step's note says so ("brightness_pct 57.5 → 58"), and the call detail holds the number sent.
+- The result is brought into the field's own range (1–100 for `brightness_pct`, 0–100 for a
+  blind's `position`), and rounded where the field takes whole numbers; a thermostat's
+  temperature keeps its half degree. The step's note says so ("brightness_pct 57.5 → 58"), and
+  the call detail holds the number sent.
+- Only a field that takes a number can be worked out. A mode or an option is written down.
 - If it can't be worked out (an unavailable sensor, say), nothing is sent and the call fails:
   `error` if that's wired, the run ends with `error` if not.
 - A number written down is stored as it always was, so flows saved before this keep their

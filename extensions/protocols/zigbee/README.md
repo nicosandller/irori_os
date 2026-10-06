@@ -24,8 +24,18 @@ handle the rest.
 - **Speaks HA MQTT Discovery** against that broker exactly like the `mqtt` extension does against
   an external one — the same `light`/`switch`/`sensor`/`binary_sensor` support, the same
   availability handling, the parsing itself shared via `irori-ha-discovery`.
-- **Permit joining**, from Irori's own "+ Add device" flow, never Z2M's frontend: a new device
-  goes into pairing mode, you press the button, it shows up.
+- **Permit joining**, from Irori's own "+ Add device" flow, never Z2M's frontend: press the
+  button, put the device into pairing mode, and it shows up. The button counts down the minute
+  the network stays open, and pressing it again closes the network early. Zigbee2MQTT's bridge
+  is itself listed as a device with a "Permit join" switch; that opens the same network (for
+  four minutes), and the countdown shows whichever opened it.
+- **Unpairs a device when you remove it.** Removing a Zigbee device takes it off the network
+  too, so it has to be paired again to come back. A battery device that is asleep won't answer;
+  Irori then says so and offers to remove it anyway. A device that paired but was never added
+  can be unpaired from the "+ Add device" screen.
+- **Buttons and remotes.** Their presses arrive as events (`single`, `double`, `hold`), which
+  automations can start from. This needs Zigbee2MQTT's `experimental_event_entities`, which this
+  extension turns on. Tested with the Tuya IH-K663 smart button.
 - **Restarts Zigbee2MQTT** by restarting itself if the Z2M process ever exits — the same
   crash-and-backoff the core already gives every extension (`docs/specs/protocols.md` §3), so
   there's no second retry loop to get wrong inside this one.

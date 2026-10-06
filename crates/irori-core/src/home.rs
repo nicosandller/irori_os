@@ -868,6 +868,16 @@ impl Home {
         Err(Rejected(format!("there's no device `{id}`")))
     }
 
+    /// Whose a device is and what that protocol calls it, for one in the home or only found.
+    pub fn device_key(&self, id: &DeviceId) -> Option<(ProtocolId, UniqueId)> {
+        if let Some(device) = self.devices.get(id) {
+            return Some((device.protocol.clone(), device.unique_id.clone()));
+        }
+        self.found
+            .get(id)
+            .map(|found| (found.protocol.clone(), found.description.unique_id.clone()))
+    }
+
     /// The entities a device keeps — in the home, or remembered for a found one — as protocol
     /// and unique id pairs, the two fields an `entities.toml` key is made of.
     pub fn device_entity_keys(&self, id: &DeviceId) -> Option<Vec<(ProtocolId, UniqueId)>> {
