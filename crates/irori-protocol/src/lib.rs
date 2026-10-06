@@ -248,10 +248,54 @@ impl IncomingCall {
 #[derive(Debug)]
 pub struct IncomingAction {
     pub action_id: String,
+    /// Asked to end early an action it said is open (`set_action_open`): close the window
+    /// rather than open it.
+    pub stop: bool,
+    /// Set when this isn't an action at all but an unpair, which travels the same way.
+    /// [`ProtocolContext::next`] hands those out as [`Incoming::Unpair`].
+    unpair: Option<(UniqueId, bool)>,
     reply: oneshot::Sender<Result<(), String>>,
 }
 
 impl IncomingAction {
+    pub fn reply(self, result: Result<(), String>) {
+        let _ = self.reply.send(result);
+    }
+
+    /// The device to unpair and whether to force it, if that's what this is. For the host,
+    /// which sends the two differently.
+    pub fn unpairing(&self) -> Option<(&UniqueId, bool)> {
+        self.unpair.as_ref().map(|(device, force)| (device, *force))
+    }
+
+    fn sorted(self) -> Incoming {
+        match self.unpair {
+            Some((unique_id, force)) => Incoming::Unpair(IncomingUnpair {
+                unique_id,
+                force,
+                reply: self.reply,
+            }),
+            None => Incoming::Action(self),
+        }
+    }
+}
+
+/// A request to take one of this protocol's devices off its network, not just out of the home
+/// (`docs/specs/protocols.md` §5, the manifest's `unpairs`). Only sent to a protocol that
+/// declares it. Reply once the network has let the device go, and call `remove_device` for it
+/// first, so it doesn't linger among what was found. Reply exactly once; dropping it without
+/// replying reports a failure.
+#[derive(Debug)]
+pub struct IncomingUnpair {
+    /// The device's `unique_id`, as this protocol described it.
+    pub unique_id: UniqueId,
+    /// The device didn't answer a plain unpair and the person said to drop it anyway: forget
+    /// it on the network's side without waiting for it to agree.
+    pub force: bool,
+    reply: oneshot::Sender<Result<(), String>>,
+}
+
+impl IncomingUnpair {
     pub fn reply(self, result: Result<(), String>) {
         let _ = self.reply.send(result);
     }
@@ -263,6 +307,7 @@ impl IncomingAction {
 pub enum Incoming {
     Call(IncomingCall),
     Action(IncomingAction),
+    Unpair(IncomingUnpair),
 }
 
 /// The protocol's handle to the core. Offers exactly the operations of the contract.
@@ -371,6 +416,19 @@ impl ProtocolContext {
         let _ = self.ops.send(host::Op::SetAvailableActions(actions)).await;
     }
 
+    /// Says one of its timed actions is open for `remaining` more (Zigbee's network accepting
+    /// new devices), or with `None` that it has closed. The page counts down to it, and can
+    /// ask for it to end early: that arrives as the same action with `stop` set.
+    ///
+    /// How long is left rather than when it ends, so the core counts on its own clock and
+    /// never has to agree with this process about what time it is.
+    pub async fn set_action_open(&self, action_id: &str, remaining: Option<std::time::Duration>) {
+        let _ = self
+            .ops
+            .send(host::Op::SetActionOpen(action_id.to_owned(), remaining))
+            .await;
+    }
+
     /// Reports a new value for one of its entities. Never waits: if the core is behind, an
     /// older report for the same entity that it hasn't read yet is replaced by this one. At most
     /// [`MAX_PENDING_ENTITIES`] entities' reports wait at once; reports for further entities are
@@ -401,7 +459,18 @@ impl ProtocolContext {
         tokio::select! {
             biased;
             _ = self.stop.wait_for(|stop| *stop) => None,
-            action = self.actions.recv() => action,
+            action = async {
+                loop {
+                    match self.actions.recv().await?.sorted() {
+                        Incoming::Action(action) => return Some(action),
+                        // A protocol that only reads actions never said it unpairs.
+                        Incoming::Unpair(unpair) => {
+                            unpair.reply(Err("this protocol can't unpair a device".into()));
+                        }
+                        Incoming::Call(_) => {}
+                    }
+                }
+            } => action,
         }
     }
 
@@ -417,7 +486,7 @@ impl ProtocolContext {
             biased;
             _ = self.stop.wait_for(|stop| *stop) => None,
             call = self.calls.recv() => call.map(Incoming::Call),
-            action = self.actions.recv() => action.map(Incoming::Action),
+            action = self.actions.recv() => action.map(IncomingAction::sorted),
         }
     }
 
@@ -710,6 +779,8 @@ pub mod host {
         SetWaiting(Vec<Waiting>),
         SetUnmodeled(Vec<Unmodeled>),
         SetAvailableActions(Vec<String>),
+        /// An action's window: open for this much longer, or `None` once closed.
+        SetActionOpen(String, Option<std::time::Duration>),
         Load(
             String,
             oneshot::Sender<Result<Option<serde_json::Value>, Rejected>>,
@@ -808,7 +879,33 @@ pub mod host {
         action_id: String,
     ) -> (IncomingAction, oneshot::Receiver<Result<(), String>>) {
         let (reply, result) = oneshot::channel();
-        (IncomingAction { action_id, reply }, result)
+        let incoming = IncomingAction {
+            action_id,
+            stop: false,
+            unpair: None,
+            reply,
+        };
+        (incoming, result)
+    }
+
+    /// The same, asking for an open action to end early.
+    pub fn incoming_stop(
+        action_id: String,
+    ) -> (IncomingAction, oneshot::Receiver<Result<(), String>>) {
+        let (mut incoming, result) = incoming_action(action_id);
+        incoming.stop = true;
+        (incoming, result)
+    }
+
+    /// Builds an unpair for the protocol, as it travels: on the actions channel.
+    /// [`ProtocolContext::next`] hands it out as [`Incoming::Unpair`].
+    pub fn incoming_unpair(
+        unique_id: UniqueId,
+        force: bool,
+    ) -> (IncomingAction, oneshot::Receiver<Result<(), String>>) {
+        let (mut incoming, result) = incoming_action(String::new());
+        incoming.unpair = Some((unique_id, force));
+        (incoming, result)
     }
 }
 

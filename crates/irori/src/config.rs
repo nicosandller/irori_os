@@ -45,6 +45,13 @@ pub enum EditError {
     Io(std::io::Error),
 }
 
+/// Whether the core may already have lost a device being forgotten.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Gone {
+    Yes,
+    No,
+}
+
 impl Config {
     /// Reads the directory and tells the core what it says, before any protocol starts — so a
     /// device that arrives in the first second already has the name its owner gave it.
@@ -122,16 +129,38 @@ impl Config {
     /// Written down first, then forgotten, like every change here: the files and the core never
     /// disagree, so a save that fails leaves the core agreeing with the disk.
     pub async fn forget_device(&self, core: &Core, id: &DeviceId) -> Result<(), EditError> {
+        // The rows its entities keep in `entities.toml`, keyed by protocol and unique id. Read
+        // from the core, because the files say nothing about which entity belongs to which
+        // device.
+        let owned = core.device_entity_keys(id).unwrap_or_default();
+        self.forget_rows(core, id, owned, Gone::No).await
+    }
+
+    /// The same for a device its protocol has just unpaired (`docs/specs/config.md` §3.2). By
+    /// now the protocol has taken it out of the core itself, so `owned` — its entities, as
+    /// they were — has to have been read before the unpair, and the core having no such device
+    /// is how it should be rather than a refusal.
+    pub async fn forget_unpaired(
+        &self,
+        core: &Core,
+        id: &DeviceId,
+        owned: Vec<(ProtocolId, UniqueId)>,
+    ) -> Result<(), EditError> {
+        self.forget_rows(core, id, owned, Gone::Yes).await
+    }
+
+    async fn forget_rows(
+        &self,
+        core: &Core,
+        id: &DeviceId,
+        owned: Vec<(ProtocolId, UniqueId)>,
+        gone: Gone,
+    ) -> Result<(), EditError> {
         let mut store = self.0.lock().await;
         report(&store.reload());
 
         let mut settings = store.settings();
-        // The rows its entities keep in `entities.toml`, keyed by protocol and unique id. Read
-        // from the core, because the files say nothing about which entity belongs to which
-        // device.
-        let owned: BTreeSet<SettingsKey> = core
-            .device_entity_keys(id)
-            .unwrap_or_default()
+        let owned: BTreeSet<SettingsKey> = owned
             .into_iter()
             .map(|(protocol, unique_id)| SettingsKey::new(protocol, unique_id))
             .collect();
@@ -145,8 +174,10 @@ impl Config {
             let files: Vec<&str> = written.iter().map(|file| file.name()).collect();
             tracing::info!(files = ?files, "config written");
         }
-        core.forget_device(id)
-            .map_err(|why| EditError::Refused(Refused(why.to_string())))?;
+        match (core.forget_device(id), gone) {
+            (Ok(()), _) | (Err(_), Gone::Yes) => {}
+            (Err(why), Gone::No) => return Err(EditError::Refused(Refused(why.to_string()))),
+        }
         core.apply_settings(settings);
         Ok(())
     }

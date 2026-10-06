@@ -28,8 +28,8 @@ use std::time::Duration;
 use irori_ha_discovery::discovery::{AvailabilityTopic, EntityTopics};
 use irori_ha_discovery::{bridge, discovery, map, state, topic};
 use irori_protocol::{
-    AvailabilityTarget, Health, IncomingAction, IncomingCall, Protocol, ProtocolContext,
-    ProtocolError, ServiceError,
+    AvailabilityTarget, Health, IncomingAction, IncomingCall, IncomingUnpair, Protocol,
+    ProtocolContext, ProtocolError, ServiceError,
 };
 use irori_types::{Availability, State, StateReport, UniqueId};
 
@@ -58,6 +58,13 @@ fn data_dir() -> std::path::PathBuf {
 }
 /// The one action this protocol declares (`irori-extension.toml`).
 const PERMIT_JOIN: &str = "permit_join";
+/// How long that action opens the network for, in seconds. The manifest says the same.
+const PERMIT_JOIN_SECONDS: u32 = 60;
+/// Zigbee2MQTT's own longest window, for when it says the network is open but not until when.
+const LONGEST_JOIN: Duration = Duration::from_secs(254);
+/// How long an unpair nobody answered is kept. Zigbee2MQTT gives up on a silent device well
+/// inside this and says so, so this only clears up after a Zigbee2MQTT that never answered.
+const UNPAIR_KEPT_FOR: Duration = Duration::from_secs(120);
 
 /// The Zigbee protocol.
 #[derive(Debug)]
@@ -74,6 +81,8 @@ impl Protocol for Zigbee {
 
 #[derive(Debug, Clone)]
 struct Entity {
+    /// The device it belongs to, so unpairing the device takes its entities with it.
+    device: Option<UniqueId>,
     topics: EntityTopics,
     /// The last state successfully decoded for this entity, if any — see the matching field in
     /// `irori-protocol-mqtt`'s own `lib.rs` for why (`irori_ha_discovery::state::decode`'s
@@ -99,6 +108,20 @@ struct Registry {
     /// available once it has, since that's the confirmation Zigbee2MQTT itself is up and
     /// connected, not just that our embedded broker is.
     bridge_seen: bool,
+    /// Whether the network was last said to be taking new devices, to notice it closing.
+    join_open: bool,
+    /// Unpairs sent to Zigbee2MQTT and not answered yet, by the transaction each was sent with.
+    unpairs: BTreeMap<String, Unpairing>,
+    /// Counts unpairs, so each has a transaction of its own.
+    unpairs_sent: u64,
+}
+
+/// An unpair waiting on Zigbee2MQTT's answer.
+#[derive(Debug)]
+struct Unpairing {
+    device: UniqueId,
+    incoming: IncomingUnpair,
+    asked: std::time::Instant,
 }
 
 async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
@@ -160,6 +183,10 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
         .subscribe(&bridge::info_topic(BASE_TOPIC))
         .await
         .map_err(ProtocolError::new)?;
+    client
+        .subscribe(&bridge::remove_response_topic(BASE_TOPIC))
+        .await
+        .map_err(ProtocolError::new)?;
 
     let mut registry = Registry::default();
     ctx.set_health(Health::Degraded("starting Zigbee2MQTT".to_owned()))
@@ -180,6 +207,9 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                     }
                     Some(irori_protocol::Incoming::Action(incoming)) => {
                         handle_action(incoming, &client).await;
+                    }
+                    Some(irori_protocol::Incoming::Unpair(incoming)) => {
+                        unpair(incoming, &mut registry, &client).await;
                     }
                     None => break Ok(()),
                 }
@@ -259,6 +289,10 @@ async fn handle_disconnect(registry: &mut Registry, ctx: &ProtocolContext) {
         registry.bridge_seen = false;
         ctx.set_available_actions(vec![]).await;
     }
+    if registry.join_open {
+        registry.join_open = false;
+        ctx.set_action_open(PERMIT_JOIN, None).await;
+    }
 }
 
 async fn handle_action(incoming: IncomingAction, client: &impl Publisher) {
@@ -267,9 +301,85 @@ async fn handle_action(incoming: IncomingAction, client: &impl Publisher) {
         incoming.reply(Err(format!("no `{action_id}` action")));
         return;
     }
-    let publish = bridge::permit_join(BASE_TOPIC, 60);
+    // Stopping is the same request for no time at all. Whether it took is read off
+    // Zigbee2MQTT's `bridge/info`, which it publishes again once the network opens or closes.
+    let seconds = if incoming.stop { 0 } else { PERMIT_JOIN_SECONDS };
+    let publish = bridge::permit_join(BASE_TOPIC, seconds);
     let result = client.publish(&publish.topic, publish.payload, false).await;
     incoming.reply(result);
+}
+
+/// Asks Zigbee2MQTT to take a device off the network. The answer comes later, on its response
+/// topic, and `unpaired` finishes the job: until then the device stays exactly as it was.
+async fn unpair(incoming: IncomingUnpair, registry: &mut Registry, client: &impl Publisher) {
+    registry
+        .unpairs
+        .retain(|_, waiting| waiting.asked.elapsed() < UNPAIR_KEPT_FOR);
+    let ieee = match bridge::ieee_address(incoming.unique_id.as_str()) {
+        Ok(ieee) => ieee.to_owned(),
+        Err(why) => {
+            incoming.reply(Err(format!("This can't be unpaired: {why}.")));
+            return;
+        }
+    };
+    registry.unpairs_sent += 1;
+    let transaction = format!("irori-{}", registry.unpairs_sent);
+    let publish = bridge::remove_device(BASE_TOPIC, &ieee, incoming.force, &transaction);
+    if let Err(why) = client.publish(&publish.topic, publish.payload, false).await {
+        incoming.reply(Err(why));
+        return;
+    }
+    registry.unpairs.insert(
+        transaction,
+        Unpairing {
+            device: incoming.unique_id.clone(),
+            incoming,
+            asked: std::time::Instant::now(),
+        },
+    );
+}
+
+/// Zigbee2MQTT answered an unpair. If it let the device go, the device and its entities leave
+/// here and the core before the answer is passed on — Zigbee2MQTT clears their discovery
+/// configs next, but those only name entities, and a device left with none would sit among
+/// what was found with nothing to offer.
+async fn unpaired(response: bridge::Response, registry: &mut Registry, ctx: &ProtocolContext) {
+    let Some(waiting) = response
+        .transaction
+        .and_then(|transaction| registry.unpairs.remove(&transaction))
+    else {
+        return;
+    };
+    if let Err(why) = response.outcome {
+        waiting.incoming.reply(Err(format!(
+            "The Zigbee network couldn't let it go: {why}. A battery device is asleep most of \
+             the time; press its button to wake it and try again."
+        )));
+        return;
+    }
+    let owned: Vec<UniqueId> = registry
+        .entities
+        .iter()
+        .filter(|(_, entity)| entity.device.as_ref() == Some(&waiting.device))
+        .map(|(unique_id, _)| unique_id.clone())
+        .collect();
+    for unique_id in owned {
+        if let Some(old) = registry.entities.remove(&unique_id) {
+            deindex(&unique_id, &old.topics, registry);
+        }
+    }
+    if let Err(e) = ctx.remove_device(waiting.device.clone()).await {
+        tracing::warn!(device = %waiting.device, error = %e, "couldn't remove an unpaired device");
+    }
+    waiting.incoming.reply(Ok(()));
+}
+
+/// This machine's clock in milliseconds since 1970 — the clock Zigbee2MQTT's `permit_join_end`
+/// is on, since it runs beside this process.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// Applies one incoming broker message: Zigbee2MQTT's own bridge status, a discovery config, a
@@ -288,6 +398,27 @@ async fn apply(
             ctx.set_health(Health::Running).await;
             ctx.set_available_actions(vec![PERMIT_JOIN.to_owned()])
                 .await;
+        }
+        // Every one of these is read, not just the first: Zigbee2MQTT publishes it again when
+        // the network opens or closes, whoever asked — Irori's button, the bridge's own
+        // "Permit join" switch, or the minute running out.
+        match bridge::join_window(&message.payload, now_ms()) {
+            Some(bridge::JoinWindow::Open(left)) => {
+                registry.join_open = true;
+                ctx.set_action_open(PERMIT_JOIN, Some(left.unwrap_or(LONGEST_JOIN)))
+                    .await;
+            }
+            Some(bridge::JoinWindow::Closed) if registry.join_open => {
+                registry.join_open = false;
+                ctx.set_action_open(PERMIT_JOIN, None).await;
+            }
+            Some(bridge::JoinWindow::Closed) | None => {}
+        }
+        return;
+    }
+    if message.topic == bridge::remove_response_topic(BASE_TOPIC) {
+        if let Some(response) = bridge::response(&message.payload) {
+            unpaired(response, registry, ctx).await;
         }
         return;
     }
@@ -404,6 +535,7 @@ async fn describe(
         return;
     }
     let unique_id = parsed.unique_id.clone();
+    let device = parsed.device.as_ref().map(|device| device.unique_id.clone());
     let entity_description = map::entity(&parsed, &discovered.object_id);
     if let Err(e) = ctx.describe_entity(entity_description).await {
         tracing::warn!(%unique_id, error = %e, "the core refused an entity");
@@ -462,6 +594,7 @@ async fn describe(
     registry.entities.insert(
         unique_id,
         Entity {
+            device,
             topics: parsed.topics,
             last_state,
             last_on,
@@ -582,6 +715,7 @@ mod tests {
                     host::Op::SetHealth(_)
                     | host::Op::SetWaiting(_)
                     | host::Op::SetUnmodeled(_)
+                    | host::Op::SetActionOpen(_, _)
                     | host::Op::SetAvailableActions(_) => {}
                     host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));
@@ -748,6 +882,7 @@ mod tests {
         registry.entities.insert(
             unique_id.clone(),
             Entity {
+                device: None,
                 topics: EntityTopics::Light(LightTopics::Default {
                     state_topic: Some("t/POWER".to_owned()),
                     command_topic: "t/cmnd/POWER".to_owned(),
@@ -896,6 +1031,312 @@ mod tests {
         assert_eq!(published[0].1, br#"{"time":60,"value":true}"#);
     }
 
+    /// The Tuya IH-K663 smart button, as Zigbee2MQTT 2.14 announces its presses with
+    /// `experimental_event_entities` on: an event whose template is Zigbee2MQTT's own Jinja
+    /// program over `value_json.action`.
+    const IH_K663_ACTION: &[u8] = br#"{
+        "unique_id": "0xa4c138f2b1c0d9e7_action_zigbee2mqtt",
+        "object_id": "desk_button_action",
+        "name": "Action",
+        "icon": "mdi:gesture-double-tap",
+        "device": {
+            "identifiers": ["zigbee2mqtt_0xa4c138f2b1c0d9e7"],
+            "name": "Desk button",
+            "manufacturer": "Tuya",
+            "model": "Smart button",
+            "model_id": "IH-K663",
+            "via_device": "zigbee2mqtt_bridge_0x00124b0001020304"
+        },
+        "state_topic": "zigbee2mqtt/Desk button",
+        "event_types": ["single", "double"],
+        "value_template": "{% set patterns = [] %}\n{% set action_value = value_json.action|default('') %}\n{% set ns = namespace(r=[('action', action_value)]) %}\n{{dict.from_keys(ns.r)|to_json}}",
+        "availability": [{ "topic": "zigbee2mqtt/bridge/state", "value_template": "{{ value_json.state }}" }]
+    }"#;
+
+    #[tokio::test]
+    async fn a_smart_buttons_presses_are_events_and_the_same_press_twice_is_two() {
+        let (ctx, host) = host::connect();
+        let _drain = drain_ops(host.ops);
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+        let config_topic = "homeassistant/event/0xa4c138f2b1c0d9e7/action/config";
+        describe(
+            topic::parse(config_topic, DISCOVERY_PREFIX).expect("valid"),
+            &message(config_topic, IH_K663_ACTION),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        let unique_id = UniqueId::try_from("0xa4c138f2b1c0d9e7_action_zigbee2mqtt").expect("valid");
+        assert!(
+            registry.entities.contains_key(&unique_id),
+            "the button's action is an entity Irori takes"
+        );
+
+        let mut presses = Vec::new();
+        for body in [
+            // A press, then Zigbee2MQTT clearing it, which is not a press.
+            &br#"{"action": "single", "battery": 100, "voltage": 3000}"#[..],
+            br#"{"action": "", "battery": 100, "voltage": 3000}"#,
+            br#"{"action": "single", "battery": 100, "voltage": 3000}"#,
+            br#"{"action": "double", "battery": 100, "voltage": 3000}"#,
+        ] {
+            apply(
+                message("zigbee2mqtt/Desk button", body),
+                &mut registry,
+                &publisher,
+                &ctx,
+            )
+            .await;
+            // Taken after each one: a report still waiting is replaced by the next for the
+            // same entity, and the point here is that each press is said.
+            for report in host.reports.drain() {
+                let Some(State::Event(event)) = report.state else {
+                    panic!("an event");
+                };
+                assert!(!report.replayed);
+                presses.push(event.event_type);
+            }
+        }
+        assert_eq!(presses, ["single", "single", "double"]);
+    }
+
+    #[tokio::test]
+    async fn stopping_permit_join_asks_for_no_time_at_all() {
+        let (incoming, answer) = host::incoming_stop(PERMIT_JOIN.to_owned());
+        let publisher = FakePublisher::default();
+
+        handle_action(incoming, &publisher).await;
+
+        assert_eq!(answer.await.expect("answered"), Ok(()));
+        let published = publisher.published.lock().expect("not poisoned");
+        assert_eq!(published[0].0, "zigbee2mqtt/bridge/request/permit_join");
+        assert_eq!(published[0].1, br#"{"time":0,"value":false}"#);
+    }
+
+    /// Every op the protocol sends, in order, each answered as accepted.
+    fn record_ops(
+        mut ops: tokio::sync::mpsc::Receiver<host::Op>,
+    ) -> Arc<Mutex<Vec<String>>> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&seen);
+        tokio::spawn(async move {
+            while let Some(op) = ops.recv().await {
+                let said = match op {
+                    host::Op::RemoveDevice(unique_id, reply) => {
+                        let _ = reply.send(Ok(()));
+                        format!("remove_device {unique_id}")
+                    }
+                    host::Op::DescribeDevice(_, reply)
+                    | host::Op::DescribeEntity(_, reply)
+                    | host::Op::RemoveEntity(_, reply)
+                    | host::Op::SetAvailability(_, _, reply) => {
+                        let _ = reply.send(Ok(()));
+                        continue;
+                    }
+                    host::Op::SetActionOpen(action, left) => {
+                        format!("{action} open: {:?}", left.map(|left| left.as_secs()))
+                    }
+                    _ => continue,
+                };
+                recorded.lock().expect("not poisoned").push(said);
+            }
+        });
+        seen
+    }
+
+    async fn unpair_request(
+        unique_id: &str,
+        force: bool,
+        registry: &mut Registry,
+        publisher: &FakePublisher,
+    ) -> tokio::sync::oneshot::Receiver<Result<(), String>> {
+        let (incoming, answer) =
+            host::incoming_unpair(UniqueId::try_from(unique_id).expect("valid"), force);
+        let (mut ctx, host) = host::connect();
+        host.actions.send(incoming).await.expect("sent");
+        let Some(irori_protocol::Incoming::Unpair(incoming)) = ctx.next().await else {
+            panic!("an unpair arrives as an unpair");
+        };
+        unpair(incoming, registry, publisher).await;
+        answer
+    }
+
+    const Z2M_LAMP: &[u8] = br#"{
+        "unique_id": "0x0017880104e45520_light_zigbee2mqtt",
+        "device": { "identifiers": ["zigbee2mqtt_0x0017880104e45520"], "name": "Lamp" },
+        "schema": "json",
+        "state_topic": "zigbee2mqtt/Lamp",
+        "command_topic": "zigbee2mqtt/Lamp/set"
+    }"#;
+
+    #[tokio::test]
+    async fn unpairing_asks_zigbee2mqtt_and_removes_the_device_once_it_agrees() {
+        let (ctx, host) = host::connect();
+        let ops = record_ops(host.ops);
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+        let config_topic = "homeassistant/light/0x0017880104e45520/light/config";
+        describe(
+            topic::parse(config_topic, DISCOVERY_PREFIX).expect("valid"),
+            &message(config_topic, Z2M_LAMP),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        assert_eq!(registry.entities.len(), 1);
+
+        let mut answer = unpair_request(
+            "zigbee2mqtt_0x0017880104e45520",
+            false,
+            &mut registry,
+            &publisher,
+        )
+        .await;
+        {
+            let published = publisher.published.lock().expect("not poisoned");
+            let (topic, payload, _) = published.last().expect("a request");
+            assert_eq!(topic, "zigbee2mqtt/bridge/request/device/remove");
+            assert_eq!(
+                payload,
+                br#"{"force":false,"id":"0x0017880104e45520","transaction":"irori-1"}"#
+            );
+        }
+        assert!(
+            answer.try_recv().is_err(),
+            "not answered until Zigbee2MQTT has"
+        );
+        assert_eq!(registry.entities.len(), 1, "and nothing is removed until then");
+
+        apply(
+            message(
+                "zigbee2mqtt/bridge/response/device/remove",
+                br#"{"data":{"id":"0x0017880104e45520"},"status":"ok","transaction":"irori-1"}"#,
+            ),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+
+        assert_eq!(answer.await.expect("answered"), Ok(()));
+        assert!(registry.entities.is_empty());
+        assert!(registry.state_topics.is_empty());
+        assert_eq!(
+            *ops.lock().expect("not poisoned"),
+            vec!["remove_device zigbee2mqtt_0x0017880104e45520".to_owned()],
+            "the device itself goes, or it would be left among what was found with nothing in it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_device_that_does_not_answer_stays_and_says_why() {
+        let (ctx, host) = host::connect();
+        let ops = record_ops(host.ops);
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+
+        let answer = unpair_request(
+            "zigbee2mqtt_0x0017880104e45520",
+            false,
+            &mut registry,
+            &publisher,
+        )
+        .await;
+        apply(
+            message(
+                "zigbee2mqtt/bridge/response/device/remove",
+                br#"{"data":{},"status":"error","error":"Failed to remove device (no response)","transaction":"irori-1"}"#,
+            ),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+
+        let why = answer.await.expect("answered").expect_err("refused");
+        assert!(why.contains("no response"), "{why}");
+        assert!(ops.lock().expect("not poisoned").is_empty());
+
+        // Asked again with force, it's a request of its own with force set.
+        let _answer = unpair_request(
+            "zigbee2mqtt_0x0017880104e45520",
+            true,
+            &mut registry,
+            &publisher,
+        )
+        .await;
+        let published = publisher.published.lock().expect("not poisoned");
+        assert_eq!(
+            published.last().expect("a request").1,
+            br#"{"force":true,"id":"0x0017880104e45520","transaction":"irori-2"}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn the_controller_itself_is_never_unpaired() {
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+
+        let answer = unpair_request(
+            "zigbee2mqtt_bridge_0x00124b0001020304",
+            false,
+            &mut registry,
+            &publisher,
+        )
+        .await;
+
+        let why = answer.await.expect("answered").expect_err("refused");
+        assert!(why.contains("controller"), "{why}");
+        assert!(publisher.published.lock().expect("not poisoned").is_empty());
+    }
+
+    #[tokio::test]
+    async fn bridge_info_opens_and_closes_the_permit_join_window() {
+        let (ctx, host) = host::connect();
+        let ops = record_ops(host.ops);
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+        let info = |body: String| message("zigbee2mqtt/bridge/info", body.as_bytes());
+        let end = now_ms() + 60_000;
+
+        apply(
+            info(r#"{"version": "2.14.2", "permit_join": false}"#.to_owned()),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        // Whoever opened it: Irori's button and the bridge's own switch both end up here.
+        apply(
+            info(format!(
+                r#"{{"version": "2.14.2", "permit_join": true, "permit_join_end": {end}}}"#
+            )),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        apply(
+            info(r#"{"version": "2.14.2", "permit_join": false}"#.to_owned()),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let seen = ops.lock().expect("not poisoned").clone();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert!(
+            seen[0] == "permit_join open: Some(59)" || seen[0] == "permit_join open: Some(60)",
+            "{seen:?}"
+        );
+        assert_eq!(seen[1], "permit_join open: None");
+    }
+
     #[tokio::test]
     async fn an_unknown_action_is_refused() {
         let (incoming, answer) = host::incoming_action("not_a_real_action".to_owned());
@@ -914,6 +1355,7 @@ mod tests {
         registry.entities.insert(
             UniqueId::try_from("0x0017880104e45520_light").expect("valid"),
             Entity {
+                device: None,
                 topics: EntityTopics::Light(LightTopics::Json {
                     state_topic: "zigbee2mqtt/Living room lamp".to_owned(),
                     command_topic: "zigbee2mqtt/Living room lamp/set".to_owned(),

@@ -139,6 +139,14 @@ pub struct Extension {
     /// Which of `actions` are usable right now, as the protocol itself says.
     #[serde(default)]
     pub available_actions: Vec<String>,
+    /// Its timed actions that are open right now, each with how long was left when this was
+    /// read (Zigbee's network accepting new devices).
+    #[serde(default)]
+    pub open_actions: BTreeMap<String, OpenAction>,
+    /// Whether removing one of its devices also unpairs it from the protocol's own network,
+    /// so it has to join again to come back (Zigbee).
+    #[serde(default)]
+    pub unpairs: bool,
     /// Its own page, with an entry in the sidebar (`docs/specs/automations.md` §B3).
     #[serde(default)]
     pub app: Option<AppInfo>,
@@ -216,6 +224,13 @@ pub async fn app_rpc(
         .await
         .map(|answer| answer.value)
         .map_err(|e| format!("Irori sent something this page can't read: {e}"))
+}
+
+/// A timed action that's open, as of when the extension was read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct OpenAction {
+    /// Milliseconds until it closes on its own.
+    pub closes_in_ms: u64,
 }
 
 /// One action an extension declares (`docs/specs/protocols.md` §5).
@@ -569,14 +584,42 @@ pub async fn edit_device(device_id: &DeviceId, edit: &DeviceEdit) -> Result<(), 
     checked(response).await
 }
 
+/// Why a device wasn't removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoveFailed {
+    /// Its network couldn't let it go, usually because the device is asleep and didn't
+    /// answer. Nothing was changed; removing it again with `force` drops it anyway.
+    Unpair(String),
+    Other(String),
+}
+
 /// Removes a device from the home: everything Irori keeps of it goes, and it's listed as found
-/// again, to be added back from "+ Add device" if wanted.
-pub async fn remove_device(device_id: &DeviceId) -> Result<(), String> {
-    let response = Request::delete(&format!("/api/dev/devices/{device_id}"))
+/// again, to be added back from "+ Add device" if wanted. One whose protocol keeps a network
+/// of its own (Zigbee) is unpaired from it too, and is gone until it joins again; `force` is
+/// for one that didn't answer the first time.
+pub async fn remove_device(device_id: &DeviceId, force: bool) -> Result<(), RemoveFailed> {
+    #[derive(Deserialize)]
+    struct Failed {
+        error: String,
+        #[serde(default)]
+        code: Option<String>,
+    }
+    let query = if force { "?force=true" } else { "" };
+    let response = Request::delete(&format!("/api/dev/devices/{device_id}{query}"))
         .send()
         .await
-        .map_err(unreachable)?;
-    checked(response).await
+        .map_err(|e| RemoveFailed::Other(unreachable(e)))?;
+    if response.ok() {
+        return Ok(());
+    }
+    let status = response.status();
+    Err(match response.json::<Failed>().await {
+        Ok(failed) if failed.code.as_deref() == Some("unpair_failed") => {
+            RemoveFailed::Unpair(failed.error)
+        }
+        Ok(failed) => RemoveFailed::Other(failed.error),
+        Err(_) => RemoveFailed::Other(format!("Irori refused that ({status})")),
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -904,6 +947,17 @@ pub async fn give_secret(
 /// `permit_join`, say — from the "+ Add device" flow.
 pub async fn trigger_action(extension: &ExtensionId, action_id: &str) -> Result<(), String> {
     let response = Request::post(&format!(
+        "/api/dev/extensions/{extension}/actions/{action_id}"
+    ))
+    .send()
+    .await
+    .map_err(unreachable)?;
+    checked(response).await
+}
+
+/// Ends an action that's open before its time is up: closes Zigbee's network to new devices.
+pub async fn stop_action(extension: &ExtensionId, action_id: &str) -> Result<(), String> {
+    let response = Request::delete(&format!(
         "/api/dev/extensions/{extension}/actions/{action_id}"
     ))
     .send()

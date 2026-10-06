@@ -64,6 +64,12 @@ pub enum FromExt {
     SetAvailableActions {
         actions: Vec<String>,
     },
+    /// One of its timed actions is open for `closes_in_ms` more, or closed when that's absent.
+    SetActionOpen {
+        action_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        closes_in_ms: Option<u64>,
+    },
     Load {
         id: u64,
         key: String,
@@ -166,6 +172,17 @@ pub enum ToExt {
     ActionCall {
         id: u64,
         action_id: String,
+        /// End the action's open window early instead of starting it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        stop: bool,
+    },
+    /// Take a device off the protocol's network. Only sent to a protocol whose manifest says
+    /// `unpairs`. Answered with `action_result`.
+    UnpairDevice {
+        id: u64,
+        unique_id: UniqueId,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        force: bool,
     },
     Stop,
     /// The answer to an engine operation. `error` starts with a code for `call_service`
@@ -438,6 +455,44 @@ fn read_one(reader: &mut impl BufRead, line: &mut String) -> Result<(), ()> {
     }
 }
 
+/// Hands an action or an unpair to the protocol and answers the host when it replies. A full
+/// queue is answered straight away, for the reason `ServiceCall` gives below. `false` once the
+/// protocol has stopped listening.
+fn queue_action(
+    id: u64,
+    incoming: IncomingAction,
+    result: oneshot::Receiver<Result<(), String>>,
+    actions: &tokio::sync::mpsc::Sender<IncomingAction>,
+    out: &mpsc::Sender<String>,
+    runtime: &tokio::runtime::Handle,
+) -> bool {
+    match actions.try_send(incoming) {
+        Ok(()) => {
+            let out = out.clone();
+            runtime.spawn(async move {
+                let error = match result.await {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) => Some(error),
+                    Err(_) => Some("the protocol dropped the action call".to_owned()),
+                };
+                enqueue_json(&out, &FromExt::ActionResult { id, error });
+            });
+            true
+        }
+        Err(TrySendError::Closed(_)) => false,
+        Err(TrySendError::Full(_)) => {
+            enqueue_json(
+                out,
+                &FromExt::ActionResult {
+                    id,
+                    error: Some("the extension is busy and can't take this action yet".into()),
+                },
+            );
+            true
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ReadControl {
     Continue,
@@ -498,32 +553,28 @@ fn handle_host_line(
                 }
             }
         }
-        ToExt::ActionCall { id, action_id } => {
-            let (incoming, result) = host::incoming_action(action_id);
-            match actions.try_send(incoming) {
-                Ok(()) => {
-                    let out = out.clone();
-                    runtime.spawn(async move {
-                        let error = match result.await {
-                            Ok(Ok(())) => None,
-                            Ok(Err(error)) => Some(error),
-                            Err(_) => Some("the protocol dropped the action call".to_owned()),
-                        };
-                        enqueue_json(&out, &FromExt::ActionResult { id, error });
-                    });
-                }
-                Err(TrySendError::Closed(_)) => return ReadControl::Stop,
-                Err(TrySendError::Full(_)) => {
-                    enqueue_json(
-                        out,
-                        &FromExt::ActionResult {
-                            id,
-                            error: Some(
-                                "the extension is busy and can't take this action yet".into(),
-                            ),
-                        },
-                    );
-                }
+        ToExt::ActionCall {
+            id,
+            action_id,
+            stop,
+        } => {
+            let (incoming, result) = if stop {
+                host::incoming_stop(action_id)
+            } else {
+                host::incoming_action(action_id)
+            };
+            if !queue_action(id, incoming, result, actions, out, runtime) {
+                return ReadControl::Stop;
+            }
+        }
+        ToExt::UnpairDevice {
+            id,
+            unique_id,
+            force,
+        } => {
+            let (incoming, result) = host::incoming_unpair(unique_id, force);
+            if !queue_action(id, incoming, result, actions, out, runtime) {
+                return ReadControl::Stop;
             }
         }
         ToExt::Stop => return ReadControl::Stop,
@@ -617,6 +668,11 @@ impl Pending {
             Op::SetWaiting(waiting) => Some(FromExt::SetWaiting { waiting }),
             Op::SetUnmodeled(unmodeled) => Some(FromExt::SetUnmodeled { unmodeled }),
             Op::SetAvailableActions(actions) => Some(FromExt::SetAvailableActions { actions }),
+            Op::SetActionOpen(action_id, remaining) => Some(FromExt::SetActionOpen {
+                action_id,
+                closes_in_ms: remaining
+                    .map(|left| u64::try_from(left.as_millis()).unwrap_or(u64::MAX)),
+            }),
             Op::Load(key, reply) => {
                 self.loads
                     .lock()

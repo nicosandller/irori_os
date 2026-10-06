@@ -108,6 +108,10 @@ core's process.
 | Set waiting | what it found but can't use until a person helps, replacing the last list | §6.6 |
 | Set unmodeled | what it found that Irori has no entity kind for yet, replacing the last list | §6.7 |
 | Handle service calls | receives `ServiceCall` (§7), replies with a result | For its own entities only |
+| Offer actions | which of its manifest's `actions` can be used right now, replacing the last list | §5.1 |
+| Say an action is open | an action id, and how long it has left, or that it has closed | §5.1 |
+| Handle actions | receives an action id, and whether to start it or stop it early; replies with a result | §5.1 |
+| Unpair a device | receives a device `unique_id` and `force`; replies with a result | Only with `unpairs` in its manifest. §5.1 |
 | Store small data | key (1–128 characters) → JSON value, up to 64 KB each; load, store, forget | Private to the protocol, kept across restarts of it and of Irori, in the data directory's database. E.g. pairing keys, a cloud token refresh, the value a helper was left at. Not for settings (a person's decisions go in the config directory) and not for history |
 | Log | leveled, structured log lines | Tagged with the protocol id |
 
@@ -119,6 +123,37 @@ package. Zigbee is the case that makes this matter — Zigbee2MQTT's network key
 live in a directory of its own, and losing them strands every paired device — and an upgrade
 today *is* an uninstall and a reinstall. Small values belong in the storage above instead; this
 is for a subprocess's own files, which Irori can't hold for it.
+
+### 5.1 Actions, and unpairing
+
+Most protocols find devices by listening. Some have to be told to look: a Zigbee network takes a
+new device only while it's open to joining. That is an **action**, declared in the manifest
+(`[[contributes.protocol.actions]]`: `id`, `label`, and `seconds` for one that lasts a while) and
+shown as a button on the extension's "+ Add device" screen.
+
+- The manifest says an action exists. The protocol says when it can be used (Zigbee's only once
+  Zigbee2MQTT is up), and the button isn't offered before that.
+- A timed action is **open** for a while. The protocol says so, with how long is left, and says
+  again when it closes. It says how long rather than until when, so the core counts on its own
+  clock. The page counts down from that, and the same number reaches a second tab or a reloaded
+  page. The protocol reports what's true however it came about: Zigbee2MQTT's own "Permit join"
+  switch opens the same network, and that shows as the same countdown.
+- An open action can be **stopped** early. The protocol receives the same action with `stop` set.
+
+A protocol whose devices are paired to a network it keeps declares `unpairs = true`. Removing one
+of its devices then asks the protocol to unpair it first ([config.md](config.md) §3.2):
+
+- The protocol asks its network to let the device go. When the network agrees, the protocol
+  removes the device (the ordinary *Remove a device* operation) and then replies.
+- If the device doesn't answer, the protocol replies with why, and nothing changes: the device is
+  still paired and still in the home.
+- With `force`, the protocol drops the device from the network's records without waiting for the
+  device to agree. This is for a device that is asleep, broken or gone.
+- A protocol refuses what can't be unpaired. Zigbee refuses its own controller.
+
+On the wire these are `action_call { id, action_id, stop }` and
+`unpair_device { id, unique_id, force }`, both answered with `action_result { id, error }`, and
+`set_action_open { action_id, closes_in_ms }` from the protocol.
 
 **What it can't do:** see or change other protocols' devices and entities (without the `api`
 permissions, [extensions.md](extensions.md) §7), touch rules, write history, or set timestamps and

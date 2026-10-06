@@ -673,6 +673,9 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
     let trouble = RwSignal::new(None::<String>);
     // The extension itself, for the heading: only the parts the heading shows, so a reading
     // arriving doesn't redraw it.
+    //
+    // Without how long its open actions have left: that number is different at every reading,
+    // and everything drawn from this would be redrawn with it. `closing` keeps those instead.
     let extension = {
         let id = id.clone();
         Memo::new(move |_| {
@@ -680,10 +683,28 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                 home.extensions
                     .iter()
                     .find(|(known, _)| **known == id)
-                    .map(|(_, extension)| extension.clone())
+                    .map(|(_, extension)| {
+                        let mut extension = extension.clone();
+                        extension.open_actions.clear();
+                        extension
+                    })
             })
         })
     };
+    let closing = closing_times(live, id.clone());
+    // Whether it opens its network for a while to find devices (Zigbee's permit join), rather
+    // than hearing them announce themselves all the time. Only the first kind has a moment
+    // when it's listening and a moment when it isn't.
+    let opens = move || {
+        extension.with(|e| {
+            e.as_ref()
+                .is_some_and(|e| e.actions.iter().any(|action| action.seconds.is_some()))
+        })
+    };
+    let open_now = move || closing.with(|closing| !closing.is_empty());
+    let unpairs = move || extension.with(|e| e.as_ref().is_some_and(|e| e.unpairs));
+    // The found device being unpaired, while its window is up.
+    let unpairing = RwSignal::new(None::<crate::api::HeldDevice>);
     let name = move || extension.with(|e| e.as_ref().map(|e| e.name.clone()).unwrap_or_default());
     let icon_there = move || extension.with(|e| e.as_ref().is_some_and(|e| e.has_icon));
 
@@ -843,7 +864,18 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                 }))}
             </div>
             {move || extension.get().map(|extension| view! {
-                <ProtocolActions id=for_actions.clone() extension=extension />
+                <ProtocolActions id=for_actions.clone() extension=extension closing=closing />
+            })}
+            {move || unpairing.get().map(|device| view! {
+                <crate::removal::RemoveDevice
+                    id=device.id.clone()
+                    name=device.name.to_string()
+                    network=name()
+                    unpairs=true
+                    found=true
+                    on_close=move || unpairing.set(None)
+                    on_done=move || unpairing.set(None)
+                />
             })}
             {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
 
@@ -918,17 +950,41 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                         let waiting = extension.with(|e| e.as_ref().is_some_and(|e| !e.waiting.is_empty()));
                         !waiting
                     };
-                    nothing.then(|| view! {
-                        <div class="listening-empty">
-                            <span class="listening-ring" aria-hidden="true"></span>
-                            <p>
-                                {format!("Listening for {} devices on your network…", name())}
-                            </p>
-                            <p class="muted small">
-                                "Anything it finds shows up here within a few seconds of joining. "
-                                "Devices already in your home are listed below."
-                            </p>
-                        </div>
+                    // Listening is only said while it's true. A protocol that opens its network
+                    // for a minute isn't listening the rest of the time, and saying so sent
+                    // people to hold a device's pairing button at a closed network.
+                    let listening = !opens() || open_now();
+                    nothing.then(|| if listening {
+                        view! {
+                            <div class="listening-empty">
+                                <span class="listening-ring" aria-hidden="true"></span>
+                                <p>
+                                    {format!("Listening for {} devices on your network…", name())}
+                                </p>
+                                <p class="muted small">
+                                    "Anything it finds shows up here within a few seconds of joining. "
+                                    "Devices already in your home are listed below."
+                                </p>
+                            </div>
+                        }
+                            .into_any()
+                    } else {
+                        let action = extension.with(|e| {
+                            e.as_ref()
+                                .and_then(|e| e.actions.iter().find(|a| a.seconds.is_some()))
+                                .map(|action| action.label.clone())
+                                .unwrap_or_default()
+                        });
+                        view! {
+                            <div class="listening-empty closed">
+                                <p class="muted small">
+                                    "Nothing found yet. Press "
+                                    <strong>{action}</strong>
+                                    " above, then put the device into pairing mode."
+                                </p>
+                            </div>
+                        }
+                            .into_any()
                     })
                 }}
                 <ul class="device-cards">
@@ -971,6 +1027,10 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                                 let id = id.clone();
                                 move |_| add(vec![id.clone()])
                             };
+                            let unpair_one = {
+                                let device = device.clone();
+                                move |_| unpairing.set(Some(device.clone()))
+                            };
                             let made = [device.manufacturer.clone(), device.model.clone()]
                                 .into_iter()
                                 .flatten()
@@ -1003,6 +1063,18 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                                             })}
                                             <span class="provides">{chips}</span>
                                         </span>
+                                        {unpairs().then(|| view! {
+                                            <button
+                                                type="button"
+                                                class="quiet-button unpair-one"
+                                                disabled=move || is_busy.get() || is_leaving.get()
+                                                aria-label=format!("Unpair {name}")
+                                                title="Take it off the network without adding it"
+                                                on:click=unpair_one
+                                            >
+                                                "Unpair"
+                                            </button>
+                                        })}
                                         <button
                                             type="button"
                                             class="add-one"
@@ -1094,6 +1166,45 @@ fn provides(kinds: &BTreeMap<String, usize>) -> AnyView {
         .into_any()
 }
 
+/// When each of an extension's open actions closes, on this browser's own clock (milliseconds,
+/// as `Date.now()` counts them), by action id. Empty when none is open.
+///
+/// The server says how long is left, not when: a browser whose clock is off would count down
+/// from the wrong place. Every reading says it again with a slightly smaller number, so a time
+/// already held is only replaced when the new one differs by more than the readings' own jitter
+/// — otherwise the countdown would twitch, and everything drawn from it would be redrawn every
+/// couple of seconds.
+fn closing_times(live: crate::Live, id: ExtensionId) -> RwSignal<BTreeMap<String, f64>> {
+    /// How far a new reading may be from what's held before it's believed over it. Readings
+    /// take a moment to arrive; a window that was really cut short or extended moves by more.
+    const SLACK_MS: f64 = 1500.0;
+    let closing = RwSignal::new(BTreeMap::<String, f64>::new());
+    Effect::new(move |_| {
+        let left = live.home.with(|home| {
+            home.extensions
+                .iter()
+                .find(|(known, _)| **known == id)
+                .map(|(_, extension)| extension.open_actions.clone())
+                .unwrap_or_default()
+        });
+        let now = web_sys::js_sys::Date::now();
+        let held = closing.get_untracked();
+        let mut next = BTreeMap::new();
+        for (action, open) in left {
+            let closes = now + open.closes_in_ms as f64;
+            let closes = match held.get(&action) {
+                Some(held) if (held - closes).abs() < SLACK_MS => *held,
+                _ => closes,
+            };
+            next.insert(action, closes);
+        }
+        if next != held {
+            closing.set(next);
+        }
+    });
+    closing
+}
+
 /// The button for a protocol's declared action (Zigbee's permit-join, say) — nothing at all for
 /// a protocol that declares none.
 ///
@@ -1101,8 +1212,18 @@ fn provides(kinds: &BTreeMap<String, usize>) -> AnyView {
 /// button. Rendering nothing there is what made the feature look missing: the extension that has
 /// the button is exactly the one that takes a while to come up, so whoever opens this first sees
 /// an empty panel and concludes there's no such flow.
+///
+/// While a timed action is open the button is its countdown: a ring that drains, the time left,
+/// and a press that closes it early. The button used to keep its words after a press, with a
+/// paragraph underneath saying the network was open "briefly" — nobody could tell whether the
+/// press had taken, or how long they had.
 #[component]
-fn ProtocolActions(id: ExtensionId, extension: crate::api::Extension) -> impl IntoView {
+fn ProtocolActions(
+    id: ExtensionId,
+    extension: crate::api::Extension,
+    /// When each open action closes (`closing_times`).
+    closing: RwSignal<BTreeMap<String, f64>>,
+) -> impl IntoView {
     let sending = RwSignal::new(None::<String>);
     let trouble = RwSignal::new(None::<String>);
     let live = expect_context::<crate::Live>();
@@ -1130,21 +1251,29 @@ fn ProtocolActions(id: ExtensionId, extension: crate::api::Extension) -> impl In
         view! { <p class="muted small">{format!("{why} — \"{names}\" appears here once it can be used.")}</p> }
     });
 
-    // What this protocol has found so far, so watching a device join is something the person can
-    // actually see happen rather than having to go and look on another page.
-    let found = {
-        let id = id.clone();
-        Memo::new(move |_| {
-            live.home
-                .get()
-                .devices
-                .iter()
-                .filter(|device| device.protocol.as_str() == id.as_str())
-                .count()
-        })
-    };
-    // Set once an action with a duration has been triggered — what to say while it's open.
-    let listening = RwSignal::new(None::<String>);
+    // The time, for the countdown: read a few times a second, and only while this is drawn.
+    let now = RwSignal::new(web_sys::js_sys::Date::now());
+    let ticking = set_interval_with_handle(
+        move || {
+            if closing.with_untracked(|closing| !closing.is_empty()) {
+                let at = web_sys::js_sys::Date::now();
+                now.set(at);
+                // One whose time is up is closed here without waiting to be told, and the
+                // extension is read again to hear it from the source.
+                if closing.with_untracked(|closing| closing.values().any(|closes| *closes <= at)) {
+                    closing.update(|closing| closing.retain(|_, closes| *closes > at));
+                    crate::refresh(live);
+                }
+            }
+        },
+        std::time::Duration::from_millis(250),
+    )
+    .ok();
+    on_cleanup(move || {
+        if let Some(ticking) = ticking {
+            ticking.clear();
+        }
+    });
 
     view! {
         <div class="protocol-actions">
@@ -1159,37 +1288,82 @@ fn ProtocolActions(id: ExtensionId, extension: crate::api::Extension) -> impl In
                         let action_id = action_id.clone();
                         move |_| sending.get().as_deref() == Some(action_id.as_str())
                     });
+                    // Milliseconds left, while it's open.
+                    let left = {
+                        let action_id = action_id.clone();
+                        move || {
+                            closing
+                                .with(|closing| closing.get(&action_id).copied())
+                                .map(|closes| (closes - now.get()).max(0.0))
+                        }
+                    };
+                    let is_open = Memo::new({
+                        let action_id = action_id.clone();
+                        move |_| closing.with(|closing| closing.contains_key(&action_id))
+                    });
+                    // What the ring is full at: the action's own length, or longer when
+                    // something else opened it for longer (the bridge's own switch opens
+                    // Zigbee's network for four minutes).
+                    let whole = StoredValue::new(f64::from(seconds.unwrap_or(0)) * 1000.0);
+                    let fraction = {
+                        let left = left.clone();
+                        move || {
+                            let left = left().unwrap_or(0.0);
+                            if left > whole.get_value() {
+                                whole.set_value(left);
+                            }
+                            let whole = whole.get_value();
+                            if whole > 0.0 { (left / whole).clamp(0.0, 1.0) } else { 0.0 }
+                        }
+                    };
+                    let seconds_left = {
+                        let left = left.clone();
+                        Signal::derive(move || (left().unwrap_or(0.0) / 1000.0).ceil() as u32)
+                    };
+                    let fraction = Signal::derive(fraction);
                     let label = match seconds {
                         Some(seconds) => format!("{} for {seconds}s", action.label),
                         None => action.label.clone(),
                     };
                     let said = action.label.clone();
+                    let spoken = action.label.clone();
+                    let closed_label = label.clone();
                     view! {
                         <button
                             type="button"
                             class="add"
+                            class:join-open=is_open
                             disabled=move || sending.get().is_some()
+                            aria-label=move || if is_open.get() {
+                                format!(
+                                    "{spoken} is open, {} seconds left. Press to close it now.",
+                                    seconds_left.get(),
+                                )
+                            } else {
+                                closed_label.clone()
+                            }
                             on:click=move |_| {
                                 let id = id.clone();
                                 let action_id = action_id.clone();
-                                let said = said.clone();
+                                let closing_it = is_open.get_untracked();
                                 sending.set(Some(action_id.clone()));
                                 spawn_local(async move {
-                                    match crate::api::trigger_action(&id, &action_id).await {
+                                    let asked = if closing_it {
+                                        crate::api::stop_action(&id, &action_id).await
+                                    } else {
+                                        crate::api::trigger_action(&id, &action_id).await
+                                    };
+                                    match asked {
                                         Ok(()) => {
                                             trouble.set(None);
-                                            // No countdown, and no number: this says what to
-                                            // do now, and nothing that goes stale while it's
-                                            // still on screen. The protocol closes its own
-                                            // window; the page has no way to know when.
-                                            listening.set(Some(match seconds {
-                                                Some(_) => format!(
-                                                    "{said} is open — briefly. Put the device \
-                                                     into pairing mode now: most need a button \
-                                                     held down, or a power cycle or three.",
-                                                ),
-                                                None => format!("{said} done."),
-                                            }));
+                                            // Closed here straight away; opening waits for the
+                                            // extension to say so, which is where the time
+                                            // left comes from.
+                                            if closing_it {
+                                                closing.update(|closing| {
+                                                    closing.remove(&action_id);
+                                                });
+                                            }
                                             crate::refresh(live);
                                         }
                                         Err(why) => trouble.set(Some(why)),
@@ -1198,28 +1372,38 @@ fn ProtocolActions(id: ExtensionId, extension: crate::api::Extension) -> impl In
                                 });
                             }
                         >
-                            {move || if is_busy.get() { "Working…".to_owned() } else { label.clone() }}
+                            {move || if is_open.get() {
+                                view! {
+                                    <svg class="join-ring" viewBox="0 0 24 24" aria-hidden="true">
+                                        <circle class="join-ring-track" cx="12" cy="12" r="9" />
+                                        <circle
+                                            class="join-ring-left"
+                                            cx="12" cy="12" r="9" pathLength="1"
+                                            style:stroke-dashoffset=move || format!("{:.4}", 1.0 - fraction.get())
+                                        />
+                                    </svg>
+                                    <span class="join-words">
+                                        <span class="join-word-open">{format!("{said} is open")}</span>
+                                        <span class="join-word-close">"Close now"</span>
+                                    </span>
+                                    <span class="join-time">
+                                        {move || {
+                                            let left = seconds_left.get();
+                                            format!("{}:{:02}", left / 60, left % 60)
+                                        }}
+                                    </span>
+                                }
+                                    .into_any()
+                            } else if is_busy.get() {
+                                "Working…".into_any()
+                            } else {
+                                label.clone().into_any()
+                            }}
                         </button>
                     }
                 })
                 .collect_view()}
             {not_yet}
-            {move || listening.get().map(|said| view! {
-                <div class="listening-empty">
-                    <p>{said}</p>
-                    <p class="muted small">
-                        {move || {
-                            let found = found.get();
-                            format!(
-                                "{found} device{} here from this extension so far. A new one \
-                                 shows up on this page on its own, within a few seconds of \
-                                 joining.",
-                                if found == 1 { "" } else { "s" },
-                            )
-                        }}
-                    </p>
-                </div>
-            })}
         </div>
     }
         .into_any()

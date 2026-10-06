@@ -830,6 +830,7 @@ mod tests {
                     irori_protocol::host::Op::SetHealth(_)
                     | irori_protocol::host::Op::SetWaiting(_)
                     | irori_protocol::host::Op::SetUnmodeled(_)
+                    | irori_protocol::host::Op::SetActionOpen(_, _)
                     | irori_protocol::host::Op::SetAvailableActions(_) => {}
                     irori_protocol::host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));
@@ -955,6 +956,7 @@ mod tests {
                     irori_protocol::host::Op::SetHealth(_)
                     | irori_protocol::host::Op::SetWaiting(_)
                     | irori_protocol::host::Op::SetUnmodeled(_)
+                    | irori_protocol::host::Op::SetActionOpen(_, _)
                     | irori_protocol::host::Op::SetAvailableActions(_) => {}
                     irori_protocol::host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));
@@ -1069,6 +1071,7 @@ mod tests {
                     irori_protocol::host::Op::SetHealth(_)
                     | irori_protocol::host::Op::SetWaiting(_)
                     | irori_protocol::host::Op::SetUnmodeled(_)
+                    | irori_protocol::host::Op::SetActionOpen(_, _)
                     | irori_protocol::host::Op::SetAvailableActions(_) => {}
                     irori_protocol::host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));

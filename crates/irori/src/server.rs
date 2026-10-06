@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
@@ -164,7 +164,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/dev/extensions/{id}/actions/{action_id}",
-            post(trigger_extension_action),
+            post(trigger_extension_action).delete(stop_extension_action),
         )
         .route("/api/dev/catalog", get(catalog))
         .route("/api/dev/extensions/{id}/install", post(install_official))
@@ -770,14 +770,48 @@ async fn edit_device(
 
 /// Removes a device from the home: its name, room, entities, floorplan spot and history go, and
 /// it's back among what its protocol has found, to be added again from "+ Add device" if wanted
-/// (`docs/specs/config.md` §3.2). Only a device in the home can be removed.
-async fn remove_device(State(state): State<AppState>, Path(id): Path<DeviceId>) -> Response {
+/// (`docs/specs/config.md` §3.2).
+///
+/// A device whose protocol keeps a network of its own (Zigbee) is unpaired from it first, and
+/// then it's gone altogether rather than found: it has to join again to come back. That one can
+/// be removed while it's only found, too, which is the way to undo pairing the wrong thing. If
+/// the unpair is refused nothing else is touched, and the answer says `unpair_failed` so the
+/// page can offer `?force=true`.
+async fn remove_device(
+    State(state): State<AppState>,
+    Path(id): Path<DeviceId>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    // For a device that didn't answer a plain unpair: drop it from its network anyway.
+    let force = query.as_deref() == Some("force=true");
     let core = &state.0.core;
-    let known = core.devices().iter().any(|device| device.id == id);
-    if !known {
+    let in_home = core.devices().iter().any(|device| device.id == id);
+    let found = core.held_devices().iter().any(|device| device.id == id);
+    let unpairs = core.unpairs(&id);
+    if !in_home && !(found && unpairs) {
         return refused(StatusCode::NOT_FOUND, format!("there's no device `{id}`"));
     }
-    match state.0.config.forget_device(core, &id).await {
+    if !unpairs {
+        return match state.0.config.forget_device(core, &id).await {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(e) => edit_failed(e),
+        };
+    }
+    // Read before the unpair: afterwards the core no longer knows what the device had.
+    let owned = core.device_entity_keys(&id).unwrap_or_default();
+    if let Err(why) = core.unpair_device(&id, force).await {
+        #[derive(Debug, Serialize)]
+        struct UnpairFailed {
+            error: String,
+            code: &'static str,
+        }
+        let failed = UnpairFailed {
+            error: why.to_string(),
+            code: "unpair_failed",
+        };
+        return (StatusCode::CONFLICT, Json(failed)).into_response();
+    }
+    match state.0.config.forget_unpaired(core, &id, owned).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => edit_failed(e),
     }
@@ -1144,6 +1178,28 @@ async fn trigger_extension_action(
         );
     }
     match core.call_action(&id, &action_id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(why) => refused(StatusCode::BAD_REQUEST, why.to_string()),
+    }
+}
+
+/// Ends early an action an extension says is open: closes Zigbee's network before its minute
+/// is up. One that isn't open has nothing to end, and that's fine.
+async fn stop_extension_action(
+    State(state): State<AppState>,
+    Path((id, action_id)): Path<(ExtensionId, String)>,
+) -> Response {
+    let core = &state.0.core;
+    let Some(overview) = core.extensions().remove(&id) else {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("there's no extension `{id}`"),
+        );
+    };
+    if !overview.open_actions.contains_key(&action_id) {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    match core.stop_action(&id, &action_id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(why) => refused(StatusCode::BAD_REQUEST, why.to_string()),
     }
@@ -3083,6 +3139,259 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    /// A protocol with a network of its own, like Zigbee's: a device is paired to it, a timed
+    /// action opens it to new ones, and removing a device has to unpair it.
+    #[derive(Debug)]
+    struct Mesh;
+
+    #[derive(Debug, Deserialize, schemars::JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    struct MeshSettings {}
+
+    impl irori_protocol::Protocol for Mesh {
+        type Config = MeshSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "mesh"
+            name = "Mesh"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+            unpairs = true
+
+            [[contributes.protocol.actions]]
+            id = "join"
+            label = "Permit joining"
+            seconds = 60
+        "#;
+        async fn run(
+            _: MeshSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            for device in ["bulb", "sleepy"] {
+                ctx.describe_device(irori_types::DeviceDescription {
+                    unique_id: device.parse()?,
+                    name: device.parse()?,
+                    manufacturer: None,
+                    model: None,
+                    sw_version: None,
+                    hw_version: None,
+                    suggested_area: None,
+                    via_device_unique_id: None,
+                })
+                .await?;
+                ctx.describe_entity(irori_types::EntityDescription {
+                    unique_id: format!("{device}_switch").parse()?,
+                    name: None,
+                    device_unique_id: Some(device.parse()?),
+                    suggested_object_id: None,
+                    capabilities: irori_types::Capabilities::Switch(
+                        irori_types::SwitchCapabilities { device_class: None },
+                    ),
+                    entity_category: None,
+                })
+                .await?;
+            }
+            ctx.set_available_actions(vec!["join".to_owned()]).await;
+            while let Some(incoming) = ctx.next().await {
+                match incoming {
+                    irori_protocol::Incoming::Action(action) => {
+                        let left = (!action.stop).then_some(Duration::from_secs(60));
+                        ctx.set_action_open("join", left).await;
+                        action.reply(Ok(()));
+                    }
+                    // The sleepy one never answers, so only force gets rid of it.
+                    irori_protocol::Incoming::Unpair(unpair)
+                        if unpair.unique_id.as_str() == "sleepy" && !unpair.force =>
+                    {
+                        unpair.reply(Err("it didn't answer".into()));
+                    }
+                    irori_protocol::Incoming::Unpair(unpair) => {
+                        ctx.remove_device(unpair.unique_id.clone()).await?;
+                        unpair.reply(Ok(()));
+                    }
+                    irori_protocol::Incoming::Call(call) => call.reply(Ok(())),
+                }
+            }
+            Ok(())
+        }
+    }
+
+    async fn mesh() -> anyhow::Result<(Core, irori_core::ExtensionHost)> {
+        let core = core();
+        let host = mesh_on(&core).await?;
+        Ok((core, host))
+    }
+
+    /// Starts the mesh on `core`. Started after the server, its devices are only found;
+    /// before it, the server's own setup has already added them to the home.
+    async fn mesh_on(core: &Core) -> anyhow::Result<irori_core::ExtensionHost> {
+        let host = irori_core::ExtensionHost::start(
+            core,
+            vec![irori_protocol::builtin::<Mesh>().map_err(anyhow::Error::msg)?],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        for _ in 0..500 {
+            let ready = core.held_devices().len() + core.devices().len() == 2
+                && core
+                    .extensions()
+                    .values()
+                    .any(|overview| !overview.available_actions.is_empty());
+            if ready {
+                return Ok(host);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        anyhow::bail!(
+            "the mesh never found its devices: {:?} {:?}",
+            core.held_devices(),
+            core.extensions()
+        )
+    }
+
+    fn known(core: &Core, id: &str) -> bool {
+        core.devices().iter().any(|device| device.id.as_str() == id)
+            || core
+                .held_devices()
+                .iter()
+                .any(|device| device.id.as_str() == id)
+    }
+
+    /// Removing a device whose protocol keeps a network unpairs it: it's gone, not back among
+    /// what was found, and nothing of it is left in the config files.
+    #[tokio::test]
+    async fn removing_a_paired_device_takes_it_off_its_network() -> anyhow::Result<()> {
+        let (core, host) = mesh().await?;
+        let server = Server::new(core.clone())?;
+        let home = server.read("/api/dev/home").await?;
+        assert_eq!(home["extensions"]["mesh"]["unpairs"], true, "{home}");
+
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/dev/devices/mesh_bulb",
+                serde_json::json!({"name": "Reading lamp"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(core.devices().iter().any(|d| d.id.as_str() == "mesh_bulb"));
+        let written = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(written.contains("mesh_bulb"), "{written}");
+
+        let (status, body) = server
+            .json(
+                "DELETE",
+                "/api/dev/devices/mesh_bulb",
+                serde_json::Value::Null,
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        assert!(!known(&core, "mesh_bulb"), "neither in the home nor found");
+        assert!(
+            !core
+                .entities()
+                .iter()
+                .any(|entity| entity.unique_id.as_str() == "bulb_switch")
+        );
+        let written = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(!written.contains("mesh_bulb"), "{written}");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A device that doesn't answer stays exactly as it was, and the answer says so in a way
+    /// the page can tell apart, so it can offer to drop it anyway. One that was only ever
+    /// found can be unpaired too.
+    #[tokio::test]
+    async fn a_device_that_will_not_unpair_stays_until_it_is_forced() -> anyhow::Result<()> {
+        let core = core();
+        let server = Server::new(core.clone())?;
+        let host = mesh_on(&core).await?;
+        assert_eq!(core.held_devices().len(), 2, "found, and not in the home");
+
+        let (status, body) = server
+            .json(
+                "DELETE",
+                "/api/dev/devices/mesh_sleepy",
+                serde_json::Value::Null,
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["code"], "unpair_failed");
+        assert_eq!(body["error"], "it didn't answer");
+        assert!(known(&core, "mesh_sleepy"));
+
+        let (status, body) = server
+            .json(
+                "DELETE",
+                "/api/dev/devices/mesh_sleepy?force=true",
+                serde_json::Value::Null,
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        assert!(!known(&core, "mesh_sleepy"));
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A timed action says how long it has left, and can be ended before then.
+    #[tokio::test]
+    async fn an_open_action_counts_down_and_can_be_closed() -> anyhow::Result<()> {
+        let (core, host) = mesh().await?;
+        let server = Server::new(core.clone())?;
+        let open = |home: &serde_json::Value| {
+            home["extensions"]["mesh"]["open_actions"]["join"]["closes_in_ms"].as_u64()
+        };
+        assert_eq!(open(&server.read("/api/dev/home").await?), None);
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/dev/extensions/mesh/actions/join",
+                serde_json::Value::Null,
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        let mut left = None;
+        for _ in 0..500 {
+            left = open(&server.read("/api/dev/home").await?);
+            if left.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            left.is_some_and(|left| left > 50_000 && left <= 60_000),
+            "{left:?}"
+        );
+
+        let (status, body) = server
+            .json(
+                "DELETE",
+                "/api/dev/extensions/mesh/actions/join",
+                serde_json::Value::Null,
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        for _ in 0..500 {
+            left = open(&server.read("/api/dev/home").await?);
+            if left.is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(left, None, "closed");
+
+        host.shutdown().await;
+        Ok(())
     }
 
     async fn safe() -> anyhow::Result<(Core, irori_core::ExtensionHost)> {

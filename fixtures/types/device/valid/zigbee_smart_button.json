@@ -1,0 +1,10 @@
+{
+  "id": "desk_button",
+  "protocol": "zigbee",
+  "unique_id": "zigbee2mqtt_0xa4c138f2b1c0d9e7",
+  "name": "Desk button",
+  "manufacturer": "Tuya",
+  "model": "Smart button",
+  "area_id": "study",
+  "via_device_id": "zigbee_zigbee2mqtt_bridge_0x00124b0001020304"
+}

@@ -264,27 +264,15 @@ fn page(
     // Removing asks first, in a window of Irori's own rather than the browser's: it says what
     // goes and how to get the device back, which is the part worth reading before pressing it.
     let confirming = RwSignal::new(false);
-    let removing = RwSignal::new(false);
-    let remove = {
-        let id = device.id.clone();
-        move || {
-            let id = id.clone();
-            removing.set(true);
-            spawn_local(async move {
-                match api::remove_device(&id).await {
-                    Ok(()) => {
-                        crate::refresh(live);
-                        leave.run(());
-                    }
-                    Err(why) => {
-                        removing.set(false);
-                        confirming.set(false);
-                        trouble.set(Some(why));
-                    }
-                }
-            });
-        }
-    };
+    let removed = device.id.clone();
+    // Whether its protocol keeps a network the device has to leave too, and what that's called.
+    let (network, unpairs) = live.home.with_untracked(|home| {
+        home.extensions
+            .iter()
+            .find(|(id, _)| id.as_str() == device.protocol.as_str())
+            .map(|(_, extension)| (extension.name.clone(), extension.unpairs))
+            .unwrap_or_default()
+    });
     let what = device.name.to_string();
     let name = device.name.to_string();
     let description = device
@@ -362,40 +350,15 @@ fn page(
                 </button>
             </div>
         </div>
-        {move || confirming.get().then(|| {
-            let remove = remove.clone();
-            view! {
-                <crate::modal::Modal
-                    title=format!("Remove {what}?")
-                    on_close=move || confirming.set(false)
-                >
-                    <div class="confirm">
-                        <p>
-                            "Irori deletes everything it keeps about it — its name, room, "
-                            "entities, spot on the floorplan and history — and nothing can use it "
-                            "any more."
-                        </p>
-                        <p class="muted small">
-                            "The device itself isn't touched. It'll be listed under "
-                            <strong>"+ Add device"</strong>
-                            " if you want it back."
-                        </p>
-                        <div class="confirm-actions">
-                            <button type="button" on:click=move |_| confirming.set(false)>
-                                "Cancel"
-                            </button>
-                            <button
-                                type="button"
-                                class="danger-solid"
-                                disabled=move || removing.get()
-                                on:click=move |_| remove()
-                            >
-                                {move || if removing.get() { "Removing…" } else { "Remove" }}
-                            </button>
-                        </div>
-                    </div>
-                </crate::modal::Modal>
-            }
+        {move || confirming.get().then(|| view! {
+            <crate::removal::RemoveDevice
+                id=removed.clone()
+                name=what.clone()
+                network=network.clone()
+                unpairs=unpairs
+                on_close=move || confirming.set(false)
+                on_done=move || leave.run(())
+            />
         })}
         <p class="description-lede">
             {{
