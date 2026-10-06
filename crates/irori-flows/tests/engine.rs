@@ -741,11 +741,11 @@ fn a_call_takes_a_setting_worked_out_earlier_in_the_run() {
     let Some(Effect::Call { call_id, data, .. }) = asked.first() else {
         panic!("a call, not {asked:?}");
     };
-    let Some(irori_flow_types::CallData::Light(light)) = data else {
+    let Some(light) = data else {
         panic!("light settings");
     };
     // 70 - 300 / 600 * 25 = 57.5, rounded.
-    assert_eq!(light.brightness_pct, Some(58));
+    assert_eq!(light.0["brightness_pct"], 58);
     engine.call_finished(*call_id, Ok(()), at(10));
     let (_, done, _) = effects(&mut engine, at(10));
     let on = done[0]
@@ -793,9 +793,11 @@ fn a_setting_that_cant_be_worked_out_is_a_failed_call() {
         data: Some(data), ..
     }) = direct.nodes.get_mut(&"on".parse().expect("as written"))
     {
-        data.brightness_pct =
+        data.0.insert(
+            "brightness_pct".into(),
             serde_json::from_value(serde_json::json!({ "expr": format!("num('{LUX}')") }))
-                .expect("as written");
+                .expect("as written"),
+        );
     }
     assert!(validate::check(&direct, &registry()).is_empty());
     let mut engine = engine_with(direct);
@@ -1072,4 +1074,194 @@ fn a_media_player_fires_when_it_changes_to_playing_and_a_check_can_ask_if_it_is(
             .any(|problem| problem.message.contains("never")),
         "{problems:#?}"
     );
+}
+
+const BUTTON: &str = "event.desk_button_action";
+const BLIND: &str = "cover.study_blind";
+
+fn press(event_type: &str, seconds: i64) -> EntityState {
+    state(
+        BUTTON,
+        State::Event(irori_types::EventState {
+            event_type: event_type.to_owned(),
+        }),
+        seconds,
+    )
+}
+
+/// A home with a smart button (a Tuya IH-K663: `single` and `double`) and a blind that can be
+/// sent to a position but has no slats.
+fn home_with_button() -> MapRegistry {
+    let mut home = registry();
+    home.entities.insert(
+        id(BUTTON),
+        entity(
+            BUTTON,
+            Capabilities::Event(irori_types::EventCapabilities {
+                event_types: vec!["single".into(), "double".into()],
+                device_class: None,
+            }),
+        ),
+    );
+    home.entities.insert(
+        id(BLIND),
+        entity(
+            BLIND,
+            Capabilities::Cover(irori_types::CoverCapabilities {
+                device_class: None,
+                position: true,
+                tilt: false,
+                stop: true,
+            }),
+        ),
+    );
+    home
+}
+
+/// One press toggles the light; a double press sends the blind half way.
+fn button_flow() -> Flow {
+    flow(serde_json::json!({
+        "id": "desk_button", "name": "Desk button",
+        "nodes": {
+            "single": { "type": "trigger", "trigger": { "type": "state", "entity": BUTTON, "to": "single" } },
+            "double": { "type": "trigger", "trigger": { "type": "state", "entity": BUTTON, "to": "double" } },
+            "toggle": { "type": "call", "service": "light.toggle", "entity": LIGHT },
+            "half": { "type": "call", "service": "cover.set_position", "entity": BLIND,
+                      "data": { "position": 50 } }
+        },
+        "wires": [["single", "toggle"], ["double", "half"]]
+    }))
+}
+
+fn engine_with_button(flow: Flow) -> Engine {
+    let mut engine = Engine::new(Box::new(CountingIds::default()));
+    engine.load_states([flag(LIGHT, false, 0), press("single", 0)]);
+    let problems = validate::check(&flow, &home_with_button());
+    assert!(problems.is_empty(), "{problems:#?}");
+    engine.set_flows(vec![Arm { flow, problems }], at(0));
+    engine
+}
+
+#[test]
+fn every_press_of_a_button_fires_even_the_same_one_twice() {
+    let mut engine = engine_with_button(button_flow());
+
+    // The value it already had, pressed again: a change of nothing, and still a press.
+    change(&mut engine, press("single", 10));
+    let (calls, done, _) = effects(&mut engine, at(10));
+    assert_eq!(calls, [(id(LIGHT), "light.toggle".to_owned())]);
+    assert!(
+        done[0].steps[0]
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("\"single\"")),
+        "{:?}",
+        done[0].steps[0].note
+    );
+    change(&mut engine, press("single", 20));
+    let (calls, _, _) = effects(&mut engine, at(20));
+    assert_eq!(calls, [(id(LIGHT), "light.toggle".to_owned())]);
+
+    // Another kind of press starts the other path, and the call carries its setting.
+    change(&mut engine, press("double", 30));
+    let asked = engine.take_effects();
+    let Some(Effect::Call {
+        entity,
+        service,
+        data,
+        ..
+    }) = asked.first()
+    else {
+        panic!("a call, not {asked:?}");
+    };
+    assert_eq!(entity, &id(BLIND));
+    assert_eq!(service.to_string(), "cover.set_position");
+    assert_eq!(data.as_ref().expect("its position").0["position"], 50);
+}
+
+#[test]
+fn a_button_going_out_of_reach_and_back_is_not_a_press() {
+    let mut engine = engine_with_button(button_flow());
+    change(&mut engine, press("single", 10));
+    let _ = effects(&mut engine, at(10));
+
+    // Unavailable, then back: reported again, but nothing happened. The core leaves
+    // `last_changed` where the press put it.
+    let mut gone = press("single", 10);
+    gone.availability = Availability::Unavailable;
+    gone.last_updated = at(20);
+    change(&mut engine, gone);
+    let mut back = press("single", 10);
+    back.last_updated = at(30);
+    change(&mut engine, back);
+
+    let (calls, _, _) = effects(&mut engine, at(30));
+    assert!(calls.is_empty(), "{calls:?}");
+}
+
+#[test]
+fn a_press_is_not_something_to_check_or_wait_for_and_a_blind_is_asked_only_what_it_can_do() {
+    let problems_of = |nodes: serde_json::Value| {
+        let flow = flow(serde_json::json!({ "id": "odd", "name": "Odd", "nodes": nodes }));
+        validate::check(&flow, &home_with_button())
+            .into_iter()
+            .map(|problem| problem.message)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let unknown_press = problems_of(serde_json::json!({
+        "t": { "type": "trigger", "trigger": { "type": "state", "entity": BUTTON, "to": "hold" } }
+    }));
+    assert!(unknown_press.contains("never"), "{unknown_press}");
+
+    let held = problems_of(serde_json::json!({
+        "t": { "type": "trigger", "trigger": { "type": "state", "entity": BUTTON, "to": "single", "for": "5s" } }
+    }));
+    assert!(held.contains("can't hold"), "{held}");
+
+    let checked = problems_of(serde_json::json!({
+        "t": { "type": "trigger", "trigger": { "type": "state", "entity": BUTTON } },
+        "g": { "type": "gate", "condition": { "type": "state", "entity": BUTTON, "is": "single" } }
+    }));
+    assert!(checked.contains("trigger instead"), "{checked}");
+
+    // No slats, so nothing to tilt; a position past the end; a word that isn't a number.
+    let tilted = problems_of(serde_json::json!({
+        "t": { "type": "trigger", "trigger": { "type": "state", "entity": BUTTON } },
+        "c": { "type": "call", "service": "cover.set_tilt", "entity": BLIND, "data": { "tilt": 40 } }
+    }));
+    assert!(tilted.contains("tilt"), "{tilted}");
+
+    // A setting worked out when it runs is checked by its range, not a stand-in's luck.
+    let worked = problems_of(serde_json::json!({
+        "t": { "type": "trigger", "trigger": { "type": "state", "entity": BUTTON } },
+        "c": { "type": "call", "service": "cover.set_position", "entity": BLIND,
+               "data": { "position": { "expr": format!("num('{LUX}') / 10") } } }
+    }));
+    assert!(
+        !worked.contains("position"),
+        "a worked-out position is fine: {worked}"
+    );
+
+    // Past the end of what a position can be: the blind itself says so.
+    let past = problems_of(serde_json::json!({
+        "t": { "type": "trigger", "trigger": { "type": "state", "entity": BUTTON } },
+        "c": { "type": "call", "service": "cover.set_position", "entity": BLIND,
+               "data": { "position": 140 } }
+    }));
+    assert!(past.contains("140"), "{past}");
+
+    for (service, data, said) in [
+        ("cover.set_position", serde_json::json!({}), "position"),
+        ("cover.open", serde_json::json!({ "position": 10 }), "does not take data"),
+        ("lock.unlock", serde_json::json!({ "code": "1234" }), "code"),
+    ] {
+        let refused = serde_json::from_value::<Flow>(serde_json::json!({
+            "id": "odd", "name": "Odd",
+            "nodes": { "c": { "type": "call", "service": service, "entity": BLIND, "data": data } }
+        }))
+        .expect_err("refused as it's read");
+        assert!(refused.to_string().contains(said), "{service}: {refused}");
+    }
 }

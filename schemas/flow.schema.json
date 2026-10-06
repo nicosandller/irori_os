@@ -81,31 +81,12 @@
   ],
   "$defs": {
     "Amount": {
-      "description": "A number in a call's settings: fixed, or worked out when the call runs.",
+      "description": "One setting of a call: fixed, or worked out when the call runs.",
       "anyOf": [
         {
-          "type": "integer",
-          "format": "uint8",
-          "maximum": 255,
-          "minimum": 0
-        },
-        {
           "$ref": "#/$defs/Worked"
-        }
-      ]
-    },
-    "Amount2": {
-      "description": "A number in a call's settings: fixed, or worked out when the call runs.",
-      "anyOf": [
-        {
-          "type": "integer",
-          "format": "uint16",
-          "maximum": 65535,
-          "minimum": 0
         },
-        {
-          "$ref": "#/$defs/Worked"
-        }
+        true
       ]
     },
     "AvailabilityWanted": {
@@ -441,55 +422,11 @@
       "minLength": 1
     },
     "FlowCallData": {
-      "description": "A light's settings in a call: each number either written down, or worked out from an\nexpression when the call runs (`{\"expr\": \"var('level')\"}`), rounded and brought into range.",
+      "description": "A call's settings, by the service's own field names: each either written down, or (for a\nnumber) worked out from an expression when the call runs (`{\"expr\": \"var('level')\"}`),\nrounded and brought into the field's range.\n\nWhich fields there are is the service's to say: a light's `brightness_pct`, a blind's\n`position`, a thermostat's `temperature`.",
       "type": "object",
-      "properties": {
-        "brightness": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Amount"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "brightness_pct": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Amount"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "color_temp_kelvin": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Amount2"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "rgb": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "integer",
-            "format": "uint8",
-            "maximum": 255,
-            "minimum": 0
-          },
-          "maxItems": 3,
-          "minItems": 3
-        }
-      },
-      "additionalProperties": false
+      "additionalProperties": {
+        "$ref": "#/$defs/Amount"
+      }
     },
     "JoinMode": {
       "description": "How a join brings paths together.",
@@ -800,15 +737,75 @@
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
     "RuleService": {
-      "description": "Services a rule may name. Includes `toggle`, which the core resolves.",
+      "description": "A service a rule may name: `<kind>.<action>`. Includes `toggle`, which the core resolves.",
       "type": "string",
       "enum": [
-        "light.turn_on",
-        "light.turn_off",
+        "button.press",
+        "climate.set_fan_mode",
+        "climate.set_humidity",
+        "climate.set_hvac_mode",
+        "climate.set_preset_mode",
+        "climate.set_swing_mode",
+        "climate.set_temperature",
+        "climate.toggle",
+        "climate.turn_off",
+        "climate.turn_on",
+        "cover.close",
+        "cover.open",
+        "cover.set_position",
+        "cover.set_tilt",
+        "cover.stop",
+        "cover.toggle",
+        "fan.oscillate",
+        "fan.set_direction",
+        "fan.set_percentage",
+        "fan.set_preset_mode",
+        "fan.toggle",
+        "fan.turn_off",
+        "fan.turn_on",
+        "humidifier.set_humidity",
+        "humidifier.set_mode",
+        "humidifier.toggle",
+        "humidifier.turn_off",
+        "humidifier.turn_on",
         "light.toggle",
-        "switch.turn_on",
+        "light.turn_off",
+        "light.turn_on",
+        "lock.lock",
+        "lock.open",
+        "lock.toggle",
+        "lock.unlock",
+        "media_player.media_next_track",
+        "media_player.media_pause",
+        "media_player.media_play",
+        "media_player.media_play_pause",
+        "media_player.media_previous_track",
+        "media_player.media_seek",
+        "media_player.media_stop",
+        "media_player.play_media",
+        "media_player.turn_off",
+        "media_player.turn_on",
+        "media_player.volume_mute",
+        "media_player.volume_set",
+        "number.set_value",
+        "select.select_option",
+        "siren.toggle",
+        "siren.turn_off",
+        "siren.turn_on",
+        "switch.toggle",
         "switch.turn_off",
-        "switch.toggle"
+        "switch.turn_on",
+        "text.set_value",
+        "valve.close",
+        "valve.open",
+        "valve.set_position",
+        "valve.stop",
+        "valve.toggle",
+        "water_heater.set_operation_mode",
+        "water_heater.set_temperature",
+        "water_heater.toggle",
+        "water_heater.turn_off",
+        "water_heater.turn_on"
       ]
     },
     "StopReason": {

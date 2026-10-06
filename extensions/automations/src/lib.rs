@@ -17,7 +17,7 @@ use irori_flows::{Arm, Effect, Engine, IdGen, ulid, validate};
 use irori_protocol::WireCommand;
 use irori_protocol::engine::{EngineClient, Incoming, Registry};
 use irori_rules::{CallData, MapRegistry, RuleService};
-use irori_types::{ContextId, LightTurnOn, Timestamp};
+use irori_types::{ContextId, Timestamp};
 use tokio::sync::mpsc;
 
 use crate::store::Store;
@@ -245,22 +245,13 @@ pub fn command(
     WireCommand,
     Option<serde_json::Map<String, serde_json::Value>>,
 ) {
-    let light = data.map(|CallData::Light(light)| LightTurnOn {
-        brightness: light.brightness.or_else(|| {
-            light.brightness_pct.map(|pct| {
-                let scaled = (u16::from(pct) * 255 + 50) / 100;
-                u8::try_from(scaled.clamp(1, 255)).unwrap_or(255)
-            })
-        }),
-        color_temp_kelvin: light.color_temp_kelvin,
-        rgb: light.rgb,
-    });
-    let data = match service {
-        RuleService::LightTurnOn => {
-            light.and_then(|light| irori_types::Service::LightTurnOn(light).data())
-        }
-        _ => None,
-    };
+    // As the core takes it: a light's `brightness_pct` worked into `brightness`. A toggle goes
+    // without any, as it always has: what it becomes is the core's to decide.
+    let data = service
+        .service(data)
+        .ok()
+        .flatten()
+        .and_then(|service| service.data());
     (service.action().to_owned(), data)
 }
 

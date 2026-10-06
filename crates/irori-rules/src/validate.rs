@@ -7,7 +7,7 @@ use cel::common::ast::{CallExpr, Expr, IdedExpr, LiteralValue};
 use irori_types::{Capabilities, Entity, EntityId, ValueShape};
 
 use crate::{
-    Action, CallData, Condition, ExprString, LightCallData, Rule, RuleService, Trigger, TypedValue,
+    Action, CallData, Condition, ExprString, Rule, RuleService, Trigger, TypedValue,
     WaitUntil,
 };
 
@@ -137,8 +137,27 @@ fn walk_triggers_one(
             to,
             above,
             below,
-            ..
+            hold,
         } => {
+            // A press, a ring: something that happens rather than a value that lasts. It has
+            // no value to have changed from, be above, or stay at.
+            if let Some(found) = registry.entity(entity)
+                && found.capabilities.kind().counts_every_report()
+            {
+                let what = found.capabilities.kind();
+                for (given, field, why) in [
+                    (hold.is_some(), "for", "it happens and is over, so it can't hold for a time"),
+                    (above.is_some(), "above", "it isn't a number"),
+                    (below.is_some(), "below", "it isn't a number"),
+                ] {
+                    if given {
+                        problems.push(problem(
+                            format!("{here}/{field}"),
+                            format!("{entity} is a {what}: {why}"),
+                        ));
+                    }
+                }
+            }
             check_state_match(here, entity, from.as_ref(), None, None, registry, problems);
             for value in to.iter().flat_map(crate::Values::iter) {
                 check_state_match(here, entity, None, Some(value), None, registry, problems);
@@ -833,6 +852,27 @@ fn check_state_match(
         ));
         return;
     };
+    if entity.capabilities.kind().counts_every_report() {
+        let what = entity.capabilities.kind();
+        // Asked what it *is* (a condition, a wait), not what it changes to (a trigger).
+        if to_field.is_some() {
+            problems.push(problem(
+                path,
+                format!(
+                    "{id} is a {what}: each one happens and is over, so there's nothing it \
+                     stays at to check. Start the flow from it with a trigger instead"
+                ),
+            ));
+            return;
+        }
+        if from.is_some() {
+            problems.push(problem(
+                format!("{path}/from"),
+                format!("{id} is a {what}: it has no value to have changed from"),
+            ));
+            return;
+        }
+    }
     if let Some(value) = from
         && let Err(reason) = typed_value_fits(value, entity)
     {
@@ -941,31 +981,22 @@ fn check_call_inner(
         ));
         return;
     }
-    if let Some(CallData::Light(light)) = data {
-        check_light_data(path, light, entity, problems);
-    }
-}
-
-fn check_light_data(
-    path: &str,
-    light: &LightCallData,
-    entity: &Entity,
-    problems: &mut Vec<Problem>,
-) {
-    let Capabilities::Light(caps) = &entity.capabilities else {
-        return;
+    // What the service's data is was checked when the rule was read; here it's whether this
+    // entity can do it: a blind with no slats can't be tilted, a lamp that only switches can't
+    // be dimmed. A toggle is only a service once it runs, so its data is checked as the
+    // `turn_on` it may become.
+    let asked = match service {
+        RuleService::Named(_) => service.service(data),
+        RuleService::Toggle(kind) => match data {
+            Some(_) => irori_types::ServiceName::of(kind, "turn_on")
+                .map_or(Ok(None), |on| RuleService::Named(on).service(data)),
+            None => Ok(None),
+        },
     };
-    if (light.brightness.is_some() || light.brightness_pct.is_some()) && !caps.brightness {
-        problems.push(problem(path, format!("{} is not dimmable", entity.id)));
-    }
-    if light.color_temp_kelvin.is_some() && caps.color_temp_kelvin.is_none() {
-        problems.push(problem(
-            path,
-            format!("{} does not support color temperature", entity.id),
-        ));
-    }
-    if light.rgb.is_some() && !caps.rgb {
-        problems.push(problem(path, format!("{} does not support RGB", entity.id)));
+    if let Ok(Some(asked)) = asked
+        && let Err(why) = entity.capabilities.supports(&asked)
+    {
+        problems.push(problem(path, format!("{} {why}", entity.id)));
     }
 }
 

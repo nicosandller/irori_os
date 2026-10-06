@@ -388,9 +388,20 @@ fn check_home(
                 entity,
                 data,
             } => {
-                let shape = data.as_ref().map(irori_flow_types::FlowCallData::shape);
-                let mut found =
-                    irori_rules::check_call("call", *service, entity, shape.as_ref(), registry);
+                // A worked-out number stands in as one from its field's range. The entity's own
+                // range can be narrower, so a stand-in may be refused only for where it is:
+                // what's asked is wrong when every stand-in is.
+                let mut found = match data {
+                    None => irori_rules::check_call("call", *service, entity, None, registry),
+                    Some(data) => data
+                        .shapes(*service)
+                        .iter()
+                        .map(|shape| {
+                            irori_rules::check_call("call", *service, entity, Some(shape), registry)
+                        })
+                        .min_by_key(Vec::len)
+                        .unwrap_or_default(),
+                };
                 for (field, expr) in data.iter().flat_map(irori_flow_types::FlowCallData::exprs) {
                     let reason = match irori_rules::inspect(expr, registry, vars) {
                         Ok(inspected)

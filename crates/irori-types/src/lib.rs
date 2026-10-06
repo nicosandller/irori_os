@@ -21,6 +21,7 @@ mod protocol;
 mod registry;
 mod release_version;
 mod schema;
+mod service_fields;
 mod settings;
 mod state;
 mod time;
@@ -41,6 +42,7 @@ pub use id::{
     IdError, Name, ObjectId, ProtocolId, RuleId, SLUG_MAX_LEN, TokenId, UniqueId, UserId,
 };
 pub use kind::EntityKind;
+pub use service_fields::{FieldShape, ServiceField};
 pub use kinds::binary_sensor::{BinarySensorCapabilities, BinarySensorClass, BinarySensorState};
 pub use kinds::button::{ButtonCapabilities, ButtonClass};
 pub use kinds::climate::{

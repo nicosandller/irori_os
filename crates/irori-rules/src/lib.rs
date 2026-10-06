@@ -19,8 +19,8 @@ mod validate;
 #[cfg(feature = "engine")]
 pub use expr::{Compiled, ExprError, Reading, StateView, compile, eval_bool};
 pub use rule::{
-    Action, AvailabilityWanted, CallData, ChooseOption, CivilTime, CompactDuration, Condition,
-    Cron, EventDatum, EventName, ExprString, LightCallData, LimitedMode, Mode, NamedMode, OnError,
+    Action, AvailabilityWanted, BRIGHTNESS_PCT, CallData, ChooseOption, CivilTime, CompactDuration, Condition,
+    Cron, EventDatum, EventName, ExprString, LimitedMode, Mode, NamedMode, NumberField, OnError,
     OnTimeout, Rule, RuleService, StopReason, SunEvent, Target, Trigger, TypedValue, Values,
     WaitUntil, Weekday,
 };

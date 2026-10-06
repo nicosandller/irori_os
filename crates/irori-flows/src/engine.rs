@@ -613,7 +613,17 @@ impl Engine {
             }
             return;
         }
-        if old.is_some() && old_value == new_value {
+        // Something that happens rather than a value that lasts (a button's press): each one
+        // counts, the same one twice included. The core says when it happened by moving
+        // `last_changed`, and leaves it alone for what isn't one — the device coming back in
+        // reach, or the protocol repeating its last press as it reconnects.
+        let happening = entity.kind().counts_every_report();
+        if happening
+            && old.is_none_or(|old| old.last_changed == new.last_changed)
+        {
+            return;
+        }
+        if !happening && old.is_some() && old_value == new_value {
             if was_available && to.as_ref().is_some_and(|to| any_matches(to, &new_value)) {
                 self.near_miss(
                     flow,
@@ -631,11 +641,15 @@ impl Engine {
             }
             return;
         }
-        let note = format!(
-            "{entity} went {} → {}",
-            words(&old_value),
-            words(&new_value)
-        );
+        let note = if happening {
+            format!("{entity}: {}", words(&new_value))
+        } else {
+            format!(
+                "{entity} went {} → {}",
+                words(&old_value),
+                words(&new_value)
+            )
+        };
         let (from_ok, to_ok) = match level {
             // A level: it has to come into the range from outside it (or from not knowing).
             // Moving about inside the range changes nothing, so a hold keeps going.
@@ -1097,7 +1111,7 @@ impl Engine {
                     None => Ok((None, Vec::new())),
                     Some(data) => {
                         let snapshot = self.snapshot(run_id, now);
-                        data.resolve(|expr| {
+                        data.resolve(service, |expr| {
                             let outcome = self.eval.value(expr.as_str(), &snapshot);
                             read.extend(outcome.reads);
                             match outcome.result? {
