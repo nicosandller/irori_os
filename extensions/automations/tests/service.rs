@@ -217,6 +217,32 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     .expect("answers");
     assert_eq!(active[0]["at"][0]["node"], "clear", "{active}");
 
+    // The assistant is handed the logic, what each entity reports now, and the run under way.
+    let brief = rpc::handle(
+        &mut service,
+        "flow.brief",
+        serde_json::json!({ "id": "hallway_motion_light" }),
+    )
+    .await
+    .expect("a brief");
+    let text = brief["text"].as_str().expect("words");
+    for said in [
+        "It is armed",
+        "- None. Nothing in its definition stops it running.",
+        "`motion` — trigger",
+        "num('sensor.demo_luminosity_illuminance') < 30",
+        "yes → `on`",
+        "matched → `off`",
+        "x (`sensor.demo_luminosity_illuminance`) = ",
+        "x (`light.demo_hall_light`) = ",
+        "A run is going right now. started",
+        "called light.turn_on on x (`light.demo_hall_light`)",
+        "it worked",
+        "`clear` (wait until) is still going",
+    ] {
+        assert!(text.contains(said), "no {said:?} in:\n{text}");
+    }
+
     // A dry run of a draft sends nothing.
     let dry = rpc::handle(
         &mut service,
@@ -268,6 +294,35 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     .await
     .expect("runs");
     assert_eq!(runs[0]["outcome"], "aborted", "{runs}");
+
+    // What stops it running is told with where it is, and so is how the last run ended.
+    let brief = rpc::handle(
+        &mut service,
+        "flow.brief",
+        serde_json::json!({ "id": "hallway_motion_light" }),
+    )
+    .await
+    .expect("a brief");
+    let text = brief["text"].as_str().expect("words");
+    for said in [
+        "It is NOT armed and cannot run until this is fixed",
+        "- Error (stops it running), at step `off`",
+        "`light.nope` = no such entity in the home",
+        "The last run that wasn't a test: started",
+        "was aborted from outside (\"changed\")",
+    ] {
+        assert!(text.contains(said), "no {said:?} in:\n{text}");
+    }
+    let short = rpc::handle(
+        &mut service,
+        "flow.brief",
+        serde_json::json!({ "id": "hallway_motion_light", "budget": 900 }),
+    )
+    .await
+    .expect("a short brief");
+    let short = short["text"].as_str().expect("words");
+    assert!(short.chars().count() <= 900, "{}", short.chars().count());
+    assert!(short.contains("at step `off`"), "{short}");
 
     // The canvas asks what happened since it last looked: nothing, the first time; since a
     // moment it names, the run that just ended.

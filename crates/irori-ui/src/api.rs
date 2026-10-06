@@ -1086,7 +1086,34 @@ pub async fn save_assistant(body: &serde_json::Value) -> Result<AssistantStatus,
     response.json().await.map_err(unreachable)
 }
 
-pub async fn assistant_transcript(scope: &str) -> Result<Vec<AssistantMessage>, String> {
+/// A question Irori is still answering, or one whose answer failed, as a page that wasn't
+/// there for it finds it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AssistantPending {
+    pub question: String,
+    /// The answer so far.
+    #[serde(default)]
+    pub text: String,
+    /// The tool being run, or `queued`.
+    #[serde(default)]
+    pub step: Option<String>,
+    /// Seconds since it was asked.
+    #[serde(default)]
+    pub seconds: u32,
+    /// Why it failed. Absent while it is still being answered.
+    #[serde(default)]
+    pub failed: Option<String>,
+}
+
+/// One conversation: what was said, and the question being answered now if there is one.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AssistantThread {
+    pub turns: Vec<AssistantMessage>,
+    #[serde(default)]
+    pub pending: Option<AssistantPending>,
+}
+
+pub async fn assistant_transcript(scope: &str) -> Result<AssistantThread, String> {
     let response = Request::get(&format!(
         "/api/dev/assistant/transcript/{}",
         encode_scope(scope)
@@ -1141,6 +1168,25 @@ pub async fn assistant_ask(
 ) -> Result<(), String> {
     let body = serde_json::json!({ "scope": scope, "message": message });
     stream("/api/dev/assistant/turns", &body, on).await
+}
+
+/// Joins the answer `scope` is in the middle of, from its first word. Irori carries on
+/// answering whether or not a page is reading, so this is how one that came back catches up.
+pub async fn assistant_follow(scope: &str, on: impl FnMut(Streamed)) -> Result<(), String> {
+    let url = format!("/api/dev/assistant/turns/{}", encode_scope(scope));
+    read_stream(Request::get(&url).send().await.map_err(unreachable)?, on).await
+}
+
+/// Stops the answer `scope` is in the middle of. Nothing of it is kept.
+pub async fn assistant_stop(scope: &str) -> Result<(), String> {
+    let response = Request::post(&format!(
+        "/api/dev/assistant/turns/{}/stop",
+        encode_scope(scope)
+    ))
+    .send()
+    .await
+    .map_err(unreachable)?;
+    checked(response).await
 }
 
 /// Installs Ollama if it is missing, then pulls a tag. `on` hears how far along it is.
@@ -1241,17 +1287,25 @@ fn encode_scope(scope: &str) -> String {
 async fn stream(
     url: &str,
     body: &serde_json::Value,
-    mut on: impl FnMut(Streamed),
+    on: impl FnMut(Streamed),
 ) -> Result<(), String> {
-    use web_sys::js_sys::{Reflect, Uint8Array};
-    use web_sys::wasm_bindgen::{JsCast as _, JsValue};
-
     let response = Request::post(url)
         .json(body)
         .map_err(|error| error.to_string())?
         .send()
         .await
         .map_err(unreachable)?;
+    read_stream(response, on).await
+}
+
+/// Reads a reply made of events, handing each to `on`, until it says it is done or failed.
+async fn read_stream(
+    response: gloo_net::http::Response,
+    mut on: impl FnMut(Streamed),
+) -> Result<(), String> {
+    use web_sys::js_sys::{Reflect, Uint8Array};
+    use web_sys::wasm_bindgen::{JsCast as _, JsValue};
+
     let status = response.status();
     if !(200..300).contains(&status) {
         return Err(format!("Irori refused that ({status})"));

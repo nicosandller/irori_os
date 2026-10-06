@@ -67,6 +67,9 @@ struct Inner {
     /// every new process, which is the point: the window resets with the boot, so the cap is one
     /// restart per cooldown per boot rather than a permanent lockout.
     last_restart: Mutex<Option<Instant>>,
+    /// The questions the assistant is in the middle of answering, by conversation.
+    #[cfg(feature = "assist")]
+    turns: crate::assistant::Turns,
 }
 
 impl AppState {
@@ -94,6 +97,8 @@ impl AppState {
             restart,
             restarting,
             last_restart: Mutex::new(None),
+            #[cfg(feature = "assist")]
+            turns: crate::assistant::Turns::default(),
         }))
     }
 }
@@ -191,6 +196,11 @@ pub fn router(state: AppState) -> Router {
             get(assistant::get).put(assistant::put),
         )
         .route("/api/dev/assistant/turns", post(assistant::turns))
+        .route("/api/dev/assistant/turns/{scope}", get(assistant::follow))
+        .route(
+            "/api/dev/assistant/turns/{scope}/stop",
+            post(assistant::stop),
+        )
         .route("/api/dev/assistant/pull", post(assistant::pull))
         .route("/api/dev/assistant/forget", post(assistant::forget))
         .route("/api/dev/assistant/install", post(assistant::install))
@@ -1260,7 +1270,7 @@ async fn stop_extension_action(
 /// including) a `writeOnly` field — schemars' shape for `Option<Secret>` is
 /// `{"anyOf": [{"$ref": "#/$defs/Secret"}, {"type": "null"}]}`, so a direct check on `field_schema`
 /// alone isn't enough.
-fn is_write_only(field_schema: &serde_json::Value, root: &serde_json::Value) -> bool {
+pub(crate) fn is_write_only(field_schema: &serde_json::Value, root: &serde_json::Value) -> bool {
     if field_schema
         .get("writeOnly")
         .and_then(serde_json::Value::as_bool)
@@ -4278,9 +4288,10 @@ mod tests {
             let flow = server
                 .read("/api/dev/assistant/transcript/automation:kettle")
                 .await?;
-            assert_eq!(home[0]["body"], "What is on?");
-            assert_eq!(home[1]["body"], "Hello from the model");
-            assert_eq!(flow[0]["body"], "Why this one?");
+            assert_eq!(home["turns"][0]["body"], "What is on?");
+            assert_eq!(home["turns"][1]["body"], "Hello from the model");
+            assert!(home["pending"].is_null(), "{home}");
+            assert_eq!(flow["turns"][0]["body"], "Why this one?");
             assert!(!flow.to_string().contains("What is on?"));
 
             let (status, _) = server
@@ -4293,9 +4304,18 @@ mod tests {
             let flow = server
                 .read("/api/dev/assistant/transcript/automation:kettle")
                 .await?;
-            assert_eq!(flow, serde_json::json!([]));
+            assert_eq!(flow["turns"], serde_json::json!([]));
             let home = server.read("/api/dev/assistant/transcript/general").await?;
-            assert_eq!(home[1]["body"], "Hello from the model");
+            assert_eq!(home["turns"][1]["body"], "Hello from the model");
+
+            // Settings has a conversation of its own, and is told what Settings holds.
+            let settings = events(&server, "settings", "Which floors are there?").await?;
+            assert!(settings.contains("Hello from the model"), "{settings}");
+            let kept = server
+                .read("/api/dev/assistant/transcript/settings")
+                .await?;
+            assert_eq!(kept["turns"][0]["body"], "Which floors are there?");
+            assert_eq!(home["turns"].as_array().map(Vec::len), Some(2));
 
             let (status, body) = server
                 .json(
@@ -4308,7 +4328,7 @@ mod tests {
             let failed = events(&server, "general", "Again").await?;
             assert!(failed.contains("error"), "{failed}");
             let home = server.read("/api/dev/assistant/transcript/general").await?;
-            assert_eq!(home.as_array().map(Vec::len), Some(2));
+            assert_eq!(home["turns"].as_array().map(Vec::len), Some(2));
             Ok(())
         }
 
@@ -4324,7 +4344,7 @@ mod tests {
             assert!(reply.contains("Let me check."), "{reply}");
             assert!(reply.contains("Nothing is on."), "{reply}");
             let home = server.read("/api/dev/assistant/transcript/general").await?;
-            assert_eq!(home[1]["body"], "Let me check.\n\nNothing is on.");
+            assert_eq!(home["turns"][1]["body"], "Let me check.\n\nNothing is on.");
             Ok(())
         }
 
@@ -4342,8 +4362,9 @@ mod tests {
             Ok(())
         }
 
+        /// Irori finishes an answer once it has been asked for, with nobody there to read it.
         #[tokio::test]
-        async fn a_page_that_leaves_does_not_keep_the_reply() -> anyhow::Result<()> {
+        async fn a_page_that_leaves_still_gets_its_answer_kept() -> anyhow::Result<()> {
             let base = cloud().await;
             let server = Server::new(core())?;
             let (status, body) = server
@@ -4351,23 +4372,78 @@ mod tests {
                 .await?;
             assert_eq!(status, StatusCode::OK, "{body}");
             let db = crate::db::open(server.dir.path())?;
-            let (tx, rx) = tokio::sync::mpsc::channel(4);
-            drop(rx);
-            crate::assistant::take_turn(
-                crate::assistant::Turn {
-                    core: &server.core,
-                    config: &server.config,
-                    history: &server.history,
-                    db: &db.path,
-                },
-                "general".into(),
-                "hello".into(),
-                tx,
-            )
-            .await;
+            let turns = crate::assistant::Turns::default();
+            let pending = turns
+                .begin("general", "hello")
+                .map_err(anyhow::Error::msg)?;
+            // Nothing follows it: the page that asked has gone.
+            turns
+                .run("general", pending, |tx| {
+                    crate::assistant::take_turn(
+                        crate::assistant::Turn {
+                            core: &server.core,
+                            config: &server.config,
+                            history: &server.history,
+                            db: &db.path,
+                            log: &server.log,
+                        },
+                        "general".into(),
+                        "hello".into(),
+                        tx,
+                    )
+                })
+                .await;
             let kept =
                 crate::assistant::transcript(&db.path, "general").map_err(anyhow::Error::msg)?;
-            assert!(kept.is_empty(), "{kept:?}");
+            assert_eq!(kept.len(), 2, "{kept:?}");
+            assert_eq!(kept[1].body, "Hello from the model");
+            assert!(turns.pending("general").is_none());
+            Ok(())
+        }
+
+        /// The Settings conversation's model can read the log, and only what it asks for.
+        #[tokio::test]
+        async fn the_settings_chat_is_told_the_trouble_in_the_log() -> anyhow::Result<()> {
+            let seen = Arc::new(Mutex::new(String::new()));
+            let heard = seen.clone();
+            let app = Router::new().route(
+                "/v1/chat/completions",
+                axum::routing::post(move |Json(body): Json<serde_json::Value>| {
+                    let heard = heard.clone();
+                    async move {
+                        *heard.lock().expect("the lock") = body.to_string();
+                        (
+                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                            "data: {\"choices\":[{\"delta\":{\"content\":\"Read.\"}}]}\n\ndata: [DONE]\n\n",
+                        )
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let base = format!("http://{}/v1", listener.local_addr()?);
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.ok();
+            });
+            let server = Server::new(core())?;
+            server.log.keep("2026-01-01T00:00:00Z  INFO irori is ready");
+            server
+                .log
+                .keep("2026-01-01T00:00:01Z  WARN the port was taken");
+            let (status, body) = server
+                .json("PUT", "/api/dev/assistant", configure(&base, "test-model"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            events(&server, "settings", "Anything wrong?").await?;
+            let asked = seen.lock().expect("the lock").clone();
+            assert!(asked.contains("the port was taken"), "{asked}");
+            assert!(!asked.contains("irori is ready"), "{asked}");
+            assert!(asked.contains("read_logs"), "{asked}");
+            assert!(asked.contains("Floors and areas"), "{asked}");
+            assert!(!asked.contains("sk-test-key-should-not-leak"), "{asked}");
+            // The chat about the home is offered no way into the log.
+            events(&server, "general", "Anything wrong?").await?;
+            let asked = seen.lock().expect("the lock").clone();
+            assert!(!asked.contains("read_logs"), "{asked}");
             Ok(())
         }
 

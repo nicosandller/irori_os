@@ -38,27 +38,48 @@ pub struct Ask {
     message: String,
 }
 
+/// Takes a question and streams its answer. The answer is Irori's to finish from here: the
+/// page leaving stops the stream, not the answer.
 pub async fn turns(State(state): State<AppState>, Json(ask): Json<Ask>) -> impl IntoResponse {
-    let (tx, rx) = mpsc::channel(32);
-    let core = state.0.core.clone();
-    let config = state.0.config.clone();
-    let history = state.0.history.clone();
-    let db = state.0.db.path.clone();
+    let pending = match state.0.turns.begin(&ask.scope, &ask.message) {
+        Ok(pending) => pending,
+        Err(error) => {
+            let (tx, rx) = mpsc::channel(1);
+            let _ = tx.try_send(ChatEvent::Error(error));
+            return events(rx);
+        }
+    };
+    let following = pending.follow();
     tokio::spawn(async move {
-        assistant::take_turn(
-            Turn {
-                core: &core,
-                config: &config,
-                history: &history,
-                db: &db,
-            },
-            ask.scope,
-            ask.message,
-            tx,
-        )
-        .await;
+        let scope = ask.scope;
+        state
+            .0
+            .turns
+            .run(&scope, pending, |tx| {
+                assistant::take_turn(turn(&state), scope.clone(), ask.message, tx)
+            })
+            .await;
     });
-    events(rx)
+    events(following)
+}
+
+/// The answer `scope` is in the middle of, from its first word, for a page that wasn't there
+/// when it was asked. Ends at once when nothing is being answered.
+pub async fn follow(State(state): State<AppState>, Path(scope): Path<String>) -> impl IntoResponse {
+    match state.0.turns.pending(&scope) {
+        Some(pending) => events(pending.follow()),
+        None => {
+            let (tx, rx) = mpsc::channel(1);
+            let _ = tx.try_send(ChatEvent::Done);
+            events(rx)
+        }
+    }
+}
+
+/// Stops the answer `scope` is in the middle of. Neither it nor its question is kept.
+pub async fn stop(State(state): State<AppState>, Path(scope): Path<String>) -> StatusCode {
+    state.0.turns.stop(&scope);
+    StatusCode::NO_CONTENT
 }
 
 #[derive(Debug, Deserialize)]
@@ -141,13 +162,15 @@ pub async fn transcript(State(state): State<AppState>, Path(scope): Path<String>
                     body: turn.body.clone(),
                 })
                 .collect();
-            Json(turns).into_response()
+            let pending = state.0.turns.pending(&scope).map(|pending| pending.view());
+            Json(serde_json::json!({ "turns": turns, "pending": pending })).into_response()
         }
         Err(error) => refused(StatusCode::BAD_REQUEST, error),
     }
 }
 
 pub async fn clear(State(state): State<AppState>, Path(scope): Path<String>) -> Response {
+    state.0.turns.stop(&scope);
     match assistant::clear(&state.0.db.path, &scope) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => refused(StatusCode::BAD_REQUEST, error),
@@ -180,6 +203,7 @@ fn turn(state: &AppState) -> Turn<'_> {
         config: &state.0.config,
         history: &state.0.history,
         db: &state.0.db.path,
+        log: &state.0.log,
     }
 }
 

@@ -1958,8 +1958,8 @@
     .send:hover:not(:disabled) { scale: 1.08; }
     .send:active:not(:disabled) { scale: .92; }
     .send:disabled { background: var(--line); color: var(--muted); cursor: default; }
-    .send.busy svg { animation: send-wait 1s var(--ease-out) infinite; }
-    @keyframes send-wait { 50% { translate: 0 -.18rem; opacity: .5; } }
+    /* While an answer is on its way the button calls it off. */
+    .send.stop { background: var(--fg); color: var(--bg); }
 
     /* The Settings card. It folds like the others, and says beside its name how it is set. */
     .assistant-card .modes { position: relative; display: grid; grid-template-columns: 1fr 1fr;

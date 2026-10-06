@@ -5,6 +5,7 @@
 //! the core's pushes (state changes, registry changes, the page's questions), for the engine's
 //! next timer, for a call's answer, and every couple of seconds to notice edited flow files.
 
+pub mod brief;
 pub mod rpc;
 pub mod store;
 

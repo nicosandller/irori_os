@@ -91,6 +91,8 @@ fn App() -> impl IntoView {
     let assistant = RwSignal::new(None);
     provide_context(Assistant(assistant));
     provide_context(assistant::Asking(RwSignal::new(None)));
+    provide_context(assistant::Chats::new());
+    provide_context(assistant::ModelSide(RwSignal::new(None)));
     let model_log = RwSignal::new(false);
     provide_context(assistant::ModelLog(model_log));
 

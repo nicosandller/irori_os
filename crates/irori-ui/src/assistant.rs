@@ -4,6 +4,8 @@
 //! is ready it opens a chat window under itself, about the thing the page is showing, and the
 //! sidebar grows an entry for the chat about the whole home.
 
+use std::collections::HashMap;
+
 use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -13,6 +15,220 @@ use web_sys::wasm_bindgen::JsCast as _;
 
 use crate::Assistant;
 use crate::api::{self, AssistantStatus, Progress, Streamed};
+
+/// One conversation as the page holds it: what was said, what is being typed, and the answer
+/// on its way.
+#[derive(Debug, Clone, Copy)]
+struct Thread {
+    messages: RwSignal<Vec<api::AssistantMessage>>,
+    draft: RwSignal<String>,
+    asking: RwSignal<bool>,
+    phase: RwSignal<Phase>,
+    /// The answer so far, while it is being written.
+    writing: RwSignal<String>,
+    trouble: RwSignal<Option<String>>,
+    /// The question a failed answer was for, so it can be asked again without typing it.
+    unanswered: RwSignal<Option<String>>,
+    /// Seconds since the question was sent.
+    waited: RwSignal<u32>,
+    /// Which wait the clock is counting: a new question starts a new one.
+    round: RwSignal<u32>,
+}
+
+/// Every conversation this page has opened, by what it is about. Kept by the shell and not by
+/// the chat drawn on a page, so a question asked on one page is still there, and still being
+/// answered, after a look at another.
+#[derive(Debug, Clone)]
+pub struct Chats {
+    /// The shell's own owner. A conversation's signals belong to it, so they outlive the page
+    /// that first opened the conversation.
+    owner: Owner,
+    threads: StoredValue<HashMap<String, Thread>>,
+}
+
+impl Chats {
+    /// Call from the shell, whose lifetime the conversations take.
+    pub fn new() -> Self {
+        Self {
+            owner: Owner::current().unwrap_or_default(),
+            threads: StoredValue::new(HashMap::new()),
+        }
+    }
+
+    fn thread(&self, scope: &str) -> Thread {
+        if let Some(thread) = self
+            .threads
+            .with_value(|threads| threads.get(scope).copied())
+        {
+            return thread;
+        }
+        let thread = self.owner.with(|| Thread {
+            messages: RwSignal::new(Vec::new()),
+            draft: RwSignal::new(String::new()),
+            asking: RwSignal::new(false),
+            phase: RwSignal::new(Phase::Thinking),
+            writing: RwSignal::new(String::new()),
+            trouble: RwSignal::new(None),
+            unanswered: RwSignal::new(None),
+            waited: RwSignal::new(0),
+            round: RwSignal::new(0),
+        });
+        self.threads.update_value(|threads| {
+            threads.insert(scope.to_owned(), thread);
+        });
+        thread
+    }
+}
+
+impl Thread {
+    /// Shows that an answer is on its way, and counts the seconds until it is here. A model
+    /// on a small machine can take minutes; the count says it is still going.
+    fn wait(self, already: u32) {
+        self.writing.set(String::new());
+        self.phase.set(Phase::Thinking);
+        self.waited.set(already);
+        self.asking.set(true);
+        let round = self.round.get_untracked() + 1;
+        self.round.set(round);
+        spawn_local(async move {
+            loop {
+                gloo_timers::future::sleep(std::time::Duration::from_secs(1)).await;
+                if !self.asking.get_untracked() || self.round.get_untracked() != round {
+                    return;
+                }
+                self.waited.update(|seconds| *seconds += 1);
+            }
+        });
+    }
+
+    /// What each piece of an answer does to the page.
+    fn hear(self) -> impl FnMut(Streamed) {
+        move |event| match event {
+            Streamed::Delta(delta) => {
+                self.writing.update(|answer| answer.push_str(&delta));
+                self.phase.set(Phase::Writing);
+            }
+            Streamed::Step(tool) => self.phase.set(Phase::Looking(tool)),
+            Streamed::Failed(_) | Streamed::Done => {}
+        }
+    }
+
+    /// The answer to `question` has ended, well or badly. What Irori kept is what is shown:
+    /// a reply that failed or was stopped isn't kept, and neither is its question.
+    async fn settle(self, scope: &str, question: String, result: Result<(), String>) {
+        let kept = api::assistant_transcript(scope).await;
+        match (kept, &result) {
+            (Ok(kept), _) => self.messages.set(kept.turns),
+            (Err(_), Ok(())) => {
+                let body = self.writing.get_untracked();
+                self.messages.update(|turns| {
+                    turns.push(api::AssistantMessage {
+                        role: "assistant".to_owned(),
+                        body: body.trim_end().to_owned(),
+                    })
+                });
+            }
+            (Err(_), Err(_)) => {}
+        }
+        if let Err(error) = result {
+            self.trouble.set(Some(error));
+            self.unanswered.set(Some(question));
+        }
+        self.writing.set(String::new());
+        self.asking.set(false);
+    }
+
+    /// Reads the conversation as Irori has it. A question Irori is still answering, asked
+    /// before this page was loaded or from somewhere else, is joined where it has got to.
+    fn load(self, scope: String) {
+        // An answer this page is already reading is ahead of anything it could fetch.
+        if self.asking.get_untracked() {
+            return;
+        }
+        spawn_local(async move {
+            let kept = match api::assistant_transcript(&scope).await {
+                Ok(kept) => kept,
+                Err(error) => {
+                    self.trouble.set(Some(error));
+                    return;
+                }
+            };
+            if self.asking.get_untracked() {
+                return;
+            }
+            // Coming back to a conversation nothing was added to draws nothing again.
+            if self.messages.with_untracked(|turns| *turns != kept.turns) {
+                self.messages.set(kept.turns);
+            }
+            let Some(pending) = kept.pending else {
+                return;
+            };
+            if let Some(why) = pending.failed {
+                self.trouble.set(Some(why));
+                self.unanswered.set(Some(pending.question));
+                return;
+            }
+            self.trouble.set(None);
+            self.unanswered.set(None);
+            self.messages.update(|turns| {
+                turns.push(api::AssistantMessage {
+                    role: "user".to_owned(),
+                    body: pending.question.clone(),
+                })
+            });
+            self.wait(pending.seconds);
+            let result = api::assistant_follow(&scope, self.hear()).await;
+            self.settle(&scope, pending.question, result).await;
+        });
+    }
+
+    /// Asks what is in the box.
+    fn ask(self, scope: String) {
+        if self.asking.get_untracked() {
+            return;
+        }
+        let text = self.draft.get_untracked().trim().to_owned();
+        if text.is_empty() {
+            return;
+        }
+        self.draft.set(String::new());
+        self.trouble.set(None);
+        self.unanswered.set(None);
+        self.wait(0);
+        self.messages.update(|turns| {
+            turns.push(api::AssistantMessage {
+                role: "user".to_owned(),
+                body: text.clone(),
+            })
+        });
+        spawn_local(async move {
+            let result = api::assistant_ask(&scope, &text, self.hear()).await;
+            self.settle(&scope, text, result).await;
+        });
+    }
+
+    /// Stops the answer on its way. Its question goes back in the box, to change or send again.
+    fn stop(self, scope: String) {
+        let asked = self.messages.with_untracked(|turns| {
+            turns
+                .last()
+                .filter(|turn| turn.role == "user")
+                .map(|turn| turn.body.clone())
+        });
+        spawn_local(async move {
+            match api::assistant_stop(&scope).await {
+                Ok(()) => {
+                    if let Some(asked) = asked
+                        && self.draft.with_untracked(String::is_empty)
+                    {
+                        self.draft.set(asked);
+                    }
+                }
+                Err(error) => self.trouble.set(Some(error)),
+            }
+        });
+    }
+}
 
 /// The chat window an Ask button opened: what it is about, and where the button was.
 #[derive(Debug, Clone, PartialEq)]
@@ -214,6 +430,7 @@ impl Phase {
                 "list_devices" => "Looking around the home",
                 "get_device" => "Checking a device",
                 "recent_states" => "Reading recent values",
+                "read_logs" => "Reading the log",
                 _ => "Looking something up",
             },
             Self::Writing => "Writing",
@@ -228,17 +445,18 @@ pub fn Chat(
     title: String,
     #[prop(optional)] on_close: Option<Callback<()>>,
 ) -> impl IntoView {
-    let messages = RwSignal::new(Vec::<api::AssistantMessage>::new());
-    let draft = RwSignal::new(String::new());
-    let asking = RwSignal::new(false);
-    let phase = RwSignal::new(Phase::Thinking);
-    // The answer so far, while it is being written.
-    let writing = RwSignal::new(String::new());
-    let trouble = RwSignal::new(None::<String>);
-    // The question a failed answer was for, so it can be asked again without typing it.
-    let unanswered = RwSignal::new(None::<String>);
-    // Seconds since the question was sent.
-    let waited = RwSignal::new(0u32);
+    let thread = expect_context::<Chats>().thread(&scope);
+    let Thread {
+        messages,
+        draft,
+        asking,
+        phase,
+        writing,
+        trouble,
+        unanswered,
+        waited,
+        ..
+    } = thread;
     let log = NodeRef::<leptos::html::Div>::new();
     let scope = StoredValue::new(scope);
     let assistant = expect_context::<Assistant>();
@@ -251,16 +469,7 @@ pub fn Chat(
             .is_some_and(|status| status.mode == "local" && status.managed)
     };
 
-    spawn_local(async move {
-        match api::assistant_transcript(&scope.get_value()).await {
-            Ok(turns) => {
-                messages.try_set(turns);
-            }
-            Err(error) => {
-                trouble.try_set(Some(error));
-            }
-        }
-    });
+    thread.load(scope.get_value());
 
     // The newest line stays in view, while reading back and while an answer grows.
     Effect::new(move |_| {
@@ -274,83 +483,18 @@ pub fn Chat(
         });
     });
 
-    // The chat can be closed while an answer is on its way, so everything the answer touches
-    // is asked for with `try_`: by then it may be gone.
-    let send = Callback::new(move |_: ()| {
-        if asking.get_untracked() {
-            return;
-        }
-        let text = draft.get_untracked().trim().to_owned();
-        if text.is_empty() {
-            return;
-        }
-        draft.set(String::new());
-        asking.set(true);
-        trouble.set(None);
-        unanswered.set(None);
-        writing.set(String::new());
-        phase.set(Phase::Thinking);
-        waited.set(0);
-        // A model on a small machine can take minutes. The count says it is still going.
-        spawn_local(async move {
-            while asking.try_get_untracked() == Some(true) {
-                gloo_timers::future::sleep(std::time::Duration::from_secs(1)).await;
-                waited.try_update(|seconds| *seconds += 1);
-            }
-        });
-        messages.update(|turns| {
-            turns.push(api::AssistantMessage {
-                role: "user".to_owned(),
-                body: text.clone(),
-            })
-        });
-        spawn_local(async move {
-            let scope = scope.try_get_value().unwrap_or_default();
-            let result = api::assistant_ask(&scope, &text, |event| match event {
-                Streamed::Delta(delta) => {
-                    writing.try_update(|answer| answer.push_str(&delta));
-                    phase.try_set(Phase::Writing);
-                }
-                Streamed::Step(tool) => {
-                    phase.try_set(Phase::Looking(tool));
-                }
-                Streamed::Failed(_) | Streamed::Done => {}
-            })
-            .await;
-            match result {
-                Ok(()) => {
-                    let body = writing.try_get_untracked().unwrap_or_default();
-                    messages.try_update(|turns| {
-                        turns.push(api::AssistantMessage {
-                            role: "assistant".to_owned(),
-                            body: body.trim_end().to_owned(),
-                        })
-                    });
-                }
-                Err(error) => {
-                    trouble.try_set(Some(error));
-                    unanswered.try_set(Some(text.clone()));
-                    // A reply that failed isn't kept, and neither is its question.
-                    if let Ok(turns) = api::assistant_transcript(&scope).await {
-                        messages.try_set(turns);
-                    }
-                }
-            }
-            writing.try_set(String::new());
-            asking.try_set(false);
-        });
-    });
+    let send = Callback::new(move |_: ()| thread.ask(scope.get_value()));
 
     let clear = move |_| {
+        let scope = scope.get_value();
         spawn_local(async move {
-            let scope = scope.try_get_value().unwrap_or_default();
             match api::assistant_clear(&scope).await {
                 Ok(()) => {
-                    messages.try_set(Vec::new());
+                    messages.set(Vec::new());
+                    trouble.set(None);
+                    unanswered.set(None);
                 }
-                Err(error) => {
-                    trouble.try_set(Some(error));
-                }
+                Err(error) => trouble.set(Some(error)),
             }
         });
     };
@@ -485,18 +629,41 @@ pub fn Chat(
                         }
                     }
                 ></textarea>
-                <button
-                    type="submit"
-                    class="send"
-                    aria-label="Send"
-                    class:busy=move || asking.get()
-                    disabled=move || asking.get() || draft.with(|text| text.trim().is_empty())
-                >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M12 19V5M5.5 11.5L12 5l6.5 6.5" fill="none" stroke="currentColor"
-                            stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-                    </svg>
-                </button>
+                // Irori answers whether or not this chat is open, so while it does, the button
+                // is the way to call the answer off.
+                {move || if asking.get() {
+                    view! {
+                        <button
+                            type="button"
+                            class="send stop"
+                            aria-label="Stop"
+                            title="Stop answering"
+                            on:click=move |_| thread.stop(scope.get_value())
+                        >
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                                <rect x="7" y="7" width="10" height="10" rx="1.6"
+                                    fill="currentColor" />
+                            </svg>
+                        </button>
+                    }
+                    .into_any()
+                } else {
+                    view! {
+                        <button
+                            type="submit"
+                            class="send"
+                            aria-label="Send"
+                            disabled=move || draft.with(|text| text.trim().is_empty())
+                        >
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                                <path d="M12 19V5M5.5 11.5L12 5l6.5 6.5" fill="none"
+                                    stroke="currentColor" stroke-width="2.2"
+                                    stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                        </button>
+                    }
+                    .into_any()
+                }}
             </form>
         </section>
     }
@@ -504,16 +671,32 @@ pub fn Chat(
 
 /// The two ways a model can answer, as the Settings card shows them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Side {
+pub enum Side {
     Local,
     Cloud,
+}
+
+/// Which side of the Settings card is showing. `None` until the first status says which model
+/// is in use; after that only a click on the slider changes it. Kept by the shell, because
+/// the card is drawn again each time its row opens, and would otherwise choose again.
+#[derive(Debug, Clone, Copy)]
+pub struct ModelSide(pub RwSignal<Option<Side>>);
+
+/// The side the card opens on: the one whose model is in use, and this machine when none is.
+fn first_side(mode: &str) -> Side {
+    if mode == "cloud" {
+        Side::Cloud
+    } else {
+        Side::Local
+    }
 }
 
 /// What the Assistant row of Settings opens to. Always there; a model is optional.
 #[component]
 pub fn Section() -> impl IntoView {
     let assistant = expect_context::<Assistant>();
-    let side = RwSignal::new(Side::Local);
+    let shown = expect_context::<ModelSide>().0;
+    let side = Memo::new(move |_| shown.get().unwrap_or(Side::Local));
     let local_tag = RwSignal::new("qwen3:1.7b".to_owned());
     let preset = RwSignal::new("openai".to_owned());
     let base_url = RwSignal::new(String::new());
@@ -528,12 +711,9 @@ pub fn Section() -> impl IntoView {
     let log_open = expect_context::<ModelLog>().0;
     let trouble = RwSignal::new(None::<String>);
 
+    // The fields, as Irori has them. The slider is not one of them: nothing Irori answers
+    // moves it.
     let apply = move |status: &AssistantStatus| {
-        side.set(if status.mode == "cloud" {
-            Side::Cloud
-        } else {
-            Side::Local
-        });
         local_tag.set(status.local_tag.clone());
         preset.set(status.preset.clone());
         base_url.set(status.base_url.clone());
@@ -549,6 +729,9 @@ pub fn Section() -> impl IntoView {
         if let Some(status) = assistant.0.get() {
             apply(&status);
             loaded.set(true);
+            if shown.get_untracked().is_none() {
+                shown.set(Some(first_side(&status.mode)));
+            }
         }
     });
 
@@ -560,8 +743,11 @@ pub fn Section() -> impl IntoView {
     });
 
     // Every change goes through here: one at a time, and the card shows what came back.
+    // `saved` is whether the fields themselves were what was sent: only then are they read
+    // back, so loading or deleting a model leaves a half-typed field alone.
     let change =
-        move |work: std::pin::Pin<Box<dyn Future<Output = Result<AssistantStatus, String>>>>| {
+        move |work: std::pin::Pin<Box<dyn Future<Output = Result<AssistantStatus, String>>>>,
+              saved: bool| {
             if busy.get_untracked() {
                 return;
             }
@@ -570,8 +756,10 @@ pub fn Section() -> impl IntoView {
             spawn_local(async move {
                 match work.await {
                     Ok(status) => {
-                        apply(&status);
-                        api_key.set(String::new());
+                        if saved {
+                            apply(&status);
+                            api_key.set(String::new());
+                        }
                         assistant.0.set(Some(status));
                     }
                     Err(error) => trouble.set(Some(error)),
@@ -588,7 +776,10 @@ pub fn Section() -> impl IntoView {
             });
         };
     let save = move |body: serde_json::Value| {
-        change(Box::pin(async move { api::save_assistant(&body).await }));
+        change(
+            Box::pin(async move { api::save_assistant(&body).await }),
+            true,
+        );
     };
 
     // Installing Ollama alone (`with_model` false), or downloading a model, which installs
@@ -645,7 +836,7 @@ pub fn Section() -> impl IntoView {
                             role="radio"
                             class:on=move || side.get() == which
                             aria-checked=move || (side.get() == which).to_string()
-                            on:click=move |_| side.set(which)
+                            on:click=move |_| shown.set(Some(which))
                         >
                             {words}
                             {move || status().is_some_and(|status| status.mode == mode).then(|| {
@@ -709,7 +900,7 @@ pub fn Section() -> impl IntoView {
                                             </span>
                                             <button type="button" class="danger-button"
                                                 disabled=move || busy.get()
-                                                on:click=move |_| change(Box::pin(api::assistant_uninstall()))>
+                                                on:click=move |_| change(Box::pin(api::assistant_uninstall()), false)>
                                                 "Uninstall"
                                             </button>
                                             <button type="button" class="quiet-button"
@@ -826,7 +1017,7 @@ pub fn Section() -> impl IntoView {
                                                             holding.set(Some(tag.clone()));
                                                             change(Box::pin(async move {
                                                                 api::assistant_hold(&tag, !loaded).await
-                                                            }));
+                                                            }), false);
                                                         }
                                                     }>
                                                     {move || {
@@ -848,7 +1039,7 @@ pub fn Section() -> impl IntoView {
                                                         let tag = deleting.clone();
                                                         change(Box::pin(async move {
                                                             api::assistant_forget(&tag).await
-                                                        }));
+                                                        }), false);
                                                     }>
                                                     "Delete"
                                                 </button>
@@ -946,9 +1137,10 @@ pub fn Section() -> impl IntoView {
                             />
                         </label>
                         <p class="muted small">
-                            "A cloud answer leaves the house: what you ask, and the names and \
-                             states of your devices, go to the provider. The key stays on this \
-                             machine and is never shown again."
+                            "A cloud answer leaves the house: what you ask goes to the provider, \
+                             with the names and states of your devices, and, when you ask from \
+                             Settings, Irori's settings and lines of its log. The key stays on \
+                             this machine and is never shown again."
                         </p>
                         {move || status().filter(|status| status.mode == "cloud").map(|status| {
                             view! { <p class="assistant-detail" class:ok=status.ready>{status.detail}</p> }
@@ -1071,5 +1263,12 @@ mod tests {
         assert_eq!(progress_words(""), "Starting");
         assert_eq!(size(1_400_000_000), "1.3 GB");
         assert_eq!(size(300 * 1024 * 1024), "300 MB");
+    }
+
+    #[test]
+    fn the_card_opens_on_the_model_in_use_and_on_this_machine_when_none_is() {
+        assert_eq!(first_side("cloud"), Side::Cloud);
+        assert_eq!(first_side("local"), Side::Local);
+        assert_eq!(first_side("off"), Side::Local);
     }
 }
