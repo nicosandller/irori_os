@@ -1,5 +1,6 @@
 //! The Extensions page: every official extension, install and uninstall.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use leptos::prelude::*;
@@ -23,6 +24,18 @@ pub fn Extensions() -> impl IntoView {
     // An extension with full access to the machine doesn't install on the first click. This is
     // the one waiting for that approval.
     let confirm_install = RwSignal::new(None::<String>);
+    // Which extension's whole story is open: a card says what fits, and this is the rest.
+    let more_open = RwSignal::new(None::<String>);
+    // The newest error in each extension's own log, for the mark on its log button.
+    let log_errors = RwSignal::new(BTreeMap::<String, String>::new());
+    // The trouble somebody has read and cleared, per extension: the mark stays off until that
+    // extension's trouble is a different one. Kept by the browser, like other things that are
+    // about reading rather than about the home.
+    let cleared = RwSignal::new(remembered_cleared());
+    Effect::new(move |_| {
+        let saved = serde_json::to_string(&cleared.get()).unwrap_or_default();
+        crate::devices::remember(CLEARED_KEY, &saved);
+    });
 
     let reload = move || {
         spawn_local(async move {
@@ -36,6 +49,36 @@ pub fn Extensions() -> impl IntoView {
         });
     };
     reload();
+
+    // Looked for when the page opens and whenever what's installed changes — not with every
+    // refresh of the catalog, which while something installs is once a second.
+    let installed = Memo::new(move |_| {
+        catalog.with(|catalog| {
+            catalog
+                .iter()
+                .filter(|entry| entry.installed)
+                .map(|entry| entry.id.clone())
+                .collect::<Vec<_>>()
+        })
+    });
+    Effect::new(move |_| {
+        for id in installed.get() {
+            spawn_local(async move {
+                let Ok(lines) = api::fetch_extension_log(&id).await else {
+                    return;
+                };
+                let newest = crate::log_window::last_error(&lines).map(str::to_owned);
+                log_errors.update(|marked| match newest {
+                    Some(error) => {
+                        marked.insert(id, error);
+                    }
+                    None => {
+                        marked.remove(&id);
+                    }
+                });
+            });
+        }
+    });
 
     // The categories actually present, in the order the catalog lists them, so a quick filter
     // never offers a choice that would show nothing.
@@ -134,6 +177,9 @@ pub fn Extensions() -> impl IntoView {
                                         settings_open,
                                         log_open,
                                         confirm_install,
+                                        more_open,
+                                        log_errors,
+                                        cleared,
                                     )
                                 })
                                 .collect_view()
@@ -169,11 +215,107 @@ pub fn Extensions() -> impl IntoView {
             })
         }}
 
-        {move || log_open.get().map(|id| view! {
-            <crate::log_window::LogWindow
-                source=crate::log_window::Source::Extension(id)
-                on_close=move || log_open.set(None)
-            />
+        // Everything a card had no room for: the whole description, what access it has, how it
+        // is faring and why, and what it found that Irori can't use yet.
+        {move || {
+            let id = more_open.get()?;
+            let entry = catalog.get().into_iter().find(|entry| entry.id == id)?;
+            let unmodeled = unplaced_unmodeled(&id);
+            let log_id = id.clone();
+            Some(view! {
+                <crate::modal::Modal title=entry.name.clone() on_close=move || more_open.set(None)>
+                    <div class="ext-more">
+                        <p class="muted small">
+                            {category_label(&entry.category)}" · "{entry.version.clone()}
+                            {entry.state.clone().map(|state| format!(" · {}", state.replace('_', " ")))}
+                        </p>
+                        <p>{entry.description.clone()}</p>
+                        {entry.full_access.then(|| view! {
+                            <p class="ext-access">
+                                "Full access to this machine: it can download and run other "
+                                "programs, the same as a terminal."
+                            </p>
+                        })}
+                        {entry.reason.clone().map(|why| view! {
+                            <p class="why">{why}</p>
+                            {entry.installed.then(|| view! {
+                                <p>
+                                    <button
+                                        type="button"
+                                        class="quiet-button"
+                                        on:click=move |_| {
+                                            more_open.set(None);
+                                            log_open.set(Some(log_id.clone()));
+                                        }
+                                    >
+                                        "View log"
+                                    </button>
+                                </p>
+                            })}
+                        })}
+                        {unmodeled.map(|text| view! { <p class="muted small">{text}</p> })}
+                    </div>
+                </crate::modal::Modal>
+            })
+        }}
+
+        {move || log_open.get().map(|id| {
+            let reason = catalog.with(|catalog| {
+                catalog
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .and_then(|entry| entry.reason.clone())
+            });
+            // Only offered when there is a mark to clear.
+            let marked = cleared.with_untracked(|cleared| {
+                log_errors.with_untracked(|errors| {
+                    troubled(&id, reason.as_deref(), errors, cleared)
+                })
+            });
+            let clear = {
+                let id = id.clone();
+                Callback::new(move |()| {
+                    let (id, reason) = (id.clone(), reason.clone());
+                    // What's in the log now, not what was there when the page opened: the
+                    // error being cleared is the one just read.
+                    spawn_local(async move {
+                        let newest = match api::fetch_extension_log(&id).await {
+                            Ok(lines) => crate::log_window::last_error(&lines).map(str::to_owned),
+                            Err(_) => log_errors.with_untracked(|errors| errors.get(&id).cloned()),
+                        };
+                        log_errors.update(|errors| match &newest {
+                            Some(error) => {
+                                errors.insert(id.clone(), error.clone());
+                            }
+                            None => {
+                                errors.remove(&id);
+                            }
+                        });
+                        let seen = trouble_of(reason.as_deref(), newest.as_deref());
+                        cleared.update(|cleared| {
+                            cleared.insert(id, seen);
+                        });
+                    });
+                })
+            };
+            if marked {
+                view! {
+                    <crate::log_window::LogWindow
+                        source=crate::log_window::Source::Extension(id)
+                        on_close=move || log_open.set(None)
+                        on_clear=clear
+                    />
+                }
+                .into_any()
+            } else {
+                view! {
+                    <crate::log_window::LogWindow
+                        source=crate::log_window::Source::Extension(id)
+                        on_close=move || log_open.set(None)
+                    />
+                }
+                .into_any()
+            }
         })}
 
         // Full access is the one install that has to be asked about (extensions.md §7). The
@@ -220,6 +362,10 @@ pub fn Extensions() -> impl IntoView {
     }
 }
 
+/// One extension: what it is in a couple of lines, and its buttons. Every card is the same
+/// height whatever its extension has to say; the rest is behind "Show more". What's wrong with
+/// one isn't written on its card — the mark on its log button says there is something to read.
+#[allow(clippy::too_many_arguments)]
 fn card(
     entry: CatalogEntry,
     busy: RwSignal<Option<String>>,
@@ -228,14 +374,17 @@ fn card(
     settings_open: RwSignal<Option<String>>,
     log_open: RwSignal<Option<String>>,
     confirm_install: RwSignal<Option<String>>,
+    more_open: RwSignal<Option<String>>,
+    log_errors: RwSignal<BTreeMap<String, String>>,
+    cleared: RwSignal<BTreeMap<String, String>>,
 ) -> impl IntoView {
     let id = entry.id.clone();
     let id_busy = id.clone();
     let id_click = id.clone();
     let id_gear = id.clone();
     let id_log = id.clone();
-    let id_log_btn = id.clone();
-    let id_unmodeled = id.clone();
+    let id_more = id.clone();
+    let id_marked = id.clone();
     let installed = entry.installed;
     let full_access = entry.full_access;
     let running = entry.state.as_deref() == Some("running");
@@ -243,6 +392,14 @@ fn card(
     // the way out is the very button next to this.
     let needs_setup = entry.state.as_deref() == Some("needs_setup");
     let schema = entry.config_schema.clone();
+    // Irori's own word that something went wrong, or an error in what the extension wrote —
+    // unless that very trouble has been read and cleared.
+    let reason = entry.reason.clone();
+    let troubled = move || {
+        log_errors.with(|errors| {
+            cleared.with(|cleared| troubled(&id_marked, reason.as_deref(), errors, cleared))
+        })
+    };
     // A `Memo` rather than a plain closure: it's `Copy`, so the same check can be read from the
     // button's `disabled`, its progress bar, and its label without cloning the id three times.
     let is_busy = Memo::new(move |_| busy.get().as_deref() == Some(id_busy.as_str()));
@@ -259,36 +416,22 @@ fn card(
                     <span class="muted small">{entry.version.clone()}</span>
                 </div>
             </div>
-            {entry.state.clone().map(|state| view! {
-                <span class="state" class:ok=running class:wants-setup=needs_setup>
-                    {state.replace('_', " ")}
-                </span>
-            })}
+            <div class="ext-standing">
+                {entry.state.clone().map(|state| view! {
+                    <span class="state" class:ok=running class:wants-setup=needs_setup>
+                        {state.replace('_', " ")}
+                    </span>
+                })}
+                {full_access.then(|| view! { <span class="chip quiet ext-full">"full access"</span> })}
+            </div>
             <p class="muted ext-description">{entry.description.clone()}</p>
-            {full_access.then(|| view! {
-                <p class="ext-access">"Full access to this machine."</p>
-            })}
-            // The reason, and a way to the whole of what the extension said — one line rarely
-            // covers a crash, and the alternative is a terminal the person may not have open.
-            {entry.reason.clone().map(|why| {
-                let id_log = id_log.clone();
-                view! {
-                    <p class="why">
-                        {why}
-                        {installed.then(|| view! {
-                            " "
-                            <button
-                                type="button"
-                                class="quiet-button"
-                                on:click=move |_| log_open.set(Some(id_log.clone()))
-                            >
-                                "View log"
-                            </button>
-                        })}
-                    </p>
-                }
-            })}
-            {move || unplaced_unmodeled(&id_unmodeled).map(|text| view! { <p class="muted small">{text}</p> })}
+            <button
+                type="button"
+                class="quiet-button ext-more-button"
+                on:click=move |_| more_open.set(Some(id_more.clone()))
+            >
+                "Show more"
+            </button>
             <div class="ext-actions">
                 {if installed {
                     view! {
@@ -339,28 +482,77 @@ fn card(
                             title=if needs_setup { "Set it up" } else { "Settings" }
                             on:click=move |_| settings_open.set(Some(id_gear.clone()))
                         >
-                            {if needs_setup { "Set it up" } else { "⚙" }}
+                            {if needs_setup {
+                                "Set it up".into_any()
+                            } else {
+                                crate::icons::icon(crate::icons::Icon::Gear)
+                            }}
                         </button>
                     }
                 })}
-                // Only when nothing is wrong: a failing card already links to the log from its
-                // reason line, which is where the eye already is.
-                {(installed && entry.reason.is_none()).then(|| {
+                // The same button on every installed extension, in the same place, whether or
+                // not anything is wrong. When something is, it carries a mark.
+                {installed.then(|| {
+                    let label = troubled.clone();
+                    let title = troubled.clone();
+                    let marked = troubled.clone();
                     view! {
                         <button
                             type="button"
-                            class="ext-settings-btn"
-                            aria-label="Log"
-                            title="What this extension has said for itself"
-                            on:click=move |_| log_open.set(Some(id_log_btn.clone()))
+                            class="ext-settings-btn ext-log-btn"
+                            class:troubled=troubled
+                            aria-label=move || if label() { "Log — it has errors" } else { "Log" }
+                            title=move || {
+                                if title() {
+                                    "Something went wrong: read what this extension said"
+                                } else {
+                                    "What this extension has said for itself"
+                                }
+                            }
+                            on:click=move |_| log_open.set(Some(id_log.clone()))
                         >
-                            "☰"
+                            {crate::icons::icon(crate::icons::Icon::Logs)}
+                            <span class="ext-mark" aria-hidden="true" hidden=move || !marked()>"!"</span>
                         </button>
                     }
                 })}
             </div>
         </section>
     }
+}
+
+/// Where the browser keeps which troubles have been cleared.
+const CLEARED_KEY: &str = "irori.extensions.cleared";
+
+fn remembered_cleared() -> BTreeMap<String, String> {
+    crate::devices::stored(CLEARED_KEY)
+        .and_then(|saved| serde_json::from_str(&saved).ok())
+        .unwrap_or_default()
+}
+
+/// An extension's trouble, as one thing that can be told apart from its next trouble: why Irori
+/// says it failed, and the newest error in its log.
+fn trouble_of(reason: Option<&str>, newest_error: Option<&str>) -> String {
+    format!(
+        "{}\n{}",
+        reason.unwrap_or_default(),
+        newest_error.unwrap_or_default()
+    )
+}
+
+/// Whether an extension's log button carries the mark: it has trouble, and it isn't the trouble
+/// somebody already cleared.
+fn troubled(
+    id: &str,
+    reason: Option<&str>,
+    errors: &BTreeMap<String, String>,
+    cleared: &BTreeMap<String, String>,
+) -> bool {
+    let newest = errors.get(id).map(String::as_str);
+    if reason.is_none() && newest.is_none() {
+        return false;
+    }
+    cleared.get(id).map(String::as_str) != Some(trouble_of(reason, newest).as_str())
 }
 
 fn category_label(category: &str) -> String {
@@ -468,4 +660,36 @@ fn unplaced_unmodeled(id: &str) -> Option<String> {
             )
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(id, value)| ((*id).to_owned(), (*value).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn the_mark_is_for_trouble_nobody_has_cleared() {
+        let none = BTreeMap::new();
+        // Nothing wrong, no mark.
+        assert!(!troubled("demo", None, &none, &none));
+        // An error in its log, or Irori saying it failed, is a mark.
+        let errors = map(&[("zigbee", "12:00 ERROR no dongle")]);
+        assert!(troubled("zigbee", None, &errors, &none));
+        assert!(troubled("cast", Some("exited"), &none, &none));
+        // Somebody else's error isn't.
+        assert!(!troubled("demo", None, &errors, &none));
+        // Cleared, it stays off...
+        let cleared = map(&[("zigbee", &trouble_of(None, Some("12:00 ERROR no dongle")))]);
+        assert!(!troubled("zigbee", None, &errors, &cleared));
+        // ...until the trouble is a different one: a newer error, or a failure.
+        let newer = map(&[("zigbee", "12:05 ERROR no dongle")]);
+        assert!(troubled("zigbee", None, &newer, &cleared));
+        assert!(troubled("zigbee", Some("exited"), &errors, &cleared));
+    }
 }

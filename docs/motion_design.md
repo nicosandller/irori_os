@@ -61,7 +61,15 @@ What moves today, and where to find it.
 | Changing page | The page arrives from where it is in the sidebar — up from below for a page further down, down from above for one further up; between devices it crossfades. | `transition.rs` (View Transition API through the router); CSS `::view-transition-*`. |
 | List → device | The list slides aside and the device's name travels from its row into the heading; back reverses it. | `transition.rs`; only the opened device's name carries a transition name. |
 | Start tiles | A tile grows into the heading of the page it opens, while the page rises in behind. | `transition.rs` `expand`; the tile and the new `.page-head` are `hero`. |
-| Settings | Sections arrive one after another; a menu button glides to its section and flashes it. | `settings.rs` `jump`; CSS `.settings-section`. |
+| Rows that fold | A group of devices, a section of Settings, a floor: the chevron turns and a drawer rolls down to exactly what's inside, and back. Nothing arrives on its own — every row starts where it was left, Settings folded. | `fold.rs`; CSS `.fold-row`, `.chevron`, `.drawer`. |
+| Switchers | Which view, what a list is grouped by, chart or table, which log lines: one highlight slides to the chosen one and takes its width. | `segmented.rs`, `glide.rs` `across`; CSS `.switcher > .glide`. |
+| Regrouping a list | Devices and Entities, grouped another way: each row on show travels from where it was to where it now belongs, and the headings change behind them. Past 80 rows the list just changes. | `devices/tables.rs` `regroup`, `transition.rs` `around`; rows carry `--vt`, named only under `html[data-nav="regroup"]`. |
+| Entity list history | The same drawer as a device's page, on every row of the Entities list. It stays down, and its chart stays drawn, while readings arrive. Regrouped, the drawer is still down and its day is not asked for again, though the chart draws its line in once more. | `history.rs`, `devices/tables.rs` `entity_row`, `device.rs` `history_panel`. |
+| System meters | A bar grows to its figure when the machine answers and moves when the figure does; turns red when nearly full; opens, like any drawer, to what's behind the figure and its last day as a chart. | `machine.rs` `meter`; CSS `.meter-fill` (a transition on `scale`). |
+| Floors and areas | "Add area" opens where the area will appear, its plus turning to a cross; Remove widens into "Remove?" before it does anything; while something is dragged, only what is under the pointer lights up, a folded floor opens when lingered over, and what was dropped travels to where it landed. | `places.rs`; CSS `.namer`, `.icon-button.asking`, `.over`, `html[data-nav="place"]`. |
+| Controls that follow what a thing is doing | A player, a lock, a cover or a valve only offers what makes sense now, and its row is drawn once and kept, so the change happens in place: Play turns into Pause, Stop and the volume fold away when it's off, Lock gives way to Unlock, a padlock's shackle lifts and drops (works up and down while the bolt moves, shakes once if it jams). | `devices/controls/mod.rs` `kept`, `glyph`, `tuck`; `media_player.rs`, `lock.rs`, `opening.rs`; CSS `.tuck`, `.glyph`, `.padlock`. |
+| Changing a name where it stands | A pencil beside a name, quiet until its row is pointed at; pressed, the name becomes a field in the same place with its own tick and cross, rising in once. | `inline.rs`; CSS `.editable`, `.pencil`, `.inline-edit`. |
+| Extension cards | A card lifts a little under the pointer; its gear leans; a mark sits on the log button when the log has an error in it. | `extensions.rs` `card`; CSS `.ext-card`, `.ext-settings-btn`, `.ext-mark`. |
 | Choices | A mode, a tone, an area: buttons in a row, the chosen one sunk with an ember edge. Hover and press are the button's. | `choices.rs`; CSS `.choices`. |
 | Live numbers | A reading counts to its new value and lifts or drops into place in ember, the way it went. | `count.rs`, for anything marked `data-n`. |
 | Device page history | The reading is the button — or pull it down; a drawer rolls down to its content; a number's day is a chart that draws itself in and then **grows with each new reading**, with a crosshair, a tooltip and arrow-key stepping. | `device.rs` `EntityRow`, `chart.rs`, `gesture.rs`; CSS `.unroll`, `.drawer`, `.chart-*`. |
@@ -89,6 +97,15 @@ replay every couple of seconds. So:
 - **Use `animation-fill-mode: backwards`**, not `both`, for entrances: once it has played, an
   entrance shouldn't hold `transform` or `opacity` over the element's own hover styles.
 
+### A control that changes shape is drawn once
+
+Most controls are drawn again from each reading, which is fine for a reading and a switch.
+One whose buttons depend on what the thing is doing can't be: a button that is drawn again
+can't turn into another, and a slider drawn again leaves the finger. Those go through `kept`
+(`devices/controls/mod.rs`): drawn once, with the state arriving as a signal, and everything
+that changes is a class or an attribute that flips. A button that only sometimes applies is
+wrapped in `tuck`, which folds it to nothing and makes it `inert`, rather than being left out.
+
 ### Move with the individual properties
 
 Many elements are already placed by their `transform` (the Floorplan's markers are
@@ -105,7 +122,8 @@ final height (the chart's waiting shimmer), so nothing jumps when it arrives.
 ### Choosing highlights glide
 
 Where one item in a column is chosen — the sidebar's page, the Floorplan's tool, its floor —
-the choice is a `<span class="glide">` that `glide.rs` moves to the chosen item. It lands
+or one in a row of a switcher (`segmented.rs`), the choice is a `<span class="glide">` that
+`glide.rs` moves to the chosen item (`glide` down a column, `across` along a row). It lands
 without travelling the first time, and fades out where nothing is chosen. Where the column
 becomes a row (on a phone), CSS hides it and the chosen item draws its own highlight.
 
@@ -122,8 +140,16 @@ which change it is as `data-nav` on `<html>`, and CSS animates by it:
 | `fade` | Between two devices, or anywhere the sidebar doesn't list | A crossfade. |
 | `floor-up` / `floor-down` | Changing floor on the Floorplan (`around`) | Only the plan. |
 | `step-in` / `step-out` | Into an extension's screen in the Add device window, and back (`around`, `step`) | Only the window's step; the picked card and the step's heading (`add-hero`) become each other. |
+| `regroup` | A list grouped another way (`around`) | Only its rows, each to its new place. The page itself changes at once. |
+| `place` | A device dropped on an area, an area on a floor (`around`) | Only chips and areas, the dropped one to where it landed. |
 
 A new kind of change gets a row here, a case in `navigation`, and a test.
+
+Rows that travel (`regroup`, `place`) each need a name of their own, so they carry one as
+`--vt` and CSS turns it into a `view-transition-name` only while that change is under way —
+never on a page change, where every row would lift out of the page. Only rows that are on show
+are named: one inside a folded group would be pictured where it is laid out and fly out of a
+group that isn't showing it.
 
 ### Numbers that change count, through `data-n`
 

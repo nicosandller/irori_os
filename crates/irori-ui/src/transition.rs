@@ -96,7 +96,9 @@ pub fn around(kind: &'static str, change: impl FnOnce() + 'static) {
         && let Ok(then) = Reflect::get(&finished, &JsValue::from_str("then"))
         && let Ok(then) = then.dyn_into::<Function>()
     {
-        let _ = then.call1(&finished, &done);
+        // Either way it ended: the browser skips a transition it can't draw (a page in a
+        // background tab), and the change has still happened.
+        let _ = then.call2(&finished, &done, &done);
     }
 }
 
@@ -171,8 +173,12 @@ pub fn list_name(id: &str) -> impl Fn() -> Option<String> + use<> {
 /// page's heading. Ids are safe characters already; anything else becomes `-`, since this has
 /// to be a CSS identifier.
 pub fn device_name(id: &str) -> String {
-    let ident: String = id
-        .chars()
+    format!("view-transition-name: device-{}", ident(id))
+}
+
+/// `id` as part of a CSS identifier.
+pub fn ident(id: &str) -> String {
+    id.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
                 c
@@ -180,8 +186,7 @@ pub fn device_name(id: &str) -> String {
                 '-'
             }
         })
-        .collect();
-    format!("view-transition-name: device-{ident}")
+        .collect()
 }
 
 /// Keeps `data-nav` on `<html>` saying what kind of page change is under way. Set as the address

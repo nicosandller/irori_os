@@ -1,12 +1,12 @@
-//! The Devices page: everything in the home, grouped by the device it belongs to, with a switch
-//! for the things that can be switched.
+//! The Devices page: everything in the home, as devices or as the entities they provide, in
+//! groups that fold, with a switch for the things that can be switched.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use irori_types::{
-    AreaId, Availability, BinarySensorCapabilities, BinarySensorClass, Capabilities, Device,
-    DeviceId, Entity, EntityId, EntityState, ExtensionId, LightTurnOn, SensorCapabilities,
-    SensorClass, SensorValue, State,
+    Availability, BinarySensorCapabilities, BinarySensorClass, Capabilities, Device, DeviceId,
+    Entity, EntityId, EntityState, ExtensionId, LightTurnOn, SensorCapabilities, SensorClass,
+    SensorValue, State,
 };
 use leptos::ev;
 use leptos::prelude::*;
@@ -16,12 +16,14 @@ use leptos_router::components::A;
 use crate::api::Home;
 
 mod controls;
+mod grouping;
+mod tables;
 
-use self::controls::control;
 pub(crate) use self::controls::{
     climate_words, fan_words, fill, humidifier_words, lock_words, media_player_words, number,
     opening_words, unit_of, water_heater_words, wording,
 };
+pub(crate) use self::controls::{control, kept};
 
 /// What a row needs to show a command on its way and what came back from it.
 #[derive(Debug, Clone, Copy)]
@@ -37,14 +39,6 @@ pub struct Controls {
     /// Ask an entity for one of its kind's actions, with that action's data: a button's
     /// `press`, a number's `set_value`, a cover's `set_position`.
     pub act: Callback<(EntityId, &'static str, Option<serde_json::Value>)>,
-}
-
-/// One device and the entities it provides. `device` is `None` for entities that belong to no
-/// device, which the protocol contract allows.
-#[derive(Debug)]
-pub struct Group {
-    pub device: Option<Device>,
-    pub entities: Vec<(Entity, Option<EntityState>)>,
 }
 
 /// Whether a device matches the shared Devices/Entities search: name, id, area, make, model.
@@ -70,79 +64,16 @@ fn matches_device(home: &Home, device: &Device, needle: &str) -> bool {
         .any(|field| field.to_lowercase().contains(needle))
 }
 
-/// Groups the home by device, keeping only what matches `needle`, and sorts everything by name so
-/// the page doesn't reshuffle between refreshes.
-pub fn groups(home: &Home, needle: &str) -> Vec<Group> {
-    let needle = needle.trim().to_lowercase();
-    let states: BTreeMap<_, _> = home.states.iter().map(|s| (&s.entity_id, s)).collect();
-    let devices: BTreeMap<_, _> = home.devices.iter().map(|d| (&d.id, d)).collect();
-
-    // A device's name is part of what its entities are called in conversation ("the lamp in the
-    // hallway sensor"), so typing it keeps the whole device. Area and make too: the same
-    // search box is used on the Devices table.
-    let matches = |entity: &Entity| {
-        needle.is_empty()
-            || entity.id.to_string().to_lowercase().contains(&needle)
-            || entity.name.as_str().to_lowercase().contains(&needle)
-            || entity
-                .device_id
-                .as_ref()
-                .and_then(|id| devices.get(id))
-                .is_some_and(|device| matches_device(home, device, &needle))
-    };
-
-    // Grouped by device name, then device id so two devices sharing a name keep a stable order.
-    // The leading flag puts the entities that belong to no device after all the real ones.
-    let mut by_device: BTreeMap<(bool, &str, &str), Group> = BTreeMap::new();
-    for entity in home.entities.iter().filter(|e| matches(e)) {
-        let device = entity
-            .device_id
-            .as_ref()
-            .and_then(|id| devices.get(id))
-            .copied();
-        let key = match device {
-            Some(device) => (false, device.name.as_str(), device.id.as_str()),
-            None => (true, "", ""),
-        };
-        by_device
-            .entry(key)
-            .or_insert_with(|| Group {
-                device: device.cloned(),
-                entities: Vec::new(),
-            })
-            .entities
-            .push((
-                entity.clone(),
-                states.get(&entity.id).map(|state| (*state).clone()),
-            ));
-    }
-
-    by_device
-        .into_values()
-        .map(|mut group| {
-            group.entities.sort_by(|(a, _), (b, _)| {
-                // What the device is for first, then its settings and diagnostics.
-                (a.entity_category, &a.name, &a.id).cmp(&(b.entity_category, &b.name, &b.id))
-            });
-            group
-        })
-        .collect()
-}
-
 /// Which view the page shows. Remembered per browser, because it's a preference about reading
 /// rather than anything Irori needs to know.
 const VIEW_KEY: &str = "irori.devices.view";
 
-/// Which groups of the device table are folded away, remembered the same way.
-const FOLDED_KEY: &str = "irori.devices.folded";
-
 /// The three ways to look at what's in the home.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Showing {
-    /// One row per device, grouped by the protocol it came through. The default: a device is
-    /// the thing a person bought and put somewhere.
+    /// One row per device. The default: a device is the thing a person bought and put somewhere.
     Devices,
-    /// Every entity with its reading and its switch, grouped by device.
+    /// Every entity with its reading and its switch.
     Entities,
     /// Values Irori keeps itself, rather than a device reporting them.
     Helpers,
@@ -176,7 +107,6 @@ pub fn Devices() -> impl IntoView {
     let adding = RwSignal::new(false);
     let adding_helper = RwSignal::new(false);
     let showing = RwSignal::new(remembered_view());
-    let folded = RwSignal::new(remembered_folded());
     provide_context(HelperTrouble(RwSignal::new(None)));
     let waiting = crate::waiting::everything_waiting(live);
     // How many devices extensions have found that aren't in the home, key-waiting ones included.
@@ -190,31 +120,16 @@ pub fn Devices() -> impl IntoView {
     });
 
     Effect::new(move |_| remember(VIEW_KEY, showing.get().key()));
-    Effect::new(move |_| {
-        remember(
-            FOLDED_KEY,
-            &folded.get().into_iter().collect::<Vec<_>>().join(","),
-        )
-    });
 
     view! {
         <div class="page-head">
             <h1>"Devices"</h1>
-            <div class="switcher" role="group" aria-label="What to show">
-                {Showing::ALL
-                    .into_iter()
-                    .map(|view| view! {
-                        <button
-                            type="button"
-                            class:chosen=move || showing.get() == view
-                            aria-pressed=move || (showing.get() == view).to_string()
-                            on:click=move |_| showing.set(view)
-                        >
-                            {view.label()}
-                        </button>
-                    })
-                    .collect_view()}
-            </div>
+            {crate::segmented::segmented(
+                "What to show",
+                Showing::ALL.into_iter().map(|view| (view, view.label())).collect(),
+                showing.into(),
+                move |view| showing.set(view),
+            )}
             // Helpers aren't devices and don't arrive through an extension — making one is a
             // name and nothing else — so the Helpers tab gets its own button, not a card in the
             // add-a-device flow pretending a helper is something an extension found.
@@ -286,14 +201,12 @@ pub fn Devices() -> impl IntoView {
             />
         })}
 
-        {move || {
-            let home = live.home.get();
-            let needle = filter.get();
-            match showing.get() {
-                Showing::Devices => table(&home, &needle, folded),
-                Showing::Entities => view(&home, &needle, controls),
-                Showing::Helpers => helpers(&home, controls),
-            }
+        // The two lists watch the home themselves, and only what they're made of (`tables.rs`).
+        // Helpers are few and hold nothing a person is typing, so they're drawn with each reading.
+        {move || match showing.get() {
+            Showing::Devices => view! { <tables::DeviceTable filter=filter /> }.into_any(),
+            Showing::Entities => view! { <tables::EntityTable filter=filter /> }.into_any(),
+            Showing::Helpers => helpers(&live.home.get(), controls),
         }}
         {move || adding_helper.get().then(|| view! {
             <crate::modal::Modal
@@ -304,190 +217,6 @@ pub fn Devices() -> impl IntoView {
             </crate::modal::Modal>
         })}
     }
-}
-
-/// A device with its entities and what they're reporting: one row of the device table.
-type DeviceRow = (Device, Vec<(Entity, Option<EntityState>)>);
-
-/// One row per device: what it is and where it is, grouped by the protocol it came through.
-///
-/// Built from the devices rather than from their entities, so a device Irori is connected to
-/// still appears when it provides nothing Irori can model — a Bluetooth proxy, say. Those are
-/// invisible in the entity view by their nature, and being unable to find them would be worse.
-fn table(home: &Home, needle: &str, folded: RwSignal<BTreeSet<String>>) -> AnyView {
-    let needle = needle.trim().to_lowercase();
-    let mut by_protocol: BTreeMap<String, Vec<DeviceRow>> = BTreeMap::new();
-    for device in home
-        .devices
-        .iter()
-        .filter(|device| matches_device(home, device, &needle))
-    {
-        let entities: Vec<_> = home
-            .entities
-            .iter()
-            .filter(|entity| entity.device_id.as_ref() == Some(&device.id))
-            .map(|entity| {
-                let state = home
-                    .states
-                    .iter()
-                    .find(|state| state.entity_id == entity.id)
-                    .cloned();
-                (entity.clone(), state)
-            })
-            .collect();
-        by_protocol
-            .entry(device.protocol.to_string())
-            .or_default()
-            .push((device.clone(), entities));
-    }
-    if by_protocol.is_empty() {
-        let message = if home.devices.is_empty() {
-            "No devices yet. Extensions bring them in; \"Add device\" says how."
-        } else {
-            "Nothing matches that."
-        };
-        return view! { <p class="empty">{message}</p> }.into_any();
-    }
-    let areas: BTreeMap<Option<AreaId>, String> = home
-        .areas
-        .iter()
-        .map(|area| (Some(area.id.clone()), area.name.to_string()))
-        .collect();
-    let mut groups: Vec<_> = by_protocol
-        .into_iter()
-        .map(|(protocol, mut devices)| {
-            devices.sort_by(|(a, _), (b, _)| (&a.name, &a.id).cmp(&(&b.name, &b.id)));
-            let extension = home
-                .extensions
-                .iter()
-                .find(|(id, _)| id.as_str() == protocol);
-            let name = extension
-                .map(|(_, extension)| extension.name.clone())
-                .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| protocol.clone());
-            let has_icon = extension.is_some_and(|(_, extension)| extension.has_icon);
-            (protocol, name, has_icon, devices)
-        })
-        .collect();
-    groups.sort_by_key(|group| group.1.to_lowercase());
-    // While filtering, every group with a match is open: a folded group hiding the one result
-    // would look like no result at all.
-    let filtering = !needle.is_empty();
-
-    view! {
-        <div class="table-scroll">
-            <table class="devices">
-                <thead>
-                    <tr>
-                        <th scope="col" class="icon-col">
-                            <span class="visually-hidden">"Protocol"</span>
-                        </th>
-                        <th scope="col">"Device"</th>
-                        <th scope="col">"Area"</th>
-                        <th scope="col">"Make"</th>
-                        <th scope="col">"Model"</th>
-                        <th scope="col">"Battery"</th>
-                        <th scope="col" class="number">"Entities"</th>
-                    </tr>
-                </thead>
-                {groups
-                    .into_iter()
-                    .map(|(protocol, name, has_icon, devices)| {
-                        group(protocol, name, has_icon, devices, &areas, folded, filtering)
-                    })
-                    .collect_view()}
-            </table>
-        </div>
-    }
-    .into_any()
-}
-
-/// One protocol's devices: a header that folds them away, and a row each.
-fn group(
-    protocol: String,
-    name: String,
-    has_icon: bool,
-    devices: Vec<DeviceRow>,
-    areas: &BTreeMap<Option<AreaId>, String>,
-    folded: RwSignal<BTreeSet<String>>,
-    filtering: bool,
-) -> AnyView {
-    let open = {
-        let key = protocol.clone();
-        move || filtering || !folded.get().contains(&key)
-    };
-    let toggle = {
-        let key = protocol.clone();
-        move |_| {
-            folded.update(|folded| {
-                if !folded.remove(&key) {
-                    folded.insert(key.clone());
-                }
-            })
-        }
-    };
-    let count = devices.len();
-    let rows = devices
-        .into_iter()
-        .map(|(device, entities)| {
-            let id = device.id.to_string();
-            let entity_count = entities.len();
-            let battery = battery(&entities);
-            let room = areas.get(&device.area_id).cloned();
-            view! {
-                <tr>
-                    <td class="icon-col">{icon(&protocol, has_icon)}</td>
-                    <th scope="row">
-                        <A
-                            href=format!("/devices/{id}")
-                            attr:style=crate::transition::list_name(&id)
-                            on:click={
-                                let (id, travelling) = (id.clone(), expect_context::<crate::transition::Travelling>().0);
-                                move |_| travelling.set(Some(id.clone()))
-                            }
-                        >
-                            {device.name.to_string()}
-                        </A>
-                        {device.description.as_ref().map(|description| view! {
-                            <span class="description">{description.to_string()}</span>
-                        })}
-                    </th>
-                    <td class="room">{room.unwrap_or_else(|| "—".to_owned())}</td>
-                    <td>{device.manufacturer.clone().unwrap_or_default()}</td>
-                    <td>{device.model.clone().unwrap_or_default()}</td>
-                    <td class="battery">{battery.unwrap_or_else(|| "—".to_owned())}</td>
-                    <td class="number">{entity_count}</td>
-                </tr>
-            }
-        })
-        .collect_view();
-    let header_icon = icon(&protocol, has_icon);
-    let folded_class = {
-        let open = open.clone();
-        move || !open()
-    };
-    view! {
-        <tbody class="group" class:folded=folded_class>
-            <tr class="group-head">
-                <th scope="rowgroup" colspan="7">
-                    <button
-                        type="button"
-                        aria-expanded=move || open().to_string()
-                        on:click=toggle
-                    >
-                        <span class="chevron" aria-hidden="true"></span>
-                        {header_icon}
-                        <span class="group-name">{name}</span>
-                        <span class="muted small">
-                            {format!("{count} device{}", if count == 1 { "" } else { "s" })}
-                        </span>
-                    </button>
-                </th>
-            </tr>
-            {rows}
-        </tbody>
-    }
-    .into_any()
 }
 
 /// A protocol's icon, or its initial when it has none. Always an `<img>`: an extension's SVG
@@ -695,32 +424,53 @@ fn AddToggle(#[prop(into)] on_added: Callback<()>) -> impl IntoView {
 /// A device's battery, if one of its entities reports one: a percentage from a battery sensor,
 /// or low/ok from a battery binary sensor. `None` when it doesn't have one, which is most
 /// mains-powered things.
-pub fn battery(entities: &[(Entity, Option<EntityState>)]) -> Option<String> {
-    entities.iter().find_map(|(entity, state)| {
-        let value = state.as_ref()?.state.as_ref();
-        match (&entity.capabilities, value) {
-            (
+fn battery_of(home: &Home, device: &DeviceId) -> Option<String> {
+    home.entities
+        .iter()
+        .filter(|entity| entity.device_id.as_ref() == Some(device))
+        .filter(|entity| {
+            matches!(
+                entity.capabilities,
                 Capabilities::Sensor(SensorCapabilities {
                     device_class: Some(SensorClass::Battery),
-                    unit,
                     ..
-                }),
-                Some(State::Sensor(sensor)),
-            ) => Some(match &sensor.value {
-                SensorValue::Number(n) => {
-                    format!("{}{}", number(*n), unit.as_deref().unwrap_or("%"))
-                }
-                SensorValue::Text(text) => text.clone(),
-            }),
-            (
-                Capabilities::BinarySensor(BinarySensorCapabilities {
+                }) | Capabilities::BinarySensor(BinarySensorCapabilities {
                     device_class: Some(BinarySensorClass::Battery),
-                }),
-                Some(State::BinarySensor(sensor)),
-            ) => Some(if sensor.on { "Low" } else { "OK" }.to_owned()),
-            _ => None,
-        }
-    })
+                })
+            )
+        })
+        .find_map(|entity| {
+            let state = home
+                .states
+                .iter()
+                .find(|state| state.entity_id == entity.id)?;
+            battery_reading(entity, state)
+        })
+}
+
+fn battery_reading(entity: &Entity, state: &EntityState) -> Option<String> {
+    match (&entity.capabilities, state.state.as_ref()) {
+        (
+            Capabilities::Sensor(SensorCapabilities {
+                device_class: Some(SensorClass::Battery),
+                unit,
+                ..
+            }),
+            Some(State::Sensor(sensor)),
+        ) => Some(match &sensor.value {
+            SensorValue::Number(n) => {
+                format!("{}{}", number(*n), unit.as_deref().unwrap_or("%"))
+            }
+            SensorValue::Text(text) => text.clone(),
+        }),
+        (
+            Capabilities::BinarySensor(BinarySensorCapabilities {
+                device_class: Some(BinarySensorClass::Battery),
+            }),
+            Some(State::BinarySensor(sensor)),
+        ) => Some(if sensor.on { "Low" } else { "OK" }.to_owned()),
+        _ => None,
+    }
 }
 
 /// The view this browser was last shown. Browser storage can be unavailable or refused, and it
@@ -731,18 +481,6 @@ fn remembered_view() -> Showing {
         .into_iter()
         .find(|view| saved.as_deref() == Some(view.key()))
         .unwrap_or(Showing::Devices)
-}
-
-fn remembered_folded() -> BTreeSet<String> {
-    stored(FOLDED_KEY)
-        .map(|saved| {
-            saved
-                .split(',')
-                .filter(|key| !key.is_empty())
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 pub fn stored(key: &str) -> Option<String> {
@@ -1499,88 +1237,17 @@ fn how(iot_class: &Option<String>) -> &'static str {
     }
 }
 
-fn view(home: &Home, needle: &str, controls: Controls) -> AnyView {
-    let groups = groups(home, needle);
-    if groups.is_empty() {
-        let message = if home.entities.is_empty() {
-            "No devices yet. Extensions bring them in; the demo extension provides a few."
-        } else {
-            "Nothing matches that."
-        };
-        return view! { <p class="empty">{message}</p> }.into_any();
-    }
-    groups
-        .into_iter()
-        .map(|group| group_view(group, controls))
-        .collect_view()
-        .into_any()
-}
-
-fn group_view(group: Group, controls: Controls) -> AnyView {
-    let (title, model) = match &group.device {
-        Some(device) => (
-            device.name.to_string(),
-            [device.manufacturer.as_deref(), device.model.as_deref()]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join(" "),
-        ),
-        None => ("Not on a device".to_owned(), String::new()),
-    };
-    view! {
-        <section class="device">
-            <h2>{title}<span class="model">{model}</span></h2>
-            {group
-                .entities
-                .into_iter()
-                .map(|(entity, state)| row(entity, state, controls, None))
-                .collect_view()}
-        </section>
-    }
-    .into_any()
-}
-
-/// A row's way into its own last 24 hours. The device page gives its rows one; the list, which
-/// is for switching things rather than reading them back, doesn't.
+/// A row's way into its own last 24 hours (`history.rs` keeps which are open).
 #[derive(Debug, Clone, Copy)]
 pub struct Unroll {
-    pub open: RwSignal<bool>,
+    pub open: Signal<bool>,
     pub toggle: Callback<()>,
-}
-
-pub fn row(
-    entity: Entity,
-    state: Option<EntityState>,
-    controls: Controls,
-    unroll: Option<Unroll>,
-) -> AnyView {
-    let offline = state
-        .as_ref()
-        .is_some_and(|s| s.availability == Availability::Unavailable);
-    let failure = {
-        let id = entity.id.clone();
-        move || controls.failures.get().get(&id).cloned()
-    };
-    let (id, full_id) = (entity.id.to_string(), entity.id.to_string());
-    view! {
-        <div class="entity" class:offline=offline>
-            <span class="names">
-                <span class="name">{entity.name.to_string()}</span>
-                <span class="id" title=full_id>{id}</span>
-            </span>
-            {offline.then(|| view! { <span class="badge">"offline"</span> })}
-            {unrolling(&entity, control(&entity, state.as_ref(), offline, controls), unroll)}
-            {move || failure().map(|why| view! { <p class="why">{why}</p> })}
-        </div>
-    }
-    .into_any()
 }
 
 /// The call to open a row's history, where the eye already is. A reading *is* the thing to ask
 /// about, so for sensors the reading itself is the button; a light or switch's control is for
 /// switching, so there the button is the chevron beside it.
-fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyView {
+pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyView {
     let Some(Unroll { open, toggle }) = unroll else {
         return control;
     };
@@ -1656,66 +1323,10 @@ fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll>) -> AnyVi
 }
 
 /// A pull on a history handle: down opens the drawer, up closes it.
-fn pull(event: &ev::PointerEvent, open: RwSignal<bool>, toggle: Callback<()>) {
+fn pull(event: &ev::PointerEvent, open: Signal<bool>, toggle: Callback<()>) {
     if let Some(down) = crate::gesture::pull_move(event)
         && down != open.get_untracked()
     {
         toggle.run(());
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn entity_home() -> Home {
-        let device = Device {
-            id: "radar".parse().expect("valid"),
-            protocol: "esphome".parse().expect("valid"),
-            unique_id: "00:11:22:33:44:55".parse().expect("valid"),
-            name: "Radar".parse().expect("valid"),
-            description: None,
-            manufacturer: Some("Espressif".into()),
-            model: Some("rd-03d".into()),
-            sw_version: None,
-            hw_version: None,
-            area_id: Some("hall".parse().expect("valid")),
-            suggested_area: None,
-            via_device_id: None,
-        };
-        let entity = Entity {
-            id: "binary_sensor.radar_moving".parse().expect("valid"),
-            protocol: device.protocol.clone(),
-            unique_id: "moving".parse().expect("valid"),
-            name: "Moving".parse().expect("valid"),
-            device_id: Some(device.id.clone()),
-            area_id: None,
-            capabilities: Capabilities::BinarySensor(BinarySensorCapabilities {
-                device_class: None,
-            }),
-            entity_category: None,
-        };
-        Home {
-            devices: vec![device],
-            entities: vec![entity],
-            areas: vec![irori_types::Area {
-                id: "hall".parse().expect("valid"),
-                name: "Hall".parse().expect("valid"),
-                floor_id: None,
-            }],
-            ..Home::default()
-        }
-    }
-
-    /// The Devices and Entities views share one search box. Typing an area or a make has to
-    /// keep the entity, not look like a broken filter, and something that isn't there finds
-    /// nothing.
-    #[test]
-    fn filtering_entities_matches_area_and_make() {
-        let home = entity_home();
-        assert_eq!(groups(&home, "hall").len(), 1);
-        assert_eq!(groups(&home, "espressif").len(), 1);
-        assert_eq!(groups(&home, "rd-03").len(), 1);
-        assert!(groups(&home, "nowhere").is_empty());
     }
 }

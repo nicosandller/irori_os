@@ -480,8 +480,73 @@ fn copy_icon() -> impl IntoView {
     }
 }
 
+/// How many lines a log holds, and how many of them are warnings and errors: what a folded
+/// row can say about a log without showing it.
+pub fn tally(lines: &[String]) -> (usize, usize, usize) {
+    let count = |weight: Weight| {
+        lines
+            .iter()
+            .filter(|raw| parse(raw).weight() == weight)
+            .count()
+    };
+    (lines.len(), count(Weight::Warn), count(Weight::Error))
+}
+
+/// The newest line of a log that is an error, if it has one: what an error mark on the way to
+/// the log stands for, and so what clearing the mark has to remember having seen.
+pub fn last_error(lines: &[String]) -> Option<&str> {
+    lines
+        .iter()
+        .rev()
+        .find(|raw| parse(raw).weight() == Weight::Error)
+        .map(String::as_str)
+}
+
+/// A log in a window of its own, over the page: an extension's, or the local model's.
+///
+/// `on_clear` is given when the way here carried an error mark: the window then offers to
+/// clear it, for an error that has been read and dealt with.
 #[component]
-pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl IntoView {
+pub fn LogWindow(
+    source: Source,
+    #[prop(into)] on_close: Callback<()>,
+    #[prop(optional, into)] on_clear: Option<Callback<()>>,
+) -> impl IntoView {
+    let (title, note, _) = source.say();
+    let cleared = RwSignal::new(false);
+    view! {
+        <crate::modal::Modal title=title on_close=on_close wide=true>
+            <div class="log-note">
+                <p class="muted small">{note}</p>
+                {on_clear.map(|on_clear| view! {
+                    <button
+                        type="button"
+                        class="quiet-button"
+                        disabled=move || cleared.get()
+                        title="Takes the mark off this extension's log button until a new error arrives"
+                        on:click=move |_| {
+                            cleared.set(true);
+                            on_clear.run(());
+                        }
+                    >
+                        {move || if cleared.get() { "Error cleared" } else { "Clear error" }}
+                    </button>
+                })}
+            </div>
+            <LogView source=source />
+        </crate::modal::Modal>
+    }
+}
+
+/// A log, kept up to date while it's on show: its filters, its search, and its lines.
+///
+/// `watching` is whether anybody can see it. A log folded away in Settings stops asking, and
+/// asks again the moment it's opened; one in a window is always being watched.
+#[component]
+pub fn LogView(
+    source: Source,
+    #[prop(optional, into)] watching: Option<Signal<bool>>,
+) -> impl IntoView {
     // Every line so far, each with the key it keeps for as long as the window is open.
     let rows = RwSignal::new(Vec::<(usize, Line)>::new());
     // The key the next new line gets.
@@ -493,7 +558,7 @@ pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl I
     // Distinguishes "nothing to show" from "haven't looked yet": an empty log is a real answer
     // and shouldn't flash an explanation before the first response arrives.
     let asked = RwSignal::new(false);
-    let (title, note, quiet) = source.say();
+    let (_, _, quiet) = source.say();
 
     // The filters. Outside what redraws as lines arrive, so a search being typed survives a
     // refresh (ROADMAP D33).
@@ -510,6 +575,9 @@ pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl I
     let pinned = StoredValue::new(true);
 
     let load = move || {
+        if watching.is_some_and(|watching| !watching.get_untracked()) {
+            return;
+        }
         let source = source.clone();
         spawn_local(async move {
             match source.lines().await {
@@ -548,7 +616,16 @@ pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl I
             asked.set(true);
         });
     };
-    load();
+    // Straight away, and again each time it comes back on show.
+    {
+        let load = load.clone();
+        Effect::new(move |_| {
+            if let Some(watching) = watching {
+                watching.track();
+            }
+            load();
+        });
+    }
 
     let handle = set_interval_with_handle(load, REFRESH).ok();
     on_cleanup(move || {
@@ -592,6 +669,13 @@ pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl I
         });
     };
 
+    // The filter's highlight slides to the chosen one; a count changing changes its width.
+    let filters = NodeRef::<leptos::html::Div>::new();
+    crate::glide::across(filters, "button.chosen", move || {
+        showing.track();
+        rows.track();
+    });
+
     let filter = move |to: Showing, label: &'static str, weight: Option<Weight>| {
         view! {
             <button
@@ -611,11 +695,16 @@ pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl I
     };
 
     view! {
-        <crate::modal::Modal title=title on_close=on_close wide=true>
-            <p class="muted small">{note}</p>
+        <div class="log-view">
             {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
             <div class="log-bar">
-                <div class="switcher log-filter" role="group" aria-label="Which lines">
+                <div
+                    class="switcher log-filter"
+                    role="group"
+                    aria-label="Which lines"
+                    node_ref=filters
+                >
+                    <span class="glide" aria-hidden="true"></span>
                     {filter(Showing::All, "All", None)}
                     {filter(Showing::Warnings, "Warnings", Some(Weight::Warn))}
                     {filter(Showing::Errors, "Errors", Some(Weight::Error))}
@@ -714,7 +803,7 @@ pub fn LogWindow(source: Source, #[prop(into)] on_close: Callback<()>) -> impl I
                     />
                 </ol>
             </div>
-        </crate::modal::Modal>
+        </div>
     }
 }
 

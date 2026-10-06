@@ -54,6 +54,12 @@
     .btn.primary { background: var(--ember); border-color: var(--ember); color: #fff; }
     .btn.primary:disabled { opacity: .45; cursor: default; }
     .btn.small { padding: .15rem .5rem; font-size: .85rem; }
+    /* Ask, as the shell draws it: an ember spark that turns under the pointer. */
+    .btn.ask { display: inline-flex; align-items: center; gap: .35rem; }
+    .btn.ask .spark { width: .85rem; height: .85rem; color: var(--ember);
+                      transition: rotate var(--dur-expressive) var(--ease-spring),
+                                  scale var(--dur-base) var(--ease-spring); }
+    .btn.ask:hover .spark { rotate: 90deg; scale: 1.15; }
     .btn.danger { color: var(--error); }
     .link { background: none; border: 0; padding: 0; color: var(--ember); text-decoration: underline; }
     /* Fields: big enough to read and hit, like the rest of Irori. Focus glows ember. */

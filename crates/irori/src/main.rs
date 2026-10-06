@@ -16,6 +16,7 @@ mod serial;
 mod server;
 mod syslog;
 mod system_device;
+mod usage;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

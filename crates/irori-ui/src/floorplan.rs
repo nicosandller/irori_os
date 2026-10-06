@@ -1592,14 +1592,7 @@ fn FloorPicker(
 
     // A new floor goes above the highest one unless told otherwise, because that is the one
     // people add.
-    let next_level = move || {
-        floors
-            .get()
-            .iter()
-            .map(|floor| floor.level)
-            .max()
-            .map_or(0, |highest| highest.saturating_add(1))
-    };
+    let next_level = move || crate::places::next_level(&floors.get());
     let open = move || {
         name.set(String::new());
         above.set(next_level().to_string());
@@ -1607,14 +1600,15 @@ fn FloorPicker(
     };
 
     let add = move || {
-        let Ok(named) = name.get_untracked().trim().parse::<irori_types::Name>() else {
-            trouble.set(Some("A floor needs a name.".into()));
-            return;
-        };
-        let Ok(level) = above.get_untracked().trim().parse::<i8>() else {
-            trouble.set(Some("A floor's level is a whole number: 0, 1, -1.".into()));
-            return;
-        };
+        // The same rule, in the same words, as making a floor in Settings.
+        let (named, level) =
+            match crate::places::floor_draft(&name.get_untracked(), &above.get_untracked()) {
+                Ok(floor) => floor,
+                Err(why) => {
+                    trouble.set(Some(why));
+                    return;
+                }
+            };
         busy.set(true);
         spawn_local(async move {
             match api::add_floor(named, level).await {
@@ -1813,10 +1807,16 @@ fn AreaPicker(
 /// want, and only then is a slider worth the room it takes.
 #[component]
 fn SnapControl(snap: RwSignal<Snap>) -> impl IntoView {
+    // The switch's highlight slides between the two, as every switcher's does.
+    let switcher = NodeRef::<leptos::html::Div>::new();
+    crate::glide::across(switcher, "button.chosen", move || {
+        snap.with(|snap| snap.is_custom());
+    });
     view! {
         <div class="snap">
             <span class="snap-label" id="snap-label">"Snap"</span>
-            <div class="switcher" role="group" aria-labelledby="snap-label">
+            <div class="switcher" role="group" aria-labelledby="snap-label" node_ref=switcher>
+                <span class="glide" aria-hidden="true"></span>
                 <button
                     type="button"
                     class:chosen=move || !snap.get().is_custom()

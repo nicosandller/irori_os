@@ -172,13 +172,14 @@ async fn run(mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
                 {
                     ctx.report_state(number("uptime", (started.elapsed().as_secs() / 60) as f64)?);
                     ctx.report_state(number("cpu", round1(f64::from(system.global_cpu_usage())))?);
-                    let total = system.total_memory();
+                    // The same memory Settings shows: a container's allowance, where there is one.
+                    let (total, used) = crate::host_info::memory(&system);
                     if total > 0 {
-                        let used = system.used_memory() as f64 / total as f64 * 100.0;
+                        let used = used as f64 / total as f64 * 100.0;
                         ctx.report_state(number("memory", round1(used))?);
                     }
                     if let Some(dir) = DATA_DIR.get() {
-                        let disk = crate::host_info::read(dir).disk;
+                        let disk = crate::host_info::disk(dir);
                         if disk.total > 0 {
                             ctx.report_state(number("disk", round1(disk.used as f64 / disk.total as f64 * 100.0))?);
                         }

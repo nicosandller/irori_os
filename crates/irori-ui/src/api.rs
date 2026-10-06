@@ -282,6 +282,27 @@ pub struct System {
     pub memory_total: u64,
     #[serde(default)]
     pub memory_used: u64,
+    /// Every core the OS schedules on, and how many processes wanted one over the last one,
+    /// five and fifteen minutes.
+    #[serde(default)]
+    pub cpu_logical: usize,
+    #[serde(default)]
+    pub load_average: [f64; 3],
+    /// What Irori's own process holds of the memory.
+    #[serde(default)]
+    pub process_memory: u64,
+    #[serde(default)]
+    pub swap_total: u64,
+    #[serde(default)]
+    pub swap_used: u64,
+    /// Every volume mounted on the machine.
+    #[serde(default)]
+    pub disks: Vec<Disk>,
+    #[serde(default)]
+    pub data_dir: String,
+    /// The database on disk, write-ahead log included.
+    #[serde(default)]
+    pub database_bytes: u64,
     /// How long the machine has been up, in the OS's seconds.
     #[serde(default)]
     pub uptime_secs: u64,
@@ -298,6 +319,50 @@ pub struct Disk {
     pub total: u64,
     pub available: u64,
     pub used: u64,
+}
+
+/// What is using the machine, from `/api/dev/system/usage`: the heaviest processes, and what
+/// Irori's data directory is made of. Slower to gather than [`System`], so it's asked for only
+/// while a meter is open.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct Usage {
+    #[serde(default)]
+    pub processes: Vec<Process>,
+    #[serde(default)]
+    pub storage: Vec<Stored>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Process {
+    pub name: String,
+    #[serde(default)]
+    pub pid: u32,
+    #[serde(default)]
+    pub memory: u64,
+    /// Its share of the whole machine's processor, 0–100.
+    #[serde(default)]
+    pub cpu: f32,
+    /// Whether it is Irori itself.
+    #[serde(default)]
+    pub own: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Stored {
+    pub name: String,
+    pub bytes: u64,
+}
+
+pub async fn fetch_usage() -> Result<Usage, String> {
+    let url = "/api/dev/system/usage";
+    let response = Request::get(url).send().await.map_err(unreachable)?;
+    if !response.ok() {
+        return Err(format!("{url} answered {}", response.status()));
+    }
+    response
+        .json::<Usage>()
+        .await
+        .map_err(|e| format!("Irori sent something this page can't read: {e}"))
 }
 
 pub async fn fetch_system() -> Result<System, String> {
@@ -554,6 +619,25 @@ pub async fn add_area(name: Name, floor: Option<&FloorId>) -> Result<(), String>
 pub async fn rename_area(id: &AreaId, name: Name) -> Result<(), String> {
     let response = Request::patch(&format!("{AREAS_URL}/{id}"))
         .json(&AreaRequest { name, floor: None })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+/// Where an area is going: a floor, or `null` for none.
+#[derive(Debug, Serialize)]
+struct AreaMove {
+    floor: Option<FloorId>,
+}
+
+/// Moves an area to another floor, or off every floor. Its devices come with it.
+pub async fn move_area(id: &AreaId, floor: Option<&FloorId>) -> Result<(), String> {
+    let response = Request::patch(&format!("{AREAS_URL}/{id}"))
+        .json(&AreaMove {
+            floor: floor.cloned(),
+        })
         .map_err(|e| e.to_string())?
         .send()
         .await
