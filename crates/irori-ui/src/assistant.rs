@@ -117,18 +117,12 @@ impl Thread {
     /// a reply that failed or was stopped isn't kept, and neither is its question.
     async fn settle(self, scope: &str, question: String, result: Result<(), String>) {
         let kept = api::assistant_transcript(scope).await;
-        match (kept, &result) {
-            (Ok(kept), _) => self.messages.set(kept.turns),
-            (Err(_), Ok(())) => {
-                let body = self.writing.get_untracked();
-                self.messages.update(|turns| {
-                    turns.push(api::AssistantMessage {
-                        role: "assistant".to_owned(),
-                        body: body.trim_end().to_owned(),
-                    })
-                });
-            }
-            (Err(_), Err(_)) => {}
+        // Only what Irori says it kept is shown as kept: an answer that ended may have been
+        // stopped, and the words written so far are then nobody's reply.
+        match kept {
+            Ok(kept) => self.messages.set(kept.turns),
+            Err(error) if result.is_ok() => self.trouble.set(Some(error)),
+            Err(_) => {}
         }
         if let Err(error) = result {
             self.trouble.set(Some(error));
@@ -215,10 +209,16 @@ impl Thread {
                 .filter(|turn| turn.role == "user")
                 .map(|turn| turn.body.clone())
         });
+        // How much had been said before this question.
+        let before = self.messages.with_untracked(Vec::len).saturating_sub(1);
         spawn_local(async move {
             match api::assistant_stop(&scope).await {
                 Ok(()) => {
+                    // An answer that finished just as it was stopped was kept after all, and
+                    // its question then isn't one to send again.
+                    let kept = api::assistant_transcript(&scope).await;
                     if let Some(asked) = asked
+                        && kept.is_ok_and(|kept| kept.turns.len() <= before)
                         && self.draft.with_untracked(String::is_empty)
                     {
                         self.draft.set(asked);

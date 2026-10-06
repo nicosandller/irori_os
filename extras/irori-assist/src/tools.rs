@@ -90,6 +90,13 @@ fn schema(tool: &Tool) -> Value {
     })
 }
 
+/// Whether the conversation `scope` is offered the tool `name`.
+pub fn tool_offered(scope: &str, name: &str) -> bool {
+    TOOLS
+        .iter()
+        .any(|tool| tool.name == name && (tool.offered)(scope))
+}
+
 /// The tools the conversation `scope` is offered, in OpenAI's shape. Anthropic uses
 /// [`anthropic_tools`].
 pub fn openai_tools(scope: &str) -> Value {
@@ -251,6 +258,9 @@ mod tests {
         assert_eq!(names(&anthropic_tools("settings"), "/name"), settings);
         let logs = &anthropic_tools("settings")[2];
         assert_eq!(logs["input_schema"]["required"], json!(["source"]));
+        assert!(tool_offered("settings", "read_logs"));
+        assert!(!tool_offered("general", "read_logs"));
+        assert!(!tool_offered("settings", "recent_states"));
         assert!(logs["input_schema"]["properties"]["contains"].is_object());
     }
 

@@ -723,7 +723,7 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
                     if tx.send(ChatEvent::Step(call.name.clone())).await.is_err() {
                         return;
                     }
-                    let result = run_tool(&env, &call);
+                    let result = run_tool(&env, &scope, &call);
                     conversation.tool(&call, &result);
                 }
                 rounds += 1;
@@ -1064,8 +1064,12 @@ fn anthropic_messages(conversation: &Conversation) -> Vec<Value> {
     messages
 }
 
-fn run_tool(env: &Env<'_>, call: &ToolCall) -> String {
+fn run_tool(env: &Env<'_>, scope: &str, call: &ToolCall) -> String {
     let args: Value = serde_json::from_str(&call.arguments).unwrap_or(json!({}));
+    // A model may ask for a tool it wasn't offered. It gets what it was offered, no more.
+    if !irori_assist::tool_offered(scope, &call.name) {
+        return format!("there is no tool `{}`", call.name);
+    }
     let text = match call.name.as_str() {
         "list_devices" => home_brief(&lines(env.core, None)),
         "get_device" => {
@@ -1150,21 +1154,29 @@ fn newest(lines: &[String], contains: Option<&str>, most: usize) -> String {
     let wanted = contains
         .map(str::to_lowercase)
         .filter(|text| !text.is_empty());
+    let matching: Vec<&String> = lines
+        .iter()
+        .filter(|line| {
+            wanted
+                .as_ref()
+                .is_none_or(|wanted| line.to_lowercase().contains(wanted))
+        })
+        .collect();
     let mut kept = Vec::new();
     let mut size = 0usize;
-    let mut left_out = 0usize;
-    for line in lines.iter().rev().filter(|line| {
-        wanted
-            .as_ref()
-            .is_none_or(|wanted| line.to_lowercase().contains(wanted))
-    }) {
+    // From the newest back, and no further than the first that doesn't fit: what is handed
+    // over is the end of the log with nothing missing from the middle of it.
+    for line in matching.iter().rev() {
         let line: String = line.chars().take(400).collect();
         if size + line.len() + 1 > most {
-            left_out += 1;
-            continue;
+            break;
         }
         size += line.len() + 1;
         kept.push(line);
+    }
+    let left_out = matching.len() - kept.len();
+    if kept.is_empty() && left_out > 0 {
+        return "The newest line of that log is too long to show.".to_owned();
     }
     if kept.is_empty() {
         return match contains {
@@ -1204,7 +1216,11 @@ fn trouble(line: &str) -> Option<bool> {
 /// Everything the Settings page holds, for [`settings_brief`]. `status` is the assistant's own.
 async fn settings_picture(env: &Env<'_>, status: &Status) -> SettingsPicture {
     // The database's own path, as the System row reads it: that is what sizes the database.
-    let host = crate::host_info::read(env.db);
+    // Off the async runtime: reading the machine looks at every disk and process.
+    let database = env.db.to_owned();
+    let host = tokio::task::spawn_blocking(move || crate::host_info::read(&database))
+        .await
+        .unwrap_or_else(|_| crate::host_info::read(env.db));
     let mut system = vec![format!("Irori {}.", crate::build_info::VERSION)];
     system.push(format!(
         "It runs on {}{} {} ({}), which has been up {}.",
