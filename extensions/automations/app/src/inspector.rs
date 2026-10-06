@@ -446,6 +446,9 @@ fn opens_something(service: RuleService, entity: Option<&irori_types::Entity>) -
         )
 }
 
+/// A change to a node, as its form hands it to the editor.
+type Change = Box<dyn FnOnce(&mut Value)>;
+
 /// The settings of a call, one input per field of its service: a blind's position, a
 /// thermostat's temperature and mode, a fan's direction. Drawn from what the service says it
 /// takes, so a kind Irori learns later has a form without this page knowing it.
@@ -458,7 +461,7 @@ fn SettingFields(
     entity: Option<irori_types::Entity>,
     /// The call's `data` as it's written, `null` when it has none.
     data: Value,
-    edit: impl Fn(Box<dyn FnOnce(&mut Value)>) + Clone + Send + Sync + 'static,
+    edit: impl Fn(Change) + Clone + Send + Sync + 'static,
 ) -> impl IntoView {
     let RuleService::Named(name) = service else {
         return ().into_any();
@@ -474,7 +477,7 @@ fn SettingFields(
         return ().into_any();
     }
     // Writes one field, and drops `data` altogether once nothing is left in it.
-    let write = move |edit: &dyn Fn(Box<dyn FnOnce(&mut Value)>), field: String, value: Value| {
+    let write = move |edit: &dyn Fn(Change), field: String, value: Value| {
         edit(Box::new(move |v: &mut Value| {
             set(v, &["data", field.as_str()], value);
             if v["data"].as_object().is_some_and(serde_json::Map::is_empty) {
@@ -715,7 +718,6 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
                 }.into_any()
             }
             Node::Call { service, entity, data } => {
-                let service = service;
                 let action = service.action();
                 let found = home.entities.with_untracked(|es| es.iter().find(|e| e.id == entity).cloned());
                 // What can be asked of it: its own kind's services, whatever kind that is.
