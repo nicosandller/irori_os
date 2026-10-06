@@ -1403,6 +1403,9 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                     official: true,
                     full_access: item.full_access,
                     installed: overview.is_some(),
+                    installed_version: overview
+                        .and_then(|o| o.info.as_ref())
+                        .map(|info| info.version.to_string()),
                     icon,
                     state: overview.map(|o| match &o.status {
                         irori_core::ExtensionStatus::Disabled => "disabled",
@@ -1458,6 +1461,10 @@ struct CatalogEntry {
     /// access to this machine" and install is refused until that is approved.
     full_access: bool,
     installed: bool,
+    /// The version that's running, which `version` (the one Install would fetch) can be ahead
+    /// of: nothing updates an installed extension when Irori itself is updated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    installed_version: Option<String>,
     icon: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     state: Option<&'static str>,

@@ -234,10 +234,19 @@ pub fn EntityPicker(
                         .unwrap_or_default();
                     Choice::new(e.id.to_string(), e.name.to_string())
                         .detail(format!("{}{now}", e.id))
+                        .group(home.device_before(e))
                 })
                 .collect()
         });
-        choices.sort_by_key(|choice| choice.label.to_lowercase());
+        // A device's entities together, in the order they're read.
+        choices.sort_by_key(|choice| {
+            let label = choice.label.to_lowercase();
+            if choice.group.is_empty() {
+                (label.clone(), label)
+            } else {
+                (choice.group.to_lowercase(), label)
+            }
+        });
         choices.splice(0..0, extra.iter().cloned());
         if !current.is_empty() && !choices.iter().any(|c| c.value == current) {
             choices.insert(

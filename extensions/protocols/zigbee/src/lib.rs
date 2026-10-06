@@ -206,7 +206,7 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                         route(incoming, &registry, &client).await;
                     }
                     Some(irori_protocol::Incoming::Action(incoming)) => {
-                        handle_action(incoming, &client).await;
+                        handle_action(incoming, &mut registry, &client, &ctx).await;
                     }
                     Some(irori_protocol::Incoming::Unpair(incoming)) => {
                         unpair(incoming, &mut registry, &client).await;
@@ -295,14 +295,18 @@ async fn handle_disconnect(registry: &mut Registry, ctx: &ProtocolContext) {
     }
 }
 
-async fn handle_action(incoming: IncomingAction, client: &impl Publisher) {
+async fn handle_action(
+    incoming: IncomingAction,
+    registry: &mut Registry,
+    client: &impl Publisher,
+    ctx: &ProtocolContext,
+) {
     if incoming.action_id != PERMIT_JOIN {
         let action_id = incoming.action_id.clone();
         incoming.reply(Err(format!("no `{action_id}` action")));
         return;
     }
-    // Stopping is the same request for no time at all. Whether it took is read off
-    // Zigbee2MQTT's `bridge/info`, which it publishes again once the network opens or closes.
+    // Stopping is the same request for no time at all.
     let seconds = if incoming.stop {
         0
     } else {
@@ -310,6 +314,14 @@ async fn handle_action(incoming: IncomingAction, client: &impl Publisher) {
     };
     let publish = bridge::permit_join(BASE_TOPIC, seconds);
     let result = client.publish(&publish.topic, publish.payload, false).await;
+    if result.is_ok() {
+        // Said before the answer goes back, so whoever asked reads it open (or closed) the
+        // moment they hear it was done, and the button turns at the click. Zigbee2MQTT's own
+        // word follows on `bridge/info` a moment later and corrects this if it disagrees.
+        registry.join_open = !incoming.stop;
+        let left = (!incoming.stop).then(|| Duration::from_secs(u64::from(PERMIT_JOIN_SECONDS)));
+        ctx.set_action_open(PERMIT_JOIN, left).await;
+    }
     incoming.reply(result);
 }
 
@@ -1033,11 +1045,22 @@ mod tests {
     async fn permit_join_publishes_to_the_bridge_request_topic() {
         let (incoming, answer) = host::incoming_action(PERMIT_JOIN.to_owned());
         let publisher = FakePublisher::default();
+        let (ctx, host) = host::connect();
+        let ops = record_ops(host.ops);
+        let mut registry = Registry::default();
 
-        handle_action(incoming, &publisher).await;
+        handle_action(incoming, &mut registry, &publisher, &ctx).await;
 
         let answered = answer.await.expect("answered rather than dropped");
         assert_eq!(answered, Ok(()));
+        // Open by the time it's answered, without waiting on Zigbee2MQTT to say so: the page
+        // reads this straight after the answer, and its button has to have turned.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            *ops.lock().expect("not poisoned"),
+            ["permit_join open: Some(60)"]
+        );
+        assert!(registry.join_open);
         let published = publisher.published.lock().expect("not poisoned");
         assert_eq!(published.len(), 1);
         assert_eq!(published[0].0, "zigbee2mqtt/bridge/request/permit_join");
@@ -1119,10 +1142,22 @@ mod tests {
     async fn stopping_permit_join_asks_for_no_time_at_all() {
         let (incoming, answer) = host::incoming_stop(PERMIT_JOIN.to_owned());
         let publisher = FakePublisher::default();
+        let (ctx, host) = host::connect();
+        let ops = record_ops(host.ops);
+        let mut registry = Registry {
+            join_open: true,
+            ..Registry::default()
+        };
 
-        handle_action(incoming, &publisher).await;
+        handle_action(incoming, &mut registry, &publisher, &ctx).await;
 
         assert_eq!(answer.await.expect("answered"), Ok(()));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            *ops.lock().expect("not poisoned"),
+            ["permit_join open: None"]
+        );
+        assert!(!registry.join_open);
         let published = publisher.published.lock().expect("not poisoned");
         assert_eq!(published[0].0, "zigbee2mqtt/bridge/request/permit_join");
         assert_eq!(published[0].1, br#"{"time":0,"value":false}"#);
@@ -1357,8 +1392,10 @@ mod tests {
     async fn an_unknown_action_is_refused() {
         let (incoming, answer) = host::incoming_action("not_a_real_action".to_owned());
         let publisher = FakePublisher::default();
+        let (ctx, host) = host::connect();
+        let _drain = drain_ops(host.ops);
 
-        handle_action(incoming, &publisher).await;
+        handle_action(incoming, &mut Registry::default(), &publisher, &ctx).await;
 
         let answered = answer.await.expect("answered rather than dropped");
         assert!(answered.is_err_and(|e| e.contains("not_a_real_action")));

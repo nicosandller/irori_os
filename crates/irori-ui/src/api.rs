@@ -816,6 +816,9 @@ pub struct CatalogEntry {
     #[serde(default)]
     pub full_access: bool,
     pub installed: bool,
+    /// The version that's running, when it's installed. `version` is the one Install fetches.
+    #[serde(default)]
+    pub installed_version: Option<String>,
     pub icon: bool,
     #[serde(default)]
     pub state: Option<String>,

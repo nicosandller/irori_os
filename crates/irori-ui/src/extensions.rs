@@ -226,7 +226,7 @@ pub fn Extensions() -> impl IntoView {
                 <crate::modal::Modal title=entry.name.clone() on_close=move || more_open.set(None)>
                     <div class="ext-more">
                         <p class="muted small">
-                            {category_label(&entry.category)}" · "{entry.version.clone()}
+                            {category_label(&entry.category)}" · "{version_words(&entry)}
                             {entry.state.clone().map(|state| format!(" · {}", state.replace('_', " ")))}
                         </p>
                         <p>{entry.description.clone()}</p>
@@ -413,7 +413,7 @@ fn card(
                 {icon(&entry.id, entry.icon)}
                 <div class="ext-card-title">
                     <span class="name">{entry.name.clone()}</span>
-                    <span class="muted small">{entry.version.clone()}</span>
+                    <span class="muted small">{version_words(&entry)}</span>
                 </div>
             </div>
             <div class="ext-standing">
@@ -660,6 +660,18 @@ fn unplaced_unmodeled(id: &str) -> Option<String> {
             )
         })
     })
+}
+
+/// The version to show for an extension: the one running, and the newer one when the catalog
+/// has moved on. An installed extension stays as it was installed until it's installed again.
+fn version_words(entry: &CatalogEntry) -> String {
+    match &entry.installed_version {
+        Some(installed) if *installed != entry.version => {
+            format!("{installed} · {} available", entry.version)
+        }
+        Some(installed) => installed.clone(),
+        None => entry.version.clone(),
+    }
 }
 
 #[cfg(test)]

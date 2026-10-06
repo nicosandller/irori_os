@@ -95,6 +95,25 @@ pub struct Home {
 }
 
 impl Home {
+    /// The device's name, to read before the entity's own in a list: "Hall lamp – Brightness".
+    /// Empty when there's no device, or when the entity's name already says it: an entity that
+    /// is its device's main feature goes by the device's name.
+    pub fn device_before(&self, entity: &Entity) -> String {
+        let Some(device_id) = &entity.device_id else {
+            return String::new();
+        };
+        let device = self.devices.with(|devices| {
+            devices
+                .iter()
+                .find(|device| &device.id == device_id)
+                .map(|device| device.name.to_string())
+        });
+        let own = entity.name.to_string().to_lowercase();
+        device
+            .filter(|device| !own.starts_with(&device.to_lowercase()))
+            .unwrap_or_default()
+    }
+
     /// A person's name for an entity: its own, or its id.
     pub fn name(&self, id: &EntityId) -> String {
         self.entities.with_untracked(|entities| {

@@ -38,6 +38,8 @@ pub struct Choice {
     pub label: String,
     /// Smaller, beside the label: an entity's id, its state now.
     pub detail: String,
+    /// What it's part of, read before the label: the device an entity belongs to.
+    pub group: String,
 }
 
 impl Choice {
@@ -46,6 +48,21 @@ impl Choice {
             value: value.into(),
             label: label.into(),
             detail: String::new(),
+            group: String::new(),
+        }
+    }
+
+    pub fn group(mut self, group: impl Into<String>) -> Self {
+        self.group = group.into();
+        self
+    }
+
+    /// The label as one line of text, what it's part of first.
+    fn whole(&self) -> String {
+        if self.group.is_empty() {
+            self.label.clone()
+        } else {
+            format!("{} – {}", self.group, self.label)
         }
     }
 
@@ -58,6 +75,7 @@ impl Choice {
         let query = query.to_lowercase();
         query.split_whitespace().all(|word| {
             self.label.to_lowercase().contains(word)
+                || self.group.to_lowercase().contains(word)
                 || self.value.to_lowercase().contains(word)
                 || self.detail.to_lowercase().contains(word)
         })
@@ -105,7 +123,7 @@ pub fn Combo(
         choices.with(|all| {
             all.iter()
                 .find(|c| c.value == v)
-                .map(|c| c.label.clone())
+                .map(Choice::whole)
                 .unwrap_or(v)
         })
     };
@@ -229,7 +247,15 @@ pub fn Combo(
                                 }
                                 on:pointerenter=move |_| active.set(i)
                             >
-                                <span class="combo-label">{marked(&choice.label, &q)}</span>
+                                <span class="combo-label">
+                                    // The part that gives way when the two don't fit: the
+                                    // device is the same down a run of rows, the name isn't.
+                                    {(!choice.group.is_empty()).then(|| view! {
+                                        <span class="combo-group">{marked(&choice.group, &q)}</span>
+                                        <span class="combo-sep" aria-hidden="true">"–"</span>
+                                    })}
+                                    <span class="combo-name">{marked(&choice.label, &q)}</span>
+                                </span>
                                 {(!choice.detail.is_empty()).then(|| view! {
                                     <span class="combo-option-detail">{marked(&choice.detail, &q)}</span>
                                 })}

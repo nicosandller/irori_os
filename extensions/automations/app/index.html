@@ -126,7 +126,12 @@
       border-radius: .45rem; cursor: pointer; transition: background-color var(--dur-fast); }
     .combo-option.active { background: var(--sunk); }
     .combo-option.chosen .combo-label { color: var(--ember); font-weight: 500; }
-    .combo-label { font-size: .92rem; }
+    /* "Device – Name" on one line. Too long for it, the device is cut short before the name is. */
+    .combo-label { font-size: .92rem; display: flex; align-items: baseline; gap: .35rem; min-width: 0; }
+    .combo-group, .combo-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .combo-group { flex: 0 1000 auto; min-width: 3.5rem; }
+    .combo-name { flex: 0 1 auto; min-width: 0; }
+    .combo-sep { flex: none; color: var(--muted); }
     .combo-option-detail { font-size: .75rem; color: var(--muted); font-family: var(--mono);
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .combo-list mark { background: color-mix(in srgb, var(--ember) 25%, transparent); color: inherit;

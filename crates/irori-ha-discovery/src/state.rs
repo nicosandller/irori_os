@@ -206,7 +206,31 @@ fn readings<'a>(readings: impl IntoIterator<Item = &'a Reading>) -> Vec<&'a str>
         .collect()
 }
 
-/// On or off, by the words this entity uses for each.
+/// On or off, as `message` says it through the entity's template, by the words this entity uses
+/// for each. `None` when the message doesn't say: Zigbee2MQTT sends `"contact": null` for a
+/// sensor it hasn't heard from yet, and a device's other entities share its topic.
+///
+/// Compared without regard to case. Zigbee2MQTT's words are often not text at all (a door's
+/// "on" is `false`), and a template renders `True` where the body said `true`.
+pub(crate) fn said_on_off(
+    message: &Message,
+    template: &ValueTemplate,
+    word_on: &str,
+    word_off: &str,
+) -> Option<Result<bool, String>> {
+    let text = message.said_through(template)??;
+    Some(if text.eq_ignore_ascii_case(word_on) {
+        Ok(true)
+    } else if text.eq_ignore_ascii_case(word_off) {
+        Ok(false)
+    } else {
+        Err(format!(
+            "`{text}` is neither the on payload (`{word_on}`) nor the off payload (`{word_off}`)"
+        ))
+    })
+}
+
+/// On or off, when the whole payload is one of the entity's two words.
 pub(crate) fn decode_on_off(
     payload: &[u8],
     payload_on: &str,
@@ -223,6 +247,16 @@ pub(crate) fn decode_on_off(
             "`{text}` is neither the on payload (`{payload_on}`) nor the off payload (`{payload_off}`)"
         ))
     }
+}
+
+/// The template an on/off entity reads its value through. One too complex to run is read as the
+/// value it tests: Zigbee2MQTT's `{% if value_json["x"] %}true{% else %}false{% endif %}` and
+/// `{{ value_json.permit_join | lower }}` both say what's at their path, in other letters.
+pub(crate) fn on_off_template(root: &serde_json::Value) -> ValueTemplate {
+    crate::kinds::setting::looked_up(ValueTemplate::parse(crate::discovery::str_field(
+        root,
+        "value_template",
+    )))
 }
 
 /// The text an entity reported, through its value template.
@@ -274,6 +308,9 @@ mod tests {
             command_topic: "t/set".to_owned(),
             payload_on: "ON".to_owned(),
             payload_off: "OFF".to_owned(),
+            value_template: ValueTemplate::None,
+            state_on: "ON".to_owned(),
+            state_off: "OFF".to_owned(),
         });
         assert!(decode(&topics, "unrelated/topic", b"ON", None).is_none());
     }
