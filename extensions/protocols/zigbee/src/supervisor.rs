@@ -7,6 +7,7 @@
 //! the UI, or `DELETE`/`POST` on its `/api/dev/extensions/{id}` routes) to pick up a new binary
 //! or schema.
 
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -33,9 +34,15 @@ pub struct Spawned {
 /// limit of process-based supervision without platform-specific code this project's own
 /// `unsafe_code = "forbid"` rules out.
 pub fn spawn(node: &Path, entry: &Path, data_dir: &Path) -> Result<Spawned, String> {
-    let mut child = Command::new(node)
-        .arg(entry)
-        .env("ZIGBEE2MQTT_DATA", data_dir)
+    let mut command = Command::new(node);
+    command.arg(entry).env("ZIGBEE2MQTT_DATA", data_dir);
+    if let Some(ceiling) = std::env::current_dir()
+        .ok()
+        .and_then(|here| git_ceiling(&here, std::env::var_os("GIT_CEILING_DIRECTORIES")))
+    {
+        command.env("GIT_CEILING_DIRECTORIES", ceiling);
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
@@ -53,6 +60,29 @@ pub fn spawn(node: &Path, entry: &Path, data_dir: &Path) -> Result<Spawned, Stri
         logs,
         last_error,
     })
+}
+
+/// What to set `GIT_CEILING_DIRECTORIES` to so git, run from `here`, never finds a repository
+/// above it.
+///
+/// Zigbee2MQTT asks `git rev-parse HEAD` what commit it is, from whatever directory it was
+/// started in, and compares the answer with the hash its published build was made at. Installed
+/// from npm there's no repository and the check is skipped — unless this extension's directory
+/// happens to sit *inside* someone else's repository (a data directory in a checkout, a home
+/// directory kept in git). Then git answers with that repository's commit, Zigbee2MQTT decides
+/// its build is stale, and it tries to rebuild itself with a `pnpm` that isn't on `PATH`,
+/// failing every start with `pnpm: command not found`.
+///
+/// A ceiling names a directory git won't climb *into*, so it's `here`'s parent, with symlinks
+/// resolved since git compares against the real path. Whatever was already set is kept.
+fn git_ceiling(here: &Path, existing: Option<OsString>) -> Option<OsString> {
+    let here = here.canonicalize().ok()?;
+    let mut ceiling = here.parent()?.as_os_str().to_owned();
+    if let Some(existing) = existing.filter(|existing| !existing.is_empty()) {
+        ceiling.push(":");
+        ceiling.push(existing);
+    }
+    Some(ceiling)
 }
 
 impl Spawned {
@@ -155,6 +185,55 @@ fn shorten(line: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Real git, in a real repository with this extension's directory inside it — the layout
+    /// that made Zigbee2MQTT take the surrounding checkout's commit for its own.
+    #[test]
+    fn git_run_from_the_extension_directory_cannot_see_a_repository_around_it() {
+        let repo = tempfile::tempdir().expect("can create a temp dir");
+        let here = repo.path().join("data/extensions/zigbee");
+        std::fs::create_dir_all(&here).expect("can create the nested directory");
+        let git = |args: &[&str], ceiling: Option<&OsString>| {
+            let mut command = std::process::Command::new("git");
+            command.args(args).current_dir(&here);
+            command
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_CEILING_DIRECTORIES");
+            if let Some(ceiling) = ceiling {
+                command.env("GIT_CEILING_DIRECTORIES", ceiling);
+            }
+            command.output()
+        };
+        let Ok(init) = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(repo.path())
+            .output()
+        else {
+            return; // no git on this machine: nothing for Zigbee2MQTT to be misled by either
+        };
+        assert!(init.status.success(), "git init failed");
+        let inside = &["rev-parse", "--is-inside-work-tree"];
+        assert!(git(inside, None).expect("git runs").status.success());
+
+        let ceiling = git_ceiling(&here, None).expect("a nested directory has a parent");
+        assert!(
+            !git(inside, Some(&ceiling))
+                .expect("git runs")
+                .status
+                .success()
+        );
+    }
+
+    #[test]
+    fn a_ceiling_already_set_is_kept_after_ours() {
+        let dir = tempfile::tempdir().expect("can create a temp dir");
+        let ours = git_ceiling(dir.path(), None).expect("a temp dir has a parent");
+        let both = git_ceiling(dir.path(), Some("/somewhere/else".into())).expect("still some");
+        let mut expected = ours.clone();
+        expected.push(":/somewhere/else");
+        assert_eq!(both, expected);
+        assert_eq!(git_ceiling(dir.path(), Some(OsString::new())), Some(ours));
+    }
 
     /// The property `drain_logs` exists for: once the child (and so its pipes) has actually
     /// closed, draining returns almost immediately rather than waiting out its own timeout — the
