@@ -239,6 +239,7 @@ pub async fn ensure_zigbee2mqtt(version: Option<&str>) -> Result<(), String> {
     tokio::fs::create_dir_all(Z2M_DIR)
         .await
         .map_err(|e| format!("couldn't create {Z2M_DIR}: {e}"))?;
+    claim_as_own_project(Path::new(Z2M_DIR)).await?;
     let spec = match version {
         Some(v) => format!("zigbee2mqtt@{}", checked_version(v)?),
         None => "zigbee2mqtt@latest".to_owned(),
@@ -264,6 +265,35 @@ pub async fn ensure_zigbee2mqtt(version: Option<&str>) -> Result<(), String> {
             "installed {spec} but {} still doesn't exist",
             zigbee2mqtt_entry().display()
         ));
+    }
+    Ok(())
+}
+
+/// Makes `dir` a pnpm project and workspace root of its own, so `pnpm add` installs *there*.
+///
+/// pnpm doesn't install into the directory it's run from — it installs into the nearest project
+/// above it. In a directory with no `package.json` it walks up until it finds one, and whatever
+/// it finds (a stray `~/package.json`, the checkout this data directory happens to sit inside)
+/// gets Zigbee2MQTT added to it instead, with pnpm exiting 0 and `z2m/` left empty. A
+/// `package.json` alone isn't enough either: a `pnpm-workspace.yaml` anywhere above still takes
+/// the lockfile and the `--allow-build` approvals. Both files, right here, stop the walk.
+///
+/// Neither is overwritten: after the first install they're pnpm's to keep (the dependency
+/// in one, the build approvals in the other).
+async fn claim_as_own_project(dir: &Path) -> Result<(), String> {
+    for (name, contents) in [
+        (
+            "package.json",
+            "{\"name\": \"irori-zigbee2mqtt\", \"private\": true}\n",
+        ),
+        ("pnpm-workspace.yaml", ""),
+    ] {
+        let path = dir.join(name);
+        if !path.exists() {
+            tokio::fs::write(&path, contents)
+                .await
+                .map_err(|e| format!("couldn't write {}: {e}", path.display()))?;
+        }
     }
     Ok(())
 }
@@ -369,6 +399,28 @@ mod tests {
         let path = path.to_string_lossy().into_owned();
         let first = path.split(':').next().expect("split yields one part");
         assert!(Path::new(first).is_absolute(), "{first}");
+    }
+
+    /// Without both files pnpm installs into whichever project it finds further up the tree and
+    /// reports success, leaving `z2m/` empty.
+    #[tokio::test]
+    async fn the_install_directory_is_its_own_project_and_keeps_what_pnpm_wrote_there() {
+        let dir = tempfile::tempdir().expect("can create a temp dir");
+        claim_as_own_project(dir.path()).await.expect("can claim");
+        let manifest = std::fs::read_to_string(dir.path().join("package.json"))
+            .expect("package.json was written");
+        serde_json::from_str::<serde_json::Value>(&manifest).expect("package.json is JSON");
+        assert!(dir.path().join("pnpm-workspace.yaml").is_file());
+
+        let approvals = "allowBuilds:\n  unix-dgram: true\n";
+        std::fs::write(dir.path().join("pnpm-workspace.yaml"), approvals).expect("can write");
+        claim_as_own_project(dir.path())
+            .await
+            .expect("can claim again");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("pnpm-workspace.yaml")).expect("still there"),
+            approvals
+        );
     }
 
     #[test]

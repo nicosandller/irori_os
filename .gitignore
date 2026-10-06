@@ -30,7 +30,3 @@ opencode.json
 /extensions/automations/app/target
 /extensions/automations/app/dist
 /crates/irori-ui-kit/target
-node_modules/*
-package.json
-pnpm-lock.yaml
-pnpm-workspace.yaml
