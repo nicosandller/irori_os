@@ -427,7 +427,7 @@ mod tests {
                     | host::Op::SetWaiting(_)
                     | host::Op::SetUnmodeled(_)
                     | host::Op::SetActionOpen(_, _)
-                | host::Op::SetAvailableActions(_) => {}
+                    | host::Op::SetAvailableActions(_) => {}
                     host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));
                     }
@@ -874,7 +874,7 @@ mod tests {
                     | host::Op::SetWaiting(_)
                     | host::Op::SetUnmodeled(_)
                     | host::Op::SetActionOpen(_, _)
-                | host::Op::SetAvailableActions(_) => {}
+                    | host::Op::SetAvailableActions(_) => {}
                     host::Op::Load(_, reply) => {
                         let _ = reply.send(Ok(None));
                     }

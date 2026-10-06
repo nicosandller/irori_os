@@ -272,8 +272,13 @@ of them without changing for each one, it needs the following. Until then, raisi
 `entity_format` past a kind it can't handle would hand it entities it can't do anything useful
 with.
 
-1. **Read entities by value, not by kind.** Today the engine and its page parse entities with
-   `irori-types`' closed enums and refuse what they don't know. They should read what every entity
+Done so far: 1 (triggers, checks and waits take any kind by its value), 2 (a call names any
+kind's service, with that service's own fields, read off the `ServiceCall` schema), 3 (a state
+trigger on an `event` fires on every report), and 6 (the editor's pickers and the call form are
+drawn from what each entity offers). Still to do: 4, 5, 7. Until 7, a call can't carry a `code`.
+
+1. **Read entities by value, not by kind.** The engine and its page once parsed entities with
+   `irori-types`' closed enums and refused what they didn't know. They read what every entity
    has: its id (as text), its value and that value's shape (on/off, number, text, or none), and
    what's known about the value:
    - its allowed values (`options`), its range and step, and its unit;
@@ -282,14 +287,17 @@ with.
    - whether it has a value at all (a `button` doesn't).
 
    `State::primary()` and `Capabilities::primary_shape()` are the start of this.
-2. **Call actions from a list, not a fixed set.** `RuleService` and `CallData` know only the light
-   and switch services. A blind's `set_position {position: 0–100}` or a select's
-   `select_option {option}` should come from a list of each entity's actions and their settings
-   (names, types, ranges, choices), checked when the flow is saved. Today the core checks each
-   service's data in `Service::from_data`. Data from a flow is parsed per service, not by its shape.
+2. **Call actions from a list, not a fixed set.** A call names any service of the entity's kind
+   (a blind's `set_position {position: 0–100}`, a select's `select_option {option}`), and its
+   settings are that service's fields: names, types, ranges and choices, read off the
+   `ServiceCall` schema (`ServiceName::fields`) and checked when the flow is saved. The core
+   still checks each call's data itself, in `Service::from_data`.
 3. **Trigger on happenings, not just changes.** A state trigger fires when the value changes.
-   Entities whose every report counts (remote buttons, doorbells) need a trigger that fires on
-   each one, ignoring what the protocol replays on reconnect.
+   Entities whose every report counts (remote buttons, doorbells) fire on each one, the same
+   one twice included: `{"type": "state", "entity": "event.desk_button_action", "to": "single"}`,
+   or without `to` for any of them. What the protocol replays on reconnect doesn't fire, and
+   neither does the device coming back in reach. Such an entity has no value that lasts, so it
+   takes no `from`, `for`, `above` or `below`, and can't be a condition or a wait.
 4. **Read more than the main value.** `num(id, 'field')` and `text(id, 'field')`, and `field` on
    state triggers and conditions, for a blind's position or a thermostat's current temperature
    ([rules.md](rules.md) amendment).

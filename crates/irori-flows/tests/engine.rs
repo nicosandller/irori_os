@@ -1254,7 +1254,11 @@ fn a_press_is_not_something_to_check_or_wait_for_and_a_blind_is_asked_only_what_
 
     for (service, data, said) in [
         ("cover.set_position", serde_json::json!({}), "position"),
-        ("cover.open", serde_json::json!({ "position": 10 }), "does not take data"),
+        (
+            "cover.open",
+            serde_json::json!({ "position": 10 }),
+            "does not take data",
+        ),
         ("lock.unlock", serde_json::json!({ "code": "1234" }), "code"),
     ] {
         let refused = serde_json::from_value::<Flow>(serde_json::json!({

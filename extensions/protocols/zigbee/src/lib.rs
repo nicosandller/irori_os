@@ -303,7 +303,11 @@ async fn handle_action(incoming: IncomingAction, client: &impl Publisher) {
     }
     // Stopping is the same request for no time at all. Whether it took is read off
     // Zigbee2MQTT's `bridge/info`, which it publishes again once the network opens or closes.
-    let seconds = if incoming.stop { 0 } else { PERMIT_JOIN_SECONDS };
+    let seconds = if incoming.stop {
+        0
+    } else {
+        PERMIT_JOIN_SECONDS
+    };
     let publish = bridge::permit_join(BASE_TOPIC, seconds);
     let result = client.publish(&publish.topic, publish.payload, false).await;
     incoming.reply(result);
@@ -379,7 +383,9 @@ async fn unpaired(response: bridge::Response, registry: &mut Registry, ctx: &Pro
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 /// Applies one incoming broker message: Zigbee2MQTT's own bridge status, a discovery config, a
@@ -535,7 +541,10 @@ async fn describe(
         return;
     }
     let unique_id = parsed.unique_id.clone();
-    let device = parsed.device.as_ref().map(|device| device.unique_id.clone());
+    let device = parsed
+        .device
+        .as_ref()
+        .map(|device| device.unique_id.clone());
     let entity_description = map::entity(&parsed, &discovered.object_id);
     if let Err(e) = ctx.describe_entity(entity_description).await {
         tracing::warn!(%unique_id, error = %e, "the core refused an entity");
@@ -1116,9 +1125,7 @@ mod tests {
     }
 
     /// Every op the protocol sends, in order, each answered as accepted.
-    fn record_ops(
-        mut ops: tokio::sync::mpsc::Receiver<host::Op>,
-    ) -> Arc<Mutex<Vec<String>>> {
+    fn record_ops(mut ops: tokio::sync::mpsc::Receiver<host::Op>) -> Arc<Mutex<Vec<String>>> {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&seen);
         tokio::spawn(async move {
@@ -1208,7 +1215,11 @@ mod tests {
             answer.try_recv().is_err(),
             "not answered until Zigbee2MQTT has"
         );
-        assert_eq!(registry.entities.len(), 1, "and nothing is removed until then");
+        assert_eq!(
+            registry.entities.len(),
+            1,
+            "and nothing is removed until then"
+        );
 
         apply(
             message(

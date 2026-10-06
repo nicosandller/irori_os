@@ -4,8 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use irori_flow_types::{
-    Amount, Condition, Flow, JoinMode, Node, NodeId, Port, RuleService, Trigger, TypedValue,
-    Values, WaitUntil,
+    Amount, Condition, Flow, JoinMode, Node, NodeId, Port, Trigger, TypedValue, Values, WaitUntil,
 };
 use irori_types::{
     BinarySensorClass, Capabilities, EntityId, EntityKind, EntityState, SensorValue, State,
@@ -303,6 +302,13 @@ pub fn sentence(node: &Node, home: &Home) -> String {
                 let name = home.name(entity);
                 let values: Vec<TypedValue> = to.iter().flat_map(Values::iter).cloned().collect();
                 let flag = home.flag_class(entity).is_some();
+                // Something that happens (a button's press) is said as what it reports.
+                if entity.kind().counts_every_report() {
+                    return match values.as_slice() {
+                        [] => format!("{name} reports anything"),
+                        values => format!("{name}: {}", one_of(values, entity, home)),
+                    };
+                }
                 let mut text = match (above, below, from, values.as_slice()) {
                     (Some(above), Some(below), ..) => {
                         format!("{name} goes between {above} and {below}")
@@ -360,31 +366,45 @@ pub fn sentence(node: &Node, home: &Home) -> String {
             data,
         } => {
             let name = home.name(entity);
-            let verb = match service {
-                RuleService::LightTurnOn | RuleService::SwitchTurnOn => "Turn on",
-                RuleService::LightTurnOff | RuleService::SwitchTurnOff => "Turn off",
-                RuleService::LightToggle | RuleService::SwitchToggle => "Toggle",
-            };
-            let Some(light) = data else {
+            let verb = crate::inspector::action_words(service.action());
+            let Some(settings) = data else {
                 return format!("{verb} {name}");
             };
             let mut text = format!("{verb} {name}");
-            match (&light.brightness_pct, &light.brightness) {
-                (Some(Amount::Fixed(pct)), _) => text.push_str(&format!(" at {pct}%")),
-                (Some(Amount::Worked(w)), _) | (None, Some(Amount::Worked(w))) => {
-                    text.push_str(&format!(" at {}", worked_words(w.expr.as_str())));
+            // A light's level reads as a percentage, however it was written.
+            let mut said: Vec<&str> = Vec::new();
+            if entity.kind() == irori_types::EntityKind::Light {
+                said.extend(["brightness_pct", "brightness", "color_temp_kelvin"]);
+                match (settings.get("brightness_pct"), settings.get("brightness")) {
+                    (Some(Amount::Fixed(pct)), _) => text.push_str(&format!(" at {pct}%")),
+                    (Some(Amount::Worked(w)), _) | (None, Some(Amount::Worked(w))) => {
+                        text.push_str(&format!(" at {}", worked_words(w.expr.as_str())));
+                    }
+                    (None, Some(Amount::Fixed(b))) => {
+                        let level = b.as_u64().unwrap_or(255) * 100 / 255;
+                        text.push_str(&format!(" at {level}%"));
+                    }
+                    (None, None) => {}
                 }
-                (None, Some(Amount::Fixed(b))) => {
-                    text.push_str(&format!(" at {}%", u16::from(*b) * 100 / 255));
+                match settings.get("color_temp_kelvin") {
+                    Some(Amount::Fixed(k)) => text.push_str(&format!(", {k} K")),
+                    Some(Amount::Worked(w)) => {
+                        text.push_str(&format!(", {} K", worked_words(w.expr.as_str())));
+                    }
+                    None => {}
                 }
-                (None, None) => {}
             }
-            match &light.color_temp_kelvin {
-                Some(Amount::Fixed(k)) => text.push_str(&format!(", {k} K")),
-                Some(Amount::Worked(w)) => {
-                    text.push_str(&format!(", {} K", worked_words(w.expr.as_str())));
+            // Every other setting, as its own name and value: "position 50", "hvac mode heat".
+            for (field, amount) in &settings.0 {
+                if said.contains(&field.as_str()) {
+                    continue;
                 }
-                None => {}
+                let value = match amount {
+                    Amount::Fixed(serde_json::Value::String(word)) => word.replace('_', " "),
+                    Amount::Fixed(value) => value.to_string(),
+                    Amount::Worked(w) => worked_words(w.expr.as_str()),
+                };
+                text.push_str(&format!(", {} {value}", field.replace('_', " ")));
             }
             text
         }

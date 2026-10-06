@@ -7,8 +7,7 @@ use cel::common::ast::{CallExpr, Expr, IdedExpr, LiteralValue};
 use irori_types::{Capabilities, Entity, EntityId, ValueShape};
 
 use crate::{
-    Action, CallData, Condition, ExprString, Rule, RuleService, Trigger, TypedValue,
-    WaitUntil,
+    Action, CallData, Condition, ExprString, Rule, RuleService, Trigger, TypedValue, WaitUntil,
 };
 
 use crate::expr::compile;
@@ -146,7 +145,11 @@ fn walk_triggers_one(
             {
                 let what = found.capabilities.kind();
                 for (given, field, why) in [
-                    (hold.is_some(), "for", "it happens and is over, so it can't hold for a time"),
+                    (
+                        hold.is_some(),
+                        "for",
+                        "it happens and is over, so it can't hold for a time",
+                    ),
                     (above.is_some(), "above", "it isn't a number"),
                     (below.is_some(), "below", "it isn't a number"),
                 ] {

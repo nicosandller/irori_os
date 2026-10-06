@@ -188,7 +188,9 @@ mod tests {
         assert!(yaml.contains("server: \"mqtt://127.0.0.1:17883\""));
         // What makes a button's presses arrive as an entity at all.
         assert!(
-            yaml.starts_with("homeassistant:\n  enabled: true\n  experimental_event_entities: true\n"),
+            yaml.starts_with(
+                "homeassistant:\n  enabled: true\n  experimental_event_entities: true\n"
+            ),
             "{yaml}"
         );
         assert!(yaml.contains("base_topic: \"zigbee2mqtt\""));

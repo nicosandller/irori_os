@@ -8,7 +8,7 @@ use irori_types::{EntityId, ValueShape};
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
-use crate::inspector::{EntityPicker, WATCHABLE};
+use crate::inspector::{EntityPicker, lasting};
 use crate::widgets::{Choice, Combo};
 use crate::{Home, model};
 
@@ -312,7 +312,7 @@ impl Checks {
             entities
                 .iter()
                 .find(|e| e.capabilities.primary_shape() == Some(ValueShape::Number))
-                .or_else(|| entities.iter().find(|e| WATCHABLE.contains(&e.id.kind())))
+                .or_else(|| entities.iter().find(|e| lasting().contains(&e.id.kind())))
                 .map(|e| e.id.to_string())
         });
         Self {
@@ -446,7 +446,7 @@ pub fn ChecksForm(
                 <div class="clause">
                     <div class="row">
                         <div class="grow">
-                            <EntityPicker value=clause.entity.clone() kinds=WATCHABLE.to_vec()
+                            <EntityPicker value=clause.entity.clone() kinds=lasting()
                                 pick=move |id: String| {
                                     let mut fresh = Clause::fresh(&id, &home);
                                     // The same kind of test as before, where it still fits.

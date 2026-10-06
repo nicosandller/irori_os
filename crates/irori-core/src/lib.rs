@@ -1192,7 +1192,7 @@ impl Core {
                             waiting: Vec::new(),
                             unmodeled: Vec::new(),
                             available_actions: Vec::new(),
-                        open_actions: BTreeMap::new(),
+                            open_actions: BTreeMap::new(),
                         },
                     );
                     true

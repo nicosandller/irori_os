@@ -204,7 +204,9 @@ mod tests {
         );
 
         assert_eq!(
-            response(br#"{"data":{"id":"0x00158d0001a2b3c4"},"status":"ok","transaction":"irori-7"}"#),
+            response(
+                br#"{"data":{"id":"0x00158d0001a2b3c4"},"status":"ok","transaction":"irori-7"}"#
+            ),
             Some(Response {
                 transaction: Some("irori-7".into()),
                 outcome: Ok(()),

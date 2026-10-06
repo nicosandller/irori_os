@@ -618,9 +618,7 @@ impl Engine {
         // `last_changed`, and leaves it alone for what isn't one — the device coming back in
         // reach, or the protocol repeating its last press as it reconnects.
         let happening = entity.kind().counts_every_report();
-        if happening
-            && old.is_none_or(|old| old.last_changed == new.last_changed)
-        {
+        if happening && old.is_none_or(|old| old.last_changed == new.last_changed) {
             return;
         }
         if !happening && old.is_some() && old_value == new_value {

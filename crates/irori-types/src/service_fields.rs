@@ -152,7 +152,12 @@ fn shape(schema: &Value, defs: &Value) -> FieldShape {
     let words: Vec<String> = schema
         .get("enum")
         .and_then(Value::as_array)
-        .map(|all| all.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+        .map(|all| {
+            all.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
         .or_else(|| {
             schema.get("oneOf").and_then(Value::as_array).map(|all| {
                 all.iter()
@@ -231,7 +236,10 @@ mod tests {
             matches!(brightness.shape, FieldShape::Number { integer: true, .. }),
             "{brightness:?}"
         );
-        assert_eq!(field(ServiceName::LightTurnOn, "rgb").shape, FieldShape::Other);
+        assert_eq!(
+            field(ServiceName::LightTurnOn, "rgb").shape,
+            FieldShape::Other
+        );
 
         let direction = field(ServiceName::FanSetDirection, "direction");
         assert_eq!(

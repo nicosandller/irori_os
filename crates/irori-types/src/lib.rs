@@ -42,7 +42,6 @@ pub use id::{
     IdError, Name, ObjectId, ProtocolId, RuleId, SLUG_MAX_LEN, TokenId, UniqueId, UserId,
 };
 pub use kind::EntityKind;
-pub use service_fields::{FieldShape, ServiceField};
 pub use kinds::binary_sensor::{BinarySensorCapabilities, BinarySensorClass, BinarySensorState};
 pub use kinds::button::{ButtonCapabilities, ButtonClass};
 pub use kinds::climate::{
@@ -85,6 +84,7 @@ pub use protocol::{
 };
 pub use registry::{Area, Capabilities, Device, Entity, EntityCategory, Floor};
 pub use schema::{SchemaDoc, schemas};
+pub use service_fields::{FieldShape, ServiceField};
 pub use settings::{
     DeviceSettings, EntitySettings, ExtensionSettings, Placement, SecretError, Settings,
     SettingsKey,
