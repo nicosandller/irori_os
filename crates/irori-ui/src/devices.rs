@@ -1292,9 +1292,14 @@ fn ProtocolActions(
                     let left = {
                         let action_id = action_id.clone();
                         move || {
+                            // Read again on every tick, but measured against the clock itself:
+                            // the tick only runs while something is open, so the time it last
+                            // wrote is from before this opened.
+                            now.track();
+                            let at = web_sys::js_sys::Date::now();
                             closing
                                 .with(|closing| closing.get(&action_id).copied())
-                                .map(|closes| (closes - now.get()).max(0.0))
+                                .map(|closes| (closes - at).max(0.0))
                         }
                     };
                     let is_open = Memo::new({
