@@ -332,6 +332,12 @@
     .entity-list .line { padding-left: 5rem; }
     .entity-list { --cols: minmax(9rem, 1.3fr) minmax(5rem, .8fr) minmax(0, 1.5fr); }
     .entity-list.by-device { --cols: minmax(9rem, 1fr) minmax(0, 1.3fr); }
+    /* A player's buttons are the widest thing a row holds: its controls take the width they
+       need to stay on one line, and the name keeps what's left. */
+    .entity-list .line:has(.media-reading) { --cols: minmax(9rem, 1fr) minmax(0, .5fr) auto; }
+    .entity-list.by-device .line:has(.media-reading) { --cols: minmax(9rem, 1fr) auto; }
+    .entity-line .media-reading { max-width: 7rem; }
+    .entity-line .volume-group input[type="range"] { width: 5.5rem; }
     .line { display: grid; grid-template-columns: var(--cols); align-items: center;
             column-gap: 1rem; padding: .45rem .8rem .45rem 2.75rem; font-size: .9rem;
             border-bottom: 1px solid var(--line); }
@@ -640,7 +646,6 @@
     .choices button:focus-visible, button.press:focus-visible {
         outline: 2px solid var(--ember); outline-offset: 2px; }
     .text-control { width: 12rem; padding: .2rem .5rem; font-size: .85rem; }
-    .media-url { flex: 1 1 12rem; width: auto; max-width: 22rem; min-width: 0; }
     .cover-buttons { display: inline-flex; flex-wrap: wrap; align-items: center; }
     /* A button that is only there while it makes sense (controls `tuck`): it folds away to
        nothing and what's beside it closes up, rather than a row of buttons that don't apply. */
@@ -661,6 +666,46 @@
     .glyph-second { opacity: 0; scale: .4; rotate: -90deg; }
     .glyph.alt .glyph-first { opacity: 0; scale: .4; rotate: 90deg; }
     .glyph.alt .glyph-second { opacity: 1; scale: 1; rotate: 0deg; }
+    /* A player's volume: mute, the slider and the level, framed as one button. */
+    .volume-group { display: inline-flex; align-items: center; gap: .35rem; height: 1.9rem;
+                    padding-right: .5rem; background: var(--card); border: 1px solid var(--line);
+                    border-radius: .4rem; transition: border-color var(--dur-fast); }
+    .volume-group:hover { border-color: var(--ember); }
+    .volume-group > :not(.glyph):first-child { margin-left: .6rem; }
+    .volume-group > .glyph:last-child { margin-right: -.5rem; }
+    .volume-group button.press.glyph { height: 100%; border: none; background: transparent; }
+    .volume-group input[type="range"] { width: 7rem; min-width: 5rem; }
+    .volume-group input:disabled { cursor: progress; opacity: .5; }
+    /* Firefox fills its track from the slider's value, not `--fill`: muted, it's emptied here. */
+    .volume-group.muted input[type="range"]::-moz-range-progress { background: transparent; }
+    .volume-group .lv { min-width: 2.6rem; text-align: right; color: var(--muted);
+                        font: .72rem var(--mono); font-variant-numeric: tabular-nums; }
+    /* What's playing gives way before the name or the buttons do: a long title is cut short,
+       and is whole in the element's title. */
+    .media-reading { flex: 0 1 auto; min-width: 0; max-width: 10rem; overflow: hidden;
+                     text-overflow: ellipsis; }
+    .entity:has(> .media-reading) .names { min-width: 5rem; }
+    /* Sending a player a link: a button, and the small form that drops from it. The form is
+       pinned to the window where the page measured the button to be, so that a list that
+       clips its rows can't clip it. */
+    .cast { position: relative; display: inline-flex; }
+    .cast > button[aria-expanded="true"] { color: var(--fg); background: var(--sunk);
+                                           border-color: var(--ember); }
+    .cast-pop { position: fixed; z-index: 20;
+                display: flex; flex-direction: column; gap: .5rem; width: min(24rem, 90vw);
+                padding: .75rem; text-align: left; background: var(--card);
+                border: 1px solid var(--line); border-radius: .5rem;
+                box-shadow: 0 .6rem 1.6rem rgba(28, 23, 20, .16);
+                animation: cast-in var(--dur-fast) var(--ease-out); }
+    @keyframes cast-in { from { opacity: 0; translate: 0 4px; } }
+    .cast-title { font-size: .8rem; font-weight: 600; color: var(--muted); }
+    .cast-row { display: flex; gap: .5rem; }
+    .cast-row input { flex: 1; min-width: 0; padding: .35rem .5rem; font-size: .85rem; }
+    .cast-row button { padding: .35rem .7rem; font: inherit; font-size: .85rem;
+                       color: var(--card); background: var(--ember);
+                       border: 1px solid var(--ember); border-radius: .4rem; cursor: pointer; }
+    .cast-row button:hover:not(:disabled) { background: #ab4717; border-color: #ab4717; }
+    .cast-row button:disabled { cursor: progress; opacity: .5; }
     /* A lock's padlock: the shackle lifts when it's unlocked and drops when it locks, works
        up and down while the bolt is moving, and shakes once when it jams. */
     .lock-reading { display: inline-flex; align-items: center; gap: .35rem; }
