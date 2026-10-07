@@ -9,7 +9,8 @@ whatever it is asked to play.
 - **Finds receivers** by mDNS (`_googlecast._tcp`). `known_hosts` adds addresses that don't
   announce themselves; each one is read from `http://{host}:8008/setup/eureka_info`.
 - **Adopts all of them**, or only the ids in `uuids`.
-- **Reports playback**: idle, playing, paused, buffering, off, or standby.
+- **Reports playback**: idle, playing, paused, buffering, off, or standby. Netflix runs on the
+  receiver itself and never says what it's doing, so Netflix in front is shown as playing.
 - **Plays an http or https URL** on the Default Media Receiver. `turn_off` quits the running app.
 - **For a TV, `turn_on`** launches that same receiver with nothing loaded, which is what lets a
   Chromecast stick ask the TV to switch to its input.

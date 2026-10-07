@@ -17,6 +17,9 @@ use crate::discover::Found;
 pub const DEFAULT_MEDIA_RECEIVER: &str = "CC1AD845";
 /// The backdrop slideshow. Nothing is playing.
 pub const BACKDROP: &str = "E8C28D3C";
+/// Apps that run on the receiver itself and never say what their player is doing. One of these
+/// in front counts as playing: there is nothing to tell a paused film from a playing one.
+const SILENT_APPS: [&str; 1] = ["Netflix"];
 
 const TEXT_MAX: usize = 255;
 
@@ -391,6 +394,13 @@ fn from_app(snap: &Snap) -> Playback {
         Some(PlayerState::Playing) => Playback::Playing,
         Some(PlayerState::Paused) => Playback::Paused,
         Some(PlayerState::Buffering) => Playback::Buffering,
+        None if snap
+            .app_id
+            .as_deref()
+            .is_some_and(|app| SILENT_APPS.contains(&app)) =>
+        {
+            Playback::Playing
+        }
         None => Playback::Idle,
     }
 }
@@ -607,6 +617,37 @@ mod tests {
         video.stand_by = Some(true);
         assert_eq!(word(&video, true, false), Playback::Idle, "a speaker");
         assert_eq!(word(&video, false, true), Playback::Idle, "ignored");
+    }
+
+    #[test]
+    fn an_app_that_never_reports_its_player_counts_as_playing() {
+        // What a Chromecast with Google TV sends with Netflix in front: no transport to ask.
+        let message = serde_json::json!({
+            "type": "RECEIVER_STATUS",
+            "status": {
+                "applications": [{
+                    "appId": "Netflix",
+                    "displayName": "Netflix",
+                    "sessionId": "e630b03f-83b4-4ce0-a893-9b2a7a317055",
+                }],
+                "isActiveInput": true,
+                "isStandBy": false,
+                "volume": { "level": 0.14, "muted": false }
+            }
+        });
+        let mut parsed = snap();
+        apply_receiver(&mut parsed, &message);
+        assert_eq!(parsed.transport_id, None);
+        let player = playback(&parsed, false, false);
+        assert_eq!(player.state, Playback::Playing);
+        assert_eq!(player.app.as_deref(), Some("Netflix"));
+
+        // Any other app with nothing to say is still idle, and the TV being off still wins.
+        parsed.app_id = Some("YouTube".to_owned());
+        assert_eq!(word(&parsed, false, false), Playback::Idle);
+        parsed.app_id = Some("Netflix".to_owned());
+        parsed.active_input = Some(false);
+        assert_eq!(word(&parsed, false, false), Playback::Off);
     }
 
     #[test]
