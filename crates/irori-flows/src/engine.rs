@@ -665,7 +665,7 @@ impl Engine {
             }
             None => (
                 from.as_ref()
-                    .is_none_or(|from| eval::matches(from, &old_value)),
+                    .is_none_or(|from| any_matches(from, &old_value)),
                 to.as_ref().is_none_or(|to| any_matches(to, &new_value)),
             ),
         };
@@ -698,6 +698,14 @@ impl Engine {
                     );
                 }
             }
+        } else if level.is_none()
+            && to_ok
+            && !from
+                .as_ref()
+                .is_some_and(|from| to.is_none() && any_matches(from, &new_value))
+        {
+            // It didn't come from where the trigger says, but it's still where the trigger
+            // wants it (paused → idle, after playing → paused): a hold keeps going.
         } else if self.cancel_hold(flow, node) {
             let hold = hold
                 .as_ref()

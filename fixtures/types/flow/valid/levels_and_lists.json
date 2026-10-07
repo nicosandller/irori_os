@@ -3,8 +3,10 @@
   "name": "TV stopped or dusk",
   "nodes": {
     "stopped": { "type": "trigger", "trigger": { "type": "state", "entity": "media_player.demo_tv", "to": ["paused", "idle", "off"], "for": "2s" } },
+    "finished": { "type": "trigger", "trigger": { "type": "state", "entity": "media_player.demo_tv", "from": ["playing", "paused"], "to": "idle" } },
+    "left_off": { "type": "trigger", "trigger": { "type": "state", "entity": "media_player.demo_tv", "from": "off" } },
     "got_dark": { "type": "trigger", "trigger": { "type": "state", "entity": "sensor.demo_luminosity_illuminance", "below": 600, "for": "30s" } },
     "on": { "type": "call", "service": "light.turn_on", "entity": "light.demo_tv_area_lights" }
   },
-  "wires": [["stopped", "on"], ["got_dark", "on"]]
+  "wires": [["stopped", "on"], ["finished", "on"], ["left_off", "on"], ["got_dark", "on"]]
 }

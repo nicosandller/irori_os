@@ -40,6 +40,9 @@ pub struct Choice {
     pub detail: String,
     /// What it's part of, read before the label: the device an entity belongs to.
     pub group: String,
+    /// A small drawing before it all: an entity's icon, as what goes inside its 24 × 24 box
+    /// (`irori_ui_kit::entity_icon::drawing`).
+    pub icon: Option<&'static str>,
 }
 
 impl Choice {
@@ -49,7 +52,13 @@ impl Choice {
             label: label.into(),
             detail: String::new(),
             group: String::new(),
+            icon: None,
         }
+    }
+
+    pub fn icon(mut self, icon: &'static str) -> Self {
+        self.icon = Some(icon);
+        self
     }
 
     pub fn group(mut self, group: impl Into<String>) -> Self {
@@ -79,6 +88,14 @@ impl Choice {
                 || self.value.to_lowercase().contains(word)
                 || self.detail.to_lowercase().contains(word)
         })
+    }
+}
+
+/// An icon from its drawing: strokes in the colour of the text around it.
+fn drawn(drawing: &'static str) -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round" inner_html=drawing></svg>
     }
 }
 
@@ -142,6 +159,12 @@ pub fn Combo(
         let v = value.get();
         choices.with(|all| all.iter().find(|c| c.value == v).map(|c| c.detail.clone()))
     };
+    let current_icon = move || {
+        let v = value.get();
+        choices.with(|all| all.iter().find(|c| c.value == v).and_then(|c| c.icon))
+    };
+    // Shown while the picked one is: typing to search takes the field's whole width back.
+    let iconed = move || !open.get() && current_icon().is_some();
     let matches = move || {
         let q = query.get();
         choices.with(|all| {
@@ -163,7 +186,7 @@ pub fn Combo(
 
     view! {
         // The hint beside the value ("now") gets room of its own, so the two never overlap.
-        <div class="combo" class:open=move || open.get()
+        <div class="combo" class:open=move || open.get() class:iconed=iconed
             style=move || {
                 let chars = if open.get() { 0 } else { current_detail().map_or(0, |d| d.chars().count()) };
                 format!("--detail-chars:{chars}")
@@ -221,6 +244,9 @@ pub fn Combo(
                     }
                 }
             />
+            {move || iconed().then(current_icon).flatten().map(|icon| view! {
+                <span class="combo-icon current" aria-hidden="true">{drawn(icon)}</span>
+            })}
             {move || parted().then(current_parts).flatten().map(|(group, name)| view! {
                 <span class="combo-shown" aria-hidden="true">
                     <span class="combo-group">{group}</span>
@@ -266,6 +292,10 @@ pub fn Combo(
                                 }
                                 on:pointerenter=move |_| active.set(i)
                             >
+                                {choice.icon.map(|icon| view! {
+                                    <span class="combo-icon" aria-hidden="true">{drawn(icon)}</span>
+                                })}
+                                <span class="combo-text">
                                 <span class="combo-label">
                                     // The part that gives way when the two don't fit: the
                                     // device is the same down a run of rows, the name isn't.
@@ -278,6 +308,7 @@ pub fn Combo(
                                 {(!choice.detail.is_empty()).then(|| view! {
                                     <span class="combo-option-detail">{marked(&choice.detail, &q)}</span>
                                 })}
+                                </span>
                             </li>
                         }
                     }).collect_view().into_any()

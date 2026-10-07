@@ -1,6 +1,6 @@
-//! A trigger's form: what's watched, and what it has to do — change to one of some values, or,
-//! for a sensor with numbers, go below or above a level — and for how long. Irori itself is one
-//! of the things to watch: its own entities, and "starts up".
+//! A trigger's form: what's watched, and what it has to do — change from one of some values, to
+//! one of some values, or both; or, for a sensor with numbers, go below or above a level — and
+//! for how long. Irori itself is one of the things to watch: its own entities, and "starts up".
 
 use irori_types::{EntityId, ValueShape};
 use leptos::prelude::*;
@@ -39,29 +39,29 @@ impl Watch {
     }
 }
 
-/// The values in a trigger's `to`: none, one, or a list.
-fn values_of(to: &Value) -> Vec<Value> {
-    match to {
+/// The values in a trigger's `from` or `to`: none, one, or a list.
+fn values_of(values: &Value) -> Vec<Value> {
+    match values {
         Value::Null => Vec::new(),
         Value::Array(values) => values.clone(),
         one => vec![one.clone()],
     }
 }
 
-/// `to` as it's written: nothing, one value, or a list.
-fn write_values(trigger: &mut Value, values: Vec<Value>) {
+/// `field` (`from` or `to`) as it's written: nothing, one value, or a list.
+fn write_values(trigger: &mut Value, field: &'static str, values: Vec<Value>) {
     let Some(object) = trigger.as_object_mut() else {
         return;
     };
     match values.len() {
         0 => {
-            object.remove("to");
+            object.remove(field);
         }
         1 => {
-            object.insert("to".into(), values.into_iter().next().unwrap_or_default());
+            object.insert(field.into(), values.into_iter().next().unwrap_or_default());
         }
         _ => {
-            object.insert("to".into(), Value::Array(values));
+            object.insert(field.into(), Value::Array(values));
         }
     }
 }
@@ -163,7 +163,7 @@ fn state_form(
                 <label>"Changes to"</label>
                 <ValueInput entity=entity.to_owned() value=to allow_any=true
                     pick=move |value: Value| edit(Box::new(move |t: &mut Value| {
-                        write_values(t, if value.is_null() { Vec::new() } else { vec![value] });
+                        write_values(t, "to", if value.is_null() { Vec::new() } else { vec![value] });
                     })) />
             }
             .into_any()
@@ -187,13 +187,51 @@ fn state_form(
     .into_any()
 }
 
-/// A text sensor: any change, or a change to one of the values picked.
+/// Something with words for values: any change, or a change from one of the values picked, to
+/// one of the values picked, or both. A happening has no value to have changed from.
 fn text_values_form(
     trigger: &Value,
     entity: &str,
     edit: impl Fn(Edit) + Clone + Send + Sync + 'static,
 ) -> AnyView {
-    let values = values_of(&trigger["to"]);
+    let (from, to) = (
+        values_of(&trigger["from"]).is_empty(),
+        values_of(&trigger["to"]).is_empty(),
+    );
+    if happens(entity) {
+        let label = if to {
+            "When it reports (anything, until you pick which)"
+        } else {
+            "When it reports any of"
+        };
+        return values_field(trigger, entity, "to", label, edit);
+    }
+    let from_label = if from {
+        "Changes from (anything, until you pick values)"
+    } else {
+        "Changes from any of"
+    };
+    let to_label = match (to, from) {
+        (true, true) => "Changes to (any change, until you pick values)",
+        (true, false) => "Changes to (anything else, until you pick values)",
+        (false, _) => "Changes to any of",
+    };
+    view! {
+        {values_field(trigger, entity, "from", from_label, edit.clone())}
+        {values_field(trigger, entity, "to", to_label, edit)}
+    }
+    .into_any()
+}
+
+/// The values picked for `field` (`from` or `to`), each to take out, and a place to add one.
+fn values_field(
+    trigger: &Value,
+    entity: &str,
+    field: &'static str,
+    label: &'static str,
+    edit: impl Fn(Edit) + Clone + Send + Sync + 'static,
+) -> AnyView {
+    let values = values_of(&trigger[field]);
     let chips = values
         .iter()
         .enumerate()
@@ -207,21 +245,14 @@ fn text_values_form(
                     {text}
                     <button type="button" title="Take this value out"
                         on:click=move |_| edit(Box::new(move |t: &mut Value| {
-                            let mut values = values_of(&t["to"]);
+                            let mut values = values_of(&t[field]);
                             if i < values.len() { values.remove(i); }
-                            write_values(t, values);
+                            write_values(t, field, values);
                         }))>"×"</button>
                 </span>
             }
         })
         .collect_view();
-    let empty = values.is_empty();
-    let label = match (happens(entity), empty) {
-        (true, true) => "When it reports (anything, until you pick which)",
-        (true, false) => "When it reports any of",
-        (false, true) => "Changes to (any change, until you pick values)",
-        (false, false) => "Changes to any of",
-    };
     view! {
         <label>{label}</label>
         <div class="value-chips">{chips}</div>
@@ -229,10 +260,10 @@ fn text_values_form(
             pick=move |text: String| {
                 if text.is_empty() { return; }
                 edit(Box::new(move |t: &mut Value| {
-                    let mut values = values_of(&t["to"]);
+                    let mut values = values_of(&t[field]);
                     let text = json!(text);
                     if !values.contains(&text) { values.push(text); }
-                    write_values(t, values);
+                    write_values(t, field, values);
                 }));
             } />
     }

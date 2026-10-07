@@ -198,8 +198,8 @@ Conditions (§6) are the level checks.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `entity` | `EntityId` | yes | Must exist at semantic check; kind must match `from`/`to` |
-| `from` | bool, number, string, or `null` | no | Previous typed value. `null` is unknown |
-| `to` | same, or a list of 1–16 of them | no | New typed value; with a list, any one of them (`["paused", "idle", "off"]`) |
+| `from` | bool, number, string, or `null`; or a list of 1–16 of them | no | Previous typed value; with a list, any one of them (`["playing", "paused"]`). `null` is unknown |
+| `to` | same | no | New typed value; with a list, any one of them (`["paused", "idle", "off"]`) |
 | `above` | number | no | Numeric sensors only, not with `from`/`to`: fires when the reading goes above this from outside the range |
 | `below` | number | no | Likewise, below. With both, the range between them (`above` < `below`) |
 | `for` | duration | no | New value must **hold** this long while **available** (with a level: stay inside the range) |
@@ -210,8 +210,12 @@ At least one of `from`, `to`, `for` may be omitted:
 |---|---|
 | `to` only | typed value **changes to** that value |
 | `from` only | typed value **changes from** that value (to anything else, including `null`) |
-| both | that exact transition |
+| both | a change from one of `from`'s values to one of `to`'s |
 | neither | any typed-value change (not mere attribute-only, not mere availability) |
+
+A change is always to a different value, so a list's values can overlap (`from: ["playing",
+"paused"]`, `to: ["paused", "idle"]` fires on playing → paused and on paused → idle), and `from`
+and `to` naming the same single value never fires: the semantic check says so.
 
 **What "typed value" means**, by kind — the same field `on()` / `num()` / `text()` read. It is
 the kind's primary value ([entities.md](entities.md) §4.4), so every kind has one:
@@ -244,6 +248,11 @@ entity that leaves the matched value **cancels** that sleep (does not fire). If 
 becomes **unavailable** or the state becomes **`null`**, the timer cancels. If a new matching
 transition happens, the timer starts again. Restart-mode abort cancels the sleep future; it does
 not wait it out.
+
+With `from`, "leaves the matched value" means leaves where the trigger wants it, not where it came
+from. After playing → paused starts the timer of `from: "playing", to: ["paused", "idle"]`,
+paused → idle isn't a change from playing, but the value is still one of `to`'s: the timer keeps
+going. With `from` alone the timer keeps going until the value is one of `from`'s again.
 
 Numeric `from`/`to` compare exactly (IEEE equality on the stored `f64`). That is rarely what a
 lux sensor wants; use an expr condition.

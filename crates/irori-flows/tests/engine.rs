@@ -933,6 +933,15 @@ fn levels_and_value_lists_are_checked() {
         bad(serde_json::json!({ "type": "state", "entity": GUESTS, "to": [true, true] })).is_err()
     );
     assert!(bad(serde_json::json!({ "type": "state", "entity": GUESTS, "to": [] })).is_err());
+    assert!(
+        bad(serde_json::json!({ "type": "state", "entity": GUESTS, "from": [true, true] }))
+            .is_err()
+    );
+    assert!(bad(serde_json::json!({ "type": "state", "entity": GUESTS, "from": [] })).is_err());
+    assert!(
+        bad(serde_json::json!({ "type": "state", "entity": LUX, "below": 30, "from": [5, 6] }))
+            .is_err()
+    );
     let on_a_switch = bad(serde_json::json!({ "type": "state", "entity": GUESTS, "below": 3 }))
         .expect("the file is fine");
     let problems = validate::check(&on_a_switch, &registry());
@@ -1074,6 +1083,149 @@ fn a_media_player_fires_when_it_changes_to_playing_and_a_check_can_ask_if_it_is(
             .any(|problem| problem.message.contains("never")),
         "{problems:#?}"
     );
+}
+
+/// The light goes on when the TV does what `trigger` says.
+fn tv_trigger(trigger: serde_json::Value) -> Flow {
+    flow(serde_json::json!({
+        "id": "tv_stopped", "name": "TV stopped",
+        "nodes": {
+            "tv": { "type": "trigger", "trigger": trigger },
+            "on": { "type": "call", "service": "light.turn_on", "entity": LIGHT }
+        },
+        "wires": [["tv", "on"]]
+    }))
+}
+
+/// How many runs the TV changing to `word` started.
+fn runs_after(engine: &mut Engine, word: Playback, seconds: i64) -> usize {
+    change(engine, playback(word, seconds));
+    effects(engine, at(seconds)).0.len()
+}
+
+#[test]
+fn a_trigger_can_say_what_it_changes_from_and_leave_out_what_to() {
+    let mut engine = engine_with_tv(tv_trigger(serde_json::json!({
+        "type": "state", "entity": TV, "from": "playing"
+    })));
+
+    // Idle → playing isn't a change from playing.
+    assert_eq!(runs_after(&mut engine, Playback::Playing, 10), 0);
+    // Playing → anything else is.
+    assert_eq!(runs_after(&mut engine, Playback::Paused, 20), 1);
+    assert_eq!(runs_after(&mut engine, Playback::Idle, 30), 0);
+    assert_eq!(runs_after(&mut engine, Playback::Playing, 40), 0);
+    assert_eq!(runs_after(&mut engine, Playback::Off, 50), 1);
+}
+
+#[test]
+fn a_trigger_with_from_and_to_fires_on_that_change_only() {
+    let stopped = tv_trigger(serde_json::json!({
+        "type": "state", "entity": TV, "from": ["playing", "paused"], "to": ["idle", "off"]
+    }));
+    // A list is written back as a list.
+    let written = serde_json::to_value(&stopped).expect("writes");
+    assert_eq!(
+        written["nodes"]["tv"]["trigger"]["from"],
+        serde_json::json!(["playing", "paused"])
+    );
+    let mut engine = engine_with_tv(stopped);
+
+    assert_eq!(runs_after(&mut engine, Playback::Playing, 10), 0);
+    assert_eq!(runs_after(&mut engine, Playback::Paused, 20), 0);
+    // Paused → idle: from one of them, to one of them.
+    assert_eq!(runs_after(&mut engine, Playback::Idle, 30), 1);
+    // Idle → off goes to the right place, but not from the right one.
+    assert_eq!(runs_after(&mut engine, Playback::Off, 40), 0);
+    assert_eq!(runs_after(&mut engine, Playback::Buffering, 50), 0);
+    assert_eq!(runs_after(&mut engine, Playback::Idle, 60), 0);
+    assert_eq!(runs_after(&mut engine, Playback::Playing, 70), 0);
+    assert_eq!(runs_after(&mut engine, Playback::Off, 80), 1);
+}
+
+#[test]
+fn a_hold_keeps_going_while_the_value_stays_where_the_trigger_wants_it() {
+    let mut engine = engine_with_tv(tv_trigger(serde_json::json!({
+        "type": "state", "entity": TV, "from": "playing", "to": ["paused", "idle"], "for": "10s"
+    })));
+    change(&mut engine, playback(Playback::Playing, 10));
+    change(&mut engine, playback(Playback::Paused, 20));
+    // Paused → idle isn't from playing, but it's still stopped: the ten seconds keep counting.
+    change(&mut engine, playback(Playback::Idle, 25));
+    let (calls, _, misses) = effects(&mut engine, at(25));
+    assert!(calls.is_empty());
+    assert!(misses.is_empty(), "{misses:#?}");
+    engine.advance(at(30));
+    let (calls, _, _) = effects(&mut engine, at(30));
+    assert_eq!(calls.len(), 1);
+
+    // Going somewhere else before the time is up is a near-miss, as it always was.
+    change(&mut engine, playback(Playback::Playing, 40));
+    change(&mut engine, playback(Playback::Paused, 50));
+    change(&mut engine, playback(Playback::Playing, 55));
+    engine.advance(at(70));
+    let (calls, _, misses) = effects(&mut engine, at(70));
+    assert!(calls.is_empty());
+    assert_eq!(misses[0].kind, NearMissKind::HoldReset);
+}
+
+#[test]
+fn a_hold_from_a_value_ends_when_it_goes_back_to_it() {
+    let mut engine = engine_with_tv(tv_trigger(serde_json::json!({
+        "type": "state", "entity": TV, "from": "playing", "for": "10s"
+    })));
+    change(&mut engine, playback(Playback::Playing, 10));
+    change(&mut engine, playback(Playback::Paused, 20));
+    change(&mut engine, playback(Playback::Playing, 25));
+    engine.advance(at(40));
+    let (calls, _, misses) = effects(&mut engine, at(40));
+    assert!(calls.is_empty());
+    assert_eq!(misses[0].kind, NearMissKind::HoldReset);
+
+    // Away from playing and staying away, wherever it wanders, fires.
+    change(&mut engine, playback(Playback::Paused, 50));
+    change(&mut engine, playback(Playback::Idle, 55));
+    engine.advance(at(60));
+    let (calls, _, _) = effects(&mut engine, at(60));
+    assert_eq!(calls.len(), 1);
+}
+
+#[test]
+fn what_a_trigger_changes_from_is_checked_like_what_it_changes_to() {
+    let problems_of = |trigger: serde_json::Value, home: &MapRegistry| {
+        validate::check(&tv_trigger(trigger), home)
+            .into_iter()
+            .map(|problem| format!("{:?}: {}", problem.field, problem.message))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let unknown_word = problems_of(
+        serde_json::json!({ "type": "state", "entity": TV, "from": ["playing", "on"] }),
+        &home_with_tv(),
+    );
+    assert!(unknown_word.contains("from"), "{unknown_word}");
+    assert!(unknown_word.contains("never \"on\""), "{unknown_word}");
+
+    let wrong_shape = problems_of(
+        serde_json::json!({ "type": "state", "entity": TV, "from": true }),
+        &home_with_tv(),
+    );
+    assert!(wrong_shape.contains("from"), "{wrong_shape}");
+    assert!(wrong_shape.contains("a boolean"), "{wrong_shape}");
+
+    let nowhere = problems_of(
+        serde_json::json!({ "type": "state", "entity": TV, "from": "playing", "to": ["playing"] }),
+        &home_with_tv(),
+    );
+    assert!(nowhere.contains("never fires"), "{nowhere}");
+    // Lists that share a value still have somewhere to go.
+    let somewhere = problems_of(
+        serde_json::json!({
+            "type": "state", "entity": TV, "from": ["playing", "paused"], "to": ["paused", "idle"]
+        }),
+        &home_with_tv(),
+    );
+    assert!(somewhere.is_empty(), "{somewhere}");
 }
 
 const BUTTON: &str = "event.desk_button_action";

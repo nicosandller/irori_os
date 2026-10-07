@@ -569,6 +569,13 @@
        as a live one. The switch is disabled separately. */
     .entity.offline .name, .entity.offline .reading, .entity.offline .reading.on { color: var(--muted); }
     .names { min-width: 0; flex: 1; }
+    /* An entity's own icon (icons.rs), to the left of its name: what kind of thing it is. Quiet,
+       so the name is still what's read first. */
+    .entity-icon { flex: none; width: 1.15rem; height: 1.15rem; color: var(--muted); }
+    .entity > .entity-icon { margin-right: -.35rem; }
+    .cell.names.iconed { display: flex; align-items: center; gap: .65rem; }
+    .names-text { min-width: 0; flex: 1; }
+    .names-text .name { overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
     .name { display: block; overflow-wrap: anywhere; }
     /* Ids are long and the name above already says which entity this is: one line, cut off
        rather than broken across lines on a phone. The full id is in the element's title. */
@@ -957,6 +964,45 @@
     .chart-tip span { color: var(--muted); font-family: var(--mono); }
     .chart-axis { display: flex; justify-content: space-between; margin-right: 3.4rem;
                   color: var(--muted); font: .65rem var(--mono); }
+    /* A state's day (timeline.rs): a strip, each block one state, as wide as it lasted. The
+       colours are eight that stay apart from each other for every kind of colour vision, in a
+       fixed order, stepped for each theme; the state that means nothing is going on is quiet,
+       and a gap is simply left empty. A hair of the surface between blocks keeps two of the
+       same lightness from running together. */
+    .timeline { --tone-1: #2a78d6; --tone-2: #eb6834; --tone-3: #1baf7a; --tone-4: #eda100;
+                --tone-5: #e87ba4; --tone-6: #008300; --tone-7: #4a3aa7; --tone-8: #e34948;
+                --tone-off: color-mix(in srgb, var(--muted) 38%, var(--card)); --tone-other: var(--muted); }
+    @media (prefers-color-scheme: dark) {
+      .timeline { --tone-1: #3987e5; --tone-2: #d95926; --tone-3: #199e70; --tone-4: #c98500;
+                  --tone-5: #d55181; --tone-6: #008300; --tone-7: #9085e9; --tone-8: #e66767; }
+    }
+    .tone-1 { background: var(--tone-1); } .tone-2 { background: var(--tone-2); }
+    .tone-3 { background: var(--tone-3); } .tone-4 { background: var(--tone-4); }
+    .tone-5 { background: var(--tone-5); } .tone-6 { background: var(--tone-6); }
+    .tone-7 { background: var(--tone-7); } .tone-8 { background: var(--tone-8); }
+    .tone-off { background: var(--tone-off); } .tone-other { background: var(--tone-other); }
+    .timeline-plot { position: relative; height: 2.25rem; margin: .9rem 0 .2rem;
+                     cursor: crosshair; touch-action: pan-y; border-radius: 4px; }
+    .timeline-plot:focus { outline: none; }
+    .timeline-plot:focus-visible { outline: 2px solid var(--ember); outline-offset: 4px; }
+    .timeline-track { position: absolute; inset: 0; overflow: hidden; border-radius: 4px;
+                      background: repeating-linear-gradient(135deg, transparent 0 5px,
+                                  var(--line) 5px 6px);
+                      animation: chart-draw 560ms var(--ease-out) both; }
+    .timeline-block { position: absolute; top: 0; bottom: 0; min-width: 2px;
+                      box-shadow: 0 0 0 1px var(--timeline-surface, var(--card)); }
+    .entity-block > .drawer .timeline { --timeline-surface: var(--bg); }
+    .timeline-axis { margin-right: 0; }
+    .timeline-legend { display: flex; flex-wrap: wrap; gap: .3rem 1.2rem; margin: .7rem 0 0;
+                       padding: 0; list-style: none; font-size: .8rem; }
+    .timeline-legend li { display: flex; align-items: center; gap: .4rem; }
+    .timeline-swatch { flex: none; width: .7rem; height: .7rem; border-radius: 3px; }
+    .timeline-total { color: var(--muted); font: .7rem var(--mono);
+                      font-variant-numeric: tabular-nums; }
+    .chart-tip .timeline-tip-state { display: flex; align-items: center; gap: .4rem;
+                                     font-family: var(--sans); }
+    .chart-tip .timeline-swatch { display: inline-block; }
+
     /* Waiting for the day: the chart's own height, gently lit, so nothing jumps when it comes. */
     .chart-waiting { height: 9.5rem; margin: 1.3rem 4.15rem 2rem .75rem; border-radius: .4rem;
                      background: linear-gradient(90deg, var(--sunk) 30%, var(--line) 50%,

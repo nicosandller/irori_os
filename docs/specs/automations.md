@@ -263,7 +263,9 @@ An engine reads entities and states in the entity format its manifest declares
 engine installed before Irori learned a kind keeps working: it doesn't see that kind until it's
 updated. The first-party engine declares format 16, so it is sent media players. A media player's
 value is its playback — `off`, `idle`, `playing`, `paused`, `buffering`, or `standby` — and a
-state trigger's `to` and a condition's `is` name that word (`changes to playing`, `is playing`).
+state trigger's `from` and `to` and a condition's `is` name that word (`changes from playing`,
+`changes to playing`, `is playing`). The trigger's form offers "Changes from" beside "Changes to"
+for every entity whose value is a word, a media player included; either can be left empty.
 
 Automations don't really need to know what kind of device something is. They need to know what
 kind of **value** it has, and what can be asked of it. Irori is adding every kind of device Home
