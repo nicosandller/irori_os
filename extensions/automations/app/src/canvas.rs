@@ -730,6 +730,17 @@ fn Groups(flow: Memo<Option<Flow>>, positions: Memo<BTreeMap<NodeId, [f64; 2]>>)
     }
 }
 
+/// How long the hold bar takes to slide to where it was last put, in milliseconds: the time
+/// between two looks at the engine, as `index.html` has it (`.hold-bar span`).
+const HOLD_STEP: i64 = 1_000;
+
+/// How far along a hold of `hold` milliseconds is with `left` still to go, as a percentage.
+fn hold_done(left: i64, hold: i64) -> f64 {
+    #[allow(clippy::cast_precision_loss)]
+    let part = 1.0 - left.max(0) as f64 / hold.max(1) as f64;
+    part.clamp(0.0, 1.0) * 100.0
+}
+
 pub fn remove_node(ed: &Editing, id: &NodeId) {
     ed.edit(|flow| {
         flow.nodes.remove(id);
@@ -766,28 +777,24 @@ fn NodeCard(
             show.lit.with(|lit| lit.get(&id).cloned())
         })
     };
-    // A trigger counting down its `for`: how far along, and how long is left.
+    // A trigger counting down its `for`: when it fires if it stays.
     let holding = {
         let id = id.clone();
-        move || {
-            let until = show
-                .holding
-                .with(|h| h.iter().find(|h| h.node == id).map(|h| h.until))?;
-            let hold = node.with(|n| match n {
-                Some(Node::Trigger {
-                    trigger:
-                        irori_flow_types::Trigger::State {
-                            hold: Some(hold), ..
-                        },
-                }) => Some(hold.millis()),
-                _ => None,
-            })?;
-            let left = (time::millis(until) - time::millis(time::now())).max(0);
-            let hold = hold.max(1);
-            #[allow(clippy::cast_precision_loss)]
-            let done = (1.0 - left as f64 / hold as f64).clamp(0.0, 1.0) * 100.0;
-            Some((done, left))
-        }
+        Memo::new(move |_| {
+            show.holding
+                .with(|h| h.iter().find(|h| h.node == id).map(|h| h.until))
+        })
+    };
+    let hold_ms = move || {
+        node.with(|n| match n {
+            Some(Node::Trigger {
+                trigger:
+                    irori_flow_types::Trigger::State {
+                        hold: Some(hold), ..
+                    },
+            }) => Some(hold.millis()),
+            _ => None,
+        })
     };
     // Selected while editing, its form is open in the panel over the canvas.
     let open = {
@@ -1003,10 +1010,28 @@ fn NodeCard(
                 <span class=format!("mark {}", lit.mark.class()) data-show=lit.show.to_string()>{lit.mark.badge()}</span>
                 {lit.note.map(|note| { let title = note.clone(); view! { <span class="live-note" title=title>{note}</span> } })}
             })}
-            {move || holding().map(|(done, left)| view! {
-                <div class="hold-bar" title=format!("fires in {} if it stays", time::span(left))>
-                    <span style=format!("--from:{done}%; --ms:{left}ms")></span>
-                </div>
+            {move || holding.get().zip(hold_ms()).map(|(until, hold)| {
+                let left = move || time::millis(until) - time::millis(time::now());
+                view! {
+                    // Where the bar stands is worked out from the clock on every look at the
+                    // engine, a second apart, and the bar slides there. Nothing is left to
+                    // run on its own: a bar set going once and trusted to arrive on time
+                    // arrives early or late whenever the page was hidden or the timing was
+                    // touched, and then sits full while the hold is still counting.
+                    <div
+                        class="hold-bar"
+                        title=move || {
+                            show.holding.track();
+                            format!("fires in {} if it stays", time::span(left()))
+                        }
+                    >
+                        <span style=move || {
+                            show.holding.track();
+                            // Where it will be when the slide there ends.
+                            format!("width:{}%", hold_done(left() - HOLD_STEP, hold))
+                        }></span>
+                    </div>
+                }
             })}
             {move || live_value().map(|value| view! { <span class="now">{format!("now {value}")}</span> })}
             {move || status().map(|s| view! { <div class="status">{s}</div> })}
@@ -1097,5 +1122,20 @@ fn NodePanel(
                 </div>
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hold_is_as_far_along_as_the_time_it_has_left_says() {
+        assert_eq!(hold_done(180_000, 180_000), 0.0);
+        assert_eq!(hold_done(45_000, 180_000), 75.0);
+        assert_eq!(hold_done(0, 180_000), 100.0);
+        // Past its time, or a page whose clock runs ahead: full, never more.
+        assert_eq!(hold_done(-5_000, 180_000), 100.0);
+        assert_eq!(hold_done(200_000, 180_000), 0.0);
     }
 }

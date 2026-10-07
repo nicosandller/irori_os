@@ -114,9 +114,11 @@ curl -s http://127.0.0.1:8480/api/dev/home     # the whole home in one response
 
 The **web UI** is a separate wasm crate, so `cargo build` alone doesn't need a wasm toolchain and
 serves a placeholder page at `/`. `cargo xtask install` above builds it; `cargo xtask ui` builds
-it without installing. It has a folding sidebar; `/` is an IroriOS start screen, and the pages are
-Devices (devices grouped by extension, entities with their switches, and an **Add device**
-panel), Extensions, and Settings (the instance, areas & floors, users, and the machine itself).
+it without installing. It has a folding sidebar whose IroriOS mark opens the assistant once a
+model is set, and the pages are Devices (devices grouped by extension, entities with their
+switches, and an **Add device** panel), Extensions, and Settings (the IroriOS wordmark and what
+the instance holds, then the instance, areas & floors, users, and the machine itself). `/` goes
+to Settings.
 
 See [crates/irori-ui/README.md](crates/irori-ui/README.md) for working on the UI itself (live
 reload, no binary rebuild). CI builds it, so downloaded release binaries always have it.

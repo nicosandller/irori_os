@@ -140,7 +140,7 @@ fn now() -> f64 {
 }
 
 /// Motion off in Settings, or the system asking for less.
-fn still() -> bool {
+pub fn still() -> bool {
     let off = document()
         .document_element()
         .and_then(|root| root.get_attribute("data-motion"))

@@ -13,11 +13,12 @@ pub struct BriefLine {
     pub value: String,
 }
 
-const HOME_CAP: usize = 6_000;
+/// The longest the picture of the home gets, when nothing asks for less.
+pub const HOME_CAP: usize = 6_000;
 
-/// A short picture of the whole home. Past the cap, the rest is counted rather than pasted, so
-/// a large house still fits in front of a small model.
-pub fn home_brief(lines: &[BriefLine]) -> String {
+/// A short picture of the whole home, in at most `cap` characters. Past that, the rest is
+/// counted rather than pasted, so a large house still fits in front of a small model.
+pub fn home_brief(lines: &[BriefLine], cap: usize) -> String {
     let mut out = String::from(
         "This is the person's home, as Irori has it right now. Answer about this home. \
          You can look up one device with tools when the line here is not enough.\n",
@@ -40,7 +41,7 @@ pub fn home_brief(lines: &[BriefLine]) -> String {
             line.entity,
             line.value
         );
-        if out.len() + row.len() > HOME_CAP {
+        if out.len() + row.len() > cap {
             break;
         }
         out.push_str(&row);
@@ -68,6 +69,64 @@ pub fn device_brief(device: &str, area: &str, lines: &[BriefLine]) -> String {
     }
     for line in lines {
         out.push_str(&format!("- {} — {}\n", line.entity, line.value));
+    }
+    out
+}
+
+/// One automation, as the list of them tells it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AutomationLine {
+    pub name: String,
+    pub id: String,
+    /// `on`, `turned off`, or why it can't run.
+    pub state: String,
+    pub problems: usize,
+    /// How its last run came out, and when. `None` when it has never run.
+    pub last_run: Option<String>,
+    /// Times a trigger nearly fired and didn't, that are still remembered.
+    pub near_misses: usize,
+}
+
+/// Every automation in a line each, in at most `budget` characters. `lines` is `Err` with the
+/// reason when the Automations extension couldn't be asked.
+pub fn automations_brief(lines: Result<&[AutomationLine], &str>, budget: usize) -> String {
+    let mut out = String::from("\nAutomations, each with its id:\n");
+    let lines = match lines {
+        Ok(lines) => lines,
+        Err(why) => {
+            out.push_str(&format!("- Not available: {}\n", cut(why, 200)));
+            return out;
+        }
+    };
+    if lines.is_empty() {
+        out.push_str("- None yet.\n");
+        return out;
+    }
+    let mut written = 0usize;
+    for line in lines {
+        let mut row = format!("- {} (`{}`) — {}", line.name, line.id, line.state);
+        match &line.last_run {
+            Some(last) => row.push_str(&format!("; last run {}", cut(last, 160))),
+            None => row.push_str("; has not run yet"),
+        }
+        if line.problems > 0 {
+            row.push_str(&format!("; problems: {}", line.problems));
+        }
+        if line.near_misses > 0 {
+            row.push_str(&format!("; near-misses: {}", line.near_misses));
+        }
+        row.push('\n');
+        if out.len() + row.len() > budget {
+            break;
+        }
+        out.push_str(&row);
+        written += 1;
+    }
+    if written < lines.len() {
+        out.push_str(&format!(
+            "And {} more, not listed here.\n",
+            lines.len() - written
+        ));
     }
     out
 }
@@ -117,11 +176,12 @@ const LOG_LINE: usize = 240;
 
 /// Settings in words, inside `budget` characters. What gives way first is what matters least
 /// to a question about settings: extensions' own settings, then devices by name (they are
-/// counted instead), then the older lines of the log.
-pub fn settings_brief(picture: &SettingsPicture, budget: usize) -> String {
+/// counted instead), then the older lines of the log. `on_page` is whether the person is asking
+/// from Settings itself, or from the chat about the whole home, which is told the same things.
+pub fn settings_brief(picture: &SettingsPicture, budget: usize, on_page: bool) -> String {
     let mut out = String::new();
     for tight in 0..=3 {
-        out = settings_at(picture, tight);
+        out = settings_at(picture, tight, on_page);
         if out.len() <= budget {
             return out;
         }
@@ -129,12 +189,15 @@ pub fn settings_brief(picture: &SettingsPicture, budget: usize) -> String {
     cut(&out, budget)
 }
 
-fn settings_at(picture: &SettingsPicture, tight: u8) -> String {
-    let mut out = String::from(
+fn settings_at(picture: &SettingsPicture, tight: u8, on_page: bool) -> String {
+    let mut out = String::from(if on_page {
         "The person is on Irori's Settings page and is asking about Irori itself: its settings, \
          the machine, floors and areas, extensions, and its log. This is what Settings holds \
-         right now.\n",
-    );
+         right now.\n"
+    } else {
+        "\nIrori itself, as its Settings page has it right now: the machine, the assistant, \
+         floors and areas, extensions, and its log.\n"
+    });
     out.push_str("\nSystem:\n");
     for line in &picture.system {
         out.push_str(&format!("- {line}\n"));
@@ -248,10 +311,13 @@ mod tests {
         let text = device_brief("Lamp", "Hall", &[line("Lamp", "light.lamp", "on")]);
         assert!(text.contains("light.lamp"));
         assert!(!text.contains("other"));
-        let home = home_brief(&[
-            line("Lamp", "light.lamp", "on"),
-            line("Kettle", "switch.kettle", "off"),
-        ]);
+        let home = home_brief(
+            &[
+                line("Lamp", "light.lamp", "on"),
+                line("Kettle", "switch.kettle", "off"),
+            ],
+            HOME_CAP,
+        );
         assert!(home.contains("Kettle"));
         assert!(
             !device_brief("Lamp", "Hall", &[line("Lamp", "light.lamp", "on")]).contains("Kettle")
@@ -293,7 +359,7 @@ mod tests {
 
     #[test]
     fn settings_are_told_floor_by_floor_and_area_by_area() {
-        let text = settings_brief(&picture(), 10_000);
+        let text = settings_brief(&picture(), 10_000, true);
         let ground = text.find("Floor \"Ground\"").expect("the ground floor");
         let kitchen = text.find("Kitchen: Kettle, Lamp").expect("the kitchen");
         let attic = text.find("Floor \"Attic\"").expect("the attic");
@@ -309,22 +375,87 @@ mod tests {
 
     #[test]
     fn a_tight_budget_gives_up_detail_before_it_gives_up_the_shape() {
-        let full = settings_brief(&picture(), 10_000);
-        let small = settings_brief(&picture(), full.len() - 1);
+        let full = settings_brief(&picture(), 10_000, true);
+        let small = settings_brief(&picture(), full.len() - 1, true);
         assert!(!small.contains("broker.local"), "{small}");
         assert!(small.contains("Kitchen: Kettle, Lamp"), "{small}");
-        let smaller = settings_brief(&picture(), small.len() - 1);
+        let smaller = settings_brief(&picture(), small.len() - 1, true);
         assert!(smaller.contains("Kitchen: 2 devices"), "{smaller}");
-        let smallest = settings_brief(&picture(), smaller.len() - 1);
+        let smallest = settings_brief(&picture(), smaller.len() - 1, true);
         assert!(!smallest.contains("WARN line 14\n"), "{smallest}");
         assert!(smallest.contains("WARN line 19"), "{smallest}");
-        assert!(settings_brief(&picture(), 50).chars().count() <= 50);
+        assert!(settings_brief(&picture(), 50, true).chars().count() <= 50);
     }
 
     #[test]
     fn the_home_is_told_with_its_floors() {
         let mut lamp = line("Lamp", "light.lamp", "on");
         lamp.floor = "Ground".into();
-        assert!(home_brief(&[lamp]).contains("- Ground, Kitchen — Lamp"));
+        assert!(home_brief(&[lamp], HOME_CAP).contains("- Ground, Kitchen — Lamp"));
+    }
+
+    #[test]
+    fn a_small_cap_counts_the_devices_it_has_no_room_for() {
+        let lines: Vec<BriefLine> = (0..40)
+            .map(|n| line(&format!("Lamp {n}"), &format!("light.lamp_{n}"), "on"))
+            .collect();
+        let text = home_brief(&lines, 600);
+        assert!(text.len() < 700, "{}", text.len());
+        assert!(
+            text.contains("Lamp 0") && !text.contains("Lamp 39"),
+            "{text}"
+        );
+        assert!(text.contains("more, not listed here"), "{text}");
+    }
+
+    #[test]
+    fn the_same_settings_are_told_to_the_chat_about_the_home() {
+        let text = settings_brief(&picture(), 10_000, false);
+        assert!(!text.contains("is on Irori's Settings page"), "{text}");
+        assert!(text.contains("Kitchen: Kettle, Lamp"), "{text}");
+        assert!(text.contains("WARN line 19"), "{text}");
+    }
+
+    #[test]
+    fn automations_are_told_a_line_each_with_what_went_last() {
+        let lines = [
+            AutomationLine {
+                name: "TV area lighting".into(),
+                id: "tv_area_lighting".into(),
+                state: "on".into(),
+                problems: 0,
+                last_run: Some("completed 3 minutes ago (ended at lights on → no)".into()),
+                near_misses: 2,
+            },
+            AutomationLine {
+                name: "Porch".into(),
+                id: "porch".into(),
+                state: "can't run: no such entity".into(),
+                problems: 1,
+                last_run: None,
+                near_misses: 0,
+            },
+        ];
+        let text = automations_brief(Ok(&lines), 2_000);
+        assert!(
+            text.contains(
+                "- TV area lighting (`tv_area_lighting`) — on; last run completed 3 minutes ago \
+                 (ended at lights on → no); near-misses: 2\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "- Porch (`porch`) — can't run: no such entity; has not run yet; problems: 1"
+            ),
+            "{text}"
+        );
+        let short = automations_brief(Ok(&lines), 200);
+        assert!(short.contains("And 1 more"), "{short}");
+        assert!(automations_brief(Ok(&[]), 500).contains("None yet"));
+        assert!(
+            automations_brief(Err("the extension isn't running"), 500)
+                .contains("Not available: the extension isn't running")
+        );
     }
 }

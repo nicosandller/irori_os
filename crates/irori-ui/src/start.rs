@@ -1,17 +1,19 @@
-//! The start screen: what IroriOS is, and what it's looking after at a glance.
+//! The head of Settings: what IroriOS is, and what it's looking after at a glance.
 //!
 //! This is the wordmark the terminal prints when `irori serve` runs (the full version in
 //! `assets/irori-cli-art.txt`), beside what the instance has to show for itself. Deliberately
-//! three counts rather than a dashboard: a browser lands here first, so it says what this is and
-//! gives a reason to go deeper — not every reading in the home at once.
+//! three counts rather than a dashboard: it says what this is and gives a reason to go deeper,
+//! not every reading in the home at once. It was a page of its own once, the first one a
+//! browser landed on; it sits over the settings table now, where the instance is looked after.
 
 use leptos::prelude::*;
 use leptos_router::components::A;
 
 use crate::Live;
 
+/// The wordmark and the counts. `children` are the page's own actions, drawn beside the name.
 #[component]
-pub fn Start() -> impl IntoView {
+pub fn Hero(children: Children) -> impl IntoView {
     let live = expect_context::<Live>();
 
     let counts = move || {
@@ -42,6 +44,7 @@ pub fn Start() -> impl IntoView {
                     <span class="start-rule" aria-hidden="true"></span>
                     <span class="start-tag">"the hearth at the center of the home"</span>
                 </span>
+                <div class="page-actions">{children()}</div>
             </div>
 
             <div class="tiles">
@@ -68,12 +71,6 @@ pub fn Start() -> impl IntoView {
                     <span class="label">"extensions running"</span>
                 </A>
             </div>
-
-            <p class="muted small">
-                "IroriOS keeps what your devices are doing and does what you ask of them — the "
-                "thing in the middle of the home. No automations yet, and no way to sign in; "
-                "see ROADMAP.md for what comes next."
-            </p>
         </section>
     }
 }

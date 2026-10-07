@@ -5,9 +5,17 @@ use serde::{Deserialize, Serialize};
 /// The on-device tag a new install offers. Qwen3 1.7B, Q4_K_M, about 1.4 GB, Apache-2.0.
 pub const DEFAULT_TAG: &str = "qwen3:1.7b";
 
-/// How much conversation a local model is given room for, in tokens. Asked for by name on
-/// every request, so what is estimated here is what Ollama sets aside.
+/// How much conversation a local model is given room for, in tokens, until the person says
+/// otherwise. Asked for by name on every request, so what is estimated here is what Ollama
+/// sets aside.
 pub const LOCAL_CONTEXT: u64 = 4096;
+/// The least and the most context a person may ask for. Under the least, the picture of the
+/// home alone doesn't fit.
+pub const CONTEXT_MIN: u64 = 2048;
+pub const CONTEXT_MAX: u64 = 262_144;
+/// The longest the person's own instructions may be, in characters. They go in front of every
+/// question, so they come out of the room a model has for the conversation.
+pub const INSTRUCTIONS_MAX: usize = 4_000;
 
 /// Memory left for the rest of the machine once a model is loaded.
 const HEADROOM: u64 = 200 * 1024 * 1024;
@@ -23,18 +31,18 @@ pub struct Shape {
     pub value_length: u64,
 }
 
-/// What a model takes once loaded: its weights, the memory of the conversation, and its
-/// working buffers. The conversation's part is one key and one value per token, layer and
-/// head, two bytes a number. Without the model's shape, a fifth of the weights and half a
-/// gigabyte stand in for it.
-pub fn local_needs(weight_bytes: u64, shape: Option<Shape>) -> u64 {
+/// What a model takes once loaded with room for `context` tokens: its weights, the memory of
+/// the conversation, and its working buffers. The conversation's part is one key and one value
+/// per token, layer and head, two bytes a number. Without the model's shape, a fifth of the
+/// weights and half a gigabyte stand in for it at the usual context, and grow with it.
+pub fn local_needs(weight_bytes: u64, shape: Option<Shape>, context: u64) -> u64 {
     let context = match shape {
-        Some(shape) => LOCAL_CONTEXT
+        Some(shape) => context
             .saturating_mul(shape.layers)
             .saturating_mul(shape.kv_heads)
             .saturating_mul(shape.key_length + shape.value_length)
             .saturating_mul(2),
-        None => weight_bytes / 5 + 512 * 1024 * 1024,
+        None => (weight_bytes / 5 + 512 * 1024 * 1024).saturating_mul(context) / LOCAL_CONTEXT,
     };
     weight_bytes.saturating_add(context).saturating_add(WORKING)
 }
@@ -82,6 +90,9 @@ impl CloudPreset {
 pub struct AssistantFile {
     #[serde(default)]
     pub mode: Mode,
+    /// What the person wants the assistant to keep to in every conversation, in their words.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub instructions: String,
     #[serde(default)]
     pub local: LocalFile,
     #[serde(default)]
@@ -93,6 +104,9 @@ pub struct AssistantFile {
 pub struct LocalFile {
     #[serde(default = "default_tag")]
     pub tag: String,
+    /// How many tokens of conversation the model is loaded with room for.
+    #[serde(default = "default_context")]
+    pub context: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,9 +124,16 @@ fn default_tag() -> String {
     DEFAULT_TAG.to_owned()
 }
 
+fn default_context() -> u64 {
+    LOCAL_CONTEXT
+}
+
 impl Default for LocalFile {
     fn default() -> Self {
-        Self { tag: default_tag() }
+        Self {
+            tag: default_tag(),
+            context: default_context(),
+        }
     }
 }
 
@@ -130,6 +151,7 @@ impl Default for AssistantFile {
     fn default() -> Self {
         Self {
             mode: Mode::Off,
+            instructions: String::new(),
             local: LocalFile::default(),
             cloud: CloudFile::default(),
         }
@@ -142,7 +164,8 @@ impl AssistantFile {
         file.validated()
     }
 
-    /// Fills an empty cloud URL from the preset, and refuses a blank or oversized tag.
+    /// Fills an empty cloud URL from the preset, and refuses a blank or oversized tag, a
+    /// context outside what a model can be loaded with, and instructions too long to send.
     pub fn validated(mut self) -> Result<Self, String> {
         let tag = model_tag(&self.local.tag);
         let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/');
@@ -153,6 +176,17 @@ impl AssistantFile {
             );
         }
         self.local.tag = tag;
+        if !(CONTEXT_MIN..=CONTEXT_MAX).contains(&self.local.context) {
+            return Err(format!(
+                "a local model's context is between {CONTEXT_MIN} and {CONTEXT_MAX} tokens"
+            ));
+        }
+        self.instructions = self.instructions.trim().to_owned();
+        if self.instructions.chars().count() > INSTRUCTIONS_MAX {
+            return Err(format!(
+                "the assistant's instructions can be {INSTRUCTIONS_MAX} characters at most"
+            ));
+        }
         if self.cloud.base_url.trim().is_empty() {
             self.cloud.base_url = self.cloud.preset.default_base_url().to_owned();
         }
@@ -181,6 +215,20 @@ pub fn cloud_ready(file: &AssistantFile, has_key: bool) -> bool {
         && has_key
         && !file.cloud.model.is_empty()
         && !file.cloud.base_url.is_empty()
+}
+
+/// The context a model is loaded with: what the person asked for, and no more than the model
+/// itself was made for, when it says.
+pub fn local_context(asked: u64, model_most: Option<u64>) -> u64 {
+    model_most.map_or(asked, |most| asked.min(most.max(CONTEXT_MIN)))
+}
+
+/// How much room a local model's context leaves, next to the usual one. What a model on this
+/// machine is handed is cut to fit the usual context; with more, it is handed more.
+pub fn context_scale(context: u64) -> f64 {
+    #[allow(clippy::cast_precision_loss)]
+    let scale = context as f64 / LOCAL_CONTEXT as f64;
+    scale.clamp(0.5, 8.0)
 }
 
 /// Whether a model that `needs` this much can be loaded into `memory_free`. One that is
@@ -304,7 +352,7 @@ mod tests {
     #[test]
     fn a_loaded_model_fits_however_little_is_left() {
         // A 4 GB Pi with qwen3:1.7b loaded: 1.66 GB free, which is less than it needs.
-        let needs = local_needs(1_359_293_444, None);
+        let needs = local_needs(1_359_293_444, None, LOCAL_CONTEXT);
         assert!(!local_fits(needs, 1_660_000_000, false));
         assert!(local_fits(needs, 1_660_000_000, true));
     }
@@ -318,9 +366,74 @@ mod tests {
             key_length: 128,
             value_length: 128,
         };
-        let needs = local_needs(1_359_293_444, Some(shape));
+        let needs = local_needs(1_359_293_444, Some(shape), LOCAL_CONTEXT);
         assert_eq!(needs, 1_359_293_444 + 448 * 1024 * 1024 + WORKING);
         assert!(needs.abs_diff(1_882_424_605) < 32 * 1024 * 1024, "{needs}");
+        // Twice the context is twice the memory the conversation takes, and nothing else.
+        let doubled = local_needs(1_359_293_444, Some(shape), 2 * LOCAL_CONTEXT);
+        assert_eq!(doubled - needs, 448 * 1024 * 1024);
+        let unknown = local_needs(1_000_000_000, None, LOCAL_CONTEXT);
+        assert!(local_needs(1_000_000_000, None, 2 * LOCAL_CONTEXT) > unknown);
+    }
+
+    #[test]
+    fn a_file_from_before_context_and_instructions_reads_as_the_defaults() {
+        let file = AssistantFile::parse("mode = \"local\"\n[local]\ntag = \"gemma3:1b\"\n")
+            .expect("an older file still parses");
+        assert_eq!(file.local.context, LOCAL_CONTEXT);
+        assert_eq!(file.instructions, "");
+        // And one that was never given instructions doesn't grow an empty line for them.
+        assert!(!file.to_toml().expect("writes").contains("instructions"));
+    }
+
+    #[test]
+    fn context_and_instructions_are_kept_and_kept_within_bounds() {
+        let file = AssistantFile {
+            instructions: "  Answer in Spanish.\nCall me Nico.  ".into(),
+            local: LocalFile {
+                context: 8192,
+                ..LocalFile::default()
+            },
+            ..AssistantFile::default()
+        };
+        let file = file.validated().expect("both are fine");
+        assert_eq!(file.instructions, "Answer in Spanish.\nCall me Nico.");
+        let again = AssistantFile::parse(&file.to_toml().expect("writes")).expect("reads back");
+        assert_eq!(again, file);
+
+        let small = AssistantFile {
+            local: LocalFile {
+                context: 512,
+                ..LocalFile::default()
+            },
+            ..AssistantFile::default()
+        };
+        assert!(
+            small
+                .validated()
+                .expect_err("too small")
+                .contains("context")
+        );
+        let wordy = AssistantFile {
+            instructions: "x".repeat(INSTRUCTIONS_MAX + 1),
+            ..AssistantFile::default()
+        };
+        assert!(
+            wordy
+                .validated()
+                .expect_err("too long")
+                .contains("instructions")
+        );
+    }
+
+    #[test]
+    fn a_model_is_never_loaded_with_more_context_than_it_was_made_for() {
+        assert_eq!(local_context(8192, None), 8192);
+        assert_eq!(local_context(8192, Some(40_960)), 8192);
+        assert_eq!(local_context(65_536, Some(32_768)), 32_768);
+        assert_eq!(context_scale(LOCAL_CONTEXT), 1.0);
+        assert_eq!(context_scale(8192), 2.0);
+        assert_eq!(context_scale(1_000_000), 8.0);
     }
 
     #[test]

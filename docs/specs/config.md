@@ -350,9 +350,11 @@ file that does not parse is logged and treated as absent.
 
 ```toml
 mode = "off"            # "off", "local", or "cloud"
+instructions = ""       # what the assistant is told to keep to, in your words; left out when empty
 
 [local]
 tag = "qwen3:1.7b"      # an Ollama library tag; this one is the default
+context = 4096          # tokens of conversation the model is loaded with room for
 
 [cloud]
 preset = "openai"       # "openai", "anthropic", "grok", or "compatible"
@@ -371,6 +373,22 @@ Settings shows as the model log. Uninstalling removes that directory. An Ollama 
 installed yourself is used as it is and never removed. Unpacking needs `tar`, and `zstd` on
 Linux. A tag that is larger than the free memory on the machine can be downloaded and still
 not be used.
+
+`local.context` is how many tokens the model holds at once: the picture of the home it is
+handed, the conversation so far, and its answer. It is between 2048 and 262144, and a model is
+never loaded with more than it says it was made for. The memory a model takes once loaded
+grows with it, and so does how much of the home and of the conversation a model on this
+machine is handed, which is cut to fit 4096 tokens otherwise. Changing it while the model is
+in memory loads the model again, and is refused, with nothing written, if it would no longer
+fit. After each answer Irori keeps how many tokens that answer took (the provider's own
+count, or about four characters a token where it gives none), and a chat shows it: as a share
+of the context for a model on this machine, and as a count for a cloud model, whose context
+is its provider's to know.
+
+`instructions` is text of your own, at most 4000 characters, put in front of every question in
+every conversation: how to answer, what to call things, what you care about. It changes what
+the assistant says and nothing it can do. For a model on this machine it comes out of the
+context.
 
 `cloud` is an endpoint. `openai` and `grok` and `compatible` speak the OpenAI chat API.
 `anthropic` speaks Anthropic's. An empty `base_url` is filled from the preset (`compatible`
