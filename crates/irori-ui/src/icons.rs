@@ -37,6 +37,7 @@ pub enum Icon {
     Power,
     Volume,
     Muted,
+    Cast,
 }
 
 /// What's drawn inside the icon's 24 × 24 box. Written here and nowhere else, so it's safe to
@@ -117,6 +118,10 @@ fn drawing(icon: Icon) -> &'static str {
         Icon::Muted => {
             r#"<path d="M4 9.500h3l4.500-4v13l-4.500-4H4Z"/><path d="m16 9.500 5 5M21 9.500l-5 5"/>"#
         }
+        Icon::Cast => concat!(
+            r#"<path d="M3 8V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/>"#,
+            r#"<path d="M3 12a8 8 0 0 1 8 8M3 16a4 4 0 0 1 4 4M3 20h.01"/>"#,
+        ),
     }
 }
 
