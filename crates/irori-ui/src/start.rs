@@ -32,7 +32,8 @@ pub fn Hero(children: Children) -> impl IntoView {
     };
 
     view! {
-        <section class="start">
+        // Named for the page it heads: its heading is the instance's name, not the page's.
+        <section class="start" aria-label="Settings">
             <div class="start-wordmark">
                 // The mark, drawn big: the frame is everything Irori keeps around the hearth,
                 // and the ember is the hearth itself.

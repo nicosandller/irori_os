@@ -6,7 +6,7 @@
 //!
 //! - **The device list and a device**: the list slides aside, and the device's name travels from
 //!   its row up into the page's heading, so it's plain which row was opened.
-//! - **A Start tile**: the tile grows into the heading of the page it opens, and the page rises
+//! - **A tile at the head of Settings**: the tile grows into the heading of the page it opens, and the page rises
 //!   in behind it.
 //!
 //! The browser does the drawing (the View Transition API, started by the router); this says
@@ -28,7 +28,7 @@ pub fn navigation(from: &str, to: &str, hint: Option<&str>) -> Option<&'static s
     if is_device(from) && to == "/devices" {
         return Some("to-list");
     }
-    if from == "/" && hint == Some("tile") {
+    if from == "/settings" && hint == Some("tile") {
         return Some("tile");
     }
     Some(match (place(from), place(to)) {
@@ -135,7 +135,7 @@ pub fn name_target(event: &ev::MouseEvent, name: &str) {
     let _ = target.set_attribute("style", &format!("{style};view-transition-name: {name}"));
 }
 
-/// A Start tile, clicked: it grows into the heading of the page it opens, so it takes the
+/// A tile at the head of Settings, clicked: it grows into the heading of the page it opens, so it takes the
 /// heading's name for the change (`hero`), and says so for [`watch`] to read.
 pub fn expand(event: ev::MouseEvent) {
     let Some(tile) = event
@@ -230,7 +230,10 @@ mod tests {
         assert_eq!(go("/devices/a", "/devices/b"), Some("fade"));
         assert_eq!(go("/nowhere", "/devices"), Some("fade"));
         assert_eq!(go("/devices", "/devices"), None);
-        assert_eq!(navigation("/", "/devices", Some("tile")), Some("tile"));
+        assert_eq!(
+            navigation("/settings", "/devices", Some("tile")),
+            Some("tile")
+        );
         assert_eq!(
             navigation("/floorplan", "/devices", Some("tile")),
             Some("down")

@@ -160,7 +160,10 @@ impl Default for AssistantFile {
 
 impl AssistantFile {
     pub fn parse(text: &str) -> Result<Self, String> {
-        let file: Self = toml::from_str(text).map_err(|error| error.to_string())?;
+        let mut file: Self = toml::from_str(text).map_err(|error| error.to_string())?;
+        // A context written by hand outside the bounds is brought to the nearest one: one
+        // number out of range is no reason to lose the model, the endpoint and the rest.
+        file.local.context = file.local.context.clamp(CONTEXT_MIN, CONTEXT_MAX);
         file.validated()
     }
 
@@ -424,6 +427,17 @@ mod tests {
                 .expect_err("too long")
                 .contains("instructions")
         );
+    }
+
+    #[test]
+    fn a_context_out_of_bounds_in_the_file_is_brought_within_them() {
+        let file = AssistantFile::parse(
+            "mode = \"cloud\"\n[local]\ncontext = 100\n[cloud]\nmodel = \"gpt\"\n",
+        )
+        .expect("the rest of the file is kept");
+        assert_eq!(file.local.context, CONTEXT_MIN);
+        assert_eq!(file.mode, Mode::Cloud);
+        assert_eq!(file.cloud.model, "gpt");
     }
 
     #[test]

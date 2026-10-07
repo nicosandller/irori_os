@@ -334,7 +334,15 @@ pub async fn save(
     }
     if resized {
         hold(data_dir, &file.local.tag, false, before.2).await?;
-        hold(data_dir, &file.local.tag, true, file.local.context).await?;
+        if let Err(error) = hold(data_dir, &file.local.tag, true, file.local.context).await {
+            // It didn't fit after all. The context goes back to what it was, and so does the
+            // model, so the assistant is left as it was found and not without a model.
+            let mut back = file.clone();
+            back.local.context = before.2;
+            write_file(&config.dir().await, &back)?;
+            let _ = hold(data_dir, &back.local.tag, true, before.2).await;
+            return Err(error);
+        }
     }
     Ok(file)
 }
@@ -660,13 +668,15 @@ async fn given_back(data_dir: &Path, free_before: u64) {
 pub async fn choose(config: &Config, data_dir: &Path, tag: &str) -> Result<(), String> {
     let tag = model_tag(tag);
     let dir = config.dir().await;
-    let mut file = load_file(&dir);
+    let context = load_file(&dir).local.context;
     for other in loaded().await {
         if other != tag {
-            let _ = hold(data_dir, &other, false, file.local.context).await;
+            let _ = hold(data_dir, &other, false, context).await;
         }
     }
-    hold(data_dir, &tag, true, file.local.context).await?;
+    hold(data_dir, &tag, true, context).await?;
+    // Read again: loading takes a while, and something else may have been saved meanwhile.
+    let mut file = load_file(&dir);
     file.mode = Mode::Local;
     file.local.tag = tag;
     write_file(&dir, &file.validated()?)
@@ -1729,8 +1739,14 @@ async fn system_prompt(
     let local = provider.context();
     // What something is cut to: `tight` for a model on this machine, grown with its context,
     // and `full` for a cloud model.
+    // The person's instructions come out of the same room, so a model on this machine is
+    // handed that much less of the picture, down to a quarter of it.
+    let spent = status.instructions.chars().count();
     let within = |tight: usize, full: usize| match local {
-        Some(context) => roomy(tight, context, full),
+        Some(context) => {
+            let room = roomy(tight, context, full);
+            room.saturating_sub(spent / 2).max(room / 4)
+        }
         None => full,
     };
     let mut prompt = String::from(
@@ -1980,12 +1996,15 @@ async fn described(model: &RemoteModel) -> Described {
     if let Some(described) = known(&model.name, model.size) {
         return described;
     }
+    // Not remembered unless it really is the model's description: Ollama may only have been
+    // slow to answer, or busy loading and answering with an error.
     let Some(value) = show(&model.name).await else {
-        // Not remembered: Ollama may only have been slow to answer.
         return Described::default();
     };
     let info = &value["model_info"];
-    let family = info["general.architecture"].as_str().unwrap_or("");
+    let Some(family) = info["general.architecture"].as_str() else {
+        return Described::default();
+    };
     let number = |key: &str| info[format!("{family}.{key}")].as_u64();
     let shape = || {
         let layers = number("block_count")?;
