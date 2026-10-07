@@ -16,6 +16,12 @@ pub enum Piece {
         name: Option<String>,
         arguments: String,
     },
+    /// How many tokens the provider counted: what it was sent, and what it wrote. Either may
+    /// come alone, and more than once; the last of each is the one that stands.
+    Usage {
+        prompt: Option<u64>,
+        output: Option<u64>,
+    },
     Done,
 }
 
@@ -65,6 +71,14 @@ impl OpenAiParser {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
                 continue;
             };
+            // Asked for with `stream_options`, it comes in a chunk of its own with no choices.
+            let usage = &value["usage"];
+            if usage.is_object() {
+                pieces.push(Piece::Usage {
+                    prompt: usage["prompt_tokens"].as_u64(),
+                    output: usage["completion_tokens"].as_u64(),
+                });
+            }
             let Some(choice) = value["choices"].get(0) else {
                 continue;
             };
@@ -132,6 +146,11 @@ impl OllamaParser {
                 }
             }
             if value["done"].as_bool() == Some(true) {
+                let prompt = value["prompt_eval_count"].as_u64();
+                let output = value["eval_count"].as_u64();
+                if prompt.is_some() || output.is_some() {
+                    pieces.push(Piece::Usage { prompt, output });
+                }
                 pieces.push(Piece::Done);
             }
         }
@@ -186,6 +205,30 @@ impl AnthropicParser {
                             id: None,
                             name: None,
                             arguments: delta["partial_json"].as_str().unwrap_or("").to_owned(),
+                        });
+                    }
+                }
+                // What it was sent is counted as the answer starts, with what it read from
+                // its cache counted apart; what it wrote, as the answer ends.
+                "message_start" => {
+                    let usage = &value["message"]["usage"];
+                    if usage.is_object() {
+                        let read = |key: &str| usage[key].as_u64().unwrap_or(0);
+                        pieces.push(Piece::Usage {
+                            prompt: Some(
+                                read("input_tokens")
+                                    + read("cache_read_input_tokens")
+                                    + read("cache_creation_input_tokens"),
+                            ),
+                            output: None,
+                        });
+                    }
+                }
+                "message_delta" => {
+                    if let Some(output) = value["usage"]["output_tokens"].as_u64() {
+                        pieces.push(Piece::Usage {
+                            prompt: None,
+                            output: Some(output),
                         });
                     }
                 }
@@ -250,6 +293,38 @@ mod tests {
             "{\"message\":{\"content\":\"Hi\"},\"done\":false}\n{\"message\":{\"content\":\"\"},\"done\":true}\n",
         );
         assert_eq!(pieces, vec![Piece::Text("Hi".into()), Piece::Done]);
+    }
+
+    #[test]
+    fn each_provider_says_how_many_tokens_it_counted() {
+        let usage = |prompt, output| Piece::Usage { prompt, output };
+        let mut ollama = OllamaParser::default();
+        assert_eq!(
+            ollama.push(
+                "{\"message\":{\"content\":\"\"},\"done\":true,\"prompt_eval_count\":1200,\"eval_count\":80}\n"
+            ),
+            vec![usage(Some(1200), Some(80)), Piece::Done]
+        );
+        let mut openai = OpenAiParser::default();
+        assert_eq!(
+            openai.push(
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":900,\"completion_tokens\":40}}\n"
+            ),
+            vec![usage(Some(900), Some(40))]
+        );
+        // A chunk that carries no usage says `null` for it, which is not a count.
+        assert!(
+            openai
+                .push("data: {\"choices\":[{\"delta\":{}}],\"usage\":null}\n")
+                .is_empty()
+        );
+        let mut anthropic = AnthropicParser::default();
+        assert_eq!(
+            anthropic.push(
+                "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"cache_read_input_tokens\":700}}}\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":55}}\n"
+            ),
+            vec![usage(Some(710), None), usage(None, Some(55))]
+        );
     }
 
     #[test]

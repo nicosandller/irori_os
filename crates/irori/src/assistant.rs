@@ -11,10 +11,11 @@ use std::time::{Duration, Instant};
 
 use futures_util::StreamExt as _;
 use irori_assist::{
-    AnthropicParser, AssistantFile, BriefLine, CloudPreset, DEFAULT_TAG, ExtensionLine,
-    LOCAL_CONTEXT, Lines, Mode, OllamaParser, OpenAiParser, Piece, Place, Role, SettingsPicture,
-    Shape, ToolCall, Turn as Remembered, anthropic_tools, assemble, cloud_ready, device_brief,
-    execute_round, home_brief, library_page, model_tag, openai_tools, settings_brief,
+    AnthropicParser, AssistantFile, AutomationLine, BriefLine, CloudPreset, DEFAULT_TAG,
+    ExtensionLine, HOME_CAP, Lines, Mode, OllamaParser, OpenAiParser, Piece, Place, Role,
+    SettingsPicture, Shape, ToolCall, Turn as Remembered, anthropic_tools, assemble,
+    automations_brief, cloud_ready, context_scale, device_brief, execute_round, home_brief,
+    library_page, local_context, model_tag, openai_tools, settings_brief,
 };
 use irori_core::Core;
 use irori_types::{Availability, DeviceId, EntityId, EntityState, ExtensionId};
@@ -41,8 +42,10 @@ const WENT_QUIET: &str = "the model stopped answering";
 /// How long Ollama keeps a model loaded after it was last used: until it is told to let go.
 /// Loaded is what "ready" means for a local model, so it must not lapse on its own.
 const KEEP_LOADED: i64 = -1;
-/// How much earlier conversation a local model is sent. Its whole context is
-/// [`LOCAL_CONTEXT`] tokens, and the picture of the home takes about half.
+/// How much earlier conversation a local model is sent at the usual context
+/// ([`irori_assist::LOCAL_CONTEXT`] tokens), where the picture of the home takes about half.
+/// Everything a local model is handed is sized for that context, and grows with a larger one
+/// ([`roomy`]).
 const LOCAL_HISTORY_BYTES: usize = 3_000;
 /// The same, for the conversations whose picture is the larger part: an automation's logic and
 /// last run, or everything Settings holds.
@@ -52,6 +55,17 @@ const LOCAL_HISTORY_BYTES_TIGHT: usize = 1_500;
 const AUTOMATION_BRIEF: usize = 12_000;
 const SETTINGS_BRIEF: usize = 8_000;
 const LOCAL_BRIEF: usize = 4_500;
+/// What the chat about the whole home is handed besides the home: Irori's settings in short,
+/// and a line for each automation. A cloud model reads the rest with tools.
+const GENERAL_SETTINGS: usize = 2_500;
+const GENERAL_AUTOMATIONS: usize = 3_000;
+/// The same three for a model on this machine, which has no tools and little room: together
+/// they are what the home alone is given in front of a cloud model.
+const LOCAL_HOME: usize = 3_500;
+const LOCAL_GENERAL_SETTINGS: usize = 1_500;
+const LOCAL_GENERAL_AUTOMATIONS: usize = 1_000;
+/// The longest a tool's answer gets.
+const TOOL_ANSWER: usize = 4_000;
 /// How much of a log one `read_logs` hands back, newest lines kept.
 const LOG_ANSWER: usize = 4_000;
 
@@ -83,6 +97,16 @@ pub struct Status {
     /// Memory a model could be loaded into right now, and how much the machine has.
     pub memory_free: u64,
     pub memory_total: u64,
+    /// The context a local model is asked to be loaded with, in tokens, and the bounds on it.
+    pub local_context: u64,
+    pub context_min: u64,
+    pub context_max: u64,
+    /// The context the model in use really has: what was asked for, or the most the model
+    /// was made for when that is less.
+    pub context: u64,
+    /// What the person wants kept to in every conversation.
+    pub instructions: String,
+    pub instructions_max: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -94,6 +118,8 @@ pub struct Pulled {
     pub loaded: bool,
     /// About how much memory it takes once loaded.
     pub needs: u64,
+    /// The most context it was made for, when it says.
+    pub context_most: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -129,17 +155,27 @@ async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
     };
     let mut models = Vec::new();
     for model in pulled {
-        let needs = irori_assist::local_needs(model.size, shape(&model).await);
+        let described = described(&model).await;
+        let needs = irori_assist::local_needs(
+            model.size,
+            described.shape,
+            local_context(file.local.context, described.context_most),
+        );
         models.push(Pulled {
             active: model.name == file.local.tag,
             loaded: in_memory.contains(&model.name),
             name: model.name,
             size: model.size,
             needs,
+            context_most: described.context_most,
         });
     }
     let pulled = models;
     let active = pulled.iter().find(|model| model.active);
+    let context = local_context(
+        file.local.context,
+        active.and_then(|model| model.context_most),
+    );
     let fits = active
         .map(|model| irori_assist::local_fits(model.needs, memory_free, model.loaded))
         .unwrap_or(false);
@@ -153,7 +189,7 @@ async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
         match file.mode {
             Mode::Local => format!("{} is running on this machine.", file.local.tag),
             Mode::Cloud => format!(
-                "Answers come from {} at {}. What you ask leaves the house, and with it device names and states, and from Settings, Irori's settings and log lines.",
+                "Answers come from {} at {}. What you ask leaves the house, and with it device names and states, your automations, Irori's settings and lines of its log.",
                 file.cloud.model, file.cloud.base_url
             ),
             Mode::Off => String::new(),
@@ -210,6 +246,12 @@ async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
         base_url: file.cloud.base_url,
         cloud_model: file.cloud.model,
         cloud: file.mode == Mode::Cloud,
+        local_context: file.local.context,
+        context_min: irori_assist::CONTEXT_MIN,
+        context_max: irori_assist::CONTEXT_MAX,
+        context,
+        instructions: file.instructions,
+        instructions_max: irori_assist::INSTRUCTIONS_MAX,
     }
 }
 
@@ -220,7 +262,7 @@ pub async fn save(
     body: &Value,
 ) -> Result<AssistantFile, String> {
     let mut file = load_file(&config.dir().await);
-    let before = (file.mode, file.local.tag.clone());
+    let before = (file.mode, file.local.tag.clone(), file.local.context);
     if let Some(mode) = body.get("mode").and_then(|value| value.as_str()) {
         file.mode = match mode {
             "off" => Mode::Off,
@@ -254,7 +296,25 @@ pub async fn save(
     if let Some(model) = body.get("model").and_then(|value| value.as_str()) {
         file.cloud.model = model.to_owned();
     }
+    if let Some(text) = body.get("instructions").and_then(|value| value.as_str()) {
+        file.instructions = text.to_owned();
+    }
+    if let Some(context) = body.get("context") {
+        file.local.context = context
+            .as_u64()
+            .ok_or_else(|| "context is a number of tokens".to_owned())?;
+    }
     let file = file.validated()?;
+    // A model in memory was loaded with the context it was asked for then. A new one means
+    // loading it again, so whether it would still fit is settled before anything is written.
+    let resized = file.mode == Mode::Local
+        && before.0 == Mode::Local
+        && file.local.tag == before.1
+        && file.local.context != before.2
+        && loaded().await.contains(&file.local.tag);
+    if resized {
+        room_for(data_dir, &file.local.tag, before.2, file.local.context).await?;
+    }
     write_file(&config.dir().await, &file)?;
     // The model that stops being the one in use gives its memory back now: two of them
     // don't fit on a small machine.
@@ -262,7 +322,7 @@ pub async fn save(
         && (file.mode != Mode::Local || file.local.tag != before.1)
         && loaded().await.contains(&before.1)
     {
-        let _ = hold(data_dir, &before.1, false).await;
+        let _ = hold(data_dir, &before.1, false, before.2).await;
     }
     if let Some(key) = body.get("api_key").and_then(|value| value.as_str()) {
         set_key(config, core, key).await?;
@@ -270,20 +330,74 @@ pub async fn save(
     // Choosing a downloaded model is asking to use it, so it is loaded. If it won't fit, the
     // card says it is not loaded, and Load says why.
     if file.mode == Mode::Local && (before.0 != Mode::Local || file.local.tag != before.1) {
-        let _ = hold(data_dir, &file.local.tag, true).await;
+        let _ = hold(data_dir, &file.local.tag, true, file.local.context).await;
+    }
+    if resized {
+        hold(data_dir, &file.local.tag, false, before.2).await?;
+        if let Err(error) = hold(data_dir, &file.local.tag, true, file.local.context).await {
+            // It didn't fit after all. The context goes back to what it was, and so does the
+            // model, so the assistant is left as it was found and not without a model.
+            let mut back = file.clone();
+            back.local.context = before.2;
+            write_file(&config.dir().await, &back)?;
+            let _ = hold(data_dir, &back.local.tag, true, before.2).await;
+            return Err(error);
+        }
     }
     Ok(file)
 }
 
-pub fn transcript(db: &Path, scope: &str) -> Result<Vec<Remembered>, String> {
+/// Whether `tag`, in memory with room for `had` tokens, could be loaded again with room for
+/// `asked`: the memory it holds now counts as free, since it is let go first.
+async fn room_for(data_dir: &Path, tag: &str, had: u64, asked: u64) -> Result<(), String> {
+    let models = tags()
+        .await
+        .map_err(|()| "Ollama isn't running on this machine.".to_owned())?;
+    let Some(model) = models.iter().find(|model| model.name == tag) else {
+        return Ok(());
+    };
+    let described = described(model).await;
+    let needs = |context: u64| {
+        irori_assist::local_needs(
+            model.size,
+            described.shape,
+            local_context(context, described.context_most),
+        )
+    };
+    let free = crate::host_info::read(data_dir)
+        .memory_free()
+        .saturating_add(needs(had));
+    if irori_assist::local_fits(needs(asked), free, false) {
+        Ok(())
+    } else {
+        Err(format!(
+            "With room for {} tokens, {tag} takes about {} of memory, and {} would be free.",
+            local_context(asked, described.context_most),
+            bytes(needs(asked)),
+            bytes(free)
+        ))
+    }
+}
+
+/// What was said in `scope`, and how much of the model's context its last answer took.
+pub fn transcript(db: &Path, scope: &str) -> Result<(Vec<Remembered>, Option<Usage>), String> {
     check_scope(scope)?;
-    load_turns(db, scope)
+    let turns = load_turns(db, scope)?;
+    // A conversation with nothing left in it takes nothing.
+    let used = if turns.is_empty() {
+        None
+    } else {
+        load_usage(db, scope)?
+    };
+    Ok((turns, used))
 }
 
 pub fn clear(db: &Path, scope: &str) -> Result<(), String> {
     check_scope(scope)?;
     let conn = open_db(db)?;
     conn.execute("DELETE FROM assistant_message WHERE scope = ?1", [scope])
+        .map_err(|error| error.to_string())?;
+    conn.execute("DELETE FROM assistant_usage WHERE scope = ?1", [scope])
         .map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -423,13 +537,14 @@ pub async fn pull(config: &Config, data_dir: &Path, tag: &str, tx: mpsc::Sender<
     let mut file = load_file(&config.dir().await);
     file.mode = Mode::Local;
     file.local.tag = tag.to_owned();
+    let context = file.local.context;
     if let Ok(file) = file.validated() {
         let _ = write_file(&config.dir().await, &file);
     }
     // Downloaded and chosen, it is loaded too, so it is ready when the bar finishes.
     let line = json!({ "status": "loading the model" });
     let _ = tx.send(ChatEvent::Delta(line.to_string())).await;
-    if let Err(error) = hold(data_dir, tag, true).await {
+    if let Err(error) = hold(data_dir, tag, true, context).await {
         let _ = tx.send(ChatEvent::Error(error)).await;
         return;
     }
@@ -449,7 +564,7 @@ pub async fn wake(config: &Config, data_dir: &Path) {
     }
     let file = load_file(&config.dir().await);
     if file.mode == Mode::Local
-        && let Err(error) = hold(data_dir, &file.local.tag, true).await
+        && let Err(error) = hold(data_dir, &file.local.tag, true, file.local.context).await
     {
         tracing::warn!(tag = %file.local.tag, %error, "the local model was not loaded");
     }
@@ -472,10 +587,12 @@ fn recent(turns: &[Remembered], bytes: usize) -> &[Remembered] {
     &turns[start.min(turns.len())..]
 }
 
-/// Loads a downloaded model into memory ahead of the first question, or lets it go.
-pub async fn hold(data_dir: &Path, tag: &str, load: bool) -> Result<(), String> {
+/// Loads a downloaded model into memory ahead of the first question, with room for `context`
+/// tokens (or as many as the model was made for, when that is fewer), or lets it go.
+pub async fn hold(data_dir: &Path, tag: &str, load: bool, context: u64) -> Result<(), String> {
     let tag = model_tag(tag);
     let free_before = crate::host_info::read(data_dir).memory_free();
+    let mut context = context;
     if load {
         let models = tags()
             .await
@@ -484,7 +601,9 @@ pub async fn hold(data_dir: &Path, tag: &str, load: bool) -> Result<(), String> 
             .iter()
             .find(|model| model.name == tag)
             .ok_or_else(|| format!("{tag} hasn't been downloaded."))?;
-        let needs = irori_assist::local_needs(model.size, shape(model).await);
+        let described = described(model).await;
+        context = local_context(context, described.context_most);
+        let needs = irori_assist::local_needs(model.size, described.shape, context);
         let free = crate::host_info::read(data_dir).memory_free();
         let already = loaded().await.contains(&tag);
         if !irori_assist::local_fits(needs, free, already) {
@@ -498,7 +617,7 @@ pub async fn hold(data_dir: &Path, tag: &str, load: bool) -> Result<(), String> 
     let mut body =
         json!({ "model": tag, "keep_alive": if load { json!(KEEP_LOADED) } else { json!(0) } });
     if load {
-        body["options"] = json!({ "num_ctx": LOCAL_CONTEXT });
+        body["options"] = json!({ "num_ctx": context });
     }
     let response = client()
         .post(format!("{OLLAMA}/api/generate"))
@@ -548,13 +667,15 @@ async fn given_back(data_dir: &Path, free_before: u64) {
 /// before. Any other model in memory is let go first, so the room it held counts.
 pub async fn choose(config: &Config, data_dir: &Path, tag: &str) -> Result<(), String> {
     let tag = model_tag(tag);
+    let dir = config.dir().await;
+    let context = load_file(&dir).local.context;
     for other in loaded().await {
         if other != tag {
-            let _ = hold(data_dir, &other, false).await;
+            let _ = hold(data_dir, &other, false, context).await;
         }
     }
-    hold(data_dir, &tag, true).await?;
-    let dir = config.dir().await;
+    hold(data_dir, &tag, true, context).await?;
+    // Read again: loading takes a while, and something else may have been saved meanwhile.
     let mut file = load_file(&dir);
     file.mode = Mode::Local;
     file.local.tag = tag;
@@ -627,14 +748,14 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
         let _ = tx.send(ChatEvent::Error(picture.detail)).await;
         return;
     }
-    let provider = match provider_for(&file, &key) {
+    let provider = match provider_for(&file, &key, picture.context) {
         Ok(provider) => provider,
         Err(error) => {
             let _ = tx.send(ChatEvent::Error(error)).await;
             return;
         }
     };
-    let system = match system_prompt(&env, &scope, provider.local(), &picture).await {
+    let system = match system_prompt(&env, &scope, &provider, &picture).await {
         Ok(system) => system,
         Err(error) => {
             let _ = tx.send(ChatEvent::Error(error)).await;
@@ -648,15 +769,19 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
             return;
         }
     };
-    let earlier = if provider.local() {
-        let roomy = scope == "general" || scope.starts_with("device:");
+    let earlier = if let Some(context) = provider.context() {
+        let wide = scope == "general" || scope.starts_with("device:");
         recent(
             &turns,
-            if roomy {
-                LOCAL_HISTORY_BYTES
-            } else {
-                LOCAL_HISTORY_BYTES_TIGHT
-            },
+            roomy(
+                if wide {
+                    LOCAL_HISTORY_BYTES
+                } else {
+                    LOCAL_HISTORY_BYTES_TIGHT
+                },
+                context,
+                irori_assist::LIMIT_BYTES,
+            ),
         )
     } else {
         &turns[..]
@@ -666,8 +791,8 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
     // already in front of it, and leaving the tools out is fewer words for it to read.
     let system = if provider.local() {
         format!(
-            "{system}There are no tools in this conversation. Answer from what is written above, \
-             and say so when it isn't there.\n"
+            "{system}Answer only from what is written above. When the answer isn't there, say \
+             you can't see it.\n"
         )
     } else {
         system
@@ -691,6 +816,8 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
     let mut tools_work = !provider.local();
     // Everything the page was sent, so what is remembered is what was read.
     let mut text = String::new();
+    // How much of its context the model had used by the end of its last round.
+    let mut used = None;
     loop {
         if tx.is_closed() {
             return;
@@ -703,7 +830,10 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
             &tx,
         )
         .await
-        {
+        .map(|(outcome, counted)| {
+            used = Some(counted);
+            outcome
+        }) {
             Ok(Outcome::Text(said)) => {
                 text.push_str(&said);
                 break;
@@ -723,7 +853,7 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
                     if tx.send(ChatEvent::Step(call.name.clone())).await.is_err() {
                         return;
                     }
-                    let result = run_tool(&env, &scope, &call);
+                    let result = run_tool(&env, &scope, &picture, &call).await;
                     conversation.tool(&call, &result);
                 }
                 rounds += 1;
@@ -763,7 +893,11 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
             body: text,
         },
     ];
-    if let Err(error) = store_turns(env.db, &scope, said) {
+    let used = used.map(|used| Usage {
+        used,
+        size: provider.context(),
+    });
+    if let Err(error) = store_turns(env.db, &scope, said, used) {
         let _ = tx.send(ChatEvent::Error(error)).await;
         return;
     }
@@ -793,6 +927,8 @@ enum Provider {
     Ollama {
         model: String,
         think: bool,
+        /// The context it is loaded with, in tokens.
+        context: u64,
     },
 }
 
@@ -804,13 +940,36 @@ impl Provider {
     fn quiet(&self) -> Duration {
         if self.local() { QUIET_LOCAL } else { QUIET }
     }
+
+    /// How many tokens of context the model has, where Irori is the one who set it: a model
+    /// on this machine. A cloud model's is its provider's to know.
+    fn context(&self) -> Option<u64> {
+        match self {
+            Self::Ollama { context, .. } => Some(*context),
+            _ => None,
+        }
+    }
 }
 
-fn provider_for(file: &AssistantFile, key: &str) -> Result<Provider, String> {
+/// `chars` of something a local model is handed at the usual context, grown for the context
+/// it really has, and never past `most`.
+fn roomy(chars: usize, context: u64, most: usize) -> usize {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
+    let grown = (chars as f64 * context_scale(context)) as usize;
+    grown.min(most.max(chars))
+}
+
+/// `context` is what the model in use is loaded with, for a model on this machine.
+fn provider_for(file: &AssistantFile, key: &str, context: u64) -> Result<Provider, String> {
     match file.mode {
         Mode::Local => Ok(Provider::Ollama {
             think: file.local.tag == DEFAULT_TAG,
             model: file.local.tag.clone(),
+            context,
         }),
         Mode::Cloud if file.cloud.preset.is_anthropic() => Ok(Provider::Anthropic {
             url: format!("{}/v1/messages", file.cloud.base_url),
@@ -863,9 +1022,38 @@ impl Conversation {
         self.items.push(Item::Result {
             id: call.id.clone(),
             name: call.name.clone(),
-            body: result.chars().take(4_000).collect(),
+            body: result.chars().take(TOOL_ANSWER).collect(),
         });
     }
+
+    /// About how many tokens all of it is, for a provider that doesn't count them: four
+    /// characters a token, which is roughly right for English and for the lists Irori writes.
+    fn about(&self) -> u64 {
+        let chars: usize = self.system.chars().count()
+            + self
+                .items
+                .iter()
+                .map(|item| match item {
+                    Item::User(text) | Item::Assistant(text) => text.chars().count(),
+                    Item::Call(call) => call.name.len() + call.arguments.chars().count(),
+                    Item::Result { body, .. } => body.chars().count(),
+                })
+                .sum::<usize>();
+        tokens_in(chars)
+    }
+}
+
+fn tokens_in(chars: usize) -> u64 {
+    (chars as u64).div_ceil(4)
+}
+
+/// How much of a model's context a conversation took, as of its last answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Usage {
+    /// Tokens: everything the model was sent for its last answer, and that answer.
+    pub used: u64,
+    /// The context it had, when Irori knows: a model on this machine.
+    pub size: Option<u64>,
 }
 
 async fn complete(
@@ -874,7 +1062,7 @@ async fn complete(
     // The conversation whose tools are offered, when any are.
     tools_for: Option<&str>,
     tx: &mpsc::Sender<ChatEvent>,
-) -> Result<Outcome, String> {
+) -> Result<(Outcome, u64), String> {
     let client = client();
     let (request, key) = match provider {
         Provider::OpenAi { url, key, model } => {
@@ -883,6 +1071,11 @@ async fn complete(
                 "stream": true,
                 "messages": openai_messages(conversation),
             });
+            // Only where it is known to be understood: an endpoint that merely speaks the
+            // same shape may refuse a field it has not heard of.
+            if url.starts_with("https://api.openai.com/") || url.starts_with("https://api.x.ai/") {
+                body["stream_options"] = json!({ "include_usage": true });
+            }
             if let Some(scope) = tools_for {
                 body["tools"] = openai_tools(scope);
             }
@@ -908,13 +1101,18 @@ async fn complete(
                 key.as_str(),
             )
         }
-        Provider::Ollama { model, think } => {
+        Provider::Ollama {
+            model,
+            think,
+            context,
+        } => {
             let mut body = json!({
                 "model": model,
                 "stream": true,
                 "messages": ollama_messages(conversation),
             });
-            body["options"] = json!({ "num_ctx": LOCAL_CONTEXT });
+            // The same context it was loaded with: another would have Ollama load it again.
+            body["options"] = json!({ "num_ctx": context });
             body["keep_alive"] = json!(KEEP_LOADED);
             if *think {
                 body["think"] = json!(false);
@@ -940,6 +1138,7 @@ async fn complete(
     let mut stream = response.bytes_stream();
     let mut text = String::new();
     let mut parts = Vec::new();
+    let mut counted = (None, None);
     let mut openai = OpenAiParser::default();
     let mut ollama = OllamaParser::default();
     let mut anthropic = AnthropicParser::default();
@@ -964,6 +1163,9 @@ async fn complete(
                     name,
                     arguments,
                 } => parts.push((index, id, name, arguments)),
+                Piece::Usage { prompt, output } => {
+                    counted = (prompt.or(counted.0), output.or(counted.1));
+                }
                 Piece::Done => {}
             }
         }
@@ -974,10 +1176,19 @@ async fn complete(
     } else {
         Vec::new()
     };
+    // What the provider counted, and where it didn't, about what the words come to. A count
+    // of what it was sent that is under half of that is a provider counting only what it had
+    // not already read, so the estimate stands in for it.
+    let about = conversation.about();
+    let prompt = counted
+        .0
+        .filter(|prompt| *prompt >= about / 2)
+        .unwrap_or(about);
+    let used = prompt + counted.1.unwrap_or_else(|| tokens_in(text.chars().count()));
     if calls.is_empty() {
-        Ok(Outcome::Text(text))
+        Ok((Outcome::Text(text), used))
     } else {
-        Ok(Outcome::Tools { said: text, calls })
+        Ok((Outcome::Tools { said: text, calls }, used))
     }
 }
 
@@ -1064,14 +1275,25 @@ fn anthropic_messages(conversation: &Conversation) -> Vec<Value> {
     messages
 }
 
-fn run_tool(env: &Env<'_>, scope: &str, call: &ToolCall) -> String {
+async fn run_tool(env: &Env<'_>, scope: &str, status: &Status, call: &ToolCall) -> String {
     let args: Value = serde_json::from_str(&call.arguments).unwrap_or(json!({}));
     // A model may ask for a tool it wasn't offered. It gets what it was offered, no more.
     if !irori_assist::tool_offered(scope, &call.name) {
         return format!("there is no tool `{}`", call.name);
     }
     let text = match call.name.as_str() {
-        "list_devices" => home_brief(&lines(env.core, None)),
+        "list_devices" => home_brief(&lines(env.core, None), HOME_CAP),
+        "read_settings" => settings_brief(&settings_picture(env, status).await, TOOL_ANSWER, false),
+        "list_automations" => automations_brief(
+            automations(env).await.as_deref().map_err(String::as_str),
+            TOOL_ANSWER,
+        ),
+        "get_automation" => {
+            let Some(id) = args.get("id").and_then(|id| id.as_str()) else {
+                return "get_automation needs an id.".to_owned();
+            };
+            automation_brief(env, id, TOOL_ANSWER).await
+        }
         "get_device" => {
             let Some(id) = args.get("id").and_then(|id| id.as_str()) else {
                 return "get_device needs an id.".to_owned();
@@ -1146,7 +1368,94 @@ fn run_tool(env: &Env<'_>, scope: &str, call: &ToolCall) -> String {
         }
         other => format!("there is no tool `{other}`"),
     };
-    text.chars().take(4_000).collect()
+    text.chars().take(TOOL_ANSWER).collect()
+}
+
+fn automations_extension() -> ExtensionId {
+    ExtensionId::try_from("automations").expect("automations is an extension id")
+}
+
+/// One automation written out by the Automations extension, in at most `budget` characters.
+async fn automation_brief(env: &Env<'_>, id: &str, budget: usize) -> String {
+    match env
+        .core
+        .app_request(
+            &automations_extension(),
+            "flow.brief".to_owned(),
+            json!({ "id": id, "budget": budget }),
+        )
+        .await
+    {
+        Ok(value) => value["text"].as_str().unwrap_or("").to_owned(),
+        Err(error) => format!("Automations isn't available ({error})."),
+    }
+}
+
+/// Every automation in a line, as the Automations extension lists them, or why it can't be
+/// asked. The core never opens a flow file: this is the list its page shows.
+async fn automations(env: &Env<'_>) -> Result<Vec<AutomationLine>, String> {
+    let listed = env
+        .core
+        .app_request(&automations_extension(), "flows.list".to_owned(), json!({}))
+        .await
+        .map_err(|error| match error {
+            irori_core::AppRequestError::NotRunning(_) => {
+                "the Automations extension isn't installed, or isn't running".to_owned()
+            }
+            other => other.to_string(),
+        })?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    Ok(listed["flows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|flow| automation_line(flow, now))
+        .collect())
+}
+
+/// One row of the Automations extension's list, in words. `now` is seconds since 1970.
+fn automation_line(flow: &Value, now: u64) -> AutomationLine {
+    let text = |value: &Value| value.as_str().unwrap_or("").to_owned();
+    let count = |value: &Value| usize::try_from(value.as_u64().unwrap_or(0)).unwrap_or(0);
+    let state = match flow["state"].as_str() {
+        Some("armed") => "on".to_owned(),
+        Some("disabled") => "turned off".to_owned(),
+        _ => format!("can't run: {}", text(&flow["reason"])),
+    };
+    let last = &flow["last_run"];
+    let last_run = last.is_object().then(|| {
+        let when = last["started_at"]
+            .as_str()
+            .and_then(|at| at.parse::<irori_types::Timestamp>().ok())
+            .map(|at| u64::try_from(at.as_jiff().as_second()).unwrap_or(0))
+            .map(|at| format!(" {} ago", lasted(now.saturating_sub(at))))
+            .unwrap_or_default();
+        let summary = text(&last["summary"]);
+        format!(
+            "{}{when}{}{}",
+            text(&last["outcome"]),
+            if last["test"].is_null() {
+                ""
+            } else {
+                ", as a test"
+            },
+            if summary.is_empty() {
+                String::new()
+            } else {
+                format!(" ({summary})")
+            },
+        )
+    });
+    AutomationLine {
+        name: text(&flow["name"]),
+        id: text(&flow["id"]),
+        state,
+        problems: count(&flow["problems"]),
+        last_run,
+        near_misses: count(&flow["near_misses"]),
+    }
 }
 
 /// The newest of `lines` that contain `contains`, oldest first, in at most `most` characters.
@@ -1254,8 +1563,8 @@ async fn settings_picture(env: &Env<'_>, status: &Status) -> SettingsPicture {
     let mut assistant = vec![match status.mode {
         Mode::Off => "The assistant is off.".to_owned(),
         Mode::Local => format!(
-            "A model on this machine answers: {}. {}",
-            status.local_tag, status.detail
+            "A model on this machine answers: {}, with a context of {} tokens. {}",
+            status.local_tag, status.context, status.detail
         ),
         Mode::Cloud => format!(
             "A cloud model answers: {} at {}.",
@@ -1270,6 +1579,14 @@ async fn settings_picture(env: &Env<'_>, status: &Status) -> SettingsPicture {
             "not saved"
         }
     ));
+    assistant.push(if status.instructions.is_empty() {
+        "It has no standing instructions.".to_owned()
+    } else {
+        format!(
+            "It has standing instructions, {} characters of them.",
+            status.instructions.chars().count()
+        )
+    });
     assistant.push(format!(
         "Ollama on this machine is {}{}.",
         status.ollama,
@@ -1410,23 +1727,66 @@ fn lasted(seconds: u64) -> String {
     format!("{n} {what}{}", if n == 1 { "" } else { "s" })
 }
 
-/// What the model reads before the conversation: who it is, and the picture of what `scope`
-/// is about. A model on this machine (`local`) is handed a shorter picture, since it has to
-/// fit, with the conversation and its own answer, in [`LOCAL_CONTEXT`] tokens.
+/// What the model reads before the conversation: who it is, what the person asked it to keep
+/// to, and the picture of what `scope` is about. A model on this machine is handed a shorter
+/// picture, since it has to fit, with the conversation and its own answer, in its context.
 async fn system_prompt(
     env: &Env<'_>,
     scope: &str,
-    local: bool,
+    provider: &Provider,
     status: &Status,
 ) -> Result<String, String> {
+    let local = provider.context();
+    // What something is cut to: `tight` for a model on this machine, grown with its context,
+    // and `full` for a cloud model.
+    // The person's instructions come out of the same room, so a model on this machine is
+    // handed that much less of the picture, down to a quarter of it.
+    let spent = status.instructions.chars().count();
+    let within = |tight: usize, full: usize| match local {
+        Some(context) => {
+            let room = roomy(tight, context, full);
+            room.saturating_sub(spent / 2).max(room / 4)
+        }
+        None => full,
+    };
     let mut prompt = String::from(
         "You are Irori's assistant. Talk about this home in plain words. \
          You can read devices and recent values. You cannot change them. \
          Keep answers short. Put every value or state you report in backticks, like `on` or \
          `21.5 °C`, and use **bold** for a device's name. Short lists are fine.\n",
     );
+    if !status.instructions.is_empty() {
+        prompt.push_str(&format!(
+            "The person has left you these standing instructions. Keep to them in every \
+             answer:\n{}\n\n",
+            status.instructions
+        ));
+    }
     if scope == "general" {
-        prompt.push_str(&home_brief(&lines(env.core, None)));
+        prompt.push_str(
+            "Below the home are Irori itself (the machine, its settings, extensions and log) \
+             and the home's automations, so you can answer about those too.\n",
+        );
+        if local.is_none() {
+            prompt.push_str(
+                "Tools read more than is pasted here: `read_settings` and `read_logs` for \
+                 Irori itself, `list_automations` and `get_automation` for an automation's \
+                 logic, its last run, and what is wrong with it.\n",
+            );
+        }
+        prompt.push_str(&home_brief(
+            &lines(env.core, None),
+            within(LOCAL_HOME, HOME_CAP),
+        ));
+        prompt.push_str(&settings_brief(
+            &settings_picture(env, status).await,
+            within(LOCAL_GENERAL_SETTINGS, GENERAL_SETTINGS),
+            false,
+        ));
+        prompt.push_str(&automations_brief(
+            automations(env).await.as_deref().map_err(String::as_str),
+            within(LOCAL_GENERAL_AUTOMATIONS, GENERAL_AUTOMATIONS),
+        ));
         return Ok(prompt);
     }
     if scope == "settings" {
@@ -1435,16 +1795,16 @@ async fn system_prompt(
              in plain words, quoting the line that shows it. Where a setting should change, say \
              which row of Settings it is under.\n",
         );
-        if !local {
+        if local.is_none() {
             prompt.push_str(
                 "The tool `read_logs` reads more of a log than is pasted here, and an \
                  extension's own output.\n",
             );
         }
-        let budget = if local { LOCAL_BRIEF } else { SETTINGS_BRIEF };
         prompt.push_str(&settings_brief(
             &settings_picture(env, status).await,
-            budget,
+            within(LOCAL_BRIEF, SETTINGS_BRIEF),
+            true,
         ));
         return Ok(prompt);
     }
@@ -1472,23 +1832,7 @@ async fn system_prompt(
         return Ok(prompt);
     }
     if let Some(id) = scope.strip_prefix("automation:") {
-        let extension =
-            ExtensionId::try_from("automations").expect("automations is an extension id");
-        let brief = match env
-            .core
-            .app_request(
-                &extension,
-                "flow.brief".to_owned(),
-                json!({
-                    "id": id,
-                    "budget": if local { LOCAL_BRIEF } else { AUTOMATION_BRIEF },
-                }),
-            )
-            .await
-        {
-            Ok(value) => value["text"].as_str().unwrap_or("").to_owned(),
-            Err(error) => format!("Automations isn't available ({error})."),
-        };
+        let brief = automation_brief(env, id, within(LOCAL_BRIEF, AUTOMATION_BRIEF)).await;
         prompt.push_str(
             "The person is asking about one automation. Below are its logic, the current value \
              of every entity it reads or acts on, its last run, and what is wrong with it. \
@@ -1627,49 +1971,76 @@ async fn loaded() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The numbers that decide a model's memory, from its own description. Asked of Ollama once
-/// per download and remembered: a model's shape does not change.
-async fn shape(model: &RemoteModel) -> Option<Shape> {
-    static KNOWN: std::sync::Mutex<Vec<(String, u64, Shape)>> = std::sync::Mutex::new(Vec::new());
+/// What a model says of itself that Irori goes by.
+#[derive(Debug, Clone, Copy, Default)]
+struct Described {
+    /// The numbers that decide how much memory its context takes.
+    shape: Option<Shape>,
+    /// The most context it was made for, in tokens.
+    context_most: Option<u64>,
+}
+
+/// A model's own description. Asked of Ollama once per download and remembered: a model's
+/// shape does not change.
+async fn described(model: &RemoteModel) -> Described {
+    static KNOWN: std::sync::Mutex<Vec<(String, u64, Described)>> =
+        std::sync::Mutex::new(Vec::new());
     let known = |name: &str, size: u64| {
         KNOWN.lock().ok().and_then(|known| {
             known
                 .iter()
                 .find(|(n, s, _)| n == name && *s == size)
-                .map(|(_, _, shape)| *shape)
+                .map(|(_, _, described)| *described)
         })
     };
-    if let Some(shape) = known(&model.name, model.size) {
-        return Some(shape);
+    if let Some(described) = known(&model.name, model.size) {
+        return described;
     }
-    let value: Value = client()
+    // Not remembered unless it really is the model's description: Ollama may only have been
+    // slow to answer, or busy loading and answering with an error.
+    let Some(value) = show(&model.name).await else {
+        return Described::default();
+    };
+    let info = &value["model_info"];
+    let Some(family) = info["general.architecture"].as_str() else {
+        return Described::default();
+    };
+    let number = |key: &str| info[format!("{family}.{key}")].as_u64();
+    let shape = || {
+        let layers = number("block_count")?;
+        let heads = number("attention.head_count")?;
+        let kv_heads = number("attention.head_count_kv").unwrap_or(heads);
+        // A model that doesn't say how long a head's key is splits its width evenly across
+        // them.
+        let width = number("embedding_length").and_then(|width| width.checked_div(heads));
+        Some(Shape {
+            layers,
+            kv_heads,
+            key_length: number("attention.key_length").or(width)?,
+            value_length: number("attention.value_length").or(width)?,
+        })
+    };
+    let described = Described {
+        shape: shape(),
+        context_most: number("context_length"),
+    };
+    if let Ok(mut known) = KNOWN.lock() {
+        known.push((model.name.clone(), model.size, described));
+    }
+    described
+}
+
+async fn show(name: &str) -> Option<Value> {
+    client()
         .post(format!("{OLLAMA}/api/show"))
         .timeout(Duration::from_secs(5))
-        .json(&json!({ "model": model.name }))
+        .json(&json!({ "model": name }))
         .send()
         .await
         .ok()?
         .json()
         .await
-        .ok()?;
-    let info = &value["model_info"];
-    let family = info["general.architecture"].as_str()?;
-    let number = |key: &str| info[format!("{family}.{key}")].as_u64();
-    let layers = number("block_count")?;
-    let heads = number("attention.head_count")?;
-    let kv_heads = number("attention.head_count_kv").unwrap_or(heads);
-    // A model that doesn't say how long a head's key is splits its width evenly across them.
-    let width = number("embedding_length").and_then(|width| width.checked_div(heads));
-    let shape = Shape {
-        layers,
-        kv_heads,
-        key_length: number("attention.key_length").or(width)?,
-        value_length: number("attention.value_length").or(width)?,
-    };
-    if let Ok(mut known) = KNOWN.lock() {
-        known.push((model.name.clone(), model.size, shape));
-    }
-    Some(shape)
+        .ok()
 }
 
 fn client() -> reqwest::Client {
@@ -1757,6 +2128,11 @@ fn open_db(db: &Path) -> Result<rusqlite::Connection, String> {
             body TEXT NOT NULL,
             created_at TEXT NOT NULL,
             PRIMARY KEY (scope, seq)
+        );
+        CREATE TABLE IF NOT EXISTS assistant_usage (
+            scope TEXT PRIMARY KEY,
+            used INTEGER NOT NULL,
+            size INTEGER
         )",
     )
     .map_err(|error| error.to_string())?;
@@ -1784,12 +2160,37 @@ fn load_turns(db: &Path, scope: &str) -> Result<Vec<Remembered>, String> {
     Ok(turns)
 }
 
-/// Adds one exchange to `scope` and drops what no longer fits.
+fn load_usage(db: &Path, scope: &str) -> Result<Option<Usage>, String> {
+    use rusqlite::OptionalExtension as _;
+    open_db(db)?
+        .query_row(
+            "SELECT used, size FROM assistant_usage WHERE scope = ?1",
+            [scope],
+            |row| {
+                // SQLite's integers are signed; a count of tokens never is.
+                let count = |n: i64| u64::try_from(n).unwrap_or(0);
+                Ok(Usage {
+                    used: count(row.get(0)?),
+                    size: row.get::<_, Option<i64>>(1)?.map(count),
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())
+}
+
+/// Adds one exchange to `scope` and drops what no longer fits. `used` is how much of the
+/// model's context the exchange took, kept beside it for the chat to show.
 ///
 /// The scope is read again here, under the write lock, so an exchange that finished while this
 /// one was waiting on the model is kept. Rows that stay keep their `created_at`, which is what
 /// [`trim_global`] goes by.
-fn store_turns(db: &Path, scope: &str, said: [Remembered; 2]) -> Result<(), String> {
+fn store_turns(
+    db: &Path,
+    scope: &str,
+    said: [Remembered; 2],
+    used: Option<Usage>,
+) -> Result<(), String> {
     let mut conn = open_db(db)?;
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -1853,6 +2254,20 @@ fn store_turns(db: &Path, scope: &str, said: [Remembered; 2]) -> Result<(), Stri
         )
         .map_err(|error| error.to_string())?;
     }
+    match used {
+        Some(used) => tx.execute(
+            "INSERT INTO assistant_usage (scope, used, size) VALUES (?1, ?2, ?3)
+             ON CONFLICT (scope) DO UPDATE SET used = excluded.used, size = excluded.size",
+            (
+                scope,
+                i64::try_from(used.used).unwrap_or(i64::MAX),
+                used.size
+                    .map(|size| i64::try_from(size).unwrap_or(i64::MAX)),
+            ),
+        ),
+        None => tx.execute("DELETE FROM assistant_usage WHERE scope = ?1", [scope]),
+    }
+    .map_err(|error| error.to_string())?;
     trim_global(&tx)?;
     tx.commit().map_err(|error| error.to_string())?;
     Ok(())
@@ -2239,7 +2654,7 @@ mod tests {
     }
 
     fn store(db: &Path, ask: &str, reply: &str) -> anyhow::Result<()> {
-        store_turns(db, "general", exchange(ask, reply)).map_err(anyhow::Error::msg)
+        store_turns(db, "general", exchange(ask, reply), None).map_err(anyhow::Error::msg)
     }
 
     fn kept(db: &Path) -> anyhow::Result<Vec<Remembered>> {

@@ -4393,10 +4393,16 @@ mod tests {
                     )
                 })
                 .await;
-            let kept =
+            let (kept, used) =
                 crate::assistant::transcript(&db.path, "general").map_err(anyhow::Error::msg)?;
             assert_eq!(kept.len(), 2, "{kept:?}");
             assert_eq!(kept[1].body, "Hello from the model");
+            // How much of the model's context it took is kept with it. This provider counts
+            // nothing, so it is what the words come to; a cloud model's size isn't Irori's
+            // to know.
+            let used = used.expect("the answer's usage was kept");
+            assert!(used.used > 100, "{used:?}");
+            assert_eq!(used.size, None);
             assert!(turns.pending("general").is_none());
             Ok(())
         }
@@ -4440,10 +4446,138 @@ mod tests {
             assert!(asked.contains("read_logs"), "{asked}");
             assert!(asked.contains("Floors and areas"), "{asked}");
             assert!(!asked.contains("sk-test-key-should-not-leak"), "{asked}");
-            // The chat about the home is offered no way into the log.
-            events(&server, "general", "Anything wrong?").await?;
+            // A device's chat is offered no way into the log.
+            events(&server, "device:nothing", "Anything wrong?").await?;
+            events(&server, "automation:kettle", "Anything wrong?").await?;
             let asked = seen.lock().expect("the lock").clone();
             assert!(!asked.contains("read_logs"), "{asked}");
+            assert!(!asked.contains("the port was taken"), "{asked}");
+
+            // The chat about the whole home is told what Settings holds and what automations
+            // there are, and is offered the tools that read more of each.
+            events(&server, "general", "Anything wrong?").await?;
+            let asked = seen.lock().expect("the lock").clone();
+            assert!(asked.contains("This is the person's home"), "{asked}");
+            assert!(asked.contains("the port was taken"), "{asked}");
+            assert!(asked.contains("Floors and areas"), "{asked}");
+            assert!(asked.contains("Automations, each with its id"), "{asked}");
+            // No Automations extension runs here, and the model is told so, not left guessing.
+            assert!(
+                asked.contains("isn't installed, or isn't running"),
+                "{asked}"
+            );
+            for tool in [
+                "read_logs",
+                "read_settings",
+                "list_automations",
+                "get_automation",
+            ] {
+                assert!(asked.contains(tool), "{tool}: {asked}");
+            }
+            assert!(!asked.contains("sk-test-key-should-not-leak"), "{asked}");
+
+            // What the person wants kept to goes in front of every conversation, and can be
+            // saved on its own, without choosing a model again.
+            let (status, body) = server
+                .json(
+                    "PUT",
+                    "/api/dev/assistant",
+                    serde_json::json!({ "instructions": "  Always answer in Spanish. " }),
+                )
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["instructions"], "Always answer in Spanish.");
+            assert_eq!(body["ready"], true, "{body}");
+            for scope in ["general", "settings", "automation:kettle"] {
+                events(&server, scope, "Anything wrong?").await?;
+                let asked = seen.lock().expect("the lock").clone();
+                assert!(
+                    asked.contains("Always answer in Spanish."),
+                    "{scope}: {asked}"
+                );
+            }
+            let file = std::fs::read_to_string(server.config_dir().join("assistant.toml"))?;
+            assert!(file.contains("Always answer in Spanish."), "{file}");
+            let (status, body) = server
+                .json(
+                    "PUT",
+                    "/api/dev/assistant",
+                    serde_json::json!({ "instructions": "" }),
+                )
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            events(&server, "general", "Anything wrong?").await?;
+            let asked = seen.lock().expect("the lock").clone();
+            assert!(!asked.contains("Always answer in Spanish."), "{asked}");
+            assert!(
+                asked.contains("It has no standing instructions."),
+                "{asked}"
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn a_chat_says_how_much_of_the_context_it_took() -> anyhow::Result<()> {
+            let base = cloud().await;
+            let server = Server::new(core())?;
+            let (status, body) = server
+                .json("PUT", "/api/dev/assistant", configure(&base, "test-model"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let before = server.read("/api/dev/assistant/transcript/general").await?;
+            assert!(before["context"].is_null(), "{before}");
+            events(&server, "general", "What is on?").await?;
+            let after = server.read("/api/dev/assistant/transcript/general").await?;
+            assert!(
+                after["context"]["used"].as_u64().is_some_and(|n| n > 100),
+                "{after}"
+            );
+            assert!(after["context"]["size"].is_null(), "{after}");
+            // Another conversation has taken nothing yet, and clearing this one forgets it.
+            let other = server
+                .read("/api/dev/assistant/transcript/settings")
+                .await?;
+            assert!(other["context"].is_null(), "{other}");
+            let (status, _) = server
+                .send(Request::delete("/api/dev/assistant/transcript/general").body(Body::empty())?)
+                .await?;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+            let cleared = server.read("/api/dev/assistant/transcript/general").await?;
+            assert!(cleared["context"].is_null(), "{cleared}");
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn a_local_models_context_is_set_within_bounds() -> anyhow::Result<()> {
+            let server = Server::new(core())?;
+            let status = server.read("/api/dev/assistant").await?;
+            assert_eq!(status["local_context"], 4096);
+            assert_eq!(status["context"], 4096);
+            let (code, body) = server
+                .json(
+                    "PUT",
+                    "/api/dev/assistant",
+                    serde_json::json!({ "context": 8192 }),
+                )
+                .await?;
+            assert_eq!(code, StatusCode::OK, "{body}");
+            assert_eq!(body["local_context"], 8192);
+            // Setting it chooses nothing: the assistant is as off as it was.
+            assert_eq!(body["mode"], "off");
+            let file = std::fs::read_to_string(server.config_dir().join("assistant.toml"))?;
+            assert!(file.contains("context = 8192"), "{file}");
+            for wrong in [serde_json::json!(100), serde_json::json!("lots")] {
+                let (code, body) = server
+                    .json(
+                        "PUT",
+                        "/api/dev/assistant",
+                        serde_json::json!({ "context": wrong }),
+                    )
+                    .await?;
+                assert_eq!(code, StatusCode::BAD_REQUEST, "{body}");
+            }
+            let status = server.read("/api/dev/assistant").await?;
+            assert_eq!(status["local_context"], 8192);
             Ok(())
         }
 

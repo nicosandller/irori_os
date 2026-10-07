@@ -1,5 +1,5 @@
-//! The Settings page: one table of the things there are to set, each a row that says how it
-//! stands and opens in place.
+//! The Settings page: what IroriOS is and what it looks after, over one table of the things
+//! there are to set, each a row that says how it stands and opens in place.
 //!
 //! In the order someone setting a home up is likely to want them: the instance and the machine
 //! under it, how the page moves, whether a model answers, the floors and areas that say what's
@@ -170,28 +170,26 @@ pub fn Settings() -> impl IntoView {
         };
 
     view! {
-        <div class="page-head">
-            <h1>"Settings"</h1>
-            <div class="page-actions">
-                // The same Ask as a device's page has, about Irori itself: a conversation of its
-                // own, told what these rows hold. Before a model is ready it opens the Assistant
-                // row below, which is on this page.
-                <crate::assistant::Ask
-                    scope="settings".to_owned()
-                    title="Irori's settings".to_owned()
-                />
-                <button
-                    type="button"
-                    // Disabled while a restart is under way, and until the first health says which
-                    // instance this is — arming without one would let the old instance's own
-                    // answer clear the button before the restart happened.
-                    disabled=move || restarting.get() || live.health.get().is_none()
-                    on:click=move |_| restart()
-                >
-                    {move || if restarting.get() { "Restarting…" } else { "Restart" }}
-                </button>
-            </div>
-        </div>
+        // The page's heading is the instance itself: its name and mark, and what it holds.
+        <crate::start::Hero>
+            // The same Ask as a device's page has, about Irori itself: a conversation of its
+            // own, told what these rows hold. Before a model is ready it opens the Assistant
+            // row below, which is on this page.
+            <crate::assistant::Ask
+                scope="settings".to_owned()
+                title="Irori's settings".to_owned()
+            />
+            <button
+                type="button"
+                // Disabled while a restart is under way, and until the first health says which
+                // instance this is — arming without one would let the old instance's own
+                // answer clear the button before the restart happened.
+                disabled=move || restarting.get() || live.health.get().is_none()
+                on:click=move |_| restart()
+            >
+                {move || if restarting.get() { "Restarting…" } else { "Restart" }}
+            </button>
+        </crate::start::Hero>
 
         {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
 

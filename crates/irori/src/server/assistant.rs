@@ -130,7 +130,8 @@ async fn hold(state: &AppState, tag: &str, load: bool) -> Response {
     let done = if load {
         assistant::choose(&state.0.config, data_dir(state), tag).await
     } else {
-        assistant::hold(data_dir(state), tag, false).await
+        // Letting go takes no context: that is only said when a model is loaded.
+        assistant::hold(data_dir(state), tag, false, 0).await
     };
     match done {
         Ok(()) => Json(assistant::read_status(turn(state), data_dir(state)).await).into_response(),
@@ -154,7 +155,7 @@ pub async fn uninstall(State(state): State<AppState>) -> Response {
 
 pub async fn transcript(State(state): State<AppState>, Path(scope): Path<String>) -> Response {
     match assistant::transcript(&state.0.db.path, &scope) {
-        Ok(turns) => {
+        Ok((turns, context)) => {
             let turns: Vec<Stored> = turns
                 .iter()
                 .map(|turn| Stored {
@@ -163,7 +164,8 @@ pub async fn transcript(State(state): State<AppState>, Path(scope): Path<String>
                 })
                 .collect();
             let pending = state.0.turns.pending(&scope).map(|pending| pending.view());
-            Json(serde_json::json!({ "turns": turns, "pending": pending })).into_response()
+            Json(serde_json::json!({ "turns": turns, "pending": pending, "context": context }))
+                .into_response()
         }
         Err(error) => refused(StatusCode::BAD_REQUEST, error),
     }
