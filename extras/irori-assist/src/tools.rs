@@ -13,72 +13,121 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
-/// OpenAI-shaped tool list. Anthropic uses [`anthropic_tools`].
-pub fn openai_tools() -> Value {
-    json!([
-        {
-            "type": "function",
-            "function": {
-                "name": "list_devices",
-                "description": "List the devices in the home, with the room and the word each entity is reporting.",
-                "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_device",
-                "description": "One device's entities and what they report right now.",
-                "parameters": {
-                    "type": "object",
-                    "properties": { "id": { "type": "string", "description": "The device id." } },
-                    "required": ["id"],
-                    "additionalProperties": false
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "recent_states",
-                "description": "Recent reported values for one entity.",
-                "parameters": {
-                    "type": "object",
-                    "properties": { "entity_id": { "type": "string" } },
-                    "required": ["entity_id"],
-                    "additionalProperties": false
-                }
-            }
-        }
-    ])
+/// One tool, said once. Each provider's shape is made from this.
+struct Tool {
+    name: &'static str,
+    description: &'static str,
+    /// Each parameter: its name, what it is, and whether the call must give it. All strings.
+    params: &'static [(&'static str, &'static str, bool)],
+    /// Whether the conversation `scope` is offered it.
+    offered: fn(&str) -> bool,
 }
 
-pub fn anthropic_tools() -> Value {
-    json!([
-        {
-            "name": "list_devices",
-            "description": "List the devices in the home, with the room and the word each entity is reporting.",
-            "input_schema": { "type": "object", "properties": {} }
-        },
-        {
-            "name": "get_device",
-            "description": "One device's entities and what they report right now.",
-            "input_schema": {
-                "type": "object",
-                "properties": { "id": { "type": "string" } },
-                "required": ["id"]
-            }
-        },
-        {
-            "name": "recent_states",
-            "description": "Recent reported values for one entity.",
-            "input_schema": {
-                "type": "object",
-                "properties": { "entity_id": { "type": "string" } },
-                "required": ["entity_id"]
-            }
-        }
-    ])
+fn about_the_home(scope: &str) -> bool {
+    scope != "settings"
+}
+
+const TOOLS: [Tool; 4] = [
+    Tool {
+        name: "list_devices",
+        description: "List the devices in the home, with the room and the word each entity is reporting.",
+        params: &[],
+        offered: |_| true,
+    },
+    Tool {
+        name: "get_device",
+        description: "One device's entities and what they report right now.",
+        params: &[("id", "The device id.", true)],
+        offered: |_| true,
+    },
+    Tool {
+        name: "recent_states",
+        description: "Recent reported values for one entity.",
+        params: &[("entity_id", "The entity id.", true)],
+        offered: about_the_home,
+    },
+    Tool {
+        name: "read_logs",
+        description: "The newest lines of a log, oldest first. Irori's own log also carries what its extensions said.",
+        params: &[
+            (
+                "source",
+                "`irori` for Irori's own log, `model` for the log of the model on this machine, or an extension's id for that extension's own output.",
+                true,
+            ),
+            (
+                "contains",
+                "Only lines containing this text, whatever its case. Leave out for every line.",
+                false,
+            ),
+        ],
+        offered: |scope| scope == "settings",
+    },
+];
+
+fn schema(tool: &Tool) -> Value {
+    let properties: serde_json::Map<String, Value> = tool
+        .params
+        .iter()
+        .map(|(name, description, _)| {
+            (
+                (*name).to_owned(),
+                json!({ "type": "string", "description": description }),
+            )
+        })
+        .collect();
+    let required: Vec<&str> = tool
+        .params
+        .iter()
+        .filter(|(_, _, required)| *required)
+        .map(|(name, _, _)| *name)
+        .collect();
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false,
+    })
+}
+
+/// Whether the conversation `scope` is offered the tool `name`.
+pub fn tool_offered(scope: &str, name: &str) -> bool {
+    TOOLS
+        .iter()
+        .any(|tool| tool.name == name && (tool.offered)(scope))
+}
+
+/// The tools the conversation `scope` is offered, in OpenAI's shape. Anthropic uses
+/// [`anthropic_tools`].
+pub fn openai_tools(scope: &str) -> Value {
+    TOOLS
+        .iter()
+        .filter(|tool| (tool.offered)(scope))
+        .map(|tool| {
+            json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": schema(tool),
+                }
+            })
+        })
+        .collect()
+}
+
+pub fn anthropic_tools(scope: &str) -> Value {
+    TOOLS
+        .iter()
+        .filter(|tool| (tool.offered)(scope))
+        .map(|tool| {
+            json!({
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": schema(tool),
+            })
+        })
+        .collect()
 }
 
 /// The highest fragment index [`assemble`] reads, plus one. The index is the provider's word,
@@ -186,6 +235,33 @@ mod tests {
         ]);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "list_devices");
+    }
+
+    fn names(tools: &Value, at: &str) -> Vec<String> {
+        tools
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|tool| tool.pointer(at)?.as_str().map(str::to_owned))
+            .collect()
+    }
+
+    #[test]
+    fn each_conversation_is_offered_its_own_tools_in_both_shapes() {
+        let home = ["list_devices", "get_device", "recent_states"];
+        let settings = ["list_devices", "get_device", "read_logs"];
+        for scope in ["general", "device:lamp", "automation:kettle"] {
+            assert_eq!(names(&openai_tools(scope), "/function/name"), home);
+            assert_eq!(names(&anthropic_tools(scope), "/name"), home);
+        }
+        assert_eq!(names(&openai_tools("settings"), "/function/name"), settings);
+        assert_eq!(names(&anthropic_tools("settings"), "/name"), settings);
+        let logs = &anthropic_tools("settings")[2];
+        assert_eq!(logs["input_schema"]["required"], json!(["source"]));
+        assert!(tool_offered("settings", "read_logs"));
+        assert!(!tool_offered("general", "read_logs"));
+        assert!(!tool_offered("settings", "recent_states"));
+        assert!(logs["input_schema"]["properties"]["contains"].is_object());
     }
 
     #[test]

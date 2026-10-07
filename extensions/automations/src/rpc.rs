@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use crate::{HISTORY_CAP, Service, a_day_before, history, now};
+use crate::{HISTORY_CAP, Service, a_day_before, brief, history, now};
 
 fn params<T: DeserializeOwned>(params: Value) -> Result<T, String> {
     serde_json::from_value(params).map_err(|e| format!("the request didn't make sense: {e}"))
@@ -52,44 +52,56 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
                 "file": p.file, "reason": p.reason,
             })).collect::<Vec<_>>(),
         })),
-        // A short reading of one flow for the assistant. The core never opens the flow file.
+        // One flow written out for the assistant. The core never opens the flow file.
         "flow.brief" => {
-            let ById { id } = params(raw)?;
+            #[derive(Deserialize)]
+            struct Brief {
+                id: RuleId,
+                /// How long it may be, in characters.
+                #[serde(default)]
+                budget: Option<usize>,
+            }
+            let Brief { id, budget } = params(raw)?;
             let flow = service
                 .store
                 .flow(&id)
                 .cloned()
                 .ok_or_else(|| format!("there's no flow `{id}`"))?;
             let problems = validate::check(&flow, &service.registry);
-            let last = service.store.runs(&id).into_iter().next();
-            let mut text = format!(
-                "{} is {}.\n",
-                flow.name,
-                if flow.enabled { "on" } else { "off" }
+            let armed = service
+                .engine
+                .armed()
+                .remove(&id)
+                .map(|(armed, _)| armed)
+                .unwrap_or(Armed::Disabled);
+            let mut involved = validate::watched(&flow, &service.registry);
+            involved.extend(flow.nodes.values().filter_map(|node| match node {
+                Node::Call { entity, .. } => Some(entity.clone()),
+                _ => None,
+            }));
+            let going = service
+                .engine
+                .active(Some(&id))
+                .into_iter()
+                .next()
+                .map(|run| run.record);
+            let kept = service.store.runs(&id);
+            let near_misses = service.store.near_misses(&id);
+            let text = brief::write(
+                &brief::Picture {
+                    flow: &flow,
+                    armed: &armed,
+                    problems: &problems,
+                    registry: &service.registry,
+                    states: &service.engine.states(),
+                    involved: involved.into_iter().collect(),
+                    going: going.as_ref(),
+                    last: kept.iter().find(|run| run.test.is_none()),
+                    ran_as_test: !kept.is_empty(),
+                    near_misses: &near_misses,
+                },
+                budget.unwrap_or(brief::BUDGET),
             );
-            match &last {
-                Some(run) if run.finished_at.is_some() => text.push_str("The last run finished.\n"),
-                Some(_) => text.push_str("The last run did not finish.\n"),
-                None => text.push_str("It has not run.\n"),
-            }
-            for (node_id, node) in &flow.nodes {
-                let kind = match node {
-                    Node::Trigger { .. } => "trigger",
-                    Node::Gate { .. } => "check",
-                    Node::Switch { .. } => "choose",
-                    Node::Call { .. } => "call",
-                    Node::Set { .. } => "set",
-                    Node::Delay { .. } => "wait",
-                    Node::Wait { .. } => "wait until",
-                    Node::Join { .. } => "join",
-                    Node::Stop { .. } => "stop",
-                };
-                text.push_str(&format!("- {node_id}: {kind}\n"));
-            }
-            if !problems.is_empty() {
-                text.push_str(&format!("{} problem(s) to fix.\n", problems.len()));
-            }
-            let text: String = text.chars().take(4_000).collect();
             answer(json!({
                 "text": text,
                 "name": flow.name,

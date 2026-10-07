@@ -4,25 +4,28 @@
 //! listening on `127.0.0.1:11434`: one the person installed, or the one Irori downloads on
 //! request (`ollama.rs`). A cloud model is an endpoint and a key kept in `secrets.toml`.
 
+use std::collections::HashMap;
 use std::path::Path;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt as _;
 use irori_assist::{
-    AnthropicParser, AssistantFile, BriefLine, CloudPreset, DEFAULT_TAG, LOCAL_CONTEXT, Lines,
-    Mode, OllamaParser, OpenAiParser, Piece, Role, Shape, ToolCall, Turn as Remembered,
-    anthropic_tools, assemble, cloud_ready, device_brief, execute_round, home_brief, library_page,
-    model_tag, openai_tools,
+    AnthropicParser, AssistantFile, BriefLine, CloudPreset, DEFAULT_TAG, ExtensionLine,
+    LOCAL_CONTEXT, Lines, Mode, OllamaParser, OpenAiParser, Piece, Place, Role, SettingsPicture,
+    Shape, ToolCall, Turn as Remembered, anthropic_tools, assemble, cloud_ready, device_brief,
+    execute_round, home_brief, library_page, model_tag, openai_tools, settings_brief,
 };
 use irori_core::Core;
 use irori_types::{Availability, DeviceId, EntityId, EntityState, ExtensionId};
 use serde::Serialize;
 use serde_json::{Value, json};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc, watch};
 
 use crate::config::{Config, EditError};
 use crate::history::History;
 use crate::ollama;
+use crate::syslog;
 
 const OLLAMA: &str = "http://127.0.0.1:11434";
 const ASSISTANT: &str = "assistant";
@@ -41,6 +44,16 @@ const KEEP_LOADED: i64 = -1;
 /// How much earlier conversation a local model is sent. Its whole context is
 /// [`LOCAL_CONTEXT`] tokens, and the picture of the home takes about half.
 const LOCAL_HISTORY_BYTES: usize = 3_000;
+/// The same, for the conversations whose picture is the larger part: an automation's logic and
+/// last run, or everything Settings holds.
+const LOCAL_HISTORY_BYTES_TIGHT: usize = 1_500;
+/// How long the picture of an automation, or of Settings, may be in characters: what a cloud
+/// model is sent, and what fits in front of a model on this machine with room left to answer.
+const AUTOMATION_BRIEF: usize = 12_000;
+const SETTINGS_BRIEF: usize = 8_000;
+const LOCAL_BRIEF: usize = 4_500;
+/// How much of a log one `read_logs` hands back, newest lines kept.
+const LOG_ANSWER: usize = 4_000;
 
 /// One question at a time for the model on this machine. Ollama would queue a second one
 /// anyway; holding it here lets the page say so, and keeps its wait off the clock.
@@ -97,6 +110,7 @@ struct Env<'a> {
     config: &'a Config,
     history: &'a History,
     db: &'a Path,
+    log: &'a syslog::Log,
 }
 
 async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
@@ -139,7 +153,7 @@ async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
         match file.mode {
             Mode::Local => format!("{} is running on this machine.", file.local.tag),
             Mode::Cloud => format!(
-                "Answers come from {} at {}. What you ask, including device names and states, leaves the house.",
+                "Answers come from {} at {}. What you ask leaves the house, and with it device names and states, and from Settings, Irori's settings and log lines.",
                 file.cloud.model, file.cloud.base_url
             ),
             Mode::Off => String::new(),
@@ -613,7 +627,14 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
         let _ = tx.send(ChatEvent::Error(picture.detail)).await;
         return;
     }
-    let system = match system_prompt(&env, &scope).await {
+    let provider = match provider_for(&file, &key) {
+        Ok(provider) => provider,
+        Err(error) => {
+            let _ = tx.send(ChatEvent::Error(error)).await;
+            return;
+        }
+    };
+    let system = match system_prompt(&env, &scope, provider.local(), &picture).await {
         Ok(system) => system,
         Err(error) => {
             let _ = tx.send(ChatEvent::Error(error)).await;
@@ -627,15 +648,16 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
             return;
         }
     };
-    let provider = match provider_for(&file, &key) {
-        Ok(provider) => provider,
-        Err(error) => {
-            let _ = tx.send(ChatEvent::Error(error)).await;
-            return;
-        }
-    };
     let earlier = if provider.local() {
-        recent(&turns, LOCAL_HISTORY_BYTES)
+        let roomy = scope == "general" || scope.starts_with("device:");
+        recent(
+            &turns,
+            if roomy {
+                LOCAL_HISTORY_BYTES
+            } else {
+                LOCAL_HISTORY_BYTES_TIGHT
+            },
+        )
     } else {
         &turns[..]
     };
@@ -674,7 +696,14 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
             return;
         }
         let with_tools = tools_work && execute_round(rounds);
-        match complete(&provider, &conversation, with_tools, &tx).await {
+        match complete(
+            &provider,
+            &conversation,
+            with_tools.then_some(scope.as_str()),
+            &tx,
+        )
+        .await
+        {
             Ok(Outcome::Text(said)) => {
                 text.push_str(&said);
                 break;
@@ -694,7 +723,7 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
                     if tx.send(ChatEvent::Step(call.name.clone())).await.is_err() {
                         return;
                     }
-                    let result = run_tool(&env, &call);
+                    let result = run_tool(&env, &scope, &call);
                     conversation.tool(&call, &result);
                 }
                 rounds += 1;
@@ -842,7 +871,8 @@ impl Conversation {
 async fn complete(
     provider: &Provider,
     conversation: &Conversation,
-    with_tools: bool,
+    // The conversation whose tools are offered, when any are.
+    tools_for: Option<&str>,
     tx: &mpsc::Sender<ChatEvent>,
 ) -> Result<Outcome, String> {
     let client = client();
@@ -853,8 +883,8 @@ async fn complete(
                 "stream": true,
                 "messages": openai_messages(conversation),
             });
-            if with_tools {
-                body["tools"] = openai_tools();
+            if let Some(scope) = tools_for {
+                body["tools"] = openai_tools(scope);
             }
             (client.post(url).bearer_auth(key).json(&body), key.as_str())
         }
@@ -866,8 +896,8 @@ async fn complete(
                 "system": conversation.system,
                 "messages": anthropic_messages(conversation),
             });
-            if with_tools {
-                body["tools"] = anthropic_tools();
+            if let Some(scope) = tools_for {
+                body["tools"] = anthropic_tools(scope);
             }
             (
                 client
@@ -889,8 +919,8 @@ async fn complete(
             if *think {
                 body["think"] = json!(false);
             }
-            if with_tools {
-                body["tools"] = openai_tools();
+            if let Some(scope) = tools_for {
+                body["tools"] = openai_tools(scope);
             }
             (client.post(format!("{OLLAMA}/api/chat")).json(&body), "")
         }
@@ -939,7 +969,7 @@ async fn complete(
         }
     }
     // Tools asked for on the round that wasn't offered any are ignored: the words stand.
-    let calls = if with_tools {
+    let calls = if tools_for.is_some() {
         assemble(&parts)
     } else {
         Vec::new()
@@ -1034,8 +1064,12 @@ fn anthropic_messages(conversation: &Conversation) -> Vec<Value> {
     messages
 }
 
-fn run_tool(env: &Env<'_>, call: &ToolCall) -> String {
+fn run_tool(env: &Env<'_>, scope: &str, call: &ToolCall) -> String {
     let args: Value = serde_json::from_str(&call.arguments).unwrap_or(json!({}));
+    // A model may ask for a tool it wasn't offered. It gets what it was offered, no more.
+    if !irori_assist::tool_offered(scope, &call.name) {
+        return format!("there is no tool `{}`", call.name);
+    }
     let text = match call.name.as_str() {
         "list_devices" => home_brief(&lines(env.core, None)),
         "get_device" => {
@@ -1089,12 +1123,302 @@ fn run_tool(env: &Env<'_>, call: &ToolCall) -> String {
                     .join("\n")
             }
         }
+        "read_logs" => {
+            let source = args
+                .get("source")
+                .and_then(|source| source.as_str())
+                .unwrap_or("irori");
+            let contains = args.get("contains").and_then(|text| text.as_str());
+            let lines = match source {
+                "irori" => env.log.lines(),
+                "model" => ollama::log(env.db.parent().unwrap_or(env.db)),
+                other => match other.parse::<ExtensionId>() {
+                    Ok(id) if env.core.extensions().contains_key(&id) => env.core.log(&id),
+                    _ => {
+                        return format!(
+                            "there's no log `{other}`. A source is irori, model, or an \
+                             extension's id."
+                        );
+                    }
+                },
+            };
+            return newest(&lines, contains, LOG_ANSWER);
+        }
         other => format!("there is no tool `{other}`"),
     };
     text.chars().take(4_000).collect()
 }
 
-async fn system_prompt(env: &Env<'_>, scope: &str) -> Result<String, String> {
+/// The newest of `lines` that contain `contains`, oldest first, in at most `most` characters.
+fn newest(lines: &[String], contains: Option<&str>, most: usize) -> String {
+    let wanted = contains
+        .map(str::to_lowercase)
+        .filter(|text| !text.is_empty());
+    let matching: Vec<&String> = lines
+        .iter()
+        .filter(|line| {
+            wanted
+                .as_ref()
+                .is_none_or(|wanted| line.to_lowercase().contains(wanted))
+        })
+        .collect();
+    let mut kept = Vec::new();
+    let mut size = 0usize;
+    // From the newest back, and no further than the first that doesn't fit: what is handed
+    // over is the end of the log with nothing missing from the middle of it.
+    for line in matching.iter().rev() {
+        let line: String = line.chars().take(400).collect();
+        if size + line.len() + 1 > most {
+            break;
+        }
+        size += line.len() + 1;
+        kept.push(line);
+    }
+    let left_out = matching.len() - kept.len();
+    if kept.is_empty() && left_out > 0 {
+        return "The newest line of that log is too long to show.".to_owned();
+    }
+    if kept.is_empty() {
+        return match contains {
+            Some(text) => format!("No line in that log contains `{text}`."),
+            None => "That log is empty.".to_owned(),
+        };
+    }
+    kept.reverse();
+    let mut text = String::new();
+    if left_out > 0 {
+        text.push_str(&format!("({left_out} older lines not shown.)\n"));
+    }
+    text.push_str(&kept.join("\n"));
+    text
+}
+
+/// Whether a log line is an error (`Some(true)`), a warning (`Some(false)`), or neither: by
+/// the word in it, whoever wrote the line, the way the Logs window reads it.
+fn trouble(line: &str) -> Option<bool> {
+    let upper = line.to_uppercase();
+    let has = |word: &str| {
+        upper.match_indices(word).any(|(at, _)| {
+            let before = upper[..at].chars().next_back();
+            let after = upper[at + word.len()..].chars().next();
+            !before.is_some_and(char::is_alphabetic) && !after.is_some_and(char::is_alphabetic)
+        })
+    };
+    if has("ERROR") {
+        Some(true)
+    } else if has("WARNING") || has("WARN") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Everything the Settings page holds, for [`settings_brief`]. `status` is the assistant's own.
+async fn settings_picture(env: &Env<'_>, status: &Status) -> SettingsPicture {
+    // The database's own path, as the System row reads it: that is what sizes the database.
+    // Off the async runtime: reading the machine looks at every disk and process.
+    let database = env.db.to_owned();
+    let host = tokio::task::spawn_blocking(move || crate::host_info::read(&database))
+        .await
+        .unwrap_or_else(|_| crate::host_info::read(env.db));
+    let mut system = vec![format!("Irori {}.", crate::build_info::VERSION)];
+    system.push(format!(
+        "It runs on {}{} {} ({}), which has been up {}.",
+        host.host
+            .as_ref()
+            .map(|name| format!("\"{name}\", "))
+            .unwrap_or_default(),
+        host.os,
+        host.os_version,
+        host.arch,
+        lasted(host.uptime_secs),
+    ));
+    system.push(format!(
+        "Processor: {}, {} cores. Load over 1, 5 and 15 minutes: {:.2}, {:.2}, {:.2}.",
+        host.cpu, host.cpu_cores, host.load_average[0], host.load_average[1], host.load_average[2]
+    ));
+    system.push(format!(
+        "Memory: {} used of {}; Irori itself holds {}.",
+        bytes(host.memory_used),
+        bytes(host.memory_total),
+        bytes(host.process_memory)
+    ));
+    system.push(format!(
+        "Disk holding Irori's data ({}): {} free of {}. The database is {}.",
+        host.data_dir,
+        bytes(host.disk.available),
+        bytes(host.disk.total),
+        bytes(host.database_bytes)
+    ));
+
+    let mut assistant = vec![match status.mode {
+        Mode::Off => "The assistant is off.".to_owned(),
+        Mode::Local => format!(
+            "A model on this machine answers: {}. {}",
+            status.local_tag, status.detail
+        ),
+        Mode::Cloud => format!(
+            "A cloud model answers: {} at {}.",
+            status.cloud_model, status.base_url
+        ),
+    }];
+    assistant.push(format!(
+        "A cloud API key is {}. The key itself is never shown.",
+        if status.credential == "set" {
+            "saved"
+        } else {
+            "not saved"
+        }
+    ));
+    assistant.push(format!(
+        "Ollama on this machine is {}{}.",
+        status.ollama,
+        if status.managed {
+            ", installed by Irori"
+        } else {
+            ""
+        }
+    ));
+    if !status.pulled.is_empty() {
+        assistant.push(format!(
+            "Models downloaded to this machine: {}.",
+            status
+                .pulled
+                .iter()
+                .map(|model| format!(
+                    "{} ({}{})",
+                    model.name,
+                    bytes(model.size),
+                    if model.loaded { ", loaded" } else { "" }
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    let mut floors = env.core.floors();
+    floors.sort_by_key(|floor| floor.level);
+    let devices = env.core.devices();
+    let named = |area: Option<&irori_types::AreaId>| -> Vec<String> {
+        devices
+            .iter()
+            .filter(|device| device.area_id.as_ref() == area)
+            .map(|device| device.name.to_string())
+            .collect()
+    };
+    let mut places: Vec<Place> = env
+        .core
+        .areas()
+        .iter()
+        .map(|area| Place {
+            floor: area
+                .floor_id
+                .as_ref()
+                .and_then(|id| floors.iter().find(|floor| &floor.id == id))
+                .map(|floor| floor.name.to_string())
+                .unwrap_or_default(),
+            area: area.name.to_string(),
+            devices: named(Some(&area.id)),
+        })
+        .collect();
+    let loose = named(None);
+    if !loose.is_empty() {
+        places.push(Place {
+            floor: String::new(),
+            area: String::new(),
+            devices: loose,
+        });
+    }
+
+    let mut extensions = Vec::new();
+    for (id, overview) in env.core.extensions() {
+        let info = overview.info.as_ref();
+        let schema = info.and_then(|info| info.config_schema.as_ref());
+        // Only what the extension's own schema names and doesn't mark as a secret: the same
+        // rule the Extensions page reads by.
+        let settings = env
+            .config
+            .extension_settings(&id)
+            .await
+            .into_iter()
+            .filter(|(key, _)| {
+                schema.is_some_and(|schema| {
+                    schema
+                        .get("properties")
+                        .and_then(|properties| properties.get(key.as_str()))
+                        .is_some_and(|field| !crate::server::is_write_only(field, schema))
+                })
+            })
+            .map(|(key, value)| (key, value.to_string()))
+            .collect();
+        extensions.push(ExtensionLine {
+            name: info.map_or_else(|| id.to_string(), |info| format!("{} (`{id}`)", info.name)),
+            version: info
+                .map(|info| info.version.to_string())
+                .unwrap_or_default(),
+            state: match &overview.status {
+                irori_core::ExtensionStatus::Disabled => "disabled".to_owned(),
+                irori_core::ExtensionStatus::Starting => "starting".to_owned(),
+                irori_core::ExtensionStatus::Running => "running".to_owned(),
+                irori_core::ExtensionStatus::Degraded { reason } => {
+                    format!("running with trouble: {reason}")
+                }
+                irori_core::ExtensionStatus::Failed { reason, .. } => format!("failed: {reason}"),
+                irori_core::ExtensionStatus::NeedsSetup { missing } => {
+                    format!("needs setting up; missing {}", missing.join(", "))
+                }
+            },
+            settings,
+        });
+    }
+
+    let lines = env.log.lines();
+    let weights: Vec<Option<bool>> = lines.iter().map(|line| trouble(line)).collect();
+    SettingsPicture {
+        system,
+        assistant,
+        floors: floors.iter().map(|floor| floor.name.to_string()).collect(),
+        places,
+        extensions,
+        log_counts: (
+            lines.len(),
+            weights
+                .iter()
+                .filter(|weight| **weight == Some(false))
+                .count(),
+            weights
+                .iter()
+                .filter(|weight| **weight == Some(true))
+                .count(),
+        ),
+        log_tail: lines
+            .iter()
+            .zip(&weights)
+            .filter(|(_, weight)| weight.is_some())
+            .map(|(line, _)| line.clone())
+            .collect(),
+    }
+}
+
+/// Seconds as a person says them: `3 days`, `5 hours`, `12 minutes`.
+fn lasted(seconds: u64) -> String {
+    let (n, what) = match seconds {
+        86_400.. => (seconds / 86_400, "day"),
+        3_600.. => (seconds / 3_600, "hour"),
+        _ => (seconds / 60, "minute"),
+    };
+    format!("{n} {what}{}", if n == 1 { "" } else { "s" })
+}
+
+/// What the model reads before the conversation: who it is, and the picture of what `scope`
+/// is about. A model on this machine (`local`) is handed a shorter picture, since it has to
+/// fit, with the conversation and its own answer, in [`LOCAL_CONTEXT`] tokens.
+async fn system_prompt(
+    env: &Env<'_>,
+    scope: &str,
+    local: bool,
+    status: &Status,
+) -> Result<String, String> {
     let mut prompt = String::from(
         "You are Irori's assistant. Talk about this home in plain words. \
          You can read devices and recent values. You cannot change them. \
@@ -1103,6 +1427,25 @@ async fn system_prompt(env: &Env<'_>, scope: &str) -> Result<String, String> {
     );
     if scope == "general" {
         prompt.push_str(&home_brief(&lines(env.core, None)));
+        return Ok(prompt);
+    }
+    if scope == "settings" {
+        prompt.push_str(
+            "When the person asks what went wrong, read the log lines and say what they mean \
+             in plain words, quoting the line that shows it. Where a setting should change, say \
+             which row of Settings it is under.\n",
+        );
+        if !local {
+            prompt.push_str(
+                "The tool `read_logs` reads more of a log than is pasted here, and an \
+                 extension's own output.\n",
+            );
+        }
+        let budget = if local { LOCAL_BRIEF } else { SETTINGS_BRIEF };
+        prompt.push_str(&settings_brief(
+            &settings_picture(env, status).await,
+            budget,
+        ));
         return Ok(prompt);
     }
     if let Some(id) = scope.strip_prefix("device:") {
@@ -1133,13 +1476,31 @@ async fn system_prompt(env: &Env<'_>, scope: &str) -> Result<String, String> {
             ExtensionId::try_from("automations").expect("automations is an extension id");
         let brief = match env
             .core
-            .app_request(&extension, "flow.brief".to_owned(), json!({ "id": id }))
+            .app_request(
+                &extension,
+                "flow.brief".to_owned(),
+                json!({
+                    "id": id,
+                    "budget": if local { LOCAL_BRIEF } else { AUTOMATION_BRIEF },
+                }),
+            )
             .await
         {
             Ok(value) => value["text"].as_str().unwrap_or("").to_owned(),
             Err(error) => format!("Automations isn't available ({error})."),
         };
-        prompt.push_str("The person is asking about one automation.\n");
+        prompt.push_str(
+            "The person is asking about one automation. Below are its logic, the current value \
+             of every entity it reads or acts on, its last run, and what is wrong with it. \
+             Answer from those.\n\
+             To say what would happen now, walk the logic from the trigger using the current \
+             values, and name the check that decides it and the value it saw.\n\
+             To say why a run did not do something, follow the last run's steps and name the \
+             step where it stopped or turned away, with the value read there.\n\
+             For a problem, name the step, say what is wrong with it, and say what to change \
+             in the automation's editor to fix it. If nothing here answers the question, say \
+             so.\n",
+        );
         prompt.push_str(&brief);
         return Ok(prompt);
     }
@@ -1149,6 +1510,7 @@ async fn system_prompt(env: &Env<'_>, scope: &str) -> Result<String, String> {
 fn lines(core: &Core, only: Option<&DeviceId>) -> Vec<BriefLine> {
     let devices = core.devices();
     let areas = core.areas();
+    let floors = core.floors();
     let entities = core.entities();
     let states = core.states();
     let mut lines = Vec::new();
@@ -1159,9 +1521,13 @@ fn lines(core: &Core, only: Option<&DeviceId>) -> Vec<BriefLine> {
         let area = device
             .area_id
             .as_ref()
-            .and_then(|id| areas.iter().find(|area| &area.id == id))
-            .map(|area| area.name.to_string())
+            .and_then(|id| areas.iter().find(|area| &area.id == id));
+        let floor = area
+            .and_then(|area| area.floor_id.as_ref())
+            .and_then(|id| floors.iter().find(|floor| &floor.id == id))
+            .map(|floor| floor.name.to_string())
             .unwrap_or_default();
+        let area = area.map(|area| area.name.to_string()).unwrap_or_default();
         let mut any = false;
         for entity in entities
             .iter()
@@ -1174,6 +1540,7 @@ fn lines(core: &Core, only: Option<&DeviceId>) -> Vec<BriefLine> {
                 .map(shown)
                 .unwrap_or_else(|| "unknown".to_owned());
             lines.push(BriefLine {
+                floor: floor.clone(),
                 area: area.clone(),
                 name: device.name.to_string(),
                 entity: entity.id.to_string(),
@@ -1182,6 +1549,7 @@ fn lines(core: &Core, only: Option<&DeviceId>) -> Vec<BriefLine> {
         }
         if !any {
             lines.push(BriefLine {
+                floor,
                 area,
                 name: device.name.to_string(),
                 entity: device.id.to_string(),
@@ -1356,12 +1724,12 @@ async fn set_key(config: &Config, core: &Core, key: &str) -> Result<(), String> 
         })
 }
 
-fn check_scope(scope: &str) -> Result<(), String> {
-    if scope == "general" {
+pub fn check_scope(scope: &str) -> Result<(), String> {
+    if scope == "general" || scope == "settings" {
         return Ok(());
     }
     let Some((kind, id)) = scope.split_once(':') else {
-        return Err("a conversation is general, a device, or an automation".into());
+        return Err("a conversation is general, settings, a device, or an automation".into());
     };
     let ok = matches!(kind, "device" | "automation")
         && !id.is_empty()
@@ -1576,6 +1944,7 @@ pub struct Turn<'a> {
     pub config: &'a Config,
     pub history: &'a History,
     pub db: &'a Path,
+    pub log: &'a syslog::Log,
 }
 
 impl<'a> Turn<'a> {
@@ -1585,6 +1954,7 @@ impl<'a> Turn<'a> {
             config: self.config,
             history: self.history,
             db: self.db,
+            log: self.log,
         }
     }
 }
@@ -1601,6 +1971,207 @@ pub async fn take_turn(
     tx: mpsc::Sender<ChatEvent>,
 ) {
     answer(turn.env(), scope, message, tx).await
+}
+
+/// How a turn that is no longer running came out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ended {
+    Done,
+    Failed(String),
+    /// The person stopped it. Nothing was kept.
+    Stopped,
+}
+
+/// Where an answer has got to: everything written so far, not the last piece of it, so a page
+/// that arrives late reads the same answer as one that was there from the start.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Progress {
+    pub text: String,
+    /// The tool being run, or `queued`. `None` while the model thinks or writes.
+    pub step: Option<String>,
+    pub ended: Option<Ended>,
+}
+
+/// A question that was asked and is being answered, or whose answer failed.
+#[derive(Debug)]
+pub struct Pending {
+    pub question: String,
+    started: Instant,
+    progress: watch::Sender<Progress>,
+    stop: Notify,
+}
+
+/// What a page that wasn't there for the question needs to draw it.
+#[derive(Debug, Serialize)]
+pub struct PendingView {
+    pub question: String,
+    pub text: String,
+    pub step: Option<String>,
+    /// Seconds since it was asked.
+    pub seconds: u64,
+    /// Why it failed, once it has. Absent while it is still being answered.
+    pub failed: Option<String>,
+}
+
+impl Pending {
+    pub fn view(&self) -> PendingView {
+        let progress = self.progress.borrow().clone();
+        PendingView {
+            question: self.question.clone(),
+            text: progress.text,
+            step: progress.step,
+            seconds: self.started.elapsed().as_secs(),
+            failed: match progress.ended {
+                Some(Ended::Failed(why)) => Some(why),
+                _ => None,
+            },
+        }
+    }
+
+    fn running(&self) -> bool {
+        self.progress.borrow().ended.is_none()
+    }
+
+    /// The answer as events, from its first word, for a page that is here now. It ends when
+    /// the answer does. The page leaving ends only this, never the answer.
+    pub fn follow(&self) -> mpsc::Receiver<ChatEvent> {
+        let mut progress = self.progress.subscribe();
+        let (tx, rx) = mpsc::channel(32);
+        tokio::spawn(async move {
+            let mut sent = 0usize;
+            let mut step = None;
+            loop {
+                let now = progress.borrow_and_update().clone();
+                // Text is only ever added to, so what was sent is a whole prefix of it.
+                if let Some(more) = now.text.get(sent..).filter(|more| !more.is_empty()) {
+                    sent = now.text.len();
+                    if tx.send(ChatEvent::Delta(more.to_owned())).await.is_err() {
+                        return;
+                    }
+                }
+                if now.step != step {
+                    step = now.step.clone();
+                    if let Some(tool) = now.step
+                        && tx.send(ChatEvent::Step(tool)).await.is_err()
+                    {
+                        return;
+                    }
+                }
+                match now.ended {
+                    Some(Ended::Failed(why)) => {
+                        let _ = tx.send(ChatEvent::Error(why)).await;
+                        return;
+                    }
+                    Some(Ended::Done | Ended::Stopped) => {
+                        let _ = tx.send(ChatEvent::Done).await;
+                        return;
+                    }
+                    None => {}
+                }
+                if progress.changed().await.is_err() {
+                    let _ = tx.send(ChatEvent::Done).await;
+                    return;
+                }
+            }
+        });
+        rx
+    }
+}
+
+/// The questions being answered, one per conversation. Irori answers a question once it has
+/// been asked, whether or not the page that asked is still open: these are what a page reads
+/// when it comes back. In memory only, so a restart loses an answer that was half written.
+#[derive(Debug, Default)]
+pub struct Turns(Mutex<HashMap<String, Arc<Pending>>>);
+
+impl Turns {
+    fn held(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Pending>>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Takes a question for `scope`. Refused while that conversation's last question is still
+    /// being answered; a failed one makes way.
+    pub fn begin(&self, scope: &str, question: &str) -> Result<Arc<Pending>, String> {
+        check_scope(scope)?;
+        let mut held = self.held();
+        if held.get(scope).is_some_and(|pending| pending.running()) {
+            return Err("The last question here is still being answered.".to_owned());
+        }
+        let pending = Arc::new(Pending {
+            question: question.trim().to_owned(),
+            started: Instant::now(),
+            progress: watch::Sender::new(Progress::default()),
+            stop: Notify::new(),
+        });
+        held.insert(scope.to_owned(), pending.clone());
+        Ok(pending)
+    }
+
+    /// The question `scope` is on, or the one that failed there.
+    pub fn pending(&self, scope: &str) -> Option<Arc<Pending>> {
+        self.held().get(scope).cloned()
+    }
+
+    /// Stops the answer under way in `scope` and forgets a failed one. Nothing of it is kept.
+    pub fn stop(&self, scope: &str) {
+        if let Some(pending) = self.held().remove(scope) {
+            pending.stop.notify_one();
+            pending.progress.send_modify(|progress| {
+                progress.ended.get_or_insert(Ended::Stopped);
+            });
+        }
+    }
+
+    /// Records how `pending` came out. A failure stays, so the page can say so and offer the
+    /// question again; anything else is done with.
+    fn settle(&self, scope: &str, pending: &Arc<Pending>, ended: Ended) {
+        let keep = matches!(ended, Ended::Failed(_));
+        pending.progress.send_modify(|progress| {
+            progress.step = None;
+            progress.ended.get_or_insert(ended);
+        });
+        let mut held = self.held();
+        if !keep && held.get(scope).is_some_and(|now| Arc::ptr_eq(now, pending)) {
+            held.remove(scope);
+        }
+    }
+
+    /// Runs `work` to its end for `pending`, keeping what it says where any page can read it.
+    /// `work` is handed the sender a turn writes to ([`take_turn`]).
+    pub async fn run<F>(
+        &self,
+        scope: &str,
+        pending: Arc<Pending>,
+        work: impl FnOnce(mpsc::Sender<ChatEvent>) -> F,
+    ) where
+        F: Future<Output = ()>,
+    {
+        let (tx, mut rx) = mpsc::channel(32);
+        let work = work(tx);
+        let heard = async {
+            while let Some(event) = rx.recv().await {
+                match event {
+                    ChatEvent::Delta(delta) => pending.progress.send_modify(|progress| {
+                        progress.text.push_str(&delta);
+                        progress.step = None;
+                    }),
+                    ChatEvent::Step(tool) => {
+                        pending
+                            .progress
+                            .send_modify(|progress| progress.step = Some(tool));
+                    }
+                    ChatEvent::Error(why) => return Ended::Failed(why),
+                    ChatEvent::Done => return Ended::Done,
+                }
+            }
+            Ended::Failed("The model didn't answer.".to_owned())
+        };
+        let ended = tokio::select! {
+            () = pending.stop.notified() => Ended::Stopped,
+            (ended, ()) = async { tokio::join!(heard, work) } => ended,
+        };
+        self.settle(scope, &pending, ended);
+    }
 }
 
 /// What Irori's own Ollama has said lately. Empty when the Ollama here isn't Irori's.
@@ -1719,5 +2290,107 @@ mod tests {
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].body.len(), irori_assist::LIMIT_BYTES);
         Ok(())
+    }
+
+    #[test]
+    fn settings_is_a_conversation_and_nonsense_is_not() {
+        assert!(check_scope("settings").is_ok());
+        assert!(check_scope("general").is_ok());
+        assert!(check_scope("device:lamp").is_ok());
+        assert!(check_scope("settings:lamp").is_err());
+        assert!(check_scope("logs").is_err());
+    }
+
+    #[test]
+    fn a_log_is_read_newest_first_filtered_and_to_a_size() {
+        let lines: Vec<String> = (0..50)
+            .map(|n| format!("line {n} {}", if n % 2 == 0 { "WARN odd" } else { "fine" }))
+            .collect();
+        let all = newest(&lines, None, 100);
+        assert!(all.ends_with("line 49 fine"), "{all}");
+        assert!(all.starts_with('('), "{all}");
+        assert!(!all.contains("line 1 "), "{all}");
+        let warned = newest(&lines, Some("warn"), 10_000);
+        assert!(warned.starts_with("line 0 WARN odd"), "{warned}");
+        assert!(!warned.contains("fine"), "{warned}");
+        assert_eq!(
+            newest(&lines, Some("nope"), 100),
+            "No line in that log contains `nope`."
+        );
+        assert_eq!(newest(&[], None, 100), "That log is empty.");
+    }
+
+    #[test]
+    fn a_line_is_trouble_by_the_word_in_it() {
+        assert_eq!(trouble("2026 ERROR it broke"), Some(true));
+        assert_eq!(trouble("2026  WARN careful"), Some(false));
+        assert_eq!(trouble("a warning: careful"), Some(false));
+        assert_eq!(trouble("2 ERRORS were dropped"), None);
+        assert_eq!(trouble("INFO fine"), None);
+    }
+
+    /// A model that says a word and then never finishes.
+    async fn stalls(tx: mpsc::Sender<ChatEvent>) {
+        let _ = tx.send(ChatEvent::Step("list_devices".into())).await;
+        let _ = tx.send(ChatEvent::Delta("So far".into())).await;
+        std::future::pending::<()>().await;
+    }
+
+    #[tokio::test]
+    async fn a_question_being_answered_can_be_read_by_a_page_that_arrives_late() {
+        let turns = Arc::new(Turns::default());
+        let pending = turns.begin("general", " What is on? ").expect("taken");
+        let running = turns.clone();
+        let task = tokio::spawn(async move { running.run("general", pending, stalls).await });
+        // A second question in the same conversation waits its turn; another one doesn't.
+        let mut late = loop {
+            let pending = turns.pending("general").expect("still there");
+            if pending.view().text == "So far" {
+                break pending.follow();
+            }
+            tokio::task::yield_now().await;
+        };
+        assert!(turns.begin("general", "And this?").is_err());
+        assert!(turns.begin("device:lamp", "And this?").is_ok());
+        let view = turns.pending("general").expect("still there").view();
+        assert_eq!(view.question, "What is on?");
+        assert_eq!(view.failed, None);
+        assert!(matches!(late.recv().await, Some(ChatEvent::Delta(text)) if text == "So far"));
+
+        // Stopping it ends it for everyone, and keeps nothing.
+        turns.stop("general");
+        task.await.expect("the turn ended");
+        assert!(matches!(late.recv().await, Some(ChatEvent::Done)));
+        assert!(turns.pending("general").is_none());
+        assert!(turns.begin("general", "And this?").is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_failed_answer_is_remembered_until_the_next_question() {
+        let turns = Turns::default();
+        let pending = turns.begin("general", "What is on?").expect("taken");
+        turns
+            .run("general", pending, |tx| async move {
+                let _ = tx.send(ChatEvent::Delta("Half".into())).await;
+                let _ = tx
+                    .send(ChatEvent::Error("the model fell over".into()))
+                    .await;
+            })
+            .await;
+        let view = turns.pending("general").expect("kept").view();
+        assert_eq!(view.question, "What is on?");
+        assert_eq!(view.failed.as_deref(), Some("the model fell over"));
+        let mut late = turns.pending("general").expect("kept").follow();
+        assert!(matches!(late.recv().await, Some(ChatEvent::Delta(_))));
+        assert!(matches!(late.recv().await, Some(ChatEvent::Error(_))));
+
+        // Asking again takes its place, and an answer that ends well leaves nothing behind.
+        let pending = turns.begin("general", "What is on?").expect("taken again");
+        turns
+            .run("general", pending, |tx| async move {
+                let _ = tx.send(ChatEvent::Done).await;
+            })
+            .await;
+        assert!(turns.pending("general").is_none());
     }
 }
