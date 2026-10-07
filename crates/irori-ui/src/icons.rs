@@ -141,3 +141,22 @@ pub fn icon(icon: Icon) -> AnyView {
     }
     .into_any()
 }
+
+/// An entity's own icon: what kind of thing it is, beside its name. The same one an
+/// extension's page draws for it (`irori_ui_kit::entity_icon`).
+pub fn entity(capabilities: &irori_types::Capabilities) -> AnyView {
+    view! {
+        <svg
+            class="icon entity-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            inner_html=irori_ui_kit::entity_icon::drawing(capabilities)
+        ></svg>
+    }
+    .into_any()
+}

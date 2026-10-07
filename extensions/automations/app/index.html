@@ -122,8 +122,16 @@
                   scale var(--dur-base) var(--ease-out), visibility 0s var(--dur-base); }
     .combo.open .combo-list { opacity: 1; translate: 0 0; scale: 1; pointer-events: auto;
       visibility: visible; transition-delay: 0s; }
-    .combo-option { display: flex; flex-direction: column; gap: .05rem; padding: .5rem .65rem;
+    .combo-option { display: flex; align-items: center; gap: .6rem; padding: .5rem .65rem;
       border-radius: .45rem; cursor: pointer; transition: background-color var(--dur-fast); }
+    .combo-text { display: flex; flex-direction: column; gap: .05rem; min-width: 0; flex: 1; }
+    /* An entity's own icon, before its name: in the list, and in the field once it's picked. */
+    .combo-icon { flex: none; display: grid; color: var(--muted); }
+    .combo-icon svg { width: 1.15rem; height: 1.15rem; }
+    .combo-icon.current { position: absolute; left: calc(.7rem + 1px); top: 50%; translate: 0 -50%;
+      pointer-events: none; }
+    .combo.iconed .combo-input { padding-left: 2.4rem !important; }
+    .combo.iconed .combo-shown { left: calc(2.4rem + 1px); }
     .combo-option.active { background: var(--sunk); }
     .combo-option.chosen .combo-label { color: var(--ember); font-weight: 500; }
     /* "Device – Name" on one line. Too long for it, the device is cut short before the name is. */

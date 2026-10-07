@@ -5,6 +5,10 @@
 //!
 //! - [`message`]: the messages, the same types on both sides.
 //! - [`page`]: the page's end — ask the shell, hear its events, look like Irori.
+//!
+//! And what both draw the same way: [`entity_icon`], the icon an entity has until someone gives
+//! it another.
 
+pub mod entity_icon;
 pub mod message;
 pub mod page;

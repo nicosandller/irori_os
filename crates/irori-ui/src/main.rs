@@ -32,6 +32,7 @@ mod segmented;
 mod settings;
 mod settings_form;
 mod start;
+mod timeline;
 mod transition;
 mod waiting;
 
