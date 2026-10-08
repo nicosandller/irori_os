@@ -50,6 +50,9 @@ pub enum Icon {
     Lock,
     Unlocked,
     Bell,
+    Thermostat,
+    /// Something that has stopped answering: a signal, struck through.
+    NoSignal,
     /// Anything that isn't one of the others.
     Dot,
 }
@@ -171,6 +174,16 @@ fn drawing(icon: Icon) -> &'static str {
         Icon::Bell => concat!(
             r#"<path d="M6 16.500V11a6 6 0 0 1 12 0v5.500l1.500 2h-15Z"/>"#,
             r#"<path d="M10.200 21a2 2 0 0 0 3.600 0M12 3v2"/>"#,
+        ),
+        Icon::Thermostat => concat!(
+            r#"<circle cx="12" cy="12" r="8.500"/><path d="M12 12l3.200-3.200"/>"#,
+            r#"<path d="M12 5.500v1.200M5.500 12h1.200M17.300 12h1.200"/>"#,
+        ),
+        // The stripe is the stylesheet's to colour (`.icon .stripe`): it is the one part of
+        // any icon that isn't the colour of the text around it.
+        Icon::NoSignal => concat!(
+            r#"<path d="M12 18.500h.01"/><path d="M8.500 15a5 5 0 0 1 7 0"/>"#,
+            r#"<path d="M5.500 12a9.200 9.200 0 0 1 13 0"/><path class="stripe" d="M5 20 19 4"/>"#,
         ),
         Icon::Dot => r#"<circle cx="12" cy="12" r="3.500" fill="currentColor"/>"#,
     }

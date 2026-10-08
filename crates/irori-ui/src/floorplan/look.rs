@@ -7,7 +7,7 @@
 
 use irori_types::{
     Availability, BinarySensorClass, Capabilities, Entity, EntityId, EntityState, EventClass,
-    LockStatus, MediaPlayerClass, Playback, SensorClass, SensorValue, State,
+    HvacAction, HvacMode, LockStatus, MediaPlayerClass, Playback, SensorClass, SensorValue, State,
 };
 
 use crate::icons::Icon;
@@ -120,8 +120,8 @@ impl Look {
 }
 
 /// A device's look, from its entities and what they last said. The first of these that fits
-/// wins: a light, a player, a switch, a lock, a radar, a motion sensor, a doorbell or a button,
-/// a thermometer, an air monitor, anything else with a reading.
+/// wins: a light, a player, a switch, a lock, a thermostat, a radar, a motion sensor, a
+/// doorbell or a button, a thermometer, an air monitor, anything else with a reading.
 ///
 /// Chosen by what an entity **can do**, not by what it has said. An entity that has reported
 /// nothing yet still has a light's or a switch's capabilities, and a marker that refused to
@@ -286,6 +286,76 @@ pub fn look_for(entities: &[&Entity], states: &[EntityState]) -> Look {
                 if locked { Icon::Lock } else { Icon::Unlocked },
                 Tone::Secure,
             )
+        };
+        offline_words(&mut look);
+        return look;
+    }
+
+    // A thermostat. Always says how warm it is, and what it's aiming for while it's on; it is
+    // set from its own page, where there is room for a dial.
+    if let Some(thermostat) =
+        main().find(|entity| matches!(entity.capabilities, Capabilities::Climate(_)))
+    {
+        let climate = match said(&thermostat.id) {
+            Some(State::Climate(climate)) => Some(climate),
+            _ => None,
+        };
+        let now = climate.and_then(|climate| climate.current_temperature);
+        let on = climate.is_some_and(|climate| climate.hvac_mode != HvacMode::Off);
+        // What it's set to: one temperature, or the band it keeps between.
+        let aim = climate.filter(|_| on).and_then(|climate| {
+            match (
+                climate.target_temperature,
+                climate.target_temp_low,
+                climate.target_temp_high,
+            ) {
+                (Some(target), _, _) => Some(format!("{}°", trimmed(target))),
+                (None, Some(low), Some(high)) => {
+                    Some(format!("{}–{}°", trimmed(low), trimmed(high)))
+                }
+                _ => None,
+            }
+        });
+        let reading = match (now, &aim) {
+            (Some(now), Some(aim)) => Some(format!("{now:.1}° → {aim}")),
+            (Some(now), None) => Some(format!("{now:.1}°")),
+            (None, Some(aim)) => Some(format!("→ {aim}")),
+            (None, None) => None,
+        };
+        let doing = climate.and_then(|climate| climate.hvac_action);
+        let to = aim
+            .as_deref()
+            .map(|aim| format!(" to {aim}"))
+            .unwrap_or_default();
+        let saying = match (on, doing) {
+            (false, _) if climate.is_some() => "Off".to_owned(),
+            (_, Some(HvacAction::Heating | HvacAction::Preheating)) => format!("Heating{to}"),
+            (_, Some(HvacAction::Cooling)) => format!("Cooling{to}"),
+            (_, Some(HvacAction::Drying)) => "Drying".to_owned(),
+            (_, Some(HvacAction::Fan)) => "Fan running".to_owned(),
+            (_, Some(HvacAction::Defrosting)) => "Defrosting".to_owned(),
+            (true, _) if aim.is_some() => format!("Set{to}"),
+            (true, _) => "On".to_owned(),
+            (false, _) => String::new(),
+        };
+        let mut look = Look {
+            offline: unreachable(&thermostat.id),
+            reading,
+            // Working right now, not merely switched on: a thermostat is on all winter.
+            active: on
+                && matches!(
+                    doing,
+                    Some(
+                        HvacAction::Heating
+                            | HvacAction::Preheating
+                            | HvacAction::Cooling
+                            | HvacAction::Drying
+                            | HvacAction::Fan
+                            | HvacAction::Defrosting
+                    )
+                ),
+            saying,
+            ..Look::plain(Icon::Thermostat, Tone::Climate)
         };
         offline_words(&mut look);
         return look;
@@ -489,14 +559,19 @@ fn in_metres(value: f64, unit: Option<&str>) -> f64 {
     }
 }
 
-/// A number the way a marker says one: a decimal only when there is one, and its unit after it.
-fn with_unit(value: f64, unit: Option<&str>) -> String {
+/// A number to one decimal place, and to none when that decimal would be a nought.
+fn trimmed(value: f64) -> String {
     let rounded = (value * 10.0).round() / 10.0;
-    let figure = if rounded.fract() == 0.0 {
+    if rounded.fract() == 0.0 {
         format!("{rounded:.0}")
     } else {
         format!("{rounded:.1}")
-    };
+    }
+}
+
+/// A number the way a marker says one: a decimal only when there is one, and its unit after it.
+fn with_unit(value: f64, unit: Option<&str>) -> String {
+    let figure = trimmed(value);
     match unit {
         None => figure,
         Some(unit) if unit == "%" || unit.starts_with('°') => format!("{figure}{unit}"),
@@ -829,6 +904,60 @@ mod tests {
         assert!(
             look_for(&[&lock], &[]).reading.is_none(),
             "nothing said yet"
+        );
+    }
+
+    /// A thermostat always says how warm it is, says what it's aiming for while it's on, and is
+    /// worth a second look only while it is actually heating or cooling.
+    #[test]
+    fn a_thermostat_says_how_warm_it_is_and_what_it_is_aiming_for() {
+        let capabilities: irori_types::ClimateCapabilities = serde_json::from_value(
+            serde_json::json!({"hvac_modes": ["off", "heat"], "min_temp": 5, "max_temp": 30, "temp_step": 0.5}),
+        )
+        .expect("a thermostat that heats");
+        let thermostat = entity("climate.hall", Capabilities::Climate(capabilities));
+        let stands = |state: serde_json::Value| {
+            let state: irori_types::ClimateState =
+                serde_json::from_value(state).expect("a thermostat's state");
+            look_for(
+                &[&thermostat],
+                &[says("climate.hall", State::Climate(state))],
+            )
+        };
+
+        let heating = stands(serde_json::json!({
+            "hvac_mode": "heat", "hvac_action": "heating",
+            "current_temperature": 19.42, "target_temperature": 22.0
+        }));
+        assert_eq!(
+            (heating.tone, heating.glyph),
+            (Tone::Climate, Icon::Thermostat)
+        );
+        assert_eq!(heating.reading.as_deref(), Some("19.4° → 22°"));
+        assert!(heating.active);
+        assert_eq!(heating.saying, "Heating to 22°");
+        assert!(heating.switch.is_none(), "it is set from its own page");
+
+        let resting = stands(serde_json::json!({
+            "hvac_mode": "heat", "hvac_action": "idle",
+            "current_temperature": 22.0, "target_temperature": 21.5
+        }));
+        assert_eq!(resting.reading.as_deref(), Some("22.0° → 21.5°"));
+        assert!(!resting.active, "on, but not working");
+        assert_eq!(resting.saying, "Set to 21.5°");
+
+        let off = stands(serde_json::json!({
+            "hvac_mode": "off", "current_temperature": 18.0, "target_temperature": 22.0
+        }));
+        assert_eq!(
+            off.reading.as_deref(),
+            Some("18.0°"),
+            "no aim while it's off"
+        );
+        assert_eq!(off.saying, "Off");
+        assert!(
+            look_for(&[&thermostat], &[]).reading.is_none(),
+            "nothing yet"
         );
     }
 

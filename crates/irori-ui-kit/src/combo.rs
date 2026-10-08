@@ -1,9 +1,9 @@
 //! A combo box: a text field that searches a list as you type, with the matches in a list below.
 //!
-//! The same control the Automations page picks a device with (`extensions/automations/app`,
-//! `widgets.rs`), kept alike on purpose so choosing an entity looks and behaves the same
-//! wherever it's done. That page is its own wasm bundle, so the code lives in both; a change to
-//! how one behaves belongs in the other too.
+//! One control for choosing an entity wherever that's done — a flow's trigger on the
+//! Automations page, a door's contact sensor on the Floorplan — so it looks and behaves the
+//! same in both. The markup is here; each page styles the `.combo` classes in its own
+//! stylesheet, at the size that suits where it sits.
 
 use leptos::prelude::*;
 
@@ -30,8 +30,6 @@ impl Choice {
         }
     }
 
-    /// Not asked for on this page yet; kept so the two copies of this control stay alike.
-    #[allow(dead_code)]
     pub fn group(mut self, group: impl Into<String>) -> Self {
         self.group = group.into();
         self

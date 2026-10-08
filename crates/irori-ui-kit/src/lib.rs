@@ -5,6 +5,11 @@
 //!
 //! - [`message`]: the messages, the same types on both sides.
 //! - [`page`]: the page's end — ask the shell, hear its events, look like Irori.
+//!
+//! And the controls both are built from, so that the same thing is the same thing in either:
+//!
+//! - [`combo`]: a field that searches a list as you type, for choosing an entity.
 
+pub mod combo;
 pub mod message;
 pub mod page;

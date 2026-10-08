@@ -1432,6 +1432,51 @@ pub fn Floorplan() -> impl IntoView {
                             })
                             .collect_view()
                     }}
+                    // A door or window whose sensor has stopped answering wears the same
+                    // struck-through signal a device does, in the middle of its gap. Only while
+                    // reading the plan: drawing it, nothing follows its sensor.
+                    {move || {
+                        if editing.get() {
+                            return None;
+                        }
+                        let home = live.home.get();
+                        let here = view.get();
+                        let level = level.get();
+                        Some(
+                            level
+                                .walls
+                                .iter()
+                                .flat_map(|wall| {
+                                    wall.openings.iter().map(move |opening| (wall, opening))
+                                })
+                                .filter(|(_, opening)| {
+                                    standing(opening, &home.states) == Standing::Unknown
+                                })
+                                .map(|(wall, opening)| {
+                                    let (middle, _, _) = along(wall, f64::from(opening.at));
+                                    let (x, y) = (
+                                        here.pan.0 + middle.0 * here.scale,
+                                        here.pan.1 + middle.1 * here.scale,
+                                    );
+                                    let words = format!(
+                                        "This {}'s sensor isn't answering",
+                                        opening.kind.label().to_lowercase()
+                                    );
+                                    view! {
+                                        <span
+                                            class="lost on-plan"
+                                            role="img"
+                                            aria-label=words.clone()
+                                            title=words
+                                            style=format!("left:{x}px;top:{y}px")
+                                        >
+                                            {icon(crate::icons::Icon::NoSignal)}
+                                        </span>
+                                    }
+                                })
+                                .collect_view(),
+                        )
+                    }}
                     {move || {
                         let home = live.home.get();
                         let here = view.get();
@@ -2138,7 +2183,7 @@ fn Inspector(
                         })}
                         <div class="choice">
                             <span>"Sensor"</span>
-                            <crate::combo::Combo
+                            <irori_ui_kit::combo::Combo
                                 choices=contacts
                                 value=following
                                 placeholder="Search contact sensors"
@@ -2216,9 +2261,9 @@ fn Inspector(
 /// door, a window, a garage door or an opening, each with a name that says which device it is.
 /// The one already chosen is always listed, even if it has since left the home or stopped being
 /// a contact sensor — the menu has to be able to show what the plan says.
-fn contacts(home: &Home, chosen: Option<&EntityId>) -> Vec<crate::combo::Choice> {
-    use crate::combo::Choice;
+fn contacts(home: &Home, chosen: Option<&EntityId>) -> Vec<irori_ui_kit::combo::Choice> {
     use irori_types::BinarySensorClass as Class;
+    use irori_ui_kit::combo::Choice;
     let mut found: Vec<Choice> = home
         .entities
         .iter()
@@ -2752,6 +2797,9 @@ fn marker(
             >
                 <path d="M16.5 -9.5 A19 19 0 0 1 16.5 9.5" />
             </svg>
+            // Not answering: a struck-through signal on the marker's shoulder. Always there,
+            // and only shown while it's true.
+            <span class="lost" aria-hidden="true">{icon(crate::icons::Icon::NoSignal)}</span>
             <span class="marker-name">{said}</span>
         </button>
     }

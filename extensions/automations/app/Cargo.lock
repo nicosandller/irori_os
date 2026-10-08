@@ -815,6 +815,7 @@ version = "0.0.0"
 dependencies = [
  "futures-channel",
  "js-sys",
+ "leptos",
  "serde",
  "serde_json",
  "wasm-bindgen",

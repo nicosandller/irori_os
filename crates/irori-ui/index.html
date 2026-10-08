@@ -1297,7 +1297,23 @@
     /* Not a control: a device with nothing to switch, or one that isn't answering. It still
        shows what it knows, it just doesn't invite a click. */
     .floorplan .marker[aria-disabled="true"] { cursor: default; }
-    .floorplan .marker.offline { opacity: .55; }
+    /* Not answering: what it last said is faded, since it may no longer be true, and a small
+       struck-through signal sits on its shoulder. The same badge marks a door or window whose
+       contact sensor has gone quiet (`.on-plan`, placed over the middle of its gap). Faded
+       part by part rather than as a whole, so the badge itself stays at full strength. */
+    .floorplan .marker.offline { border-style: dashed; box-shadow: none; }
+    .floorplan .marker.offline .glyph, .floorplan .marker.offline .reading,
+    .floorplan .marker.offline .facing { opacity: .45; }
+    .floorplan .lost { position: absolute; display: none; place-items: center; width: 1.3rem;
+                       height: 1.3rem; color: var(--muted); background: var(--card);
+                       border: 1px solid var(--line); border-radius: 50%;
+                       box-shadow: 0 1px 2px rgb(0 0 0 / .18); pointer-events: none; }
+    .floorplan .lost .icon { width: .92rem; height: .92rem; display: block; stroke-width: 2.2; }
+    /* Red, not the ember: the ember is Irori's own colour and here means "picked up". */
+    .floorplan .lost .icon .stripe { stroke: #d9433b; stroke-width: 2.6; }
+    .floorplan .marker .lost { top: -.45rem; left: 1.5rem; }
+    .floorplan .marker.offline .lost { display: grid; }
+    .floorplan .lost.on-plan { display: grid; translate: -50% -50%; pointer-events: auto; }
     /* Picked up and focused are the page talking, not the device: the ember, whatever its kind. */
     .floorplan .marker.chosen { outline: 2px solid var(--ember); outline-offset: 2px; }
     .floorplan .marker.movable { cursor: move; }
@@ -1451,8 +1467,9 @@
     .floorplan .choice .switcher { background: var(--bg); }
     .floorplan .choice .switcher button { flex: 1; padding: .25rem .4rem; font-size: .8rem; }
 
-    /* The combo box (combo.rs): a field that searches as you type, its matches in a list below.
-       The Automations page's own, in the same words, sized down for a panel this narrow. */
+    /* The combo box (irori-ui-kit `combo`): a field that searches as you type, its matches in a
+       list below. The same control the Automations page uses, sized down for a panel this
+       narrow. */
     .combo { position: relative; }
     .combo-input { width: 100%; min-height: 2.1rem; padding: .35rem 1.9rem .35rem .55rem;
                    font: inherit; font-size: .85rem; color: var(--fg); background: var(--bg);
