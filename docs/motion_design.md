@@ -80,6 +80,13 @@ What moves today, and where to find it.
 | Add device | The extension cards arrive one after another; picking one grows it into the next step's heading while the step slides aside (Back reverses it); found devices come in one after another, one that turns up later glows once; **Add** turns into a ring, then a check that draws itself, and the card folds away as the device appears under "In your home"; while it's listening and has found nothing, a ring pings to say so; the button's count pops in. | `devices.rs` `AddDevice`, `ProtocolStep`; `transition.rs` `step`, `name_target`; CSS `.protocol-card`, `.device-card`, `.add-one`, `.listening-ring`, `.count-badge`. |
 | Permit joining | Between the press and the network's own word that it opened (or closed), a small ring turns in the button beside "Opening…" or "Closing…", so the wait reads as work, not as a press that missed. While the network is open the button is its countdown: a ring springs in and drains with the time left, which is also written beside it (`0:47`); hovering or focusing swaps the words to "Close now", and a press closes it. The ring eases between clock readings, so it glides; with motion off it steps and the written time carries it. Driven by how long the server says is left, never by a timer started on the press, so a reload or a second tab shows the same. | `devices.rs` `ProtocolActions`, `closing_times`; CSS `.add.join-open`, `.add.join-waiting`, `.join-wait`, `.join-ring`, `.join-words`. |
 | Log window | A line that arrives while the window is open fades in where it lands; the copy button's clipboard gives way to a check that draws itself, or shakes when the browser refused. | `log_window.rs`; CSS `.log-row.fresh`, `.log-copy`. |
+| Welcome | The first time IroriOS is opened: the page dims and a card rises in; the mark's frame pops in and its ember catches, once, then burns like the one on Settings. Each of its four steps slides away to the side it's leaving by while the next comes in (`step-in` / `step-out`), the card widening for the map; the dots along the bottom follow, the current one drawn out into a dash. The repeat-password field rolls down only once there is a password to repeat. Done is a ring that closes and a check that draws itself in it. | `welcome.rs`; CSS `.welcome`, `.welcome-mark`, `.welcome-dots`, `.welcome-check`. |
+| Signing in | The people of the home are chips to pick yourself from, the chosen one sunk with an ember edge and its initial lit. A wrong password clears the field and the field shakes its head, each time. | `welcome.rs` `SignIn`; CSS `.signin-person`, `.signin-password.wrong-a` / `.wrong-b`. |
+| The map | Drawn by the page (no map library): dragging moves it, the wheel zooms around the pointer, tiles fade in as they arrive. Sent to a place that was searched for, it travels there, pulling back on a long trip so the land between is seen going by, and settles (620 ms, the one duration longer than a page change: there is a continent to cross). With motion off it is simply there. | `map.rs` `between`, `Map`; CSS `.map`, `.map-tile`. |
+| The pin | Irori's mark on a stem. It leans in under the pointer, lifts while it's held with its shadow dropping away, and is put down with a bounce and one ember ring, like a marker on the Floorplan. | `map.rs`; CSS `.map-pin`, `.held`, `.landed-a` / `.landed-b`, `.map-pin-ring`. |
+| Location and users rows | What a search found rolls down under the search and away again; Save turns into a ring and then a check that draws itself; a person's password form rolls down under their row; Remove widens into "Remove?" first. | `place.rs`, `users.rs`; CSS `.place-found`, `.add-one`, `.person-key`. |
+| A time of day (Automations) | A 24-hour dial, noon up and midnight down, its night half shaded from the home's own sunset round to its sunrise. The hand is dragged (five-minute steps, the knob swelling while held) and the time in the middle follows; typed, the hand turns to it the short way round. Day chips light in ember and give a little under a press. "Next: tomorrow at 06:52" fades in when the engine answers. | `extensions/automations/app/src/clock_forms.rs` `dial`, `glide`; CSS `.dial`, `.day`, `.clock-next`. |
+| The sun (Automations) | The day as an arc over a horizon, with dawn, sunrise, noon, sunset, dusk and midnight as stops. Picking one sends the sun along its arc to it, never across the chord, and the sky behind warms as it climbs and darkens as it sinks; the offset slider nudges it along live while it's dragged. The disc's glow breathes. | `clock_forms.rs` `arc`, `travelling`; CSS `.sun-arc`, `.sun-disc`, `.sun-sky`. |
 | Ambient | Live dot breathes (still when the core stops answering); the Start ember flickers; Start tiles stagger in; a banner drops in. | CSS `.dot.ok`, `.start-ember`, `.tiles .tile`, `.banner`. |
 
 ## 4. Rules
@@ -179,6 +186,22 @@ The browser holds frames back until the update answers, so the update waits for 
 zero-length timeout — waiting for an animation frame there waits forever. Two elements may never
 share a transition name in the same picture, or the browser skips the transition: that is why a
 Start tile is `hero`, not `page`.
+
+### What a form shows moves, even though the form is built again
+
+The Automations inspector builds a node's form again after every edit, so nothing in it is "the
+same element" from one value to the next and a CSS transition has nothing to run on. A value
+that should travel (the dial's hand, the sun) is therefore moved by the page: what was shown
+last is remembered, and the new form starts there and glides to where it now is
+(`clock_forms.rs` `glide`, 340 ms, the same as `--dur-expressive`). Two rules come with that:
+
+- It asks whether motion is off (`data-motion`, and the system's own setting) and lands at once
+  if so. The stylesheet's off switch can't reach a script.
+- While something is dragged, the form keeps the value to itself and only writes it down when
+  it is let go. Writing on every move would build the form again under the pointer.
+
+The map's trip (`map.rs`) is moved by the page for the same kind of reason: its tiles are laid
+out from the view, not transitioned.
 
 ### Charts
 

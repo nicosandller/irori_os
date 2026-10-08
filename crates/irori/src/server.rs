@@ -1,7 +1,7 @@
-//! HTTP server: health, a temporary unauthenticated view of the core under `/api/dev/` (reads,
-//! plus the commands the Devices page sends), and the embedded UI. Nothing here checks who is
-//! asking, which is why `serve` binds loopback unless told otherwise; auth and the WebSocket API
-//! arrive with `irori-api` in M1.5.
+//! HTTP server: health, a temporary view of the core under `/api/dev/` (reads, plus the commands
+//! the Devices page sends), and the embedded UI. Who may ask for what is `server/auth.rs`: a
+//! home with no passwords is open to whoever can reach it, which is why `serve` binds loopback
+//! unless told otherwise. Tokens and the WebSocket API arrive with `irori-api` (ROADMAP C16).
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,8 +31,10 @@ use crate::syslog;
 mod apps;
 #[cfg(feature = "assist")]
 mod assistant;
+mod auth;
+mod people;
 
-/// Who commands are attributed to until there are accounts to attribute them to (M1.5).
+/// Who commands are attributed to in a home where nobody has been set up.
 static UNAUTHENTICATED: LazyLock<UserId> =
     LazyLock::new(|| UserId::try_from("unauthenticated").expect("a valid user id"));
 
@@ -67,6 +69,8 @@ struct Inner {
     /// every new process, which is the point: the window resets with the boot, so the cap is one
     /// restart per cooldown per boot rather than a permanent lockout.
     last_restart: Mutex<Option<Instant>>,
+    /// Who is signed in, and who has been getting their password wrong.
+    auth: auth::Auth,
     /// The questions the assistant is in the middle of answering, by conversation.
     #[cfg(feature = "assist")]
     turns: crate::assistant::Turns,
@@ -87,6 +91,7 @@ impl AppState {
         Self(Arc::new(Inner {
             started: Instant::now(),
             boot_id: boot_id(),
+            auth: auth::Auth::open(&db),
             db,
             build: BuildInfo::current(),
             core,
@@ -122,6 +127,21 @@ fn boot_id() -> String {
 pub fn router(state: AppState) -> Router {
     let router = Router::new()
         .route("/api/health", get(health))
+        // Who is there, and setting the home up the first time (`server/auth.rs`).
+        .route(
+            "/api/session",
+            get(auth::session)
+                .post(auth::sign_in)
+                .delete(auth::sign_out),
+        )
+        .route("/api/setup", post(auth::set_up))
+        .route("/api/setup/dismiss", post(auth::dismiss))
+        .route("/api/dev/users", get(people::users).post(people::add_user))
+        .route(
+            "/api/dev/users/{id}",
+            patch(people::edit_user).delete(people::remove_user),
+        )
+        .route("/api/dev/place", get(people::place).put(people::set_place))
         // Unstable, for the UI and for trying things out until the real API (M0.5, M1.5) exists.
         // Everything the Devices page shows, in one response; the rest are the same data split up.
         .route("/api/dev/home", get(home))
@@ -212,7 +232,14 @@ pub fn router(state: AppState) -> Router {
             "/api/dev/assistant/transcript/{scope}",
             get(assistant::transcript).delete(assistant::clear),
         );
-    router.fallback(get(ui::serve)).with_state(state)
+    router
+        .fallback(get(ui::serve))
+        // Over everything, the page included: one place decides who may ask for what.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::guard,
+        ))
+        .with_state(state)
 }
 
 /// Everything the Devices page shows, in one response: what exists, what it's doing, and how the
@@ -1702,16 +1729,20 @@ struct CommandRequest {
 /// Asks an entity to do something and answers with its state once the protocol confirms, so
 /// the page can show the result without waiting for its next refresh.
 ///
-/// There's no sign-in yet (ROADMAP D12, M1.5), so every command is attributed to one
-/// unauthenticated person; with accounts it becomes the user who clicked.
-async fn command(State(state): State<AppState>, Json(request): Json<CommandRequest>) -> Response {
+/// A command is attributed to whoever is signed in, or to the home's owner while Irori is open;
+/// before anybody has been set up, to one unauthenticated person.
+async fn command(
+    State(state): State<AppState>,
+    axum::Extension(who): axum::Extension<auth::Actor>,
+    Json(request): Json<CommandRequest>,
+) -> Response {
     let command = Command {
         action: request.command,
         data: request.data.unwrap_or_default(),
     };
     let core = &state.0.core;
     let who = core.new_context(Origin::User {
-        user_id: UNAUTHENTICATED.clone(),
+        user_id: who.user_id(),
     });
     // Subscribed before the call: the protocol reports the new state and answers the call in
     // the same breath, and the report must not slip past while the call is still in flight.
@@ -4612,5 +4643,689 @@ mod tests {
             assert!(text.contains("error"), "{text}");
             Ok(())
         }
+    }
+
+    // ---- who is there (`server/auth.rs`, `server/people.rs`) --------------------------------
+
+    /// One request, as a browser with (or without) a session cookie would send it. `ui` is
+    /// whether it carries the header only Irori's own page sends.
+    async fn ask(
+        app: &Router,
+        method: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+        cookie: Option<&str>,
+        ui: bool,
+    ) -> anyhow::Result<(StatusCode, serde_json::Value, Option<String>)> {
+        let mut request = Request::builder().method(method).uri(path);
+        if let Some(cookie) = cookie {
+            request = request.header("cookie", cookie);
+        }
+        if ui {
+            request = request.header(UI_HEADER, "1");
+        }
+        let request = match body {
+            Some(body) => request
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body)?))?,
+            None => request.body(Body::empty())?,
+        };
+        let response = app.clone().oneshot(request).await?;
+        let status = response.status();
+        // Only the name and the value: what a browser sends back.
+        let cookie = response
+            .headers()
+            .get("set-cookie")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .map(str::to_owned);
+        let bytes = response.into_body().collect().await?.to_bytes();
+        Ok((
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+            cookie,
+        ))
+    }
+
+    /// A home with an owner who has a password, and the owner's cookie.
+    async fn locked_home(server: &Server) -> anyhow::Result<(Router, String)> {
+        let app = server.app()?;
+        let (status, _, cookie) = ask(
+            &app,
+            "POST",
+            "/api/setup",
+            Some(serde_json::json!({ "name": "Nico", "password": "correct horse" })),
+            None,
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED);
+        Ok((app, cookie.expect("setting a password signs its owner in")))
+    }
+
+    #[tokio::test]
+    async fn a_home_nobody_has_set_up_is_open_and_says_so() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let app = server.app()?;
+        let (status, session, _) = ask(&app, "GET", "/api/session", None, None, false).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(session["locked"], false);
+        assert_eq!(session["owner"], true);
+        assert_eq!(session["user"], serde_json::Value::Null);
+        assert_eq!(
+            session["setup"],
+            serde_json::json!({ "owner": false, "place": false, "dismissed": false })
+        );
+        // And everything works as it always did, with no header and no cookie.
+        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, None, false).await?;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _, _) = ask(
+            &app,
+            "POST",
+            "/api/dev/areas",
+            Some(serde_json::json!({ "name": "Hall" })),
+            None,
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_owner_without_a_password_leaves_the_home_open() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let app = server.app()?;
+        let (status, session, cookie) = ask(
+            &app,
+            "POST",
+            "/api/setup",
+            Some(serde_json::json!({ "name": "Nico" })),
+            None,
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{session}");
+        assert_eq!(cookie, None, "there's nothing to sign in to");
+        assert_eq!(session["locked"], false);
+        assert_eq!(session["setup"]["owner"], true);
+        assert_eq!(session["user"]["id"], "nico");
+        assert_eq!(session["user"]["role"], "owner");
+
+        let users = std::fs::read_to_string(server.config_dir().join("users.toml"))?;
+        assert!(users.contains("[users.nico]"), "{users}");
+        assert!(users.contains("role = \"owner\""), "{users}");
+        // No password, so nothing secret was written.
+        assert!(!server.config_dir().join("secrets.toml").exists());
+
+        // Still open, and a second owner can't be set up from the door.
+        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, None, false).await?;
+        assert_eq!(status, StatusCode::OK);
+        let (status, why, _) = ask(
+            &app,
+            "POST",
+            "/api/setup",
+            Some(serde_json::json!({ "name": "Mallory" })),
+            None,
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            why["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("already has an owner"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_password_locks_the_home_and_only_its_hash_is_kept() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, cookie) = locked_home(&server).await?;
+
+        let secrets = std::fs::read_to_string(server.config_dir().join("secrets.toml"))?;
+        assert!(secrets.contains("[users.passwords]"), "{secrets}");
+        assert!(secrets.contains("$argon2id$"), "a hash is kept");
+        assert!(!secrets.contains("correct horse"), "the password is not");
+        assert!(
+            !std::fs::read_to_string(server.config_dir().join("users.toml"))?.contains("argon2")
+        );
+
+        // Nobody's request is refused, and says what to do.
+        let (status, why, _) = ask(&app, "GET", "/api/dev/home", None, None, false).await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(why["error"].as_str().is_some_and(|e| e.contains("sign in")));
+        // What it takes to get in stays open, and so does being told you're alive.
+        for open in ["/api/health", "/api/session", "/", "/settings"] {
+            let (status, _, _) = ask(&app, "GET", open, None, None, false).await?;
+            assert_ne!(status, StatusCode::UNAUTHORIZED, "{open}");
+        }
+        let (_, session, _) = ask(&app, "GET", "/api/session", None, None, false).await?;
+        assert_eq!(session["locked"], true);
+        assert_eq!(session["user"], serde_json::Value::Null);
+        assert_eq!(session["people"][0]["name"], "Nico");
+
+        // The owner's is let through.
+        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, Some(&cookie), false).await?;
+        assert_eq!(status, StatusCode::OK);
+        let (_, session, _) = ask(&app, "GET", "/api/session", None, Some(&cookie), false).await?;
+        assert_eq!(session["user"]["id"], "nico");
+        assert_eq!(session["owner"], true);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn signing_in_takes_the_right_password_and_signing_out_ends_it() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, _) = locked_home(&server).await?;
+        let sign_in = |password: &'static str| {
+            let app = app.clone();
+            async move {
+                ask(
+                    &app,
+                    "POST",
+                    "/api/session",
+                    Some(serde_json::json!({ "user": "nico", "password": password })),
+                    None,
+                    true,
+                )
+                .await
+            }
+        };
+        let (status, why, cookie) = sign_in("battery staple").await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(cookie, None);
+        assert!(
+            why["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("don't go together"))
+        );
+        // Somebody who isn't there gets the same answer: it doesn't say which was wrong.
+        let (status, same, _) = ask(
+            &app,
+            "POST",
+            "/api/session",
+            Some(serde_json::json!({ "user": "nobody", "password": "correct horse" })),
+            None,
+            true,
+        )
+        .await?;
+        assert_eq!((status, &same), (StatusCode::UNAUTHORIZED, &why));
+
+        let (status, session, cookie) = sign_in("correct horse").await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(session["user"]["id"], "nico");
+        let cookie = cookie.expect("a session");
+        assert!(cookie.starts_with("irori_session="));
+
+        // The session is kept in the database: a restarted server still knows it.
+        let again = server.app()?;
+        let (status, _, _) =
+            ask(&again, "GET", "/api/dev/home", None, Some(&cookie), false).await?;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _, _) = ask(&app, "DELETE", "/api/session", None, Some(&cookie), true).await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, Some(&cookie), false).await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn too_many_wrong_passwords_have_to_wait() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, _) = locked_home(&server).await?;
+        let wrong = serde_json::json!({ "user": "nico", "password": "battery staple" });
+        for _ in 0..5 {
+            let (status, _, _) = ask(
+                &app,
+                "POST",
+                "/api/session",
+                Some(wrong.clone()),
+                None,
+                true,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        // The sixth isn't looked at, right or wrong.
+        let right = serde_json::json!({ "user": "nico", "password": "correct horse" });
+        let (status, why, _) = ask(&app, "POST", "/api/session", Some(right), None, true).await?;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            why["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("try again in"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_change_in_a_locked_home_needs_the_pages_own_header() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, cookie) = locked_home(&server).await?;
+        let area = serde_json::json!({ "name": "Hall" });
+        // The cookie alone is what another site's form would send.
+        let (status, why, _) = ask(
+            &app,
+            "POST",
+            "/api/dev/areas",
+            Some(area.clone()),
+            Some(&cookie),
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(
+            why["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("x-irori-ui"))
+        );
+        let (status, _, _) = ask(
+            &app,
+            "POST",
+            "/api/dev/areas",
+            Some(area),
+            Some(&cookie),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_user_uses_the_home_and_an_owner_runs_it() -> anyhow::Result<()> {
+        let (core, _host) = demo().await?;
+        let server = Server::new(core)?;
+        let (app, owner) = locked_home(&server).await?;
+        let (status, users, _) = ask(
+            &app,
+            "POST",
+            "/api/dev/users",
+            Some(serde_json::json!({ "name": "Guest", "role": "user", "password": "let me in!" })),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{users}");
+        assert_eq!(users[0]["id"], "guest");
+        assert_eq!(users[0]["has_password"], true);
+        assert!(users.to_string().find("argon2").is_none(), "never the hash");
+
+        let (status, session, guest) = ask(
+            &app,
+            "POST",
+            "/api/session",
+            Some(serde_json::json!({ "user": "guest", "password": "let me in!" })),
+            None,
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(session["owner"], false);
+        let guest = guest.expect("a session");
+
+        // Sees everything, and switches a light.
+        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, Some(&guest), false).await?;
+        assert_eq!(status, StatusCode::OK);
+        let (status, state, _) = ask(
+            &app,
+            "POST",
+            "/api/dev/command",
+            Some(serde_json::json!({ "entity_id": "switch.demo_plug", "command": "turn_on" })),
+            Some(&guest),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{state}");
+
+        // Changes nothing about how the home is set up.
+        let refused = [
+            (
+                "POST",
+                "/api/dev/areas",
+                serde_json::json!({ "name": "Hall" }),
+            ),
+            (
+                "PUT",
+                "/api/dev/place",
+                serde_json::json!({ "time_zone": "Europe/Brussels" }),
+            ),
+            (
+                "POST",
+                "/api/dev/users",
+                serde_json::json!({ "name": "Friend", "password": "open sesame" }),
+            ),
+            ("DELETE", "/api/dev/users/nico", serde_json::Value::Null),
+            ("POST", "/api/dev/restart", serde_json::Value::Null),
+            (
+                "POST",
+                "/api/dev/extensions/demo/install",
+                serde_json::json!({}),
+            ),
+            (
+                "POST",
+                "/api/dev/apps/automations/rpc",
+                serde_json::json!({}),
+            ),
+            (
+                "PATCH",
+                "/api/dev/users/nico",
+                serde_json::json!({ "password": "mine now!" }),
+            ),
+            (
+                "PATCH",
+                "/api/dev/users/guest",
+                serde_json::json!({ "role": "owner" }),
+            ),
+        ];
+        for (method, path, body) in refused {
+            let (status, why, _) = ask(&app, method, path, Some(body), Some(&guest), true).await?;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}: {why}");
+            assert!(
+                why["error"].as_str().is_some_and(|e| e.contains("owner")),
+                "{why}"
+            );
+        }
+        // Their own password is theirs to change.
+        let (status, _, _) = ask(
+            &app,
+            "PATCH",
+            "/api/dev/users/guest",
+            Some(serde_json::json!({ "password": "a better one" })),
+            Some(&guest),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn people_are_added_only_once_the_home_asks_who_is_there() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let app = server.app()?;
+        ask(
+            &app,
+            "POST",
+            "/api/setup",
+            Some(serde_json::json!({ "name": "Nico" })),
+            None,
+            false,
+        )
+        .await?;
+        // An open home has one person: with two, nothing would tell them apart.
+        let guest = serde_json::json!({ "name": "Guest", "password": "let me in!" });
+        let (status, why, _) = ask(
+            &app,
+            "POST",
+            "/api/dev/users",
+            Some(guest.clone()),
+            None,
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            why["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("password for the owner"))
+        );
+
+        // The owner sets one; from here the home asks, and this browser is signed in as them.
+        let (status, _, owner) = ask(
+            &app,
+            "PATCH",
+            "/api/dev/users/nico",
+            Some(serde_json::json!({ "password": "correct horse" })),
+            None,
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        let owner = owner.expect("setting the first password signs its owner in");
+        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, None, false).await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "the home asks now");
+
+        // Everyone after the first needs a password of their own, and a long enough one.
+        for (body, said) in [
+            (serde_json::json!({ "name": "Guest" }), "needs a password"),
+            (
+                serde_json::json!({ "name": "Guest", "password": "short" }),
+                "at least 8",
+            ),
+            (
+                serde_json::json!({ "name": "nico", "password": "let me in!" }),
+                "already somebody",
+            ),
+        ] {
+            let (status, why, _) = ask(
+                &app,
+                "POST",
+                "/api/dev/users",
+                Some(body),
+                Some(&owner),
+                true,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{why}");
+            assert!(
+                why["error"].as_str().is_some_and(|e| e.contains(said)),
+                "{why}"
+            );
+        }
+        let (status, _, _) = ask(
+            &app,
+            "POST",
+            "/api/dev/users",
+            Some(guest),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_home_always_has_somebody_to_run_it() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, owner) = locked_home(&server).await?;
+        ask(
+            &app,
+            "POST",
+            "/api/dev/users",
+            Some(serde_json::json!({ "name": "Guest", "password": "let me in!" })),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        // The only owner can't step down, or go.
+        for (method, body) in [
+            ("PATCH", serde_json::json!({ "role": "user" })),
+            ("DELETE", serde_json::Value::Null),
+        ] {
+            let (status, why, _) = ask(
+                &app,
+                method,
+                "/api/dev/users/nico",
+                Some(body),
+                Some(&owner),
+                true,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{method}");
+            assert!(
+                why["error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains("needs an owner")),
+                "{why}"
+            );
+        }
+        // A password can't be taken away while there are two people to tell apart.
+        let (status, why, _) = ask(
+            &app,
+            "PATCH",
+            "/api/dev/users/nico",
+            Some(serde_json::json!({ "password": "" })),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            why["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("one person")),
+            "{why}"
+        );
+
+        // Removing somebody signs them out and takes their hash with them.
+        let (_, _, guest) = ask(
+            &app,
+            "POST",
+            "/api/session",
+            Some(serde_json::json!({ "user": "guest", "password": "let me in!" })),
+            None,
+            true,
+        )
+        .await?;
+        let guest = guest.expect("a session");
+        let (status, users, _) = ask(
+            &app,
+            "DELETE",
+            "/api/dev/users/guest",
+            None,
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(users.as_array().map(Vec::len), Some(1));
+        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, Some(&guest), false).await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let secrets = std::fs::read_to_string(server.config_dir().join("secrets.toml"))?;
+        assert!(!secrets.contains("guest"), "{secrets}");
+
+        // Alone again, the owner may open the home back up.
+        let (status, _, _) = ask(
+            &app,
+            "PATCH",
+            "/api/dev/users/nico",
+            Some(serde_json::json!({ "password": "" })),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, None, false).await?;
+        assert_eq!(status, StatusCode::OK);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_welcome_is_put_off_for_every_browser() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let app = server.app()?;
+        let (status, _, _) = ask(&app, "POST", "/api/setup/dismiss", None, None, false).await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        // Another browser, after a restart.
+        let (_, session, _) = ask(&server.app()?, "GET", "/api/session", None, None, false).await?;
+        assert_eq!(session["setup"]["dismissed"], true);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn where_the_home_is_lands_in_home_toml_and_reaches_the_core() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let app = server.app()?;
+        let (status, home, _) = ask(&app, "GET", "/api/dev/place", None, None, false).await?;
+        assert_eq!((status, home), (StatusCode::OK, serde_json::json!({})));
+
+        let place = serde_json::json!({
+            "time_zone": "Europe/Brussels",
+            "location": { "latitude": 50.846_712_3, "longitude": 4.3525, "label": "Brussels, Belgium" },
+        });
+        let (status, kept, _) =
+            ask(&app, "PUT", "/api/dev/place", Some(place), None, false).await?;
+        assert_eq!(status, StatusCode::OK, "{kept}");
+        // To about a metre, which is what's written down.
+        assert_eq!(kept["location"]["latitude"], 50.84671);
+
+        let file = std::fs::read_to_string(server.config_dir().join("home.toml"))?;
+        assert!(file.contains("time_zone = \"Europe/Brussels\""), "{file}");
+        assert!(file.contains("latitude = 50.84671"), "{file}");
+        assert!(file.contains("label = \"Brussels, Belgium\""), "{file}");
+        // The core has it, which is how the engines that fire by the clock are told.
+        let known = server.core.place();
+        assert_eq!(
+            known.time_zone.map(|zone| zone.to_string()).as_deref(),
+            Some("Europe/Brussels")
+        );
+        let (_, session, _) = ask(&app, "GET", "/api/session", None, None, false).await?;
+        assert_eq!(session["setup"]["place"], true);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_place_that_cant_be_is_refused_and_says_why() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let app = server.app()?;
+        for (place, said) in [
+            (
+                serde_json::json!({ "time_zone": "Europe/Atlantis" }),
+                "isn't a time zone Irori knows",
+            ),
+            (
+                serde_json::json!({ "time_zone": "Europe Brussels" }),
+                "isn't a time zone name",
+            ),
+            (
+                serde_json::json!({ "location": { "latitude": 123.0, "longitude": 4.0 } }),
+                "from -90 to 90",
+            ),
+        ] {
+            let (status, why, _) = ask(
+                &app,
+                "PUT",
+                "/api/dev/place",
+                Some(place.clone()),
+                None,
+                false,
+            )
+            .await?;
+            assert!(status.is_client_error(), "{place}: {status}");
+            let text = why["error"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| why.to_string());
+            // A body that doesn't parse is refused by the framework, in its own words.
+            assert!(
+                text.contains(said) || status == StatusCode::UNPROCESSABLE_ENTITY,
+                "{text}"
+            );
+        }
+        assert!(
+            !server.config_dir().join("home.toml").exists(),
+            "nothing was written"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn people_written_into_the_file_by_hand_are_the_home_s_people() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        std::fs::write(
+            server.config_dir().join("users.toml"),
+            "[users.ana]\nname = \"Ana\"\nrole = \"owner\"\n",
+        )?;
+        // Picked up the way every file is: the next time the directory is read.
+        server.config.home().await;
+        let (_, users, _) = ask(&server.app()?, "GET", "/api/dev/users", None, None, false).await?;
+        assert_eq!(users[0]["name"], "Ana");
+        assert_eq!(users[0]["has_password"], false);
+        Ok(())
     }
 }

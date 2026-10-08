@@ -2468,6 +2468,200 @@
     .assistant-detail { margin: 0; font-size: .85rem; color: var(--warn); }
     .assistant-detail.ok { color: var(--muted); }
     .assistant-off { margin: 1rem 0 0; padding-top: .8rem; border-top: 1px solid var(--line); }
+
+    /* ---- Who is there, and where the home is (welcome.rs, users.rs, place.rs, map.rs) ---- */
+
+    /* The home is asking who is there: the shell is kept, out of sight, behind the question. */
+    .shell.locked { display: none; }
+    button.link { padding: 0; font: inherit; color: var(--ember); background: none; border: 0;
+                  cursor: pointer; text-decoration: underline; text-underline-offset: .15em; }
+    .welcome-again { margin: -.75rem 0 1.5rem; }
+
+    /* The welcome and the sign-in page: one card in the middle of the page, over everything.
+       The page dims behind it and the card rises in, as a window does. */
+    .welcome { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center;
+               justify-content: center; padding: 1.5rem 1rem; overflow: auto;
+               background: color-mix(in srgb, var(--bg) 88%, transparent);
+               backdrop-filter: blur(6px);
+               animation: welcome-dim var(--dur-layout) var(--ease-out) backwards; }
+    .welcome.signin { background: var(--bg); backdrop-filter: none; }
+    @keyframes welcome-dim { from { opacity: 0; } }
+    .welcome-card { width: 100%; max-width: 30rem; margin: auto; padding: 2rem 2rem 1.25rem;
+                    background: var(--card); border: 1px solid var(--line); border-radius: .75rem;
+                    box-shadow: 0 1.5rem 3rem rgba(28, 23, 20, .18);
+                    transition: max-width var(--dur-layout) var(--ease-emphasized);
+                    animation: rise-in var(--dur-expressive) var(--ease-emphasized) backwards; }
+    /* The map's step wants the room. */
+    .welcome-card:has(.welcome-wide) { max-width: 44rem; }
+    .welcome-step { display: flex; flex-direction: column; gap: .8rem; }
+    .welcome-step h1 { margin: 0; font-size: 1.5rem; letter-spacing: -.01em; }
+    .welcome-lede { margin: 0 0 .25rem; color: var(--muted); }
+    .welcome-hello { align-items: center; text-align: center; }
+    .welcome-hello .welcome-lede { max-width: 24rem; }
+    /* The mark, as the page opens: the frame draws in and the ember catches. Once. */
+    .welcome-mark { width: 5rem; height: 5rem; margin-bottom: .5rem;
+                    animation: mark-in var(--dur-expressive) var(--ease-bounce) backwards; }
+    .welcome-mark .start-ember { width: 2rem; height: 2rem;
+        animation: ember-catch 900ms var(--ease-out) backwards,
+                   embers 3.2s ease-in-out 900ms infinite; }
+    @keyframes mark-in { from { opacity: 0; scale: .7; } }
+    @keyframes ember-catch {
+        0% { opacity: 0; scale: .2; box-shadow: 0 0 0 rgba(196, 85, 43, 0); }
+        55% { opacity: 1; scale: 1.25; box-shadow: 0 0 2.4rem rgba(196, 85, 43, .8); }
+        100% { scale: 1; box-shadow: 0 0 1.2rem rgba(196, 85, 43, .45); }
+    }
+    .welcome-actions { display: flex; align-items: center; justify-content: flex-end; gap: .6rem;
+                       width: 100%; margin-top: .75rem; }
+    .welcome-hello .welcome-actions { justify-content: center; }
+    .welcome-next { padding: .5rem 1.1rem; font: inherit; font-weight: 500; color: #fff;
+                    background: var(--ember); border: 1px solid var(--ember);
+                    border-radius: .45rem; cursor: pointer; }
+    .welcome-next:hover:not(:disabled) { background: #ab4717; border-color: #ab4717; }
+    .welcome-next:disabled { opacity: .5; cursor: default; }
+    .welcome-next:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+    .welcome .settings-field { text-align: left; }
+    .welcome .settings-field input { width: 100%; }
+    .welcome .why { text-align: left; }
+    /* Where in the four steps this is: a row of dots, the current one drawn out into a dash. */
+    .welcome-dots { display: flex; justify-content: center; gap: .4rem; margin: 1.5rem 0 0;
+                    padding: 0; list-style: none; }
+    .welcome-dots li { width: .4rem; height: .4rem; border-radius: 1rem; background: var(--line);
+                       transition: width var(--dur-layout) var(--ease-spring),
+                                   background-color var(--dur-base) var(--ease-out); }
+    .welcome-dots li.past { background: color-mix(in srgb, var(--ember) 45%, var(--line)); }
+    .welcome-dots li.here { width: 1.4rem; background: var(--ember); }
+    /* Done: a ring closes and a check draws itself inside it. */
+    .welcome-check { width: 4.5rem; height: 4.5rem; margin-bottom: .25rem; fill: none;
+                     stroke: var(--ember); stroke-width: 2.5; stroke-linecap: round;
+                     stroke-linejoin: round; }
+    .welcome-check circle { stroke-dasharray: 1; rotate: -90deg; transform-origin: center;
+                            animation: draw 520ms var(--ease-emphasized) backwards; }
+    .welcome-check path { stroke-dasharray: 1; stroke-width: 3.5;
+                          animation: draw var(--dur-expressive) var(--ease-spring) 380ms backwards; }
+    @keyframes draw { from { stroke-dashoffset: 1; } }
+    .welcome-said { margin: 0; padding: 0; list-style: none; display: grid; gap: .35rem;
+                    max-width: 26rem; }
+
+    /* Sign-in: the people of the home, to pick yourself from. */
+    .signin-people { display: flex; flex-wrap: wrap; justify-content: center; gap: .5rem; }
+    .signin-person { display: inline-flex; align-items: center; gap: .5rem; padding: .35rem .8rem .35rem .35rem;
+                     font: inherit; color: var(--muted); background: var(--card);
+                     border: 1px solid var(--line); border-radius: 2rem; cursor: pointer;
+                     transition: color var(--dur-fast), border-color var(--dur-fast),
+                                 background-color var(--dur-base) var(--ease-out); }
+    .signin-person:hover { color: var(--fg); border-color: var(--ember); }
+    .signin-person[aria-pressed="true"] { color: var(--fg); background: var(--sunk);
+                                          border-color: var(--ember); }
+    .signin-person[aria-pressed="true"] .person-initial { color: #fff; background: var(--ember); }
+    .signin-password { width: 100%; max-width: 18rem; }
+    /* A wrong password: the field shakes its head, each time. */
+    .signin-password.wrong-a input { animation: shake-a var(--dur-expressive) var(--ease-out); }
+    .signin-password.wrong-b input { animation: shake-b var(--dur-expressive) var(--ease-out); }
+    @keyframes shake-a { 20% { translate: -6px 0; } 45% { translate: 5px 0; }
+                         70% { translate: -3px 0; } 90% { translate: 1px 0; } }
+    @keyframes shake-b { 20% { translate: -6px 0; } 45% { translate: 5px 0; }
+                         70% { translate: -3px 0; } 90% { translate: 1px 0; } }
+
+    /* The Users row. */
+    .people { margin: .25rem 1rem .75rem 2.85rem; padding: 0; list-style: none; display: grid;
+              gap: .15rem; }
+    .person { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem;
+              padding: .5rem 0; border-top: 1px solid var(--line); }
+    .person:first-child { border-top: 0; }
+    .person-initial { display: grid; place-items: center; flex: none; width: 2rem; height: 2rem;
+                      border-radius: 50%; font-weight: 600; font-size: .9rem; color: var(--ember);
+                      background: color-mix(in srgb, var(--ember) 14%, var(--card));
+                      transition: color var(--dur-base), background-color var(--dur-base) var(--ease-out); }
+    .person-words { display: grid; flex: 1 1 8rem; min-width: 0; }
+    .person-name { font-weight: 500; overflow-wrap: anywhere; }
+    .person-role { color: var(--muted); font-size: .8rem; }
+    .person-key { flex-basis: 100%; }
+    .person-form { display: grid; gap: .6rem; max-width: 24rem; }
+    .drawer.open > .person-form { padding: .25rem 0 .5rem; }
+    .people-out { display: flex; justify-content: flex-end; }
+
+    /* Location and time zone. */
+    .place { display: grid; gap: .6rem; }
+    .place-search { display: flex; gap: .5rem; }
+    .place-search input { flex: 1; min-width: 0; padding: .45rem .7rem; font: inherit;
+                          color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+                          border-radius: .4rem; }
+    .place-search input:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
+    .place-search .press { padding: .45rem .9rem; font-size: .85rem; }
+    .place-found { margin: 0; padding: 0; list-style: none; border: 1px solid var(--line);
+                   border-radius: .4rem; overflow: hidden; }
+    .place-found li + li { border-top: 1px solid var(--line); }
+    .place-found button { display: block; width: 100%; padding: .5rem .7rem; font: inherit;
+                          font-size: .85rem; text-align: left; color: var(--fg);
+                          background: var(--card); border: 0; cursor: pointer; }
+    .place-found button:hover { color: var(--ember); background: var(--sunk); }
+    .place-hint { margin: 0; }
+    .place-fields { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: .75rem; align-items: start; }
+    .place-fields input { width: 100%; }
+    .place-fields > label input { font-family: var(--mono); font-size: .85rem; }
+    .place-zone-read { padding: .4rem 0; font-family: var(--mono); font-size: .85rem; }
+    .place-zone .combo-list { left: 0; right: 0; max-height: 15rem; overflow: auto; }
+    .place-actions { display: flex; align-items: center; justify-content: flex-end; gap: .75rem;
+                     min-height: 2rem; }
+    @media (max-width: 40rem) { .place-fields { grid-template-columns: 1fr 1fr; }
+                                .place-zone { grid-column: 1 / -1; } }
+
+    /* The map. OpenStreetMap's tiles, tinted to the paper so they sit in the page rather than
+       on it; in the dark they are turned over and warmed towards the ink. */
+    .map { position: relative; height: 20rem; overflow: hidden; border: 1px solid var(--line);
+           border-radius: .5rem; background: var(--sunk); cursor: grab; touch-action: none;
+           user-select: none; }
+    .map.holding { cursor: grabbing; }
+    .map-tiles { position: absolute; inset: 0;
+                 filter: grayscale(.85) sepia(.28) contrast(.92) brightness(1.03); }
+    @media (prefers-color-scheme: dark) {
+      .map-tiles { filter: invert(1) hue-rotate(180deg) grayscale(.7) sepia(.3) contrast(.95)
+                           brightness(1.25); }
+    }
+    .map-tile { position: absolute; max-width: none; pointer-events: none;
+                animation: tile-in var(--dur-layout) var(--ease-out) backwards; }
+    @keyframes tile-in { from { opacity: 0; } }
+    .map-quiet { position: absolute; inset: 0; display: grid; place-items: center; margin: 0;
+                 padding: 1.5rem; text-align: center; color: var(--muted); font-size: .875rem; }
+    .map-credit { position: absolute; right: .35rem; bottom: .3rem; padding: .05rem .35rem;
+                  font-size: .65rem; color: var(--muted); text-decoration: none;
+                  background: color-mix(in srgb, var(--card) 80%, transparent); border-radius: .25rem; }
+    .map-credit:hover { color: var(--ember); }
+    .map-zoom { position: absolute; top: .5rem; right: .5rem; display: grid;
+                border: 1px solid var(--line); border-radius: .45rem; overflow: hidden;
+                background: var(--card); box-shadow: 0 .2rem .6rem rgba(28, 23, 20, .12); }
+    .map-zoom button { width: 2rem; height: 2rem; padding: 0; font: 500 1.05rem/1 var(--sans);
+                       color: var(--fg); background: none; border: 0; cursor: pointer; }
+    .map-zoom button + button { border-top: 1px solid var(--line); }
+    .map-zoom button:hover { color: var(--ember); background: var(--sunk); }
+    /* The pin: Irori's mark on a stem, standing on the spot. It leans in under the pointer,
+       lifts while it's held, and is put down with a bounce and one ring, like a marker on the
+       Floorplan. Placed by its foot, so `translate` is its own to move with. */
+    .map-pin { position: absolute; width: 2.25rem; height: 2.8rem; margin: -2.8rem 0 0 -1.125rem;
+               transform-origin: 50% 100%; cursor: grab; touch-action: none;
+               filter: drop-shadow(0 .25rem .3rem rgba(28, 23, 20, .3));
+               transition: translate var(--dur-base) var(--ease-spring),
+                           scale var(--dur-base) var(--ease-spring),
+                           filter var(--dur-base) var(--ease-out); }
+    .map:not(.editable) .map-pin { cursor: default; }
+    .map.editable .map-pin:hover { scale: 1.08; }
+    .map-pin.held { translate: 0 -.6rem; scale: 1.12; cursor: grabbing;
+                    filter: drop-shadow(0 .9rem .6rem rgba(28, 23, 20, .28)); }
+    .map-pin svg { display: block; width: 100%; height: 100%; overflow: visible; }
+    .map-pin-frame { fill: var(--card); stroke: var(--fg); stroke-width: 4; }
+    .map-pin-stem { fill: var(--fg); }
+    .map-pin-ember { fill: var(--ember); }
+    .map-pin.landed-a:not(.held) { animation: pin-land-a var(--dur-expressive) var(--ease-bounce); }
+    .map-pin.landed-b:not(.held) { animation: pin-land-b var(--dur-expressive) var(--ease-bounce); }
+    @keyframes pin-land-a { from { translate: 0 -.9rem; scale: 1.12; } }
+    @keyframes pin-land-b { from { translate: 0 -.9rem; scale: 1.12; } }
+    .map-pin-ring { position: absolute; left: 50%; bottom: -.3rem; width: .6rem; height: .6rem;
+                    margin-left: -.3rem; border: 2px solid var(--ember); border-radius: 50%;
+                    opacity: 0; pointer-events: none; }
+    .map-pin.landed-a:not(.held) .map-pin-ring { animation: pin-ring-a 620ms var(--ease-out) 120ms; }
+    .map-pin.landed-b:not(.held) .map-pin-ring { animation: pin-ring-b 620ms var(--ease-out) 120ms; }
+    @keyframes pin-ring-a { from { opacity: .9; scale: .4; } to { opacity: 0; scale: 5; } }
+    @keyframes pin-ring-b { from { opacity: .9; scale: .4; } to { opacity: 0; scale: 5; } }
   </style>
 </head>
 <body></body>

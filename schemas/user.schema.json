@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "User",
+  "description": "One person.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/$defs/UserId"
+    },
+    "name": {
+      "$ref": "#/$defs/Name"
+    },
+    "role": {
+      "$ref": "#/$defs/Role"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "name",
+    "role"
+  ],
+  "$defs": {
+    "Name": {
+      "description": "A human-readable name. 1-100 characters, no leading or trailing whitespace.",
+      "type": "string",
+      "maxLength": 100,
+      "minLength": 1,
+      "pattern": "^[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F]([^\\u0000-\\u001F\\u007F-\\u009F]*[^\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u0000-\\u001F\\u007F-\\u009F])?$"
+    },
+    "Role": {
+      "description": "What a person may do.",
+      "oneOf": [
+        {
+          "description": "Runs the home: everything, including who else is let in.",
+          "type": "string",
+          "const": "owner"
+        },
+        {
+          "description": "Uses the home: sees everything and controls devices.",
+          "type": "string",
+          "const": "user"
+        }
+      ]
+    },
+    "UserId": {
+      "description": "Format of a slug (user id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    }
+  }
+}

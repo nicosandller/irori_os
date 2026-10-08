@@ -5,7 +5,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 
 use crate::{
     Area, AttributeKey, Device, DeviceDescription, Entity, EntityDescription, EntityKind,
-    EntityState, ExtensionManifest, Floor, Floorplan, ServiceCall, StateReport,
+    EntityState, ExtensionManifest, Floor, Floorplan, HomeSettings, ServiceCall, StateReport, User,
 };
 
 /// One generated schema document.
@@ -35,6 +35,8 @@ pub fn schemas() -> Vec<SchemaDoc> {
         doc::<Floor>("floor"),
         doc::<Area>("area"),
         doc::<Floorplan>("floorplan"),
+        doc::<HomeSettings>("home"),
+        doc::<User>("user"),
         doc::<Device>("device"),
         doc::<Entity>("entity"),
         doc::<EntityState>("entity-state"),

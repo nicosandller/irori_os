@@ -463,6 +463,7 @@ fn a_dry_run_sends_nothing_and_says_what_it_assumed() {
         &"motion".parse().expect("valid"),
         states,
         &overrides,
+        None,
         at(0),
     )
     .expect("runs");
@@ -501,7 +502,7 @@ fn a_backtest_replays_history_into_the_runs_it_would_have_made() {
         (id(LUX), vec![lux(8.0, 0), lux(300.0, 4000)]),
         (id(OCCUPANCY), vec![flag(OCCUPANCY, false, 0)]),
     ]);
-    let (runs, changes) = sim::backtest(&hallway(), &history, &[], at(10_000));
+    let (runs, changes) = sim::backtest(&hallway(), &history, &[], None, at(10_000));
     assert_eq!(changes, 5);
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[0].started_at, at(100));
@@ -1468,4 +1469,202 @@ fn a_worked_out_setting_is_not_refused_for_where_a_stand_in_falls() {
             .any(|problem| problem.message.contains("color temperature")),
         "{problems:#?}"
     );
+}
+
+// ---- the clock (flows.md §3: `time`, `sun`) -------------------------------------------------
+
+fn moment(text: &str) -> Timestamp {
+    Timestamp::from_jiff(text.parse().expect("a time"))
+}
+
+fn brussels() -> irori_rules::clock::Place {
+    irori_rules::clock::Place::new("Europe/Brussels", Some((50.8467, 4.3525))).expect("a place")
+}
+
+fn at_seven() -> Flow {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/types/flow/valid/hall_light_at_seven.json"
+    ))
+    .expect("a flow")
+}
+
+fn before_sunset() -> Flow {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/types/flow/valid/hall_light_before_sunset.json"
+    ))
+    .expect("a flow")
+}
+
+fn armed(flow: Flow) -> Vec<Arm> {
+    vec![Arm {
+        flow,
+        problems: Vec::new(),
+    }]
+}
+
+fn finished(engine: &mut Engine) -> Vec<irori_flow_types::trace::RunRecord> {
+    engine
+        .take_effects()
+        .into_iter()
+        .filter_map(|effect| match effect {
+            Effect::Finished(record) => Some(*record),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_time_of_day_fires_at_its_minute_and_again_the_next_day_it_is_for() {
+    let mut engine = Engine::dry(Box::new(CountingIds::default()));
+    engine.load_states([flag(LIGHT, false, 0)]);
+    // Friday 3 July 2026, 06:00 in Brussels.
+    let start = moment("2026-07-03T04:00:00Z");
+    engine.set_place(Some(brussels()), start);
+    engine.set_flows(armed(at_seven()), start);
+
+    let seven = moment("2026-07-03T05:00:00Z");
+    assert_eq!(engine.next_deadline(), Some(seven));
+    // A minute early, nothing.
+    engine.advance(moment("2026-07-03T04:59:00Z"));
+    assert!(finished(&mut engine).is_empty());
+
+    engine.advance(seven);
+    let runs = finished(&mut engine);
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(runs[0].started_at, seven);
+    assert_eq!(runs[0].trigger.as_str(), "seven");
+    let note = runs[0].steps[0].note.clone().unwrap_or_default();
+    assert_eq!(note, "it's 07:00 on Friday");
+
+    // Weekdays only: the weekend is skipped, and Monday is next.
+    let flow = at_seven().id;
+    let next = engine.next_clock(&flow);
+    assert_eq!(
+        next.values().copied().collect::<Vec<_>>(),
+        [moment("2026-07-06T05:00:00Z")]
+    );
+}
+
+#[test]
+fn without_a_place_nothing_is_on_the_clock_and_saying_one_winds_it() {
+    let mut engine = Engine::dry(Box::new(CountingIds::default()));
+    let start = moment("2026-07-03T04:00:00Z");
+    engine.set_flows(armed(at_seven()), start);
+    assert_eq!(engine.next_deadline(), None);
+
+    engine.set_place(Some(brussels()), start);
+    assert_eq!(engine.next_deadline(), Some(moment("2026-07-03T05:00:00Z")));
+
+    // The home moves: seven o'clock is seven o'clock there.
+    let tokyo = irori_rules::clock::Place::new("Asia/Tokyo", None).expect("a place");
+    engine.set_place(Some(tokyo), start);
+    assert_eq!(engine.next_deadline(), Some(moment("2026-07-05T22:00:00Z")));
+
+    engine.set_place(None, start);
+    assert_eq!(engine.next_deadline(), None);
+}
+
+#[test]
+fn a_flow_turned_off_comes_off_the_clock() {
+    let mut engine = Engine::dry(Box::new(CountingIds::default()));
+    let start = moment("2026-07-03T04:00:00Z");
+    engine.set_place(Some(brussels()), start);
+    let mut flow = at_seven();
+    flow.enabled = false;
+    engine.set_flows(armed(flow), start);
+    assert_eq!(engine.next_deadline(), None);
+}
+
+#[test]
+fn half_an_hour_before_sunset_fires_then_and_says_so() {
+    let mut engine = Engine::dry(Box::new(CountingIds::default()));
+    engine.load_states([flag(LIGHT, false, 0)]);
+    let start = moment("2026-06-21T10:00:00Z");
+    engine.set_place(Some(brussels()), start);
+    engine.set_flows(armed(before_sunset()), start);
+
+    // Sunset in Brussels on 21 June is 22:00 at home, so this is 21:30 — 19:30Z.
+    let due = engine.next_deadline().expect("on the clock");
+    let off =
+        (due.as_jiff().as_second() - moment("2026-06-21T19:30:00Z").as_jiff().as_second()).abs();
+    assert!(off < 120, "{due:?}");
+
+    engine.advance(due);
+    let runs = finished(&mut engine);
+    assert_eq!(runs.len(), 1);
+    let note = runs[0].steps[0].note.clone().unwrap_or_default();
+    assert!(note.starts_with("30m before sunset (21:"), "{note}");
+    // And tomorrow's is already waiting.
+    assert!(engine.next_deadline().is_some_and(|next| next > due));
+}
+
+#[test]
+fn the_sun_without_a_location_is_not_on_the_clock() {
+    let mut engine = Engine::dry(Box::new(CountingIds::default()));
+    let start = moment("2026-06-21T10:00:00Z");
+    let zone_only = irori_rules::clock::Place::new("Europe/Brussels", None).expect("a place");
+    engine.set_place(Some(zone_only), start);
+    engine.set_flows(armed(before_sunset()), start);
+    assert_eq!(engine.next_deadline(), None);
+}
+
+#[test]
+fn the_checks_say_where_to_set_what_is_missing() {
+    let mut home = registry();
+    let problems = validate::check(&at_seven(), &home);
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.message.contains("Settings → Location and time zone")),
+        "{problems:?}"
+    );
+    home.timezone = true;
+    assert!(
+        validate::check(&at_seven(), &home)
+            .iter()
+            .all(|p| !p.is_error())
+    );
+    // The sun wants the location too.
+    assert!(
+        validate::check(&before_sunset(), &home)
+            .iter()
+            .any(|p| p.is_error())
+    );
+    home.location = true;
+    assert!(
+        validate::check(&before_sunset(), &home)
+            .iter()
+            .all(|p| !p.is_error())
+    );
+}
+
+#[test]
+fn a_backtest_finds_the_run_a_time_of_day_would_have_made() {
+    // Nothing watched, so the day before is replayed on the clock alone. Friday 3 July, noon.
+    let to = moment("2026-07-03T10:00:00Z");
+    let (runs, changes) = sim::backtest(
+        &at_seven(),
+        &BTreeMap::new(),
+        &[flag(LIGHT, false, 0)],
+        Some(brussels()),
+        to,
+    );
+    assert_eq!(changes, 0);
+    // Thursday's 07:00 was more than a day ago; Friday's is inside the window.
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(runs[0].started_at, moment("2026-07-03T05:00:00Z"));
+}
+
+#[test]
+fn a_dry_run_of_a_time_trigger_ends() {
+    let record = sim::dry_run(
+        &at_seven(),
+        &"seven".parse().expect("valid"),
+        vec![flag(LIGHT, false, 0)],
+        &BTreeMap::new(),
+        Some(brussels()),
+        moment("2026-07-03T10:00:00Z"),
+    )
+    .expect("runs");
+    assert!(record.finished_at.is_some());
 }

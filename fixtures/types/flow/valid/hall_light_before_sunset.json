@@ -1,0 +1,9 @@
+{
+  "id": "hall_light_before_sunset",
+  "name": "Hall light on half an hour before sunset",
+  "nodes": {
+    "dusk": { "type": "trigger", "trigger": { "type": "sun", "event": "sunset", "offset": "-30m" } },
+    "on": { "type": "call", "service": "light.turn_on", "entity": "light.demo_hall_light" }
+  },
+  "wires": [["dusk", "on"]]
+}

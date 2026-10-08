@@ -7,6 +7,8 @@ use irori_flow_types::trace::{Outcome, RunRecord, TestKind};
 use irori_flow_types::{Flow, NodeId, Port};
 use irori_types::{Availability, EntityId, EntityState, State, Timestamp, Typed};
 
+use irori_rules::clock::Place;
+
 use crate::engine::{Arm, CountingIds, Effect, Engine};
 
 /// How many timers a simulation follows before it decides the flow won't settle.
@@ -20,11 +22,13 @@ pub fn dry_run(
     trigger: &NodeId,
     states: Vec<EntityState>,
     overrides: &BTreeMap<EntityId, serde_json::Value>,
+    place: Option<Place>,
     now: Timestamp,
 ) -> Result<RunRecord, String> {
     let mut flow = flow.clone();
     flow.enabled = true;
     let mut engine = Engine::dry(Box::new(CountingIds::default()));
+    engine.set_place(place, now);
     let mut states: BTreeMap<EntityId, EntityState> = states
         .into_iter()
         .map(|state| (state.entity_id.clone(), state))
@@ -56,6 +60,9 @@ pub fn dry_run(
 /// Replays `history` — each entity's states, oldest first — through `flow`, and answers the
 /// runs it would have made between `from` and `to`, and how many changes it replayed.
 ///
+/// The clock is replayed too: a time or sun trigger fires where it would have, as far back as
+/// the history goes, or over the day before `to` when the flow watches nothing.
+///
 /// Each entity starts from its first state in the history; the rest are replayed in the order
 /// of their own timestamps. An entity with no history didn't change in the window, so its
 /// state in `baseline` (the home now) held throughout. Calls don't feed back into state: the
@@ -64,6 +71,7 @@ pub fn backtest(
     flow: &Flow,
     history: &BTreeMap<EntityId, Vec<EntityState>>,
     baseline: &[EntityState],
+    place: Option<Place>,
     to: Timestamp,
 ) -> (Vec<RunRecord>, usize) {
     let mut flow = flow.clone();
@@ -89,8 +97,15 @@ pub fn backtest(
         .filter_map(|states| states.first())
         .map(|state| state.last_updated)
         .min()
-        .unwrap_or(to);
+        .unwrap_or_else(|| {
+            Timestamp::from_jiff(
+                to.as_jiff()
+                    .checked_sub(jiff::SignedDuration::from_hours(24))
+                    .unwrap_or(to.as_jiff()),
+            )
+        });
     engine.load_states(initial);
+    engine.set_place(place, start);
     engine.set_flows(
         vec![Arm {
             flow,
@@ -121,6 +136,11 @@ fn settle(engine: &mut Engine, now: Timestamp, until: Option<Timestamp>) -> Vec<
     let mut ticks = 0;
     while let Some(next) = engine.next_deadline() {
         if until.is_some_and(|until| next > until) || ticks >= MAX_TICKS {
+            break;
+        }
+        // With no end given, this follows one run to its end. A time trigger's next moment is
+        // always on the clock, and would otherwise be followed for ever.
+        if until.is_none() && engine.idle() {
             break;
         }
         engine.advance(next.max(now));

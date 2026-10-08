@@ -17,6 +17,7 @@ use irori_flow_types::Flow;
 use irori_flows::{Arm, Effect, Engine, IdGen, ulid, validate};
 use irori_protocol::WireCommand;
 use irori_protocol::engine::{EngineClient, Incoming, Registry};
+use irori_rules::clock::Place;
 use irori_rules::{CallData, MapRegistry, RuleService};
 use irori_types::{ContextId, Timestamp};
 use tokio::sync::mpsc;
@@ -81,16 +82,34 @@ pub fn flows_dir() -> (PathBuf, PathBuf) {
     (flows, data)
 }
 
-fn registry_view(registry: Registry) -> MapRegistry {
-    MapRegistry {
+/// Where the home is, as the core said it, if it said a time zone this engine knows.
+fn place_of(registry: &Registry) -> Option<Place> {
+    let said = registry.place.as_ref()?;
+    let zone = said.time_zone.as_deref()?;
+    match Place::new(zone, said.latitude.zip(said.longitude)) {
+        Ok(place) => Some(place),
+        Err(error) => {
+            tracing::warn!(%error, "the home's time zone can't be used; time triggers stay off");
+            None
+        }
+    }
+}
+
+/// The home as the checks read it, and where it is. What the checks are told about time comes
+/// from the place this engine could actually build, so a flow is never armed on a zone it
+/// can't tell the time in.
+fn registry_view(registry: Registry) -> (MapRegistry, Option<Place>) {
+    let place = place_of(&registry);
+    let view = MapRegistry {
         entities: registry
             .entities
             .into_iter()
             .map(|entity| (entity.id.clone(), entity))
             .collect(),
-        timezone: registry.timezone,
-        location: registry.location,
-    }
+        timezone: place.is_some(),
+        location: place.as_ref().is_some_and(Place::has_location),
+    };
+    (view, place)
 }
 
 impl Service {
@@ -107,7 +126,9 @@ impl Service {
             .await
             .map_err(|e| e.to_string())?;
         engine.load_states(client.get_states().await.map_err(|e| e.to_string())?);
-        let registry = registry_view(client.get_registry().await.map_err(|e| e.to_string())?);
+        let (registry, place) =
+            registry_view(client.get_registry().await.map_err(|e| e.to_string())?);
+        engine.set_place(place, now());
         let mut service = Self {
             client,
             engine,
@@ -198,8 +219,12 @@ impl Service {
                 // The registry changed, or this engine missed events: read both again.
                 match self.client.get_registry().await {
                     Ok(registry) => {
-                        self.registry = registry_view(registry);
+                        let (registry, place) = registry_view(registry);
+                        self.registry = registry;
+                        self.engine.set_place(place, now());
                         self.arm();
+                        // A time that was due as the home changed has just fired.
+                        self.apply_effects();
                     }
                     Err(error) => tracing::warn!(%error, "couldn't read the registry again"),
                 }

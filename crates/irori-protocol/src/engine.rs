@@ -42,6 +42,33 @@ pub struct Registry {
     /// Whether it has a location, so sun triggers can be armed.
     #[serde(default)]
     pub location: bool,
+    /// The time zone and the coordinates themselves. Absent from a core older than this field,
+    /// which also answered `false` to both flags.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<Place>,
+}
+
+/// Where the home is, as much as has been said (`home.toml`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Place {
+    /// An IANA name, `Europe/Brussels`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_zone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latitude: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub longitude: Option<f64>,
+}
+
+impl Place {
+    /// `None` when the home says nothing about where it is.
+    pub fn of(home: &irori_types::HomeSettings) -> Option<Self> {
+        (!home.is_empty()).then(|| Self {
+            time_zone: home.time_zone.as_ref().map(|zone| zone.as_str().to_owned()),
+            latitude: home.location.as_ref().map(|at| at.latitude),
+            longitude: home.location.as_ref().map(|at| at.longitude),
+        })
+    }
 }
 
 /// Why an engine request didn't work, as the core said it.

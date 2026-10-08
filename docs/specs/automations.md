@@ -137,7 +137,7 @@ instead:
 
 | Message | Scope | Answer (`value`) |
 |---|---|---|
-| `get_registry { id }` | `registry:read` | `{ entities: [Entity], timezone: bool, location: bool }` |
+| `get_registry { id }` | `registry:read` | `{ entities: [Entity], timezone: bool, location: bool, place?: { time_zone?, latitude?, longitude? } }`. The flags say whether the home has each; `place` is what `home.toml` holds, left out when it holds nothing. A change to it is a `registry_changed`. |
 | `get_states { id }` | `states:read` | `[EntityState]` |
 | `get_history { id, entities: [EntityId], since: Timestamp }` | `history:read` | `{ "<entity_id>": [EntityState] }`, oldest first |
 | `subscribe { id, states: bool, registry: bool }` | `events:read` | `null`. Afterwards the core pushes the events asked for |

@@ -1,6 +1,7 @@
 //! A trigger's form: what's watched, and what it has to do — change from one of some values, to
 //! one of some values, or both; or, for a sensor with numbers, go below or above a level — and
 //! for how long. Irori itself is one of the things to watch: its own entities, and "starts up".
+//! So is the clock: a time of day, and the sun (`clock_forms.rs`).
 
 use irori_types::{EntityId, ValueShape};
 use leptos::prelude::*;
@@ -15,6 +16,10 @@ type Edit = Box<dyn FnOnce(&mut Value)>;
 
 /// What the picker says for the trigger that fires when Irori starts.
 pub const STARTS_UP: &str = "irori:starts_up";
+
+/// And for the two that fire by the clock: a time of day, and the sun.
+pub const A_TIME: &str = "irori:time";
+pub const THE_SUN: &str = "irori:sun";
 
 /// How a numeric trigger watches its sensor.
 #[derive(Clone, Copy, PartialEq)]
@@ -75,21 +80,39 @@ pub fn TriggerForm(
     let home = expect_context::<Home>();
     let kind = trigger["type"].as_str().unwrap_or("state").to_owned();
     let entity = trigger["entity"].as_str().unwrap_or_default().to_owned();
-    let picked = if kind == "startup" {
-        STARTS_UP.to_owned()
-    } else {
-        entity.clone()
+    let picked = match kind.as_str() {
+        "startup" => STARTS_UP.to_owned(),
+        "time" => A_TIME.to_owned(),
+        "sun" => THE_SUN.to_owned(),
+        _ => entity.clone(),
     };
     let edit_what = edit.clone();
     let what = view! {
         <label>"What"</label>
         <EntityPicker value=picked kinds=watchable()
-            extra=vec![Choice::new(STARTS_UP, "Irori starts up").detail("Irori")]
+            extra=vec![
+                Choice::new(A_TIME, "A time of day").detail("the clock at home"),
+                Choice::new(THE_SUN, "The sun").detail("sunrise, sunset, dawn, dusk…"),
+                Choice::new(STARTS_UP, "Irori starts up").detail("Irori"),
+            ]
             pick=move |id: String| {
                 let home = home;
                 edit_what(Box::new(move |t: &mut Value| {
                     if id == STARTS_UP {
                         *t = json!({ "type": "startup" });
+                        return;
+                    }
+                    // Picked again, it keeps what it had: the picker isn't a reset.
+                    if id == A_TIME {
+                        if t["type"] != "time" {
+                            *t = json!({ "type": "time", "at": "07:00" });
+                        }
+                        return;
+                    }
+                    if id == THE_SUN {
+                        if t["type"] != "sun" {
+                            *t = json!({ "type": "sun", "event": "sunset" });
+                        }
                         return;
                     }
                     let hold = t.get("for").cloned();
@@ -123,6 +146,8 @@ pub fn TriggerForm(
         }
         .into_any(),
         "state" => state_form(&trigger, &entity, edit, home),
+        "time" => crate::clock_forms::time_form(&trigger, edit),
+        "sun" => crate::clock_forms::sun_form(&trigger, edit),
         _ => view! { <p class="muted">"This kind of trigger is edited as JSON below."</p> }
             .into_any(),
     };

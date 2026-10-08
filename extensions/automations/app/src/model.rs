@@ -4,7 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use irori_flow_types::{
-    Amount, Condition, Flow, JoinMode, Node, NodeId, Port, Trigger, TypedValue, Values, WaitUntil,
+    Amount, Condition, Flow, JoinMode, Node, NodeId, Port, SunEvent, Trigger, TypedValue, Values,
+    WaitUntil, Weekday,
 };
 use irori_types::{
     BinarySensorClass, Capabilities, EntityId, EntityKind, EntityState, SensorValue, State,
@@ -271,8 +272,45 @@ pub fn condition_words(condition: &Condition, home: &Home) -> String {
         },
         Condition::Expr { expr } => crate::checks::expr_words(expr.as_str(), home)
             .unwrap_or_else(|| expr.as_str().to_owned()),
-        Condition::Time { .. } => "in the time window".into(),
-        Condition::Sun { .. } => "the sun is where it should be".into(),
+        Condition::Time {
+            after,
+            before,
+            weekday,
+        } => {
+            let days = weekday.as_ref().map(|days| days_written(days));
+            let days = days.as_deref().map(crate::clock_forms::days_words);
+            let hours = match (after, before) {
+                (Some(after), Some(before)) => {
+                    format!("it's between {} and {}", after.as_str(), before.as_str())
+                }
+                (Some(after), None) => format!("it's after {}", after.as_str()),
+                (None, Some(before)) => format!("it's before {}", before.as_str()),
+                (None, None) => "it's".to_owned(),
+            };
+            match days {
+                Some(days) => format!("{hours} {days}"),
+                None => hours,
+            }
+        }
+        Condition::Sun {
+            after,
+            before,
+            offset,
+        } => {
+            let moved = offset
+                .as_ref()
+                .map(|offset| format!(" ({})", offset.as_str()))
+                .unwrap_or_default();
+            let word = |event: &SunEvent| crate::clock_forms::sun_word(&sun_written(*event));
+            match (after, before) {
+                (Some(after), Some(before)) => {
+                    format!("it's between {} and {}{moved}", word(after), word(before))
+                }
+                (Some(after), None) => format!("it's after {}{moved}", word(after)),
+                (None, Some(before)) => format!("it's before {}{moved}", word(before)),
+                (None, None) => "the sun is anywhere".to_owned(),
+            }
+        }
         Condition::All { conditions } => conditions
             .iter()
             .map(|c| condition_words(c, home))
@@ -343,15 +381,38 @@ pub fn sentence(node: &Node, home: &Home) -> String {
                 text
             }
             Trigger::Startup {} => "Irori starts up".into(),
-            Trigger::Time { at, cron, .. } => at
-                .as_ref()
-                .map(|at| format!("it's {}", at.as_str()))
-                .or_else(|| {
-                    cron.as_ref()
-                        .map(|cron| format!("the schedule {}", cron.as_str()))
-                })
-                .unwrap_or_else(|| "a time comes".into()),
-            Trigger::Sun { event, .. } => format!("{event:?}").to_lowercase(),
+            Trigger::Time { at, cron, weekday } => match (at, cron) {
+                (Some(at), _) => {
+                    let days = weekday.as_ref().map(|days| days_written(days));
+                    format!(
+                        "it's {}",
+                        crate::clock_forms::time_words(at.as_str(), &days.unwrap_or_default())
+                            .trim_start_matches("at ")
+                    )
+                }
+                (None, Some(cron)) => crate::clock_forms::cron_words(cron.as_str())
+                    .map(|words| format!("it's {}", words.trim_start_matches("at ")))
+                    .unwrap_or_else(|_| format!("the schedule {}", cron.as_str())),
+                (None, None) => "a time comes".into(),
+            },
+            Trigger::Sun { event, offset } => {
+                let minutes = offset
+                    .as_ref()
+                    .and_then(|offset| crate::clock_forms::offset_minutes(offset.as_str()));
+                match (offset, minutes) {
+                    // One the words can't hold (seconds) is said as it's written.
+                    (Some(offset), None) => format!(
+                        "{} {}",
+                        offset.as_str(),
+                        crate::clock_forms::sun_word(&sun_written(*event))
+                    ),
+                    _ => format!(
+                        "it's {}",
+                        crate::clock_forms::sun_words(&sun_written(*event), minutes.unwrap_or(0))
+                            .trim_start_matches("at ")
+                    ),
+                }
+            }
             Trigger::Event { event, .. } => format!("the event {} happens", event.as_str()),
         },
         Node::Gate { condition } => condition_words(condition, home),
@@ -705,6 +766,18 @@ pub const TEMPLATES: &[Template] = &[
         },
     },
     Template {
+        group: "Triggers",
+        label: "At a time of day",
+        base: "at",
+        make: |_| serde_json::json!({ "type": "trigger", "trigger": { "type": "time", "at": "07:00" } }),
+    },
+    Template {
+        group: "Triggers",
+        label: "At sunrise or sunset",
+        base: "sun",
+        make: |_| serde_json::json!({ "type": "trigger", "trigger": { "type": "sun", "event": "sunset" } }),
+    },
+    Template {
         group: "Decide",
         label: "Condition",
         base: "check",
@@ -992,6 +1065,22 @@ pub fn part_name(flow: &Flow, part: &Part) -> String {
         .get(&part.key)
         .map(ToString::to_string)
         .unwrap_or_else(|| words_of(part.nodes.last().unwrap_or(&part.key)))
+}
+
+/// Days as they're written in a flow: `mon`, `tue`…
+fn days_written(days: &[Weekday]) -> Vec<String> {
+    days.iter()
+        .filter_map(|day| serde_json::to_value(day).ok())
+        .filter_map(|day| day.as_str().map(str::to_owned))
+        .collect()
+}
+
+/// A sun event as it's written in a flow: `sunset`.
+fn sun_written(event: SunEvent) -> String {
+    serde_json::to_value(event)
+        .ok()
+        .and_then(|event| event.as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

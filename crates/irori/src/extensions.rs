@@ -57,6 +57,11 @@ fn log(event: &Event) {
         } => {
             tracing::debug!(entity = %entity_id, %service, "service called");
         }
+        Event::PlaceChanged { home } => {
+            // The zone and whether a location is set. The coordinates are somebody's address.
+            let zone = home.time_zone.as_ref().map(ToString::to_string);
+            tracing::info!(time_zone = ?zone, located = home.location.is_some(), "the home's place changed");
+        }
         Event::DeviceUpdated { .. }
         | Event::DeviceRemoved { .. }
         | Event::EntityUpdated { .. }

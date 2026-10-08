@@ -17,6 +17,8 @@ pub enum Icon {
     Appearance,
     Assistant,
     Places,
+    /// Where the home is: a pin.
+    Place,
     Users,
     Logs,
     // What the machine is short of, or isn't.
@@ -92,6 +94,10 @@ fn drawing(icon: Icon) -> &'static str {
         Icon::Places => {
             r#"<path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="m3 12.5 9 5 9-5"/><path d="m3 17 9 5 9-5"/>"#
         }
+        Icon::Place => concat!(
+            r#"<path d="M12 21.5s7-6.2 7-11.5a7 7 0 0 0-14 0c0 5.3 7 11.5 7 11.5Z"/>"#,
+            r#"<circle cx="12" cy="10" r="2.5"/>"#,
+        ),
         Icon::Users => r#"<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>"#,
         Icon::Logs => {
             r#"<rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/>"#

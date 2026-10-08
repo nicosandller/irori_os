@@ -120,6 +120,7 @@ impl EngineLink {
             | Event::EntityAdded { .. }
             | Event::EntityUpdated { .. }
             | Event::EntityRemoved { .. }
+            | Event::PlaceChanged { .. }
                 if self.registry =>
             {
                 Some(ToExt::RegistryChanged {})
@@ -160,11 +161,14 @@ impl EngineLink {
                         .iter()
                         .filter_map(|entity| format::entity_for(self.format, entity))
                         .collect();
+                    // What `home.toml` says (rules.md K13). The flags are what older engines
+                    // read; `place` is what one needs to actually tell the time.
+                    let home = core.place();
                     json!({
                         "entities": entities,
-                        // `irori.toml` has neither yet (rules.md K13).
-                        "timezone": false,
-                        "location": false,
+                        "timezone": home.time_zone.is_some(),
+                        "location": home.location.is_some(),
+                        "place": irori_protocol::engine::Place::of(&home),
                     })
                 });
                 self.answer(id, result);

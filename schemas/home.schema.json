@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HomeSettings",
+  "description": "What `home.toml` says.",
+  "type": "object",
+  "properties": {
+    "location": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Location"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "time_zone": {
+      "description": "The home's IANA time zone, e.g. `Europe/Brussels`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TimeZoneName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Location": {
+      "description": "Where the home is on the earth.",
+      "type": "object",
+      "properties": {
+        "label": {
+          "description": "What it was found as, for a person to read: \"Brussels, Belgium\".",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "maxLength": 120
+        },
+        "latitude": {
+          "description": "Degrees north, −90 to 90.",
+          "type": "number",
+          "format": "double",
+          "maximum": 90.0,
+          "minimum": -90.0
+        },
+        "longitude": {
+          "description": "Degrees east, −180 to 180.",
+          "type": "number",
+          "format": "double",
+          "maximum": 180.0,
+          "minimum": -180.0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "latitude",
+        "longitude"
+      ]
+    },
+    "TimeZoneName": {
+      "description": "An IANA time zone name, e.g. Europe/Brussels.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$"
+    }
+  }
+}

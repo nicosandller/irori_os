@@ -1,0 +1,9 @@
+{
+  "id": "hall_light_at_seven",
+  "name": "Hall light on at seven on weekdays",
+  "nodes": {
+    "seven": { "type": "trigger", "trigger": { "type": "time", "at": "07:00", "weekday": ["mon", "tue", "wed", "thu", "fri"] } },
+    "on": { "type": "call", "service": "light.turn_on", "entity": "light.demo_hall_light" }
+  },
+  "wires": [["seven", "on"]]
+}

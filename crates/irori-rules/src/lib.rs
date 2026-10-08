@@ -9,6 +9,9 @@
 //! wasm page can share them.
 
 #[cfg(feature = "engine")]
+pub mod clock;
+pub mod cron;
+#[cfg(feature = "engine")]
 pub mod eval;
 #[cfg(feature = "engine")]
 mod expr;

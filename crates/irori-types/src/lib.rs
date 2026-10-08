@@ -14,6 +14,7 @@ mod context;
 mod extension;
 mod floorplan;
 pub mod format;
+mod home;
 mod kind;
 mod kinds;
 mod num;
@@ -26,6 +27,7 @@ mod settings;
 mod state;
 mod time;
 pub mod units;
+mod users;
 
 pub use context::{Context, Origin};
 pub use extension::{
@@ -38,6 +40,7 @@ pub use floorplan::{
     Floorplan, Hinge, Level, Opening, OpeningKind, PlacedArea, PlacedDevice, PlanError, Point,
     Side, Wall,
 };
+pub use home::{HomeSettings, Location, TimeZoneName};
 pub use id::{
     AreaId, AttributeKey, ContextId, Description, DeviceId, EntityId, ExtensionId, FloorId,
     IdError, Name, ObjectId, ProtocolId, RuleId, SLUG_MAX_LEN, TokenId, UniqueId, UserId,
@@ -92,6 +95,9 @@ pub use settings::{
 };
 pub use state::{Attributes, Availability, EntityState, State};
 pub use time::{Timestamp, TimestampError};
+pub use users::{
+    PASSWORD_MAX_LEN, PASSWORD_MIN_LEN, Role, User, check_password, check_users, user_id_from,
+};
 
 /// A problem with a value that is well-formed JSON of the right shape but breaks a rule that
 /// spans several fields, e.g. an entity whose id says `light` but whose state says `switch`.

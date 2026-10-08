@@ -40,6 +40,10 @@ pub enum Event {
         extension_id: ExtensionId,
         status: ExtensionStatus,
     },
+    /// Where the home is, or its time zone, changed (`home.toml`).
+    PlaceChanged {
+        home: irori_types::HomeSettings,
+    },
     /// A service call was sent to a protocol.
     ServiceCalled {
         entity_id: EntityId,

@@ -11,8 +11,12 @@ use cel::{Context, FunctionContext, ResolveResult, Value};
 use irori_types::{Availability, EntityId, EntityState, State, Timestamp, Typed};
 use serde::{Deserialize, Serialize};
 
+use crate::clock::{self, Place};
 use crate::expr::{Compiled, compile};
 use crate::{AvailabilityWanted, Condition, TypedValue, WaitUntil};
+
+/// What a window of time says when nobody has said what time zone the home is in.
+const NO_ZONE: &str = "time and sun windows need the home's time zone";
 
 /// What an evaluation can see: every entity's state, the run's variables, and now.
 #[derive(Debug, Clone)]
@@ -64,9 +68,20 @@ pub struct Outcome<T> {
 #[derive(Debug, Default)]
 pub struct Evaluator {
     compiled: HashMap<String, Arc<Compiled>>,
+    /// Where the home is, for windows of time and `hour()`. `None` until it's been said.
+    place: Option<Arc<Place>>,
 }
 
 impl Evaluator {
+    /// Says where the home is, or that it's no longer known.
+    pub fn set_place(&mut self, place: Option<Place>) {
+        self.place = place.map(Arc::new);
+    }
+
+    pub fn place(&self) -> Option<&Place> {
+        self.place.as_deref()
+    }
+
     fn program(&mut self, source: &str) -> Result<Arc<Compiled>, String> {
         if let Some(compiled) = self.compiled.get(source) {
             return Ok(Arc::clone(compiled));
@@ -90,7 +105,7 @@ impl Evaluator {
         };
         let reads = Arc::new(Mutex::new(Vec::<Read>::new()));
         let mut context = Context::default();
-        bind(&mut context, snapshot, &reads);
+        bind(&mut context, snapshot, &reads, self.place.clone());
         let result = compiled
             .program_ref()
             .execute(&context)
@@ -120,8 +135,38 @@ impl Evaluator {
                 availability,
             } => state_holds(entity, is.as_ref(), *availability, snapshot),
             Condition::Expr { expr } => self.boolean(expr.as_str(), snapshot),
-            Condition::Time { .. } | Condition::Sun { .. } => Outcome {
-                result: Err("time and sun windows need a timezone in irori.toml".into()),
+            Condition::Time {
+                after,
+                before,
+                weekday,
+            } => Outcome {
+                result: match &self.place {
+                    Some(place) => Ok(clock::in_time_window(
+                        place,
+                        after.as_ref(),
+                        before.as_ref(),
+                        weekday.as_deref(),
+                        snapshot.now,
+                    )),
+                    None => Err(NO_ZONE.to_owned()),
+                },
+                reads: Vec::new(),
+            },
+            Condition::Sun {
+                after,
+                before,
+                offset,
+            } => Outcome {
+                result: match &self.place {
+                    Some(place) => clock::in_sun_window(
+                        place,
+                        *after,
+                        *before,
+                        offset.as_ref().map_or(0, crate::CompactDuration::millis),
+                        snapshot.now,
+                    ),
+                    None => Err(NO_ZONE.to_owned()),
+                },
                 reads: Vec::new(),
             },
             Condition::All { conditions } | Condition::Any { conditions } => {
@@ -331,7 +376,7 @@ fn numbers(
         .collect()
 }
 
-fn bind(context: &mut Context, snapshot: &Snapshot, reads: &Reads) {
+fn bind(context: &mut Context, snapshot: &Snapshot, reads: &Reads, place: Option<Arc<Place>>) {
     let entity_fn =
         |name: &'static str, read: fn(State, &str) -> Result<Value, String>| -> EntityFn {
             let states = Arc::clone(&snapshot.states);
@@ -484,8 +529,13 @@ fn bind(context: &mut Context, snapshot: &Snapshot, reads: &Reads) {
         },
     );
     for name in ["hour", "minute"] {
-        context.add_function(name, move |ftx: &FunctionContext| {
-            fail(ftx, format!("{name}() needs a timezone in irori.toml"))
+        let (place, now) = (place.clone(), snapshot.now);
+        context.add_function(name, move |ftx: &FunctionContext| match &place {
+            Some(place) => {
+                let (hour, minute) = clock::hour_and_minute(place, now);
+                Ok(Value::Int(if name == "hour" { hour } else { minute }))
+            }
+            None => fail(ftx, format!("{name}() needs the home's time zone")),
         });
     }
 }

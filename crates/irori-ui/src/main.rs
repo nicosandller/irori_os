@@ -24,7 +24,9 @@ mod icons;
 mod inline;
 mod log_window;
 mod machine;
+mod map;
 mod modal;
+mod place;
 mod places;
 mod removal;
 mod rich;
@@ -34,7 +36,9 @@ mod settings_form;
 mod start;
 mod timeline;
 mod transition;
+mod users;
 mod waiting;
+mod welcome;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -70,6 +74,10 @@ pub struct Live {
 #[derive(Debug, Clone, Copy)]
 pub struct Assistant(pub RwSignal<Option<api::AssistantStatus>>);
 
+/// Who this browser is, and how far the home has been set up. `None` until the first answer.
+#[derive(Debug, Clone, Copy)]
+pub struct Session(pub RwSignal<Option<api::Session>>);
+
 /// Whether the page animates: switches that spring, sliders that swell, the Live dot breathing.
 /// On unless Settings turned it off. The system's own "reduce motion" wins over this either way —
 /// that's CSS, and needs nothing from here.
@@ -89,6 +97,39 @@ fn App() -> impl IntoView {
         trouble: RwSignal::new(None),
     };
     provide_context(live);
+    // Who is there. Asked before anything else: a home that asks gets the sign-in page and
+    // nothing behind it, and a home nobody has set up gets the welcome.
+    let session = RwSignal::new(None::<api::Session>);
+    provide_context(Session(session));
+    let place = RwSignal::new(None);
+    provide_context(place::Place(place));
+    let people = RwSignal::new(Vec::new());
+    provide_context(users::People(people));
+    let welcoming = RwSignal::new(false);
+    provide_context(welcome::Showing(welcoming));
+    let must_sign_in =
+        Memo::new(move |_| session.with(|s| s.as_ref().is_some_and(api::Session::must_sign_in)));
+    spawn_local(async move {
+        if let Ok(now) = api::fetch_session().await {
+            welcoming.set(now.wants_welcome() && now.owner);
+            session.set(Some(now));
+        }
+    });
+    // Where the home is and who is in it, once this browser may ask: as the page opens, and
+    // again when somebody signs in.
+    Effect::new(move |_| {
+        if session.with(Option::is_none) || must_sign_in.get() {
+            return;
+        }
+        spawn_local(async move {
+            if let Ok(home) = api::fetch_place().await {
+                place.set(Some(home));
+            }
+            if let Ok(users) = api::fetch_users().await {
+                people.set(users);
+            }
+        });
+    });
     let assistant = RwSignal::new(None);
     provide_context(Assistant(assistant));
     provide_context(assistant::Asking(RwSignal::new(None)));
@@ -132,6 +173,11 @@ fn App() -> impl IntoView {
     spawn_local(async move {
         let mut ticks: u32 = 0;
         loop {
+            // Nobody is signed in: there is nothing this browser may ask for yet.
+            if must_sign_in.get_untracked() {
+                gloo_timers::future::sleep(REFRESH).await;
+                continue;
+            }
             match api::fetch_home().await {
                 Ok(mut fetched) => {
                     let shown = live.home.get_untracked();
@@ -147,7 +193,16 @@ fn App() -> impl IntoView {
                     }
                     live.trouble.set(None);
                 }
-                Err(why) => live.trouble.set(Some(why)),
+                Err(why) => {
+                    live.trouble.set(Some(why));
+                    // It may be that the home started asking who is there (a password set
+                    // from another screen), or that this browser was signed out.
+                    if let Ok(now) = api::fetch_session().await
+                        && session.get_untracked().as_ref() != Some(&now)
+                    {
+                        session.set(Some(now));
+                    }
+                }
             }
             // What Irori itself is doing changes far less often than what the devices are, so
             // it's asked for less often — but it is asked again: the uptime moves, and a
@@ -199,10 +254,14 @@ fn App() -> impl IntoView {
     let sidebar = NodeRef::<leptos::html::Aside>::new();
 
     view! {
+        {move || must_sign_in.get().then(|| view! { <welcome::SignIn /> })}
+        {move || (welcoming.get() && !must_sign_in.get()).then(|| view! { <welcome::Welcome /> })}
         <Router>
             <div
                 class="shell"
                 class:folded=move || folded.get()
+                // Kept, and put out of sight, while the home is asking who is there.
+                class:locked=move || must_sign_in.get()
                 data-motion=move || if motion.get() { "on" } else { "off" }
             >
                 <aside class="sidebar" node_ref=sidebar>
@@ -416,7 +475,12 @@ const SECTIONS: [(&str, &str, &str); 3] = [
 #[component]
 fn AppLinks() -> impl IntoView {
     let live = expect_context::<Live>();
+    let Session(session) = expect_context::<Session>();
     let apps = Memo::new(move |_| {
+        // An extension's page talks to its engine, which is running the home: an owner's.
+        if !session.with(|s| s.as_ref().is_none_or(|s| s.owner)) {
+            return Vec::new();
+        }
         live.home.with(|home| {
             home.extensions
                 .iter()

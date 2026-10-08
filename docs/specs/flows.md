@@ -160,9 +160,18 @@ Same meaning as rules.md §5, restated for what the engine watches:
   sensor, `above`/`below` fire instead when the reading crosses into that range (rules.md §5.1);
   with `for`, it has to stay in the range, and moving about inside it doesn't reset the timer.
 - `startup`: fires once when the flow is armed after the engine starts.
-- `time`, `sun`: need a timezone (and a location, for sun) in `irori.toml` (rules.md K13). Until
-  then the flow is **unarmed** with that reason. `event`: accepted, never fires until protocols
-  emit events (rules.md open question 3); a warning says so.
+- `time`: fires when the clock at home reads `at` (on the days in `weekday`, if any), or when a
+  `cron` comes round. `sun`: fires at the event, moved by `offset`. Both need the home's time
+  zone, and the sun its location as well, from `home.toml` (rules.md K13, config.md §3.9). Until
+  then the flow is **unarmed**, with a reason that says where to set it.
+  - The engine keeps each such trigger's next moment as a timer and winds it again after it
+    fires, when the flows change, and when the home's place does. It never reads the clock
+    itself, so a backtest replays the same moments on its virtual clock.
+  - Clocks going forward over a time skip it that day; going back over one fires it once, at the
+    first (rules.md §5.2). A sun event that doesn't happen on a day is skipped.
+  - The step's note says why it fired: "it's 07:00 on Friday", "30m before sunset (21:29)".
+- `event`: accepted, never fires until protocols emit events (rules.md open question 3); a
+  warning says so.
 
 Any trigger can also be fired by hand (§7).
 
@@ -280,6 +289,7 @@ What the page calls through the bridge's `rpc`:
 | `timeline` | `id`, `from`, `to` | Watched entities' changes, near-misses and runs in the window |
 | `test` | §7 | The run record |
 | `backtest` | §7 | Would-be runs, actual runs, covered window |
+| `clock.next` | `trigger` | For a `time` or `sun` trigger as it stands in the form: when it next fires (`next`, and `spoken`: "tomorrow at 06:52"), the home's `time_zone` and whether it has a `location`, the time at home `now`, and today's `sun` (each event as `HH:MM`, only those that happen today). Read-only. The page asks rather than working it out, so the zone and the sun are read in one place |
 | `live` | `id`, `after?` | What the canvas plays while the flow is open: runs finished and near-misses since `after` (none without it; at most 5 each, oldest first), the triggers holding a `for` and when they'd fire, and `now` to ask with next time |
 | `tests.get` / `tests.save` | `id`, `settings` | How the page last set up a test of this flow (up to 16 KB, kept as given), so it runs again the same way. Deleted with the flow |
 
@@ -292,5 +302,5 @@ What the page calls through the bridge's `rpc`:
 
 ## 10. Not in this spec
 
-Flows calling flows; loops; custom protocol services; events from protocols; timezone and
-location in `irori.toml`; backtests longer than a day (C18); push to the page (C17).
+Flows calling flows; loops; custom protocol services; events from protocols; backtests longer
+than a day (C18); push to the page (C17).

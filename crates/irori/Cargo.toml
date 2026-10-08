@@ -19,7 +19,6 @@ assist = [
     "dep:reqwest",
     "dep:tokio-stream",
     "dep:futures-util",
-    "dep:sha2",
 ]
 
 [dependencies]
@@ -33,9 +32,13 @@ futures-util = { version = "0.3.32", default-features = false, features = ["std"
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "stream", "rustls-tls"], optional = true }
 tokio-stream = { version = "0.1.17", features = ["sync"], optional = true }
 # The checksum of the Ollama release Irori downloads on request (ollama.rs).
-sha2 = { workspace = true, optional = true }
 
 anyhow.workspace = true
+# Passwords (`server/auth.rs`): argon2id hashes, and the SHA-256 a session's token is kept as.
+argon2 = "0.5.3"
+sha2.workspace = true
+# Checking that a time zone is one Irori can tell the time in, on an image with no zoneinfo.
+jiff = { workspace = true, features = ["tzdb-bundle-always"] }
 axum.workspace = true
 clap.workspace = true
 getrandom.workspace = true

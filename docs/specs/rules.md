@@ -61,7 +61,7 @@ It has to be:
 | K10 | **Node path = location in the tree** (`triggers/0`, `actions/2/then/0`). Rule version = SHA-256 of canonical JSON of the definition, **excluding `enabled`**. Traces (M0.4) key `(rule_id, rule_version, node_path)`. | Inserting a node shifts later paths; old traces still match because they point at a version. Toggling enabled must not fork that history. |
 | K11 | **People-facing service data** (`brightness_pct`, `light.toggle`) lives on the rule. The core adapter converts to `Command` / `LightTurnOn` (`brightness` 1–255, toggle resolved). Protocols never see `brightness_pct` (already true: `fixtures/types/service-call/invalid/brightness_pct_is_for_people.json`). | entities.md §5.3, protocols.md §7.1. |
 | K12 | **Helpers are ordinary switch entities.** `switch.guests_over` is the first real condition. No special helper node. | D40. The helpers extension is already the proof that the protocol contract is enough. |
-| K13 | **Two gates.** `time` triggers, time-window conditions, `hour()`, `minute()`: unarmed until `irori.toml` has an IANA timezone. `sun` triggers/conditions: unarmed until it has timezone **and** lat/lon. | Civil `07:00` needs a zone. Sunrise needs coordinates. [config.md](config.md) §7 reserves location as one hole; this spec must not arm sun on timezone alone. |
+| K13 | **Two gates.** `time` triggers, time-window conditions, `hour()`, `minute()`: unarmed until `home.toml` has an IANA timezone. `sun` triggers/conditions: unarmed until it has timezone **and** lat/lon. | Civil `07:00` needs a zone. Sunrise needs coordinates. Both live in `home.toml` ([config.md](config.md) §3.9), set from Settings → Location and time zone; this spec must not arm sun on timezone alone. |
 | K14 | **No protocol in the rule schema.** An event trigger names an event (`mqtt.message`); it does not name an MQTT topic as a core field. The MQTT extension (when it emits events) owns topics. | D15. The protocol contract today has no "emit event" operation; this spec defines the rule side and a core `Event::Bus` shape. Wiring extensions onto it is a small addendum to protocols.md when MQTT needs it. |
 | K15 | **No auth model for rules.** A rule calling `light.turn_off` is the same as the owner doing it in the UI. | D12 is not built. Rules are owner-authored config on disk. |
 | K16 | **`irori-rules` is this engine, not the OS.** It depends only on workspace crate `irori-types` among workspace crates. It is **not** a dependency of `irori` / `irori-core`. Traits `Clock`, `StateView`, `ServiceCaller` live here; a future extension host provides the adapter. `cel` 0.14.5 with **`default-features = false`**. | `xtask/src/deps.rs`. |
@@ -267,14 +267,20 @@ lux sensor wants; use an expr condition.
 
 `at` and `cron` together are an error. `weekday` with `cron` is an error (put days in the cron).
 
-**Timezone.** Time triggers need a home IANA timezone (`Europe/Brussels`). `irori.toml` does not
-have that yet ([config.md](config.md) §7). Until it does, a rule that contains a `time` trigger
-(or a time-window condition, or `hour()` / `minute()` in an expression) is **semantically
-invalid** (file parses; the rule is not armed) with:
+**Timezone.** Time triggers need a home IANA timezone (`Europe/Brussels`), which is `time_zone`
+in `home.toml` ([config.md](config.md) §3.9). Until it is set, a rule that contains a `time`
+trigger (or a time-window condition, or `hour()` / `minute()` in an expression) is
+**semantically invalid** (file parses; the rule is not armed) with:
 
 ```
-triggers/0: time triggers need a timezone; it isn't in irori.toml yet
+triggers/0: time triggers need the home's time zone; set the time zone in Settings → Location and time zone
 ```
+
+**Cron** is read into the sets it names (`irori-rules/src/cron.rs`): `*`, a number, a range
+(`1-5`), a step (`*/15`, `10-40/10`), lists of those, `JAN`–`DEC` for the month and `SUN`–`SAT`
+for the day of the week (`7` is Sunday too). When both the day of the month and the day of the
+week are given, either is enough, as cron has always had it. A field that doesn't read is a
+problem on the node, saying which field and why.
 
 Sun is a **separate** gate (§5.3): timezone is not enough for sunrise. The schema still accepts
 both so adding settings does not change the rule format.
@@ -294,14 +300,23 @@ Same rules apply to a cron field that names that hour.
 | `offset` | signed duration | no | `-30m` = 30 minutes before |
 
 **Location.** Sun needs the home timezone **and** latitude/longitude. Until both are in
-`irori.toml`, the node is a semantic error and the rule is not armed:
+`home.toml`, the node is a semantic error and the rule is not armed:
 
 ```
-triggers/0: sun triggers need a location (lat/lon); it isn't in irori.toml yet
+triggers/0: the sun needs to know where the home is; set the location in Settings → Location and time zone
 ```
 
-A timezone without coordinates still leaves `sun` unarmed; `time` triggers may arm. Implementation
-(M1.4) may use `sunrise` or equivalent (ROADMAP §2.2); the rule schema does not mention that crate.
+A timezone without coordinates still leaves `sun` unarmed; `time` triggers may arm.
+
+**How the sun is worked out** (`irori-rules/src/clock.rs`): NOAA's solar equations, with no
+dependency of their own, good to well under a minute. `sunrise` and `sunset` are the sun's top
+edge at the horizon with the air's bending of the light (a zenith of 90.833°); `dawn` and `dusk`
+are civil twilight, the sun 6° down; `noon` and `midnight` are the sun's own, not the clock's.
+
+- On a day an event doesn't happen (the midnight sun, the polar night), it is skipped: the next
+  one is whenever it next does happen, which may be weeks on.
+- A sun **window** (§6.4) on such a day doesn't hold, and the trace says there is no such event
+  at home today.
 
 ### 5.4 `event`
 
@@ -411,7 +426,7 @@ Truth table (civil time in the home timezone; same timezone gate as §5.2):
 | `after`/`before` + `weekday` | the time bound, on those days only |
 
 "All day" is `weekday` only, or omitting the condition. Same timezone gate as triggers: unarmed
-until `irori.toml` has a timezone.
+until `home.toml` has a timezone.
 
 ### 6.4 `sun`
 
@@ -1461,8 +1476,6 @@ is an obvious M1.4 win if 39 µs is allocation-dominated. Wasm compile of `cel` 
 | Numeric / text / timer helpers | D40, after this |
 | Custom protocol services (`esphome.reboot`) | [protocols.md](protocols.md) open question 1 |
 | Protocols emitting bus events | addendum to protocols.md when MQTT needs it |
-| Local time actually firing | after an IANA timezone lands in `irori.toml` |
-| Sun actually firing | after timezone **and** lat/lon land in `irori.toml` |
 | Unit conversion in `num()` | [entities.md](entities.md) open question 3; `num` is the stored number |
 | Auto-rewriting rules on entity rename | §24.1 |
 | Rule permissions / auth | D12, then Phase 3 |
@@ -1575,9 +1588,9 @@ confirmed). Pretending we can unsend it breaks D0. Waits cancel; calls don't.
    M1.4 even if no built-in protocol uses it yet**, so the Python external example can. Small
    protocols.md addendum.
 
-4. **`irori.toml` location shape.** When it lands: IANA timezone (`Europe/Brussels`) for `time`
-   / `hour()` / `minute()`, plus lat/lon for `sun`. Both are required for sun; timezone alone
-   must not arm sun. Exact TOML keys are config.md's, not this spec.
+4. **Location shape.** Settled: `home.toml` ([config.md](config.md) §3.9) holds an IANA
+   `time_zone` for `time` / `hour()` / `minute()`, plus `[location]` latitude and longitude for
+   `sun`. Both are required for sun; timezone alone does not arm sun.
 
 5. **`Dropped` traces.** Store them (noisy for `restart`'s cousin `single` on a chatty sensor)
    or only count them? M0.4. Engine still emits.

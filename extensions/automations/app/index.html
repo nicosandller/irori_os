@@ -507,6 +507,117 @@
       .palette button { width: auto; white-space: nowrap; }
       .panel { border-left: 0; border-top: 1px solid var(--line); max-height: 45vh; }
     }
+
+    /* ---- A time of day and the sun (clock_forms.rs) ------------------------------------- */
+
+    /* The dial: 24 hours, noon up and midnight down, so the day sits where the sun would.
+       The hand is turned by the page (it glides to a typed time), so nothing here transitions
+       its rotation. */
+    .clock-form { display: flex; align-items: center; gap: 1rem; margin-top: .6rem; }
+    .clock-side { flex: 1; min-width: 0; }
+    .clock-side label:first-child { margin-top: 0; }
+    .clock-hint { font-size: .78rem; margin: .5rem 0 0; }
+    .clock-typed { font-family: var(--mono); font-size: 1.05rem; letter-spacing: .04em; }
+    .clock-typed.wrong { border-color: var(--error); }
+    .dial { flex: none; width: 9.5rem; height: 9.5rem; cursor: grab; touch-action: none;
+            user-select: none; overflow: visible; }
+    .dial.holding { cursor: grabbing; }
+    .dial-ring { fill: none; stroke: var(--sunk); stroke-width: 22; }
+    .dial-night { fill: color-mix(in srgb, var(--k-time) 30%, transparent);
+                  animation: clock-fade var(--dur-expressive) var(--ease-out) backwards; }
+    .dial-span { fill: color-mix(in srgb, var(--ember) 45%, transparent); }
+    .dial-tick { stroke: var(--muted); stroke-width: 1; opacity: .45; }
+    .dial-tick.major { stroke-width: 1.6; opacity: .8; }
+    .dial-hour { fill: var(--muted); font: 500 10px var(--mono); text-anchor: middle;
+                 dominant-baseline: central; pointer-events: none; }
+    .dial-hand { transform-origin: 100px 100px; }
+    .dial-hand line { stroke: var(--ember); stroke-width: 2.5; stroke-linecap: round; }
+    .dial-knob { fill: var(--ember); stroke: var(--card); stroke-width: 3;
+                 transform-box: fill-box; transform-origin: center;
+                 transition: scale var(--dur-base) var(--ease-spring); }
+    .dial:hover .dial-knob { scale: 1.12; }
+    .dial-hand.held .dial-knob { scale: 1.3; }
+    .dial-hub { fill: var(--ember); }
+    .dial-time { fill: var(--fg); font: 600 17px var(--mono); text-anchor: middle;
+                 dominant-baseline: central; pointer-events: none; paint-order: stroke;
+                 stroke: var(--card); stroke-width: 5; stroke-linejoin: round; }
+    .dial-time.pair { font-size: 11px; }
+    @keyframes clock-fade { from { opacity: 0; } }
+
+    /* Which days: seven round chips, lit when the time is for that day, and three ways to
+       set them all at once. */
+    .days { display: flex; gap: .3rem; }
+    .day { width: 2rem; height: 2rem; padding: 0; border-radius: 50%; font-size: .8rem;
+           font-weight: 600; color: var(--muted); background: var(--card);
+           border: 1px solid var(--line);
+           transition: color var(--dur-fast), background-color var(--dur-base) var(--ease-out),
+                       border-color var(--dur-fast), scale var(--dur-base) var(--ease-spring); }
+    .day:hover { border-color: var(--ember); color: var(--fg); }
+    .day:active { scale: .9; }
+    .day[aria-pressed="true"] { color: #fff; background: var(--ember); border-color: var(--ember); }
+    .day-sets { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .45rem; }
+    .day-set, .sun-chip { padding: .2rem .6rem; font-size: .78rem; color: var(--muted);
+                          background: var(--card); border: 1px solid var(--line);
+                          border-radius: .4rem;
+                          transition: color var(--dur-fast), border-color var(--dur-fast),
+                                      background-color var(--dur-base) var(--ease-out); }
+    .day-set:hover, .sun-chip:hover { color: var(--fg); border-color: var(--ember); }
+    .day-set[aria-pressed="true"], .sun-chip[aria-pressed="true"] {
+        color: var(--fg); background: var(--sunk); border-color: var(--ember); }
+
+    /* When it next fires, or what the home is missing for it to. */
+    .clock-next { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem;
+                  margin: .9rem 0 0; padding: .5rem .65rem; font-size: .85rem;
+                  background: var(--sunk); border-radius: .4rem;
+                  animation: clock-fade var(--dur-base) var(--ease-out) backwards; }
+    .clock-next.missing { display: block; border-left: 3px solid var(--ember); }
+    .clock-next-dot { width: .45rem; height: .45rem; border-radius: 50%; background: var(--ember);
+                      align-self: center; }
+    .clock-reads { margin: .45rem 0 0; font-size: .85rem; }
+    .clock-switch { display: block; margin-top: .7rem; font-size: .78rem; }
+
+    /* The sun's day: an arc over a horizon, and a shallow one under it for the night. The
+       disc is moved by the page along the arc; the sky behind it warms as it climbs. */
+    .sun-arc { display: block; width: 100%; max-width: 21rem; margin: .6rem auto 0;
+               overflow: visible; }
+    .sun-sky { fill: color-mix(in srgb, var(--ember) 22%, transparent); }
+    .sun-night { fill: color-mix(in srgb, var(--k-time) 26%, transparent); }
+    .sun-path { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+    .sun-path.day { opacity: .7; }
+    .sun-path.night { stroke-dasharray: 2 4; opacity: .5; }
+    .sun-horizon { stroke: var(--fg); stroke-width: 1.5; opacity: .55; stroke-linecap: round; }
+    .sun-stop { cursor: pointer; }
+    .sun-stop-hit { fill: transparent; }
+    .sun-stop-dot { fill: var(--card); stroke: var(--muted); stroke-width: 1.5;
+                    transform-box: fill-box; transform-origin: center;
+                    transition: scale var(--dur-base) var(--ease-spring), stroke var(--dur-fast); }
+    .sun-stop text { fill: var(--muted); font: 500 9.5px var(--sans); dominant-baseline: central;
+                     transition: fill var(--dur-fast); }
+    .sun-stop:hover .sun-stop-dot { scale: 1.4; stroke: var(--ember); }
+    .sun-stop:hover text, .sun-stop.chosen text { fill: var(--fg); }
+    .sun-stop.chosen .sun-stop-dot { stroke: var(--ember); }
+    .sun-disc { pointer-events: none; }
+    .sun-body { fill: var(--ember); stroke: var(--card); stroke-width: 2; }
+    .sun-glow { fill: var(--ember); opacity: .22; transform-box: fill-box;
+                transform-origin: center; animation: sun-breathe 3.2s ease-in-out infinite; }
+    @keyframes sun-breathe { 50% { scale: 1.25; opacity: .12; } }
+    .sun-chips { display: grid; grid-template-columns: repeat(3, 1fr); gap: .3rem;
+                 margin-top: .5rem; }
+    .sun-chip { display: flex; align-items: baseline; justify-content: space-between; gap: .4rem; }
+    .sun-chip-time { font-family: var(--mono); font-size: .72rem; opacity: .8; }
+    .sun-offset { appearance: none; height: 1.4rem; background: transparent; cursor: pointer; }
+    .sun-offset::-webkit-slider-runnable-track { height: .35rem; border-radius: 1rem;
+        background: linear-gradient(to right, var(--ember) var(--fill, 50%), var(--line) var(--fill, 50%)); }
+    .sun-offset::-moz-range-track { height: .35rem; border-radius: 1rem;
+        background: linear-gradient(to right, var(--ember) var(--fill, 50%), var(--line) var(--fill, 50%)); }
+    .sun-offset::-webkit-slider-thumb { appearance: none; width: 1.05rem; height: 1.05rem;
+        margin-top: -.35rem; border-radius: 50%; background: var(--ember);
+        border: 2px solid var(--card); transition: scale var(--dur-base) var(--ease-spring); }
+    .sun-offset::-moz-range-thumb { width: .85rem; height: .85rem; border-radius: 50%;
+        background: var(--ember); border: 2px solid var(--card); }
+    .sun-offset:hover::-webkit-slider-thumb { scale: 1.15; }
+    .sun-offset:active::-webkit-slider-thumb { scale: 1.3; }
+    .sun-offset-ends { display: flex; justify-content: space-between; font-size: .7rem; }
   </style>
 </head>
 <body></body>

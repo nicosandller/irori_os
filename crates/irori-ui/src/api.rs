@@ -201,7 +201,7 @@ pub async fn app_rpc(
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let url = format!("/api/dev/apps/{extension}/rpc");
-    let response = Request::post(&url)
+    let response = post(&url)
         .json(&serde_json::json!({ "method": method, "params": params }))
         .map_err(|e| e.to_string())?
         .send()
@@ -240,6 +240,28 @@ pub struct ProtocolActionInfo {
     pub label: String,
     #[serde(default)]
     pub seconds: Option<u32>,
+}
+
+/// The header only Irori's own page sends. Once somebody has a password, every change has to
+/// carry it: a cookie goes along with a request whoever wrote the page that made it, and a
+/// cross-site page can't set a header of its own (a `<form>` has none, and a fetch with one is
+/// stopped by the browser's preflight).
+const UI_HEADER: &str = "x-irori-ui";
+
+fn post(url: &str) -> gloo_net::http::RequestBuilder {
+    Request::post(url).header(UI_HEADER, "1")
+}
+
+fn put(url: &str) -> gloo_net::http::RequestBuilder {
+    Request::put(url).header(UI_HEADER, "1")
+}
+
+fn patch(url: &str) -> gloo_net::http::RequestBuilder {
+    Request::patch(url).header(UI_HEADER, "1")
+}
+
+fn delete(url: &str) -> gloo_net::http::RequestBuilder {
+    Request::delete(url).header(UI_HEADER, "1")
 }
 
 /// The browser's own words for a failed request ("TypeError: Failed to fetch") say nothing a
@@ -412,11 +434,7 @@ pub async fn restart() -> RestartSent {
     // The server only restarts for the page's own fetch: this header is what says it is one,
     // and a cross-site website can't set it (a <form> POST has no header, and a fetch with a
     // custom header is stopped by CORS preflight).
-    let response = match Request::post(RESTART_URL)
-        .header("x-irori-ui", "1")
-        .send()
-        .await
-    {
+    let response = match post(RESTART_URL).send().await {
         Ok(response) => response,
         Err(error) => {
             // The browser's own words for a failed request ("TypeError: Failed to fetch") say
@@ -479,7 +497,7 @@ async fn command(
         command,
         data,
     };
-    let response = Request::post(COMMAND_URL)
+    let response = post(COMMAND_URL)
         .json(&body)
         .map_err(|e| e.to_string())?
         .send()
@@ -575,7 +593,7 @@ async fn checked(response: gloo_net::http::Response) -> Result<(), String> {
 }
 
 pub async fn edit_device(device_id: &DeviceId, edit: &DeviceEdit) -> Result<(), String> {
-    let response = Request::patch(&format!("/api/dev/devices/{device_id}"))
+    let response = patch(&format!("/api/dev/devices/{device_id}"))
         .json(edit)
         .map_err(|e| e.to_string())?
         .send()
@@ -605,7 +623,7 @@ pub async fn remove_device(device_id: &DeviceId, force: bool) -> Result<(), Remo
         code: Option<String>,
     }
     let query = if force { "?force=true" } else { "" };
-    let response = Request::delete(&format!("/api/dev/devices/{device_id}{query}"))
+    let response = delete(&format!("/api/dev/devices/{device_id}{query}"))
         .send()
         .await
         .map_err(|e| RemoveFailed::Other(unreachable(e)))?;
@@ -628,7 +646,7 @@ struct EntityEdit {
 }
 
 pub async fn rename_entity(entity_id: &EntityId, name: Option<Name>) -> Result<(), String> {
-    let response = Request::patch(&format!("/api/dev/entities/{entity_id}"))
+    let response = patch(&format!("/api/dev/entities/{entity_id}"))
         .json(&EntityEdit { name })
         .map_err(|e| e.to_string())?
         .send()
@@ -647,7 +665,7 @@ struct AreaRequest {
 }
 
 pub async fn add_area(name: Name, floor: Option<&FloorId>) -> Result<(), String> {
-    let response = Request::post(AREAS_URL)
+    let response = post(AREAS_URL)
         .json(&AreaRequest {
             name,
             floor: floor.cloned(),
@@ -660,7 +678,7 @@ pub async fn add_area(name: Name, floor: Option<&FloorId>) -> Result<(), String>
 }
 
 pub async fn rename_area(id: &AreaId, name: Name) -> Result<(), String> {
-    let response = Request::patch(&format!("{AREAS_URL}/{id}"))
+    let response = patch(&format!("{AREAS_URL}/{id}"))
         .json(&AreaRequest { name, floor: None })
         .map_err(|e| e.to_string())?
         .send()
@@ -677,7 +695,7 @@ struct AreaMove {
 
 /// Moves an area to another floor, or off every floor. Its devices come with it.
 pub async fn move_area(id: &AreaId, floor: Option<&FloorId>) -> Result<(), String> {
-    let response = Request::patch(&format!("{AREAS_URL}/{id}"))
+    let response = patch(&format!("{AREAS_URL}/{id}"))
         .json(&AreaMove {
             floor: floor.cloned(),
         })
@@ -695,7 +713,7 @@ struct FloorRequest {
 }
 
 pub async fn add_floor(name: Name, level: i8) -> Result<(), String> {
-    let response = Request::post("/api/dev/floors")
+    let response = post("/api/dev/floors")
         .json(&FloorRequest { name, level })
         .map_err(|e| e.to_string())?
         .send()
@@ -719,7 +737,7 @@ pub async fn edit_floor(
     name: Option<Name>,
     level: Option<i8>,
 ) -> Result<(), String> {
-    let response = Request::patch(&format!("/api/dev/floors/{id}"))
+    let response = patch(&format!("/api/dev/floors/{id}"))
         .json(&FloorEdit { name, level })
         .map_err(|e| e.to_string())?
         .send()
@@ -729,7 +747,7 @@ pub async fn edit_floor(
 }
 
 pub async fn remove_floor(id: &irori_types::FloorId) -> Result<(), String> {
-    let response = Request::delete(&format!("/api/dev/floors/{id}"))
+    let response = delete(&format!("/api/dev/floors/{id}"))
         .send()
         .await
         .map_err(unreachable)?;
@@ -747,7 +765,7 @@ pub struct PlanSaved {
 /// Saves the plan of the home, whole. The editor keeps a working copy while somebody draws, so
 /// this is only ever sent by Save — and Cancel is simply never sending it.
 pub async fn save_floorplan(plan: &Floorplan) -> Result<PlanSaved, String> {
-    let response = Request::put("/api/dev/floorplan")
+    let response = put("/api/dev/floorplan")
         .json(plan)
         .map_err(|e| e.to_string())?
         .send()
@@ -766,7 +784,7 @@ pub async fn save_floorplan(plan: &Floorplan) -> Result<PlanSaved, String> {
 }
 
 pub async fn remove_area(id: &AreaId) -> Result<(), String> {
-    let response = Request::delete(&format!("{AREAS_URL}/{id}"))
+    let response = delete(&format!("{AREAS_URL}/{id}"))
         .send()
         .await
         .map_err(unreachable)?;
@@ -776,7 +794,7 @@ pub async fn remove_area(id: &AreaId) -> Result<(), String> {
 /// Makes a toggle helper: a switch Irori keeps itself. Its entity appears a moment later, once
 /// the helpers extension has restarted with it.
 pub async fn add_toggle(name: Name) -> Result<(), String> {
-    let response = Request::post("/api/dev/helpers/toggles")
+    let response = post("/api/dev/helpers/toggles")
         .json(&AreaRequest { name, floor: None })
         .map_err(|e| e.to_string())?
         .send()
@@ -787,7 +805,7 @@ pub async fn add_toggle(name: Name) -> Result<(), String> {
 
 /// Removes a toggle helper by the id it was made with: the object id of its `switch.` entity.
 pub async fn remove_toggle(id: &str) -> Result<(), String> {
-    let response = Request::delete(&format!("/api/dev/helpers/toggles/{id}"))
+    let response = delete(&format!("/api/dev/helpers/toggles/{id}"))
         .send()
         .await
         .map_err(unreachable)?;
@@ -905,7 +923,7 @@ pub async fn install_extension(
     approve_full_access: bool,
     update: bool,
 ) -> Result<(), String> {
-    let response = Request::post(&format!("/api/dev/extensions/{id}/install"))
+    let response = post(&format!("/api/dev/extensions/{id}/install"))
         .json(&serde_json::json!({
             "approve_full_access": approve_full_access,
             "update": update,
@@ -918,7 +936,7 @@ pub async fn install_extension(
 }
 
 pub async fn uninstall_extension(id: &str) -> Result<(), String> {
-    let response = Request::delete(&format!("/api/dev/extensions/{id}"))
+    let response = delete(&format!("/api/dev/extensions/{id}"))
         .send()
         .await
         .map_err(unreachable)?;
@@ -932,7 +950,7 @@ pub async fn set_extension_settings(
     id: &str,
     settings: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
-    let response = Request::post(&format!("/api/dev/extensions/{id}/settings"))
+    let response = post(&format!("/api/dev/extensions/{id}/settings"))
         .json(settings)
         .map_err(|e| e.to_string())?
         .send()
@@ -946,7 +964,7 @@ pub async fn give_secret(
     path: &[String],
     value: &str,
 ) -> Result<(), String> {
-    let response = Request::put(&format!("/api/dev/extensions/{extension}/secrets"))
+    let response = put(&format!("/api/dev/extensions/{extension}/secrets"))
         .json(&SecretGiven { path, value })
         .map_err(|e| e.to_string())?
         .send()
@@ -958,7 +976,7 @@ pub async fn give_secret(
 /// Triggers one of an extension's declared, currently-available actions — Zigbee's
 /// `permit_join`, say — from the "+ Add device" flow.
 pub async fn trigger_action(extension: &ExtensionId, action_id: &str) -> Result<(), String> {
-    let response = Request::post(&format!(
+    let response = post(&format!(
         "/api/dev/extensions/{extension}/actions/{action_id}"
     ))
     .send()
@@ -969,7 +987,7 @@ pub async fn trigger_action(extension: &ExtensionId, action_id: &str) -> Result<
 
 /// Ends an action that's open before its time is up: closes Zigbee's network to new devices.
 pub async fn stop_action(extension: &ExtensionId, action_id: &str) -> Result<(), String> {
-    let response = Request::delete(&format!(
+    let response = delete(&format!(
         "/api/dev/extensions/{extension}/actions/{action_id}"
     ))
     .send()
@@ -1086,7 +1104,7 @@ pub async fn fetch_assistant() -> Result<AssistantStatus, String> {
 }
 
 pub async fn save_assistant(body: &serde_json::Value) -> Result<AssistantStatus, String> {
-    let response = Request::put("/api/dev/assistant")
+    let response = put("/api/dev/assistant")
         .json(body)
         .map_err(|error| error.to_string())?
         .send()
@@ -1159,7 +1177,7 @@ pub async fn assistant_transcript(scope: &str) -> Result<AssistantThread, String
 }
 
 pub async fn assistant_clear(scope: &str) -> Result<(), String> {
-    let response = Request::delete(&format!(
+    let response = delete(&format!(
         "/api/dev/assistant/transcript/{}",
         encode_scope(scope)
     ))
@@ -1207,7 +1225,7 @@ pub async fn assistant_follow(scope: &str, on: impl FnMut(Streamed)) -> Result<(
 
 /// Stops the answer `scope` is in the middle of. Nothing of it is kept.
 pub async fn assistant_stop(scope: &str) -> Result<(), String> {
-    let response = Request::post(&format!(
+    let response = post(&format!(
         "/api/dev/assistant/turns/{}/stop",
         encode_scope(scope)
     ))
@@ -1255,7 +1273,7 @@ pub async fn assistant_install(mut on: impl FnMut(Progress)) -> Result<(), Strin
 }
 
 pub async fn assistant_forget(tag: &str) -> Result<AssistantStatus, String> {
-    let response = Request::post("/api/dev/assistant/forget")
+    let response = post("/api/dev/assistant/forget")
         .json(&serde_json::json!({ "tag": tag }))
         .map_err(|error| error.to_string())?
         .send()
@@ -1277,7 +1295,7 @@ pub async fn assistant_hold(tag: &str, load: bool) -> Result<AssistantStatus, St
     } else {
         "/api/dev/assistant/unload"
     };
-    let response = Request::post(url)
+    let response = post(url)
         .json(&serde_json::json!({ "tag": tag }))
         .map_err(|error| error.to_string())?
         .send()
@@ -1293,7 +1311,7 @@ pub async fn assistant_hold(tag: &str, load: bool) -> Result<AssistantStatus, St
 }
 
 pub async fn assistant_uninstall() -> Result<AssistantStatus, String> {
-    let response = Request::post("/api/dev/assistant/uninstall")
+    let response = post("/api/dev/assistant/uninstall")
         .send()
         .await
         .map_err(unreachable)?;
@@ -1317,7 +1335,7 @@ async fn stream(
     body: &serde_json::Value,
     on: impl FnMut(Streamed),
 ) -> Result<(), String> {
-    let response = Request::post(url)
+    let response = post(url)
         .json(body)
         .map_err(|error| error.to_string())?
         .send()
@@ -1477,4 +1495,244 @@ mod tests {
             vec![Streamed::Failed("no model".into())]
         );
     }
+}
+
+// ---- who is there, and where the home is (`server/auth.rs`, `server/people.rs`) -----------
+
+const SESSION_URL: &str = "/api/session";
+const USERS_URL: &str = "/api/dev/users";
+const PLACE_URL: &str = "/api/dev/place";
+
+/// What the page boots from: whether Irori asks who is there, who this browser is, and how
+/// far the home has been set up.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Session {
+    pub locked: bool,
+    #[serde(default)]
+    pub user: Option<irori_types::User>,
+    /// Whether this browser may change how the home is set up.
+    pub owner: bool,
+    pub setup: Setup,
+    /// Who can sign in, for the sign-in page to offer by name.
+    #[serde(default)]
+    pub people: Vec<Person>,
+}
+
+impl Session {
+    /// Locked, and this browser is nobody yet.
+    pub fn must_sign_in(&self) -> bool {
+        self.locked && self.user.is_none()
+    }
+
+    /// Whether the welcome should open by itself: nobody has set the home up, and nobody has
+    /// said not now.
+    pub fn wants_welcome(&self) -> bool {
+        !self.setup.owner && !self.setup.dismissed
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct Setup {
+    pub owner: bool,
+    pub place: bool,
+    pub dismissed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Person {
+    pub id: irori_types::UserId,
+    pub name: Name,
+}
+
+async fn read<T: for<'de> Deserialize<'de>>(
+    response: gloo_net::http::Response,
+) -> Result<T, String> {
+    if !response.ok() {
+        let status = response.status();
+        return Err(match response.json::<Refused>().await {
+            Ok(refused) => refused.error,
+            Err(_) => format!("Irori refused that ({status})"),
+        });
+    }
+    response
+        .json::<T>()
+        .await
+        .map_err(|e| format!("Irori sent something this page can't read: {e}"))
+}
+
+pub async fn fetch_session() -> Result<Session, String> {
+    read(
+        Request::get(SESSION_URL)
+            .send()
+            .await
+            .map_err(unreachable)?,
+    )
+    .await
+}
+
+pub async fn sign_in(user: &irori_types::UserId, password: &str) -> Result<Session, String> {
+    let response = post(SESSION_URL)
+        .json(&serde_json::json!({ "user": user, "password": password }))
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read(response).await
+}
+
+pub async fn sign_out() -> Result<(), String> {
+    checked(delete(SESSION_URL).send().await.map_err(unreachable)?).await
+}
+
+/// Sets up the home's first owner. `password` empty leaves the home open.
+pub async fn set_up(name: &Name, password: &str) -> Result<Session, String> {
+    let response = post("/api/setup")
+        .json(&serde_json::json!({ "name": name, "password": password }))
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read(response).await
+}
+
+/// Puts the welcome off for good, on every browser.
+pub async fn dismiss_welcome() -> Result<(), String> {
+    checked(
+        post("/api/setup/dismiss")
+            .send()
+            .await
+            .map_err(unreachable)?,
+    )
+    .await
+}
+
+/// One person, as Settings shows them.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct UserRow {
+    pub id: irori_types::UserId,
+    pub name: Name,
+    pub role: irori_types::Role,
+    pub has_password: bool,
+}
+
+pub async fn fetch_users() -> Result<Vec<UserRow>, String> {
+    read(Request::get(USERS_URL).send().await.map_err(unreachable)?).await
+}
+
+pub async fn add_user(
+    name: &Name,
+    role: irori_types::Role,
+    password: &str,
+) -> Result<Vec<UserRow>, String> {
+    let response = post(USERS_URL)
+        .json(&serde_json::json!({ "name": name, "role": role, "password": password }))
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read(response).await
+}
+
+/// Changes a person: any of their name, what they may do, and their password (an empty one
+/// takes it away).
+pub async fn edit_user(
+    id: &irori_types::UserId,
+    edit: &serde_json::Value,
+) -> Result<Vec<UserRow>, String> {
+    let response = patch(&format!("{USERS_URL}/{id}"))
+        .json(edit)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read(response).await
+}
+
+pub async fn remove_user(id: &irori_types::UserId) -> Result<Vec<UserRow>, String> {
+    let response = delete(&format!("{USERS_URL}/{id}"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read(response).await
+}
+
+pub async fn fetch_place() -> Result<irori_types::HomeSettings, String> {
+    read(Request::get(PLACE_URL).send().await.map_err(unreachable)?).await
+}
+
+pub async fn save_place(
+    home: &irori_types::HomeSettings,
+) -> Result<irori_types::HomeSettings, String> {
+    let response = put(PLACE_URL)
+        .json(home)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read(response).await
+}
+
+// ---- the map's two questions, asked of the internet, never of Irori -----------------------
+//
+// Where an address is, and what time zone a point is in. Both are extras: with no internet
+// the map area says so, and typed coordinates and the time zone list carry on.
+
+/// A place an address search found.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Found {
+    pub label: String,
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
+/// Looks an address up with OpenStreetMap's Nominatim. Once per search, never per keystroke:
+/// that is its usage policy, and the polite thing besides.
+pub async fn find_address(query: &str) -> Result<Vec<Found>, String> {
+    #[derive(Deserialize)]
+    struct Hit {
+        display_name: String,
+        lat: String,
+        lon: String,
+    }
+    let asked: String = web_sys::js_sys::encode_uri_component(query).into();
+    let url = format!("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&q={asked}");
+    let offline = |error: gloo_net::Error| {
+        leptos::logging::error!("{error}");
+        "Can't reach the address search. Is this browser online?".to_owned()
+    };
+    let response = Request::get(&url).send().await.map_err(offline)?;
+    if !response.ok() {
+        return Err(format!("The address search answered {}", response.status()));
+    }
+    let hits: Vec<Hit> = response.json().await.map_err(offline)?;
+    Ok(hits
+        .into_iter()
+        .filter_map(|hit| {
+            Some(Found {
+                label: hit.display_name,
+                latitude: hit.lat.parse().ok()?,
+                longitude: hit.lon.parse().ok()?,
+            })
+        })
+        .collect())
+}
+
+/// The time zone a point is in, asked of Open-Meteo. `None` when it can't be reached or
+/// doesn't say: the zone is then the person's to pick.
+pub async fn zone_at(latitude: f64, longitude: f64) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Answer {
+        timezone: String,
+    }
+    let url = format!(
+        "https://api.open-meteo.com/v1/forecast?latitude={latitude}&longitude={longitude}\
+         &current=temperature_2m&timezone=auto"
+    );
+    let response = Request::get(&url).send().await.ok()?;
+    if !response.ok() {
+        return None;
+    }
+    let answer: Answer = response.json().await.ok()?;
+    // Out at sea it answers "GMT", which is nobody's home.
+    answer.timezone.contains('/').then_some(answer.timezone)
 }
