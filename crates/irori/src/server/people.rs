@@ -10,7 +10,9 @@ use axum::{Extension, Json};
 use irori_types::{HomeSettings, Location, Name, Role, TimeZoneName, User, UserId};
 use serde::{Deserialize, Serialize};
 
-use super::auth::{Actor, edit_failed, password_hash, session_cookie, token_of};
+use super::auth::{
+    Actor, Client, check_current, edit_failed, password_hash, session_cookie, token_of,
+};
 use super::{AppState, refused};
 use crate::config::Refused;
 
@@ -144,6 +146,9 @@ pub struct UserEdit {
     /// A new password; an empty one takes the password away.
     #[serde(default)]
     password: Option<String>,
+    /// The password they have now. Needed to change or take away your own.
+    #[serde(default)]
+    current_password: Option<String>,
 }
 
 impl std::fmt::Debug for UserEdit {
@@ -160,6 +165,7 @@ impl std::fmt::Debug for UserEdit {
 pub async fn edit_user(
     State(state): State<AppState>,
     Extension(who): Extension<Actor>,
+    Extension(Client(from)): Extension<Client>,
     Path(id): Path<UserId>,
     headers: HeaderMap,
     Json(ask): Json<UserEdit>,
@@ -172,6 +178,19 @@ pub async fn edit_user(
         );
     }
     let clears = ask.password.as_deref() == Some("");
+    // Your own password is changed with the one you have: a screen left signed in mustn't be
+    // enough to take the home over. An owner resetting somebody else's doesn't know theirs.
+    if own && ask.password.is_some() {
+        let current = state.0.config.people().await.hashes.get(&id).cloned();
+        if let Some(current) = current {
+            let trier = (Some(id.clone()), from);
+            if let Some(no) =
+                check_current(&state.0.auth, &trier, ask.current_password.clone(), current).await
+            {
+                return no;
+            }
+        }
+    }
     let hash = match password_hash(ask.password.filter(|password| !password.is_empty())).await {
         Ok(hash) => hash,
         Err(why) => return refused(StatusCode::UNPROCESSABLE_ENTITY, why),
@@ -292,6 +311,14 @@ pub async fn set_place(State(state): State<AppState>, Json(ask): Json<PlaceEdit>
         return refused(
             StatusCode::UNPROCESSABLE_ENTITY,
             format!("{zone} isn't a time zone Irori knows; one looks like Europe/Brussels"),
+        );
+    }
+    // The zone is the part that's needed: a time of day means nothing without it, and the sun
+    // is worked out in it. Where the home is on the map is the optional part.
+    if ask.location.is_some() && ask.time_zone.is_none() {
+        return refused(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "a location needs a time zone with it; pick the home's time zone first".to_owned(),
         );
     }
     let home = HomeSettings {

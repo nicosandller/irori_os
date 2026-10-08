@@ -113,6 +113,8 @@ pub fn Section() -> impl IntoView {
     let keying = RwSignal::new(None::<UserId>);
     let asking = RwSignal::new(None::<UserId>);
     let (password, again) = (RwSignal::new(String::new()), RwSignal::new(String::new()));
+    // The password somebody has now, typed to change their own.
+    let current = RwSignal::new(String::new());
     let adding = RwSignal::new(false);
     let new_name = RwSignal::new(String::new());
     let new_role = RwSignal::new(Role::User);
@@ -126,6 +128,7 @@ pub fn Section() -> impl IntoView {
             adding.set(false);
             password.set(String::new());
             again.set(String::new());
+            current.set(String::new());
             new_name.set(String::new());
             refresh(people, session);
         }
@@ -133,8 +136,12 @@ pub fn Section() -> impl IntoView {
     };
 
     let set_password = move |id: UserId, password: String| {
+        let had = current.get_untracked();
         spawn_local(async move {
-            let edit = serde_json::json!({ "password": password });
+            let mut edit = serde_json::json!({ "password": password });
+            if !had.is_empty() {
+                edit["current_password"] = had.into();
+            }
             after(api::edit_user(&id, &edit).await);
         });
     };
@@ -229,6 +236,7 @@ pub fn Section() -> impl IntoView {
                         on:click=move |_| {
                             password.set(String::new());
                             again.set(String::new());
+                            current.set(String::new());
                             trouble.set(None);
                             keying.update(|open| {
                                 *open = (open.as_ref() != Some(&key_id)).then(|| key_id.clone());
@@ -279,6 +287,19 @@ pub fn Section() -> impl IntoView {
                             }
                         }
                     >
+                        // Your own is changed with the one you have. An owner resetting
+                        // somebody else's doesn't know theirs, and isn't asked.
+                        {(mine && has_password).then(|| view! {
+                            <label class="settings-field">
+                                "Your current password"
+                                <input
+                                    type="password"
+                                    autocomplete="current-password"
+                                    prop:value=move || current.get()
+                                    on:input=move |event| current.set(event_target_value(&event))
+                                />
+                            </label>
+                        })}
                         {password_fields(password, again, "New password")}
                         <div class="settings-form-actions">
                             <button type="button" on:click=move |_| keying.set(None)>"Cancel"</button>

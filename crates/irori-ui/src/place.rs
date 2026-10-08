@@ -1,8 +1,8 @@
 //! Where the home is and its time zone: the Settings row, and the same picker in the welcome.
 //!
-//! One question, really. A person knows where they live; the time zone follows from it, and
-//! is what "07:00" and "sunset" in an automation are read in. So the map comes first and the
-//! zone is offered from the pin, with a list to overrule it from.
+//! The time zone is the part that is needed: it is what "07:00" in an automation is read in,
+//! so it comes first and starts from this browser's own. Where the home is on the map is
+//! optional, and only the sun needs it; putting a pin down also offers the zone it stands in.
 //!
 //! The map and the two lookups (an address, a point's zone) need the internet and are extras.
 //! The coordinates and the zone list don't, and are the whole of it offline.
@@ -73,7 +73,8 @@ pub fn summary(home: &HomeSettings) -> String {
     match (at, zone) {
         (Some(at), Some(zone)) => format!("{at} · {zone}"),
         (Some(at), None) => format!("{at} · no time zone"),
-        (None, Some(zone)) => format!("{zone} · no location"),
+        // The zone alone is a whole answer: the map is optional.
+        (None, Some(zone)) => zone.to_owned(),
         (None, None) => "not set".to_owned(),
     }
 }
@@ -135,7 +136,11 @@ pub fn PlacePicker(
         }
         draft.update(|draft| {
             draft.location = now.and_then(|(latitude, longitude)| {
-                Location::new(latitude, longitude, label.get_untracked()).ok()
+                // What a search calls a place can run long; a label is a few words.
+                let label = label
+                    .get_untracked()
+                    .map(|label| label.chars().take(120).collect::<String>());
+                Location::new(latitude, longitude, label).ok()
             });
         });
         let Some((latitude, longitude)) = now else {
@@ -270,6 +275,34 @@ pub fn PlacePicker(
 
     view! {
         <div class="place">
+            // The part that is needed: what a time of day is read in.
+                <div class="settings-field place-zone">
+                    <span>"Time zone"</span>
+                    {if editable {
+                        view! {
+                            <Combo
+                                choices=zone_choices
+                                value=zone_value
+                                pick=pick_zone
+                                placeholder="Search for a city".to_owned()
+                            />
+                        }
+                        .into_any()
+                    } else {
+                        view! { <span class="place-zone-read">{move || zone_value.get()}</span> }
+                            .into_any()
+                    }}
+                    <span class="muted small place-zone-note">
+                        {move || zone_note.get().unwrap_or("what a time of day is read in")}
+                    </span>
+                </div>
+
+            <div class="place-where">
+                <span class="place-where-title">"Where the home is"</span>
+                <span class="muted small">
+                    "Optional. Only sunrise and sunset need it."
+                </span>
+            </div>
             {editable.then(|| view! {
                 <form class="place-search" on:submit=search>
                     <input
@@ -315,6 +348,7 @@ pub fn PlacePicker(
                 }}
             </p>
 
+
             <div class="place-fields">
                 <label class="settings-field">
                     "Latitude"
@@ -338,26 +372,20 @@ pub fn PlacePicker(
                         on:change=move |event| typed(None, Some(event_target_value(&event)))
                     />
                 </label>
-                <div class="settings-field place-zone">
-                    <span>"Time zone"</span>
-                    {if editable {
-                        view! {
-                            <Combo
-                                choices=zone_choices
-                                value=zone_value
-                                pick=pick_zone
-                                placeholder="Search for a city".to_owned()
-                            />
+                {editable.then(|| view! {
+                    // Always there, so it can fade: taking the pin off the map again.
+                    <button
+                        type="button"
+                        class="press place-clear"
+                        disabled=move || pin.with(Option::is_none)
+                        on:click=move |_| {
+                            label.set(None);
+                            pin.set(None);
                         }
-                        .into_any()
-                    } else {
-                        view! { <span class="place-zone-read">{move || zone_value.get()}</span> }
-                            .into_any()
-                    }}
-                    <span class="muted small place-zone-note">
-                        {move || zone_note.get().unwrap_or("what a time of day is read in")}
-                    </span>
-                </div>
+                    >
+                        "Remove the location"
+                    </button>
+                })}
             </div>
 
             {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
@@ -430,7 +458,10 @@ pub fn Section() -> impl IntoView {
                     class="add-one"
                     class:busy=move || saving.get()
                     class:done=move || done.get()
-                    disabled=move || saving.get() || !changed()
+                    // The zone is the part that's needed: without one there is nothing to save.
+                    disabled=move || {
+                        saving.get() || !changed() || draft.with(|draft| draft.time_zone.is_none())
+                    }
                     on:click=save
                 >
                     <span class="add-one-label">"Save"</span>
@@ -464,7 +495,7 @@ mod tests {
         assert_eq!(summary(&home(None, None)), "not set");
         assert_eq!(
             summary(&home(Some("Europe/Brussels"), None)),
-            "Europe/Brussels · no location"
+            "Europe/Brussels"
         );
         assert_eq!(
             summary(&home(

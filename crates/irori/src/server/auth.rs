@@ -44,6 +44,22 @@ const TRIES: u32 = 5;
 /// who mistyped five times is back in before they've found the config directory.
 const LOCKOUT: Duration = Duration::from_secs(30);
 
+/// The most people trying passwords that are kept count of at once. Far more than a home has
+/// people or devices; past it, new ones wait until old ones are forgotten.
+const MAX_TRIERS: usize = 1024;
+
+/// How long somebody who has stopped trying is remembered.
+const FORGET_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// Whose password is being tried, and from where. Counted together, so somebody guessing from
+/// one machine can't make the owner wait on another. A name that isn't anybody's is counted
+/// as nobody, so made-up names can't fill the count.
+pub type Trier = (Option<UserId>, Option<std::net::IpAddr>);
+
+/// Where a request came from, when the server knows. Put on every request by the guard.
+#[derive(Debug, Clone, Copy)]
+pub struct Client(pub Option<std::net::IpAddr>);
+
 /// Who a request is from, as far as Irori can tell. Put on every request the guard lets
 /// through, for the handlers that care who is asking.
 #[derive(Debug, Clone)]
@@ -127,7 +143,7 @@ struct Attempts {
 pub struct Auth {
     db: PathBuf,
     sessions: Mutex<HashMap<String, Session>>,
-    attempts: Mutex<HashMap<UserId, Attempts>>,
+    attempts: Mutex<HashMap<Trier, Attempts>>,
 }
 
 fn now_seconds() -> u64 {
@@ -242,11 +258,19 @@ impl Auth {
 
     /// Whose session a token is, if it is anybody's still.
     fn whose(&self, token: &str) -> Option<UserId> {
-        let sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
-        sessions
-            .get(&fingerprint(token))
-            .filter(|session| session.expires > now_seconds())
-            .map(|session| session.user.clone())
+        let hash = fingerprint(token);
+        let found = {
+            let sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+            sessions.get(&hash).cloned()
+        };
+        let session = found?;
+        if session.expires > now_seconds() {
+            return Some(session.user);
+        }
+        // Run out: it goes, and so does every other one that has, here and in the database.
+        let now = now_seconds();
+        self.forget(|_, session| session.expires > now);
+        None
     }
 
     fn forget(&self, keep: impl Fn(&str, &Session) -> bool) {
@@ -287,31 +311,46 @@ impl Auth {
         self.forget(|hash, session| &session.user != user || kept.as_deref() == Some(hash));
     }
 
-    /// How long `user` has to wait before trying a password again, if they do.
-    fn must_wait(&self, user: &UserId) -> Option<Duration> {
-        let attempts = self.attempts.lock().unwrap_or_else(PoisonError::into_inner);
-        let tries = attempts.get(user)?;
-        (tries.failed >= TRIES)
-            .then(|| LOCKOUT.checked_sub(tries.last.elapsed()))
-            .flatten()
+    /// Counts a try at `who`'s password, before the password is looked at, or says how long
+    /// they have to wait. Counted first so that many tries sent at once are each counted: a
+    /// check made before the slow work and a count made after it would let them all through.
+    pub fn try_now(&self, who: &Trier) -> Result<(), Duration> {
+        let mut attempts = self.attempts.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(tries) = attempts.get_mut(who) {
+            if tries.failed >= TRIES {
+                match LOCKOUT.checked_sub(tries.last.elapsed()) {
+                    Some(wait) => return Err(wait),
+                    // A wait that has been sat out starts the count again.
+                    None => tries.failed = 0,
+                }
+            }
+            tries.failed += 1;
+            tries.last = Instant::now();
+            return Ok(());
+        }
+        if attempts.len() >= MAX_TRIERS {
+            // Whoever has been quiet for long enough is forgotten to make room.
+            attempts.retain(|_, tries| tries.last.elapsed() < FORGET_AFTER);
+            if attempts.len() >= MAX_TRIERS {
+                return Err(LOCKOUT);
+            }
+        }
+        attempts.insert(
+            who.clone(),
+            Attempts {
+                failed: 1,
+                last: Instant::now(),
+            },
+        );
+        Ok(())
     }
 
-    fn tried(&self, user: &UserId, right: bool) {
-        let mut attempts = self.attempts.lock().unwrap_or_else(PoisonError::into_inner);
-        if right {
-            attempts.remove(user);
-            return;
-        }
-        let tries = attempts.entry(user.clone()).or_insert(Attempts {
-            failed: 0,
-            last: Instant::now(),
-        });
-        // A wait that has been sat out starts the count again.
-        if tries.failed >= TRIES && tries.last.elapsed() >= LOCKOUT {
-            tries.failed = 0;
-        }
-        tries.failed += 1;
-        tries.last = Instant::now();
+    /// The password was right: what was counted against `who` is forgotten.
+    pub fn got_in(&self, who: &Trier) {
+        self.attempts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(who);
     }
 
     fn dismissed(&self) -> bool {
@@ -438,6 +477,11 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
             );
         }
     }
+    let from = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0.ip());
+    request.extensions_mut().insert(Client(from));
     // Open addresses get whoever it is too, or nobody: the session endpoints read it.
     request.extensions_mut().insert(who.unwrap_or(Actor {
         user: None,
@@ -522,36 +566,80 @@ impl std::fmt::Debug for SignIn {
     }
 }
 
-/// Signs somebody in. A wrong name and a wrong password get the same answer, after the same
-/// work, so neither says which it was.
-pub async fn sign_in(State(state): State<AppState>, Json(ask): Json<SignIn>) -> Response {
-    let auth = &state.0.auth;
-    if let Some(wait) = auth.must_wait(&ask.user) {
-        return refused(
-            StatusCode::TOO_MANY_REQUESTS,
-            format!(
-                "too many wrong passwords; try again in {} seconds",
-                wait.as_secs().max(1)
-            ),
-        );
-    }
-    let people = state.0.config.people().await;
-    let hash = people
-        .user(&ask.user)
-        .and_then(|user| people.hashes.get(&user.id))
-        .cloned();
-    let password = ask.password;
-    let right = tokio::task::spawn_blocking(move || match hash {
+fn too_many(wait: Duration) -> Response {
+    refused(
+        StatusCode::TOO_MANY_REQUESTS,
+        format!(
+            "too many wrong passwords; try again in {} seconds",
+            wait.as_secs().max(1)
+        ),
+    )
+}
+
+/// Whether `password` is the one `hash` was made from, worked out off the async runtime. With
+/// no hash to check against the work is done all the same, so how long the answer takes says
+/// nothing about whether there was one.
+async fn right_for(password: String, hash: Option<String>) -> bool {
+    tokio::task::spawn_blocking(move || match hash {
         Some(hash) => right_password(&password, &hash),
         None => {
-            // Nobody by that name, or nobody with a password: do the work all the same.
             let _ = hash_password(&password);
             false
         }
     })
     .await
-    .unwrap_or(false);
-    auth.tried(&ask.user, right);
+    .unwrap_or(false)
+}
+
+/// Checks the password somebody already has, before they change it: counted like a sign-in,
+/// so a session left open isn't a way to guess at leisure. Answers the refusal, if there is one.
+pub async fn check_current(
+    auth: &Auth,
+    trier: &Trier,
+    password: Option<String>,
+    hash: String,
+) -> Option<Response> {
+    let Some(password) = password else {
+        return Some(refused(
+            StatusCode::FORBIDDEN,
+            "type your current password to change it".to_owned(),
+        ));
+    };
+    if let Err(wait) = auth.try_now(trier) {
+        return Some(too_many(wait));
+    }
+    if right_for(password, Some(hash)).await {
+        auth.got_in(trier);
+        None
+    } else {
+        Some(refused(
+            StatusCode::FORBIDDEN,
+            "that isn't your current password".to_owned(),
+        ))
+    }
+}
+
+/// Signs somebody in. A wrong name and a wrong password get the same answer, after the same
+/// work, so neither says which it was.
+pub async fn sign_in(
+    State(state): State<AppState>,
+    Extension(Client(from)): Extension<Client>,
+    Json(ask): Json<SignIn>,
+) -> Response {
+    let auth = &state.0.auth;
+    let people = state.0.config.people().await;
+    let trier: Trier = (people.user(&ask.user).map(|user| user.id.clone()), from);
+    if let Err(wait) = auth.try_now(&trier) {
+        return too_many(wait);
+    }
+    let hash = people
+        .user(&ask.user)
+        .and_then(|user| people.hashes.get(&user.id))
+        .cloned();
+    let right = right_for(ask.password, hash).await;
+    if right {
+        auth.got_in(&trier);
+    }
     let Some(user) = people.user(&ask.user).filter(|_| right).cloned() else {
         return refused(
             StatusCode::UNAUTHORIZED,
@@ -602,6 +690,14 @@ impl std::fmt::Debug for FirstOwner {
 /// Sets up the first owner. Open to anyone who can reach Irori, and only while there is
 /// nobody: after that, people are added by an owner.
 pub async fn set_up(State(state): State<AppState>, Json(ask): Json<FirstOwner>) -> Response {
+    // Looked at before any hashing: this address is open to anyone, and a home that already
+    // has an owner mustn't be made to do slow work for whoever asks.
+    if !state.0.config.people().await.users.is_empty() {
+        return refused(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "this home already has an owner; people are added in Settings".to_owned(),
+        );
+    }
     let password = ask.password.filter(|password| !password.is_empty());
     let hash = match password_hash(password).await {
         Ok(hash) => hash,

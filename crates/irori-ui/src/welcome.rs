@@ -19,7 +19,7 @@ use crate::transition;
 use crate::users::password_trouble;
 
 /// The steps, in order. What each is called is what the dots along the bottom are read as.
-const STEPS: [&str; 4] = ["Welcome", "You", "Your home", "Done"];
+const STEPS: [&str; 4] = ["Welcome", "You", "Time zone", "Done"];
 
 /// Whether the welcome is on show. Set by the page as it boots, and by Settings to open it
 /// again.
@@ -212,21 +212,20 @@ pub fn Welcome() -> impl IntoView {
         .into_any(),
         2 => view! {
             <div class="welcome-step add-step welcome-wide">
-                <h1>"Where is the home?"</h1>
+                <h1>"What time is it at home?"</h1>
                 <p class="welcome-lede">
-                    "Automations use it: a time of day needs the time zone, and sunrise and \
-                     sunset need the place."
+                    "Automations go by the home's time zone. Putting the home on the map is \
+                     up to you: it is what sunrise and sunset are worked out from."
                 </p>
                 <PlacePicker draft=draft />
                 {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
                 <div class="welcome-actions">
-                    <button type="button" class="quiet-button" on:click=move |_| go(3)>
-                        "Skip"
-                    </button>
+                    // No Skip here: the zone is filled in from this browser, so going on costs
+                    // nothing, and the map above it can simply be left alone.
                     <button
                         type="button"
                         class="welcome-next"
-                        disabled=move || busy.get() || draft.with(HomeSettings::is_empty)
+                        disabled=move || busy.get() || draft.with(|draft| draft.time_zone.is_none())
                         on:click=home
                     >
                         "Continue"
@@ -259,8 +258,8 @@ pub fn Welcome() -> impl IntoView {
                     <li>
                         {move || match placed.get() {
                             Some(home) => format!("The home is at {}.", crate::place::summary(&home)),
-                            None => "No place was set, so automations can't fire by the clock \
-                                     or the sun yet."
+                            None => "No time zone was set, so automations can't fire by the \
+                                     clock yet."
                                 .to_owned(),
                         }}
                     </li>

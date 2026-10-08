@@ -6,6 +6,9 @@
   <title>IroriOS</title>
   <link data-trunk rel="rust" data-wasm-opt="z" data-wasm-opt-params="--enable-bulk-memory --enable-nontrapping-float-to-int">
   <link data-trunk rel="copy-file" href="../irori/assets/favicon.svg">
+  <!-- The map's own script (src/map.js). Small, and it fetches nothing until a map is shown. -->
+  <link data-trunk rel="copy-file" href="src/map.js">
+  <script src="/map.js" defer></script>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <style>
     /* Brand tokens (assets/README.md). Fonts are never downloaded: the UI works offline. */
@@ -2596,7 +2599,15 @@
                           background: var(--card); border: 0; cursor: pointer; }
     .place-found button:hover { color: var(--ember); background: var(--sunk); }
     .place-hint { margin: 0; }
-    .place-fields { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: .75rem; align-items: start; }
+    .place-fields { display: grid; grid-template-columns: 1fr 1fr auto; gap: .75rem; align-items: end; }
+    .place-clear { padding: .45rem .8rem; font-size: .8rem; white-space: nowrap;
+                   transition: opacity var(--dur-base) var(--ease-out), color var(--dur-fast),
+                               border-color var(--dur-fast); }
+    .place-clear:disabled { opacity: .4; cursor: default; }
+    .place-where { display: flex; flex-wrap: wrap; align-items: baseline; gap: .15rem .6rem;
+                   margin-top: .6rem; padding-top: .9rem; border-top: 1px solid var(--line); }
+    .place-where-title { font-weight: 500; }
+    .place-zone { max-width: 24rem; }
     .place-fields input { width: 100%; }
     .place-fields > label input { font-family: var(--mono); font-size: .85rem; }
     .place-zone-read { padding: .4rem 0; font-family: var(--mono); font-size: .85rem; }
@@ -2604,30 +2615,35 @@
     .place-actions { display: flex; align-items: center; justify-content: flex-end; gap: .75rem;
                      min-height: 2rem; }
     @media (max-width: 40rem) { .place-fields { grid-template-columns: 1fr 1fr; }
-                                .place-zone { grid-column: 1 / -1; } }
+                                .place-clear { grid-column: 1 / -1; } }
 
-    /* The map. OpenStreetMap's tiles, tinted to the paper so they sit in the page rather than
-       on it; in the dark they are turned over and warmed towards the ink. */
+    /* The map (map.rs, map.js): OpenFreeMap, Positron on the light page and Dark on the dark
+       one, its ground and water already moved onto the page's paper and ink. A touch of
+       warmth over the rest, and it fades in once it has drawn. */
     .map { position: relative; height: 20rem; overflow: hidden; border: 1px solid var(--line);
-           border-radius: .5rem; background: var(--sunk); cursor: grab; touch-action: none;
-           user-select: none; }
-    .map.holding { cursor: grabbing; }
-    .map-tiles { position: absolute; inset: 0;
-                 filter: grayscale(.85) sepia(.28) contrast(.92) brightness(1.03); }
+           border-radius: .5rem; background: var(--sunk); }
+    .map .map-canvas, .map .map-canvas.maplibregl-map { position: absolute; inset: 0; }
+    .map-canvas { opacity: 0;
+                  transition: opacity var(--dur-expressive) var(--ease-out); }
+    .map.ready .map-canvas { opacity: 1; }
+    .map-canvas canvas { filter: sepia(.14) saturate(.9); outline: none; }
+    /* The dark style is drawn nearly black on black: lifted, so the streets can be read. */
     @media (prefers-color-scheme: dark) {
-      .map-tiles { filter: invert(1) hue-rotate(180deg) grayscale(.7) sepia(.3) contrast(.95)
-                           brightness(1.25); }
+      .map-canvas canvas { filter: sepia(.2) saturate(.9) brightness(1.45) contrast(1.05); }
     }
-    .map-tile { position: absolute; max-width: none; pointer-events: none;
-                animation: tile-in var(--dur-layout) var(--ease-out) backwards; }
-    @keyframes tile-in { from { opacity: 0; } }
     .map-quiet { position: absolute; inset: 0; display: grid; place-items: center; margin: 0;
                  padding: 1.5rem; text-align: center; color: var(--muted); font-size: .875rem; }
-    .map-credit { position: absolute; right: .35rem; bottom: .3rem; padding: .05rem .35rem;
-                  font-size: .65rem; color: var(--muted); text-decoration: none;
-                  background: color-mix(in srgb, var(--card) 80%, transparent); border-radius: .25rem; }
-    .map-credit:hover { color: var(--ember); }
-    .map-zoom { position: absolute; top: .5rem; right: .5rem; display: grid;
+    /* Who the map is from, as its licence asks: quiet, in the page's own type and colours
+       (said with the library's own class names twice over, to win over its stylesheet). */
+    .map .maplibregl-ctrl.maplibregl-ctrl-attrib, .map .maplibregl-ctrl-attrib.maplibregl-compact {
+        font: .65rem/1.5 var(--sans); color: var(--muted); border-radius: .75rem;
+        background: color-mix(in srgb, var(--card) 88%, transparent); }
+    .map .maplibregl-ctrl-attrib a { color: inherit; }
+    .map .maplibregl-ctrl-attrib-button { opacity: .55; }
+    @media (prefers-color-scheme: dark) {
+      .map .maplibregl-ctrl-attrib-button { filter: invert(1); }
+    }
+    .map-zoom { position: absolute; z-index: 2; top: .5rem; right: .5rem; display: grid;
                 border: 1px solid var(--line); border-radius: .45rem; overflow: hidden;
                 background: var(--card); box-shadow: 0 .2rem .6rem rgba(28, 23, 20, .12); }
     .map-zoom button { width: 2rem; height: 2rem; padding: 0; font: 500 1.05rem/1 var(--sans);
@@ -2636,16 +2652,17 @@
     .map-zoom button:hover { color: var(--ember); background: var(--sunk); }
     /* The pin: Irori's mark on a stem, standing on the spot. It leans in under the pointer,
        lifts while it's held, and is put down with a bounce and one ring, like a marker on the
-       Floorplan. Placed by its foot, so `translate` is its own to move with. */
-    .map-pin { position: absolute; width: 2.25rem; height: 2.8rem; margin: -2.8rem 0 0 -1.125rem;
-               transform-origin: 50% 100%; cursor: grab; touch-action: none;
+       Floorplan. The map places the element around it (`.map-pin-at`); `translate` and `scale`
+       are the pin's own to move with. */
+    .map-pin-at { cursor: grab; }
+    .map:not(.editable) .map-pin-at { cursor: default; }
+    .map-pin { position: relative; width: 2.25rem; height: 2.8rem; transform-origin: 50% 100%;
                filter: drop-shadow(0 .25rem .3rem rgba(28, 23, 20, .3));
                transition: translate var(--dur-base) var(--ease-spring),
                            scale var(--dur-base) var(--ease-spring),
                            filter var(--dur-base) var(--ease-out); }
-    .map:not(.editable) .map-pin { cursor: default; }
-    .map.editable .map-pin:hover { scale: 1.08; }
-    .map-pin.held { translate: 0 -.6rem; scale: 1.12; cursor: grabbing;
+    .map.editable .map-pin-at:hover .map-pin { scale: 1.08; }
+    .map-pin.held { translate: 0 -.6rem; scale: 1.12;
                     filter: drop-shadow(0 .9rem .6rem rgba(28, 23, 20, .28)); }
     .map-pin svg { display: block; width: 100%; height: 100%; overflow: visible; }
     .map-pin-frame { fill: var(--card); stroke: var(--fg); stroke-width: 4; }

@@ -455,8 +455,10 @@ longitude = 4.3525                # degrees east, -180 to 180
 label = "Brussels, Belgium"       # optional: what it was found as, for a person to read
 ```
 
-Every key is optional, and a zone with no location is a home with time triggers and no sun
-triggers.
+The time zone is the part that's needed, and the location is optional: a zone with no location
+is a home with time triggers and no sun triggers. A location with no zone is the one thing the
+page won't save, since nothing could be worked out from it; the welcome and the Settings row
+both lead with the zone, filled in from the browser's own, and offer the map after it.
 
 - Coordinates are kept to five decimals, about a metre. Finer than that is noise that makes the
   file diff badly.
@@ -470,9 +472,14 @@ triggers.
   registry, so a time trigger moves with the zone it is read in without a restart.
 
 The Settings row for it has a map. The map's tiles, its address search and the lookup of a
-point's time zone are fetched by the **browser** from the internet (OpenStreetMap, Nominatim,
-Open-Meteo); Irori itself asks nobody. They are extras: with no internet the coordinates are
+point's time zone are fetched by the **browser** from the internet (OpenFreeMap, in its
+Positron style on the light page and its Dark style on the dark one, drawn by MapLibre GL JS;
+Nominatim; Open-Meteo); Irori itself asks nobody. They are extras: with no internet the coordinates are
 typed and the zone is picked from a list.
+
+MapLibre is the one script the page loads that isn't Irori's own, and only when a map is
+shown. It comes from a CDN at a pinned version and is checked against a hash written into the
+page (subresource integrity), so what runs is that release or nothing.
 
 ### 3.10 `users.toml`
 
@@ -515,6 +522,11 @@ The rules, held for a hand-edited file and for the page alike:
   everyone added has one of their own, of at least 8 characters. Otherwise nothing would tell them
   apart, and a role would mean nothing.
 - A password can be taken away again only while the home has one person in it.
+- Changing or taking away your own password takes the one you have. An owner resetting somebody
+  else's doesn't, because they don't know it.
+- Wrong passwords are counted per person and per machine they come from, before the password
+  is looked at: after five, that machine waits 30 seconds to try that person again. Names that
+  are nobody's share one count.
 
 **Forgetting a password** is put right from the machine, not from the page: delete that person's
 line under `[users.passwords]` in `secrets.toml` (if they are the only one with a password, the

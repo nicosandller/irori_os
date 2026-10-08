@@ -292,7 +292,10 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
                     log,
                     restart.clone(),
                     restarting.clone(),
-                )),
+                ))
+                // So a sign-in knows where it came from: wrong passwords are counted per
+                // machine, and one guessing can't make another wait.
+                .into_make_service_with_connect_info::<SocketAddr>(),
             )
             .with_graceful_shutdown(shutdown_signal(restart))
             .await

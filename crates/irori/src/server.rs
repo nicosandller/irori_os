@@ -5029,13 +5029,32 @@ mod tests {
                 "{why}"
             );
         }
-        // Their own password is theirs to change.
+        // Their own password is theirs to change, with the one they have.
+        for (current, expected) in [
+            (serde_json::Value::Null, StatusCode::FORBIDDEN),
+            ("not it at all".into(), StatusCode::FORBIDDEN),
+            ("let me in!".into(), StatusCode::OK),
+        ] {
+            let (status, why, _) = ask(
+                &app,
+                "PATCH",
+                "/api/dev/users/guest",
+                Some(
+                    serde_json::json!({ "password": "a better one", "current_password": current }),
+                ),
+                Some(&guest),
+                true,
+            )
+            .await?;
+            assert_eq!(status, expected, "{why}");
+        }
+        // The owner can reset it without knowing it: that is what an owner is for.
         let (status, _, _) = ask(
             &app,
             "PATCH",
             "/api/dev/users/guest",
-            Some(serde_json::json!({ "password": "a better one" })),
-            Some(&guest),
+            Some(serde_json::json!({ "password": "reset by owner" })),
+            Some(&owner),
             true,
         )
         .await?;
@@ -5169,7 +5188,7 @@ mod tests {
             &app,
             "PATCH",
             "/api/dev/users/nico",
-            Some(serde_json::json!({ "password": "" })),
+            Some(serde_json::json!({ "password": "", "current_password": "correct horse" })),
             Some(&owner),
             true,
         )
@@ -5214,7 +5233,7 @@ mod tests {
             &app,
             "PATCH",
             "/api/dev/users/nico",
-            Some(serde_json::json!({ "password": "" })),
+            Some(serde_json::json!({ "password": "", "current_password": "correct horse" })),
             Some(&owner),
             true,
         )
@@ -5326,6 +5345,121 @@ mod tests {
         let (_, users, _) = ask(&server.app()?, "GET", "/api/dev/users", None, None, false).await?;
         assert_eq!(users[0]["name"], "Ana");
         assert_eq!(users[0]["has_password"], false);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wrong_passwords_sent_all_at_once_are_each_counted() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, _) = locked_home(&server).await?;
+        let wrong = serde_json::json!({ "user": "nico", "password": "battery staple" });
+        let tries: Vec<_> = (0..12)
+            .map(|_| {
+                let (app, wrong) = (app.clone(), wrong.clone());
+                tokio::spawn(async move {
+                    ask(&app, "POST", "/api/session", Some(wrong), None, true)
+                        .await
+                        .map(|(status, _, _)| status)
+                })
+            })
+            .collect();
+        let mut looked_at = 0;
+        for one in tries {
+            if one.await?? == StatusCode::UNAUTHORIZED {
+                looked_at += 1;
+            }
+        }
+        // Five passwords are looked at; the rest are turned away unread.
+        assert_eq!(looked_at, 5);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn names_that_are_nobodys_share_one_count() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, _) = locked_home(&server).await?;
+        let mut statuses = Vec::new();
+        for n in 0..7 {
+            let body = serde_json::json!({ "user": format!("nobody_{n}"), "password": "whatever" });
+            statuses.push(
+                ask(&app, "POST", "/api/session", Some(body), None, true)
+                    .await?
+                    .0,
+            );
+        }
+        assert_eq!(statuses[..5], [StatusCode::UNAUTHORIZED; 5]);
+        assert_eq!(statuses[5..], [StatusCode::TOO_MANY_REQUESTS; 2]);
+        // And the owner, who has guessed nothing, is not kept waiting by it.
+        let right = serde_json::json!({ "user": "nico", "password": "correct horse" });
+        let (status, _, _) = ask(&app, "POST", "/api/session", Some(right), None, true).await?;
+        assert_eq!(status, StatusCode::OK);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_location_needs_its_time_zone_and_a_zone_stands_alone() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let app = server.app()?;
+        let (status, why, _) = ask(
+            &app,
+            "PUT",
+            "/api/dev/place",
+            Some(serde_json::json!({ "location": { "latitude": 50.8, "longitude": 4.3 } })),
+            None,
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            why["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("needs a time zone")),
+            "{why}"
+        );
+        let (status, kept, _) = ask(
+            &app,
+            "PUT",
+            "/api/dev/place",
+            Some(serde_json::json!({ "time_zone": "Asia/Tokyo" })),
+            None,
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(kept, serde_json::json!({ "time_zone": "Asia/Tokyo" }));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_first_password_has_to_be_an_owners() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        // Two people written into the file by hand, neither with a password.
+        std::fs::write(
+            server.config_dir().join("users.toml"),
+            "[users.ana]\nname = \"Ana\"\nrole = \"owner\"\n\n[users.bo]\nname = \"Bo\"\nrole = \"user\"\n",
+        )?;
+        server.config.home().await;
+        let app = server.app()?;
+        let (status, why, _) = ask(
+            &app,
+            "PATCH",
+            "/api/dev/users/bo",
+            Some(serde_json::json!({ "password": "let me in!" })),
+            None,
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            why["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("owner needs a password")),
+            "{why}"
+        );
+        // Still open, and nothing secret was written.
+        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, None, false).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!server.config_dir().join("secrets.toml").exists());
         Ok(())
     }
 }

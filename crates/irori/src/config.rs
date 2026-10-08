@@ -332,6 +332,21 @@ impl Config {
         let made = change(&mut people).map_err(EditError::Refused)?;
         irori_types::check_users(&people.users)
             .map_err(|e| EditError::Refused(Refused(e.to_string())))?;
+        // A home that asks who is there has to have an owner who can answer. Otherwise the
+        // first password, given to somebody who isn't one, would shut every owner out.
+        let has = |user: &User| people.hashes.contains_key(&user.id);
+        if people.users.iter().any(has)
+            && !people
+                .users
+                .iter()
+                .any(|user| user.role.runs_the_home() && has(user))
+        {
+            return Err(EditError::Refused(Refused(
+                "an owner needs a password before anybody else has one: otherwise nobody \
+                 could sign in to run the home"
+                    .to_owned(),
+            )));
+        }
         let mut secrets = store.secrets();
         let table = users_table();
         // Rewritten whole, so a person who is gone takes their hash with them.
