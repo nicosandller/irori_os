@@ -301,6 +301,7 @@ pub fn sentence(node: &Node, home: &Home) -> String {
             } => {
                 let name = home.name(entity);
                 let values: Vec<TypedValue> = to.iter().flat_map(Values::iter).cloned().collect();
+                let from: Vec<TypedValue> = from.iter().flat_map(Values::iter).cloned().collect();
                 let flag = home.flag_class(entity).is_some();
                 // Something that happens (a button's press) is said as what it reports.
                 if entity.kind().counts_every_report() {
@@ -309,30 +310,30 @@ pub fn sentence(node: &Node, home: &Home) -> String {
                         values => format!("{name}: {}", one_of(values, entity, home)),
                     };
                 }
-                let mut text = match (above, below, from, values.as_slice()) {
+                let mut text = match (above, below, from.as_slice(), values.as_slice()) {
                     (Some(above), Some(below), ..) => {
                         format!("{name} goes between {above} and {below}")
                     }
                     (None, Some(below), ..) => format!("{name} goes below {below}"),
                     (Some(above), None, ..) => format!("{name} goes above {above}"),
-                    (_, _, None, [TypedValue::Bool(on)]) if flag => {
+                    (_, _, [], [TypedValue::Bool(on)]) if flag => {
                         format!(
                             "{name} becomes {}",
                             value_words(&TypedValue::Bool(*on), entity, home)
                         )
                     }
-                    (_, _, None, [TypedValue::Bool(true)]) => format!("{name} turns on"),
-                    (_, _, None, [TypedValue::Bool(false)]) => format!("{name} turns off"),
-                    (_, _, None, []) => format!("{name} changes"),
-                    (_, _, None, values) => {
+                    (_, _, [], [TypedValue::Bool(true)]) => format!("{name} turns on"),
+                    (_, _, [], [TypedValue::Bool(false)]) => format!("{name} turns off"),
+                    (_, _, [], []) => format!("{name} changes"),
+                    (_, _, [], values) => {
                         format!("{name} becomes {}", one_of(values, entity, home))
                     }
-                    (_, _, Some(from), []) => {
-                        format!("{name} stops being {}", value_words(from, entity, home))
+                    (_, _, from, []) => {
+                        format!("{name} stops being {}", one_of(from, entity, home))
                     }
-                    (_, _, Some(from), values) => format!(
+                    (_, _, from, values) => format!(
                         "{name} goes {} → {}",
-                        value_words(from, entity, home),
+                        one_of(from, entity, home),
                         one_of(values, entity, home)
                     ),
                 };

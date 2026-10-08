@@ -145,9 +145,45 @@
                background: var(--card); overflow: hidden; }
     .sidebar-top { display: flex; align-items: center; justify-content: space-between;
                    gap: .25rem; margin-bottom: 1rem; }
-    .sidebar .mark { display: flex; align-items: center; gap: .6rem; padding: .35rem .45rem;
-                     color: var(--fg); text-decoration: none; font-weight: 500; }
-    .sidebar .mark svg { width: 1.5rem; height: 1.5rem; flex: none; }
+    .sidebar .mark { position: relative; display: flex; align-items: center; gap: .6rem;
+                     padding: .35rem .45rem; color: var(--fg); text-decoration: none;
+                     font-weight: 500; border-radius: .4rem; cursor: default;
+                     transition: background-color var(--dur-fast); }
+    .sidebar .mark .mark-logo { width: 1.5rem; height: 1.5rem; flex: none; overflow: visible; }
+    /* Once a model is ready the name is the way to its assistant, and wears Ask's spark:
+       after the name, or on the mark's corner when the sidebar is folded. */
+    .sidebar a.mark { cursor: pointer; }
+    .sidebar a.mark:hover, .sidebar a.mark[aria-current="page"] { background: var(--sunk); }
+    .sidebar a.mark[aria-current="page"] .mark-letters { color: var(--ember); }
+    .mark-spark { flex: none; width: .8rem; height: .8rem; margin-left: -.3rem;
+                  color: var(--ember);
+                  animation: pop var(--dur-expressive) var(--ease-spring) backwards;
+                  transition: rotate var(--dur-expressive) var(--ease-spring),
+                              scale var(--dur-base) var(--ease-spring); }
+    .sidebar a.mark:hover .mark-spark { rotate: 90deg; scale: 1.15; }
+    .mark-ember { transform-box: fill-box; transform-origin: center; }
+    .mark-letters span { display: inline-block; }
+    /* A model has just become ready: the name catches, letter by letter from the left, like
+       fire along a fuse, while the ember in the mark flares. Then it burns back down to the
+       name it was, and is a link (main.rs waits IGNITE, which is these timings added up). */
+    .mark.igniting .mark-letters span {
+        animation: letter-catch 1.1s var(--ease-out) both;
+        animation-delay: calc(var(--i) * 95ms); }
+    @keyframes letter-catch {
+        0% { color: inherit; text-shadow: none; translate: 0 0; }
+        22% { color: #f2994a; translate: 0 -1.5px;
+              text-shadow: 0 0 .5em rgba(242, 153, 74, .95), 0 -.25em .7em rgba(196, 85, 43, .7); }
+        55% { color: var(--ember); translate: 0 0;
+              text-shadow: 0 0 .35em rgba(196, 85, 43, .55); }
+        100% { color: inherit; text-shadow: none; }
+    }
+    .mark.igniting .mark-ember { animation: ember-flare .56s ease-in-out 3; }
+    @keyframes ember-flare {
+        0%, 100% { scale: 1; filter: none; }
+        45% { scale: 1.45; fill: #f2994a;
+              filter: drop-shadow(0 0 3px rgba(242, 153, 74, .95))
+                      drop-shadow(0 0 7px rgba(196, 85, 43, .8)); }
+    }
     .sidebar nav { display: flex; flex-direction: column; gap: .15rem; }
     .sidebar nav a { display: flex; align-items: center; gap: .7rem; padding: .5rem .6rem;
                      border-radius: .4rem; color: var(--muted); text-decoration: none;
@@ -206,6 +242,8 @@
     .folded .sidebar .label { position: absolute; width: 1px; height: 1px; overflow: hidden;
                               clip: rect(0 0 0 0); white-space: nowrap; }
     .folded .sidebar-top { flex-direction: column; }
+    .folded .mark-spark { position: absolute; top: -.05rem; right: -.05rem; width: .7rem;
+                          height: .7rem; margin: 0; }
     .folded .fold svg { transform: rotate(180deg); }
     .folded .sidebar nav a { justify-content: center; padding: .5rem 0; }
     .folded .sidebar-bottom { align-items: stretch; }
@@ -225,6 +263,7 @@
       .sidebar-bottom { flex-direction: row; align-items: center; margin: 0 0 0 auto; gap: .25rem; }
       .sidebar .live { padding: 0; }
       .folded .sidebar .label { position: static; width: auto; height: auto; clip: auto; }
+      .folded .mark-spark { position: static; width: .8rem; height: .8rem; margin-left: -.3rem; }
       .folded .sidebar-top { flex-direction: row; }
       main { padding: 1.25rem 1rem 3rem; }
     }
@@ -305,6 +344,12 @@
     .entity-list .line { padding-left: 5rem; }
     .entity-list { --cols: minmax(9rem, 1.3fr) minmax(5rem, .8fr) minmax(0, 1.5fr); }
     .entity-list.by-device { --cols: minmax(9rem, 1fr) minmax(0, 1.3fr); }
+    /* A player's buttons are the widest thing a row holds: its controls take the width they
+       need to stay on one line, and the name keeps what's left. */
+    .entity-list .line:has(.media-reading) { --cols: minmax(9rem, 1fr) minmax(0, .5fr) auto; }
+    .entity-list.by-device .line:has(.media-reading) { --cols: minmax(9rem, 1fr) auto; }
+    .entity-line .media-reading { max-width: 7rem; }
+    .entity-line .volume-group input[type="range"] { width: 5.5rem; }
     .line { display: grid; grid-template-columns: var(--cols); align-items: center;
             column-gap: 1rem; padding: .45rem .8rem .45rem 2.75rem; font-size: .9rem;
             border-bottom: 1px solid var(--line); }
@@ -536,6 +581,13 @@
        as a live one. The switch is disabled separately. */
     .entity.offline .name, .entity.offline .reading, .entity.offline .reading.on { color: var(--muted); }
     .names { min-width: 0; flex: 1; }
+    /* An entity's own icon (icons.rs), to the left of its name: what kind of thing it is. Quiet,
+       so the name is still what's read first. */
+    .entity-icon { flex: none; width: 1.15rem; height: 1.15rem; color: var(--muted); }
+    .entity > .entity-icon { margin-right: -.35rem; }
+    .cell.names.iconed { display: flex; align-items: center; gap: .65rem; }
+    .names-text { min-width: 0; flex: 1; }
+    .names-text .name { overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
     .name { display: block; overflow-wrap: anywhere; }
     /* Ids are long and the name above already says which entity this is: one line, cut off
        rather than broken across lines on a phone. The full id is in the element's title. */
@@ -613,7 +665,6 @@
     .choices button:focus-visible, button.press:focus-visible {
         outline: 2px solid var(--ember); outline-offset: 2px; }
     .text-control { width: 12rem; padding: .2rem .5rem; font-size: .85rem; }
-    .media-url { flex: 1 1 12rem; width: auto; max-width: 22rem; min-width: 0; }
     .cover-buttons { display: inline-flex; flex-wrap: wrap; align-items: center; }
     /* A button that is only there while it makes sense (controls `tuck`): it folds away to
        nothing and what's beside it closes up, rather than a row of buttons that don't apply. */
@@ -634,6 +685,46 @@
     .glyph-second { opacity: 0; scale: .4; rotate: -90deg; }
     .glyph.alt .glyph-first { opacity: 0; scale: .4; rotate: 90deg; }
     .glyph.alt .glyph-second { opacity: 1; scale: 1; rotate: 0deg; }
+    /* A player's volume: mute, the slider and the level, framed as one button. */
+    .volume-group { display: inline-flex; align-items: center; gap: .35rem; height: 1.9rem;
+                    padding-right: .5rem; background: var(--card); border: 1px solid var(--line);
+                    border-radius: .4rem; transition: border-color var(--dur-fast); }
+    .volume-group:hover { border-color: var(--ember); }
+    .volume-group > :not(.glyph):first-child { margin-left: .6rem; }
+    .volume-group > .glyph:last-child { margin-right: -.5rem; }
+    .volume-group button.press.glyph { height: 100%; border: none; background: transparent; }
+    .volume-group input[type="range"] { width: 7rem; min-width: 5rem; }
+    .volume-group input:disabled { cursor: progress; opacity: .5; }
+    /* Firefox fills its track from the slider's value, not `--fill`: muted, it's emptied here. */
+    .volume-group.muted input[type="range"]::-moz-range-progress { background: transparent; }
+    .volume-group .lv { min-width: 2.6rem; text-align: right; color: var(--muted);
+                        font: .72rem var(--mono); font-variant-numeric: tabular-nums; }
+    /* What's playing gives way before the name or the buttons do: a long title is cut short,
+       and is whole in the element's title. */
+    .media-reading { flex: 0 1 auto; min-width: 0; max-width: 10rem; overflow: hidden;
+                     text-overflow: ellipsis; }
+    .entity:has(> .media-reading) .names { min-width: 5rem; }
+    /* Sending a player a link: a button, and the small form that drops from it. The form is
+       pinned to the window where the page measured the button to be, so that a list that
+       clips its rows can't clip it. */
+    .cast { position: relative; display: inline-flex; }
+    .cast > button[aria-expanded="true"] { color: var(--fg); background: var(--sunk);
+                                           border-color: var(--ember); }
+    .cast-pop { position: fixed; z-index: 20;
+                display: flex; flex-direction: column; gap: .5rem; width: min(24rem, 90vw);
+                padding: .75rem; text-align: left; background: var(--card);
+                border: 1px solid var(--line); border-radius: .5rem;
+                box-shadow: 0 .6rem 1.6rem rgba(28, 23, 20, .16);
+                animation: cast-in var(--dur-fast) var(--ease-out); }
+    @keyframes cast-in { from { opacity: 0; translate: 0 4px; } }
+    .cast-title { font-size: .8rem; font-weight: 600; color: var(--muted); }
+    .cast-row { display: flex; gap: .5rem; }
+    .cast-row input { flex: 1; min-width: 0; padding: .35rem .5rem; font-size: .85rem; }
+    .cast-row button { padding: .35rem .7rem; font: inherit; font-size: .85rem;
+                       color: var(--card); background: var(--ember);
+                       border: 1px solid var(--ember); border-radius: .4rem; cursor: pointer; }
+    .cast-row button:hover:not(:disabled) { background: #ab4717; border-color: #ab4717; }
+    .cast-row button:disabled { cursor: progress; opacity: .5; }
     /* A lock's padlock: the shackle lifts when it's unlocked and drops when it locks, works
        up and down while the bolt is moving, and shakes once when it jams. */
     .lock-reading { display: inline-flex; align-items: center; gap: .35rem; }
@@ -885,6 +976,45 @@
     .chart-tip span { color: var(--muted); font-family: var(--mono); }
     .chart-axis { display: flex; justify-content: space-between; margin-right: 3.4rem;
                   color: var(--muted); font: .65rem var(--mono); }
+    /* A state's day (timeline.rs): a strip, each block one state, as wide as it lasted. The
+       colours are eight that stay apart from each other for every kind of colour vision, in a
+       fixed order, stepped for each theme; the state that means nothing is going on is quiet,
+       and a gap is simply left empty. A hair of the surface between blocks keeps two of the
+       same lightness from running together. */
+    .timeline { --tone-1: #2a78d6; --tone-2: #eb6834; --tone-3: #1baf7a; --tone-4: #eda100;
+                --tone-5: #e87ba4; --tone-6: #008300; --tone-7: #4a3aa7; --tone-8: #e34948;
+                --tone-off: color-mix(in srgb, var(--muted) 38%, var(--card)); --tone-other: var(--muted); }
+    @media (prefers-color-scheme: dark) {
+      .timeline { --tone-1: #3987e5; --tone-2: #d95926; --tone-3: #199e70; --tone-4: #c98500;
+                  --tone-5: #d55181; --tone-6: #008300; --tone-7: #9085e9; --tone-8: #e66767; }
+    }
+    .tone-1 { background: var(--tone-1); } .tone-2 { background: var(--tone-2); }
+    .tone-3 { background: var(--tone-3); } .tone-4 { background: var(--tone-4); }
+    .tone-5 { background: var(--tone-5); } .tone-6 { background: var(--tone-6); }
+    .tone-7 { background: var(--tone-7); } .tone-8 { background: var(--tone-8); }
+    .tone-off { background: var(--tone-off); } .tone-other { background: var(--tone-other); }
+    .timeline-plot { position: relative; height: 2.25rem; margin: .9rem 0 .2rem;
+                     cursor: crosshair; touch-action: pan-y; border-radius: 4px; }
+    .timeline-plot:focus { outline: none; }
+    .timeline-plot:focus-visible { outline: 2px solid var(--ember); outline-offset: 4px; }
+    .timeline-track { position: absolute; inset: 0; overflow: hidden; border-radius: 4px;
+                      background: repeating-linear-gradient(135deg, transparent 0 5px,
+                                  var(--line) 5px 6px);
+                      animation: chart-draw 560ms var(--ease-out) both; }
+    .timeline-block { position: absolute; top: 0; bottom: 0; min-width: 2px;
+                      box-shadow: 0 0 0 1px var(--timeline-surface, var(--card)); }
+    .entity-block > .drawer .timeline { --timeline-surface: var(--bg); }
+    .timeline-axis { margin-right: 0; }
+    .timeline-legend { display: flex; flex-wrap: wrap; gap: .3rem 1.2rem; margin: .7rem 0 0;
+                       padding: 0; list-style: none; font-size: .8rem; }
+    .timeline-legend li { display: flex; align-items: center; gap: .4rem; }
+    .timeline-swatch { flex: none; width: .7rem; height: .7rem; border-radius: 3px; }
+    .timeline-total { color: var(--muted); font: .7rem var(--mono);
+                      font-variant-numeric: tabular-nums; }
+    .chart-tip .timeline-tip-state { display: flex; align-items: center; gap: .4rem;
+                                     font-family: var(--sans); }
+    .chart-tip .timeline-swatch { display: inline-block; }
+
     /* Waiting for the day: the chart's own height, gently lit, so nothing jumps when it comes. */
     .chart-waiting { height: 9.5rem; margin: 1.3rem 4.15rem 2rem .75rem; border-radius: .4rem;
                      background: linear-gradient(90deg, var(--sunk) 30%, var(--line) 50%,
@@ -952,8 +1082,11 @@
 
     /* The start screen: the IroriOS wordmark as the terminal prints it, big enough to be the
        first thing a browser lands on. */
-    .start { display: grid; gap: 2.25rem; }
-    .start-wordmark { display: flex; align-items: center; gap: 1.5rem; padding: .5rem 0 .25rem; }
+    .start { display: grid; gap: 1.75rem; margin-bottom: .5rem; }
+    .start-wordmark { display: flex; flex-wrap: wrap; align-items: center; gap: 1.5rem;
+                      padding: .5rem 0 .25rem; }
+    /* The page's own actions, beside the name: level with it, at the far end. */
+    .start-wordmark .page-actions { align-self: flex-start; }
     .start-box { display: grid; place-items: center; width: 6rem; height: 6rem; flex: none;
                  border: 2px solid var(--fg); border-radius: .5rem; }
     .start-ember { width: 2.5rem; height: 2.5rem; border-radius: .25rem; background: var(--ember);
@@ -1501,9 +1634,17 @@
                               visibility 0s var(--dur-base); }
     .combo.open .combo-list { opacity: 1; translate: 0 0; scale: 1; pointer-events: auto;
                               visibility: visible; transition-delay: 0s; }
-    .combo-option { display: flex; flex-direction: column; gap: .05rem; padding: .45rem .6rem;
+    .combo-option { display: flex; align-items: center; gap: .55rem; padding: .45rem .6rem;
                     border-radius: .45rem; cursor: pointer;
                     transition: background-color var(--dur-fast); }
+    .combo-text { display: flex; flex-direction: column; gap: .05rem; min-width: 0; flex: 1; }
+    /* An entity's own icon, before its name: in the list, and in the field once it's picked. */
+    .combo-icon { flex: none; display: grid; color: var(--muted); }
+    .combo-icon svg { width: 1.05rem; height: 1.05rem; }
+    .combo-icon.current { position: absolute; left: calc(.5rem + 1px); top: 50%;
+                          translate: 0 -50%; pointer-events: none; }
+    .combo.iconed .combo-input { padding-left: 1.95rem; }
+    .combo.iconed .combo-shown { left: calc(1.95rem + 1px); }
     .combo-option.active { background: var(--sunk); }
     .combo-option.chosen .combo-label { color: var(--ember); font-weight: 500; }
     .combo-label { font-size: .88rem; display: flex; align-items: baseline; gap: .35rem;
@@ -2160,10 +2301,14 @@
                                                           border-color: var(--line); }
     .chat-clear:disabled { opacity: .4; cursor: default; }
 
-    .chat-log { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
-                gap: .9rem; padding: 1rem .9rem; overscroll-behavior: contain; }
+    /* It scrolls one way only. Whatever a model writes — a log line, a path, an address with
+       no space in it — breaks to fit the window, and nothing here is ever wider than it. */
+    .chat-log { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; display: flex;
+                flex-direction: column; gap: .9rem; padding: 1rem .9rem;
+                overscroll-behavior: contain; }
     .chat-empty { margin: auto 1rem; text-align: center; color: var(--muted); font-size: .9rem; }
-    .turn { max-width: 100%; animation: turn-in var(--dur-layout) var(--ease-out) backwards; }
+    .turn { max-width: 100%; min-width: 0;
+            animation: turn-in var(--dur-layout) var(--ease-out) backwards; }
     @keyframes turn-in { from { opacity: 0; translate: 0 .4rem; } }
     .turn p { margin: 0; }
     /* What was asked sits in a bubble on the right; the answer is the page talking, and
@@ -2175,19 +2320,24 @@
     @keyframes said { from { opacity: 0; scale: .9; translate: 0 .4rem; } }
     .turn.theirs { align-self: stretch; padding: 0 .15rem; overflow-wrap: anywhere; }
     .turn.writing { animation: none; }
-    .rich { display: grid; gap: .55rem; font-size: .95rem; line-height: 1.55; }
+    /* One column that is as wide as the chat and no wider: left to itself a grid column
+       grows to fit the longest thing in it that won't break. */
+    .rich { display: grid; grid-template-columns: minmax(0, 1fr); gap: .55rem; font-size: .95rem;
+            line-height: 1.55; }
+    .rich > * { min-width: 0; overflow-wrap: anywhere; }
     .rich p { white-space: pre-wrap; }
     .rich strong { font-weight: 600; }
     .rich-heading { font-weight: 600; }
-    .rich-item { display: grid; grid-template-columns: 1.1rem 1fr; gap: .1rem; }
+    .rich-item { display: grid; grid-template-columns: 1.1rem minmax(0, 1fr); gap: .1rem; }
     .rich-mark { color: var(--ember); font: .85em/1.8 var(--mono); }
-    .rich-code { margin: 0; padding: .6rem .7rem; overflow-x: auto; background: var(--sunk);
-                 border-radius: .5rem; font: .8rem/1.5 var(--mono); }
+    .rich-code { margin: 0; padding: .6rem .7rem; background: var(--sunk); white-space: pre-wrap;
+                 overflow-wrap: anywhere; border-radius: .5rem; font: .8rem/1.5 var(--mono); }
     /* A value or a state: the thing the answer is about, set apart from the words around it. */
     .rich code.value { padding: .08em .42em; font: 500 .84em var(--mono); color: var(--ember);
                        background: color-mix(in srgb, var(--ember) 11%, transparent);
                        border: 1px solid color-mix(in srgb, var(--ember) 26%, transparent);
-                       border-radius: .4em; white-space: nowrap; }
+                       border-radius: .4em; overflow-wrap: anywhere;
+                       -webkit-box-decoration-break: clone; box-decoration-break: clone; }
     .chat-phase { display: flex; align-items: center; gap: .5rem; color: var(--muted);
                   font-size: .82rem; }
     .dots { display: inline-flex; gap: .22rem; }
@@ -2296,7 +2446,24 @@
     .chat-waited { font: .75rem var(--mono); opacity: .8; }
     .chat-slow { color: var(--muted); font-size: .8rem;
                  animation: drop-in var(--dur-base) var(--ease-out); }
-    .chat-trouble p { margin: 0; }
+    .chat-trouble p { margin: 0; overflow-wrap: anywhere; }
+    /* How much of the model's context the last answer took: a share of it where the whole is
+       known (a model on this machine), and otherwise the count. */
+    .chat-context { flex: none; display: inline-flex; align-items: center; gap: .35rem;
+                    font: .7rem var(--mono); color: var(--muted); cursor: default; }
+    .chat-context .bar { width: 2rem; height: .3rem; overflow: hidden; background: var(--sunk);
+                         border-radius: 999px; }
+    .chat-context .bar span { display: block; height: 100%; background: var(--muted);
+                              border-radius: 999px;
+                              transition: width var(--dur-expressive) var(--ease-out); }
+    .chat-context.high { color: var(--warn); }
+    .chat-context.high .bar span { background: var(--warn); }
+    .assistant-context { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+    .assistant-context input { width: 8rem; padding: .45rem .6rem; font-family: var(--mono); }
+    .assistant-instructions { margin-top: 1.1rem; padding-top: 1rem;
+                              border-top: 1px solid var(--line); }
+    .assistant-instructions textarea { width: 100%; min-height: 5.5rem; font: inherit;
+                                       font-size: .9rem; line-height: 1.45; }
     .chat-trouble-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
     .assistant-detail { margin: 0; font-size: .85rem; color: var(--warn); }
     .assistant-detail.ok { color: var(--muted); }

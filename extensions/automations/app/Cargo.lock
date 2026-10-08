@@ -814,6 +814,7 @@ name = "irori-ui-kit"
 version = "0.0.0"
 dependencies = [
  "futures-channel",
+ "irori-types",
  "js-sys",
  "leptos",
  "serde",

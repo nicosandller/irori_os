@@ -2289,6 +2289,7 @@ fn contacts(home: &Home, chosen: Option<&EntityId>) -> Vec<irori_ui_kit::combo::
                 device.unwrap_or_else(|| entity.name.to_string()),
             )
             .detail(entity.id.to_string())
+            .icon(irori_ui_kit::entity_icon::drawing(&entity.capabilities))
         })
         .collect();
     found.sort_by(|a, b| a.label.cmp(&b.label));

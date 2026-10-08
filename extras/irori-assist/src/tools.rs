@@ -1,4 +1,4 @@
-//! The read-only tools a model may call. Two rounds, then a plain answer. Writing the home is
+//! The read-only tools a model may call. A few rounds, then a plain answer. Writing the home is
 //! not one of them.
 
 use serde_json::{Value, json};
@@ -27,7 +27,12 @@ fn about_the_home(scope: &str) -> bool {
     scope != "settings"
 }
 
-const TOOLS: [Tool; 4] = [
+/// The chat about the whole home, which may ask about everything Irori holds.
+fn general(scope: &str) -> bool {
+    scope == "general"
+}
+
+const TOOLS: [Tool; 7] = [
     Tool {
         name: "list_devices",
         description: "List the devices in the home, with the room and the word each entity is reporting.",
@@ -61,7 +66,29 @@ const TOOLS: [Tool; 4] = [
                 false,
             ),
         ],
-        offered: |scope| scope == "settings",
+        offered: |scope| scope == "settings" || general(scope),
+    },
+    Tool {
+        name: "read_settings",
+        description: "Everything Irori's Settings page holds: the machine it runs on, the assistant's own configuration, floors and areas with the devices in each, extensions and their settings, and the newest warnings and errors.",
+        params: &[],
+        offered: general,
+    },
+    Tool {
+        name: "list_automations",
+        description: "Every automation, with its id, whether it is on, how its last run came out, and how many problems it has.",
+        params: &[],
+        offered: general,
+    },
+    Tool {
+        name: "get_automation",
+        description: "One automation in full: its logic step by step, what the entities it reads report now, its last run, near-misses, and what is wrong with it.",
+        params: &[(
+            "id",
+            "The automation's id, as list_automations gives it.",
+            true,
+        )],
+        offered: general,
     },
 ];
 
@@ -250,16 +277,32 @@ mod tests {
     fn each_conversation_is_offered_its_own_tools_in_both_shapes() {
         let home = ["list_devices", "get_device", "recent_states"];
         let settings = ["list_devices", "get_device", "read_logs"];
-        for scope in ["general", "device:lamp", "automation:kettle"] {
+        // The chat about the whole home is offered all of it.
+        let general = [
+            "list_devices",
+            "get_device",
+            "recent_states",
+            "read_logs",
+            "read_settings",
+            "list_automations",
+            "get_automation",
+        ];
+        for scope in ["device:lamp", "automation:kettle"] {
             assert_eq!(names(&openai_tools(scope), "/function/name"), home);
             assert_eq!(names(&anthropic_tools(scope), "/name"), home);
         }
+        assert_eq!(names(&openai_tools("general"), "/function/name"), general);
+        assert_eq!(names(&anthropic_tools("general"), "/name"), general);
         assert_eq!(names(&openai_tools("settings"), "/function/name"), settings);
         assert_eq!(names(&anthropic_tools("settings"), "/name"), settings);
         let logs = &anthropic_tools("settings")[2];
         assert_eq!(logs["input_schema"]["required"], json!(["source"]));
         assert!(tool_offered("settings", "read_logs"));
-        assert!(!tool_offered("general", "read_logs"));
+        assert!(tool_offered("general", "read_logs"));
+        assert!(tool_offered("general", "get_automation"));
+        assert!(!tool_offered("device:lamp", "read_logs"));
+        assert!(!tool_offered("automation:kettle", "list_automations"));
+        assert!(!tool_offered("settings", "read_settings"));
         assert!(!tool_offered("settings", "recent_states"));
         assert!(logs["input_schema"]["properties"]["contains"].is_object());
     }

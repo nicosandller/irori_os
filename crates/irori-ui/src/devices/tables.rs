@@ -364,9 +364,12 @@ fn entity_row(line: EntityLine, by: EntitiesBy, travels: bool, histories: Histor
     view! {
         <div class="entity-block" role="rowgroup" style=travelling_row(&shown, travels)>
             <div class="line entity-line" role="row" class:offline=move || offline.get()>
-                <span class="cell names" role="rowheader">
-                    <span class="name">{entity.name.to_string()}</span>
-                    <span class="id" title=shown.clone()>{shown.clone()}</span>
+                <span class="cell names iconed" role="rowheader">
+                    {crate::icons::entity(&entity.capabilities)}
+                    <span class="names-text">
+                        <span class="name">{entity.name.to_string()}</span>
+                        <span class="id" title=shown.clone()>{shown.clone()}</span>
+                    </span>
                 </span>
                 {(by != EntitiesBy::Device).then(|| view! {
                     <span class="cell of-device" role="cell">

@@ -10,6 +10,8 @@ license = "Apache-2.0"
 # Not a workspace member, like irori-ui: it builds for wasm32, inside the pages that use it.
 
 [dependencies]
+# What an entity is, to pick its icon (`entity_icon`). Every page that uses this already has it.
+irori-types = { path = "../irori-types" }
 futures-channel = "0.3.34"
 js-sys = "0.3"
 # The shared controls (combo.rs). Both pages already build with exactly this, so it adds nothing

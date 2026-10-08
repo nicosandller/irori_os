@@ -23,6 +23,7 @@ const NOWHERE: &str = "";
 const LET_THE_DEVICE_SAY: &str = "let the device say";
 use crate::devices::{self, Controls};
 use crate::settings::named;
+use crate::timeline;
 
 /// What this page shows that isn't a live reading: the device itself, the areas it could be in,
 /// and which entities it has.
@@ -705,6 +706,7 @@ fn EntityRow(
     view! {
         <div class="entity-row">
             <div class="entity" class:offline=move || offline.get()>
+                {crate::icons::entity(&entity.capabilities)}
                 <span class="names">
                     {names}
                     <span class="id" title=shown_id.clone()>{shown_id.clone()}</span>
@@ -730,20 +732,31 @@ fn EntityRow(
 }
 
 /// The unrolled "last 24 hours": the day of changes the server has recorded for this entity.
-/// A number's day is drawn as a chart, with the table a click away; anything else — on and off,
-/// words — is the table, newest first, in its own scroll so a sensor that changed a hundred
-/// times doesn't stretch the page. "As much as available" is what it says: the server keeps
-/// what happened while it's been running, and the long view is the recorder's job (M1.3).
+/// A number's day is drawn as a chart and a state's — on and off, words — as a strip of how
+/// long each lasted, both with the table a click away. What only happens (a button's presses)
+/// or mustn't be shown (a password) is the table alone, newest first, in its own scroll so a
+/// sensor that changed a hundred times doesn't stretch the page. "As much as available" is what
+/// it says: the server keeps what happened while it's been running, and the long view is the
+/// recorder's job (M1.3).
 pub(crate) fn history_panel(
     entity: Entity,
-    history: ArcRwSignal<crate::history::Day>,
+    history: crate::history::Kept,
     // The row's reading as it is now, so a chart can grow with it.
     live: Signal<Option<EntityState>>,
 ) -> AnyView {
     let numeric = entity.capabilities.primary_shape() == Some(irori_types::ValueShape::Number);
+    // Each change is noted beside the day that was fetched, so that when the list draws this
+    // row again (it does, whenever the home changes shape) the day it's drawn from is whole.
+    let kept = history.clone();
+    Effect::new(move |_| {
+        if let Some(state) = live.get() {
+            kept.note(state);
+        }
+    });
+    let (history, kept) = (history.day.clone(), history);
     view! {
         <div class="history">
-            {move || match history.get() {
+            {move || match history.get().map(|day| day.map(|states| kept.with_later(states))) {
                 // A number's chart will need the room: keep it, so the drawer doesn't jump
                 // when the day arrives.
                 None if numeric => view! {
@@ -766,14 +779,25 @@ pub(crate) fn history_panel(
                     </p>
                 }
                 .into_any(),
-                Some(Ok(states)) => match readings(&states) {
-                    Some(numbers) => charted(&entity, numbers, states, live),
-                    None => table(&entity, states),
-                },
+                Some(Ok(states)) => drawn_day(&entity, states, live),
             }}
         </div>
     }
     .into_any()
+}
+
+/// A day with something in it: a number's as a chart, a state's as a strip, anything else as the
+/// table alone.
+fn drawn_day(
+    entity: &Entity,
+    states: Vec<EntityState>,
+    live: Signal<Option<EntityState>>,
+) -> AnyView {
+    match (readings(&states), spans(entity, &states)) {
+        (Some(numbers), _) => charted(entity, numbers, states, live),
+        (None, Some(spans)) => timelined(entity, spans, states, live),
+        (None, None) => table(entity, states),
+    }
 }
 
 /// A day of readings as numbers, if every reading is a number or a gap. A gap is the sensor
@@ -848,6 +872,133 @@ fn charted(
     .into_any()
 }
 
+/// A day of states as the strip's spans, for an entity whose value is a state that lasts: on
+/// or off, or a word. Not for what only happens (an event has no "for how long"), nor for a
+/// password, whose value isn't shown.
+fn spans(entity: &Entity, states: &[EntityState]) -> Option<Vec<timeline::Span>> {
+    if entity.id.kind().counts_every_report() {
+        return None;
+    }
+    if matches!(&entity.capabilities, Capabilities::Text(text) if text.mode == irori_types::TextMode::Password)
+    {
+        return None;
+    }
+    let spans: Vec<timeline::Span> = states
+        .iter()
+        .map(|state| as_span(entity, state))
+        .collect::<Option<_>>()?;
+    spans
+        .iter()
+        .any(|span| span.label.is_some())
+        .then_some(spans)
+}
+
+/// One state as a stretch of the strip: its word, or a gap. Nothing if it's a number.
+fn as_span(entity: &Entity, state: &EntityState) -> Option<timeline::Span> {
+    let label = match (state.availability, state.state.as_ref()) {
+        (Availability::Unavailable, _) | (_, None) => None,
+        (_, Some(state)) => Some(match state.primary() {
+            irori_types::Typed::Bool(on) => flag_word(&entity.capabilities, on).to_owned(),
+            irori_types::Typed::Text(text) => state_word(&entity.capabilities, &text),
+            irori_types::Typed::Number(_) => return None,
+        }),
+    };
+    Some(timeline::Span {
+        at_ms: state.last_changed.as_jiff().as_millisecond() as f64,
+        at: clock_time(state.last_changed),
+        label,
+    })
+}
+
+/// What on and off are called for this entity: a door sensor's are "Open" and "Closed". The
+/// table's Reading column says the same (`reading_of`); a light's adds its brightness there.
+fn flag_word(capabilities: &Capabilities, on: bool) -> &'static str {
+    match capabilities {
+        Capabilities::BinarySensor(sensor) => devices::wording(sensor.device_class, on),
+        Capabilities::Siren(_) if on => "Sounding",
+        Capabilities::Siren(_) => "Quiet",
+        _ if on => "On",
+        _ => "Off",
+    }
+}
+
+/// A state's word as the strip says it. What a person wrote or a device made up (a sensor's
+/// text, a select's options) is kept as it is; Irori's own words (`playing`) get a capital.
+fn state_word(capabilities: &Capabilities, text: &str) -> String {
+    if matches!(
+        capabilities,
+        Capabilities::Sensor(_) | Capabilities::Select(_) | Capabilities::Text(_)
+    ) {
+        return text.to_owned();
+    }
+    let words = text.replace('_', " ");
+    let mut letters = words.chars();
+    match letters.next() {
+        Some(first) => first.to_uppercase().chain(letters).collect(),
+        None => words,
+    }
+}
+
+/// The strip, with the same day as a table behind a switch: the table is where every change is
+/// readable without pointing at it.
+fn timelined(
+    entity: &Entity,
+    spans: Vec<timeline::Span>,
+    states: Vec<EntityState>,
+    live: Signal<Option<EntityState>>,
+) -> AnyView {
+    let as_table = RwSignal::new(false);
+    let capabilities = entity.capabilities.clone();
+    // On and off: off is the quiet one. A word: every one the entity lists, in its order, so
+    // each keeps its colour from day to day; a player that is off is quiet too.
+    let (known, off) = match capabilities.primary_shape() {
+        Some(irori_types::ValueShape::Bool) => (
+            vec![
+                flag_word(&capabilities, true).to_owned(),
+                flag_word(&capabilities, false).to_owned(),
+            ],
+            Some(flag_word(&capabilities, false).to_owned()),
+        ),
+        _ => (
+            capabilities
+                .text_options()
+                .unwrap_or_default()
+                .iter()
+                .map(|option| state_word(&capabilities, option))
+                .collect(),
+            matches!(capabilities, Capabilities::MediaPlayer(_)).then(|| "Off".to_owned()),
+        ),
+    };
+    let name = entity.name.to_string();
+    let watched = entity.clone();
+    let strip = view! {
+        <timeline::StateTimeline
+            spans=spans
+            live=Signal::derive(move || {
+                live.get().as_ref().and_then(|state| as_span(&watched, state))
+            })
+            known=known
+            off=off
+            name=name
+        />
+    }
+    .into_any();
+    let table = table(entity, states);
+    view! {
+        <div class="history-head">
+            {crate::segmented::segmented(
+                "Show as",
+                vec![(false, "Timeline"), (true, "Table")],
+                as_table.into(),
+                move |table| as_table.set(table),
+            )}
+        </div>
+        <div hidden=move || as_table.get()>{strip}</div>
+        <div hidden=move || !as_table.get()>{table}</div>
+    }
+    .into_any()
+}
+
 fn table(entity: &Entity, states: Vec<EntityState>) -> AnyView {
     view! {
         <div class="history-scroll">
@@ -908,7 +1059,7 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
                 .unwrap_or_else(|| on.to_owned())
         }
         (Capabilities::Switch(_), Some(State::Switch(switch))) => {
-            if switch.on { "On" } else { "Off" }.to_owned()
+            flag_word(&entity.capabilities, switch.on).to_owned()
         }
         (Capabilities::Button(_), _) => "—".to_owned(),
         (Capabilities::Event(_), Some(State::Event(event))) => event.event_type.clone(),
@@ -932,7 +1083,7 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
             devices::water_heater_words(heater)
         }
         (Capabilities::Siren(_), Some(State::Siren(siren))) => {
-            if siren.on { "Sounding" } else { "Quiet" }.to_owned()
+            flag_word(&entity.capabilities, siren.on).to_owned()
         }
         (Capabilities::Valve(_), Some(State::Valve(valve))) => {
             devices::opening_words(valve.opening())

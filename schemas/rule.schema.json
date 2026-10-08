@@ -867,9 +867,10 @@
               ]
             },
             "from": {
+              "description": "The value it changes from, or any one of several.",
               "anyOf": [
                 {
-                  "$ref": "#/$defs/TypedValue"
+                  "$ref": "#/$defs/Values"
                 },
                 {
                   "type": "null"

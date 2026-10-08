@@ -161,9 +161,25 @@ fn walk_triggers_one(
                     }
                 }
             }
-            check_state_match(here, entity, from.as_ref(), None, None, registry, problems);
+            for value in from.iter().flat_map(crate::Values::iter) {
+                check_state_match(here, entity, Some(value), None, None, registry, problems);
+            }
             for value in to.iter().flat_map(crate::Values::iter) {
                 check_state_match(here, entity, None, Some(value), None, registry, problems);
+            }
+            // A change is to something else, so from one value to that same value never is one.
+            if let (Some(from), Some(to)) = (from, to)
+                && let ([from], [to]) = (
+                    from.iter().collect::<Vec<_>>().as_slice(),
+                    to.iter().collect::<Vec<_>>().as_slice(),
+                )
+                && from == to
+            {
+                problems.push(problem(
+                    format!("{here}/from"),
+                    "`from` and `to` are the same value, and a change is to something else, so \
+                     this never fires",
+                ));
             }
             if (above.is_some() || below.is_some())
                 && let Some(found) = registry.entity(entity)

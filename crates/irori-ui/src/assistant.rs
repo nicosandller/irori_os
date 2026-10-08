@@ -33,6 +33,8 @@ struct Thread {
     waited: RwSignal<u32>,
     /// Which wait the clock is counting: a new question starts a new one.
     round: RwSignal<u32>,
+    /// How much of the model's context the last answer took.
+    used: RwSignal<Option<api::AssistantContext>>,
 }
 
 /// Every conversation this page has opened, by what it is about. Kept by the shell and not by
@@ -72,6 +74,7 @@ impl Chats {
             unanswered: RwSignal::new(None),
             waited: RwSignal::new(0),
             round: RwSignal::new(0),
+            used: RwSignal::new(None),
         });
         self.threads.update_value(|threads| {
             threads.insert(scope.to_owned(), thread);
@@ -120,7 +123,10 @@ impl Thread {
         // Only what Irori says it kept is shown as kept: an answer that ended may have been
         // stopped, and the words written so far are then nobody's reply.
         match kept {
-            Ok(kept) => self.messages.set(kept.turns),
+            Ok(kept) => {
+                self.messages.set(kept.turns);
+                self.used.set(kept.context);
+            }
             Err(error) if result.is_ok() => self.trouble.set(Some(error)),
             Err(_) => {}
         }
@@ -153,6 +159,9 @@ impl Thread {
             // Coming back to a conversation nothing was added to draws nothing again.
             if self.messages.with_untracked(|turns| *turns != kept.turns) {
                 self.messages.set(kept.turns);
+            }
+            if self.used.get_untracked() != kept.context {
+                self.used.set(kept.context);
             }
             let Some(pending) = kept.pending else {
                 return;
@@ -431,6 +440,9 @@ impl Phase {
                 "get_device" => "Checking a device",
                 "recent_states" => "Reading recent values",
                 "read_logs" => "Reading the log",
+                "read_settings" => "Reading Irori's settings",
+                "list_automations" => "Looking at the automations",
+                "get_automation" => "Reading an automation",
                 _ => "Looking something up",
             },
             Self::Writing => "Writing",
@@ -455,6 +467,7 @@ pub fn Chat(
         trouble,
         unanswered,
         waited,
+        used,
         ..
     } = thread;
     let log = NodeRef::<leptos::html::Div>::new();
@@ -491,6 +504,7 @@ pub fn Chat(
             match api::assistant_clear(&scope).await {
                 Ok(()) => {
                     messages.set(Vec::new());
+                    used.set(None);
                     trouble.set(None);
                     unanswered.set(None);
                 }
@@ -507,6 +521,23 @@ pub fn Chat(
             <header class="chat-head">
                 <Spark />
                 <span class="chat-title">{title}</span>
+                {move || used.get().map(|used| {
+                    let (words, part) = context_words(used);
+                    view! {
+                        <span
+                            class="chat-context"
+                            class:high=part.is_some_and(|part| part >= 80.0)
+                            title=context_title(used)
+                        >
+                            {part.map(|part| view! {
+                                <span class="bar">
+                                    <span style=format!("width: {part:.0}%")></span>
+                                </span>
+                            })}
+                            {words}
+                        </span>
+                    }
+                })}
                 {move || has_log().then(|| view! {
                     <button
                         type="button"
@@ -702,6 +733,9 @@ pub fn Section() -> impl IntoView {
     let base_url = RwSignal::new(String::new());
     let model = RwSignal::new(String::new());
     let api_key = RwSignal::new(String::new());
+    // As typed: a number of tokens, checked when it is applied.
+    let context = RwSignal::new(String::new());
+    let instructions = RwSignal::new(String::new());
     let loaded = RwSignal::new(false);
     let busy = RwSignal::new(false);
     let progress = RwSignal::new(None::<Progress>);
@@ -728,6 +762,8 @@ pub fn Section() -> impl IntoView {
         }
         if let Some(status) = assistant.0.get() {
             apply(&status);
+            context.set(status.local_context.to_string());
+            instructions.set(status.instructions.clone());
             loaded.set(true);
             if shown.get_untracked().is_none() {
                 shown.set(Some(first_side(&status.mode)));
@@ -811,6 +847,39 @@ pub fn Section() -> impl IntoView {
     };
 
     let status = move || assistant.0.get();
+    // What is typed and isn't yet what Irori has: only then is there something to save.
+    let context_changed = move || {
+        status().is_some_and(|status| context.get().trim() != status.local_context.to_string())
+    };
+    let instructions_changed =
+        move || status().is_some_and(|status| instructions.get().trim() != status.instructions);
+    // These two are saved on their own, and only their own field is read back: a model or
+    // a key half typed in the form beside them stays as it was typed.
+    let apply_context = move || match context.get_untracked().trim().parse::<u64>() {
+        Ok(tokens) => change(
+            Box::pin(async move {
+                let status = api::save_assistant(&serde_json::json!({ "context": tokens })).await?;
+                context.set(status.local_context.to_string());
+                Ok(status)
+            }),
+            false,
+        ),
+        Err(_) => trouble.set(Some(
+            "A context is a number of tokens, such as 8192.".into(),
+        )),
+    };
+    let save_instructions = move || {
+        let text = instructions.get_untracked();
+        change(
+            Box::pin(async move {
+                let status =
+                    api::save_assistant(&serde_json::json!({ "instructions": text })).await?;
+                instructions.set(status.instructions.clone());
+                Ok(status)
+            }),
+            false,
+        );
+    };
     let has_key = move || status().is_some_and(|status| status.credential == "set");
     let ollama_up = move || status().is_some_and(|status| status.ollama == "up");
 
@@ -944,6 +1013,52 @@ pub fn Section() -> impl IntoView {
                             <a href="https://huggingface.co/models?library=gguf" target="_blank"
                                 rel="noreferrer">"huggingface.co"</a>
                             " and it works the same. The default, qwen3:1.7b, is about 1.4 GB."
+                        </p>
+                        <div class="field">
+                            <span>"CONTEXT"</span>
+                            <div class="assistant-context">
+                                <input
+                                    type="number"
+                                    aria-label="Context, in tokens"
+                                    inputmode="numeric"
+                                    step="1024"
+                                    min=move || status().map(|status| status.context_min.to_string())
+                                    max=move || status().map(|status| status.context_max.to_string())
+                                    prop:value=move || context.get()
+                                    on:input=move |event| context.set(event_target_value(&event))
+                                    on:keydown=move |event: ev::KeyboardEvent| {
+                                        if event.key() == "Enter" {
+                                            event.prevent_default();
+                                            apply_context();
+                                        }
+                                    }
+                                />
+                                <span class="muted small">"tokens"</span>
+                                <button type="button" class="quiet-button"
+                                    disabled=move || busy.get() || !context_changed()
+                                    on:click=move |_| apply_context()>
+                                    {move || if busy.get() && context_changed() { "Applying…" } else { "Apply" }}
+                                </button>
+                            </div>
+                        </div>
+                        <p class="muted small">
+                            "How much the model holds at once: the picture of your home, the \
+                             conversation so far, and its answer. More lets it be told more and \
+                             remember further back, and takes more memory; the model in use is \
+                             loaded again to change it. Each chat shows how much of it the last \
+                             answer took."
+                            {move || status().and_then(|status| {
+                                let most = status
+                                    .pulled
+                                    .iter()
+                                    .find(|model| model.active)?
+                                    .context_most?;
+                                Some(format!(
+                                    " {} was made for up to {} tokens.",
+                                    status.local_tag,
+                                    thousands(most)
+                                ))
+                            })}
                         </p>
                         <div class="assistant-actions">
                             <button type="button" class="primary"
@@ -1138,9 +1253,9 @@ pub fn Section() -> impl IntoView {
                         </label>
                         <p class="muted small">
                             "A cloud answer leaves the house: what you ask goes to the provider, \
-                             with the names and states of your devices, and, when you ask from \
-                             Settings, Irori's settings and lines of its log. The key stays on \
-                             this machine and is never shown again."
+                             with the names and states of your devices, your automations, \
+                             Irori's settings and lines of its log. The key stays on this \
+                             machine and is never shown again."
                         </p>
                         {move || status().filter(|status| status.mode == "cloud").map(|status| {
                             view! { <p class="assistant-detail" class:ok=status.ready>{status.detail}</p> }
@@ -1169,6 +1284,40 @@ pub fn Section() -> impl IntoView {
                 }
                 .into_any(),
             }}
+            // Whichever model answers, and before one does: what it is told to keep to.
+            <form class="assistant-instructions about-form" on:submit=move |event: ev::SubmitEvent| {
+                event.prevent_default();
+                save_instructions();
+            }>
+                <label>
+                    <span>"INSTRUCTIONS"</span>
+                    <textarea
+                        rows="4"
+                        placeholder="Answer in Spanish. Call the living room “the lounge”. One sentence unless I ask for more."
+                        maxlength=move || status().map(|status| status.instructions_max.to_string())
+                        prop:value=move || instructions.get()
+                        on:input=move |event| instructions.set(event_target_value(&event))
+                    ></textarea>
+                </label>
+                <p class="muted small">
+                    "Read by the assistant before every question, in every chat: how to answer, \
+                     what to call things, what you care about. It still only reads the home; \
+                     nothing here lets it switch anything. For a model on this machine these \
+                     words come out of its context."
+                </p>
+                <div class="assistant-actions end">
+                    <span class="muted small">
+                        {move || {
+                            let most = status().map_or(0, |status| status.instructions_max);
+                            format!("{} / {most}", instructions.with(|text| text.trim().chars().count()))
+                        }}
+                    </span>
+                    <button type="submit" class="primary"
+                        disabled=move || busy.get() || !instructions_changed()>
+                        "Save instructions"
+                    </button>
+                </div>
+            </form>
             {move || status().is_some_and(|status| status.mode != "off").then(|| view! {
                 <p class="assistant-off">
                     <button type="button" class="quiet-button" disabled=move || busy.get()
@@ -1196,6 +1345,49 @@ pub fn state() -> AnyView {
         })
     })
     .into_any()
+}
+
+/// How much of its context a conversation has taken, as the chat's heading shows it: the
+/// words, and the share of the whole where the whole is known.
+fn context_words(used: api::AssistantContext) -> (String, Option<f64>) {
+    match used.size.filter(|size| *size > 0) {
+        Some(size) => {
+            #[allow(clippy::cast_precision_loss)]
+            let part = (used.used as f64 / size as f64 * 100.0).min(100.0);
+            (format!("{part:.0}%"), Some(part))
+        }
+        None => (format!("{} tokens", thousands(used.used)), None),
+    }
+}
+
+/// The same in a sentence, for the pointer resting on it.
+fn context_title(used: api::AssistantContext) -> String {
+    match used.size.filter(|size| *size > 0) {
+        Some(size) => format!(
+            "The last answer took {} of the model's {} tokens of context. Nearer the end, \
+             older messages are left out; Clear starts again.",
+            thousands(used.used),
+            thousands(size)
+        ),
+        None => format!(
+            "The last answer took {} tokens. How much a cloud model can hold is its \
+             provider's to say, so there is no share to show.",
+            thousands(used.used)
+        ),
+    }
+}
+
+/// A count of tokens, short: `812`, `1.5k`, `12k`.
+fn thousands(n: u64) -> String {
+    #[allow(clippy::cast_precision_loss)]
+    let k = n as f64 / 1000.0;
+    if n < 1000 {
+        n.to_string()
+    } else if k < 10.0 {
+        format!("{k:.1}k")
+    } else {
+        format!("{k:.0}k")
+    }
 }
 
 /// Seconds as a short clock: `8 s`, `1:05`.
@@ -1263,6 +1455,28 @@ mod tests {
         assert_eq!(progress_words(""), "Starting");
         assert_eq!(size(1_400_000_000), "1.3 GB");
         assert_eq!(size(300 * 1024 * 1024), "300 MB");
+    }
+
+    #[test]
+    fn a_chat_says_what_share_of_the_context_it_took_where_the_whole_is_known() {
+        let local = api::AssistantContext {
+            used: 1536,
+            size: Some(4096),
+        };
+        assert_eq!(context_words(local), ("38%".to_owned(), Some(37.5)));
+        assert!(context_title(local).contains("1.5k of the model's 4.1k tokens"));
+        // More than the whole is still only all of it.
+        let over = api::AssistantContext {
+            used: 5000,
+            size: Some(4096),
+        };
+        assert_eq!(context_words(over).0, "100%");
+        let cloud = api::AssistantContext {
+            used: 12_400,
+            size: None,
+        };
+        assert_eq!(context_words(cloud), ("12k tokens".to_owned(), None));
+        assert_eq!(thousands(812), "812");
     }
 
     #[test]

@@ -32,6 +32,7 @@ mod segmented;
 mod settings;
 mod settings_form;
 mod start;
+mod timeline;
 mod transition;
 mod waiting;
 
@@ -41,7 +42,7 @@ use std::time::Duration;
 use irori_types::{EntityId, EntityState, LightTurnOn};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_router::components::{A, Route, Router, Routes};
+use leptos_router::components::{A, Redirect, Route, Router, Routes};
 use leptos_router::hooks::use_location;
 use leptos_router::path;
 
@@ -207,16 +208,7 @@ fn App() -> impl IntoView {
                 <aside class="sidebar" node_ref=sidebar>
                     <SidebarGlide sidebar=sidebar />
                     <div class="sidebar-top">
-                        <A href="/" attr:class="mark" attr:title="IroriOS">
-                            // Mark A (assets/irori-mark-a-mono.svg): frame follows the text,
-                            // ember stays.
-                            <svg viewBox="0 0 48 48" role="img" aria-label="IroriOS">
-                                <rect x="2" y="2" width="44" height="44" rx="2.5" fill="none"
-                                    stroke="currentColor" stroke-width="4" />
-                                <rect x="17" y="17" width="14" height="14" rx="1" fill="#c4552b" />
-                            </svg>
-                            <span class="label">"IroriOS"</span>
-                        </A>
+                        <Mark />
                         <button
                             type="button"
                             class="fold"
@@ -241,16 +233,6 @@ fn App() -> impl IntoView {
                             })
                             .collect_view()}
                         <AppLinks />
-                        {move || assistant.get().is_some_and(|status| status.ready).then(|| view! {
-                            <A href="/assistant" attr:title="Assistant">
-                                <svg viewBox="0 0 24 24" aria-hidden="true">
-                                    <path d="M5 6.5h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H9l-4 3v-3H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z"
-                                        fill="none" stroke="currentColor" stroke-width="1.8"
-                                        stroke-linejoin="round" />
-                                </svg>
-                                <span class="label">"Assistant"</span>
-                            </A>
-                        })}
                     </nav>
                     <div class="sidebar-bottom">
                         <A href="/settings" attr:class="settings-link" attr:title="Settings">
@@ -302,7 +284,9 @@ fn Page(live: Live) -> impl IntoView {
         }>
             {move || live.trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
             <Routes fallback=NotFound transition=true>
-                <Route path=path!("/") view=start::Start />
+                // The start screen moved to the head of Settings, so that is where a bare
+                // address lands.
+                <Route path=path!("/") view=|| view! { <Redirect path="/settings" /> } />
                 <Route path=path!("/floorplan") view=floorplan::Floorplan />
                 <Route path=path!("/devices") view=devices::Devices />
                 <Route path=path!("/devices/:id") view=device::DevicePage />
@@ -313,6 +297,89 @@ fn Page(live: Live) -> impl IntoView {
                 <Route path=path!("/apps/:id/*rest") view=app_frame::AppPage />
             </Routes>
         </main>
+    }
+}
+
+/// How long the mark takes to catch light when a model becomes ready: the last letter's
+/// delay and its burn, as `index.html` times them (`letter-catch`).
+const IGNITE: Duration = Duration::from_millis(1700);
+
+/// The top of the sidebar: IroriOS's mark and name, which is also the way to its assistant.
+///
+/// Until a model is ready it is only the name, and nothing to click. The moment one becomes
+/// ready the name catches, letter by letter from the left, while the ember in the mark flares:
+/// something here just came alive. Once that has burned down it is a link to the chat about
+/// the whole home, wearing the same spark every Ask does: after the name, or on the mark's
+/// corner when the sidebar is folded.
+#[component]
+fn Mark() -> impl IntoView {
+    let Assistant(assistant) = expect_context::<Assistant>();
+    let ready = Memo::new(move |_| assistant.get().map(|status| status.ready));
+    let igniting = RwSignal::new(false);
+    // Only a change seen happening catches light: a page that opens with a model already
+    // set has nothing new to announce.
+    Effect::new(move |before: Option<Option<bool>>| {
+        let now = ready.get();
+        if before == Some(Some(false)) && now == Some(true) && !count::still() {
+            igniting.set(true);
+            // A timer and not the animation's own end: with motion off there is no animation
+            // to end, and the name must never be left unclickable.
+            spawn_local(async move {
+                gloo_timers::future::sleep(IGNITE).await;
+                igniting.set(false);
+            });
+        }
+        now
+    });
+    let inside = move || {
+        view! {
+            // Mark A (assets/irori-mark-a-mono.svg): frame follows the text, ember stays.
+            <svg class="mark-logo" viewBox="0 0 48 48" role="img" aria-label="IroriOS">
+                <rect x="2" y="2" width="44" height="44" rx="2.5" fill="none"
+                    stroke="currentColor" stroke-width="4" />
+                <rect class="mark-ember" x="17" y="17" width="14" height="14" rx="1"
+                    fill="#c4552b" />
+            </svg>
+            <span class="label mark-letters">
+                {"IroriOS"
+                    .chars()
+                    .enumerate()
+                    .map(|(i, letter)| view! { <span style=format!("--i: {i}")>{letter}</span> })
+                    .collect_view()}
+            </span>
+        }
+    };
+    move || {
+        if ready.get() == Some(true) && !igniting.get() {
+            view! {
+                <A href="/assistant" attr:class="mark" attr:title="Ask IroriOS">
+                    {inside()}
+                    <svg class="mark-spark" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"
+                            fill="currentColor" />
+                    </svg>
+                    <span class="visually-hidden">"Assistant"</span>
+                </A>
+            }
+            .into_any()
+        } else {
+            view! {
+                <span
+                    class="mark"
+                    class:igniting=move || igniting.get()
+                    title=move || {
+                        if igniting.get() {
+                            "IroriOS"
+                        } else {
+                            "IroriOS. Its assistant is set up in Settings."
+                        }
+                    }
+                >
+                    {inside()}
+                </span>
+            }
+            .into_any()
+        }
     }
 }
 
@@ -397,7 +464,8 @@ fn AppLinks() -> impl IntoView {
 #[component]
 fn SidebarGlide(sidebar: NodeRef<leptos::html::Aside>) -> impl IntoView {
     let location = use_location();
-    // Not the wordmark, though it's a link to Start too: Start has no entry here to glide to.
+    // Not the mark, though it is a link too, to the assistant: it sits in a row with the fold
+    // button, and shows that it is the page being read in its own way.
     glide::glide(
         sidebar,
         r#"nav a[aria-current="page"], .settings-link[aria-current="page"]"#,
@@ -412,10 +480,10 @@ fn NotFound() -> impl IntoView {
         <section class="card">
             <h1>"There's no page here"</h1>
             <p class="muted">
-                "IroriOS has a start screen, a Floorplan, a Devices page, an Extensions page "
+                "IroriOS has a Floorplan, a Devices page, an Extensions page, an assistant "
                 "and a Settings page. The rest is still to come."
             </p>
-            <p><A href="/" attr:class="quiet-button">"Back to the start"</A></p>
+            <p><A href="/settings" attr:class="quiet-button">"Back to Settings"</A></p>
         </section>
     }
 }

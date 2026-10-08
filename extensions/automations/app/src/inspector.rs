@@ -235,6 +235,7 @@ pub fn EntityPicker(
                     Choice::new(e.id.to_string(), e.name.to_string())
                         .detail(format!("{}{now}", e.id))
                         .group(home.device_before(e))
+                        .icon(irori_ui_kit::entity_icon::drawing(&e.capabilities))
                 })
                 .collect()
         });
@@ -1214,7 +1215,11 @@ fn ExprInput(value: String, commit: impl Fn(String) + Send + Sync + 'static) -> 
                         || e.name.as_str().to_lowercase().contains(&typed)
                 })
                 .take(8)
-                .map(|e| Choice::new(e.id.to_string(), e.name.to_string()).detail(e.id.to_string()))
+                .map(|e| {
+                    Choice::new(e.id.to_string(), e.name.to_string())
+                        .detail(e.id.to_string())
+                        .icon(irori_ui_kit::entity_icon::drawing(&e.capabilities))
+                })
                 .collect()
         })
     };

@@ -181,8 +181,9 @@ pub enum LimitedMode {
 pub enum Trigger {
     State {
         entity: EntityId,
+        /// The value it changes from, or any one of several.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        from: Option<TypedValue>,
+        from: Option<Values>,
         /// The value it changes to, or any one of several.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to: Option<Values>,
@@ -250,8 +251,8 @@ impl Trigger {
                         "nothing is above {above} and below {below} at once"
                     )));
                 }
-                if let Some(to) = to {
-                    to.validate()?;
+                for values in [from, to].into_iter().flatten() {
+                    values.validate()?;
                 }
                 Ok(())
             }
@@ -856,7 +857,7 @@ pub enum TypedValue {
     Null,
 }
 
-/// Most values a trigger's `to` can list.
+/// Most values a trigger's `from` or `to` can list.
 pub const MAX_VALUES: usize = 16;
 
 /// A value, or any one of several: `"playing"`, or `["paused", "idle", "off"]`.

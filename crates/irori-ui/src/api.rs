@@ -1035,6 +1035,18 @@ pub struct AssistantStatus {
     pub memory_free: u64,
     #[serde(default)]
     pub memory_total: u64,
+    /// The context a local model is asked to be loaded with, in tokens, and the bounds on it.
+    #[serde(default)]
+    pub local_context: u64,
+    #[serde(default)]
+    pub context_min: u64,
+    #[serde(default)]
+    pub context_max: u64,
+    /// What the person wants the assistant to keep to in every conversation.
+    #[serde(default)]
+    pub instructions: String,
+    #[serde(default)]
+    pub instructions_max: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -1048,6 +1060,9 @@ pub struct PulledModel {
     /// About how much memory it takes once loaded.
     #[serde(default)]
     pub needs: u64,
+    /// The most context it was made for, when it says.
+    #[serde(default)]
+    pub context_most: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -1111,6 +1126,19 @@ pub struct AssistantThread {
     pub turns: Vec<AssistantMessage>,
     #[serde(default)]
     pub pending: Option<AssistantPending>,
+    /// How much of the model's context the last answer took. Absent before the first one.
+    #[serde(default)]
+    pub context: Option<AssistantContext>,
+}
+
+/// How much of a model's context a conversation took, as of its last answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct AssistantContext {
+    /// Tokens: what the model was sent, and what it answered.
+    pub used: u64,
+    /// The context it had, for a model on this machine. A cloud model's isn't Irori's to know.
+    #[serde(default)]
+    pub size: Option<u64>,
 }
 
 pub async fn assistant_transcript(scope: &str) -> Result<AssistantThread, String> {

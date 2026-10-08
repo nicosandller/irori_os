@@ -55,6 +55,7 @@ pub enum Icon {
     NoSignal,
     /// Anything that isn't one of the others.
     Dot,
+    Cast,
 }
 
 /// What's drawn inside the icon's 24 × 24 box. Written here and nowhere else, so it's safe to
@@ -186,6 +187,10 @@ fn drawing(icon: Icon) -> &'static str {
             r#"<path d="M5.500 12a9.200 9.200 0 0 1 13 0"/><path class="stripe" d="M5 20 19 4"/>"#,
         ),
         Icon::Dot => r#"<circle cx="12" cy="12" r="3.500" fill="currentColor"/>"#,
+        Icon::Cast => concat!(
+            r#"<path d="M3 8V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/>"#,
+            r#"<path d="M3 12a8 8 0 0 1 8 8M3 16a4 4 0 0 1 4 4M3 20h.01"/>"#,
+        ),
     }
 }
 
@@ -201,6 +206,25 @@ pub fn icon(icon: Icon) -> AnyView {
             stroke-linejoin="round"
             aria-hidden="true"
             inner_html=drawing(icon)
+        ></svg>
+    }
+    .into_any()
+}
+
+/// An entity's own icon: what kind of thing it is, beside its name. The same one an
+/// extension's page draws for it (`irori_ui_kit::entity_icon`).
+pub fn entity(capabilities: &irori_types::Capabilities) -> AnyView {
+    view! {
+        <svg
+            class="icon entity-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            inner_html=irori_ui_kit::entity_icon::drawing(capabilities)
         ></svg>
     }
     .into_any()
