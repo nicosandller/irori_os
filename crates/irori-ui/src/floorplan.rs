@@ -10,19 +10,26 @@
 //! pixels is [`Viewport`]. Keeping that one conversion in one place is what lets the walls, the
 //! grid and the device markers agree about where anything is at any zoom.
 
+use std::collections::BTreeMap;
+
 use irori_types::{
     AreaId, Capabilities, Device, DeviceId, EntityId, FloorId, Floorplan, Level, Opening,
-    OpeningKind, PlacedArea, PlacedDevice, Point, State, Wall,
+    OpeningKind, PlacedArea, PlacedDevice, Point, Timestamp, Wall,
 };
 use leptos::ev;
 use leptos::html::Div;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use web_sys::wasm_bindgen::JsCast;
 
 use crate::api::{self, Home};
 use crate::devices::Controls;
+use crate::icons::icon;
 
 mod ambience;
+mod look;
+
+use look::{Look, look_for};
 
 /// What the editor rounds to by default, in centimetres. Fine enough to draw a real room,
 /// coarse enough that two walls meant to meet actually do.
@@ -361,6 +368,9 @@ pub fn Floorplan() -> impl IntoView {
 
     // Everything below draws and edits one floor at a time.
     let level = Memo::new(move |_| on_floor(&shown.get(), floor.get().as_ref()));
+    // What each aimed sensor on this floor can see. Walls and aim decide it and readings don't,
+    // so it is worked out when the plan changes rather than every time a sensor speaks.
+    let sightlines = Memo::new(move |_| ambience::sightlines(&level.get()));
     // The floor under this one, drawn faintly so an upstairs can be lined up with it.
     let beneath = Memo::new(move |_| {
         let floors = floors.get();
@@ -914,6 +924,58 @@ pub fn Floorplan() -> impl IntoView {
         }
     };
 
+    // Buttons that have just been pressed and doorbells that have just rung, for the moment
+    // their markers flash. Counted rather than flagged, so a second press while the first flash
+    // is still fading starts it again instead of being lost in it.
+    let flashes = RwSignal::new(BTreeMap::<DeviceId, u32>::new());
+    // When each event entity last said something happened. Only a *change* is a happening: the
+    // first sight of one is just the page arriving, and nothing plays as the page arrives.
+    let heard = StoredValue::new(BTreeMap::<EntityId, Timestamp>::new());
+    Effect::new(move |_| {
+        let home = live.home.get();
+        let mut rang = Vec::new();
+        heard.update_value(|heard| {
+            for entity in &home.entities {
+                if !matches!(entity.capabilities, Capabilities::Event(_)) {
+                    continue;
+                }
+                let Some(device) = entity.device_id.clone() else {
+                    continue;
+                };
+                let Some(state) = home
+                    .states
+                    .iter()
+                    .find(|state| state.entity_id == entity.id)
+                    .filter(|state| state.state.is_some())
+                else {
+                    continue;
+                };
+                let before = heard.insert(entity.id.clone(), state.last_changed);
+                if before.is_some_and(|before| before != state.last_changed) {
+                    rang.push(device);
+                }
+            }
+        });
+        for device in rang {
+            let mut count = 0;
+            flashes.update(|flashes| {
+                let entry = flashes.entry(device.clone()).or_insert(0);
+                *entry += 1;
+                count = *entry;
+            });
+            set_timeout(
+                move || {
+                    flashes.update(|flashes| {
+                        if flashes.get(&device) == Some(&count) {
+                            flashes.remove(&device);
+                        }
+                    });
+                },
+                std::time::Duration::from_millis(700),
+            );
+        }
+    });
+
     // The marker just put down, for the moment it takes to settle.
     let dropped = RwSignal::new(None::<usize>);
     let on_up = move |_: ev::MouseEvent| {
@@ -1053,6 +1115,15 @@ pub fn Floorplan() -> impl IntoView {
                 // including another floor — the picker offers every device whatever floor is
                 // showing, so this is the ordinary way to move one upstairs.
                 let here = floor.get_untracked();
+                // Where it points goes with it: moving a radar across the room, or upstairs,
+                // isn't a reason to have to aim it again.
+                let before = draft.with_untracked(|plan| {
+                    plan.floors
+                        .values()
+                        .flat_map(|level| &level.devices)
+                        .find(|placed| placed.device == device)
+                        .cloned()
+                });
                 draft.update(|plan| {
                     for (id, level) in &mut plan.floors {
                         if Some(id) != here.as_ref() {
@@ -1062,7 +1133,10 @@ pub fn Floorplan() -> impl IntoView {
                 });
                 on_level(draft, floor, |level| {
                     level.devices.retain(|placed| placed.device != device);
-                    level.devices.push(PlacedDevice { device, at });
+                    level.devices.push(match before {
+                        Some(before) => PlacedDevice { at, ..before },
+                        None => PlacedDevice::new(device, at),
+                    });
                     picked.set(Some(Pick::Device(level.devices.len() - 1)));
                 });
                 arming.set(None);
@@ -1195,7 +1269,26 @@ pub fn Floorplan() -> impl IntoView {
                     // where it would only get in the way of the lines.
                     {move || {
                         (!editing.get()).then(|| {
-                            ambience::ambience(&level.get(), &live.home.get(), transform(view.get()))
+                            ambience::ambience(
+                                &level.get(),
+                                &live.home.get(),
+                                &sightlines.get(),
+                                transform(view.get()),
+                            )
+                        })
+                    }}
+                    // While drawing, only what's being aimed: every radar's field at its full
+                    // reach, so turning one shows what it will be looking at.
+                    {move || {
+                        editing.get().then(|| view! {
+                            <g class="ambience" transform=transform(view.get())>
+                                {ambience::fields(
+                                    &level.get(),
+                                    &live.home.get(),
+                                    &sightlines.get(),
+                                    true,
+                                )}
+                            </g>
                         })
                     }}
                     {move || {
@@ -1207,10 +1300,12 @@ pub fn Floorplan() -> impl IntoView {
                             .iter()
                             .enumerate()
                             .map(|(w, wall)| {
-                                drawn_wall(wall, w, joints(&level, w), here, chosen)
+                                drawn_wall(wall, w, finishes(&level, w), here, chosen)
                             })
                             .collect_view()
                     }}
+                    // The inside of each corner a single curve couldn't carry, rounded off.
+                    {move || drawn_fillets(&fillets(&level.get()), view.get())}
                     {move || {
                         let (Some(from), Some(to)) = (running.get(), pointer.get()) else {
                             return None;
@@ -1354,6 +1449,7 @@ pub fn Floorplan() -> impl IntoView {
                                     drag,
                                     dragged,
                                     dropped,
+                                    flashes,
                                     remember_cb,
                                 ))
                             })
@@ -1556,7 +1652,8 @@ pub fn Floorplan() -> impl IntoView {
                     } else if level.get().is_empty() {
                         ""
                     } else {
-                        "The devices on the plan show what they're doing. Click one to switch it."
+                        "The devices on the plan show what they're doing. Hover one for its name, \
+                         and click a light, a plug or a player to switch it."
                     }}
                 </p>
             </div>
@@ -2017,6 +2114,9 @@ fn Inspector(
                     .find(|device| device.id == placed.device)
                     .map(|device| device.name.to_string())
                     .unwrap_or_else(|| placed.device.to_string());
+                // Only a radar points anywhere, so only a radar is asked which way.
+                let radar = looks(&home, &placed.device).radar;
+                let (facing, wide) = (placed.facing, placed.view_angle());
                 Some(
                     view! {
                         <div class="inspector">
@@ -2024,12 +2124,188 @@ fn Inspector(
                             <p class="name">{name}</p>
                             <p class="muted small">{placed.device.to_string()}</p>
                             <p class="muted small">"Drag it to move it."</p>
+                            {radar.then(|| aim(draft, floor, d, facing, wide, remember))}
                         </div>
                     }
                     .into_any(),
                 )
             }
         }
+    }
+}
+
+/// Which way a radar points and how wide it sees: the two things about it no protocol reports
+/// and nobody can drag onto a plan.
+///
+/// A dial to turn, because a direction is easier pointed than typed; the number beside it for
+/// when it has to be exact, with a nudge either side; and a slider for the width. The field
+/// itself is drawn on the plan as these change, at its full reach, so the thing being aimed at
+/// is the room and not a number.
+fn aim(
+    draft: RwSignal<Floorplan>,
+    floor: RwSignal<Option<FloorId>>,
+    device: usize,
+    facing: Option<u16>,
+    wide: u16,
+    remember: Callback<()>,
+) -> impl IntoView {
+    let turn_to = move |to: i32| {
+        on_level(draft, floor, |level| {
+            if let Some(placed) = level.devices.get_mut(device) {
+                placed.facing = Some(to.rem_euclid(360) as u16);
+            }
+        });
+    };
+    // Where on the dial the pointer is, as a direction: clockwise from pointing right, the same
+    // way round the plan measures it, to the nearest five degrees.
+    let pointed = |event: &ev::PointerEvent| -> Option<i32> {
+        let dial = event
+            .current_target()?
+            .dyn_into::<web_sys::Element>()
+            .ok()?;
+        let rect = dial.get_bounding_client_rect();
+        let (dx, dy) = (
+            f64::from(event.client_x()) - (rect.left() + rect.width() / 2.0),
+            f64::from(event.client_y()) - (rect.top() + rect.height() / 2.0),
+        );
+        // Right on the hub there is no direction to speak of.
+        (dx.hypot(dy) >= 4.0).then(|| (dy.atan2(dx).to_degrees() / 5.0).round() as i32 * 5)
+    };
+    let half = f64::from(wide).to_radians() / 2.0;
+    let field = format!(
+        "M 0 0 L {x:.2} {:.2} A 26 26 0 0 1 {x:.2} {:.2} Z",
+        -26.0 * half.sin(),
+        26.0 * half.sin(),
+        x = 26.0 * half.cos()
+    );
+    let turned = format!("rotate:{}deg", facing.unwrap_or(0));
+    let (least, most) = (
+        *PlacedDevice::FIELD_OF_VIEW_RANGE.start(),
+        *PlacedDevice::FIELD_OF_VIEW_RANGE.end(),
+    );
+
+    view! {
+        <div class="aim">
+            <div class="aim-head">
+                <span id="aim-label">"Facing"</span>
+                <span class="figure">
+                    {facing.map_or_else(|| "not aimed".to_owned(), |facing| format!("{facing}°"))}
+                </span>
+            </div>
+            <svg
+                class="dial"
+                class:unset=facing.is_none()
+                viewBox="-32 -32 64 64"
+                role="img"
+                aria-label="Drag to turn the sensor"
+                on:pointerdown=move |event: ev::PointerEvent| {
+                    event.prevent_default();
+                    remember.run(());
+                    if let Some(dial) = event
+                        .current_target()
+                        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                    {
+                        // So the turn carries on when the pointer slides off the dial.
+                        let _ = dial.set_pointer_capture(event.pointer_id());
+                    }
+                    if let Some(to) = pointed(&event) {
+                        turn_to(to);
+                    }
+                }
+                on:pointermove=move |event: ev::PointerEvent| {
+                    if event.buttons() & 1 == 1
+                        && let Some(to) = pointed(&event)
+                    {
+                        turn_to(to);
+                    }
+                }
+            >
+                <circle class="dial-ring" r="26" />
+                <path class="dial-field" d=field style=turned.clone() />
+                <line class="dial-needle" x1="0" y1="0" x2="24" y2="0" style=turned />
+                <circle class="dial-hub" r="3" />
+            </svg>
+            <div class="aim-step">
+                <button
+                    type="button"
+                    aria-label="Turn 15° anticlockwise"
+                    on:click=move |_| {
+                        remember.run(());
+                        turn_to(i32::from(facing.unwrap_or(0)) - 15);
+                    }
+                >
+                    "−15°"
+                </button>
+                <input
+                    type="number"
+                    min="0"
+                    max="359"
+                    step="1"
+                    aria-labelledby="aim-label"
+                    placeholder="—"
+                    prop:value=facing.map(|facing| facing.to_string()).unwrap_or_default()
+                    on:pointerdown=move |_| remember.run(())
+                    on:keydown=move |_| remember.run(())
+                    on:input=move |event| {
+                        if let Ok(to) = event_target_value(&event).parse::<i32>() {
+                            turn_to(to.clamp(0, 359));
+                        }
+                    }
+                />
+                <button
+                    type="button"
+                    aria-label="Turn 15° clockwise"
+                    on:click=move |_| {
+                        remember.run(());
+                        turn_to(i32::from(facing.unwrap_or(0)) + 15);
+                    }
+                >
+                    "+15°"
+                </button>
+            </div>
+            {facing.is_some().then(|| view! {
+                <button
+                    type="button"
+                    class="quiet"
+                    on:click=move |_| {
+                        remember.run(());
+                        on_level(draft, floor, |level| {
+                            if let Some(placed) = level.devices.get_mut(device) {
+                                placed.facing = None;
+                                placed.field_of_view = None;
+                            }
+                        });
+                    }
+                >
+                    "Stop aiming it"
+                </button>
+            })}
+        </div>
+        <label class="slider">
+            <span>"Field of view"</span>
+            <input
+                type="range"
+                min=least
+                max=most
+                step="5"
+                disabled=facing.is_none()
+                prop:value=wide
+                style:--fill=format!("{}%", crate::devices::fill(wide, least, most))
+                on:pointerdown=move |_| remember.run(())
+                on:keydown=move |_| remember.run(())
+                on:input=move |event| {
+                    let Ok(next) = event_target_value(&event).parse::<u16>() else {
+                        return;
+                    };
+                    on_level(draft, floor, |level| {
+                        if let Some(placed) = level.devices.get_mut(device) {
+                            placed.field_of_view = Some(next.clamp(least, most));
+                        }
+                    });
+                }
+            />
+            <output class="figure">{format!("{wide}°")}</output>
+        </label>
     }
 }
 
@@ -2211,12 +2487,21 @@ fn DevicePicker(
     }
 }
 
-/// One device where it was put: what it's called, and what it's doing.
+/// One device where it was put: what kind of thing it is, and what it's doing.
+///
+/// A round glyph in the tone of its kind, which opens out to the right into a short reading
+/// only while it has something to say — a temperature, the watts a plug is drawing, what the TV
+/// is playing. Its name is a hover away, and always shown while arranging the plan, when names
+/// are what tell two lamps apart.
 ///
 /// HTML rather than something drawn in the SVG, because a marker is a control — it has a label,
 /// it can be focused, and in reading mode clicking it switches the device. It is also the one
-/// thing on the canvas that must *not* scale with the zoom: a name is either readable or it
+/// thing on the canvas that must *not* scale with the zoom: a reading is either readable or it
 /// isn't.
+///
+/// The page draws these again with every reading, in place. So the shape of what's returned
+/// never depends on the device's state — only classes, text and styles do — which is what lets
+/// a marker *grow* into its reading rather than be swapped for a wider one.
 #[expect(
     clippy::too_many_arguments,
     reason = "the editor's state, passed along"
@@ -2234,42 +2519,78 @@ fn marker(
     drag: RwSignal<Option<Drag>>,
     dragged: RwSignal<bool>,
     dropped: RwSignal<Option<usize>>,
+    flashes: RwSignal<BTreeMap<DeviceId, u32>>,
     remember: Callback<()>,
 ) -> impl IntoView + use<> {
     let (x, y) = view.screen(placed.at);
-    let sensing = ambience::sensing(home, &device.id);
     let look = looks(home, &device.id);
     let name = device.name.to_string();
     let (on, offline) = (look.on, look.offline);
-    // A marker is a control only while reading the plan: a device that can't be switched, or
-    // that isn't answering, must not look like one that can be. In edit mode it is a thing to
-    // move instead, so it stays live whatever the device is doing.
-    let switchable = look.switch.is_some() && !offline;
-    let title = match (offline, on) {
-        (true, _) => format!("{name} — not answering"),
-        (false, Some(true)) => format!("{name} — on"),
-        (false, Some(false)) => format!("{name} — off"),
-        (false, None) => name.clone(),
+    // What a click does, if anything. A marker is a control only while reading the plan, and
+    // only for a device that is answering: one that isn't must not look like one that is. In
+    // edit mode it is a thing to move instead, so it stays live whatever the device is doing.
+    let click = if offline {
+        None
+    } else if let Some(entity) = look.switch.clone() {
+        // An entity that hasn't said yet is turned on, which is what asking for "the other
+        // one" means when there is no current one.
+        Some(Click::Switch(entity, !on.unwrap_or(false)))
+    } else if let Some(entity) = look.media.clone() {
+        Some(Click::Act(entity, "media_play_pause"))
+    } else {
+        look.press.clone().map(|entity| Click::Act(entity, "press"))
     };
-    let switch = look.switch.clone();
+    let live = click.is_some();
+    // Arranging the plan, a marker says only which device it is; reading it, what it's doing.
+    let said = if editing || look.saying.is_empty() {
+        name.clone()
+    } else {
+        format!("{name} · {}", look.saying)
+    };
+    let label = match (&look.reading, look.saying.is_empty()) {
+        (Some(reading), _) => format!("{name}, {reading}"),
+        (None, false) => format!("{name}, {}", look.saying),
+        (None, true) => name.clone(),
+    };
+    // Only a radar that has been aimed says which way it looks.
+    let facing = placed.facing.filter(|_| look.radar);
+    let open = look.reading.is_some();
+    let reading = look.reading.clone().unwrap_or_default();
+    let tip = said.clone();
+    let (flashed, flashed_again) = (device.id.clone(), device.id.clone());
 
     view! {
         <button
             type="button"
             class="marker"
-            class:on=move || on == Some(true)
+            data-tone=look.tone.as_str()
+            class:on=look.active
+            class:lit=look.lit
+            class:open=open
+            class:pulse=look.pulse
+            class:aimed=facing.is_some()
             class:offline=offline
-            class:sensing=sensing
+            // A press or a ring: the same flash under two names, so one straight after another
+            // starts it again.
+            class:flash-a=move || flashes.with(|all| all.get(&flashed).is_some_and(|n| n % 2 == 1))
+            class:flash-b=move || {
+                flashes.with(|all| all.get(&flashed_again).is_some_and(|n| n % 2 == 0))
+            }
             // Held, it lifts off the plan; put down, it settles with a bounce.
             class:lifted=move || matches!(drag.get(), Some(Drag::Device { device }) if device == index)
             class:dropped=move || dropped.get() == Some(index)
             class:chosen=chosen
             class:movable=editing
-            class:switchable=!editing && switchable
+            class:switchable=!editing && live
             style=format!("left:{x}px;top:{y}px")
-            title=title
-            disabled=!editing && !switchable
-            aria-pressed=(!editing && switchable).then(|| on.map(|on| on.to_string())).flatten()
+            title=tip
+            aria-label=label
+            // Not `disabled`: a marker with nothing to switch still has a name and a reading to
+            // show to whoever tabs to it, and a disabled button can't be tabbed to.
+            aria-disabled=(!editing && !live).then_some("true")
+            aria-pressed=(!editing && live && look.switch.is_some())
+                .then(|| on.map(|on| on.to_string()))
+                .flatten()
             on:mousedown=move |event: ev::MouseEvent| {
                 if !editing {
                     return;
@@ -2282,71 +2603,49 @@ fn marker(
             }
             on:click=move |event: ev::MouseEvent| {
                 event.stop_propagation();
-                if editing || !switchable {
+                if editing {
                     return;
                 }
-                let Some(entity) = switch.clone() else { return };
-                // An entity that hasn't said yet is turned on, which is what asking for
-                // "the other one" means when there is no current one.
-                controls.set_on.run((entity, !on.unwrap_or(false)));
+                match click.clone() {
+                    Some(Click::Switch(entity, to)) => controls.set_on.run((entity, to)),
+                    Some(Click::Act(entity, action)) => controls.act.run((entity, action, None)),
+                    None => {}
+                }
             }
         >
-            <span class="pip"></span>
-            <span class="marker-name">{name}</span>
+            <span class="glyph">{icon(look.glyph)}</span>
+            <span class="reading">{reading}</span>
+            // Which way a radar looks: a short arc on the marker's own ring, turned to face it.
+            <svg
+                class="facing"
+                viewBox="-20 -20 40 40"
+                aria-hidden="true"
+                style=format!("rotate:{}deg", facing.unwrap_or(0))
+            >
+                <path d="M16.5 -9.5 A19 19 0 0 1 16.5 9.5" />
+            </svg>
+            <span class="marker-name">{said}</span>
         </button>
     }
 }
 
-/// What a device looks like on the plan right now.
-struct Look {
-    /// Whether the entity a click would switch is on. `None` when it can be switched but hasn't
-    /// said yet — a device that has only just joined — which is still worth a click.
-    on: Option<bool>,
-    /// Whether *that* entity is unreachable. Not whether anything on the device is: a lamp with
-    /// a flaky signal sensor is still a lamp you can switch.
-    offline: bool,
-    /// The entity a click switches, if there is one.
-    switch: Option<EntityId>,
+/// What a click on a marker asks for.
+#[derive(Debug, Clone)]
+enum Click {
+    /// Turn an entity on or off.
+    Switch(EntityId, bool),
+    /// One of its kind's own actions: play or pause, press.
+    Act(EntityId, &'static str),
 }
 
-/// A device's state, as the plan shows it: the first light or switch it provides speaks for it.
-///
-/// Chosen by what the entity **can do**, not by what it has said. An entity that has reported
-/// nothing yet still has a light's or a switch's capabilities, and a marker that refused to
-/// switch it until it had spoken would be a dead control on a device that works — the Devices
-/// page turns such an entity on from an unknown state, and so does this.
+/// A device's look on the plan, from the home as it is right now ([`look_for`] has the rules).
 fn looks(home: &Home, device: &DeviceId) -> Look {
-    let found = home
+    let entities: Vec<_> = home
         .entities
         .iter()
         .filter(|entity| entity.device_id.as_ref() == Some(device))
-        .find(|entity| {
-            matches!(
-                entity.capabilities,
-                Capabilities::Light(_) | Capabilities::Switch(_)
-            )
-        });
-    let Some(entity) = found else {
-        return Look {
-            on: None,
-            offline: false,
-            switch: None,
-        };
-    };
-    let state = home
-        .states
-        .iter()
-        .find(|state| state.entity_id == entity.id);
-    Look {
-        on: match state.and_then(|state| state.state.as_ref()) {
-            Some(State::Light(light)) => Some(light.on),
-            Some(State::Switch(switch)) => Some(switch.on),
-            _ => None,
-        },
-        offline: state
-            .is_some_and(|state| state.availability == irori_types::Availability::Unavailable),
-        switch: Some(entity.id.clone()),
-    }
+        .collect();
+    look_for(&entities, &home.states)
 }
 
 // --- Drawing ------------------------------------------------------------------------------
@@ -2405,38 +2704,79 @@ fn grid(view: Viewport, snap: Snap) -> impl IntoView {
 
 /// One wall: the stretches of it that are still solid, and the doors and windows in the gaps.
 ///
-/// `joints` is how far each end runs past the point it was drawn to, so that a corner comes out
-/// solid; see [`joints`].
+/// `finishes` is how each end meets its neighbours — flat, capped, or curving round into the
+/// next wall; see [`finishes`]. Each stretch is one path, so a wall and the curve it ends in
+/// are a single stroke with no seam between them.
 fn drawn_wall(
     wall: &Wall,
     index: usize,
-    joints: (f64, f64),
+    finishes: (Finish, Finish),
     view: Viewport,
     picked: Option<Pick>,
 ) -> impl IntoView + use<> {
     let thickness = f64::from(wall.thickness);
     let chosen = picked == Some(Pick::Wall(index));
     let length = wall.length();
+    let arc = |turn: Turn, clockwise: bool, to: (f64, f64)| {
+        format!(
+            "A {r:.2} {r:.2} 0 0 {} {:.2} {:.2}",
+            u8::from(clockwise),
+            to.0,
+            to.1,
+            r = turn.radius
+        )
+    };
     let runs = solid_runs(wall)
         .into_iter()
         .map(|(start, end)| {
-            // Only the ends that really are the ends of the wall get the joint: the sides of a
+            // Only the ends that really are the ends of the wall are finished: the sides of a
             // doorway are the ends of a run too, and they must stay where the door is.
-            let start = if start <= 0.0 { -joints.0 } else { start };
-            let end = if end >= length {
-                length + joints.1
-            } else {
-                end
+            let from = (start <= 0.0).then_some(finishes.0);
+            let to = (end >= length).then_some(finishes.1);
+            let (start, lead) = match from {
+                Some(Finish::Turn(turn)) => (turn.back, Some(turn)),
+                _ => (start, None),
+            };
+            let (end, tail) = match to {
+                Some(Finish::Turn(turn)) => (length - turn.back, Some(turn)),
+                _ => (end, None),
             };
             let (a, _, _) = along(wall, start);
-            let (b, _, _) = along(wall, end);
+            let (b, _, _) = along(wall, end.max(start));
+            let mut path = match lead {
+                // Drawn from the middle of the corner back onto the wall, so the other way round.
+                Some(turn) => format!(
+                    "M {:.2} {:.2} {} ",
+                    turn.to.0,
+                    turn.to.1,
+                    arc(turn, !turn.clockwise, a)
+                ),
+                None => format!("M {:.2} {:.2} ", a.0, a.1),
+            };
+            path.push_str(&format!("L {:.2} {:.2}", b.0, b.1));
+            if let Some(turn) = tail {
+                path.push(' ');
+                path.push_str(&arc(turn, turn.clockwise, turn.to));
+            }
             view! {
-                <line
+                <path
                     class="wall"
                     class:chosen=chosen
-                    x1=a.0 y1=a.1 x2=b.0 y2=b.1
+                    d=path
+                    fill="none"
                     stroke-width=thickness
                 />
+            }
+        })
+        .collect_view();
+    // A round cap where several walls meet: together they make the outside of the joint round
+    // whatever the angles are.
+    let caps = [(finishes.0, wall.from), (finishes.1, wall.to)]
+        .into_iter()
+        .filter(|(finish, _)| *finish == Finish::Capped)
+        .map(|(_, at)| {
+            view! {
+                <circle class="wall-cap" class:chosen=chosen cx=at.x cy=at.y r=thickness / 2.0 />
             }
         })
         .collect_view();
@@ -2450,9 +2790,34 @@ fn drawn_wall(
     view! {
         <g class="wall-group" transform=transform(view)>
             {runs}
+            {caps}
             {openings}
         </g>
     }
+}
+
+/// The insides of the corners that [`fillets`] rounds, filled in the walls' own colour.
+fn drawn_fillets(fillets: &[Fillet], view: Viewport) -> impl IntoView + use<> {
+    let patches = fillets
+        .iter()
+        .map(|fillet| {
+            let path = format!(
+                "M {:.2} {:.2} L {:.2} {:.2} L {:.2} {:.2} A {r:.2} {r:.2} 0 0 {} {:.2} {:.2} Z",
+                fillet.from.0,
+                fillet.from.1,
+                fillet.corner.0,
+                fillet.corner.1,
+                fillet.to.0,
+                fillet.to.1,
+                u8::from(fillet.clockwise),
+                fillet.from.0,
+                fillet.from.1,
+                r = fillet.radius
+            );
+            view! { <path class="wall-fillet" d=path /> }
+        })
+        .collect_view();
+    view! { <g class="wall-group" transform=transform(view)>{patches}</g> }
 }
 
 /// A door or a window in the gap its wall left for it.
@@ -2735,58 +3100,335 @@ fn on_wall_at(from: Point, to: Point, world: (f64, f64)) -> (f64, f64) {
     (share * square.sqrt(), (world.0 - px).hypot(world.1 - py))
 }
 
-/// How far each end of a wall has to run past the point it was drawn to for its corners to come
-/// out solid, in centimetres: `(from, to)`.
-///
-/// Walls are drawn as thick lines with flat ends, so two of them meeting at a right angle stop
-/// on the corner point and leave a square notch missing from the outside of it — small, but the
-/// one thing that makes a plan look unfinished. Running each wall on by the **mitre distance**
-/// fills it: half the thickness divided by the tangent of half the angle between them, which is
-/// exactly half the thickness at a right angle, nothing at all where two walls carry straight
-/// on, and more as the corner closes up.
-///
-/// A free end — one no other wall meets — gets nothing, because a wall that stops in the middle
-/// of a room stops where it was drawn. Where several walls meet, the largest of the distances
-/// wins: the overshoot lands inside the other walls, where it can't be seen.
-fn joints(level: &Level, index: usize) -> (f64, f64) {
-    let Some(wall) = level.walls.get(index) else {
-        return (0.0, 0.0);
-    };
-    let half = f64::from(wall.thickness) / 2.0;
-    // Past about 15° the mitre runs away to nothing useful, so it's cut off — a sliver at a very
-    // sharp corner beats a spike shooting across the plan.
-    let limit = half * 4.0;
+/// How much rounder than the wall is thick a corner's curve is: the radius of its middle line,
+/// in wall thicknesses. A little over one, so the inside of the corner is visibly round too —
+/// soft, not a bend in a pipe.
+const ROUNDING: f64 = 1.2;
 
-    let reach = |corner: Point, away: Point| {
-        // The wall's own direction, pointing away from this corner.
-        let mine = direction(corner, away);
-        let mut most = 0.0_f64;
-        for (other, from, to) in level
+/// How sharp a corner can be, in radians, and still be rounded. Sharper than this the curve
+/// would have to be so tight it isn't one.
+const SHARPEST: f64 = 0.35;
+
+/// How one end of a wall is finished where it meets the others.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Finish {
+    /// Stops flat, where it was drawn: an end no other wall's end meets. A wall that stops in
+    /// the middle of a room stops there.
+    Flat,
+    /// Ends in a round cap. Where walls meet in a way one curve can't carry — three of them, or
+    /// two of different thicknesses, or a hairpin — each is capped, and the caps together make
+    /// the outside of the joint round. Two walls carrying straight on are capped too, and it
+    /// doesn't show.
+    Capped,
+    /// Curves round into its one neighbour.
+    Turn(Turn),
+}
+
+/// A wall's half of a rounded corner: where it stops being straight, and the arc that carries
+/// it on to meet the other wall half-way round.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Turn {
+    /// How far short of the corner the straight part stops, in centimetres.
+    back: f64,
+    /// The radius of the arc down the middle of the wall.
+    radius: f64,
+    /// Where this wall's share of the arc ends: the middle of the corner and a touch beyond,
+    /// so the two halves overlap rather than leave a hairline between them.
+    to: (f64, f64),
+    /// Which way the arc bends going from the wall into the corner, as SVG's sweep flag has it.
+    clockwise: bool,
+}
+
+/// How each end of a wall meets its neighbours: `(from, to)`.
+///
+/// Walls are drawn as thick lines with flat ends, so two of them meeting at a corner would
+/// stop on the corner point: a notch missing from the outside and a hard edge on the inside.
+/// Instead a corner of two walls is **one curve** — each wall stops short of the corner and an
+/// arc carries it round, so the inside and the outside come out as two concentric curves, the
+/// way a line drawn with a round pen turns.
+///
+/// The curve is as round as [`ROUNDING`] says, less wherever that wouldn't fit: it never
+/// reaches past the middle of either wall or into a doorway, and at a sharp corner it tightens
+/// so that the point the corner was drawn at stays inside the wall — a room traced to that
+/// point must not poke out of its own walls.
+fn finishes(level: &Level, index: usize) -> (Finish, Finish) {
+    let Some(wall) = level.walls.get(index) else {
+        return (Finish::Flat, Finish::Flat);
+    };
+    let at = |corner: Point, away: Point| {
+        let mut meeting = level
             .walls
             .iter()
             .enumerate()
-            .filter(|(which, _)| *which != index)
-            .map(|(_, other)| (other, other.from, other.to))
+            .filter(|(which, other)| {
+                *which != index && (other.from == corner || other.to == corner)
+            })
+            .map(|(_, other)| other);
+        let Some(other) = meeting.next() else {
+            return Finish::Flat;
+        };
+        if meeting.next().is_some()
+            || other.thickness != wall.thickness
+            || runs_through(level, corner)
         {
-            let _ = other;
-            let theirs = if from == corner {
-                direction(corner, to)
-            } else if to == corner {
-                direction(corner, from)
-            } else {
-                continue;
-            };
-            // The angle at the corner, between the two walls running away from it.
-            let cos = (mine.0 * theirs.0 + mine.1 * theirs.1).clamp(-1.0, 1.0);
-            let angle = cos.acos();
-            let tan = (angle / 2.0).tan();
-            let distance = if tan.abs() < 1e-6 { limit } else { half / tan };
-            most = most.max(distance.clamp(0.0, limit));
+            return Finish::Capped;
         }
-        most
+        let far = if other.from == corner {
+            other.to
+        } else {
+            other.from
+        };
+        let room = room_at(wall, corner).min(room_at(other, corner));
+        turn(corner, away, far, f64::from(wall.thickness), room)
+            .map_or(Finish::Capped, Finish::Turn)
     };
+    (at(wall.from, wall.to), at(wall.to, wall.from))
+}
 
-    (reach(wall.from, wall.to), reach(wall.to, wall.from))
+/// The curve a wall takes round a corner into another of the same thickness, or `None` where
+/// there isn't a curve to draw: the two carry straight on, double back, or have no room.
+fn turn(corner: Point, away: Point, far: Point, thickness: f64, room: f64) -> Option<Turn> {
+    let (mine, theirs) = (direction(corner, away), direction(corner, far));
+    // The angle at the corner between the two walls running away from it: a half turn when
+    // they carry straight on, nothing when one doubles back along the other.
+    let angle = (mine.0 * theirs.0 + mine.1 * theirs.1)
+        .clamp(-1.0, 1.0)
+        .acos();
+    if angle < SHARPEST {
+        return None;
+    }
+    let (sin, tan) = ((angle / 2.0).sin(), (angle / 2.0).tan());
+    // The drawn corner is this far outside the arc's middle line for each centimetre of
+    // radius; it has to stay within half a thickness of it to stay inside the wall.
+    let outside = 1.0 / sin - 1.0;
+    let radius = if outside > 1e-9 {
+        (thickness * ROUNDING).min(thickness / 2.0 / outside)
+    } else {
+        thickness * ROUNDING
+    };
+    let back = (radius / tan).min(room);
+    if back < 0.5 {
+        return None;
+    }
+    let radius = back * tan;
+    // The arc's centre is on the line that halves the corner, on the inside of it.
+    let (bx, by) = (mine.0 + theirs.0, mine.1 + theirs.1);
+    let reach = bx.hypot(by);
+    let (cx, cy) = (
+        f64::from(corner.x) + bx / reach * radius / sin,
+        f64::from(corner.y) + by / reach * radius / sin,
+    );
+    let start = (
+        f64::from(corner.x) + mine.0 * back,
+        f64::from(corner.y) + mine.1 * back,
+    );
+    let end = (
+        f64::from(corner.x) + theirs.0 * back,
+        f64::from(corner.y) + theirs.1 * back,
+    );
+    let from = (start.1 - cy).atan2(start.0 - cx);
+    let sweep = short_way((end.1 - cy).atan2(end.0 - cx) - from);
+    // Half-way, and a little over.
+    let share = (sweep.abs() / 2.0 + 0.06).min(sweep.abs()) * sweep.signum();
+    let stop = from + share;
+    Some(Turn {
+        back,
+        radius,
+        to: (cx + radius * stop.cos(), cy + radius * stop.sin()),
+        // With y running down the page, a growing angle is a clockwise one.
+        clockwise: sweep > 0.0,
+    })
+}
+
+/// An angle brought into the half turn either side of nothing: the short way round.
+fn short_way(mut angle: f64) -> f64 {
+    while angle > std::f64::consts::PI {
+        angle -= std::f64::consts::TAU;
+    }
+    while angle < -std::f64::consts::PI {
+        angle += std::f64::consts::TAU;
+    }
+    angle
+}
+
+/// How much of a wall there is to round a corner with at one of its ends, in centimetres: up to
+/// the first doorway, and never past the wall's middle — the other end may want its half.
+fn room_at(wall: &Wall, corner: Point) -> f64 {
+    let length = wall.length();
+    let runs = solid_runs(wall);
+    let solid = if wall.from == corner {
+        runs.first()
+            .filter(|(start, _)| *start <= 0.0)
+            .map_or(0.0, |(start, end)| end - start)
+    } else {
+        runs.last()
+            .filter(|(_, end)| *end >= length)
+            .map_or(0.0, |(start, end)| end - start)
+    };
+    solid.min(length / 2.0)
+}
+
+/// Whether some wall carries on through a point rather than ending at it: the top of a T.
+fn runs_through(level: &Level, corner: Point) -> bool {
+    let at = (f64::from(corner.x), f64::from(corner.y));
+    level.walls.iter().any(|wall| {
+        if wall.from == corner || wall.to == corner {
+            return false;
+        }
+        let (along, off) = on_wall_at(wall.from, wall.to, at);
+        off < 0.5 && along > 0.5 && along < wall.length() - 0.5
+    })
+}
+
+/// The inside of one corner, rounded: the sliver between the two walls' faces and the arc that
+/// joins them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Fillet {
+    /// Where the two faces meet.
+    corner: (f64, f64),
+    /// Where the arc leaves one face and where it lands on the other.
+    from: (f64, f64),
+    to: (f64, f64),
+    radius: f64,
+    /// Which way the arc bends from `to` back to `from`, as SVG's sweep flag has it.
+    clockwise: bool,
+}
+
+/// One wall as seen from a joint: which way it leaves, how thick, and how far it stays solid.
+struct Arm {
+    toward: (f64, f64),
+    half: f64,
+    room: f64,
+}
+
+/// The inside corners that want rounding and that [`finishes`] can't reach.
+///
+/// A corner of two walls is one curve, inside and out. Everything else that joins — a T, a
+/// cross, two walls of different thicknesses, a wall that ends against the side of another —
+/// keeps its straight walls and has each inside corner filled with a small curve instead, the
+/// way plaster rounds the foot of one.
+fn fillets(level: &Level) -> Vec<Fillet> {
+    let mut joints: Vec<Point> = level
+        .walls
+        .iter()
+        .flat_map(|wall| [wall.from, wall.to])
+        .collect();
+    joints.sort_by_key(|point| (point.x, point.y));
+    joints.dedup();
+
+    let mut fillets = Vec::new();
+    for joint in joints {
+        let at = (f64::from(joint.x), f64::from(joint.y));
+        let mut arms = Vec::new();
+        let mut curved = false;
+        for (index, wall) in level.walls.iter().enumerate() {
+            let half = f64::from(wall.thickness) / 2.0;
+            if wall.from == joint || wall.to == joint {
+                let away = if wall.from == joint {
+                    wall.to
+                } else {
+                    wall.from
+                };
+                let (from, to) = finishes(level, index);
+                let finish = if wall.from == joint { from } else { to };
+                curved |= matches!(finish, Finish::Turn(_));
+                arms.push(Arm {
+                    toward: direction(joint, away),
+                    half,
+                    room: room_at(wall, joint),
+                });
+                continue;
+            }
+            let length = wall.length();
+            let (along, off) = on_wall_at(wall.from, wall.to, at);
+            if off >= 0.5 || along <= 0.5 || along >= length - 0.5 {
+                continue;
+            }
+            // A wall running through the joint leaves it both ways.
+            let (ahead, behind) = solid_around(wall, along);
+            let forward = direction(wall.from, wall.to);
+            arms.push(Arm {
+                toward: forward,
+                half,
+                room: ahead,
+            });
+            arms.push(Arm {
+                toward: (-forward.0, -forward.1),
+                half,
+                room: behind,
+            });
+        }
+        if curved || arms.len() < 2 {
+            continue;
+        }
+        arms.sort_by(|a, b| {
+            let (a, b) = (a.toward.1.atan2(a.toward.0), b.toward.1.atan2(b.toward.0));
+            a.total_cmp(&b)
+        });
+        for (index, one) in arms.iter().enumerate() {
+            let next = &arms[(index + 1) % arms.len()];
+            if let Some(fillet) = fillet(at, one, next) {
+                fillets.push(fillet);
+            }
+        }
+    }
+    fillets
+}
+
+/// The curve inside the corner between one wall and the next one round the joint, if the gap
+/// between them is a corner at all: not two walls lying along each other, and not a wall
+/// carrying straight on.
+fn fillet(joint: (f64, f64), one: &Arm, next: &Arm) -> Option<Fillet> {
+    let gap = (next.toward.1.atan2(next.toward.0) - one.toward.1.atan2(one.toward.0))
+        .rem_euclid(std::f64::consts::TAU);
+    if !(SHARPEST..=std::f64::consts::PI - 0.17).contains(&gap) {
+        return None;
+    }
+    let (sin, tan) = (gap.sin(), (gap / 2.0).tan());
+    // Where the two faces meet: each wall's face is the other wall's half-thickness along it.
+    let (along_one, along_next) = (next.half / sin, one.half / sin);
+    let corner = (
+        joint.0 + one.toward.0 * along_one + next.toward.0 * along_next,
+        joint.1 + one.toward.1 * along_one + next.toward.1 * along_next,
+    );
+    let radius = (ROUNDING - 0.5) * 2.0 * one.half.min(next.half);
+    let reach = (radius / tan)
+        .min(one.room - along_one)
+        .min(next.room - along_next);
+    if reach < 0.5 {
+        return None;
+    }
+    let radius = reach * tan;
+    let from = (
+        corner.0 + one.toward.0 * reach,
+        corner.1 + one.toward.1 * reach,
+    );
+    let to = (
+        corner.0 + next.toward.0 * reach,
+        corner.1 + next.toward.1 * reach,
+    );
+    // The arc's centre, out along the line that halves the gap.
+    let (bx, by) = (one.toward.0 + next.toward.0, one.toward.1 + next.toward.1);
+    let length = bx.hypot(by);
+    let out = radius / (gap / 2.0).sin();
+    let (cx, cy) = (corner.0 + bx / length * out, corner.1 + by / length * out);
+    let sweep = short_way((from.1 - cy).atan2(from.0 - cx) - (to.1 - cy).atan2(to.0 - cx));
+    Some(Fillet {
+        corner,
+        from,
+        to,
+        radius,
+        clockwise: sweep > 0.0,
+    })
+}
+
+/// How far a wall stays solid either side of a point along it: `(ahead, behind)`, in
+/// centimetres, each stopping at a doorway or at the end of the wall.
+fn solid_around(wall: &Wall, at: f64) -> (f64, f64) {
+    solid_runs(wall)
+        .into_iter()
+        .find(|(start, end)| *start <= at && at <= *end)
+        .map_or((0.0, 0.0), |(start, end)| (end - at, at - start))
 }
 
 /// The unit vector from one point towards another, or a default when they're the same place.
@@ -2900,10 +3542,17 @@ fn point_along(from: Point, to: Point, at: f64) -> ((f64, f64), (f64, f64), (f64
 /// The stretches of a wall that are still wall, in centimetres from its `from` end. Overlapping
 /// openings are one hole, which is what makes a door dragged over a window survive being drawn.
 fn solid_runs(wall: &Wall) -> Vec<(f64, f64)> {
+    runs(wall, |_| true)
+}
+
+/// The stretches of a wall left once the openings `is_hole` picks are cut out of it. A door is
+/// a hole to something looking through it; a window isn't.
+fn runs(wall: &Wall, is_hole: impl Fn(&Opening) -> bool) -> Vec<(f64, f64)> {
     let length = wall.length();
     let mut holes: Vec<(f64, f64)> = wall
         .openings
         .iter()
+        .filter(|opening| is_hole(opening))
         .map(|opening| {
             let half = f64::from(opening.width) / 2.0;
             let at = f64::from(opening.at);
@@ -3470,10 +4119,17 @@ mod tests {
         assert!(Snap::Custom(SNAP).is_custom());
     }
 
-    /// The gap this closes: two walls meeting at a right angle stop on the corner and leave a
-    /// square notch out of the outside of it. Each has to run on by half its thickness.
+    fn turned(finish: Finish) -> Turn {
+        match finish {
+            Finish::Turn(turn) => turn,
+            other => panic!("expected a curve, got {other:?}"),
+        }
+    }
+
+    /// A corner of two walls is one curve: each stops short of the corner by the same distance
+    /// and an arc carries it round, so the inside and the outside both come out round.
     #[test]
-    fn a_corner_runs_on_far_enough_to_come_out_solid() {
+    fn a_corner_of_two_walls_is_one_curve() {
         let plan = Level {
             walls: vec![
                 wall((0, 0), (400, 0)),
@@ -3482,44 +4138,152 @@ mod tests {
             ],
             ..Level::default()
         };
-        let half = f64::from(Wall::DEFAULT_THICKNESS) / 2.0;
+        let thickness = f64::from(Wall::DEFAULT_THICKNESS);
 
-        let (from, to) = joints(&plan, 0);
-        assert_eq!(from, 0.0, "a free end stops where it was drawn");
+        let (from, to) = finishes(&plan, 0);
+        assert_eq!(from, Finish::Flat, "a free end stops where it was drawn");
+        let mine = turned(to);
         assert!(
-            (to - half).abs() < 1e-9,
-            "a right angle runs on by half: {to}"
+            (mine.radius - thickness * ROUNDING).abs() < 1e-9,
+            "as round as asked: {mine:?}"
         );
-        let (from, _) = joints(&plan, 1);
         assert!(
-            (from - half).abs() < 1e-9,
-            "and so does the other wall: {from}"
+            (mine.back - mine.radius).abs() < 1e-9,
+            "at a right angle it stops a radius short: {mine:?}"
         );
+        assert!(
+            mine.radius > thickness / 2.0,
+            "round enough that the inside is a curve too"
+        );
+        let theirs = turned(finishes(&plan, 1).0);
+        assert!(
+            (theirs.back - mine.back).abs() < 1e-9,
+            "and so does the other wall"
+        );
+        assert_ne!(
+            mine.clockwise, theirs.clockwise,
+            "each bends the opposite way as it's drawn, into the same corner"
+        );
+        // The two halves meet in the middle of the corner, on the inside of the drawn point.
+        for half in [mine, theirs] {
+            assert!(half.to.0 < 400.0 && half.to.1 > 0.0, "{half:?}");
+            assert!((half.to.0 - 400.0).hypot(half.to.1) < thickness, "{half:?}");
+        }
         assert_eq!(
-            joints(&plan, 2),
-            (0.0, 0.0),
+            finishes(&plan, 2),
+            (Finish::Flat, Finish::Flat),
             "a wall on its own gets nothing"
         );
+        assert!(fillets(&plan).is_empty(), "and a curve needs no filling in");
     }
 
-    /// Two walls carrying straight on need nothing; a hairpin needs more than a right angle,
-    /// but not without limit.
+    /// Two walls carrying straight on have nothing to round; a sharp corner still curves, but
+    /// tighter, so the point it was drawn at stays inside the wall.
     #[test]
-    fn how_far_a_corner_runs_on_follows_the_angle() {
+    fn how_round_a_corner_is_follows_the_angle() {
         let straight = Level {
             walls: vec![wall((0, 0), (400, 0)), wall((400, 0), (800, 0))],
             ..Level::default()
         };
-        assert!(joints(&straight, 0).1 < 1e-6, "nothing to fill");
+        assert_eq!(finishes(&straight, 0).1, Finish::Capped, "nothing to curve");
+        assert!(fillets(&straight).is_empty());
 
         let sharp = Level {
+            walls: vec![wall((0, 0), (400, 0)), wall((400, 0), (0, 300))],
+            ..Level::default()
+        };
+        let thickness = f64::from(Wall::DEFAULT_THICKNESS);
+        let tight = turned(finishes(&sharp, 0).1);
+        assert!(tight.radius < thickness * ROUNDING, "tighter: {tight:?}");
+        // The drawn corner is no further from the arc than the wall is thick either side of it.
+        let half_angle = (300.0_f64).atan2(400.0) / 2.0;
+        let outside = tight.radius * (1.0 / half_angle.sin() - 1.0);
+        assert!(outside <= thickness / 2.0 + 1e-9, "{outside}");
+
+        let hairpin = Level {
             walls: vec![wall((0, 0), (400, 0)), wall((400, 0), (0, 40))],
             ..Level::default()
         };
+        assert_eq!(
+            finishes(&hairpin, 0).1,
+            Finish::Capped,
+            "too sharp to curve"
+        );
+    }
+
+    /// A curve never eats a doorway, and never takes more than its half of a short wall.
+    #[test]
+    fn a_curve_stays_out_of_a_doorway() {
+        let mut front = wall((0, 0), (400, 0));
+        front.openings.push(Opening {
+            kind: OpeningKind::Door,
+            at: 395,
+            width: 6,
+        });
+        let plan = Level {
+            walls: vec![front, wall((400, 0), (400, 300))],
+            ..Level::default()
+        };
+        let near = turned(finishes(&plan, 0).1);
+        assert!((near.back - 2.0).abs() < 1e-9, "up to the door: {near:?}");
+        assert!(
+            (turned(finishes(&plan, 1).0).back - 2.0).abs() < 1e-9,
+            "and the other wall agrees, or the two halves wouldn't meet"
+        );
+
+        let stub = Level {
+            walls: vec![wall((0, 0), (10, 0)), wall((10, 0), (10, 300))],
+            ..Level::default()
+        };
+        assert!(turned(finishes(&stub, 0).1).back <= 5.0);
+    }
+
+    /// Where one curve can't carry the joint — three walls, or two of different thicknesses —
+    /// the walls are capped and the inside corners are filled in round instead.
+    #[test]
+    fn a_joint_one_curve_cannot_carry_is_capped_and_filled() {
+        let tee = Level {
+            walls: vec![
+                wall((0, 0), (400, 0)),
+                wall((400, 0), (800, 0)),
+                wall((400, 0), (400, 300)),
+            ],
+            ..Level::default()
+        };
+        assert_eq!(finishes(&tee, 0).1, Finish::Capped);
+        assert_eq!(finishes(&tee, 2).0, Finish::Capped);
+        let filled = fillets(&tee);
+        assert_eq!(filled.len(), 2, "either side of the stem: {filled:?}");
         let half = f64::from(Wall::DEFAULT_THICKNESS) / 2.0;
-        let run = joints(&sharp, 0).1;
-        assert!(run > half, "a sharper corner needs more: {run}");
-        assert!(run <= half * 4.0, "but the spike is cut off: {run}");
+        for fillet in &filled {
+            assert!(
+                ((fillet.corner.0 - 400.0).abs() - half).abs() < 1e-9
+                    && (fillet.corner.1 - half).abs() < 1e-9,
+                "where the faces meet: {fillet:?}"
+            );
+            assert!(fillet.radius > 0.0);
+        }
+
+        // The same T with the top drawn as one wall: the stem ends against its side.
+        let butted = Level {
+            walls: vec![wall((0, 0), (800, 0)), wall((400, 0), (400, 300))],
+            ..Level::default()
+        };
+        assert_eq!(
+            finishes(&butted, 1).0,
+            Finish::Flat,
+            "nothing ends there but itself"
+        );
+        assert_eq!(fillets(&butted).len(), 2);
+
+        let mut thick = wall((0, 0), (400, 0));
+        thick.thickness = 30;
+        let uneven = Level {
+            walls: vec![thick, wall((400, 0), (400, 300))],
+            ..Level::default()
+        };
+        assert_eq!(finishes(&uneven, 0).1, Finish::Capped);
+        assert_eq!(fillets(&uneven).len(), 1, "only the inside of the corner");
     }
 
     /// The angle a corner is read as — the one its two lines actually enclose: a wall running
@@ -3751,10 +4515,10 @@ mod tests {
     fn the_whole_plan_can_be_framed() {
         let plan = Level {
             walls: vec![wall((-50, 0), (400, 0)), wall((400, 0), (400, 300))],
-            devices: vec![PlacedDevice {
-                device: "demo_lamp".parse().expect("a valid device id"),
-                at: Point::new(120, 420),
-            }],
+            devices: vec![PlacedDevice::new(
+                "demo_lamp".parse().expect("a valid device id"),
+                Point::new(120, 420),
+            )],
             ..Level::default()
         };
         assert_eq!(

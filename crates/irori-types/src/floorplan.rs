@@ -305,6 +305,45 @@ impl OpeningKind {
 pub struct PlacedDevice {
     pub device: DeviceId,
     pub at: Point,
+    /// Which way a directional sensor points, in degrees clockwise from the plan's +x axis:
+    /// 0 is rightwards, 90 is down the page. Authored, because nothing a radar reports says
+    /// which wall it was screwed to. Absent for a device that looks every way at once, and for
+    /// one nobody has aimed yet.
+    ///
+    /// Under a full turn: [`Level::check`] turns down 360 and over, so the schema does too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(max = 359))]
+    pub facing: Option<u16>,
+    /// How wide it sees, in degrees, inside [`PlacedDevice::FIELD_OF_VIEW_RANGE`].
+    /// [`PlacedDevice::DEFAULT_FIELD_OF_VIEW`] when `facing` is set and this isn't.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 20, max = 180))]
+    pub field_of_view: Option<u16>,
+}
+
+impl PlacedDevice {
+    /// How wide a directional sensor sees until somebody says otherwise: about what a
+    /// wall-mounted mmWave radar covers.
+    pub const DEFAULT_FIELD_OF_VIEW: u16 = 100;
+
+    /// How narrow and how wide a field of view may be, in degrees. Narrower than 20° is a
+    /// line, not a field; wider than a half turn is looking through the wall it's mounted on.
+    pub const FIELD_OF_VIEW_RANGE: std::ops::RangeInclusive<u16> = 20..=180;
+
+    /// A device put down at a point, not aimed anywhere.
+    pub fn new(device: DeviceId, at: Point) -> Self {
+        Self {
+            device,
+            at,
+            facing: None,
+            field_of_view: None,
+        }
+    }
+
+    /// How wide it sees: what was set, or the default.
+    pub fn view_angle(&self) -> u16 {
+        self.field_of_view.unwrap_or(Self::DEFAULT_FIELD_OF_VIEW)
+    }
 }
 
 /// Why a plan was refused. Checked where the plan is saved, so a file edited by hand and a page
@@ -383,6 +422,26 @@ impl Level {
                         opening.kind.label().to_lowercase()
                     )));
                 }
+            }
+        }
+        for placed in &self.devices {
+            if let Some(facing) = placed.facing
+                && facing >= 360
+            {
+                return Err(PlanError(format!(
+                    "`{}` faces {facing}°; a direction is 0 to 359",
+                    placed.device
+                )));
+            }
+            if let Some(view) = placed.field_of_view
+                && !PlacedDevice::FIELD_OF_VIEW_RANGE.contains(&view)
+            {
+                return Err(PlanError(format!(
+                    "`{}` has a field of view of {view}°; it has to be {} to {}",
+                    placed.device,
+                    PlacedDevice::FIELD_OF_VIEW_RANGE.start(),
+                    PlacedDevice::FIELD_OF_VIEW_RANGE.end()
+                )));
             }
         }
         let mut traced = std::collections::BTreeSet::new();
@@ -560,9 +619,11 @@ mod tests {
     /// cannot. Whoever read a plan that said otherwise would have to pick one.
     #[test]
     fn a_device_is_drawn_once_in_the_whole_home() {
-        let lamp = || PlacedDevice {
-            device: "demo_lamp".parse().expect("a valid device id"),
-            at: Point::new(120, 90),
+        let lamp = || {
+            PlacedDevice::new(
+                "demo_lamp".parse().expect("a valid device id"),
+                Point::new(120, 90),
+            )
         };
         let level = Level {
             devices: vec![lamp()],
@@ -666,6 +727,48 @@ mod tests {
         )
         .expect("an old plan, without a label");
         assert_eq!(from_file.label, Point::new(0, 0));
+    }
+
+    /// A radar is aimed somewhere on the compass and sees a sensible width, and a plan drawn
+    /// before either could be said still loads and still writes the same file.
+    #[test]
+    fn a_device_faces_a_real_direction_and_sees_a_sensible_width() {
+        let aimed = |facing, field_of_view| {
+            on_ground(Level {
+                devices: vec![PlacedDevice {
+                    facing,
+                    field_of_view,
+                    ..PlacedDevice::new(
+                        "demo_mmwave".parse().expect("a valid device id"),
+                        Point::new(0, 0),
+                    )
+                }],
+                ..Level::default()
+            })
+            .check()
+        };
+        assert!(aimed(Some(0), None).is_ok());
+        assert!(aimed(Some(359), Some(20)).is_ok());
+        assert!(aimed(Some(90), Some(180)).is_ok());
+        assert!(
+            aimed(None, Some(100)).is_ok(),
+            "a width with nowhere to point is only unused"
+        );
+        let error = aimed(Some(400), None).expect_err("more than a full turn");
+        assert!(error.to_string().contains("demo_mmwave"), "{error}");
+        assert!(aimed(Some(360), None).is_err(), "a full turn is 0");
+        assert!(aimed(Some(90), Some(5)).is_err(), "a line, not a field");
+        assert!(aimed(Some(90), Some(181)).is_err(), "through its own wall");
+
+        let old: PlacedDevice =
+            serde_json::from_str(r#"{"device":"demo_lamp","at":[120,90]}"#).expect("an old plan");
+        assert_eq!(old.facing, None);
+        assert_eq!(old.view_angle(), PlacedDevice::DEFAULT_FIELD_OF_VIEW);
+        assert_eq!(
+            serde_json::to_string(&old).expect("json"),
+            r#"{"device":"demo_lamp","at":[120,90]}"#,
+            "and nothing new is written for it"
+        );
     }
 
     /// The plan a first run has: one that says nothing, and writes nothing.

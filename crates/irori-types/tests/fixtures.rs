@@ -273,6 +273,20 @@ fn the_plans_schema_refuses_what_the_plan_refuses() -> anyhow::Result<()> {
             ]})),
         ),
         (
+            "a device facing more than a full turn",
+            Says::Both,
+            floor(serde_json::json!({"devices": [
+                {"device": "demo_mmwave", "at": [0, 0], "facing": 400}
+            ]})),
+        ),
+        (
+            "a field of view too narrow to be one",
+            Says::Both,
+            floor(serde_json::json!({"devices": [
+                {"device": "demo_mmwave", "at": [0, 0], "facing": 90, "field_of_view": 5}
+            ]})),
+        ),
+        (
             "a wall that starts and ends in the same place",
             Says::OnlyRust,
             floor(serde_json::json!({"walls": [{"from": [7, 7], "to": [7, 7]}]})),

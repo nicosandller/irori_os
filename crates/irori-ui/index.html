@@ -13,6 +13,16 @@
       color-scheme: light dark;
       --ink: #1c1714; --paper: #faf7f4; --ember: #c4552b; --muted: #6b625b;
       --fg: var(--ink); --bg: var(--paper); --line: #e6dfd8; --card: #fffdfb; --sunk: #efe9e3;
+      /* The kinds of device on the Floorplan, a pastel each. The same in both themes: on the
+         light one they are deepened where they're used as a line (`.marker`'s `--edge`). */
+      --tone-light: #e7d3a1;   /* sand: lights */
+      --tone-power: #eec2a6;   /* apricot: switches, plugs */
+      --tone-media: #c5b9dc;   /* lilac: TVs, speakers */
+      --tone-sense: #a8c5da;   /* sky: motion, presence, mmWave */
+      --tone-climate: #b9cdb6; /* sage: temperature, humidity */
+      --tone-air: #e9b8bc;     /* blush: CO2 and air quality */
+      --tone-input: #e8a58b;   /* peach: buttons, events */
+      --tone-other: #c9c0b8;   /* neutral: anything else */
       /* A warning: amber, quieter than the ember a failure gets. */
       --warn: #a8560a;
       /* A failure, as text: the ember, deepened until it reads on the page. */
@@ -1147,6 +1157,9 @@
     .floorplan .grid .fine-line { opacity: .45; }
     .floorplan .wall { stroke: var(--fg); stroke-linecap: butt; }
     .floorplan .wall.chosen { stroke: var(--ember); }
+    /* Where walls join: a round cap on each, and the inside of the corner filled in round. */
+    .floorplan .wall-cap, .floorplan .wall-fillet { fill: var(--fg); stroke: none; }
+    .floorplan .wall-cap.chosen { fill: var(--ember); }
     .floorplan .jamb { stroke: var(--fg); stroke-linecap: butt; }
     .floorplan .door { stroke: var(--muted); stroke-linecap: round; }
     .floorplan .door.chosen, .floorplan .window.chosen { stroke: var(--ember); }
@@ -1198,28 +1211,89 @@
     .floorplan .angle-arc polyline { stroke: var(--ember); stroke-width: 1.5;
                                      stroke-dasharray: 3 3; fill: none; }
 
-    /* Devices on the plan. HTML rather than SVG: a marker is a control with a name, and its
-       size must not follow the zoom — a label is either readable or it isn't. */
+    /* Devices on the plan. HTML rather than SVG: a marker is a control, and its size must not
+       follow the zoom — a reading is either readable or it isn't.
+
+       A round glyph in the tone of its kind, standing on the device's own spot, that opens out
+       to the right into a short reading while it has one to give. Every state is mixed from the
+       one `--tone`, so a new kind of device is a new line in the list below and nothing else.
+       `--edge` is that tone where it has to be seen as a line or a glyph: itself on the dark
+       plan, deepened towards ink on the light one, where a pastel on paper disappears. */
     .floorplan .markers { position: absolute; inset: 0; pointer-events: none; }
-    .floorplan .marker { position: absolute; transform: translate(-50%, -50%);
-                         display: flex; align-items: center; gap: .4rem; pointer-events: auto;
-                         padding: .25rem .5rem .25rem .35rem; font: inherit; font-size: .8rem;
+    .floorplan .marker { --tone: var(--tone-other);
+                         --edge: color-mix(in oklab, var(--tone) 65%, var(--ink));
+                         position: absolute; transform: translate(-1.25rem, -50%);
+                         transform-origin: 1.25rem 50%;
+                         display: flex; align-items: center; pointer-events: auto;
+                         height: 2.5rem; min-width: 2.5rem; padding: 0; font: inherit;
+                         font-size: .8rem; font-weight: 500; font-variant-numeric: tabular-nums;
                          color: var(--fg); background: var(--card); cursor: pointer;
-                         border: 1px solid var(--line); border-radius: 1rem;
+                         border: 1px solid color-mix(in oklab, var(--edge) 32%, var(--line));
+                         border-radius: 1.25rem;
                          box-shadow: 0 1px 3px rgb(0 0 0 / .12); white-space: nowrap; }
+    @media (prefers-color-scheme: dark) {
+      .floorplan .marker { --edge: var(--tone); }
+    }
+    .floorplan .marker[data-tone="light"] { --tone: var(--tone-light); }
+    .floorplan .marker[data-tone="power"] { --tone: var(--tone-power); }
+    .floorplan .marker[data-tone="media"] { --tone: var(--tone-media); }
+    .floorplan .marker[data-tone="sense"] { --tone: var(--tone-sense); }
+    .floorplan .marker[data-tone="climate"] { --tone: var(--tone-climate); }
+    .floorplan .marker[data-tone="air"] { --tone: var(--tone-air); }
+    .floorplan .marker[data-tone="input"] { --tone: var(--tone-input); }
+    .floorplan .marker[data-tone="other"] { --tone: var(--tone-other); }
+    /* The glyph: 20px, in the middle of the circle the marker is while it's closed. */
+    .floorplan .marker .glyph { position: relative; display: grid; place-items: center;
+                                flex: none; width: calc(2.5rem - 2px); height: 100%;
+                                color: color-mix(in oklab, var(--edge) 55%, var(--fg));
+                                opacity: .8; }
+    .floorplan .marker .glyph .icon { width: 1.25rem; height: 1.25rem; display: block; }
+    /* The reading: always there, and no wider than nothing until there's one to show. */
+    .floorplan .marker .reading { max-width: 0; opacity: 0; overflow: hidden; }
+    .floorplan .marker.open .reading { max-width: 11rem; opacity: 1; padding-right: .85rem;
+                                       text-overflow: ellipsis; }
+    .floorplan .marker.aimed.open .reading { padding-left: .6rem; }
+    /* Doing something: on, playing, sensing someone. */
+    .floorplan .marker.on { border-color: var(--edge);
+                            background: color-mix(in oklab, var(--tone) 17%, var(--card)); }
+    .floorplan .marker.on .glyph { color: var(--edge); opacity: 1; }
+    /* A light that's on is lit: the tone itself, with dark ink on it — a pastel can't carry
+       white — and a glow around it. */
+    .floorplan .marker.lit { color: var(--ink); background: var(--tone);
+                             border-color: var(--tone);
+                             box-shadow: 0 0 1.75rem color-mix(in srgb, var(--tone) 50%, transparent); }
+    .floorplan .marker.lit .glyph { color: var(--ink); opacity: 1; }
     .floorplan .marker.switchable:hover, .floorplan .marker.movable:hover {
-        border-color: var(--ember); }
+        border-color: var(--edge); }
     /* Not a control: a device with nothing to switch, or one that isn't answering. It still
        shows what it knows, it just doesn't invite a click. */
-    .floorplan .marker:disabled { cursor: default; }
-    .floorplan .marker .pip { width: .55rem; height: .55rem; flex: none; border-radius: 50%;
-                              background: var(--muted); }
-    .floorplan .marker.on { border-color: var(--ember); }
-    .floorplan .marker.on .pip { background: var(--ember); box-shadow: 0 0 .5rem var(--ember); }
+    .floorplan .marker[aria-disabled="true"] { cursor: default; }
     .floorplan .marker.offline { opacity: .55; }
+    /* Picked up and focused are the page talking, not the device: the ember, whatever its kind. */
     .floorplan .marker.chosen { outline: 2px solid var(--ember); outline-offset: 2px; }
     .floorplan .marker.movable { cursor: move; }
     .floorplan .marker:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+    /* Which way a radar looks: a short arc on the marker's own ring. */
+    .floorplan .marker .facing { position: absolute; top: -1px; left: -1px; width: 2.5rem;
+                                 height: 2.5rem; overflow: visible; pointer-events: none;
+                                 display: none; }
+    .floorplan .marker.aimed .facing { display: block; }
+    .floorplan .marker .facing path { fill: none; stroke: var(--edge); stroke-width: 3.5;
+                                      stroke-linecap: round; }
+    /* Its name, and what it's doing in words: over the marker when it's pointed at or tabbed
+       to, and under it the whole time the plan is being arranged — when names are the only
+       thing that tells two lamps apart. */
+    .floorplan .marker-name { position: absolute; left: 1.25rem; bottom: calc(100% + .45rem);
+                              translate: -50% 0; padding: .2rem .5rem; font-size: .75rem;
+                              font-weight: 400; color: var(--bg); background: var(--fg);
+                              border-radius: .35rem; pointer-events: none; opacity: 0;
+                              visibility: hidden; z-index: 1; }
+    .floorplan .marker:hover, .floorplan .marker:focus-visible { z-index: 1; }
+    .floorplan .marker:hover .marker-name, .floorplan .marker:focus-visible .marker-name {
+        opacity: 1; visibility: visible; }
+    .floorplan.editing .marker-name { top: calc(100% + .3rem); bottom: auto; padding: 0 .3rem;
+                                      color: var(--fg); background: var(--bg);
+                                      opacity: .9; visibility: visible; }
 
     /* Floating over the canvas: the page's own heading and what it can do. */
     .floorplan .plan-head { position: absolute; top: 0; left: 0; right: 0; z-index: 2;
@@ -1318,6 +1392,30 @@
     .floorplan .slider input[type="range"] { grid-column: 1 / -1; width: 100%; margin: 0;
                                              accent-color: var(--ember); }
 
+    /* Aiming a radar: a dial to turn, and the number it stands for. */
+    .floorplan .aim { display: grid; gap: .4rem; margin: .5rem 0 .6rem; font-size: .85rem;
+                      color: var(--muted); }
+    .floorplan .aim-head { display: flex; justify-content: space-between; align-items: baseline; }
+    .floorplan .dial { width: 5.5rem; height: 5.5rem; margin: 0 auto; display: block;
+                       cursor: grab; touch-action: none; }
+    .floorplan .dial:active { cursor: grabbing; }
+    .floorplan .dial-ring { fill: var(--sunk); stroke: var(--line); stroke-width: 1; }
+    .floorplan .dial-field { fill: var(--tone-sense); fill-opacity: .45; stroke: none; }
+    .floorplan .dial-needle { stroke: var(--fg); stroke-width: 2; stroke-linecap: round; }
+    .floorplan .dial-hub { fill: var(--fg); }
+    .floorplan .dial.unset .dial-field, .floorplan .dial.unset .dial-needle { display: none; }
+    .floorplan .aim-step { display: flex; gap: .3rem; align-items: center; }
+    .floorplan .aim-step input { flex: 1; min-width: 0; padding: .25rem .35rem; font: .8rem var(--mono);
+                                 color: var(--fg); background: var(--bg); text-align: center;
+                                 border: 1px solid var(--line); border-radius: .3rem; }
+    .floorplan .aim-step input:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
+    .floorplan .aim button { padding: .25rem .4rem; font: inherit; font-size: .75rem;
+                             color: var(--fg); background: var(--card); cursor: pointer;
+                             border: 1px solid var(--line); border-radius: .3rem; }
+    .floorplan .aim button:hover { border-color: var(--ember); color: var(--ember); }
+    .floorplan .aim button.quiet { border-color: transparent; background: none;
+                                   color: var(--muted); padding: 0; justify-self: start; }
+
     /* How far apart points may land. */
     .floorplan .snap { display: flex; align-items: center; gap: .5rem; pointer-events: auto; }
     .floorplan .snap-label { color: var(--muted); font: .65rem var(--mono); letter-spacing: .08em;
@@ -1415,39 +1513,58 @@
       .floorplan .toolbar button.chosen { background: transparent; border-color: transparent; }
     }
 
-    /* Devices: a marker leans in under the pointer and gives under a press; a lamp's pip warms
-       up rather than snapping on, and sends out one ring as it does. */
+    /* Devices: a marker leans in under the pointer and gives under a press, warms to its tone
+       rather than snapping to it, and grows into its reading and shrinks back out of it. */
     .floorplan .marker { transition: scale var(--dur-base) var(--ease-spring),
                                      box-shadow var(--dur-base) var(--ease-out),
+                                     background-color var(--dur-base) var(--ease-out),
+                                     color var(--dur-base) var(--ease-out),
                                      border-color var(--dur-base), opacity var(--dur-base); }
     .floorplan .marker.switchable:hover, .floorplan .marker.movable:hover { scale: 1.06; }
     .floorplan .marker.switchable:active, .floorplan .marker.movable:active { scale: .96; }
-    .floorplan .marker .pip { position: relative;
-                              transition: background-color var(--dur-base) var(--ease-out),
-                                          box-shadow var(--dur-base) var(--ease-out); }
-    .floorplan .marker.on .pip::after { content: ""; position: absolute; inset: 0;
-                                        border-radius: 50%; pointer-events: none;
-                                        animation: ring .6s var(--ease-out) forwards; }
-    @keyframes ring {
-        from { box-shadow: 0 0 0 0 rgba(196, 85, 43, .55); }
-        to { box-shadow: 0 0 0 .7rem rgba(196, 85, 43, 0); }
-    }
+    .floorplan .marker .glyph { transition: color var(--dur-base) var(--ease-out),
+                                            opacity var(--dur-base) var(--ease-out); }
+    .floorplan .marker .reading { transition: max-width 420ms var(--ease-out),
+                                              padding 420ms var(--ease-out),
+                                              opacity var(--dur-fast) var(--ease-out); }
+    .floorplan .marker-name { transition: opacity var(--dur-fast) var(--ease-out),
+                                          visibility var(--dur-fast); }
+    .floorplan .marker .facing { transition: rotate var(--dur-layout) var(--ease-out); }
 
-    /* Held, a marker lifts off the plan; put down, it settles with a bounce. A motion sensor
-       that senses someone lights its pip. */
+    /* Held, a marker lifts off the plan; put down, it settles with a bounce. */
     .floorplan .marker.lifted { scale: 1.12;
                                 box-shadow: 0 .6rem 1.2rem rgba(28, 23, 20, .22); }
     .floorplan .marker.dropped { animation: settle-down 520ms var(--ease-bounce); }
     @keyframes settle-down { from { scale: 1.14; } }
-    .floorplan .marker.sensing .pip { background: var(--ember);
-                                      box-shadow: 0 0 .5rem var(--ember); }
 
-    /* The plan, alive (floorplan/ambience.rs): a lit light's warm pool, as bright as the light
-       and stopped by its room's walls, fading as the light changes; a motion sensor's ripples
-       spreading across its room while it senses someone. With motion off the ripples stand
-       still as a faint ring — still saying someone's there. */
+    /* A motion sensor that senses someone sends a ring out from its marker for as long as it
+       does. With motion off the ring stands still, faintly — still saying someone's there. */
+    .floorplan .marker.pulse .glyph::after { content: ""; position: absolute; top: 50%; left: 50%;
+                                             width: 2.5rem; height: 2.5rem; translate: -50% -50%;
+                                             border: 2px solid var(--edge); border-radius: 50%;
+                                             pointer-events: none; opacity: .3; scale: 1.25;
+                                             animation: marker-pulse 1.8s var(--ease-out) infinite; }
+    @keyframes marker-pulse { from { scale: 1; opacity: .7; } to { scale: 1.9; opacity: 0; } }
+
+    /* A button pressed, a doorbell rung: one flash across the circle. Two names for the same
+       flash, so a second press straight after the first starts it again (floorplan.rs). */
+    .floorplan .marker .glyph::before { content: ""; position: absolute; top: 50%; left: 50%;
+                                        width: 1rem; height: 1rem; translate: -50% -50%;
+                                        border-radius: 50%; background: var(--ember);
+                                        pointer-events: none; opacity: 0; }
+    .floorplan .marker.flash-a .glyph::before { animation: marker-flash-a 600ms var(--ease-out); }
+    .floorplan .marker.flash-b .glyph::before { animation: marker-flash-b 600ms var(--ease-out); }
+    @keyframes marker-flash-a { from { scale: 1; opacity: .7; } to { scale: 2.6; opacity: 0; } }
+    @keyframes marker-flash-b { from { scale: 1; opacity: .7; } to { scale: 2.6; opacity: 0; } }
+
+    /* The plan, alive (floorplan/ambience.rs): a lit light's pool of sand-coloured light, as
+       bright as the light and stopped by its room's walls, fading as the light changes; a motion
+       sensor's ripples spreading across its room while it senses someone. With motion off the
+       ripples stand still as a faint ring — still saying someone's there. */
     .floorplan .pool { transition: opacity var(--dur-expressive) var(--ease-out); }
-    .floorplan .ripple circle { fill: none; stroke: var(--ember); stroke-width: 2;
+    .floorplan .pool-near { stop-color: var(--tone-light); }
+    .floorplan .pool-far { stop-color: color-mix(in oklab, var(--tone-light) 70%, #6b5a2e); }
+    .floorplan .ripple circle { fill: none; stroke: var(--tone-sense); stroke-width: 2;
                                 vector-effect: non-scaling-stroke; opacity: .3; scale: .6;
                                 transform-box: fill-box; transform-origin: center;
                                 animation: ripple 1.8s var(--ease-out) infinite; }
@@ -1455,6 +1572,32 @@
     @keyframes ripple { from { scale: .08; opacity: .6; } to { scale: 1; opacity: 0; } }
     @media (prefers-color-scheme: dark) {
       .floorplan .pool { mix-blend-mode: screen; }
+    }
+
+    /* What a radar sees: its field, cut off by the walls and let through by the doorways,
+       fading in while it senses someone, and an arc across it at the distance they are. The
+       arc's radius is a style, so a new reading glides to its place instead of jumping. */
+    .floorplan .field { opacity: 0; transition: opacity 500ms var(--ease-out); }
+    .floorplan .field.sensing { opacity: 1; }
+    .floorplan .field-stop { stop-color: var(--tone-sense); }
+    .floorplan .field-shape { stroke: color-mix(in srgb, var(--tone-sense) 30%, transparent);
+                              stroke-width: 1.5; stroke-linejoin: round; }
+    .floorplan .field-target circle { fill: none; stroke: var(--tone-sense);
+                                      transition: r 2.6s ease-in-out; }
+    .floorplan .field-target .halo { stroke-width: 16; opacity: .16; }
+    .floorplan .field-target .arc { stroke-width: 3; }
+    .floorplan .field-target { transition: opacity var(--dur-expressive) var(--ease-out); }
+    .floorplan .field-target.hidden { opacity: 0; }
+    /* On paper the sky tone is too pale to be a line: deepen it, as the markers do. */
+    @media (prefers-color-scheme: light) {
+      .floorplan .field-stop, .floorplan .field-target circle {
+          stop-color: color-mix(in oklab, var(--tone-sense) 65%, var(--ink));
+          stroke: color-mix(in oklab, var(--tone-sense) 65%, var(--ink)); }
+      .floorplan .field-shape {
+          stroke: color-mix(in srgb, color-mix(in oklab, var(--tone-sense) 65%, var(--ink)) 40%,
+                            transparent); }
+      .floorplan .ripple circle { stroke: color-mix(in oklab, var(--tone-sense) 65%, var(--ink)); }
+      .floorplan .pool-near { stop-color: color-mix(in oklab, var(--tone-light) 80%, #c98a1e); }
     }
 
     /* Changing floor (transition.rs `around`): the plan, and only the plan, moves — going up,

@@ -125,6 +125,26 @@
         },
         "device": {
           "$ref": "#/$defs/DeviceId"
+        },
+        "facing": {
+          "description": "Which way a directional sensor points, in degrees clockwise from the plan's +x axis:\n0 is rightwards, 90 is down the page. Authored, because nothing a radar reports says\nwhich wall it was screwed to. Absent for a device that looks every way at once, and for\none nobody has aimed yet.\n\nUnder a full turn: [`Level::check`] turns down 360 and over, so the schema does too.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 359,
+          "minimum": 0
+        },
+        "field_of_view": {
+          "description": "How wide it sees, in degrees, inside [`PlacedDevice::FIELD_OF_VIEW_RANGE`].\n[`PlacedDevice::DEFAULT_FIELD_OF_VIEW`] when `facing` is set and this isn't.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 180,
+          "minimum": 20
         }
       },
       "additionalProperties": false,

@@ -284,6 +284,12 @@ label = [0, -40]        # optional: how far the room's name is drawn from its mi
 [[floors.ground.devices]]
 device = "demo_lamp"
 at = [120, 90]
+
+[[floors.ground.devices]]
+device = "demo_mmwave_sensor"
+at = [0, 150]
+facing = 0              # optional: which way a directional sensor points, in degrees
+field_of_view = 100     # optional: how wide it sees, in degrees
 ```
 
 Keyed by the **floor's id** from §3.1, because a plan *is* the plan of a floor: a house with an
@@ -319,10 +325,20 @@ in the home right now is **kept and simply not drawn** (§4), as is an entry for
 that has since been removed — a device unplugged for a week comes back to the spot it was put in,
 and making a deleted floor again brings its drawing back.
 
-Three rules are enforced rather than warned about, because breaking any of them leaves a plan
+A device that **looks in one direction** — an mmWave presence sensor on a wall — can be aimed.
+`facing` is which way it points, in whole degrees clockwise from the plan's +x axis as the plan
+is drawn: `0` is rightwards, `90` is down the page, `0` to `359`. `field_of_view` is how wide it
+sees, `20` to `180` degrees, and is 100 when `facing` is set and it isn't. Both are authored for
+the same reason the walls are: a radar reports that someone is 1.8 m away, and nothing it reports
+says which wall it was screwed to. The page uses them to draw what the sensor can see — stopped
+by walls, let through by doors — and where in it the target is. Left out, the device is drawn as
+a point that looks nowhere in particular, which is what every plan written before these fields
+existed says.
+
+Some rules are enforced rather than warned about, because breaking any of them leaves a plan
 that can't be drawn at all: a wall must have some length (a wall with none has no direction, so
-its openings have nowhere to sit), an opening must fit inside its wall, and a room's shape needs
-at least three corners. A file that breaks one is rejected whole, like any other unparseable file
+its openings have nowhere to sit), an opening must fit inside its wall, a room's shape needs
+at least three corners, and a `facing` or `field_of_view` must be inside its range. A file that breaks one is rejected whole, like any other unparseable file
 (§6), and the UI is held to exactly the same rules. A refusal says which floor it is about,
 because that is the first thing anybody needs in order to go and look.
 

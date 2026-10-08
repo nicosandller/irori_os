@@ -115,15 +115,17 @@ off everything.
   tile grows into the page it opens.
 - **Live numbers** count to their new value as readings arrive (`src/count.rs`), and a
   device's chart grows with them. **Toggles swipe**, a history **pulls down**
-  (`src/gesture.rs`), and on the **Floorplan** lit lights pool warm light in their rooms and
-  motion sensors ripple (`src/floorplan/ambience.rs`); changing floor, the plan sinks or rises.
+  (`src/gesture.rs`), and on the **Floorplan** lit lights pool light in their rooms, motion
+  sensors ripple, and an aimed radar's field fades in with an arc gliding to where its target is
+  (`src/floorplan/ambience.rs`); changing floor, the plan sinks or rises.
 - **A device's history:** on a device's page a sensor's reading is itself the way into its last
   24 hours (a switch or light has a chevron beside it); the drawer rolls down to its content. A
   number's day is a chart (`src/chart.rs`) that draws itself in, with a crosshair and the reading
   at any moment under the pointer or the arrow keys, and the table a click away.
 - **The Floorplan:** the tools, the device and room pickers and the inspector slide in when they
-  appear; a device marker leans in under the pointer, and a lamp's pip warms up and sends out one
-  ring when it comes on; what's picked, and the line being drawn, march like any drawing tool's
+  appear; a device marker leans in under the pointer, warms to its tone, and grows into its
+  reading and back out of it; a motion sensor's marker pulses while it senses someone and a
+  button's flashes once when it's pressed; what's picked, and the line being drawn, march like any drawing tool's
   selection. Its sliders (a wall's thickness, an opening's width, the snap step) are drawn like
   the lights'.
 - **Ambient:** the Live dot breathes while the core answers and goes still when it doesn't, the
