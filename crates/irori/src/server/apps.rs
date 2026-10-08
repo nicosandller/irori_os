@@ -179,12 +179,6 @@ fn serve(
 /// whose origin is opaque, and while Chrome still takes `'self'` to mean the address the page
 /// came from, Safari and Firefox take it to match nothing there — and the page can't even load
 /// its own script, a blank frame.
-///
-/// `sandbox allow-scripts` makes that so however the page is opened. The shell frames it
-/// sandboxed, but its address is open to anyone (`server/auth.rs`), and opened on its own it
-/// would otherwise be a page of this server's: one that is sent the session cookie and can
-/// ask for anything the person signed in may. Sandboxed by its own policy, an extension's
-/// page is never that, and all it can reach is what the shell's bridge hands it.
 fn page_csp(request: &HeaderMap) -> String {
     let own = request
         .get(header::HOST)
@@ -200,7 +194,7 @@ fn page_csp(request: &HeaderMap) -> String {
     format!(
         "default-src 'self'{own}; script-src 'self'{own} 'wasm-unsafe-eval'; \
          style-src 'self'{own} 'unsafe-inline'; img-src 'self'{own} data:; \
-         connect-src 'self'{own}; frame-ancestors 'self'; sandbox allow-scripts"
+         connect-src 'self'{own}; frame-ancestors 'self'"
     )
 }
 
@@ -247,8 +241,6 @@ mod tests {
             policy.contains("script-src 'self' http://192.168.1.20:8480 'wasm-unsafe-eval'"),
             "{policy}"
         );
-        // Opened on its own it is still not a page of this server's: no cookie, no API.
-        assert!(policy.ends_with("sandbox allow-scripts"), "{policy}");
         request.insert(header::HOST, HeaderValue::from_static("evil; script-src *"));
         assert!(
             !page_csp(&request).contains("evil"),
