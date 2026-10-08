@@ -11,7 +11,12 @@
 //! redraws with every reading and every pan, in place: a pool's brightness transitions, and a
 //! ripple keeps rippling rather than starting again.
 
-use irori_types::{Capabilities, DeviceId, Level, OpeningKind, PlacedArea, Point, State, Wall};
+use std::collections::BTreeSet;
+
+use irori_types::{
+    Availability, Capabilities, DeviceId, EntityId, EntityState, Level, Opening, OpeningKind,
+    PlacedArea, Point, State, Wall,
+};
 use leptos::prelude::*;
 
 use crate::api::Home;
@@ -95,7 +100,14 @@ fn outline(room: &PlacedArea) -> String {
 /// A sensor is usually screwed to a wall, which on the plan means standing *on* the line of
 /// one. That wall mustn't blind it, so for a wall it is mounted on the sensor is taken to sit on
 /// the face it looks out from: it sees into the room, and not back through its own wall.
-pub fn sight(at: Point, facing: f64, view: f64, walls: &[Wall], range: f64) -> Vec<(f64, f64)> {
+pub fn sight(
+    at: Point,
+    facing: f64,
+    view: f64,
+    walls: &[Wall],
+    shut: &BTreeSet<EntityId>,
+    range: f64,
+) -> Vec<(f64, f64)> {
     struct Piece {
         from: (f64, f64),
         to: (f64, f64),
@@ -125,7 +137,7 @@ pub fn sight(at: Point, facing: f64, view: f64, walls: &[Wall], range: f64) -> V
         } else {
             eye
         };
-        for (start, end) in super::runs(wall, |opening| opening.kind == OpeningKind::Door) {
+        for (start, end) in super::runs(wall, |opening| seen_through(opening, shut)) {
             let (a, _, _) = super::along(wall, start);
             let (b, _, _) = super::along(wall, end);
             pieces.push(Piece {
@@ -171,10 +183,40 @@ pub fn sight(at: Point, facing: f64, view: f64, walls: &[Wall], range: f64) -> V
         .collect()
 }
 
+/// Whether a sensor sees through an opening: a door, unless its own sensor says it's shut. A
+/// door nothing is known about is taken to be open — better a field that reaches into a room
+/// it can't quite see than one that stops at a door standing wide.
+pub fn seen_through(opening: &Opening, shut: &BTreeSet<EntityId>) -> bool {
+    opening.kind == OpeningKind::Door
+        && !opening
+            .sensor
+            .as_ref()
+            .is_some_and(|sensor| shut.contains(sensor))
+}
+
+/// The contact sensors of this floor's doors that say their door is shut.
+pub fn shut_doors(level: &Level, states: &[EntityState]) -> BTreeSet<EntityId> {
+    level
+        .walls
+        .iter()
+        .flat_map(|wall| &wall.openings)
+        .filter(|opening| opening.kind == OpeningKind::Door)
+        .filter_map(|opening| opening.sensor.as_ref())
+        .filter(|sensor| {
+            states.iter().any(|state| {
+                &state.entity_id == *sensor
+                    && state.availability != Availability::Unavailable
+                    && matches!(&state.state, Some(State::BinarySensor(contact)) if !contact.on)
+            })
+        })
+        .cloned()
+        .collect()
+}
+
 /// The field each placed device sees, as the path of its outline — `None` for a device nobody
 /// has aimed. Only the plan decides it, so it is worked out when the plan changes and not with
 /// every reading.
-pub fn sightlines(level: &Level) -> Vec<Option<String>> {
+pub fn sightlines(level: &Level, shut: &BTreeSet<EntityId>) -> Vec<Option<String>> {
     level
         .devices
         .iter()
@@ -185,6 +227,7 @@ pub fn sightlines(level: &Level) -> Vec<Option<String>> {
                 f64::from(facing),
                 f64::from(placed.view_angle()),
                 &level.walls,
+                shut,
                 MMWAVE_RANGE,
             );
             let mut path = format!("M {} {}", placed.at.x, placed.at.y);
@@ -379,7 +422,14 @@ mod tests {
     /// it could see in the open.
     #[test]
     fn a_wall_stops_what_a_sensor_sees() {
-        let seen = sight(p(200, 150), 0.0, 60.0, &room(), MMWAVE_RANGE);
+        let seen = sight(
+            p(200, 150),
+            0.0,
+            60.0,
+            &room(),
+            &BTreeSet::new(),
+            MMWAVE_RANGE,
+        );
         assert_eq!(seen.len(), RAYS);
         let face = 400.0 - f64::from(Wall::DEFAULT_THICKNESS) / 2.0;
         assert!(
@@ -392,7 +442,7 @@ mod tests {
             "and it gets that far: {furthest}"
         );
 
-        let open = sight(p(200, 150), 0.0, 60.0, &[], MMWAVE_RANGE);
+        let open = sight(p(200, 150), 0.0, 60.0, &[], &BTreeSet::new(), MMWAVE_RANGE);
         assert!(
             open.iter()
                 .all(|(x, y)| ((x - 200.0).hypot(y - 150.0) - MMWAVE_RANGE).abs() < 1e-6),
@@ -405,12 +455,17 @@ mod tests {
     fn a_door_lets_a_sensor_see_into_the_next_room() {
         let cut = |kind| {
             let mut walls = room();
-            walls[1].openings.push(irori_types::Opening {
-                kind,
-                at: 150,
-                width: 80,
-            });
-            sight(p(200, 150), 0.0, 60.0, &walls, MMWAVE_RANGE)
+            walls[1]
+                .openings
+                .push(irori_types::Opening::new(kind, 150, 80));
+            sight(
+                p(200, 150),
+                0.0,
+                60.0,
+                &walls,
+                &BTreeSet::new(),
+                MMWAVE_RANGE,
+            )
         };
         let through = cut(OpeningKind::Door);
         let straight = through[RAYS / 2];
@@ -438,7 +493,14 @@ mod tests {
     #[test]
     fn a_sensor_on_a_wall_looks_out_from_the_face_it_is_aimed_from() {
         for x in [0, 3, -3] {
-            let into = sight(p(x, 150), 0.0, 60.0, &room(), MMWAVE_RANGE);
+            let into = sight(
+                p(x, 150),
+                0.0,
+                60.0,
+                &room(),
+                &BTreeSet::new(),
+                MMWAVE_RANGE,
+            );
             let straight = into[RAYS / 2];
             assert!(
                 (straight.0 - 395.0).abs() < 1e-6,
@@ -446,17 +508,58 @@ mod tests {
             );
         }
         // Turned round, the same sensor is on the outside of the house looking at the garden.
-        let out = sight(p(0, 150), 180.0, 60.0, &room(), MMWAVE_RANGE);
+        let out = sight(
+            p(0, 150),
+            180.0,
+            60.0,
+            &room(),
+            &BTreeSet::new(),
+            MMWAVE_RANGE,
+        );
         let straight = out[RAYS / 2];
         assert!((straight.0 + MMWAVE_RANGE).abs() < 0.1, "{straight:?}");
 
         // Standing clear of the wall behind it, it is simply in front of that wall.
-        let clear = sight(p(60, 150), 180.0, 60.0, &room(), MMWAVE_RANGE);
+        let clear = sight(
+            p(60, 150),
+            180.0,
+            60.0,
+            &room(),
+            &BTreeSet::new(),
+            MMWAVE_RANGE,
+        );
         assert!(
             (clear[RAYS / 2].0 - 5.0).abs() < 1e-6,
             "{:?}",
             clear[RAYS / 2]
         );
+    }
+
+    /// A door whose sensor says it's shut is wall to a radar; open, or with nothing to say, it
+    /// is a hole.
+    #[test]
+    fn a_shut_door_stops_what_a_sensor_sees() {
+        let contact: EntityId = "binary_sensor.kitchen_door"
+            .parse()
+            .expect("a valid entity id");
+        let mut walls = room();
+        walls[1].openings.push(Opening {
+            sensor: Some(contact.clone()),
+            ..Opening::new(OpeningKind::Door, 150, 80)
+        });
+        let shut: BTreeSet<EntityId> = [contact].into();
+        let open = BTreeSet::new();
+
+        let holes = |shut: &BTreeSet<EntityId>| {
+            super::super::runs(&walls[1], |opening| seen_through(opening, shut))
+        };
+        assert_eq!(holes(&open), vec![(0.0, 110.0), (190.0, 300.0)], "a hole");
+        assert_eq!(holes(&shut), vec![(0.0, 300.0)], "wall from end to end");
+
+        let through = sight(p(200, 150), 0.0, 60.0, &walls, &open, MMWAVE_RANGE);
+        assert!(through[RAYS / 2].0 > 600.0);
+        let stopped = sight(p(200, 150), 0.0, 60.0, &walls, &shut, MMWAVE_RANGE);
+        assert!(stopped.iter().all(|(x, _)| *x <= 395.0 + 1e-6));
     }
 
     #[test]
@@ -477,7 +580,7 @@ mod tests {
             devices: vec![lamp, radar],
             ..Level::default()
         };
-        let lines = sightlines(&level);
+        let lines = sightlines(&level, &BTreeSet::new());
         assert_eq!(lines[0], None);
         let path = lines[1].as_deref().expect("the radar is aimed");
         assert!(

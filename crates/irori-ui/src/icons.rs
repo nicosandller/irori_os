@@ -47,6 +47,9 @@ pub enum Icon {
     Motion,
     Button,
     Air,
+    Lock,
+    Unlocked,
+    Bell,
     /// Anything that isn't one of the others.
     Dot,
 }
@@ -158,6 +161,16 @@ fn drawing(icon: Icon) -> &'static str {
         Icon::Air => concat!(
             r#"<path d="M3 9h9.500a2.500 2.500 0 1 0-2.400-3.200"/>"#,
             r#"<path d="M3 13h14.500a2.800 2.800 0 1 1-2.700 3.600"/><path d="M3 17h7"/>"#,
+        ),
+        Icon::Lock => {
+            r#"<rect x="5" y="10.500" width="14" height="10" rx="2"/><path d="M8 10.500V7.500a4 4 0 0 1 8 0v3"/>"#
+        }
+        Icon::Unlocked => {
+            r#"<rect x="5" y="10.500" width="14" height="10" rx="2"/><path d="M8 10.500V7.500a4 4 0 0 1 7.700-1.500"/>"#
+        }
+        Icon::Bell => concat!(
+            r#"<path d="M6 16.500V11a6 6 0 0 1 12 0v5.500l1.500 2h-15Z"/>"#,
+            r#"<path d="M10.200 21a2 2 0 0 0 3.600 0M12 3v2"/>"#,
         ),
         Icon::Dot => r#"<circle cx="12" cy="12" r="3.500" fill="currentColor"/>"#,
     }

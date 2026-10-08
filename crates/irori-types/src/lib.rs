@@ -35,7 +35,8 @@ pub use extension::{
     RunCommand, SerialPath, Version,
 };
 pub use floorplan::{
-    Floorplan, Level, Opening, OpeningKind, PlacedArea, PlacedDevice, PlanError, Point, Wall,
+    Floorplan, Hinge, Level, Opening, OpeningKind, PlacedArea, PlacedDevice, PlanError, Point,
+    Side, Wall,
 };
 pub use id::{
     AreaId, AttributeKey, ContextId, Description, DeviceId, EntityId, ExtensionId, FloorId,

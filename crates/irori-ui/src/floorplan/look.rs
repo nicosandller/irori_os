@@ -6,8 +6,8 @@
 //! tested here without a page to draw them on.
 
 use irori_types::{
-    Availability, BinarySensorClass, Capabilities, Entity, EntityId, EntityState, MediaPlayerClass,
-    Playback, SensorClass, SensorValue, State,
+    Availability, BinarySensorClass, Capabilities, Entity, EntityId, EntityState, EventClass,
+    LockStatus, MediaPlayerClass, Playback, SensorClass, SensorValue, State,
 };
 
 use crate::icons::Icon;
@@ -29,6 +29,8 @@ pub enum Tone {
     Air,
     /// Buttons and things that happen.
     Input,
+    /// Locks.
+    Secure,
     Other,
 }
 
@@ -43,6 +45,7 @@ impl Tone {
             Tone::Climate => "climate",
             Tone::Air => "air",
             Tone::Input => "input",
+            Tone::Secure => "secure",
             Tone::Other => "other",
         }
     }
@@ -73,8 +76,13 @@ pub struct Look {
     pub media: Option<EntityId>,
     /// The button a click presses, when there is one.
     pub press: Option<EntityId>,
+    /// The lock a click locks. Only ever locks: unlocking lets someone in, so it is asked for
+    /// on the lock's own page, where it is asked twice.
+    pub lock: Option<EntityId>,
     /// The entity whose happenings flash the marker: a remote's button, a doorbell.
     pub event: Option<EntityId>,
+    /// A doorbell: its marker rings as well as flashing.
+    pub rings: bool,
     /// A presence sensor that also says how far away its target is, so it can be aimed and
     /// its field drawn.
     pub radar: bool,
@@ -100,7 +108,9 @@ impl Look {
             pulse: false,
             media: None,
             press: None,
+            lock: None,
             event: None,
+            rings: false,
             radar: false,
             sensing: false,
             distance: None,
@@ -110,8 +120,8 @@ impl Look {
 }
 
 /// A device's look, from its entities and what they last said. The first of these that fits
-/// wins: a light, a player, a switch, a radar, a motion sensor, a button, a thermometer, an air
-/// monitor, anything else with a reading.
+/// wins: a light, a player, a switch, a lock, a radar, a motion sensor, a doorbell or a button,
+/// a thermometer, an air monitor, anything else with a reading.
 ///
 /// Chosen by what an entity **can do**, not by what it has said. An entity that has reported
 /// nothing yet still has a light's or a switch's capabilities, and a marker that refused to
@@ -249,6 +259,38 @@ pub fn look_for(entities: &[&Entity], states: &[EntityState]) -> Look {
         return look;
     }
 
+    // A lock. Shut and locked is the ordinary state and says nothing; anything else is worth
+    // knowing from across the room, so it opens to say so.
+    if let Some(lock) = main().find(|entity| matches!(entity.capabilities, Capabilities::Lock(_))) {
+        let status = match said(&lock.id) {
+            Some(State::Lock(lock)) => Some(lock.state),
+            _ => None,
+        };
+        let (reading, saying, locked) = match status {
+            Some(LockStatus::Locked) => (None, "Locked", true),
+            Some(LockStatus::Locking) => (Some("Locking…"), "Locking", true),
+            Some(LockStatus::Unlocked) => (Some("Unlocked"), "Unlocked — click to lock", false),
+            Some(LockStatus::Unlocking) => (Some("Unlocking…"), "Unlocking", false),
+            Some(LockStatus::Jammed) => (Some("Jammed"), "Jammed", false),
+            Some(LockStatus::Open) => (Some("Open"), "Open", false),
+            Some(LockStatus::Opening) => (Some("Opening…"), "Opening", false),
+            None => (None, "", true),
+        };
+        let mut look = Look {
+            offline: unreachable(&lock.id),
+            reading: reading.map(Into::into),
+            active: !locked,
+            lock: (status == Some(LockStatus::Unlocked)).then(|| lock.id.clone()),
+            saying: saying.into(),
+            ..Look::plain(
+                if locked { Icon::Lock } else { Icon::Unlocked },
+                Tone::Secure,
+            )
+        };
+        offline_words(&mut look);
+        return look;
+    }
+
     // 4 and 5. Something that senses whether anyone is there.
     if let Some(presence) = main().find(|entity| {
         matches!(
@@ -310,19 +352,30 @@ pub fn look_for(entities: &[&Entity], states: &[EntityState]) -> Look {
     let button = main().find(|entity| matches!(entity.capabilities, Capabilities::Button(_)));
     let event = main().find(|entity| matches!(entity.capabilities, Capabilities::Event(_)));
     if button.is_some() || event.is_some() {
+        // A doorbell is an event that says it is one. It has nothing to press from here —
+        // ringing somebody's bell from the plan isn't a thing — so it only ever tells.
+        let bell = event.is_some_and(|event| {
+            matches!(
+                &event.capabilities,
+                Capabilities::Event(caps) if caps.device_class == Some(EventClass::Doorbell)
+            )
+        });
         let offline = button
             .or(event)
             .is_some_and(|entity| unreachable(&entity.id));
         let mut look = Look {
             offline,
-            press: button.map(|button| button.id.clone()),
+            press: button.filter(|_| !bell).map(|button| button.id.clone()),
             event: event.map(|event| event.id.clone()),
-            saying: if button.is_some() {
+            saying: if bell {
+                "Doorbell".into()
+            } else if button.is_some() {
                 "Click to press".into()
             } else {
                 String::new()
             },
-            ..Look::plain(Icon::Button, Tone::Input)
+            rings: bell,
+            ..Look::plain(if bell { Icon::Bell } else { Icon::Button }, Tone::Input)
         };
         offline_words(&mut look);
         return look;
@@ -726,6 +779,57 @@ mod tests {
         assert_eq!(look.tone, Tone::Input);
         assert!(look.reading.is_none() && look.press.is_none());
         assert_eq!(look.event, Some(bell.id.clone()));
+    }
+
+    /// A doorbell is a bell, rings, and can't be rung from the plan.
+    #[test]
+    fn a_doorbell_is_a_bell_that_only_tells() {
+        let bell = entity(
+            "event.doorbell",
+            Capabilities::Event(EventCapabilities {
+                event_types: vec!["ring".into()],
+                device_class: Some(EventClass::Doorbell),
+            }),
+        );
+        let look = look_for(&[&bell], &[]);
+        assert_eq!((look.tone, look.glyph), (Tone::Input, Icon::Bell));
+        assert!(look.rings && look.reading.is_none() && look.press.is_none());
+        assert_eq!(look.event, Some(bell.id.clone()));
+    }
+
+    /// Locked is the ordinary state and says nothing. Anything else opens to say so, and the
+    /// only thing a click ever does is lock.
+    #[test]
+    fn a_lock_says_when_it_is_not_locked_and_a_click_only_locks() {
+        let lock = entity(
+            "lock.front_door",
+            Capabilities::Lock(irori_types::LockCapabilities::default()),
+        );
+        let stands = |status: &str| {
+            let state: irori_types::LockState =
+                serde_json::from_value(serde_json::json!({"state": status}))
+                    .expect("a lock's state");
+            look_for(&[&lock], &[says("lock.front_door", State::Lock(state))])
+        };
+        let locked = stands("locked");
+        assert_eq!((locked.tone, locked.glyph), (Tone::Secure, Icon::Lock));
+        assert!(locked.reading.is_none() && !locked.active);
+        assert!(locked.lock.is_none(), "a click never unlocks");
+
+        let unlocked = stands("unlocked");
+        assert_eq!(unlocked.glyph, Icon::Unlocked);
+        assert_eq!(unlocked.reading.as_deref(), Some("Unlocked"));
+        assert!(unlocked.active);
+        assert_eq!(unlocked.lock, Some(lock.id.clone()));
+
+        let jammed = stands("jammed");
+        assert_eq!(jammed.reading.as_deref(), Some("Jammed"));
+        assert!(jammed.active && jammed.lock.is_none());
+        assert_eq!(stands("locking").glyph, Icon::Lock);
+        assert!(
+            look_for(&[&lock], &[]).reading.is_none(),
+            "nothing said yet"
+        );
     }
 
     /// A blind's Calibrate button is a setting of the blind, not what the blind is.

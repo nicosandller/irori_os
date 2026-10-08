@@ -125,7 +125,8 @@ off everything.
 - **The Floorplan:** the tools, the device and room pickers and the inspector slide in when they
   appear; a device marker leans in under the pointer, warms to its tone, and grows into its
   reading and back out of it; a motion sensor's marker pulses while it senses someone and a
-  button's flashes once when it's pressed; what's picked, and the line being drawn, march like any drawing tool's
+  button's flashes once when it's pressed (a doorbell's bell swings too); a door or window with
+  a contact sensor swings open and shut on its hinge; what's picked, and the line being drawn, march like any drawing tool's
   selection. Its sliders (a wall's thickness, an opening's width, the snap step) are drawn like
   the lights'.
 - **Ambient:** the Live dot breathes while the core answers and goes still when it doesn't, the

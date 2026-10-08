@@ -276,6 +276,14 @@ kind = "door"       # "door" or "window"
 at = 250            # centimetres along the wall, from its `from` end, to the middle of the hole
 width = 80
 
+[[floors.ground.walls.openings]]
+kind = "door"
+at = 420
+width = 90
+side = "right"          # optional: which side it opens to, looking from `from` to `to`
+hinge = "far"           # optional: which end of the gap a door hangs from
+sensor = "binary_sensor.front_door_contact"   # optional: says whether it's open
+
 [[floors.ground.areas]]
 area = "kitchen"
 points = [[0, 0], [300, 0], [300, 250], [0, 250]]
@@ -324,6 +332,17 @@ A device is placed by its id, the same one `devices.toml` uses. An entry for a d
 in the home right now is **kept and simply not drawn** (§4), as is an entry for a floor or room
 that has since been removed — a device unplugged for a week comes back to the spot it was put in,
 and making a deleted floor again brings its drawing back.
+
+A door or window can say **which way it opens and whether it is open**. `side` is the side of
+the wall it swings to, `"left"` or `"right"`, standing at the wall's `from` end and looking
+towards `to`; left when it isn't said, which is how every door was drawn before the field
+existed. `hinge` is the end of the gap a door hangs from, `"near"` (the `from` end, and the
+default) or `"far"`; a window is hinged at both jambs, so it has no use for it. `sensor` is the
+id of the contact sensor on it: a `binary_sensor` whose `on` means open. With one, the plan
+draws the door or window open and shut as the sensor says, and a radar's field stops at a door
+that is shut. Without one it is drawn shut — a plan shouldn't claim a door is open that nothing
+says is. A `sensor` that names an entity no longer in the home is kept and not obeyed (§4), and
+none of the three is written when it holds its default.
 
 A device that **looks in one direction** — an mmWave presence sensor on a wall — can be aimed.
 `facing` is which way it points, in whole degrees clockwise from the plan's +x axis as the plan

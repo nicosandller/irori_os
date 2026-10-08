@@ -370,7 +370,14 @@ pub fn Floorplan() -> impl IntoView {
     let level = Memo::new(move |_| on_floor(&shown.get(), floor.get().as_ref()));
     // What each aimed sensor on this floor can see. Walls and aim decide it and readings don't,
     // so it is worked out when the plan changes rather than every time a sensor speaks.
-    let sightlines = Memo::new(move |_| ambience::sightlines(&level.get()));
+    // The doors a sensor says are shut: a radar doesn't see through those. Its own memo, so
+    // the fields are traced again when a door moves and not every time anything reports.
+    let shut = Memo::new(move |_| {
+        let level = level.get();
+        live.home
+            .with(|home| ambience::shut_doors(&level, &home.states))
+    });
+    let sightlines = Memo::new(move |_| ambience::sightlines(&level.get(), &shut.get()));
     // The floor under this one, drawn faintly so an upstairs can be lined up with it.
     let beneath = Memo::new(move |_| {
         let floors = floors.get();
@@ -1050,11 +1057,11 @@ pub fn Floorplan() -> impl IntoView {
                         // A wall too short for the usual door gets a door the width of the wall
                         // rather than a refusal: whoever drew it can widen the wall later.
                         let width = kind.default_width().min(length.floor().max(1.0) as u32);
-                        wall.openings.push(Opening {
+                        wall.openings.push(Opening::new(
                             kind,
-                            at: fit_opening(along, width, length),
+                            fit_opening(along, width, length),
                             width,
-                        });
+                        ));
                         picked.set(Some(Pick::Opening(w, wall.openings.len() - 1)));
                     }
                 });
@@ -1295,12 +1302,15 @@ pub fn Floorplan() -> impl IntoView {
                         let here = view.get();
                         let level = level.get();
                         let chosen = editing.get().then(|| picked.get()).flatten();
+                        // Doors and windows follow their sensors while the plan is being read.
+                        let home = (!editing.get()).then(|| live.home.get());
+                        let states = home.as_ref().map(|home| home.states.as_slice());
                         level
                             .walls
                             .iter()
                             .enumerate()
                             .map(|(w, wall)| {
-                                drawn_wall(wall, w, finishes(&level, w), here, chosen)
+                                drawn_wall(wall, w, finishes(&level, w), here, chosen, states)
                             })
                             .collect_view()
                     }}
@@ -2036,9 +2046,30 @@ fn Inspector(
                 let wall = here.walls.get(w)?;
                 let opening = wall.openings.get(o)?;
                 let (kind, width) = (opening.kind, opening.width);
+                let (side, hinge, sensor) = (opening.side, opening.hinge, opening.sensor.clone());
                 // An opening can't be wider than the wall it's cut into, so the slider stops
                 // where the wall does rather than letting a plan be made that can't be saved.
                 let widest = wall.length().floor().max(1.0) as u32;
+                // Changes one thing about this opening, as one step to undo.
+                let change = move |edit: &dyn Fn(&mut Opening)| {
+                    remember.run(());
+                    on_level(draft, floor, |level| {
+                        if let Some(opening) = level
+                            .walls
+                            .get_mut(w)
+                            .and_then(|wall| wall.openings.get_mut(o))
+                        {
+                            edit(opening);
+                        }
+                    });
+                };
+                // The sensors that could be on a door or a window. Read once per redraw of this
+                // panel, not with every reading: a list that reshuffled under an open menu
+                // would be worse than one a new sensor takes a click to appear in.
+                let contacts = live
+                    .home
+                    .with_untracked(|home| contacts(home, sensor.as_ref()));
+                let following = sensor.as_ref().map(ToString::to_string).unwrap_or_default();
                 Some(view! {
                     <div class="inspector">
                         <h2>{kind.label()}</h2>
@@ -2077,6 +2108,60 @@ fn Inspector(
                             />
                             <output class="figure">{format!("{width} cm")}</output>
                         </label>
+                        <div class="choice">
+                            <span>"Opens to"</span>
+                            {crate::segmented::segmented(
+                                "Which side it opens to",
+                                vec![
+                                    (irori_types::Side::Left, "Left"),
+                                    (irori_types::Side::Right, "Right"),
+                                ],
+                                Signal::derive(move || side),
+                                move |to| change(&|opening| opening.side = to),
+                            )}
+                        </div>
+                        // A window is hinged at both jambs; only a door has an end it hangs from.
+                        {(kind == OpeningKind::Door).then(|| view! {
+                            <div class="choice">
+                                <span>"Hinge"</span>
+                                {crate::segmented::segmented(
+                                    "Which end it is hinged at",
+                                    vec![
+                                        (irori_types::Hinge::Near, "Near end"),
+                                        (irori_types::Hinge::Far, "Far end"),
+                                    ],
+                                    Signal::derive(move || hinge),
+                                    move |to| change(&|opening| opening.hinge = to),
+                                )}
+                            </div>
+                        })}
+                        <label class="choice">
+                            <span>"Sensor"</span>
+                            <select
+                                prop:value=following.clone()
+                                on:change=move |event| {
+                                    let picked = event_target_value(&event).parse::<EntityId>().ok();
+                                    change(&|opening| opening.sensor = picked.clone());
+                                }
+                            >
+                                <option value="" selected=following.is_empty()>"None"</option>
+                                {contacts
+                                    .into_iter()
+                                    .map(|(id, name)| {
+                                        let id = id.to_string();
+                                        let chosen = id == following;
+                                        view! { <option value=id selected=chosen>{name}</option> }
+                                    })
+                                    .collect_view()}
+                            </select>
+                        </label>
+                        <p class="muted small">
+                            {if sensor.is_some() {
+                                "It opens and shuts on the plan as its sensor says."
+                            } else {
+                                "Give it a contact sensor and it opens and shuts on the plan."
+                            }}
+                        </p>
                     </div>
                 }.into_any())
             }
@@ -2132,6 +2217,46 @@ fn Inspector(
             }
         }
     }
+}
+
+/// The contact sensors a door or window could follow: binary sensors that say they are on a
+/// door, a window, a garage door or an opening, each with a name that says which device it is.
+/// The one already chosen is always listed, even if it has since left the home or stopped being
+/// a contact sensor — the menu has to be able to show what the plan says.
+fn contacts(home: &Home, chosen: Option<&EntityId>) -> Vec<(EntityId, String)> {
+    use irori_types::BinarySensorClass as Class;
+    let mut found: Vec<(EntityId, String)> = home
+        .entities
+        .iter()
+        .filter(|entity| {
+            matches!(
+                &entity.capabilities,
+                Capabilities::BinarySensor(sensor) if matches!(
+                    sensor.device_class,
+                    Some(Class::Door | Class::Window | Class::GarageDoor | Class::Opening)
+                )
+            )
+        })
+        .map(|entity| {
+            let device = entity.device_id.as_ref().and_then(|id| {
+                home.devices
+                    .iter()
+                    .find(|device| &device.id == id)
+                    .map(|device| device.name.to_string())
+            });
+            (
+                entity.id.clone(),
+                device.unwrap_or_else(|| entity.name.to_string()),
+            )
+        })
+        .collect();
+    found.sort_by(|a, b| a.1.cmp(&b.1));
+    if let Some(chosen) = chosen
+        && !found.iter().any(|(id, _)| id == chosen)
+    {
+        found.push((chosen.clone(), format!("{chosen} (not in the home)")));
+    }
+    found
 }
 
 /// Which way a radar points and how wide it sees: the two things about it no protocol reports
@@ -2537,6 +2662,8 @@ fn marker(
         Some(Click::Switch(entity, !on.unwrap_or(false)))
     } else if let Some(entity) = look.media.clone() {
         Some(Click::Act(entity, "media_play_pause"))
+    } else if let Some(entity) = look.lock.clone() {
+        Some(Click::Act(entity, "lock"))
     } else {
         look.press.clone().map(|entity| Click::Act(entity, "press"))
     };
@@ -2569,6 +2696,7 @@ fn marker(
             class:open=open
             class:pulse=look.pulse
             class:aimed=facing.is_some()
+            class:rings=look.rings
             class:offline=offline
             // A press or a ring: the same flash under two names, so one straight after another
             // starts it again.
@@ -2713,6 +2841,9 @@ fn drawn_wall(
     finishes: (Finish, Finish),
     view: Viewport,
     picked: Option<Pick>,
+    // What the home's sensors last said, for showing doors and windows open. `None` while the
+    // plan is being drawn: then they are shut, except the one being worked on.
+    states: Option<&[irori_types::EntityState]>,
 ) -> impl IntoView + use<> {
     let thickness = f64::from(wall.thickness);
     let chosen = picked == Some(Pick::Wall(index));
@@ -2784,7 +2915,11 @@ fn drawn_wall(
         .openings
         .iter()
         .enumerate()
-        .map(|(o, opening)| drawn_opening(wall, opening, picked == Some(Pick::Opening(index, o))))
+        .map(|(o, opening)| {
+            let chosen = picked == Some(Pick::Opening(index, o));
+            let standing = states.map_or(Standing::Shut, |states| standing(opening, states));
+            drawn_opening(wall, opening, standing, chosen, chosen)
+        })
         .collect_view();
 
     view! {
@@ -2820,61 +2955,217 @@ fn drawn_fillets(fillets: &[Fillet], view: Viewport) -> impl IntoView + use<> {
     view! { <g class="wall-group" transform=transform(view)>{patches}</g> }
 }
 
-/// A door or a window in the gap its wall left for it.
+/// Whether a door or window is open, as far as the plan knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Standing {
+    Shut,
+    Open,
+    /// It has a sensor, and the sensor isn't saying: never reported, or not answering. Drawn
+    /// shut, and faded, because shut is a guess.
+    Unknown,
+}
+
+/// How an opening stands, from the contact sensor it was given. Without one it is shut: a plan
+/// shouldn't claim a door is open that nothing says is.
+fn standing(opening: &Opening, states: &[irori_types::EntityState]) -> Standing {
+    let Some(sensor) = &opening.sensor else {
+        return Standing::Shut;
+    };
+    let Some(state) = states.iter().find(|state| &state.entity_id == sensor) else {
+        return Standing::Unknown;
+    };
+    if state.availability == irori_types::Availability::Unavailable {
+        return Standing::Unknown;
+    }
+    match &state.state {
+        Some(irori_types::State::BinarySensor(contact)) if contact.on => Standing::Open,
+        Some(irori_types::State::BinarySensor(_)) => Standing::Shut,
+        _ => Standing::Unknown,
+    }
+}
+
+/// The part of a door or window that moves: a slab or a pane, lying in the wall while it's
+/// shut, and the turn about its hinge that opens it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Leaf {
+    /// Its four corners while shut, in the plan's centimetres.
+    corners: [(f64, f64); 4],
+    /// The hinge it turns on.
+    pivot: (f64, f64),
+    /// The end furthest from the hinge, on the wall's middle line.
+    latch: (f64, f64),
+    /// How far it turns to stand open, in degrees. Positive is clockwise as the plan is drawn,
+    /// which is the way CSS and SVG both count with y running down the page.
+    swing: f64,
+}
+
+impl Leaf {
+    /// Where a point of the shut leaf is once it stands open.
+    fn opened(&self, point: (f64, f64)) -> (f64, f64) {
+        let (sin, cos) = self.swing.to_radians().sin_cos();
+        let (dx, dy) = (point.0 - self.pivot.0, point.1 - self.pivot.1);
+        (
+            self.pivot.0 + dx * cos - dy * sin,
+            self.pivot.1 + dx * sin + dy * cos,
+        )
+    }
+}
+
+/// A window narrower than this, in centimetres, is a single pane: two sashes that small would
+/// be slivers.
+const ONE_PANE: u32 = 60;
+
+/// The leaves of an opening: a door's one slab, hung from whichever end it was told; a window's
+/// pair of panes, one hung from each jamb, or its single pane when it's a small one.
 ///
-/// A door is drawn the way plans have always drawn one: the leaf standing open, and the arc it
-/// sweeps. A window is the pane across the gap. Both get jambs, so the hole reads as a hole
-/// rather than as a wall somebody forgot to finish.
-fn drawn_opening(wall: &Wall, opening: &Opening, chosen: bool) -> impl IntoView + use<> {
+/// A leaf runs from its hinge along the wall, and opens by a quarter turn towards the side the
+/// opening was told. Turning the wall's own direction clockwise gives its left-hand side, so a
+/// leaf that runs *with* the wall turns clockwise to open left, and one that runs against it —
+/// hung from the far end — turns the other way to end up on the same side.
+fn leaves(wall: &Wall, opening: &Opening) -> Vec<Leaf> {
     let half = f64::from(opening.width) / 2.0;
     let at = f64::from(opening.at);
     let thickness = f64::from(wall.thickness);
     let (near, unit, normal) = along(wall, at - half);
     let (far, _, _) = along(wall, at + half);
-    let width = f64::from(opening.width);
-
-    let jamb = |(x, y): (f64, f64)| {
-        let (dx, dy) = (normal.0 * thickness / 2.0, normal.1 * thickness / 2.0);
-        view! {
-            <line
-                class="jamb"
-                x1=x - dx y1=y - dy x2=x + dx y2=y + dy
-                stroke-width=thickness / 4.0
-            />
+    let towards = match opening.side {
+        irori_types::Side::Left => 1.0,
+        irori_types::Side::Right => -1.0,
+    };
+    // A leaf from `pivot`, `length` long, running with the wall (`way` 1) or against it (-1).
+    let leaf = |pivot: (f64, f64), way: f64, length: f64, deep: f64| {
+        let latch = (
+            pivot.0 + unit.0 * way * length,
+            pivot.1 + unit.1 * way * length,
+        );
+        let (ox, oy) = (normal.0 * deep / 2.0, normal.1 * deep / 2.0);
+        Leaf {
+            corners: [
+                (pivot.0 - ox, pivot.1 - oy),
+                (latch.0 - ox, latch.1 - oy),
+                (latch.0 + ox, latch.1 + oy),
+                (pivot.0 + ox, pivot.1 + oy),
+            ],
+            pivot,
+            latch,
+            swing: 90.0 * towards * way,
         }
     };
+    let width = f64::from(opening.width);
+    match opening.kind {
+        OpeningKind::Door => vec![match opening.hinge {
+            irori_types::Hinge::Near => leaf(near, 1.0, width, thickness * 0.7),
+            irori_types::Hinge::Far => leaf(far, -1.0, width, thickness * 0.7),
+        }],
+        OpeningKind::Window if opening.width < ONE_PANE => {
+            vec![leaf(near, 1.0, (width - 1.0).max(0.5), thickness * 0.6)]
+        }
+        OpeningKind::Window => {
+            let pane = (width / 2.0 - 1.0).max(0.5);
+            vec![
+                leaf(near, 1.0, pane, thickness * 0.6),
+                leaf(far, -1.0, pane, thickness * 0.6),
+            ]
+        }
+    }
+}
 
-    let inner = match opening.kind {
-        OpeningKind::Door => {
-            let tip = (near.0 + normal.0 * width, near.1 + normal.1 * width);
-            let leaf = format!(
-                "M {} {} L {} {} A {width} {width} 0 0 0 {} {}",
-                near.0, near.1, tip.0, tip.1, far.0, far.1
+/// A door or a window in the gap its wall left for it.
+///
+/// The wall's two faces carry on across the gap as thin lines, so the wall still reads as one
+/// wall. Shut, the gap holds a door's slab or a window's glass. Open, the slab or the panes
+/// stand out from the wall on their hinges, and a door lights the floor it swept across. The
+/// turn is a style rather than a redrawn shape, so a door *swings* when its sensor changes.
+///
+/// `previewing` is the editor's view of the one that's picked up: standing open, faintly, so
+/// whoever is choosing its side and its hinge can see which way it goes.
+fn drawn_opening(
+    wall: &Wall,
+    opening: &Opening,
+    standing: Standing,
+    chosen: bool,
+    previewing: bool,
+) -> impl IntoView + use<> {
+    let half = f64::from(opening.width) / 2.0;
+    let at = f64::from(opening.at);
+    let thickness = f64::from(wall.thickness);
+    let (near, _, normal) = along(wall, at - half);
+    let (far, _, _) = along(wall, at + half);
+    let width = f64::from(opening.width);
+    let is_door = opening.kind == OpeningKind::Door;
+
+    let edges = [1.0, -1.0]
+        .into_iter()
+        .map(|face| {
+            let (dx, dy) = (
+                normal.0 * thickness / 2.0 * face,
+                normal.1 * thickness / 2.0 * face,
             );
             view! {
-                <path class="door" class:chosen=chosen d=leaf fill="none"
-                    stroke-width=thickness / 4.0 />
+                <line
+                    class="opening-edge"
+                    x1=near.0 + dx y1=near.1 + dy x2=far.0 + dx y2=far.1 + dy
+                    stroke-width=thickness * 0.15
+                />
             }
-            .into_any()
-        }
-        OpeningKind::Window => view! {
-            <line
-                class="window" class:chosen=chosen
-                x1=near.0 y1=near.1 x2=far.0 y2=far.1
-                stroke-width=thickness / 3.0
-            />
-        }
-        .into_any(),
-    };
-    // Silences the unused warning on `unit`, which only the jambs' direction needs.
-    let _ = unit;
+        })
+        .collect_view();
+
+    let moving = leaves(wall, opening);
+    // The floor a door passes over: the quarter circle between where its latch is shut and
+    // where it is open.
+    let sweeps = moving
+        .iter()
+        .filter(|_| is_door)
+        .map(|leaf| {
+            let open = leaf.opened(leaf.latch);
+            let path = format!(
+                "M {:.2} {:.2} L {:.2} {:.2} A {width} {width} 0 0 {} {:.2} {:.2} Z",
+                leaf.pivot.0,
+                leaf.pivot.1,
+                leaf.latch.0,
+                leaf.latch.1,
+                u8::from(leaf.swing > 0.0),
+                open.0,
+                open.1
+            );
+            view! { <path class="door-sweep" d=path /> }
+        })
+        .collect_view();
+    let panels = moving
+        .iter()
+        .map(|leaf| {
+            let points = leaf
+                .corners
+                .iter()
+                .map(|(x, y)| format!("{x:.2},{y:.2}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            view! {
+                <polygon
+                    class=if is_door { "door-slab" } else { "window-pane" }
+                    points=points
+                    style=format!(
+                        "transform-origin:{:.2}px {:.2}px;--swing:{}deg",
+                        leaf.pivot.0, leaf.pivot.1, leaf.swing
+                    )
+                />
+            }
+        })
+        .collect_view();
 
     view! {
-        <>
-            {jamb(near)}
-            {jamb(far)}
-            {inner}
-        </>
+        <g
+            class="opening"
+            class:open=previewing || standing == Standing::Open
+            class:unknown=!previewing && standing == Standing::Unknown
+            class:chosen=chosen
+            class:previewing=previewing
+        >
+            {sweeps}
+            {edges}
+            {panels}
+        </g>
     }
 }
 
@@ -3764,9 +4055,9 @@ fn metres(cm: f64) -> String {
 /// Whether the keyboard belongs to something being typed into, so Delete doesn't remove a wall
 /// while somebody is editing a field.
 fn typing() -> bool {
-    document()
-        .active_element()
-        .is_some_and(|element| matches!(element.tag_name().as_str(), "INPUT" | "TEXTAREA"))
+    document().active_element().is_some_and(|element| {
+        matches!(element.tag_name().as_str(), "INPUT" | "TEXTAREA" | "SELECT")
+    })
 }
 
 /// The tools, in the order they're used: pick things up, draw walls, put things in them.
@@ -3850,16 +4141,9 @@ mod tests {
     #[test]
     fn a_wall_is_drawn_around_the_holes_in_it() {
         let mut wall = wall((0, 0), (400, 0));
-        wall.openings.push(Opening {
-            kind: OpeningKind::Door,
-            at: 100,
-            width: 80,
-        });
-        wall.openings.push(Opening {
-            kind: OpeningKind::Window,
-            at: 300,
-            width: 100,
-        });
+        wall.openings.push(Opening::new(OpeningKind::Door, 100, 80));
+        wall.openings
+            .push(Opening::new(OpeningKind::Window, 300, 100));
         assert_eq!(
             solid_runs(&wall),
             vec![(0.0, 60.0), (140.0, 250.0), (350.0, 400.0)]
@@ -3871,16 +4155,9 @@ mod tests {
     #[test]
     fn overlapping_holes_are_one_hole() {
         let mut wall = wall((0, 0), (400, 0));
-        wall.openings.push(Opening {
-            kind: OpeningKind::Window,
-            at: 220,
-            width: 100,
-        });
-        wall.openings.push(Opening {
-            kind: OpeningKind::Door,
-            at: 200,
-            width: 80,
-        });
+        wall.openings
+            .push(Opening::new(OpeningKind::Window, 220, 100));
+        wall.openings.push(Opening::new(OpeningKind::Door, 200, 80));
         assert_eq!(solid_runs(&wall), vec![(0.0, 160.0), (270.0, 400.0)]);
     }
 
@@ -3888,12 +4165,65 @@ mod tests {
     #[test]
     fn a_wall_that_is_all_door_has_nothing_solid_in_it() {
         let mut wall = wall((0, 0), (100, 0));
-        wall.openings.push(Opening {
-            kind: OpeningKind::Door,
-            at: 50,
-            width: 200,
-        });
+        wall.openings.push(Opening::new(OpeningKind::Door, 50, 200));
         assert_eq!(solid_runs(&wall), Vec::<(f64, f64)>::new());
+    }
+
+    /// A door opens to the side it was told whichever end it hangs from, on a wall running
+    /// either way: its latch ends up a door's width out from the wall, on that side.
+    #[test]
+    fn a_door_swings_to_the_side_it_was_told() {
+        use irori_types::{Hinge, Side};
+        for (from, to) in [((0, 0), (400, 0)), ((0, 0), (0, 400)), ((400, 300), (0, 0))] {
+            let mut wall = wall(from, to);
+            for side in [Side::Left, Side::Right] {
+                for hinge in [Hinge::Near, Hinge::Far] {
+                    wall.openings = vec![Opening {
+                        side,
+                        hinge,
+                        ..Opening::new(OpeningKind::Door, 200, 80)
+                    }];
+                    let slab = leaves(&wall, &wall.openings[0]);
+                    assert_eq!(slab.len(), 1, "a door has one leaf");
+                    let (near, _, normal) = along(&wall, 160.0);
+                    let (far, _, _) = along(&wall, 240.0);
+                    let pivot = if hinge == Hinge::Near { near } else { far };
+                    assert!(
+                        (slab[0].pivot.0 - pivot.0).hypot(slab[0].pivot.1 - pivot.1) < 1e-9,
+                        "hung from the {hinge:?} end"
+                    );
+                    let open = slab[0].opened(slab[0].latch);
+                    let out = (open.0 - pivot.0) * normal.0 + (open.1 - pivot.1) * normal.1;
+                    let wanted = if side == Side::Left { 80.0 } else { -80.0 };
+                    assert!(
+                        (out - wanted).abs() < 1e-6,
+                        "{from:?}→{to:?} {side:?} {hinge:?}: {out}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A window's two panes both stand out on the side it opens to; a small window has one.
+    #[test]
+    fn a_window_has_two_panes_unless_it_is_a_small_one() {
+        let mut wall = wall((0, 0), (400, 0));
+        wall.openings = vec![Opening {
+            side: irori_types::Side::Right,
+            ..Opening::new(OpeningKind::Window, 200, 100)
+        }];
+        let panes = leaves(&wall, &wall.openings[0]);
+        assert_eq!(panes.len(), 2);
+        assert_eq!(
+            (panes[0].pivot, panes[1].pivot),
+            ((150.0, 0.0), (250.0, 0.0))
+        );
+        for pane in &panes {
+            let open = pane.opened(pane.latch);
+            assert!((open.1 + 49.0).abs() < 1e-6, "out to the right: {open:?}");
+        }
+        wall.openings = vec![Opening::new(OpeningKind::Window, 200, 59)];
+        assert_eq!(leaves(&wall, &wall.openings[0]).len(), 1);
     }
 
     #[test]
@@ -3909,11 +4239,9 @@ mod tests {
     #[test]
     fn dragging_a_wall_short_pulls_its_door_in_with_it() {
         let mut short = wall((0, 0), (60, 0));
-        short.openings.push(Opening {
-            kind: OpeningKind::Door,
-            at: 200,
-            width: 80,
-        });
+        short
+            .openings
+            .push(Opening::new(OpeningKind::Door, 200, 80));
         trim(&mut short);
         let level = Level {
             walls: vec![short],
@@ -4215,11 +4543,7 @@ mod tests {
     #[test]
     fn a_curve_stays_out_of_a_doorway() {
         let mut front = wall((0, 0), (400, 0));
-        front.openings.push(Opening {
-            kind: OpeningKind::Door,
-            at: 395,
-            width: 6,
-        });
+        front.openings.push(Opening::new(OpeningKind::Door, 395, 6));
         let plan = Level {
             walls: vec![front, wall((400, 0), (400, 300))],
             ..Level::default()
@@ -4374,11 +4698,9 @@ mod tests {
     #[test]
     fn what_is_under_the_pointer_is_the_opening_before_the_wall() {
         let mut front = wall((0, 0), (400, 0));
-        front.openings.push(Opening {
-            kind: OpeningKind::Door,
-            at: 200,
-            width: 80,
-        });
+        front
+            .openings
+            .push(Opening::new(OpeningKind::Door, 200, 80));
         let plan = Level {
             walls: vec![front, wall((0, 300), (400, 300))],
             ..Level::default()
