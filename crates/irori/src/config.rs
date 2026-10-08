@@ -594,10 +594,10 @@ mod tests {
                     floors: [(
                         "ground".parse().expect("a valid floor id"),
                         irori_types::Level {
-                            devices: vec![irori_types::PlacedDevice {
-                                device: id.clone(),
-                                at: irori_types::Point { x: 10, y: 20 },
-                            }],
+                            devices: vec![irori_types::PlacedDevice::new(
+                                id.clone(),
+                                irori_types::Point { x: 10, y: 20 },
+                            )],
                             ..Default::default()
                         },
                     )]

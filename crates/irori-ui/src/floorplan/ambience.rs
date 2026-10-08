@@ -231,8 +231,8 @@ pub fn fields(
                             gradientUnits="userSpaceOnUse"
                             cx=x cy=y r=MMWAVE_RANGE
                         >
-                            <stop class="field-stop" offset="0" stop-opacity=".24" />
-                            <stop class="field-stop" offset="1" stop-opacity=".02" />
+                            <stop class="field-stop" offset="0" stop-opacity=".32" />
+                            <stop class="field-stop" offset="1" stop-opacity=".05" />
                         </radialGradient>
                         <clipPath id=clip.clone()>
                             <path d=outline.clone() />

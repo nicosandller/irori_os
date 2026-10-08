@@ -721,8 +721,8 @@ mod tests {
                 label: Point::new(0, 0),
             }],
             devices: vec![PlacedDevice {
-                device: "demo_lamp".parse().expect("valid"),
-                at: Point::new(120, 90),
+                facing: Some(90),
+                ..PlacedDevice::new("demo_lamp".parse().expect("valid"), Point::new(120, 90))
             }],
         };
         let upstairs = irori_types::Level {
