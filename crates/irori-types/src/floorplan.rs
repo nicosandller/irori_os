@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use std::collections::BTreeMap;
 
-use crate::{AreaId, DeviceId, FloorId};
+use crate::{AreaId, DeviceId, EntityId, FloorId};
 
 /// A point on the plan, in whole centimetres: `x` rightwards, `y` downwards, from an origin that
 /// is wherever the person who drew it started.
@@ -268,6 +268,58 @@ pub struct Opening {
     /// How wide it is, in centimetres. At least one, for the reason [`Wall::thickness`] gives.
     #[schemars(range(min = 1))]
     pub width: u32,
+    /// Which side of the wall it opens towards, looking along the wall from `from` to `to`.
+    /// For a window that is the side its sashes swing out to, which is normally outside.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub side: Side,
+    /// Which end of the gap a door is hung from. A window is hinged at both jambs, so this
+    /// says nothing about one.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub hinge: Hinge,
+    /// The contact sensor that says whether it's open: a binary sensor on the door or window
+    /// itself, where `on` means open. Without one it is drawn shut. Like every other reference
+    /// in the config, one that points at an entity no longer in the home is kept and not obeyed
+    /// (`docs/specs/config.md` §4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensor: Option<EntityId>,
+}
+
+impl Opening {
+    /// A hole of one kind, somewhere along a wall: opening to the left, hung from the near end,
+    /// and with nothing to say whether it's open.
+    pub fn new(kind: OpeningKind, at: i32, width: u32) -> Self {
+        Self {
+            kind,
+            at,
+            width,
+            side: Side::default(),
+            hinge: Hinge::default(),
+            sensor: None,
+        }
+    }
+}
+
+/// Which side of its wall an opening swings to, looking along the wall from `from` to `to`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Side {
+    #[default]
+    Left,
+    Right,
+}
+
+/// Which end of its gap a door is hung from: the one nearer the wall's `from` end, or the other.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Hinge {
+    #[default]
+    Near,
+    Far,
+}
+
+/// Whether a value is the one it would have been given anyway, and so needn't be written.
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -305,6 +357,45 @@ impl OpeningKind {
 pub struct PlacedDevice {
     pub device: DeviceId,
     pub at: Point,
+    /// Which way a directional sensor points, in degrees clockwise from the plan's +x axis:
+    /// 0 is rightwards, 90 is down the page. Authored, because nothing a radar reports says
+    /// which wall it was screwed to. Absent for a device that looks every way at once, and for
+    /// one nobody has aimed yet.
+    ///
+    /// Under a full turn: [`Level::check`] turns down 360 and over, so the schema does too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(max = 359))]
+    pub facing: Option<u16>,
+    /// How wide it sees, in degrees, inside [`PlacedDevice::FIELD_OF_VIEW_RANGE`].
+    /// [`PlacedDevice::DEFAULT_FIELD_OF_VIEW`] when `facing` is set and this isn't.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 20, max = 180))]
+    pub field_of_view: Option<u16>,
+}
+
+impl PlacedDevice {
+    /// How wide a directional sensor sees until somebody says otherwise: about what a
+    /// wall-mounted mmWave radar covers.
+    pub const DEFAULT_FIELD_OF_VIEW: u16 = 100;
+
+    /// How narrow and how wide a field of view may be, in degrees. Narrower than 20° is a
+    /// line, not a field; wider than a half turn is looking through the wall it's mounted on.
+    pub const FIELD_OF_VIEW_RANGE: std::ops::RangeInclusive<u16> = 20..=180;
+
+    /// A device put down at a point, not aimed anywhere.
+    pub fn new(device: DeviceId, at: Point) -> Self {
+        Self {
+            device,
+            at,
+            facing: None,
+            field_of_view: None,
+        }
+    }
+
+    /// How wide it sees: what was set, or the default.
+    pub fn view_angle(&self) -> u16 {
+        self.field_of_view.unwrap_or(Self::DEFAULT_FIELD_OF_VIEW)
+    }
 }
 
 /// Why a plan was refused. Checked where the plan is saved, so a file edited by hand and a page
@@ -385,6 +476,26 @@ impl Level {
                 }
             }
         }
+        for placed in &self.devices {
+            if let Some(facing) = placed.facing
+                && facing >= 360
+            {
+                return Err(PlanError(format!(
+                    "`{}` faces {facing}°; a direction is 0 to 359",
+                    placed.device
+                )));
+            }
+            if let Some(view) = placed.field_of_view
+                && !PlacedDevice::FIELD_OF_VIEW_RANGE.contains(&view)
+            {
+                return Err(PlanError(format!(
+                    "`{}` has a field of view of {view}°; it has to be {} to {}",
+                    placed.device,
+                    PlacedDevice::FIELD_OF_VIEW_RANGE.start(),
+                    PlacedDevice::FIELD_OF_VIEW_RANGE.end()
+                )));
+            }
+        }
         let mut traced = std::collections::BTreeSet::new();
         for placed in &self.areas {
             if placed.points.len() < PlacedArea::FEWEST_POINTS {
@@ -455,11 +566,7 @@ mod tests {
 
         let plan = on_ground(Level {
             walls: vec![Wall {
-                openings: vec![Opening {
-                    kind: OpeningKind::Door,
-                    at: 0,
-                    width: 80,
-                }],
+                openings: vec![Opening::new(OpeningKind::Door, 0, 80)],
                 ..Wall::new(Point::new(i32::MIN, 0), Point::new(i32::MAX, 0))
             }],
             ..Level::default()
@@ -483,11 +590,8 @@ mod tests {
     fn an_opening_has_to_fit_in_the_wall_it_is_cut_into() {
         let fits = |at, width| {
             let mut wall = wall((0, 0), (400, 0));
-            wall.openings.push(Opening {
-                kind: OpeningKind::Door,
-                at,
-                width,
-            });
+            wall.openings
+                .push(Opening::new(OpeningKind::Door, at, width));
             on_ground(Level {
                 walls: vec![wall],
                 ..Level::default()
@@ -560,9 +664,11 @@ mod tests {
     /// cannot. Whoever read a plan that said otherwise would have to pick one.
     #[test]
     fn a_device_is_drawn_once_in_the_whole_home() {
-        let lamp = || PlacedDevice {
-            device: "demo_lamp".parse().expect("a valid device id"),
-            at: Point::new(120, 90),
+        let lamp = || {
+            PlacedDevice::new(
+                "demo_lamp".parse().expect("a valid device id"),
+                Point::new(120, 90),
+            )
         };
         let level = Level {
             devices: vec![lamp()],
@@ -666,6 +772,81 @@ mod tests {
         )
         .expect("an old plan, without a label");
         assert_eq!(from_file.label, Point::new(0, 0));
+    }
+
+    /// A door drawn before it could be told which way it swings reads as it always did, and
+    /// writes nothing new; one that has been told keeps what it was told.
+    #[test]
+    fn an_opening_only_writes_what_was_said_about_it() {
+        let plain = r#"{"kind":"door","at":200,"width":80}"#;
+        let door: Opening = serde_json::from_str(plain).expect("an old door");
+        assert_eq!(door, Opening::new(OpeningKind::Door, 200, 80));
+        assert_eq!(
+            (door.side, door.hinge, &door.sensor),
+            (Side::Left, Hinge::Near, &None)
+        );
+        assert_eq!(serde_json::to_string(&door).expect("json"), plain);
+
+        let told = Opening {
+            side: Side::Right,
+            hinge: Hinge::Far,
+            sensor: Some(
+                "binary_sensor.front_door_contact"
+                    .parse()
+                    .expect("a valid entity id"),
+            ),
+            ..Opening::new(OpeningKind::Door, 200, 80)
+        };
+        let json = serde_json::to_string(&told).expect("json");
+        assert!(
+            json.contains(
+                r#""side":"right","hinge":"far","sensor":"binary_sensor.front_door_contact""#
+            ),
+            "{json}"
+        );
+        assert_eq!(serde_json::from_str::<Opening>(&json).expect("json"), told);
+    }
+
+    /// A radar is aimed somewhere on the compass and sees a sensible width, and a plan drawn
+    /// before either could be said still loads and still writes the same file.
+    #[test]
+    fn a_device_faces_a_real_direction_and_sees_a_sensible_width() {
+        let aimed = |facing, field_of_view| {
+            on_ground(Level {
+                devices: vec![PlacedDevice {
+                    facing,
+                    field_of_view,
+                    ..PlacedDevice::new(
+                        "demo_mmwave".parse().expect("a valid device id"),
+                        Point::new(0, 0),
+                    )
+                }],
+                ..Level::default()
+            })
+            .check()
+        };
+        assert!(aimed(Some(0), None).is_ok());
+        assert!(aimed(Some(359), Some(20)).is_ok());
+        assert!(aimed(Some(90), Some(180)).is_ok());
+        assert!(
+            aimed(None, Some(100)).is_ok(),
+            "a width with nowhere to point is only unused"
+        );
+        let error = aimed(Some(400), None).expect_err("more than a full turn");
+        assert!(error.to_string().contains("demo_mmwave"), "{error}");
+        assert!(aimed(Some(360), None).is_err(), "a full turn is 0");
+        assert!(aimed(Some(90), Some(5)).is_err(), "a line, not a field");
+        assert!(aimed(Some(90), Some(181)).is_err(), "through its own wall");
+
+        let old: PlacedDevice =
+            serde_json::from_str(r#"{"device":"demo_lamp","at":[120,90]}"#).expect("an old plan");
+        assert_eq!(old.facing, None);
+        assert_eq!(old.view_angle(), PlacedDevice::DEFAULT_FIELD_OF_VIEW);
+        assert_eq!(
+            serde_json::to_string(&old).expect("json"),
+            r#"{"device":"demo_lamp","at":[120,90]}"#,
+            "and nothing new is written for it"
+        );
     }
 
     /// The plan a first run has: one that says nothing, and writes nothing.

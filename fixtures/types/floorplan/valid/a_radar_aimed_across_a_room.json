@@ -1,0 +1,15 @@
+{
+  "floors": {
+    "ground": {
+      "walls": [
+        { "from": [0, 0], "to": [400, 0] },
+        { "from": [400, 0], "to": [400, 300] }
+      ],
+      "devices": [
+        { "device": "demo_lamp", "at": [120, 90] },
+        { "device": "demo_mmwave_sensor", "at": [0, 150], "facing": 0 },
+        { "device": "demo_tv_area_mmwave_sensor", "at": [200, 0], "facing": 90, "field_of_view": 120 }
+      ]
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "floors": {
+    "ground": {
+      "walls": [
+        { "from": [0, 0], "to": [400, 0], "openings": [{ "kind": "door", "at": 100, "width": 80, "side": "up" }] }
+      ]
+    }
+  }
+}

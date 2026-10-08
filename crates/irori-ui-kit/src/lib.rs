@@ -6,9 +6,12 @@
 //! - [`message`]: the messages, the same types on both sides.
 //! - [`page`]: the page's end — ask the shell, hear its events, look like Irori.
 //!
-//! And what both draw the same way: [`entity_icon`], the icon an entity has until someone gives
-//! it another.
+//! And what both are built from, so that the same thing is the same thing in either:
+//!
+//! - [`combo`]: a field that searches a list as you type, for choosing an entity.
+//! - [`entity_icon`]: the icon an entity has until someone gives it another.
 
+pub mod combo;
 pub mod entity_icon;
 pub mod message;
 pub mod page;

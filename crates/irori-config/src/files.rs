@@ -703,11 +703,9 @@ mod tests {
     /// standing in it.
     fn a_plan() -> Floorplan {
         let mut front = Wall::new(Point::new(0, 0), Point::new(400, 0));
-        front.openings.push(Opening {
-            kind: OpeningKind::Door,
-            at: 200,
-            width: 80,
-        });
+        front
+            .openings
+            .push(Opening::new(OpeningKind::Door, 200, 80));
         let ground = irori_types::Level {
             walls: vec![front, Wall::new(Point::new(400, 0), Point::new(400, 300))],
             areas: vec![irori_types::PlacedArea {
@@ -721,12 +719,20 @@ mod tests {
                 label: Point::new(0, 0),
             }],
             devices: vec![PlacedDevice {
-                device: "demo_lamp".parse().expect("valid"),
-                at: Point::new(120, 90),
+                facing: Some(90),
+                ..PlacedDevice::new("demo_lamp".parse().expect("valid"), Point::new(120, 90))
             }],
         };
+        // A door that has been told which way it swings and which sensor to follow.
+        let mut landing = Wall::new(Point::new(0, 0), Point::new(400, 0));
+        landing.openings.push(Opening {
+            side: irori_types::Side::Right,
+            hinge: irori_types::Hinge::Far,
+            sensor: Some("binary_sensor.landing_door".parse().expect("valid")),
+            ..Opening::new(OpeningKind::Door, 120, 80)
+        });
         let upstairs = irori_types::Level {
-            walls: vec![Wall::new(Point::new(0, 0), Point::new(400, 0))],
+            walls: vec![landing],
             ..Default::default()
         };
         Floorplan {
@@ -764,9 +770,17 @@ mod tests {
             "device = \"demo_lamp\"",
             "at = [120, 90]",
             "[[floors.upstairs.walls]]",
+            "side = \"right\"",
+            "hinge = \"far\"",
+            "sensor = \"binary_sensor.landing_door\"",
         ] {
             assert!(written.contains(line), "expected {line:?} in:\n{written}");
         }
+        // The ground floor's door was told nothing, and nothing is written for it.
+        for said_once in ["side =", "hinge =", "sensor ="] {
+            assert_eq!(written.matches(said_once).count(), 1, "{written}");
+        }
+        assert_eq!(read_floorplan(&written).expect("valid"), a_plan());
     }
 
     /// A plan nobody has drawn is an empty file rather than an absent one, the same as every

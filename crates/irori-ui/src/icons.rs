@@ -37,6 +37,24 @@ pub enum Icon {
     Power,
     Volume,
     Muted,
+    // The kinds of device on the Floorplan.
+    Bulb,
+    Tv,
+    Speaker,
+    Plug,
+    /// Someone a radar can see.
+    Person,
+    Motion,
+    Button,
+    Air,
+    Lock,
+    Unlocked,
+    Bell,
+    Thermostat,
+    /// Something that has stopped answering: a signal, struck through.
+    NoSignal,
+    /// Anything that isn't one of the others.
+    Dot,
     Cast,
 }
 
@@ -118,6 +136,57 @@ fn drawing(icon: Icon) -> &'static str {
         Icon::Muted => {
             r#"<path d="M4 9.500h3l4.500-4v13l-4.500-4H4Z"/><path d="m16 9.500 5 5M21 9.500l-5 5"/>"#
         }
+        Icon::Bulb => concat!(
+            r#"<path d="M9 17.5h6M10 20.5h4"/>"#,
+            r#"<path d="M8.5 14.5a6 6 0 1 1 7 0c-.6.5-1 1.200-1 2v1h-5v-1c0-.800-.4-1.500-1-2Z"/>"#,
+        ),
+        Icon::Tv => {
+            r#"<rect x="3" y="5" width="18" height="12" rx="1.5"/><path d="M8.5 20.5h7M12 17v3.500"/>"#
+        }
+        Icon::Speaker => concat!(
+            r#"<rect x="6.5" y="3" width="11" height="18" rx="2"/>"#,
+            r#"<circle cx="12" cy="14.5" r="2.800"/><path d="M12 7.500h.01"/>"#,
+        ),
+        Icon::Plug => concat!(
+            r#"<path d="M9 3v5M15 3v5M12 17v4"/>"#,
+            r#"<path d="M6.5 8h11v3.500a5.500 5.500 0 0 1-11 0Z"/>"#,
+        ),
+        Icon::Person => {
+            r#"<circle cx="12" cy="7" r="3.200"/><path d="M5.5 20.500a6.500 6.500 0 0 1 13 0"/>"#
+        }
+        Icon::Motion => concat!(
+            r#"<circle cx="12" cy="12" r="1.600" fill="currentColor"/>"#,
+            r#"<path d="M8.300 8.300a5.200 5.200 0 0 0 0 7.400M15.700 8.300a5.200 5.200 0 0 1 0 7.400"/>"#,
+            r#"<path d="M5.500 5.500a9.200 9.200 0 0 0 0 13M18.500 5.500a9.200 9.200 0 0 1 0 13"/>"#,
+        ),
+        Icon::Button => {
+            r#"<circle cx="12" cy="12" r="8.500"/><circle cx="12" cy="12" r="3.500" fill="currentColor"/>"#
+        }
+        Icon::Air => concat!(
+            r#"<path d="M3 9h9.500a2.500 2.500 0 1 0-2.400-3.200"/>"#,
+            r#"<path d="M3 13h14.500a2.800 2.800 0 1 1-2.700 3.600"/><path d="M3 17h7"/>"#,
+        ),
+        Icon::Lock => {
+            r#"<rect x="5" y="10.500" width="14" height="10" rx="2"/><path d="M8 10.500V7.500a4 4 0 0 1 8 0v3"/>"#
+        }
+        Icon::Unlocked => {
+            r#"<rect x="5" y="10.500" width="14" height="10" rx="2"/><path d="M8 10.500V7.500a4 4 0 0 1 7.700-1.500"/>"#
+        }
+        Icon::Bell => concat!(
+            r#"<path d="M6 16.500V11a6 6 0 0 1 12 0v5.500l1.500 2h-15Z"/>"#,
+            r#"<path d="M10.200 21a2 2 0 0 0 3.600 0M12 3v2"/>"#,
+        ),
+        Icon::Thermostat => concat!(
+            r#"<circle cx="12" cy="12" r="8.500"/><path d="M12 12l3.200-3.200"/>"#,
+            r#"<path d="M12 5.500v1.200M5.500 12h1.200M17.300 12h1.200"/>"#,
+        ),
+        // The stripe is the stylesheet's to colour (`.icon .stripe`): it is the one part of
+        // any icon that isn't the colour of the text around it.
+        Icon::NoSignal => concat!(
+            r#"<path d="M12 18.500h.01"/><path d="M8.500 15a5 5 0 0 1 7 0"/>"#,
+            r#"<path d="M5.500 12a9.200 9.200 0 0 1 13 0"/><path class="stripe" d="M5 20 19 4"/>"#,
+        ),
+        Icon::Dot => r#"<circle cx="12" cy="12" r="3.500" fill="currentColor"/>"#,
         Icon::Cast => concat!(
             r#"<path d="M3 8V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/>"#,
             r#"<path d="M3 12a8 8 0 0 1 8 8M3 16a4 4 0 0 1 4 4M3 20h.01"/>"#,

@@ -770,6 +770,7 @@ dependencies = [
  "futures-channel",
  "irori-types",
  "js-sys",
+ "leptos",
  "serde",
  "serde_json",
  "wasm-bindgen",

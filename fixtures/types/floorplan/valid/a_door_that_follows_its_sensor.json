@@ -1,0 +1,30 @@
+{
+  "floors": {
+    "ground": {
+      "walls": [
+        {
+          "from": [0, 0],
+          "to": [400, 0],
+          "openings": [
+            { "kind": "door", "at": 100, "width": 80 },
+            {
+              "kind": "door",
+              "at": 300,
+              "width": 90,
+              "side": "right",
+              "hinge": "far",
+              "sensor": "binary_sensor.front_door_contact"
+            }
+          ]
+        },
+        {
+          "from": [400, 0],
+          "to": [400, 300],
+          "openings": [
+            { "kind": "window", "at": 150, "width": 120, "side": "right", "sensor": "binary_sensor.window_contact" }
+          ]
+        }
+      ]
+    }
+  }
+}

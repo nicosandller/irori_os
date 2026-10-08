@@ -51,7 +51,9 @@ where
         // After the DOM has caught up with whatever `track` just read: the chosen item's class
         // or `aria-current` is set by the same change, and may not be there yet.
         request_animation_frame(move || {
-            if let Some(element) = container.get_untracked() {
+            // The list may have been drawn again since this was asked for — the Floorplan's
+            // floor picker is, with every edit — and its old node gone with it.
+            if let Some(element) = container.try_get_untracked().flatten() {
                 place(element.unchecked_ref(), selector, way);
             }
         })

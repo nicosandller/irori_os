@@ -30,6 +30,92 @@
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
+    "EntityId": {
+      "description": "An entity id: `<kind>.<object_id>`, e.g. `light.hallway`. The object id uses lowercase letters a-z and digits in words separated by single `_`, 1-64 characters.",
+      "type": "string",
+      "anyOf": [
+        {
+          "maxLength": 70,
+          "pattern": "^light\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^switch\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^sensor\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 78,
+          "pattern": "^binary_sensor\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^number\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^select\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^text\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^button\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^event\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^cover\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^lock\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 68,
+          "pattern": "^fan\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^valve\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^siren\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 72,
+          "pattern": "^climate\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 77,
+          "pattern": "^water_heater\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 75,
+          "pattern": "^humidifier\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 77,
+          "pattern": "^media_player\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        }
+      ]
+    },
+    "Hinge": {
+      "description": "Which end of its gap a door is hung from: the one nearer the wall's `from` end, or the other.",
+      "type": "string",
+      "enum": [
+        "near",
+        "far"
+      ]
+    },
     "Level": {
       "description": "One floor of the home as it is drawn.",
       "type": "object",
@@ -66,8 +152,27 @@
           "type": "integer",
           "format": "int32"
         },
+        "hinge": {
+          "description": "Which end of the gap a door is hung from. A window is hinged at both jambs, so this\nsays nothing about one.",
+          "$ref": "#/$defs/Hinge"
+        },
         "kind": {
           "$ref": "#/$defs/OpeningKind"
+        },
+        "sensor": {
+          "description": "The contact sensor that says whether it's open: a binary sensor on the door or window\nitself, where `on` means open. Without one it is drawn shut. Like every other reference\nin the config, one that points at an entity no longer in the home is kept and not obeyed\n(`docs/specs/config.md` §4).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EntityId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "side": {
+          "description": "Which side of the wall it opens towards, looking along the wall from `from` to `to`.\nFor a window that is the side its sashes swing out to, which is normally outside.",
+          "$ref": "#/$defs/Side"
         },
         "width": {
           "description": "How wide it is, in centimetres. At least one, for the reason [`Wall::thickness`] gives.",
@@ -125,6 +230,26 @@
         },
         "device": {
           "$ref": "#/$defs/DeviceId"
+        },
+        "facing": {
+          "description": "Which way a directional sensor points, in degrees clockwise from the plan's +x axis:\n0 is rightwards, 90 is down the page. Authored, because nothing a radar reports says\nwhich wall it was screwed to. Absent for a device that looks every way at once, and for\none nobody has aimed yet.\n\nUnder a full turn: [`Level::check`] turns down 360 and over, so the schema does too.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 359,
+          "minimum": 0
+        },
+        "field_of_view": {
+          "description": "How wide it sees, in degrees, inside [`PlacedDevice::FIELD_OF_VIEW_RANGE`].\n[`PlacedDevice::DEFAULT_FIELD_OF_VIEW`] when `facing` is set and this isn't.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 180,
+          "minimum": 20
         }
       },
       "additionalProperties": false,
@@ -142,6 +267,14 @@
       },
       "maxItems": 2,
       "minItems": 2
+    },
+    "Side": {
+      "description": "Which side of its wall an opening swings to, looking along the wall from `from` to `to`.",
+      "type": "string",
+      "enum": [
+        "left",
+        "right"
+      ]
     },
     "Wall": {
       "description": "A straight run of wall between two points.\n\nOpenings live **inside** the wall they are cut into rather than pointing at it by id. A door\nis a hole in a wall and has nowhere else to be, so this way a wall can't be deleted out from\nunder its own doors and no id has to be handed out to make the link.",
