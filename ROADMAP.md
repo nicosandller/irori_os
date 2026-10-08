@@ -23,7 +23,7 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | C11 | UI: Devices | Devices and entities as compact tables by area/floor, live state, a control per kind, add-device flow, removing a device unpairs it | ✅ | C5 |
 | C12 | UI: Start & Settings | Start screen, Settings, restart button, motion with a switch to turn it off (`docs/motion_design.md`) | ✅ | C11 |
 | C13 | UI: Extensions page | Browse, install, uninstall official extensions | ✅ | C7 |
-| C14 | UI: First-run setup | A welcome that asks who you are and where the home is; a first run works without it (`docs/specs/config.md` §2), so it is a prompt, not a gate. Users in Settings: owner or user, an optional password that locks the page behind a sign-in (`users.toml`). Location and time zone on a map (`home.toml`), which is what arms `time` and `sun` triggers in Automations | ✅ | |
+| C14 | UI: First-run setup | A welcome that asks who you are and where the home is; a first run works without it (`docs/specs/config.md` §2), so it is a prompt, not a gate. Users in Settings: owner or user, each with a password, and a sign-in that never lists who lives here (`users.toml`); https with `--tls`. Location and time zone on a map (`home.toml`), which is what arms `time` and `sun` triggers in Automations | ✅ | |
 | C16 | API spec & auth | Public API protocol, tokens and scopes for programs that aren't the page (`docs/specs/api.md`). The page's own sign-in is C14 | - | |
 | C17 | Public API | Real API replacing `/api/dev/*`, push instead of polling, external extensions | - | C16 |
 | C18 | Recorder | History storage that survives restarts (`irori-recorder` is an empty crate; names, areas and settings already persist in the config dir) | - | C5 |

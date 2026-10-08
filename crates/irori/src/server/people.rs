@@ -11,7 +11,8 @@ use irori_types::{HomeSettings, Location, Name, Role, TimeZoneName, User, UserId
 use serde::{Deserialize, Serialize};
 
 use super::auth::{
-    Actor, Client, check_current, edit_failed, password_hash, session_cookie, token_of,
+    Actor, Client, NEEDS_PASSWORD, check_current, edit_failed, password_hash, session_cookie,
+    token_of,
 };
 use super::{AppState, refused};
 use crate::config::Refused;
@@ -59,12 +60,12 @@ impl std::fmt::Debug for NewUser {
     }
 }
 
-/// What everybody past the first needs, and why.
-const NEEDS_PASSWORDS: &str = "set a password for the owner first: with more than one person, \
-     Irori has to ask who is there, and it tells people apart by their passwords";
+/// What adding somebody to a home with no owner yet is told.
+const NEEDS_OWNER: &str = "set the home up first: it needs an owner with a password before \
+     anybody else is let in";
 
-/// Adds a person. The first is the owner and may go without a password; everyone after needs
-/// one, and needs the home to be asking already.
+/// Adds a person, with a password of their own. The owner comes first, through the welcome
+/// (`auth::set_up`); this is for everybody after.
 pub async fn add_user(State(state): State<AppState>, Json(ask): Json<NewUser>) -> Response {
     let password = ask.password.filter(|password| !password.is_empty());
     let hash = match password_hash(password).await {
@@ -81,17 +82,12 @@ pub async fn add_user(State(state): State<AppState>, Json(ask): Json<NewUser>) -
         .0
         .config
         .edit_people(&state.0.core, |people| {
-            let first = people.users.is_empty();
-            let role = if first { Role::Owner } else { ask.role };
-            if !first {
-                if !people.locked() {
-                    return Err(Refused(NEEDS_PASSWORDS.to_owned()));
-                }
-                if hash.is_none() {
-                    return Err(Refused(
-                        "everyone but a home's only owner needs a password".to_owned(),
-                    ));
-                }
+            let role = ask.role;
+            if !people.locked() {
+                return Err(Refused(NEEDS_OWNER.to_owned()));
+            }
+            if hash.is_none() {
+                return Err(Refused(NEEDS_PASSWORD.to_owned()));
             }
             if people
                 .users
@@ -143,7 +139,7 @@ pub struct UserEdit {
     name: Option<Name>,
     #[serde(default)]
     role: Option<Role>,
-    /// A new password; an empty one takes the password away.
+    /// A new password. An empty one is refused: a password is changed, never taken away.
     #[serde(default)]
     password: Option<String>,
     /// The password they have now. Needed to change or take away your own.
@@ -217,13 +213,10 @@ pub async fn edit_user(
                 )));
             }
             if clears {
-                if people.users.len() > 1 {
-                    return Err(Refused(
-                        "a password can only be taken away while the home has one person in it"
-                            .to_owned(),
-                    ));
-                }
-                people.hashes.remove(&id);
+                return Err(Refused(
+                    "a password can be changed, not taken away: everybody in the home has one"
+                        .to_owned(),
+                ));
             }
             if let Some(hash) = hash {
                 people.hashes.insert(id.clone(), hash);

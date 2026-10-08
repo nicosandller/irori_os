@@ -347,6 +347,9 @@ pub struct ServerSettings {
     /// Relative to the config directory.
     pub data: Option<std::path::PathBuf>,
     pub allow_unauthenticated_lan: Option<bool>,
+    /// Serve over https, with the certificate in the data directory (made the first time if
+    /// there is none).
+    pub tls: Option<bool>,
     pub log_level: Option<LogLevel>,
 }
 

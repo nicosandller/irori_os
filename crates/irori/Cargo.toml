@@ -37,6 +37,11 @@ anyhow.workspace = true
 # Passwords (`server/auth.rs`): argon2id hashes, and the SHA-256 a session's token is kept as.
 argon2 = "0.5.3"
 sha2.workspace = true
+# Serving over https (`tls.rs`): the handshake, reading a certificate, and making one for a home
+# that has none. `ring` and not the default provider, which needs a C toolchain to cross-build.
+tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12"] }
+rustls-pemfile = "2.2.0"
+rcgen = { version = "0.13.2", default-features = false, features = ["crypto", "pem", "ring"] }
 # Checking that a time zone is one Irori can tell the time in, on an image with no zoneinfo.
 jiff = { workspace = true, features = ["tzdb-bundle-always"] }
 axum.workspace = true

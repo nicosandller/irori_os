@@ -1513,9 +1513,6 @@ pub struct Session {
     /// Whether this browser may change how the home is set up.
     pub owner: bool,
     pub setup: Setup,
-    /// Who can sign in, for the sign-in page to offer by name.
-    #[serde(default)]
-    pub people: Vec<Person>,
 }
 
 impl Session {
@@ -1524,10 +1521,9 @@ impl Session {
         self.locked && self.user.is_none()
     }
 
-    /// Whether the welcome should open by itself: nobody has set the home up, and nobody has
-    /// said not now.
+    /// Whether the welcome should open by itself: the home has no owner who can sign in yet.
     pub fn wants_welcome(&self) -> bool {
-        !self.setup.owner && !self.setup.dismissed
+        !self.setup.owner
     }
 }
 
@@ -1535,13 +1531,6 @@ impl Session {
 pub struct Setup {
     pub owner: bool,
     pub place: bool,
-    pub dismissed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Person {
-    pub id: irori_types::UserId,
-    pub name: Name,
 }
 
 async fn read<T: for<'de> Deserialize<'de>>(
@@ -1570,7 +1559,7 @@ pub async fn fetch_session() -> Result<Session, String> {
     .await
 }
 
-pub async fn sign_in(user: &irori_types::UserId, password: &str) -> Result<Session, String> {
+pub async fn sign_in(user: &str, password: &str) -> Result<Session, String> {
     let response = post(SESSION_URL)
         .json(&serde_json::json!({ "user": user, "password": password }))
         .map_err(|e| e.to_string())?
@@ -1584,7 +1573,7 @@ pub async fn sign_out() -> Result<(), String> {
     checked(delete(SESSION_URL).send().await.map_err(unreachable)?).await
 }
 
-/// Sets up the home's first owner. `password` empty leaves the home open.
+/// Sets up the home's owner, with the password that locks it.
 pub async fn set_up(name: &Name, password: &str) -> Result<Session, String> {
     let response = post("/api/setup")
         .json(&serde_json::json!({ "name": name, "password": password }))
@@ -1593,17 +1582,6 @@ pub async fn set_up(name: &Name, password: &str) -> Result<Session, String> {
         .await
         .map_err(unreachable)?;
     read(response).await
-}
-
-/// Puts the welcome off for good, on every browser.
-pub async fn dismiss_welcome() -> Result<(), String> {
-    checked(
-        post("/api/setup/dismiss")
-            .send()
-            .await
-            .map_err(unreachable)?,
-    )
-    .await
 }
 
 /// One person, as Settings shows them.

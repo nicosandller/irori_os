@@ -10,7 +10,7 @@
   <a href="dev/README.md"><b>Try it on a Mac</b></a>
 </p>
 
-> Status: the core's registry, live state, and extension host run; a Devices page shows everything and switches it (M0.8, M1.6 first slice); **ESPHome devices on your network are found and connected automatically**, sensors and all (D26); and a **Floorplan** page draws the home — walls, doors and windows — with the devices live on it. Automations are an extension you install: flows drawn on a canvas, with every run traced, near-misses kept, dry runs and a 24-hour backtest (`docs/specs/flows.md`). A first run asks who you are and where the home is; a password is optional, and is what makes it ask who is there (`docs/specs/config.md` §3.10). Tokens and the public API are still to come.
+> Status: the core's registry, live state, and extension host run; a Devices page shows everything and switches it (M0.8, M1.6 first slice); **ESPHome devices on your network are found and connected automatically**, sensors and all (D26); and a **Floorplan** page draws the home — walls, doors and windows — with the devices live on it. Automations are an extension you install: flows drawn on a canvas, with every run traced, near-misses kept, dry runs and a 24-hour backtest (`docs/specs/flows.md`). A first run asks who you are, with a password that locks the home to you, and what time zone it is in (`docs/specs/config.md` §3.10); `--tls` serves it over https. Tokens and the public API are still to come.
 
 ## Install
 
@@ -221,11 +221,11 @@ scp target/aarch64-unknown-linux-musl/release/irori pi@raspberrypi.local:
 ssh pi@raspberrypi.local ./irori serve --bind 0.0.0.0:8480 --allow-unauthenticated-lan
 ```
 
-A home starts with no password, so Irori only listens on `127.0.0.1` unless you pass
-`--allow-unauthenticated-lan`. Until somebody sets a password (the welcome offers to, and so does
-Settings → Users), anyone on your network can then open the UI and switch your devices. With a
-password, Irori asks who is there before it shows anything. The flag is still needed to listen
-beyond this machine, because a home without a password is the default (ROADMAP C16).
+Until its owner is set up, a home is open, so Irori only listens on `127.0.0.1` unless you pass
+`--allow-unauthenticated-lan`. Open the page and the welcome asks who you are, with a password;
+from then on Irori asks who is there before it shows anything. Add `--tls` to serve https, so
+that password travels encrypted: Irori makes its own certificate the first time (your browser
+will ask about it once), or uses `tls/cert.pem` and `tls/key.pem` from the data directory.
 
 CI runs on every pull request (and on every push to `main`). It builds `x86_64` and `aarch64` musl binaries, smoke-tests the `aarch64` one under QEMU, and uploads them as workflow artifacts.
 

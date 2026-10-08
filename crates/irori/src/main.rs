@@ -16,6 +16,7 @@ mod serial;
 mod server;
 mod syslog;
 mod system_device;
+mod tls;
 mod usage;
 
 use std::net::SocketAddr;
@@ -64,6 +65,11 @@ enum Command {
         /// Temporary: removed when login and access tokens land (ROADMAP D12, M1.5).
         #[arg(long, env = "IRORI_ALLOW_UNAUTHENTICATED_LAN", num_args = 0..=1, default_missing_value = "true")]
         allow_unauthenticated_lan: Option<bool>,
+        /// Serve over https, so passwords and sign-ins travel encrypted. Uses tls/cert.pem and
+        /// tls/key.pem in the data directory, and makes its own certificate the first time if
+        /// they aren't there (a browser asks about that one once). Also `[server] tls`.
+        #[arg(long, env = "IRORI_TLS", num_args = 0..=1, default_missing_value = "true")]
+        tls: Option<bool>,
         /// How much to log: error, warn, info, debug, or trace. `debug` shows every device and
         /// state change. Also `[server] log_level`; default info.
         #[arg(long, env = "IRORI_LOG_LEVEL")]
@@ -86,6 +92,7 @@ fn main() -> anyhow::Result<()> {
             bind,
             bind_fallback,
             allow_unauthenticated_lan,
+            tls,
             log_level,
         } => {
             let flags = Flags {
@@ -93,6 +100,7 @@ fn main() -> anyhow::Result<()> {
                 bind,
                 bind_fallback,
                 allow_unauthenticated_lan,
+                tls,
                 log_level,
             };
             serve(config, flags)
@@ -116,6 +124,7 @@ struct Flags {
     bind: Option<SocketAddr>,
     bind_fallback: Option<SocketAddr>,
     allow_unauthenticated_lan: Option<bool>,
+    tls: Option<bool>,
     log_level: Option<tracing::Level>,
 }
 
@@ -126,6 +135,7 @@ struct Resolved {
     bind: SocketAddr,
     bind_fallback: Option<SocketAddr>,
     allow_unauthenticated_lan: bool,
+    tls: bool,
     log_level: tracing::Level,
 }
 
@@ -157,6 +167,7 @@ fn resolve(
             .allow_unauthenticated_lan
             .or(file.allow_unauthenticated_lan)
             .unwrap_or(false),
+        tls: flags.tls.or(file.tls).unwrap_or(false),
         log_level: flags
             .log_level
             .or(file.log_level.map(level))
@@ -178,6 +189,7 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
         bind,
         bind_fallback,
         allow_unauthenticated_lan,
+        tls,
         log_level,
     } = resolve(flags, &store.irori().server, &config);
 
@@ -226,14 +238,28 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // unauthenticated warning names the address we really ended up on (a fallback may
             // differ from `bind`, e.g. a loopback bind falling back to a LAN address).
             let address = listener.local_addr()?;
-            banner::print(address);
+            // Read, or made, before anything is served: a certificate that can't be used is a
+            // reason not to start, not a reason to quietly serve in the clear.
+            let tls_config = if tls {
+                Some(tls::config(&data, address)?)
+            } else {
+                None
+            };
+            server::serve_cookies_over_tls(tls);
+            banner::print(address, tls);
             if !address.ip().is_loopback() {
                 tracing::warn!(
                     %address,
-                    "listening beyond this machine WITHOUT authentication \
-                     (--allow-unauthenticated-lan); \
-                     anyone on the network can reach this server and switch its devices"
+                    "listening beyond this machine (--allow-unauthenticated-lan): until the \
+                     home's owner is set up with a password, anyone on the network can reach \
+                     this server and switch its devices"
                 );
+                if !tls {
+                    tracing::warn!(
+                        "serving plain http: passwords and sign-ins can be read by anything on \
+                         the network. Start with --tls to encrypt them"
+                    );
+                }
             }
             tracing::info!(
                 addr = %address,
@@ -281,24 +307,31 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             )
             .map_err(anyhow::Error::msg)?;
 
-            let served = axum::serve(
-                listener,
-                server::router(server::AppState::new(
-                    db,
-                    core,
-                    settings,
-                    host.clone(),
-                    history,
-                    log,
-                    restart.clone(),
-                    restarting.clone(),
-                ))
-                // So a sign-in knows where it came from: wrong passwords are counted per
-                // machine, and one guessing can't make another wait.
-                .into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .with_graceful_shutdown(shutdown_signal(restart))
-            .await
+            // With where each request came from: wrong passwords are counted per machine,
+            // and one guessing can't make another wait.
+            let app = server::router(server::AppState::new(
+                db,
+                core,
+                settings,
+                host.clone(),
+                history,
+                log,
+                restart.clone(),
+                restarting.clone(),
+            ))
+            .into_make_service_with_connect_info::<tls::ClientAddr>();
+            let served = match tls_config {
+                Some(config) => {
+                    axum::serve(tls::TlsListener::new(listener, config)?, app)
+                        .with_graceful_shutdown(shutdown_signal(restart))
+                        .await
+                }
+                None => {
+                    axum::serve(listener, app)
+                        .with_graceful_shutdown(shutdown_signal(restart))
+                        .await
+                }
+            }
             .context("server error");
             // Give every extension its chance to stop cleanly, even if the server failed.
             host.shutdown().await;
@@ -376,8 +409,8 @@ async fn bind_with_fallback(
 fn check_bind(bind: SocketAddr, allow_unauthenticated_lan: bool) -> anyhow::Result<()> {
     anyhow::ensure!(
         bind.ip().is_loopback() || allow_unauthenticated_lan,
-        "refusing to listen on {bind}: this build has no authentication yet, so it would be \
-         open to anyone on the network.\n\
+        "refusing to listen on {bind}: until the home's owner is set up with a password it \
+         would be open to anyone on the network.\n\
          Use a loopback address (the default, 127.0.0.1:8480), or pass \
          --allow-unauthenticated-lan (IRORI_ALLOW_UNAUTHENTICATED_LAN=true) if you accept that."
     );
@@ -545,6 +578,7 @@ mod tests {
             bind_fallback: Some(addr("0.0.0.0:9001")),
             data: Some(PathBuf::from("state")),
             allow_unauthenticated_lan: Some(true),
+            tls: Some(true),
             log_level: Some(irori_config::LogLevel::Debug),
         };
         let config = std::path::Path::new("/etc/irori");
@@ -554,6 +588,7 @@ mod tests {
         assert_eq!(from_file.bind_fallback, Some(addr("0.0.0.0:9001")));
         assert_eq!(from_file.data, PathBuf::from("/etc/irori/state"));
         assert!(from_file.allow_unauthenticated_lan);
+        assert!(from_file.tls);
         assert_eq!(from_file.log_level, tracing::Level::DEBUG);
 
         let flags = Flags {
@@ -576,6 +611,7 @@ mod tests {
         assert_eq!(defaults.bind_fallback, None);
         assert_eq!(defaults.data, PathBuf::from("./data"));
         assert!(!defaults.allow_unauthenticated_lan);
+        assert!(!defaults.tls, "https is asked for, never assumed");
         assert_eq!(defaults.log_level, tracing::Level::INFO);
     }
 

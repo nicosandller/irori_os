@@ -34,10 +34,15 @@ A missing directory is not an error: Irori runs with nothing configured and crea
 on the first write. This is what a first run looks like, and a first run should not need a setup
 step.
 
-The page does offer one: the first time it is opened in a home with no owner, a welcome asks who
-you are and where the home is (§3.9, §3.10). It is a prompt and not a gate. Every step can be
-skipped, "Not now" is remembered by Irori (in its database, so no other browser asks again), and
-both questions stay in Settings.
+The page does have one. Until the home has an owner, the page opens on a welcome that asks who
+you are, with a password, and then what time zone the home is in (§3.9, §3.10). The owner's
+password is not optional: a home is reached from more than the room it is in, and the password
+is what makes it somebody's. The time zone is filled in from the browser. Both are in Settings
+afterwards.
+
+What a first run doesn't need is anything before that: Irori starts, finds devices and serves its
+API with nothing configured, which is what lets it be installed, scripted and checked before
+anybody opens the page. That open state ends the moment the owner is set up.
 
 ## 3. The files
 
@@ -210,6 +215,7 @@ matters while there's no sign-in, because `allow_unauthenticated_lan` is here.
 bind = "0.0.0.0:8480"
 bind_fallback = "127.0.0.1:8481"  # optional: where to listen if bind is already taken
 allow_unauthenticated_lan = true
+tls = true                    # serve over https; see below
 log_level = "info"            # error, warn, info, debug, trace
 data = "/var/lib/irori"       # relative paths are relative to this directory
 
@@ -229,6 +235,20 @@ the address it actually chose. `--bind-fallback` and `IRORI_BIND_FALLBACK` say t
 setting. Setting `bind_fallback` equal to `bind` locks the port: Irori tries only `bind` and fails
 loudly if it's taken, never stepping — the way to keep a fixed published and health-checked port
 (e.g. the dev container) on the address everything expects.
+
+`tls` (also `--tls`, `IRORI_TLS`) serves https, so the password and the session cookie travel
+encrypted and the cookie is marked for https only. It is off unless asked for. The certificate
+is `tls/cert.pem` with its key `tls/key.pem` in the data directory:
+
+- If neither is there, Irori makes its own the first time, for this machine's names and
+  addresses, and keeps it. No browser has heard of a certificate a home makes for itself, so the
+  browser warns once and asks to be told it is fine. What travels is encrypted either way.
+- A certificate a browser does trust (from a private CA, or a DNS-validated one) goes in the same
+  two files and is used as it is. A certificate that can't be read, or a key that doesn't go
+  with it, stops Irori from starting and says which file; it never falls back to plain http.
+
+Without `tls`, a home reached over the network sends passwords in the clear, and Irori says so
+in its log when it starts.
 
 `log_level` decides how much Irori says, and it is read once at startup: a quiet instance has less
 in its log to read, including in the log window on the Settings page, which shows the same lines
@@ -507,32 +527,37 @@ command they send is attributed to (`Origin::User`).
 argon2id hash in `secrets.toml`, under `[users.passwords]`, with everything that makes that file
 safe (§3.4). No request reads a hash back, and nothing logs one.
 
-**A password is what makes Irori ask who is there.** While nobody has one, Irori is as it always
-was: open to whoever can reach it, with every request treated as the owner's. That is why the
-owner's password is optional, and why `serve` still binds loopback unless told otherwise. The
-first password locks it: the page shows a sign-in, and every address but the page itself and what
-it takes to sign in needs a session.
+**Everybody has a password.** The owner's is set in the welcome and is what locks the home: from
+then on the page shows a sign-in, and every address but the page itself and what it takes to
+sign in needs a session. Until then, on a first run, Irori is open to whoever can reach it,
+which is why `serve` still binds loopback unless told otherwise.
 
 The rules, held for a hand-edited file and for the page alike:
 
 - A home with people in it has at least one owner. A `users.toml` that has people and no owner is
   rejected whole (§6), since nobody could then put it right from the page; the last owner can't be
   removed or made a user.
-- An open home has one person. A second can be added only once the owner has a password, and
-  everyone added has one of their own, of at least 8 characters. Otherwise nothing would tell them
-  apart, and a role would mean nothing.
-- A password can be taken away again only while the home has one person in it.
-- Changing or taking away your own password takes the one you have. An owner resetting somebody
-  else's doesn't, because they don't know it.
+- The owner comes first, with a password of at least 8 characters. Everybody added after has one
+  of their own. A password is changed, never taken away.
+- A home that asks who is there has an owner who can answer: the first password can't be given
+  to somebody who isn't one.
+- Changing your own password takes the one you have. An owner resetting somebody else's doesn't,
+  because they don't know it.
 - Wrong passwords are counted per person and per machine they come from, before the password
   is looked at: after five, that machine waits 30 seconds to try that person again. Names that
   are nobody's share one count.
+- Signing in is a name and a password, both typed. The page never lists who lives here, and a
+  wrong name gets the same answer as a wrong password.
+
+A `users.toml` from before passwords were needed may hold an owner without one. That home is
+still open, and the welcome asks that owner for a password the next time the page is opened.
 
 **Forgetting a password** is put right from the machine, not from the page: delete that person's
-line under `[users.passwords]` in `secrets.toml` (if they are the only one with a password, the
-home is open again), then set a new one in Settings.
+line under `[users.passwords]` in `secrets.toml`. If they were the only one with a password the
+home is open again and the welcome asks for a new one; otherwise an owner sets it in Settings.
 
-Sessions are not config. A sign-in is a cookie (`HttpOnly`, `SameSite=Strict`, 30 days) whose
+Sessions are not config. A sign-in is a cookie (`HttpOnly`, `SameSite=Strict`, 30 days, and
+`Secure` when Irori serves https, §3.5) whose
 SHA-256 is kept in the database, so it survives a restart and can't be turned back into a cookie
 by somebody who reads the file. Because a cookie goes along with a request whoever wrote the page
 that made it, every change in a locked home must also carry the `x-irori-ui: 1` header, which only

@@ -2545,17 +2545,7 @@
     .welcome-said { margin: 0; padding: 0; list-style: none; display: grid; gap: .35rem;
                     max-width: 26rem; }
 
-    /* Sign-in: the people of the home, to pick yourself from. */
-    .signin-people { display: flex; flex-wrap: wrap; justify-content: center; gap: .5rem; }
-    .signin-person { display: inline-flex; align-items: center; gap: .5rem; padding: .35rem .8rem .35rem .35rem;
-                     font: inherit; color: var(--muted); background: var(--card);
-                     border: 1px solid var(--line); border-radius: 2rem; cursor: pointer;
-                     transition: color var(--dur-fast), border-color var(--dur-fast),
-                                 background-color var(--dur-base) var(--ease-out); }
-    .signin-person:hover { color: var(--fg); border-color: var(--ember); }
-    .signin-person[aria-pressed="true"] { color: var(--fg); background: var(--sunk);
-                                          border-color: var(--ember); }
-    .signin-person[aria-pressed="true"] .person-initial { color: #fff; background: var(--ember); }
+    /* Sign-in: a name and a password. */
     .signin-password { width: 100%; max-width: 18rem; }
     /* A wrong password: the field shakes its head, each time. */
     .signin-password.wrong-a input { animation: shake-a var(--dur-expressive) var(--ease-out); }

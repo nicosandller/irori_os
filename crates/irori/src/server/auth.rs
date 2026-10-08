@@ -352,26 +352,6 @@ impl Auth {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(who);
     }
-
-    fn dismissed(&self) -> bool {
-        self.conn()
-            .and_then(|conn| {
-                conn.query_row(
-                    "SELECT 1 FROM meta WHERE key = 'welcome_dismissed'",
-                    [],
-                    |_| Ok(()),
-                )
-            })
-            .is_ok()
-    }
-
-    fn dismiss(&self) -> rusqlite::Result<()> {
-        self.conn()?.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES ('welcome_dismissed', '1')",
-            [],
-        )?;
-        Ok(())
-    }
 }
 
 /// A password's hash, as it's kept: argon2id with a salt of its own, in the PHC string form.
@@ -405,11 +385,25 @@ pub fn token_of(headers: &HeaderMap) -> Option<&str> {
         .map(|(_, token)| token)
 }
 
+/// Whether this server is serving over https (`--tls`). Set once, as it starts.
+static OVER_TLS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Says whether cookies are for https only from here on.
+pub fn over_tls(tls: bool) {
+    OVER_TLS.store(tls, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn cookie(token: &str, life: Duration) -> HeaderValue {
-    // Not `Secure`: Irori is reached over plain http on the home's own network. `SameSite`
-    // keeps another site from borrowing it, and `HttpOnly` keeps the page's own scripts out.
+    // `SameSite` keeps another site from borrowing it, and `HttpOnly` keeps the page's own
+    // scripts out. `Secure` when this server is https, so the browser never sends it in the
+    // clear; over plain http it can't be, or the browser wouldn't send it at all.
+    let secure = if OVER_TLS.load(std::sync::atomic::Ordering::Relaxed) {
+        "; Secure"
+    } else {
+        ""
+    };
     HeaderValue::from_str(&format!(
-        "{COOKIE}={token}; Path=/; Max-Age={}; HttpOnly; SameSite=Strict",
+        "{COOKIE}={token}; Path=/; Max-Age={}; HttpOnly; SameSite=Strict{secure}",
         life.as_secs()
     ))
     .unwrap_or_else(|_| HeaderValue::from_static(""))
@@ -479,8 +473,8 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
     }
     let from = request
         .extensions()
-        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .map(|info| info.0.ip());
+        .get::<axum::extract::ConnectInfo<crate::tls::ClientAddr>>()
+        .map(|info| info.0.0.ip());
     request.extensions_mut().insert(Client(from));
     // Open addresses get whoever it is too, or nobody: the session endpoints read it.
     request.extensions_mut().insert(who.unwrap_or(Actor {
@@ -490,7 +484,8 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
     next.run(request).await
 }
 
-/// What the page boots from.
+/// What the page boots from. It says nothing of who lives here: a home may be reached from
+/// further away than its own network, and the names of its people are not for whoever asks.
 #[derive(Debug, Serialize)]
 struct SessionView {
     /// Whether Irori asks who is there.
@@ -500,50 +495,26 @@ struct SessionView {
     /// Whether this request may change how the home is set up.
     owner: bool,
     setup: Setup,
-    /// Who can sign in, for the sign-in page to offer by name. Only while locked.
-    people: Vec<Person>,
 }
 
 #[derive(Debug, Serialize)]
 struct Setup {
-    /// Whether anybody has been set up as the owner.
+    /// Whether the home has an owner who can sign in. Until it does, the welcome is shown.
     owner: bool,
     /// Whether the home has a time zone.
     place: bool,
-    /// Whether the welcome was put off.
-    dismissed: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct Person {
-    id: UserId,
-    name: Name,
 }
 
 async fn view(state: &AppState, who: &Actor) -> SessionView {
     let people = state.0.config.people().await;
     let home = state.0.core.place();
-    let locked = people.locked();
     SessionView {
-        locked,
+        locked: people.locked(),
         user: who.user.clone(),
         owner: who.owner,
         setup: Setup {
-            owner: people.users.iter().any(|user| user.role.runs_the_home()),
+            owner: people.locked(),
             place: home.time_zone.is_some(),
-            dismissed: state.0.auth.dismissed(),
-        },
-        people: if locked {
-            people
-                .users
-                .iter()
-                .map(|user| Person {
-                    id: user.id.clone(),
-                    name: user.name.clone(),
-                })
-                .collect()
-        } else {
-            Vec::new()
         },
     }
 }
@@ -555,7 +526,8 @@ pub async fn session(State(state): State<AppState>, Extension(who): Extension<Ac
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SignIn {
-    user: UserId,
+    /// Their name as they type it, or their id.
+    user: String,
     password: String,
 }
 
@@ -628,19 +600,26 @@ pub async fn sign_in(
 ) -> Response {
     let auth = &state.0.auth;
     let people = state.0.config.people().await;
-    let trier: Trier = (people.user(&ask.user).map(|user| user.id.clone()), from);
+    // By name, however it's capitalised, or by id. Nobody is offered a list to pick from.
+    let typed = ask.user.trim().to_lowercase();
+    let found = people
+        .users
+        .iter()
+        .find(|user| user.id.as_str() == typed || user.name.as_str().trim().to_lowercase() == typed)
+        .cloned();
+    let trier: Trier = (found.as_ref().map(|user| user.id.clone()), from);
     if let Err(wait) = auth.try_now(&trier) {
         return too_many(wait);
     }
-    let hash = people
-        .user(&ask.user)
+    let hash = found
+        .as_ref()
         .and_then(|user| people.hashes.get(&user.id))
         .cloned();
     let right = right_for(ask.password, hash).await;
     if right {
         auth.got_in(&trier);
     }
-    let Some(user) = people.user(&ask.user).filter(|_| right).cloned() else {
+    let Some(user) = found.filter(|_| right) else {
         return refused(
             StatusCode::UNAUTHORIZED,
             "that name and password don't go together".to_owned(),
@@ -674,9 +653,7 @@ pub async fn sign_out(State(state): State<AppState>, headers: HeaderMap) -> Resp
 #[serde(deny_unknown_fields)]
 pub struct FirstOwner {
     name: Name,
-    /// Left out, or empty, for a home that doesn't ask who is there.
-    #[serde(default)]
-    password: Option<String>,
+    password: String,
 }
 
 impl std::fmt::Debug for FirstOwner {
@@ -687,77 +664,84 @@ impl std::fmt::Debug for FirstOwner {
     }
 }
 
-/// Sets up the first owner. Open to anyone who can reach Irori, and only while there is
-/// nobody: after that, people are added by an owner.
+/// Sets up the home's owner, with the password that locks it. Open to anyone who can reach
+/// Irori, and only while nobody has a password: this is the first run, and whoever is setting
+/// the home up is who is there. After it, people are added by an owner.
+///
+/// A home from before passwords were required may already have an owner without one. They
+/// are the one set up: they keep their id and take the name and password given.
 pub async fn set_up(State(state): State<AppState>, Json(ask): Json<FirstOwner>) -> Response {
-    // Looked at before any hashing: this address is open to anyone, and a home that already
-    // has an owner mustn't be made to do slow work for whoever asks.
-    if !state.0.config.people().await.users.is_empty() {
-        return refused(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "this home already has an owner; people are added in Settings".to_owned(),
-        );
+    // Looked at before any hashing: this address is open to anyone, and a home that is
+    // already locked mustn't be made to do slow work for whoever asks.
+    const DONE: &str = "this home already has an owner; people are added in Settings";
+    if state.0.config.people().await.locked() {
+        return refused(StatusCode::UNPROCESSABLE_ENTITY, DONE.to_owned());
     }
-    let password = ask.password.filter(|password| !password.is_empty());
-    let hash = match password_hash(password).await {
-        Ok(hash) => hash,
+    let hash = match password_hash(Some(ask.password)).await {
+        Ok(Some(hash)) => hash,
+        Ok(None) => return refused(StatusCode::UNPROCESSABLE_ENTITY, NEEDS_PASSWORD.to_owned()),
         Err(why) => return refused(StatusCode::UNPROCESSABLE_ENTITY, why),
     };
-    let Some(id) = irori_types::user_id_from(ask.name.as_str()) else {
+    let Some(fresh) = irori_types::user_id_from(ask.name.as_str()) else {
         return refused(
             StatusCode::UNPROCESSABLE_ENTITY,
             "that name has no letters or numbers to make an id from".to_owned(),
         );
     };
-    let user = User {
-        id,
-        name: ask.name,
-        role: Role::Owner,
-    };
-    let locking = hash.is_some();
+    let name = ask.name;
     let made = state
         .0
         .config
         .edit_people(&state.0.core, |people| {
-            if !people.users.is_empty() {
-                return Err(Refused(
-                    "this home already has an owner; people are added in Settings".to_owned(),
-                ));
+            if people.locked() {
+                return Err(Refused(DONE.to_owned()));
             }
-            people.users.push(user.clone());
-            if let Some(hash) = hash {
-                people.hashes.insert(user.id.clone(), hash);
-            }
-            Ok(())
+            let owner = people
+                .users
+                .iter()
+                .position(|user| user.role.runs_the_home());
+            let user = match owner {
+                Some(at) => {
+                    people.users[at].name = name.clone();
+                    people.users[at].clone()
+                }
+                None => {
+                    let user = User {
+                        id: fresh.clone(),
+                        name: name.clone(),
+                        role: Role::Owner,
+                    };
+                    people.users.push(user.clone());
+                    people.users.sort_by(|a, b| a.id.cmp(&b.id));
+                    user
+                }
+            };
+            people.hashes.insert(user.id.clone(), hash);
+            Ok(user)
         })
         .await;
-    if let Err(error) = made {
-        return edit_failed(error);
-    }
-    tracing::info!(user = %user.id, locked = locking, "the home has an owner");
+    let user = match made {
+        Ok(user) => user,
+        Err(error) => return edit_failed(error),
+    };
+    tracing::info!(user = %user.id, "the home has an owner, and asks who is there");
+    // The home is locked from here on, so the person who just set it up is signed in rather
+    // than shown the door.
+    let token = state.0.auth.begin(&user.id);
     let who = Actor {
-        user: Some(user.clone()),
+        user: Some(user),
         owner: true,
     };
-    // A password locks the home from here on, so the person who just set it is signed in
-    // rather than shown the door.
-    let token = locking.then(|| state.0.auth.begin(&user.id));
     let mut response = (StatusCode::CREATED, Json(view(&state, &who).await)).into_response();
-    if let Some(token) = token {
-        response
-            .headers_mut()
-            .insert(header::SET_COOKIE, cookie(&token, SESSION_LIFE));
-    }
+    response
+        .headers_mut()
+        .insert(header::SET_COOKIE, cookie(&token, SESSION_LIFE));
     response
 }
 
-/// Puts the welcome off: it isn't shown again, on this browser or any other.
-pub async fn dismiss(State(state): State<AppState>) -> Response {
-    match state.0.auth.dismiss() {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => refused(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-    }
-}
+/// What is said when somebody is to be let in with no password.
+pub const NEEDS_PASSWORD: &str =
+    "everybody in the home needs a password: it is what Irori tells people apart by";
 
 /// Checks and hashes a password off the async runtime: hashing is meant to be slow.
 pub async fn password_hash(password: Option<String>) -> Result<Option<String>, String> {
@@ -809,7 +793,6 @@ mod tests {
             (Method::PUT, "/api/dev/assistant", Run),
             (Method::POST, "/api/dev/apps/automations/rpc", Run),
             (Method::PUT, "/api/dev/extensions/mqtt/secrets", Run),
-            (Method::POST, "/api/setup/dismiss", Run),
             // Nobody has named it, so it's closed.
             (Method::POST, "/api/something/new", Run),
             (Method::GET, "/api/something/new", Run),

@@ -11,6 +11,9 @@
 # It also makes a room called "Smoke test room" and removes it again, which is the only way to
 # prove the server can actually write its config directory (a permissions problem shows up
 # nowhere else). Against your own instance that means one room appears and disappears.
+#
+# A home that has its owner is locked, and this script has no password: there it checks health,
+# the page, and that the lock holds, and stops.
 set -euo pipefail
 
 base_url="${1:-http://127.0.0.1:8480}"
@@ -46,6 +49,20 @@ if grep -q '"features":\[[^]]*"ui"' <<<"$health"; then
 else
   [[ "$index" == 404* ]] || fail "expected 404 at / in a build without the ui feature (got: $index)"
   echo "ui: not compiled in, / returns 404 as expected"
+fi
+
+# A home whose owner has been set up asks who is there, and answers nothing else to a caller
+# with no session. That is the home doing its job, not a failure: a fresh instance (CI, a wiped
+# volume) is open and gets every check below, a lived-in one gets the checks above and says so.
+# Checked with the sign-in page's own question, which is open to anyone.
+session="$(curl -fsS --max-time 2 "$base_url/api/session" 2>/dev/null)" || \
+  fail "can't ask whether the home is locked"
+if grep -q '"locked":true' <<<"$session"; then
+  refused="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 2 "$base_url/api/dev/home")"
+  [[ "$refused" == 401 ]] || fail "a locked home answered $refused to a caller with no session"
+  echo "locked: the home asks who is there, and refuses a caller with no session"
+  echo "smoke test passed (the catalog, log and config checks need an open home; skipped)"
+  exit 0
 fi
 
 catalog="$(curl -fsS --max-time 2 "$base_url/api/dev/catalog" 2>/dev/null)" || \

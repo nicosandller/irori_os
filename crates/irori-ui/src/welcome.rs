@@ -1,9 +1,8 @@
 //! The welcome: the first time IroriOS is opened, it asks who you are and where the home is.
 //!
-//! A prompt and not a gate (`docs/specs/config.md` §2). Everything works without it, every step
-//! has a way out, and "Not now" is remembered by Irori rather than by the browser, so it isn't
-//! asked again from the next screen somebody opens. Settings holds the same two questions for
-//! whenever they are wanted.
+//! It is how a home gets its owner. A home is reached from more than the room it is in, so the
+//! owner has a password and the welcome doesn't end without one; until then the page is the
+//! welcome. The time zone is asked next and is filled in already. Both are in Settings after.
 //!
 //! Four steps, moving the way the Add device window's steps do: the one being left slides
 //! away and the next comes in from the side it's going to.
@@ -41,7 +40,15 @@ pub fn Welcome() -> impl IntoView {
     let trouble = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
 
-    let name = RwSignal::new(String::new());
+    // A home from before passwords were needed may already have its owner: their name is
+    // there to keep or change.
+    let name = RwSignal::new(session.with_untracked(|session| {
+        session
+            .as_ref()
+            .and_then(|session| session.user.as_ref())
+            .map(|user| user.name.as_str().to_owned())
+            .unwrap_or_default()
+    }));
     let (password, again) = (RwSignal::new(String::new()), RwSignal::new(String::new()));
     let draft = RwSignal::new(saved.get_untracked().unwrap_or_default());
     // What was set on the way, for the last step to say back.
@@ -54,14 +61,6 @@ pub fn Welcome() -> impl IntoView {
         showing.set(false);
         crate::users::refresh(people, session);
     };
-    // Not now: said to Irori, so no other screen asks again.
-    let not_now = move |_| {
-        spawn_local(async move {
-            let _ = api::dismiss_welcome().await;
-            close();
-        });
-    };
-
     let you = move |event: ev::SubmitEvent| {
         event.prevent_default();
         if busy.get_untracked() {
@@ -72,7 +71,7 @@ pub fn Welcome() -> impl IntoView {
             Err(why) => return trouble.set(Some(why)),
         };
         let secret = password.get_untracked();
-        if let Some(why) = password_trouble(&secret, &again.get_untracked(), false) {
+        if let Some(why) = password_trouble(&secret, &again.get_untracked(), true) {
             return trouble.set(Some(why.to_owned()));
         }
         busy.set(true);
@@ -110,13 +109,7 @@ pub fn Welcome() -> impl IntoView {
         });
     };
 
-    let finish = move |_| {
-        // Done is as good as "not now" for every screen after this one.
-        spawn_local(async move {
-            let _ = api::dismiss_welcome().await;
-            close();
-        });
-    };
+    let finish = move |_| close();
 
     let body = move || {
         match step.get() {
@@ -127,12 +120,11 @@ pub fn Welcome() -> impl IntoView {
                 </span>
                 <h1>"Welcome to IroriOS"</h1>
                 <p class="welcome-lede">
-                    "The hearth at the center of the home. Two questions before you start: \
-                     who you are, and where the home is. Both can wait, and both are in \
-                     Settings whenever you want them."
+                    "The hearth at the center of the home. Two things before you start: who \
+                     you are, with a password that keeps the home yours, and what time it is \
+                     there."
                 </p>
                 <div class="welcome-actions">
-                    <button type="button" class="quiet-button" on:click=not_now>"Not now"</button>
                     <button
                         type="button"
                         class="welcome-next"
@@ -162,7 +154,7 @@ pub fn Welcome() -> impl IntoView {
                     />
                 </label>
                 <label class="settings-field">
-                    "A password, if you want one"
+                    "A password"
                     <input
                         type="password"
                         autocomplete="new-password"
@@ -186,23 +178,13 @@ pub fn Welcome() -> impl IntoView {
                     </div>
                 </div>
                 <p class="muted small">
-                    {move || {
-                        if password.with(String::is_empty) {
-                            "Without a password the home stays open: anyone who can reach \
-                             IroriOS on your network can use it and change it. That is how it \
-                             has worked until now, and you can set one later."
-                        } else {
-                            "With a password, IroriOS asks who is there before it shows \
-                             anything. There is no way to recover a forgotten one from the \
-                             page; it's reset from the files on the machine."
-                        }
-                    }}
+                    "IroriOS asks who is there before it shows anything, so the home is \
+                     yours wherever it is reached from. At least 8 characters. A forgotten \
+                     password can't be recovered from the page; it's reset from the files \
+                     on the machine."
                 </p>
                 {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
                 <div class="welcome-actions">
-                    <button type="button" class="quiet-button" on:click=move |_| go(2)>
-                        "Skip"
-                    </button>
                     <button type="submit" class="welcome-next" disabled=move || busy.get()>
                         "Continue"
                     </button>
@@ -248,11 +230,9 @@ pub fn Welcome() -> impl IntoView {
                 </h1>
                 <ul class="welcome-said">
                     <li>
-                        {move || match (made.get(), session.with(|s| s.as_ref().is_some_and(|s| s.locked))) {
-                            (Some(_), true) => "You're the owner, and IroriOS asks who is there.",
-                            (Some(_), false) => "You're the owner. The home is open, with no password.",
-                            (None, _) if has_owner() => "The home already has an owner.",
-                            (None, _) => "Nobody was set up. The home is open to whoever can reach it.",
+                        {move || match made.get() {
+                            Some(_) => "You're the owner, and IroriOS asks who is there.",
+                            None => "The home already has its owner.",
                         }}
                     </li>
                     <li>
@@ -300,18 +280,12 @@ pub fn Welcome() -> impl IntoView {
 
 /// The sign-in page: a home that asks who is there, and a browser that hasn't said.
 ///
-/// The people are offered by name, because this is a home and not a bank: the person at the
-/// door picks themselves and types their password.
+/// A name and a password, both typed. The page doesn't say who lives here: a home may be
+/// reached from further away than its own network.
 #[component]
 pub fn SignIn() -> impl IntoView {
     let crate::Session(session) = expect_context::<crate::Session>();
-    let people = move || session.with(|s| s.as_ref().map(|s| s.people.clone()).unwrap_or_default());
-    // Whoever is first, until somebody picks: a home with one person has nothing to pick.
-    let who = RwSignal::new(None::<irori_types::UserId>);
-    let chosen = move || {
-        who.get()
-            .or_else(|| people().first().map(|person| person.id.clone()))
-    };
+    let who = RwSignal::new(String::new());
     let password = RwSignal::new(String::new());
     let trouble = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -320,10 +294,8 @@ pub fn SignIn() -> impl IntoView {
 
     let enter = move |event: ev::SubmitEvent| {
         event.prevent_default();
-        let Some(user) = chosen() else {
-            return;
-        };
-        if busy.get_untracked() {
+        let user = who.get_untracked().trim().to_owned();
+        if user.is_empty() || busy.get_untracked() {
             return;
         }
         busy.set(true);
@@ -350,29 +322,17 @@ pub fn SignIn() -> impl IntoView {
                         <span class="start-ember"></span>
                     </span>
                     <h1>"Who's there?"</h1>
-                    <div class="signin-people" role="group" aria-label="Who you are">
-                        <For each=people key=|person| person.id.clone() let:person>
-                            {
-                                let (id, picked) = (person.id.clone(), person.id.clone());
-                                view! {
-                                    <button
-                                        type="button"
-                                        class="signin-person"
-                                        aria-pressed=move || (chosen().as_ref() == Some(&id)).to_string()
-                                        on:click=move |_| {
-                                            who.set(Some(picked.clone()));
-                                            trouble.set(None);
-                                        }
-                                    >
-                                        <span class="person-initial" aria-hidden="true">
-                                            {crate::users::initial(person.name.as_str())}
-                                        </span>
-                                        {person.name.as_str().to_owned()}
-                                    </button>
-                                }
-                            }
-                        </For>
-                    </div>
+                    <label class="settings-field signin-password">
+                        "Your name"
+                        <input
+                            type="text"
+                            autocomplete="username"
+                            autocapitalize="words"
+                            autofocus
+                            prop:value=move || who.get()
+                            on:input=move |event| who.set(event_target_value(&event))
+                        />
+                    </label>
                     <label
                         class="settings-field signin-password"
                         class:wrong-a=move || !wrong.get().is_multiple_of(2)

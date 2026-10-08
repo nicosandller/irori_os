@@ -1,8 +1,8 @@
 //! The Users row of Settings: who is allowed in, and what each may do.
 //!
 //! Two kinds of person. An owner runs the home; a user sees everything and controls devices.
-//! A home with one person and no password is open, as Irori always was; the first password is
-//! what makes it ask who is there, and everyone added after that has one of their own.
+//! Everybody has a password of their own: the owner's is set in the welcome and is what makes
+//! IroriOS ask who is there, and everyone added after has one too.
 
 use irori_types::{Name, Role, UserId};
 use leptos::ev;
@@ -161,7 +161,7 @@ pub fn Section() -> impl IntoView {
         };
         let first = people.with_untracked(Vec::is_empty);
         let typed = password.get_untracked();
-        if let Some(why) = password_trouble(&typed, &again.get_untracked(), !first) {
+        if let Some(why) = password_trouble(&typed, &again.get_untracked(), true) {
             trouble.set(Some(why.to_owned()));
             return;
         }
@@ -314,15 +314,12 @@ pub fn Section() -> impl IntoView {
     view! {
         <p class="muted setting-note">
             {move || {
-                if people.with(Vec::is_empty) {
-                    "Nobody has been set up, so anyone who can reach IroriOS is looking after \
-                     the home. Say who you are to make it yours."
-                } else if !locked() {
-                    "This home is open: anyone who can reach IroriOS can use it and change it. \
-                     Setting a password is what makes it ask who is there."
+                if !locked() {
+                    "This home has no owner with a password yet. The welcome sets one up."
                 } else {
                     "IroriOS asks who is there. An owner runs the home; a user sees everything \
-                     and controls devices, and changes nothing else."
+                     and controls devices, and changes nothing else. Everybody has a password \
+                     of their own."
                 }
             }}
         </p>
@@ -357,8 +354,7 @@ pub fn Section() -> impl IntoView {
                     </button>
                     {(!can_add).then(|| view! {
                         <p class="muted small">
-                            "Set a password for yourself first. With more than one person, \
-                             IroriOS has to ask who is there."
+                            "The home needs its owner first."
                         </p>
                     })}
                     <div class="drawer" class:open=move || adding.get()
@@ -397,7 +393,7 @@ pub fn Section() -> impl IntoView {
                             {password_fields(
                                 password,
                                 again,
-                                if first { "Password (leave empty for none)" } else { "Password" },
+                                "Password",
                             )}
                             <div class="settings-form-actions">
                                 <button type="button" on:click=move |_| adding.set(false)>
