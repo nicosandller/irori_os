@@ -2070,6 +2070,7 @@ fn Inspector(
                     .home
                     .with_untracked(|home| contacts(home, sensor.as_ref()));
                 let following = sensor.as_ref().map(ToString::to_string).unwrap_or_default();
+                let following = Signal::derive(move || following.clone());
                 Some(view! {
                     <div class="inspector">
                         <h2>{kind.label()}</h2>
@@ -2135,26 +2136,18 @@ fn Inspector(
                                 )}
                             </div>
                         })}
-                        <label class="choice">
+                        <div class="choice">
                             <span>"Sensor"</span>
-                            <select
-                                prop:value=following.clone()
-                                on:change=move |event| {
-                                    let picked = event_target_value(&event).parse::<EntityId>().ok();
+                            <crate::combo::Combo
+                                choices=contacts
+                                value=following
+                                placeholder="Search contact sensors"
+                                pick=Callback::new(move |picked: String| {
+                                    let picked = picked.parse::<EntityId>().ok();
                                     change(&|opening| opening.sensor = picked.clone());
-                                }
-                            >
-                                <option value="" selected=following.is_empty()>"None"</option>
-                                {contacts
-                                    .into_iter()
-                                    .map(|(id, name)| {
-                                        let id = id.to_string();
-                                        let chosen = id == following;
-                                        view! { <option value=id selected=chosen>{name}</option> }
-                                    })
-                                    .collect_view()}
-                            </select>
-                        </label>
+                                })
+                            />
+                        </div>
                         <p class="muted small">
                             {if sensor.is_some() {
                                 "It opens and shuts on the plan as its sensor says."
@@ -2223,9 +2216,10 @@ fn Inspector(
 /// door, a window, a garage door or an opening, each with a name that says which device it is.
 /// The one already chosen is always listed, even if it has since left the home or stopped being
 /// a contact sensor — the menu has to be able to show what the plan says.
-fn contacts(home: &Home, chosen: Option<&EntityId>) -> Vec<(EntityId, String)> {
+fn contacts(home: &Home, chosen: Option<&EntityId>) -> Vec<crate::combo::Choice> {
+    use crate::combo::Choice;
     use irori_types::BinarySensorClass as Class;
-    let mut found: Vec<(EntityId, String)> = home
+    let mut found: Vec<Choice> = home
         .entities
         .iter()
         .filter(|entity| {
@@ -2244,18 +2238,24 @@ fn contacts(home: &Home, chosen: Option<&EntityId>) -> Vec<(EntityId, String)> {
                     .find(|device| &device.id == id)
                     .map(|device| device.name.to_string())
             });
-            (
-                entity.id.clone(),
+            // The device is what a person knows it by; the id is there to tell two apart.
+            Choice::new(
+                entity.id.to_string(),
                 device.unwrap_or_else(|| entity.name.to_string()),
             )
+            .detail(entity.id.to_string())
         })
         .collect();
-    found.sort_by(|a, b| a.1.cmp(&b.1));
+    found.sort_by(|a, b| a.label.cmp(&b.label));
     if let Some(chosen) = chosen
-        && !found.iter().any(|(id, _)| id == chosen)
+        && !found
+            .iter()
+            .any(|choice| choice.value == chosen.to_string())
     {
-        found.push((chosen.clone(), format!("{chosen} (not in the home)")));
+        found.push(Choice::new(chosen.to_string(), chosen.to_string()).detail("not in the home"));
     }
+    // First, and with an empty value: picking it takes the sensor away.
+    found.insert(0, Choice::new("", "None"));
     found
 }
 

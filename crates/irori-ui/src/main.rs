@@ -11,6 +11,7 @@ mod app_frame;
 mod assistant;
 mod chart;
 mod choices;
+mod combo;
 mod count;
 mod device;
 mod devices;
