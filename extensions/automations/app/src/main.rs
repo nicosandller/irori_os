@@ -8,6 +8,7 @@
 mod api;
 mod canvas;
 mod checks;
+mod clock_forms;
 mod editor;
 mod inspector;
 mod list;

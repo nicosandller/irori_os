@@ -3,7 +3,7 @@
 //!
 //! In the order someone setting a home up is likely to want them: the instance and the machine
 //! under it, how the page moves, whether a model answers, the floors and areas that say what's
-//! where, the people allowed in (none yet), and what Irori has been saying. Every row starts
+//! where, where the home is, the people allowed in, and what Irori has been saying. Every row starts
 //! folded; what it says beside its name is usually all that was wanted.
 
 use std::collections::BTreeSet;
@@ -18,10 +18,11 @@ use crate::fold::{Head, fold};
 use crate::icons::{Icon, icon};
 
 /// The rows, by the id each goes by in the address (`/settings#assistant`).
-const SECTIONS: [&str; 6] = [
+const SECTIONS: [&str; 7] = [
     "system",
     "appearance",
     "assistant",
+    "location",
     "floors-and-areas",
     "users",
     "logs",
@@ -31,6 +32,13 @@ const SECTIONS: [&str; 6] = [
 pub fn Settings() -> impl IntoView {
     let live = expect_context::<crate::Live>();
     let crate::Motion(motion) = expect_context::<crate::Motion>();
+    let crate::Session(session) = expect_context::<crate::Session>();
+    let crate::place::Place(place) = expect_context::<crate::place::Place>();
+    let crate::users::People(people) = expect_context::<crate::users::People>();
+    let crate::welcome::Showing(welcoming) = expect_context::<crate::welcome::Showing>();
+    // Whether this browser may change how the home is set up. Yes until told otherwise, so
+    // nothing blinks out and back while the first answer is on its way.
+    let owner = move || session.with(|session| session.as_ref().is_none_or(|s| s.owner));
     let trouble = RwSignal::new(None::<String>);
     // Which rows are open. Nothing remembers this: the page opens folded every time.
     let open = RwSignal::new(BTreeSet::<&'static str>::new());
@@ -179,16 +187,19 @@ pub fn Settings() -> impl IntoView {
                 scope="settings".to_owned()
                 title="Irori's settings".to_owned()
             />
-            <button
-                type="button"
-                // Disabled while a restart is under way, and until the first health says which
-                // instance this is — arming without one would let the old instance's own
-                // answer clear the button before the restart happened.
-                disabled=move || restarting.get() || live.health.get().is_none()
-                on:click=move |_| restart()
-            >
-                {move || if restarting.get() { "Restarting…" } else { "Restart" }}
-            </button>
+            // Restarting is running the home: an owner's button.
+            {move || owner().then(|| view! {
+                <button
+                    type="button"
+                    // Disabled while a restart is under way, and until the first health says
+                    // which instance this is — arming without one would let the old
+                    // instance's own answer clear the button before the restart happened.
+                    disabled=move || restarting.get() || live.health.get().is_none()
+                    on:click=move |_| restart()
+                >
+                    {move || if restarting.get() { "Restarting…" } else { "Restart" }}
+                </button>
+            })}
         </crate::start::Hero>
 
         {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
@@ -238,6 +249,17 @@ pub fn Settings() -> impl IntoView {
                 view! { <crate::assistant::Section /> }.into_any(),
             )}
             {row(
+                "location",
+                Icon::Place,
+                "Location and time zone",
+                (move || place.with(|home| match home {
+                    Some(home) => crate::place::summary(home),
+                    None => String::new(),
+                }))
+                .into_any(),
+                view! { <crate::place::Section /> }.into_any(),
+            )}
+            {row(
                 "floors-and-areas",
                 Icon::Places,
                 "Floors and areas",
@@ -248,15 +270,8 @@ pub fn Settings() -> impl IntoView {
                 "users",
                 Icon::Users,
                 "Users",
-                "none yet".into_any(),
-                view! {
-                    <p class="muted setting-note">
-                        "No users yet — and nothing to sign in with. IroriOS is for the person in "
-                        "the room with it: anyone who can reach it is looking after the home. "
-                        "That changes before it runs in anyone else's home (ROADMAP M1.6)."
-                    </p>
-                }
-                .into_any(),
+                (move || people.with(|people| crate::users::summary(people))).into_any(),
+                view! { <crate::users::Section /> }.into_any(),
             )}
             {row(
                 "logs",
@@ -282,6 +297,24 @@ pub fn Settings() -> impl IntoView {
                 .into_any(),
             )}
         </div>
+
+        // The welcome's two questions are the two rows above; this is the way back to being
+        // walked through them, for a home where one is still unanswered.
+        {move || {
+            let unanswered = session.with(|session| {
+                session
+                    .as_ref()
+                    .is_some_and(|s| s.owner && (!s.setup.owner || !s.setup.place))
+            });
+            unanswered.then(|| view! {
+                <p class="muted small welcome-again">
+                    "This home isn't fully set up. "
+                    <button type="button" class="link" on:click=move |_| welcoming.set(true)>
+                        "Go through the welcome"
+                    </button>
+                </p>
+            })
+        }}
     }
 }
 

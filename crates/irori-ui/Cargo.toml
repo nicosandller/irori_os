@@ -54,6 +54,8 @@ web-sys = { version = "0.3", features = [
     "ReadableStreamDefaultReader",
     "HtmlElement",
     "KeyboardEvent",
+    # The map (map.rs): a pin dragged, and the map zoomed with the wheel.
+    "PointerEvent",
 ] }
 # Already in the bundle transitively (leptos uses it); this is only so the copy button can await
 # the promise the clipboard API returns — no size cost of its own.

@@ -12,7 +12,10 @@ use irori_config::{Problem, ServerSettings, Store};
 use irori_core::Core;
 use std::collections::BTreeSet;
 
-use irori_types::{DeviceId, ExtensionSettings, ProtocolId, Settings, SettingsKey, UniqueId};
+use irori_types::{
+    DeviceId, ExtensionId, ExtensionSettings, HomeSettings, ProtocolId, Settings, SettingsKey,
+    UniqueId, User, UserId,
+};
 use tokio::sync::Mutex;
 
 /// How often the files are checked for outside edits. Two seconds is fast enough that editing a
@@ -76,6 +79,7 @@ impl Config {
             tracing::info!(extensions = ?disabled, "turned off in irori.toml");
         }
         core.apply_disabled_extensions(disabled);
+        core.apply_home(store.home());
         if let Some(new) = store.irori().devices.new {
             tracing::warn!(
                 new = %new,
@@ -279,6 +283,101 @@ impl Config {
         Ok(made)
     }
 
+    /// Where the home is and its time zone, as `home.toml` stands.
+    pub async fn home(&self) -> HomeSettings {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+        store.home()
+    }
+
+    /// Changes `home.toml`, writes it, and tells the core, which tells the engines that fire
+    /// by the clock. Same order and same re-read as [`Config::edit`].
+    pub async fn edit_home<T>(
+        &self,
+        core: &Core,
+        change: impl FnOnce(&mut HomeSettings) -> Result<T, Refused>,
+    ) -> Result<T, EditError> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+
+        let mut home = store.home();
+        let made = change(&mut home).map_err(EditError::Refused)?;
+        if store.save_home(&home).map_err(EditError::Io)? {
+            tracing::info!(file = "home.toml", "config written");
+        }
+        core.apply_home(home);
+        Ok(made)
+    }
+
+    /// The people allowed in, each with the hash of their password if they have one. Read
+    /// without touching the disk: this is asked on every request, and the watch loop and every
+    /// edit keep it current.
+    pub async fn people(&self) -> People {
+        let store = self.0.lock().await;
+        People::of(store.users(), &store.secrets())
+    }
+
+    /// Changes who is allowed in and what their passwords are, as one write: `users.toml` and
+    /// the `[users]` table of `secrets.toml` together, so nobody is left in one without the
+    /// other. What can't stand (nobody left to run the home) is refused with nothing written.
+    pub async fn edit_people<T>(
+        &self,
+        core: &Core,
+        change: impl FnOnce(&mut People) -> Result<T, Refused>,
+    ) -> Result<T, EditError> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+
+        let mut people = People::of(store.users(), &store.secrets());
+        let made = change(&mut people).map_err(EditError::Refused)?;
+        irori_types::check_users(&people.users)
+            .map_err(|e| EditError::Refused(Refused(e.to_string())))?;
+        // A home that asks who is there has to have an owner who can answer. Otherwise the
+        // first password, given to somebody who isn't one, would shut every owner out.
+        let has = |user: &User| people.hashes.contains_key(&user.id);
+        if people.users.iter().any(has)
+            && !people
+                .users
+                .iter()
+                .any(|user| user.role.runs_the_home() && has(user))
+        {
+            return Err(EditError::Refused(Refused(
+                "an owner needs a password before anybody else has one: otherwise nobody \
+                 could sign in to run the home"
+                    .to_owned(),
+            )));
+        }
+        let mut secrets = store.secrets();
+        let table = users_table();
+        // Rewritten whole, so a person who is gone takes their hash with them.
+        secrets.remove(&table, &[PASSWORDS.to_owned()]);
+        for user in &people.users {
+            if let Some(hash) = people.hashes.get(&user.id) {
+                secrets
+                    .set(
+                        &table,
+                        &[PASSWORDS.to_owned(), user.id.to_string()],
+                        hash.clone(),
+                    )
+                    .map_err(|e| EditError::Refused(Refused(e.to_string())))?;
+            }
+        }
+        // A home with no passwords writes nothing secret: `secrets.toml` isn't made for it.
+        if secrets == store.secrets() {
+            if store.save_users(&people.users).map_err(EditError::Io)? {
+                tracing::info!(file = "users.toml", "config written");
+            }
+        } else {
+            store
+                .save_users_and_secrets(&people.users, &secrets)
+                .map_err(EditError::Io)?;
+            // Which files, never what's in them.
+            tracing::info!(files = "users.toml, secrets.toml", "config written");
+        }
+        core.apply_extension_settings(store.extension_settings());
+        Ok(made)
+    }
+
     /// The config directory, for files this type doesn't own (`assistant.toml`).
     #[cfg(feature = "assist")]
     pub async fn dir(&self) -> std::path::PathBuf {
@@ -350,6 +449,7 @@ impl Config {
             core.apply_extension_settings(store.extension_settings());
             let irori = store.irori();
             core.apply_disabled_extensions(irori.extensions.disabled);
+            core.apply_home(store.home());
             // Where Irori listens and logs can't change under a running server. Say so, once per
             // edit, rather than leaving someone wondering why their change did nothing.
             if irori.server != started.0 && warned.as_ref() != Some(&irori.server) {
@@ -359,6 +459,66 @@ impl Config {
                 warned = Some(irori.server);
             }
         }
+    }
+}
+
+/// The table of `secrets.toml` that people's password hashes are kept in.
+const PASSWORDS: &str = "passwords";
+
+fn users_table() -> ExtensionId {
+    ExtensionId::try_from("users").expect("a valid id")
+}
+
+/// Who is allowed in, and the hash of each one's password.
+#[derive(Clone, Default)]
+pub struct People {
+    /// Ordered by id.
+    pub users: Vec<User>,
+    /// By user. A person with no entry has no password.
+    pub hashes: std::collections::BTreeMap<UserId, String>,
+}
+
+/// Never the hashes: they are secrets, and this type ends up in logs through `AppState`.
+impl std::fmt::Debug for People {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("People")
+            .field("users", &self.users)
+            .field("with_passwords", &self.hashes.len())
+            .finish()
+    }
+}
+
+impl People {
+    fn of(users: Vec<User>, secrets: &ExtensionSettings) -> Self {
+        let table = secrets.of(&users_table());
+        let hashes = users
+            .iter()
+            .filter_map(|user| match &table[PASSWORDS][user.id.as_str()] {
+                serde_json::Value::String(hash) if !hash.is_empty() => {
+                    Some((user.id.clone(), hash.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        Self { users, hashes }
+    }
+
+    pub fn user(&self, id: &UserId) -> Option<&User> {
+        self.users.iter().find(|user| &user.id == id)
+    }
+
+    /// Whether an owner has a password: the home has somebody who can sign in to run it. Until
+    /// it does, the welcome sets one up.
+    pub fn owned(&self) -> bool {
+        self.users
+            .iter()
+            .any(|user| user.role.runs_the_home() && self.hashes.contains_key(&user.id))
+    }
+
+    /// Whether anyone has a password, which is what makes Irori ask who is there
+    /// (`docs/specs/config.md` §3.10).
+    pub fn locked(&self) -> bool {
+        !self.hashes.is_empty()
     }
 }
 

@@ -21,7 +21,7 @@ use std::time::SystemTime;
 
 use irori_types::{
     Area, AreaId, DeviceId, DeviceSettings, EntitySettings, ExtensionId, ExtensionSettings, Floor,
-    FloorId, Floorplan, Settings, SettingsKey,
+    FloorId, Floorplan, HomeSettings, Settings, SettingsKey, User,
 };
 
 pub use files::{DevicesSection, ExtensionsSection, File, IroriSettings, LogLevel, ServerSettings};
@@ -75,6 +75,8 @@ pub struct Store {
     devices: Part<BTreeMap<DeviceId, DeviceSettings>>,
     entities: Part<BTreeMap<SettingsKey, EntitySettings>>,
     secrets: Part<ExtensionSettings>,
+    home: Part<HomeSettings>,
+    users: Part<Vec<User>>,
     /// `extensions/<id>.toml`, one per extension that has one.
     extensions: BTreeMap<ExtensionId, Part<serde_json::Map<String, serde_json::Value>>>,
     /// Keys set in both an extension's file and its secrets, as last reported: said once when
@@ -96,6 +98,8 @@ impl Store {
             devices: Part::default(),
             entities: Part::default(),
             secrets: Part::default(),
+            home: Part::default(),
+            users: Part::default(),
             extensions: BTreeMap::new(),
             clashes: std::collections::BTreeSet::new(),
             missing_floors: std::collections::BTreeSet::new(),
@@ -127,6 +131,69 @@ impl Store {
     /// Settings for Irori itself, from `irori.toml`.
     pub fn irori(&self) -> IroriSettings {
         self.irori.value.clone()
+    }
+
+    /// Where the home is and its time zone, from `home.toml`.
+    pub fn home(&self) -> HomeSettings {
+        self.home.value.clone()
+    }
+
+    /// The people allowed in, from `users.toml`, ordered by id.
+    pub fn users(&self) -> Vec<User> {
+        self.users.value.clone()
+    }
+
+    /// Replaces `home.toml`, atomically, if its contents would change. Says whether it wrote.
+    pub fn save_home(&mut self, home: &HomeSettings) -> std::io::Result<bool> {
+        let path = self.path(File::Home);
+        let changed = self.replace(&path, &files::write_home(home))?;
+        self.home.value = home.clone();
+        *self.seen_mut(File::Home) = look(&path);
+        Ok(changed)
+    }
+
+    /// Replaces `users.toml`, atomically, if its contents would change. Says whether it wrote.
+    pub fn save_users(&mut self, users: &[User]) -> std::io::Result<bool> {
+        let path = self.path(File::Users);
+        let changed = self.replace(&path, &files::write_users(users))?;
+        self.users.value = users.to_vec();
+        *self.seen_mut(File::Users) = look(&path);
+        Ok(changed)
+    }
+
+    /// Writes `users.toml` and `secrets.toml` as one change: the people, and the passwords
+    /// kept for them. If the secrets can't be written, the people are put back as they were, so
+    /// nobody is left in the file with a password that never landed.
+    pub fn save_users_and_secrets(
+        &mut self,
+        users: &[User],
+        secrets: &ExtensionSettings,
+    ) -> std::io::Result<()> {
+        let previous = self.users();
+        self.save_users(users)?;
+        if let Err(error) = self.save_secrets(secrets) {
+            if self.save_users(&previous).is_err() {
+                return Err(std::io::Error::other(format!(
+                    "{error}; also couldn't restore users.toml"
+                )));
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Puts `text` at `path` if that would change it, through a temporary file beside it.
+    fn replace(&self, path: &Path, text: &str) -> std::io::Result<bool> {
+        if std::fs::read_to_string(path).is_ok_and(|current| current == text) {
+            return Ok(false);
+        }
+        std::fs::create_dir_all(&self.dir)?;
+        let temporary = write_beside(path, text, Readable::ByAnyone)?;
+        if let Err(e) = std::fs::rename(&temporary, path) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(e);
+        }
+        Ok(true)
     }
 
     /// Each extension's settings: `extensions/<id>.toml` joined with its table in `secrets.toml`
@@ -388,6 +455,8 @@ impl Store {
             File::Devices => self.devices.value = files::read_devices(&text)?,
             File::Entities => self.entities.value = files::read_entities(&text)?,
             File::Secrets => self.secrets.value = files::read_secrets(&text)?,
+            File::Home => self.home.value = files::read_home(&text)?,
+            File::Users => self.users.value = files::read_users(&text)?,
         }
         // Only once it parsed: a file that is being edited and saved half-written should be
         // re-read on the next tick, not remembered as good.
@@ -403,6 +472,8 @@ impl Store {
             File::Devices => self.devices.seen.as_ref(),
             File::Entities => self.entities.seen.as_ref(),
             File::Secrets => self.secrets.seen.as_ref(),
+            File::Home => self.home.seen.as_ref(),
+            File::Users => self.users.seen.as_ref(),
         }
     }
 
@@ -414,6 +485,8 @@ impl Store {
             File::Devices => &mut self.devices.seen,
             File::Entities => &mut self.entities.seen,
             File::Secrets => &mut self.secrets.seen,
+            File::Home => &mut self.home.seen,
+            File::Users => &mut self.users.seen,
         }
     }
 

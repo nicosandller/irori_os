@@ -131,6 +131,16 @@ fn floorplans() -> anyhow::Result<()> {
 }
 
 #[test]
+fn homes() -> anyhow::Result<()> {
+    check::<irori_types::HomeSettings>("home")
+}
+
+#[test]
+fn users() -> anyhow::Result<()> {
+    check::<irori_types::User>("user")
+}
+
+#[test]
 fn devices() -> anyhow::Result<()> {
     check::<Device>("device")
 }

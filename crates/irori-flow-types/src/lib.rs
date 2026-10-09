@@ -13,9 +13,12 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// Reading a cron into what it stands for: plain Rust, so a page can check one as it's typed.
+pub use irori_rules::cron;
 pub use irori_rules::{
     AvailabilityWanted, CallData, CompactDuration, Condition, ExprString, LimitedMode, Mode,
-    NamedMode, NumberField, RuleService, StopReason, Trigger, TypedValue, Values, WaitUntil,
+    NamedMode, NumberField, RuleService, StopReason, SunEvent, Trigger, TypedValue, Values,
+    WaitUntil, Weekday,
 };
 
 /// Most nodes in a flow.

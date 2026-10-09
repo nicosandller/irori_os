@@ -34,6 +34,16 @@ A missing directory is not an error: Irori runs with nothing configured and crea
 on the first write. This is what a first run looks like, and a first run should not need a setup
 step.
 
+The page does have one. Until the home has an owner, the page opens on a welcome that asks who
+you are, with a password, and then what time zone the home is in (§3.9, §3.10). The owner's
+password is not optional: a home is reached from more than the room it is in, and the password
+is what makes it somebody's. The time zone is filled in from the browser. Both are in Settings
+afterwards.
+
+What a first run doesn't need is anything before that: Irori starts, finds devices and serves its
+API with nothing configured, which is what lets it be installed, scripted and checked before
+anybody opens the page. That open state ends the moment the owner is set up.
+
 ## 3. The files
 
 ```
@@ -45,6 +55,8 @@ config/
   entities.toml   what you have said about an entity
   secrets.toml    keys, passwords, tokens — one table per extension
   assistant.toml  which model answers, when one does (the key stays in secrets.toml)
+  home.toml       where the home is, and its time zone
+  users.toml      the people allowed in, and what each may do
   extensions/
     <id>.toml     an extension's settings that aren't secret
 ```
@@ -176,6 +188,9 @@ An extension receives exactly its own table, checks it against its own config ty
 restarted when that table changes ([protocols.md](protocols.md) §3). What's inside is the
 extension's business: the ESPHome extension's shape is in its README.
 
+Two tables are Irori's own and no extension's: `[assistant]` (§3.8), and `[users]`, which holds
+the hash of each person's password under `[users.passwords]` (§3.10).
+
 Handled as a secret throughout:
 
 - **Irori writes it readable by its own user only** (`0600`), setting the permission before
@@ -200,6 +215,7 @@ matters while there's no sign-in, because `allow_unauthenticated_lan` is here.
 bind = "0.0.0.0:8480"
 bind_fallback = "127.0.0.1:8481"  # optional: where to listen if bind is already taken
 allow_unauthenticated_lan = true
+tls = true                    # serve over https; see below
 log_level = "info"            # error, warn, info, debug, trace
 data = "/var/lib/irori"       # relative paths are relative to this directory
 
@@ -219,6 +235,20 @@ the address it actually chose. `--bind-fallback` and `IRORI_BIND_FALLBACK` say t
 setting. Setting `bind_fallback` equal to `bind` locks the port: Irori tries only `bind` and fails
 loudly if it's taken, never stepping — the way to keep a fixed published and health-checked port
 (e.g. the dev container) on the address everything expects.
+
+`tls` (also `--tls`, `IRORI_TLS`) serves https, so the password and the session cookie travel
+encrypted and the cookie is marked for https only. It is off unless asked for. The certificate
+is `tls/cert.pem` with its key `tls/key.pem` in the data directory:
+
+- If neither is there, Irori makes its own the first time, for this machine's names and
+  addresses, and keeps it. No browser has heard of a certificate a home makes for itself, so the
+  browser warns once and asks to be told it is fine. What travels is encrypted either way.
+- A certificate a browser does trust (from a private CA, or a DNS-validated one) goes in the same
+  two files and is used as it is. A certificate that can't be read, or a key that doesn't go
+  with it, stops Irori from starting and says which file; it never falls back to plain http.
+
+Without `tls`, a home reached over the network sends passwords in the clear, and Irori says so
+in its log when it starts.
 
 `log_level` decides how much Irori says, and it is read once at startup: a quiet instance has less
 in its log to read, including in the log window on the Settings page, which shows the same lines
@@ -430,6 +460,118 @@ context.
 has none). The API key is not in this file. It is `api_key` under `[assistant]` in
 `secrets.toml` (§3.4), written owner-only, and no request reads it back.
 
+### 3.9 `home.toml`
+
+Where the home is, and what time it is there. Two answers only a person can give, and what the
+clock in an automation is read by: a time of day needs the time zone, and the sun needs the
+location as well ([rules.md](rules.md) K13).
+
+```toml
+time_zone = "Europe/Brussels"     # an IANA name
+
+[location]
+latitude = 50.84671               # degrees north, -90 to 90
+longitude = 4.3525                # degrees east, -180 to 180
+label = "Brussels, Belgium"       # optional: what it was found as, for a person to read
+```
+
+The time zone is the part that's needed, and the location is optional: a zone with no location
+is a home with time triggers and no sun triggers. A location with no zone is the one thing the
+page won't save, since nothing could be worked out from it; the welcome and the Settings row
+both lead with the zone, filled in from the browser's own, and offer the map after it.
+
+- Coordinates are kept to five decimals, about a metre. Finer than that is noise that makes the
+  file diff badly.
+- `time_zone` must be a zone Irori knows. The database of zones is compiled into the binary (and
+  into the Automations engine), so "07:00" never depends on what the machine has installed. A
+  name that isn't one is refused by the page with the reason; in a hand-edited file it is logged
+  by the engine, and time triggers stay off until it is put right.
+- This is the file Irori writes, and `irori.toml` is still the one it only reads (§3.5): the
+  setting that opens Irori to the network must stay out of reach of the page.
+- A change is picked up like any other, and the core tells every engine that reads the
+  registry, so a time trigger moves with the zone it is read in without a restart.
+
+The Settings row for it has a map. The map's tiles, its address search and the lookup of a
+point's time zone are fetched by the **browser** from the internet (OpenFreeMap, in its
+Positron style on the light page and its Dark style on the dark one, drawn by MapLibre GL JS;
+Nominatim; Open-Meteo); Irori itself asks nobody. They are extras: with no internet the coordinates are
+typed and the zone is picked from a list.
+
+MapLibre is the one script the page loads that isn't Irori's own, and only when a map is
+shown. It comes from a CDN at a pinned version and is checked against a hash written into the
+page (subresource integrity), so what runs is that release or nothing.
+
+### 3.10 `users.toml`
+
+The people allowed in, and what each may do.
+
+```toml
+[users.nico]
+name = "Nico"
+role = "owner"        # "owner" or "user"
+
+[users.guest]
+name = "A guest"
+role = "user"
+```
+
+Keyed by the person's id, which is made from their name when they are added and is what a
+command they send is attributed to (`Origin::User`).
+
+| Role | May |
+|---|---|
+| `owner` | Everything, including who else is let in. |
+| `user` | See everything and control devices; ask the assistant; change their own name and password. Nothing that changes how the home is set up. |
+
+**Passwords are not here.** This file is meant for git. Each person's password is kept as an
+argon2id hash in `secrets.toml`, under `[users.passwords]`, with everything that makes that file
+safe (§3.4). No request reads a hash back, and nothing logs one.
+
+**Everybody has a password.** The owner's is set in the welcome and is what locks the home: from
+then on the page shows a sign-in, and every address but the page itself and what it takes to
+sign in needs a session. Until then, on a first run, Irori is open to whoever can reach it,
+which is why `serve` still binds loopback unless told otherwise.
+
+The rules, held for a hand-edited file and for the page alike:
+
+- A home with people in it has at least one owner. A `users.toml` that has people and no owner is
+  rejected whole (§6), since nobody could then put it right from the page; the last owner can't be
+  removed or made a user.
+- The owner comes first, with a password of at least 8 characters. Everybody added after has one
+  of their own. A password is changed, never taken away.
+- A home that asks who is there has an owner who can answer: the first password can't be given
+  to somebody who isn't one.
+- Changing your own password takes the one you have. An owner resetting somebody else's doesn't,
+  because they don't know it.
+- Wrong passwords are counted per person and per machine they come from, before the password
+  is looked at: after five, that machine waits 30 seconds to try that person again. Names that
+  are nobody's share one count.
+- Signing in is a name and a password, both typed. The page never lists who lives here, and a
+  wrong name gets the same answer as a wrong password.
+
+A `users.toml` from before passwords were needed may hold an owner without one. That home is
+still open, and the welcome asks that owner for a password the next time the page is opened.
+
+**Forgetting a password** is put right from the machine, not from the page: delete that
+person's line under `[users.passwords]` in `secrets.toml`.
+
+- For anybody but the last owner with a password, an owner then sets a new one in Settings.
+- For an owner, when no other owner has a password, the page opens on the welcome again and
+  asks them for a new one. This holds whoever else still has a password: they keep theirs, and
+  can sign in as before. Until the welcome is finished the home has nobody to run it, and
+  whoever opens the page first becomes that owner, as on a first run.
+
+Either way, a session is only as good as the password it was begun with. Taking a password out
+of the file ends that person's sessions, and setting the owner up through the welcome ends
+everybody's, so a browser signed in under the forgotten password (a lost phone, say) is out.
+
+Sessions are not config. A sign-in is a cookie (`HttpOnly`, `SameSite=Strict`, 30 days, and
+`Secure` when Irori serves https, §3.5) whose
+SHA-256 is kept in the database, so it survives a restart and can't be turned back into a cookie
+by somebody who reads the file. Because a cookie goes along with a request whoever wrote the page
+that made it, every change in a locked home must also carry the `x-irori-ui: 1` header, which only
+Irori's own page sends. Tokens for other programs are the public API's (ROADMAP C16).
+
 ## 4. What a decision is attached to
 
 **A device** is attached to its id. A device's id is made from its protocol and the
@@ -495,7 +637,9 @@ flat and boring.
 
 Named here so the layout has room for them, specified when they are built:
 
-- **More of `irori.toml`** — location, recorder retention.
+- **More of `irori.toml`** — recorder retention.
+- **More about people** — per-area permissions and an audit log (ROADMAP C28), and tokens for
+  programs that aren't the page (C16).
 - **Approved permissions** in `extensions/<id>.toml`, and validating it against the extension's
   `config_schema` before it starts (`docs/specs/extensions.md`). Today the extension's own config
   type checks it, and an extension with invalid settings waits for valid ones.

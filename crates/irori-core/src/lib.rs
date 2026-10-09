@@ -329,6 +329,8 @@ struct Shared {
     history: RwLock<Option<Arc<dyn HistorySource>>>,
     /// The config directory, handed to engines whose permissions name it.
     config_dir: RwLock<Option<PathBuf>>,
+    /// Where the home is and its time zone (`home.toml`), for engines that fire by the clock.
+    place: RwLock<irori_types::HomeSettings>,
     /// One lock per entity, so calls on the same entity happen one after another.
     busy: Mutex<HashMap<EntityId, Arc<tokio::sync::Mutex<()>>>>,
     extensions: RwLock<BTreeMap<ExtensionId, ExtensionOverview>>,
@@ -407,6 +409,7 @@ impl Core {
             app_links: RwLock::default(),
             history: RwLock::default(),
             config_dir: RwLock::default(),
+            place: RwLock::default(),
             busy: Mutex::default(),
             extensions: RwLock::default(),
             extension_settings: watch::Sender::new(ExtensionSettings::default()),
@@ -535,6 +538,24 @@ impl Core {
         let stamp = self.stamp();
         let events = write(&self.0.home).apply_settings(settings, &stamp);
         self.publish(events);
+    }
+
+    /// Says where the home is and what its time zone is. Engines that read the registry are
+    /// told when it changes, so a time trigger moves with the zone it's read in.
+    pub fn apply_home(&self, home: irori_types::HomeSettings) {
+        {
+            let mut place = write(&self.0.place);
+            if *place == home {
+                return;
+            }
+            *place = home.clone();
+        }
+        self.publish(vec![Event::PlaceChanged { home }]);
+    }
+
+    /// Where the home is and its time zone, as last said.
+    pub fn place(&self) -> irori_types::HomeSettings {
+        read(&self.0.place).clone()
     }
 
     /// Replaces every extension's settings. An extension whose own settings changed is restarted

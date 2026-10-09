@@ -137,7 +137,7 @@ instead:
 
 | Message | Scope | Answer (`value`) |
 |---|---|---|
-| `get_registry { id }` | `registry:read` | `{ entities: [Entity], timezone: bool, location: bool }` |
+| `get_registry { id }` | `registry:read` | `{ entities: [Entity], timezone: bool, location: bool, place?: { time_zone?, latitude?, longitude? } }`. The flags say whether the home has each; `place` is what `home.toml` holds, left out when it holds nothing. A change to it is a `registry_changed`. |
 | `get_states { id }` | `states:read` | `[EntityState]` |
 | `get_history { id, entities: [EntityId], since: Timestamp }` | `history:read` | `{ "<entity_id>": [EntityState] }`, oldest first |
 | `subscribe { id, states: bool, registry: bool }` | `events:read` | `null`. Afterwards the core pushes the events asked for |
@@ -190,6 +190,12 @@ For each running extension with an `app` contribution, the core:
   so a reload there reaches the shell.)
   A package whose `entry` file is missing is still listed, with `built: false`, and the shell
   says so on the page instead of showing an empty frame;
+- refuses to serve any of them as a page of its own. A browser opening one in a tab says so
+  (`Sec-Fetch-Dest: document`, which a page can't set), and gets a 403 that points at
+  `/apps/<extension>/`. Opened that way the page would be this server's own, sent the session
+  cookie and free to ask for anything the person signed in may; inside the shell's frame it has
+  an origin of its own and reaches only what the bridge hands it. The frame, the page's own
+  scripts and images, and anything that isn't a browser are served as before.
 - relays `POST /api/dev/apps/<extension>/rpc` with body `{ "method": "…", "params": … }` to the
   engine as `app_request`, and returns `{ "value": … }` or an error status with `{ "error": "…" }`.
   30 s timeout (a backtest can take a moment). `503` if the engine isn't running.

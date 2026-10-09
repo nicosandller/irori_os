@@ -13,13 +13,13 @@ const RESET: &str = "\x1b[0m";
 
 /// Prints the banner to stdout, but only for a person at a terminal: journald, Docker logs,
 /// and files get plain log lines only.
-pub fn print(bind: SocketAddr) {
+pub fn print(bind: SocketAddr, tls: bool) {
     let mut out = std::io::stdout().lock();
     if !out.is_terminal() {
         return;
     }
     let version = crate::build_info::VERSION;
-    let url = display_url(bind);
+    let url = display_url(bind, tls);
     let _ = write!(
         out,
         "\n  ┌───────┐\n  \
@@ -31,16 +31,17 @@ pub fn print(bind: SocketAddr) {
 
 /// A URL a person can open. A wildcard bind (`0.0.0.0`, `::`) isn't an address you can browse
 /// to, so show the loopback URL and say it's listening on every interface.
-fn display_url(bind: SocketAddr) -> String {
+fn display_url(bind: SocketAddr, tls: bool) -> String {
+    let scheme = if tls { "https" } else { "http" };
     let port = bind.port();
     match bind.ip() {
         IpAddr::V4(ip) if ip.is_unspecified() => {
-            format!("http://127.0.0.1:{port} (listening on all interfaces)")
+            format!("{scheme}://127.0.0.1:{port} (listening on all interfaces)")
         }
         IpAddr::V6(ip) if ip.is_unspecified() => {
-            format!("http://[::1]:{port} (listening on all interfaces)")
+            format!("{scheme}://[::1]:{port} (listening on all interfaces)")
         }
-        _ => format!("http://{bind}"),
+        _ => format!("{scheme}://{bind}"),
     }
 }
 
@@ -50,7 +51,7 @@ mod tests {
 
     #[test]
     fn wildcard_binds_show_a_browsable_url() {
-        let url = |s: &str| display_url(s.parse().expect("valid address"));
+        let url = |s: &str| display_url(s.parse().expect("valid address"), false);
         assert_eq!(url("127.0.0.1:8480"), "http://127.0.0.1:8480");
         assert_eq!(url("192.168.1.20:8480"), "http://192.168.1.20:8480");
         assert_eq!(
@@ -62,5 +63,8 @@ mod tests {
             "http://[::1]:8480 (listening on all interfaces)"
         );
         assert_eq!(url("[::1]:8480"), "http://[::1]:8480");
+        // Served over https, it says so.
+        let bind = "192.168.1.20:8480".parse().expect("valid address");
+        assert_eq!(display_url(bind, true), "https://192.168.1.20:8480");
     }
 }

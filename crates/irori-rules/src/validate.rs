@@ -194,11 +194,16 @@ fn walk_triggers_one(
                 ));
             }
         }
-        Trigger::Time { .. } => {
+        Trigger::Time { cron, .. } => {
+            if let Some(cron) = cron
+                && let Err(why) = crate::cron::CronSpec::parse(cron.as_str())
+            {
+                problems.push(problem(here, &why));
+            }
             if !registry.has_timezone() {
                 problems.push(problem(
                     here,
-                    "time triggers need a timezone; it isn't in irori.toml yet",
+                    "time triggers need the home's time zone; set the time zone in Settings → Location and time zone",
                 ));
             }
         }
@@ -211,13 +216,13 @@ fn check_sun_gate(path: &str, registry: &impl RegistryView, problems: &mut Vec<P
     if !registry.has_timezone() {
         problems.push(problem(
             path,
-            "sun triggers need a timezone; it isn't in irori.toml yet",
+            "the sun needs the home's time zone; set the time zone in Settings → Location and time zone",
         ));
     }
     if !registry.has_location() {
         problems.push(problem(
             path,
-            "sun windows need a location (lat/lon); it isn't in irori.toml yet",
+            "the sun needs to know where the home is; set the location in Settings → Location and time zone",
         ));
     }
 }
@@ -258,7 +263,7 @@ fn walk_condition(
             if !registry.has_timezone() {
                 problems.push(problem(
                     path,
-                    "time windows need a timezone; it isn't in irori.toml yet",
+                    "time windows need the home's time zone; set the time zone in Settings → Location and time zone",
                 ));
             }
         }
@@ -477,7 +482,7 @@ fn check_expr(
             if inspected.uses_clock && !registry.has_timezone() {
                 problems.push(problem(
                     path,
-                    "time triggers need a timezone; it isn't in irori.toml yet",
+                    "time triggers need the home's time zone; set the time zone in Settings → Location and time zone",
                 ));
             }
             if inspected.kind != ExprKind::Bool {
@@ -488,7 +493,7 @@ fn check_expr(
             if inspected.uses_clock && !registry.has_timezone() {
                 problems.push(problem(
                     path,
-                    "time triggers need a timezone; it isn't in irori.toml yet",
+                    "time triggers need the home's time zone; set the time zone in Settings → Location and time zone",
                 ));
             }
         }
@@ -1346,7 +1351,7 @@ mod tests {
         registry.location = true;
         let problems = validate(&rule, &registry);
         assert!(
-            problems.iter().any(|p| p.reason.contains("timezone")),
+            problems.iter().any(|p| p.reason.contains("time zone")),
             "{problems:?}"
         );
     }

@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 
 use irori_types::{
     Area, AreaId, Description, DeviceId, DeviceSettings, EntitySettings, ExtensionId,
-    ExtensionSettings, Floor, FloorId, Floorplan, Name, Placement, Settings, SettingsKey,
+    ExtensionSettings, Floor, FloorId, Floorplan, HomeSettings, Name, Placement, Role, Settings,
+    SettingsKey, User, UserId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -22,17 +23,21 @@ pub enum File {
     Devices,
     Entities,
     Secrets,
+    Home,
+    Users,
 }
 
 impl File {
     /// Every file, in the order they're read.
-    pub const ALL: [File; 6] = [
+    pub const ALL: [File; 8] = [
         File::Irori,
         File::Areas,
         File::Floorplan,
         File::Devices,
         File::Entities,
         File::Secrets,
+        File::Home,
+        File::Users,
     ];
 
     /// The files that make up [`Settings`], which are saved together.
@@ -46,6 +51,8 @@ impl File {
             File::Devices => "devices.toml",
             File::Entities => "entities.toml",
             File::Secrets => "secrets.toml",
+            File::Home => "home.toml",
+            File::Users => "users.toml",
         }
     }
 }
@@ -226,6 +233,81 @@ pub fn read_entities(text: &str) -> Result<BTreeMap<SettingsKey, EntitySettings>
         .collect()
 }
 
+/// Where the home is and its time zone, from `home.toml` (`docs/specs/config.md` §3.9). The
+/// file is the type, so there is no separate TOML shape.
+pub fn read_home(text: &str) -> Result<HomeSettings, String> {
+    toml::from_str(text).map_err(|e| e.to_string())
+}
+
+/// `home.toml`'s text, ready to write.
+pub fn write_home(home: &HomeSettings) -> String {
+    format!(
+        "# Where your home is, and its time zone. Automations use these: a time of day needs\n\
+         # the time zone, sunrise and sunset need the location as well.\n\
+         #\n\
+         # Written by Irori, and yours to edit: changes are picked up within a couple of seconds.\n\
+         # Comments and ordering don't survive a rewrite. See docs/specs/config.md.\n\n{}",
+        toml::to_string_pretty(home).unwrap_or_default()
+    )
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UsersFile {
+    #[serde(default)]
+    users: BTreeMap<UserId, RawUser>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawUser {
+    name: Name,
+    role: Role,
+}
+
+/// The people in `users.toml`, ordered by id (`docs/specs/config.md` §3.10). A file with people
+/// in it and no owner is refused whole: nobody could then change it from the page.
+pub fn read_users(text: &str) -> Result<Vec<User>, String> {
+    let file: UsersFile = toml::from_str(text).map_err(|e| e.to_string())?;
+    let users: Vec<User> = file
+        .users
+        .into_iter()
+        .map(|(id, raw)| User {
+            id,
+            name: raw.name,
+            role: raw.role,
+        })
+        .collect();
+    irori_types::check_users(&users).map_err(|e| e.to_string())?;
+    Ok(users)
+}
+
+/// `users.toml`'s text, ready to write.
+pub fn write_users(users: &[User]) -> String {
+    let file = UsersFile {
+        users: users
+            .iter()
+            .map(|user| {
+                (
+                    user.id.clone(),
+                    RawUser {
+                        name: user.name.clone(),
+                        role: user.role,
+                    },
+                )
+            })
+            .collect(),
+    };
+    format!(
+        "# The people allowed into your home. An owner runs it; a user sees everything and\n\
+         # controls devices. Passwords are not here: they are kept, hashed, in secrets.toml.\n\
+         #\n\
+         # Written by Irori, and yours to edit: changes are picked up within a couple of seconds.\n\
+         # Comments and ordering don't survive a rewrite. See docs/specs/config.md.\n\n{}",
+        toml::to_string_pretty(&file).unwrap_or_default()
+    )
+}
+
 /// Settings for Irori itself, from `irori.toml` (`docs/specs/config.md` §3.5).
 ///
 /// Irori only ever reads this file. Nothing it serves can write it, which matters while there's no
@@ -265,6 +347,9 @@ pub struct ServerSettings {
     /// Relative to the config directory.
     pub data: Option<std::path::PathBuf>,
     pub allow_unauthenticated_lan: Option<bool>,
+    /// Serve over https, with the certificate in the data directory (made the first time if
+    /// there is none).
+    pub tls: Option<bool>,
     pub log_level: Option<LogLevel>,
 }
 
@@ -421,6 +506,8 @@ pub fn write(file: File, settings: &Settings) -> String {
         File::Floorplan => toml::to_string(&settings.floorplan),
         File::Secrets => unreachable!("secrets are written by `write_secrets`"),
         File::Irori => unreachable!("irori.toml is only ever read"),
+        File::Home => unreachable!("home.toml is written by `write_home`"),
+        File::Users => unreachable!("users.toml is written by `write_users`"),
         File::Entities => toml::to_string_pretty(&EntitiesFile {
             entities: settings
                 .entities
@@ -463,7 +550,9 @@ fn preamble(file: File) -> String {
             "What you've said about individual entities.\n\
              # Each key is `<protocol>/<the protocol's own id for the entity>`."
         }
-        File::Secrets => unreachable!("secrets have their own preamble"),
+        File::Secrets | File::Home | File::Users => {
+            unreachable!("this file has its own preamble")
+        }
         File::Irori => unreachable!("irori.toml is only ever read"),
     };
     format!(

@@ -17,6 +17,8 @@ use irori_flow_types::{
     CallData, Condition, Flow, JoinMode, LimitedMode, Mode, NamedMode, Node, NodeId, Port,
     RuleService, Trigger, TypedValue, Values, WaitUntil, Wire,
 };
+use irori_rules::clock::{self, Place};
+use irori_rules::cron::CronSpec;
 use irori_rules::eval::{self, Evaluator, Snapshot};
 use irori_types::{Availability, ContextId, EntityId, EntityState, RuleId, Timestamp};
 
@@ -156,9 +158,23 @@ struct Run {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Timer {
-    Hold { flow: RuleId, node: NodeId },
-    Token { run: ContextId, token: u32 },
-    Join { run: ContextId, node: NodeId },
+    Hold {
+        flow: RuleId,
+        node: NodeId,
+    },
+    Token {
+        run: ContextId,
+        token: u32,
+    },
+    Join {
+        run: ContextId,
+        node: NodeId,
+    },
+    /// A time or sun trigger's next moment.
+    Clock {
+        flow: RuleId,
+        node: NodeId,
+    },
 }
 
 /// The flow engine.
@@ -252,9 +268,65 @@ impl Engine {
         self.states.values().cloned().collect()
     }
 
+    /// Says where the home is: its time zone, and its coordinates if it has them. Time and sun
+    /// triggers are worked out again from here, and windows of time are read in this zone.
+    pub fn set_place(&mut self, place: Option<Place>, now: Timestamp) {
+        if self.eval.place() == place.as_ref() {
+            return;
+        }
+        // What was due in the old zone happens first: a change of place mustn't swallow it.
+        self.advance(now);
+        self.eval.set_place(place);
+        self.wind_clocks(now);
+    }
+
+    /// Where the home is, as last said.
+    pub fn place(&self) -> Option<&Place> {
+        self.eval.place()
+    }
+
+    /// When each time or sun trigger of `flow` next fires, by node.
+    pub fn next_clock(&self, flow: &RuleId) -> BTreeMap<NodeId, Timestamp> {
+        self.timers
+            .iter()
+            .filter_map(|(at, _, timer)| match timer {
+                Timer::Clock { flow: of, node } if of == flow => Some((node.clone(), *at)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Puts every armed flow's time and sun triggers on the clock again, from `now`.
+    fn wind_clocks(&mut self, now: Timestamp) {
+        self.timers
+            .retain(|(_, _, timer)| !matches!(timer, Timer::Clock { .. }));
+        let Some(place) = self.eval.place().cloned() else {
+            return;
+        };
+        let due: Vec<(Timestamp, RuleId, NodeId)> = self
+            .flows
+            .iter()
+            .filter(|(_, loaded)| loaded.armed == Armed::Armed)
+            .flat_map(|(id, loaded)| {
+                let place = &place;
+                loaded.flow.nodes.iter().filter_map(move |(node, kind)| {
+                    let Node::Trigger { trigger } = kind else {
+                        return None;
+                    };
+                    next_moment(place, trigger, now).map(|at| (at, id.clone(), node.clone()))
+                })
+            })
+            .collect();
+        for (at, flow, node) in due {
+            self.schedule(at, Timer::Clock { flow, node });
+        }
+    }
+
     /// The flows to run. A flow whose definition changed, that was turned off, or that now has
     /// problems has its runs aborted; one that's the same keeps them.
     pub fn set_flows(&mut self, arms: Vec<Arm>, now: Timestamp) {
+        // A time trigger that was due under the old set fires before the set changes.
+        self.advance(now);
         let mut next = BTreeMap::new();
         for Arm { flow, problems } in arms {
             let version = flow.version();
@@ -302,6 +374,12 @@ impl Engine {
             self.abort_flow(&id, AbortReason::Removed, now);
         }
         self.flows = next;
+        self.wind_clocks(now);
+    }
+
+    /// Whether no run is under way.
+    pub fn idle(&self) -> bool {
+        self.runs.is_empty()
     }
 
     /// Whether each flow is armed, and why not.
@@ -484,6 +562,15 @@ impl Engine {
             }
             let Some((at, _, timer)) = self.timers.pop_first() else {
                 break;
+            };
+            // A wait inside a run ended when it was due, however late this is looked at. A time
+            // of day is different: it fires now, once, and its next moment is worked out from
+            // now. Worked out from when it was due, a machine that slept through three days
+            // would wake and fire every morning it missed, one after another.
+            let at = if matches!(timer, Timer::Clock { .. }) {
+                now
+            } else {
+                at
             };
             self.timer(timer, at);
             self.drive(at);
@@ -1642,6 +1729,44 @@ impl Engine {
 
     fn timer(&mut self, timer: Timer, now: Timestamp) {
         match timer {
+            Timer::Clock { flow, node } => {
+                let Some(place) = self.eval.place().cloned() else {
+                    return;
+                };
+                let trigger = self
+                    .flows
+                    .get(&flow)
+                    .filter(|loaded| loaded.armed == Armed::Armed)
+                    .and_then(|loaded| loaded.flow.nodes.get(&node))
+                    .and_then(|node| match node {
+                        Node::Trigger { trigger } => Some(trigger.clone()),
+                        _ => None,
+                    });
+                let Some(trigger) = trigger else {
+                    return;
+                };
+                // The next one first, so a run that goes wrong can't stop the clock.
+                if let Some(at) = next_moment(&place, &trigger, now) {
+                    self.schedule(
+                        at,
+                        Timer::Clock {
+                            flow: flow.clone(),
+                            node: node.clone(),
+                        },
+                    );
+                }
+                self.fire_now(
+                    &flow,
+                    Firing {
+                        trigger: node,
+                        cause: None,
+                        test: None,
+                        note: clock_note(&place, &trigger, now),
+                        reads: Vec::new(),
+                    },
+                    now,
+                );
+            }
             Timer::Hold { flow, node } => {
                 let due = self
                     .flows
@@ -1836,6 +1961,67 @@ fn yes_no(b: bool) -> &'static str {
 }
 
 /// A value the way a person says it: on, off, 42, "rinse", unknown.
+/// When a time or sun trigger next fires after `after`. `None` for every other trigger, for
+/// the sun without a location, and for a moment that never comes.
+pub fn next_moment(place: &Place, trigger: &Trigger, after: Timestamp) -> Option<Timestamp> {
+    match trigger {
+        Trigger::Time {
+            at: Some(at),
+            weekday,
+            ..
+        } => clock::next_time(place, at, weekday.as_deref(), after),
+        Trigger::Time {
+            cron: Some(cron), ..
+        } => clock::next_cron(place, &CronSpec::parse(cron.as_str()).ok()?, after),
+        Trigger::Sun { event, offset } => clock::next_sun(
+            place,
+            *event,
+            offset
+                .as_ref()
+                .map_or(0, irori_rules::CompactDuration::millis),
+            after,
+        ),
+        _ => None,
+    }
+}
+
+/// Why a time or sun trigger fired, as a person would say it: "it's 07:00 on Monday",
+/// "30m before sunset (18:42)".
+fn clock_note(place: &Place, trigger: &Trigger, now: Timestamp) -> String {
+    const DAYS: [&str; 7] = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ];
+    let wall = clock::wall(place, now);
+    match trigger {
+        Trigger::Sun { event, offset } => {
+            let event = clock::sun_word(*event);
+            match offset
+                .as_ref()
+                .map(|offset| (offset.millis(), offset.as_str()))
+            {
+                Some((ms, text)) if ms < 0 => {
+                    format!("{} before {event} ({wall})", text.trim_start_matches('-'))
+                }
+                Some((ms, text)) if ms > 0 => {
+                    format!("{} after {event} ({wall})", text.trim_start_matches('+'))
+                }
+                _ => format!("{event} ({wall})"),
+            }
+        }
+        _ => {
+            let day = usize::try_from(place.civil(now).date().weekday().to_monday_zero_offset())
+                .unwrap_or(0);
+            format!("it's {wall} on {}", DAYS[day % 7])
+        }
+    }
+}
+
 pub fn words(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::Bool(true) => "on".into(),

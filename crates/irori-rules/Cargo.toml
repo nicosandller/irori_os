@@ -12,6 +12,9 @@ irori-types.workspace = true
 # Successor of `cel-interpreter` (ROADMAP D41). No chrono/regex: the surface does not use them.
 # Only with `engine`: the types alone (what a page shares) compile without it.
 cel = { version = "0.14.5", default-features = false, optional = true }
+# Telling the time at home (`clock.rs`). The time zone database is compiled in: an engine is its
+# own process, often on an image with no /usr/share/zoneinfo.
+jiff = { workspace = true, optional = true, features = ["tzdb-bundle-always"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -20,7 +23,7 @@ serde_json.workspace = true
 # Expressions, the registry type-check, and evaluation. Without it, only the document types —
 # what a wasm page needs to read and write them.
 default = ["engine"]
-engine = ["dep:cel"]
+engine = ["dep:cel", "dep:jiff"]
 
 [dev-dependencies]
 anyhow.workspace = true

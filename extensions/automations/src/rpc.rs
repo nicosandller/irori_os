@@ -5,11 +5,14 @@ use irori_flow_types::api::{
     Timeline,
 };
 use irori_flow_types::trace::{RunRecord, TestKind};
-use irori_flow_types::{Flow, Node};
+use std::collections::BTreeMap;
+
+use irori_flow_types::{Flow, Node, Trigger};
+use irori_flows::engine::next_moment;
 use irori_flows::{sim, validate};
 use irori_types::{ContextId, RuleId, Timestamp};
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{HISTORY_CAP, Service, a_day_before, brief, history, now};
@@ -351,6 +354,7 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
                     &request.trigger,
                     service.engine.states(),
                     &request.overrides,
+                    service.engine.place().cloned(),
                     at,
                 )?)
             } else {
@@ -396,7 +400,13 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
                 .flatten()
                 .max()
                 .unwrap_or(window);
-            let (would, changes) = sim::backtest(&flow, &history, &service.engine.states(), to);
+            let (would, changes) = sim::backtest(
+                &flow,
+                &history,
+                &service.engine.states(),
+                service.engine.place().cloned(),
+                to,
+            );
             answer(Backtest {
                 from,
                 to,
@@ -413,6 +423,14 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
                     .collect(),
                 changes,
             })
+        }
+        "clock.next" => {
+            #[derive(Deserialize)]
+            struct Ask {
+                trigger: Value,
+            }
+            let Ask { trigger } = params(raw)?;
+            answer(clock_next(service, trigger))
         }
         other => Err(format!("the Automations engine has no `{other}`")),
     }
@@ -459,4 +477,78 @@ fn find_run(service: &Service, id: &RuleId, run_id: &ContextId) -> Option<RunRec
         .map(|run| run.record)
         .chain(service.store.runs(id))
         .find(|run| &run.run_id == run_id)
+}
+
+/// What the page is told about a time or sun trigger: when it next fires, and today's sun.
+#[derive(Debug, Serialize)]
+struct ClockNext {
+    /// The home's time zone, if it has been set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    time_zone: Option<String>,
+    /// Whether the home's location has been set.
+    location: bool,
+    /// When the trigger next fires.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next: Option<Timestamp>,
+    /// The same, as a person says it: "tomorrow at 06:52".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spoken: Option<String>,
+    /// Why there's no next time, when the trigger itself is what's wrong.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    problem: Option<String>,
+    /// The time on the wall at home now, "14:05".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    now: Option<String>,
+    /// Today's sun at home, each as "HH:MM": only the events that happen today.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    sun: BTreeMap<&'static str, String>,
+}
+
+/// When `trigger` next fires. The page asks instead of working it out, so the zone and the sun
+/// are only ever read in one place.
+fn clock_next(service: &Service, trigger: Value) -> ClockNext {
+    use irori_rules::SunEvent;
+    use irori_rules::clock;
+
+    let at = now();
+    let Some(place) = service.engine.place() else {
+        return ClockNext {
+            time_zone: None,
+            location: false,
+            next: None,
+            spoken: None,
+            problem: None,
+            now: None,
+            sun: BTreeMap::new(),
+        };
+    };
+    let mut sun = BTreeMap::new();
+    for (name, event) in [
+        ("dawn", SunEvent::Dawn),
+        ("sunrise", SunEvent::Sunrise),
+        ("noon", SunEvent::Noon),
+        ("sunset", SunEvent::Sunset),
+        ("dusk", SunEvent::Dusk),
+        ("midnight", SunEvent::Midnight),
+    ] {
+        if let Ok(Some(when)) = clock::sun_today(place, event, at) {
+            sun.insert(name, clock::wall(place, when));
+        }
+    }
+    let (next, problem) = match serde_json::from_value::<Trigger>(trigger) {
+        Ok(trigger) => match trigger.validate() {
+            Ok(()) => (next_moment(place, &trigger, at), None),
+            Err(error) => (None, Some(error.to_string())),
+        },
+        Err(error) => (None, Some(error.to_string())),
+    };
+    ClockNext {
+        time_zone: Some(place.time_zone().to_owned()),
+        location: place.has_location(),
+        spoken: next.map(|next| clock::spoken(place, next, at)),
+        next,
+        problem,
+        now: Some(clock::wall(place, at)),
+        sun,
+    }
 }

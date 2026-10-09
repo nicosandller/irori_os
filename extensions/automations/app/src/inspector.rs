@@ -1124,6 +1124,8 @@ fn condition_form(
         .flatten();
     let expr = value["expr"].as_str().map(str::to_owned);
     let shown = match (&checks, value["type"].as_str()) {
+        (_, Some("time")) => "time",
+        (_, Some("sun")) => "sun",
         (Some(_), _) => "checks",
         (None, Some("expr")) => "expr",
         _ => "other",
@@ -1142,6 +1144,8 @@ fn condition_form(
             }
             .into_any()
         }
+        "time" => crate::clock_forms::time_window_form(&value, edit.clone()),
+        "sun" => crate::clock_forms::sun_window_form(&value, edit.clone()),
         _ => view! { <p class="muted">"This condition is edited as JSON below."</p> }.into_any(),
     };
     let key_for_kind = key.clone();
@@ -1161,12 +1165,18 @@ fn condition_form(
                         Some(expr) => json!({ "type": "expr", "expr": expr }),
                         None => json!({ "type": "expr", "expr": "true" }),
                     },
+                    "time" if v["type"] == "time" => v.clone(),
+                    "time" => json!({ "type": "time", "after": "22:00", "before": "06:00" }),
+                    "sun" if v["type"] == "sun" => v.clone(),
+                    "sun" => json!({ "type": "sun", "after": "sunset", "before": "sunrise" }),
                     _ if Checks::from_condition(v).is_some() => v.clone(),
                     _ => fresh,
                 };
             }));
         }>
             <option value="checks" selected=shown == "checks">"these checks hold"</option>
+            <option value="time" selected=shown == "time">"it's between two times"</option>
+            <option value="sun" selected=shown == "sun">"the sun is between two moments"</option>
             <option value="expr" selected=shown == "expr">"an expression holds"</option>
             {(shown == "other").then(|| view! {
                 <option value="other" selected=true>"something else (JSON)"</option>

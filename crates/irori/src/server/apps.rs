@@ -123,6 +123,13 @@ fn serve(
     path: String,
     headers: &HeaderMap,
 ) -> Response {
+    if opened_on_its_own(headers) {
+        return (
+            StatusCode::FORBIDDEN,
+            format!("This is part of the `{id}` page. Open it from IroriOS: /apps/{id}/\n"),
+        )
+            .into_response();
+    }
     let Some(entry) = state
         .0
         .core
@@ -198,6 +205,21 @@ fn page_csp(request: &HeaderMap) -> String {
     )
 }
 
+/// Whether the browser is opening this as a page of its own, in a tab, and not inside the
+/// shell's frame.
+///
+/// The shell frames an extension's page sandboxed, with an origin of its own: no cookie is
+/// sent for it, and all it can reach is what the shell's bridge hands it. Opened directly it
+/// would instead be a page of this server's, sent the session cookie and free to ask for
+/// anything the person signed in may. So it isn't served that way. The browser says which it
+/// is (`Sec-Fetch-Dest`), and a page can't set or change that header. Anything that isn't a
+/// browser opening a tab (the frame, the page's own scripts and images, `curl`) is served.
+fn opened_on_its_own(request: &HeaderMap) -> bool {
+    request
+        .get("sec-fetch-dest")
+        .is_some_and(|dest| dest == "document")
+}
+
 /// The file `path` names beside the page's `entry`, if it's a package path (no `..`, no hidden
 /// names) and exists. The empty path is the entry itself.
 fn locate(package: &std::path::Path, entry: &PackagePath, path: &str) -> Option<PathBuf> {
@@ -246,6 +268,28 @@ mod tests {
             !page_csp(&request).contains("evil"),
             "a Host that isn't a host is left out"
         );
+    }
+
+    #[test]
+    fn a_page_is_served_into_the_shells_frame_and_not_as_a_tab_of_its_own() {
+        let asked_as = |dest: Option<&'static str>| {
+            let mut request = HeaderMap::new();
+            if let Some(dest) = dest {
+                request.insert("sec-fetch-dest", HeaderValue::from_static(dest));
+            }
+            opened_on_its_own(&request)
+        };
+        assert!(asked_as(Some("document")));
+        // The frame, what the page loads for itself, and whatever isn't a browser.
+        for inside in [
+            Some("iframe"),
+            Some("script"),
+            Some("empty"),
+            Some("image"),
+            None,
+        ] {
+            assert!(!asked_as(inside), "{inside:?}");
+        }
     }
 
     #[test]
