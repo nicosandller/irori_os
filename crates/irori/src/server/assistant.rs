@@ -40,7 +40,14 @@ pub struct Ask {
     /// model may draw on it and the page is sent the result; nothing here saves it.
     #[serde(default)]
     plan: Option<irori_types::Floorplan>,
+    /// A picture or PDF of a floorplan to draw from. Read for this answer and not kept.
+    #[serde(default)]
+    attachment: Option<assistant::Attachment>,
 }
+
+/// The most a question may weigh: the words, the plan being edited, and a file of the size
+/// [`assistant::Attachment`] allows, with room to spare.
+pub const MOST_ASKED: usize = 14 * 1024 * 1024;
 
 /// Takes a question and streams its answer. The answer is Irori's to finish from here: the
 /// page leaving stops the stream, not the answer.
@@ -60,7 +67,14 @@ pub async fn turns(State(state): State<AppState>, Json(ask): Json<Ask>) -> impl 
             .0
             .turns
             .run(&scope, pending, |tx| {
-                assistant::take_turn(turn(&state), scope.clone(), ask.message, ask.plan, tx)
+                assistant::take_turn(
+                    turn(&state),
+                    scope.clone(),
+                    ask.message,
+                    ask.plan,
+                    ask.attachment,
+                    tx,
+                )
             })
             .await;
     });

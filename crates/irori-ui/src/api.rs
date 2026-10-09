@@ -1204,18 +1204,59 @@ pub struct Progress {
     pub total: u64,
 }
 
-/// Asks, and hands each piece of the answer to `on` as it arrives. `plan` is the floorplan
-/// being edited, when the question comes from the page it is being edited on: what the model
-/// may draw on.
+/// A picture or a PDF given with a question: a floorplan somebody already has, for the model
+/// to draw the home from. `data` is the file in base64.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Attachment {
+    pub name: String,
+    pub media_type: String,
+    pub data: String,
+}
+
+/// A file's bytes as base64, which is how it travels inside a question.
+pub fn base64(bytes: &[u8]) -> String {
+    const LETTERS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut text = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let three = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let sixes = [
+            three[0] >> 2,
+            (three[0] & 0b11) << 4 | three[1] >> 4,
+            (three[1] & 0b1111) << 2 | three[2] >> 6,
+            three[2] & 0b11_1111,
+        ];
+        for (place, six) in sixes.into_iter().enumerate() {
+            // Past the end of the file there is nothing to say, and `=` says so.
+            if place <= chunk.len() {
+                text.push(char::from(LETTERS[usize::from(six)]));
+            } else {
+                text.push('=');
+            }
+        }
+    }
+    text
+}
+
+/// Asks, and hands each piece of the answer to `on` as it arrives. `plan` is the floorplan on
+/// the page the question comes from — what the model may draw on — and `attachment` a picture
+/// or PDF to draw it from.
 pub async fn assistant_ask(
     scope: &str,
     message: &str,
     plan: Option<&Floorplan>,
+    attachment: Option<&Attachment>,
     on: impl FnMut(Streamed),
 ) -> Result<(), String> {
     let mut body = serde_json::json!({ "scope": scope, "message": message });
     if let Some(plan) = plan {
         body["plan"] = serde_json::to_value(plan).map_err(|error| error.to_string())?;
+    }
+    if let Some(attachment) = attachment {
+        body["attachment"] = serde_json::to_value(attachment).map_err(|error| error.to_string())?;
     }
     stream("/api/assistant/turns", &body, on).await
 }
@@ -1491,6 +1532,15 @@ mod tests {
                 "cut at {cut}"
             );
         }
+    }
+
+    #[test]
+    fn a_file_is_written_in_base64_whatever_its_length() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"A"), "QQ==");
+        assert_eq!(base64(b"AB"), "QUI=");
+        assert_eq!(base64(b"ABC"), "QUJD");
+        assert_eq!(base64(&[0xff, 0xfe, 0xfd, 0xfc]), "//79/A==");
     }
 
     /// A plan the model drew arrives whole, and one this page can't read is not taken.

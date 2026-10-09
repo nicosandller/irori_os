@@ -37,6 +37,8 @@ struct Thread {
     used: RwSignal<Option<api::AssistantContext>>,
     /// The Floorplan page's working copy, while that page is open.
     desk: StoredValue<Option<Desk>>,
+    /// The picture or PDF that will go with the next question.
+    attached: RwSignal<Option<api::Attachment>>,
 }
 
 /// The plan being edited on the Floorplan page, as the assistant reaches it: `read` is the
@@ -100,6 +102,7 @@ impl Chats {
             round: RwSignal::new(0),
             used: RwSignal::new(None),
             desk: self.desk,
+            attached: RwSignal::new(None),
         });
         self.threads.update_value(|threads| {
             threads.insert(scope.to_owned(), thread);
@@ -222,11 +225,16 @@ impl Thread {
         if self.asking.get_untracked() {
             return;
         }
+        let attachment = self.attached.get_untracked();
         let text = self.draft.get_untracked().trim().to_owned();
-        if text.is_empty() {
-            return;
-        }
+        // A picture with nothing said about it is a request to draw it.
+        let text = match (&attachment, text.is_empty()) {
+            (Some(_), true) => "Draw this floorplan.".to_owned(),
+            (None, true) => return,
+            _ => text,
+        };
         self.draft.set(String::new());
+        self.attached.set(None);
         self.trouble.set(None);
         self.unanswered.set(None);
         self.wait(0);
@@ -244,7 +252,14 @@ impl Thread {
             .flatten()
             .and_then(|desk| desk.read.run(()));
         spawn_local(async move {
-            let result = api::assistant_ask(&scope, &text, plan.as_ref(), self.hear(&scope)).await;
+            let result = api::assistant_ask(
+                &scope,
+                &text,
+                plan.as_ref(),
+                attachment.as_ref(),
+                self.hear(&scope),
+            )
+            .await;
             self.settle(&scope, text, result).await;
         });
     }
@@ -298,6 +313,38 @@ pub struct ModelLog(pub RwSignal<bool>);
 /// Which chat window is open, if one is. One at a time, shared by every Ask on the page.
 #[derive(Debug, Clone, Copy)]
 pub struct Asking(pub RwSignal<Option<AskAt>>);
+
+/// A paperclip: a file to go with the question.
+const CLIP: &str = r#"<path d="M20 11.5l-8 8a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7L9.8 17a1.7 1.7 0 0 1-2.4-2.4L15 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
+
+/// The most a file to attach may be: what Irori will take (`Attachment::MOST` on the server).
+const MOST_ATTACHED: f64 = 8.0 * 1024.0 * 1024.0;
+
+/// Reads a chosen file into what goes with a question, or says why it can't go.
+async fn read_file(file: web_sys::File) -> Result<api::Attachment, String> {
+    let media_type = file.type_();
+    let known = matches!(
+        media_type.as_str(),
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "application/pdf"
+    );
+    if !known {
+        return Err(
+            "That isn't a picture or a PDF. A PNG, JPEG, WebP, GIF or PDF can be read.".into(),
+        );
+    }
+    if file.size() > MOST_ATTACHED {
+        return Err("That file is too big. Up to 8 MB can be read.".into());
+    }
+    let buffer = wasm_bindgen_futures::JsFuture::from(file.array_buffer())
+        .await
+        .map_err(|_| "That file couldn't be read.".to_owned())?;
+    let bytes = web_sys::js_sys::Uint8Array::new(&buffer).to_vec();
+    Ok(api::Attachment {
+        name: file.name(),
+        media_type,
+        data: api::base64(&bytes),
+    })
+}
 
 /// How wide the chat window is drawn, in pixels: `.ask-pop`'s 26rem.
 const POP_WIDTH: f64 = 416.0;
@@ -516,6 +563,7 @@ pub fn Chat(
         unanswered,
         waited,
         used,
+        attached,
         ..
     } = thread;
     let log = NodeRef::<leptos::html::Div>::new();
@@ -633,9 +681,9 @@ pub fn Chat(
                                 "Drawing on the plan needs a cloud model; the one on this \
                                  machine can only answer."
                             } else {
-                                "While you're editing it can draw too — walls, doors, windows \
-                                 and rooms — as one step you can undo. Nothing is saved until \
-                                 you press Save."
+                                "It can draw too — walls, doors, windows and rooms, from what you \
+                                 tell it or from a picture or PDF of a plan you attach — as one \
+                                 step you can undo. Nothing is saved until you press Save."
                             }}
                         </p>
                     }.into_any()
@@ -711,6 +759,21 @@ pub fn Chat(
                     </div>
                 })}
             </div>
+            // The file that will go with the next question, and the way to take it back.
+            {move || attached.get().map(|file| view! {
+                <p class="attached">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=CLIP></svg>
+                    <span class="attached-name">{file.name}</span>
+                    <button
+                        type="button"
+                        aria-label="Don't send this file"
+                        title="Don't send this file"
+                        on:click=move |_| attached.set(None)
+                    >
+                        "×"
+                    </button>
+                </p>
+            })}
             <form
                 class="composer"
                 on:submit=move |event: ev::SubmitEvent| {
@@ -718,6 +781,33 @@ pub fn Chat(
                     send.run(());
                 }
             >
+                // Only where there is something to draw from a picture: the Floorplan's chat.
+                {on_plan.then(|| view! {
+                    <label class="attach" title="Attach a picture or PDF of a floorplan">
+                        <span class="visually-hidden">"Attach a picture or PDF of a floorplan"</span>
+                        <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=CLIP></svg>
+                        <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp,image/gif,application/pdf"
+                            on:change=move |event| {
+                                let input = event_target::<web_sys::HtmlInputElement>(&event);
+                                let file = input.files().and_then(|files| files.get(0));
+                                // The same file can be chosen again after it's taken back.
+                                input.set_value("");
+                                let Some(file) = file else { return };
+                                spawn_local(async move {
+                                    match read_file(file).await {
+                                        Ok(file) => {
+                                            trouble.set(None);
+                                            attached.set(Some(file));
+                                        }
+                                        Err(why) => trouble.set(Some(why)),
+                                    }
+                                });
+                            }
+                        />
+                    </label>
+                })}
                 <textarea
                     rows="1"
                     aria-label="Message"
@@ -757,7 +847,10 @@ pub fn Chat(
                             type="submit"
                             class="send"
                             aria-label="Send"
-                            disabled=move || draft.with(|text| text.trim().is_empty())
+                            disabled=move || {
+                                draft.with(|text| text.trim().is_empty())
+                                    && attached.with(Option::is_none)
+                            }
                         >
                             <svg viewBox="0 0 24 24" aria-hidden="true">
                                 <path d="M12 19V5M5.5 11.5L12 5l6.5 6.5" fill="none"

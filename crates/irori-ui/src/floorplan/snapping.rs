@@ -1,8 +1,9 @@
 //! Where a point being drawn lands, and what it caught on the way there.
 //!
 //! A plan is drawn by eye and has to come out square, so the pointer is pulled towards the
-//! things a wall usually wants to meet, in this order: a corner already there, the middle of a
-//! wall, the line of a wall, a place level with another wall's end, and only then the grid.
+//! things a wall usually wants to meet, in this order: a corner already there, the line of a
+//! wall, a place level with another wall's end, and only then the grid. The middle of a wall is
+//! marked and not pulled towards: a pull there got in the way of every line drawn near it.
 //! What caught it is said as well as where, so the canvas can draw the mark that explains why
 //! the point isn't under the pointer.
 //!
@@ -13,13 +14,8 @@ use irori_types::{Level, Point, Wall};
 
 use super::{CORNER, Snap, Viewport, angle_at, direction, on_wall_at, point_along, round};
 
-/// How near, in screen pixels, the middle of a wall has to be to pull a point onto it. Less
-/// than [`CORNER`]: the middle is somewhere a wall sometimes starts, a corner is where it
-/// nearly always ends, and on a short wall the two are close enough to argue.
-const MIDDLE: f64 = 14.0;
-
 /// How near a wall the pointer has to be, in screen pixels, for that wall's middle to be
-/// marked at all. Wider than [`MIDDLE`], so the mark is there to aim at before it pulls.
+/// marked at all.
 const SHOWN: f64 = 48.0;
 
 /// How near the line of a wall a point has to be, in screen pixels, to land on it.
@@ -42,8 +38,6 @@ const STANDING: f64 = 0.75;
 pub(super) enum Caught {
     /// A corner that was already there.
     Corner,
-    /// The middle of a wall. Which wall.
-    Middle(usize),
     /// Somewhere along a wall. Which wall.
     OnWall(usize),
     /// Level with something else on the plan.
@@ -65,8 +59,16 @@ pub(super) struct Placed {
     pub caught: Caught,
     /// The lines that say what the point is level with. Empty unless a line is being drawn.
     pub guides: Vec<Guide>,
-    /// The middle of the wall the pointer is beside, to mark — whether or not it caught.
+    /// The middle of the wall the pointer is beside, to mark. Nothing pulls towards it; it is
+    /// there to be aimed at, and [`Placed::on_the_middle`] says when the aim was true.
     pub middle: Option<Point>,
+}
+
+impl Placed {
+    /// Whether the point has landed exactly on the middle that is marked.
+    pub(super) fn on_the_middle(&self) -> bool {
+        self.middle == Some(self.point)
+    }
 }
 
 /// The middle of a wall, to the centimetre.
@@ -75,13 +77,13 @@ pub(super) fn middle_of(wall: &Wall) -> Point {
     Point::new(half(wall.from.x, wall.to.x), half(wall.from.y, wall.to.y))
 }
 
-/// Where a new point goes: onto a corner that's already there, the middle of a wall or the
-/// line of one if any is within reach, level with another wall's end if a line is being drawn
+/// Where a new point goes: onto a corner that's already there or the line of a wall if either
+/// is within reach, level with another wall's end if a line is being drawn
 /// and it nearly is, and onto the grid otherwise.
 ///
 /// `except` leaves one corner out — the one being dragged — along with every wall standing on
 /// it. Without it a corner could never be moved off the grid square it started on, because it
-/// would keep snapping to itself, or to the middle of the wall it is the end of.
+/// would keep snapping to itself, or to the wall it is the end of.
 ///
 /// `run_from` is the start of the line being drawn, when there is one. Only a line has an end
 /// that can be level with anything, so only then are there guides.
@@ -129,18 +131,6 @@ pub(super) fn place(
         .min_by(|a, b| a.0.total_cmp(&b.0));
     if let Some((_, corner)) = corner {
         return placed(corner, Caught::Corner, Vec::new());
-    }
-
-    let halfway = level
-        .walls
-        .iter()
-        .enumerate()
-        .filter(|(_, wall)| free(wall))
-        .map(|(index, wall)| (away(middle_of(wall)), index, middle_of(wall)))
-        .filter(|(off, _, _)| *off <= MIDDLE * per_pixel)
-        .min_by(|a, b| a.0.total_cmp(&b.0));
-    if let Some((_, index, point)) = halfway {
-        return placed(point, Caught::Middle(index), Vec::new());
     }
 
     let step = snap.step();
@@ -484,22 +474,25 @@ mod tests {
     }
 
     #[test]
-    fn the_middle_of_a_wall_pulls_and_a_corner_pulls_harder() {
+    fn the_middle_of_a_wall_is_marked_and_does_not_pull() {
         let level = plan(&[((0, 0), (400, 0))]);
         let at = |world| place(&level, world, view(), Snap::Grid, None, None);
 
-        let caught = at((193.0, 8.0));
-        assert_eq!(caught.point, Point::new(200, 0));
-        assert_eq!(caught.caught, Caught::Middle(0));
+        // Close to the middle, and still wherever the wall and the grid put it.
+        let near = at((193.0, 3.0));
+        assert_eq!(near.point, Point::new(190, 0));
+        assert_eq!(near.middle, Some(Point::new(200, 0)));
+        assert!(!near.on_the_middle());
+        // On it when that is where the pointer is.
+        assert!(at((201.0, 2.0)).on_the_middle());
 
-        // Beside the wall but not near its middle: on the wall, on the grid along it, and the
-        // middle still marked to aim at.
+        // Beside the wall: on the wall, on the grid along it, and the middle marked to aim at.
         let along = at((118.0, 4.0));
         assert_eq!(along.point, Point::new(120, 0));
         assert_eq!(along.caught, Caught::OnWall(0));
         assert_eq!(along.middle, Some(Point::new(200, 0)));
 
-        // A wall so short its middle is within a corner's reach: the corner has it.
+        // A corner still takes a point that is near it.
         let short = plan(&[((0, 0), (20, 0))]);
         let end = place(&short, (12.0, 0.0), view(), Snap::Grid, None, None);
         assert_eq!(end.caught, Caught::Corner);

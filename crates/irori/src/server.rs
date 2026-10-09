@@ -222,7 +222,13 @@ pub fn router(state: AppState) -> Router {
     #[cfg(feature = "assist")]
     let router = router
         .route("/api/assistant", get(assistant::get).put(assistant::put))
-        .route("/api/assistant/turns", post(assistant::turns))
+        // A question can carry a picture of a floorplan, which is far more than the two
+        // megabytes any other request is allowed.
+        .route(
+            "/api/assistant/turns",
+            post(assistant::turns)
+                .layer(axum::extract::DefaultBodyLimit::max(assistant::MOST_ASKED)),
+        )
         .route("/api/assistant/turns/{scope}", get(assistant::follow))
         .route("/api/assistant/turns/{scope}/stop", post(assistant::stop))
         .route("/api/assistant/pull", post(assistant::pull))
@@ -4215,6 +4221,26 @@ mod tests {
                         )
                             .into_response();
                     }
+                    // Says whether it was shown a picture, and how much of one.
+                    if body["model"] == "looks" {
+                        let shown = body["messages"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|m| m["content"][1]["image_url"]["url"].as_str())
+                            .map(str::len)
+                            .next();
+                        let said = match shown {
+                            Some(size) => format!("A picture of {size} characters."),
+                            None => "No picture.".to_owned(),
+                        };
+                        let line = serde_json::json!({"choices": [{"delta": {"content": said}}]});
+                        return (
+                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                            format!("data: {line}\n\ndata: [DONE]\n\n"),
+                        )
+                            .into_response();
+                    }
                     // Draws a room when it is offered the tool to, and says it can't when it
                     // isn't. `draws-badly` asks for a room the home doesn't have.
                     if body["model"] == "draws" || body["model"] == "draws-badly" {
@@ -4260,7 +4286,9 @@ mod tests {
                     )
                         .into_response()
                 }),
-            );
+            )
+            // A provider takes a picture; the stand-in has to as well.
+            .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024));
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
                 .expect("a local port");
@@ -4525,6 +4553,68 @@ mod tests {
             Ok(())
         }
 
+        /// A picture of a floorplan goes to the model with the question it was asked with —
+        /// one far bigger than any other request may be — and is not what is remembered.
+        #[tokio::test]
+        async fn a_picture_given_on_the_floorplan_reaches_the_model() -> anyhow::Result<()> {
+            let base = cloud().await;
+            let server = Server::new(core())?;
+            let (status, body) = server
+                .json(
+                    "POST",
+                    "/api/floors",
+                    serde_json::json!({"name": "Ground", "level": 0}),
+                )
+                .await?;
+            assert!(status.is_success(), "{body}");
+            let (status, body) = server
+                .json("PUT", "/api/assistant", configure(&base, "looks"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let ask = |scope: &str, media_type: &str, data: String| {
+                let body = serde_json::json!({
+                    "scope": scope,
+                    "message": "Draw this.",
+                    "attachment": {"name": "plan.png", "media_type": media_type, "data": data},
+                });
+                let server = &server;
+                async move {
+                    let (status, bytes) = server
+                        .send(
+                            Request::post("/api/assistant/turns")
+                                .header("content-type", "application/json")
+                                .body(Body::from(serde_json::to_vec(&body)?))?,
+                        )
+                        .await?;
+                    anyhow::Ok((status, String::from_utf8(bytes)?))
+                }
+            };
+            // Three megabytes: more than a request is otherwise allowed to be.
+            let picture = "QUJD".repeat(750_000);
+            let (status, reply) = ask("floorplan:ground", "image/png", picture.clone()).await?;
+            assert_eq!(status, StatusCode::OK, "{reply}");
+            let expected = picture.len() + "data:image/png;base64,".len();
+            assert!(
+                reply.contains(&format!("A picture of {expected} characters.")),
+                "{reply}"
+            );
+            let kept = server
+                .read("/api/assistant/transcript/floorplan:ground")
+                .await?;
+            assert_eq!(
+                kept["turns"][0]["body"],
+                "Draw this.\n\n(attached: plan.png)"
+            );
+            assert!(kept.to_string().len() < 2_000, "the picture was kept");
+
+            // Not something that isn't a picture, and not in a conversation that can't draw.
+            let (_, reply) = ask("floorplan:ground", "text/html", "QUJD".into()).await?;
+            assert!(reply.contains("isn't a picture or a PDF"), "{reply}");
+            let (_, reply) = ask("general", "image/png", "QUJD".into()).await?;
+            assert!(reply.contains("on the Floorplan page"), "{reply}");
+            Ok(())
+        }
+
         /// A question with a plan attached, from a conversation that has no use for one.
         async fn events_of(
             server: &Server,
@@ -4572,6 +4662,7 @@ mod tests {
                         },
                         "general".into(),
                         "hello".into(),
+                        None,
                         None,
                         tx,
                     )

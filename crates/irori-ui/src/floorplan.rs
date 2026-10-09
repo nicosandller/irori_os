@@ -33,7 +33,7 @@ mod source;
 mod zoom;
 
 use look::{Look, look_for};
-use snapping::{Caught, Hosts, Placed, hosts, on_grid, place, room_angles, twin};
+use snapping::{Hosts, Placed, hosts, on_grid, place, room_angles, twin};
 
 /// What the editor rounds to by default, in centimetres. Fine enough to draw a real room,
 /// coarse enough that two walls meant to meet actually do.
@@ -112,6 +112,57 @@ const HISTORY: usize = 100;
 /// Where the floor last looked at is remembered. A preference about this screen rather than
 /// something about the home, so it belongs to the browser.
 const FLOOR_KEY: &str = "irori.floorplan.floor";
+
+/// Where a floor's own Fit is remembered, in this browser.
+fn fit_key(floor: &FloorId) -> String {
+    format!("irori.floorplan.fit.{floor}")
+}
+
+/// A way of framing the plan that doesn't depend on the window: how far in, and which place on
+/// the plan sits in the middle of the room there is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Framing {
+    scale: f64,
+    /// In the plan's own centimetres.
+    middle: (f64, f64),
+}
+
+impl Framing {
+    /// The framing a view amounts to, given where the middle of the clear canvas is.
+    fn of(view: Viewport, middle: (f64, f64)) -> Self {
+        Self {
+            scale: view.scale,
+            middle: view.world(middle.0, middle.1),
+        }
+    }
+
+    /// The view that puts this framing's middle at `middle` on the screen.
+    fn view(self, middle: (f64, f64)) -> Viewport {
+        let scale = self.scale.clamp(MIN_SCALE, MAX_SCALE);
+        Viewport {
+            scale,
+            pan: (
+                middle.0 - self.middle.0 * scale,
+                middle.1 - self.middle.1 * scale,
+            ),
+        }
+    }
+
+    fn written(self) -> String {
+        format!("{},{},{}", self.scale, self.middle.0, self.middle.1)
+    }
+
+    /// What was kept, if it still reads as a framing. Nothing at all is how one is forgotten.
+    fn read(kept: &str) -> Option<Self> {
+        let mut parts = kept.split(',').map(|part| part.trim().parse::<f64>().ok());
+        let (scale, x, y) = (parts.next()??, parts.next()??, parts.next()??);
+        (parts.next().is_none() && [scale, x, y].iter().all(|n| n.is_finite()) && scale > 0.0)
+            .then_some(Self {
+                scale,
+                middle: (x, y),
+            })
+    }
+}
 
 /// What's drawn on one floor, or nothing at all — which is what a home with no floors has, and
 /// what a floor nobody has drawn on has.
@@ -222,8 +273,8 @@ impl Tool {
             }
             Tool::Wall => {
                 "Click to start a wall, then click for each corner. Right-click or Escape ends \
-                 the run. Ends snap to corners, to the middle of a wall, and level with other \
-                 walls; hold Alt for the grid alone."
+                 the run. Ends snap to corners, onto walls, and level with other walls; a \
+                 wall's middle is marked. Hold Alt for the grid alone."
             }
             Tool::Door => "Click a wall to cut a door into it.",
             Tool::Window => "Click a wall to cut a window into it.",
@@ -436,25 +487,32 @@ pub fn Floorplan() -> impl IntoView {
         ))
     };
 
-    // Frames the whole plan, with a margin. Used once when a drawn home first arrives, and by
-    // the Fit button afterwards.
-    let fit = move || {
-        let Some((low, high)) = extent(&level.get_untracked()) else {
-            view.set(Viewport::default());
-            return;
-        };
-        let Some(node) = canvas.get_untracked() else {
-            return;
-        };
-        let rect = node.get_bounding_client_rect();
+    // The view somebody chose to be this floor's Fit, when they have: how far in, and what
+    // sits in the middle. A preference about this screen, so it is the browser's to keep, and
+    // it is said as a place on the plan rather than as a pan in pixels, so it still means the
+    // same thing in a window of another size.
+    let chosen_fit = RwSignal::new(None::<Framing>);
+    Effect::new(move |_| {
+        chosen_fit.set(
+            floor
+                .get()
+                .and_then(|floor| crate::devices::stored(&fit_key(&floor)))
+                .and_then(|kept| Framing::read(&kept)),
+        );
+    });
+    // What Fit last set the view to, to tell whether the view has since been moved off it.
+    let fitted = RwSignal::new(Some(Viewport::default()));
+
+    // The middle of what's *left* of the canvas, and how much room that is: the title sits
+    // over the top, the tools down the left, the zoom and the hint along the bottom, and the
+    // floors and the inspector down the right. A plan framed into the whole rectangle would
+    // come out with a wall under the panels, which is exactly what "Fit" is pressed to undo.
+    let clear = move || -> Option<((f64, f64), (f64, f64))> {
+        let rect = canvas.get_untracked()?.get_bounding_client_rect();
         let (width, height) = (rect.width(), rect.height());
         if width <= 0.0 || height <= 0.0 {
-            return;
+            return None;
         }
-        // Fitting means fitting into what's *left* of the canvas: the title sits over the top,
-        // the tools down the left, the zoom and the hint along the bottom, and the floors and
-        // the inspector down the right. A plan framed into the whole rectangle would come out
-        // with a wall under the panels, which is exactly what "Fit" is pressed to undo.
         let margin = 24.0;
         let gutters = Insets {
             top: 56.0 + margin,
@@ -471,28 +529,71 @@ pub fn Floorplan() -> impl IntoView {
             width - gutters.left - gutters.right,
             height - gutters.top - gutters.bottom,
         );
-        if room.0 <= 0.0 || room.1 <= 0.0 {
+        (room.0 > 0.0 && room.1 > 0.0).then(|| {
+            (
+                (gutters.left + room.0 / 2.0, gutters.top + room.1 / 2.0),
+                room,
+            )
+        })
+    };
+
+    // Frames the plan: the way somebody set it for this floor, or else the whole of it with a
+    // margin. Used once when a drawn home first arrives, and by the Fit button afterwards.
+    let fit = move || {
+        let chosen = chosen_fit.get_untracked();
+        let drawn = extent(&level.get_untracked());
+        if chosen.is_none() && drawn.is_none() {
+            view.set(Viewport::default());
+            fitted.set(Some(Viewport::default()));
             return;
         }
-        // Every coordinate becomes a `f64` before any arithmetic: a plan can hold points at
-        // opposite ends of `i32` (`Point::distance_to` says why), and framing one must give a
-        // silly zoom rather than overflow.
-        let (left, right) = (f64::from(low.x), f64::from(high.x));
-        let (top, bottom) = (f64::from(low.y), f64::from(high.y));
-        let (span_x, span_y) = ((right - left).max(100.0), (bottom - top).max(100.0));
-        let scale = (room.0 / span_x)
-            .min(room.1 / span_y)
-            .clamp(MIN_SCALE, MAX_SCALE);
-        // The middle of what's left, not the middle of the canvas.
-        let middle = (gutters.left + room.0 / 2.0, gutters.top + room.1 / 2.0);
-        view.set(Viewport {
-            scale,
-            pan: (
-                middle.0 - (left + right) / 2.0 * scale,
-                middle.1 - (top + bottom) / 2.0 * scale,
-            ),
+        let Some((middle, room)) = clear() else {
+            return;
+        };
+        let framing = chosen.or_else(|| {
+            let (low, high) = drawn?;
+            // Every coordinate becomes a `f64` before any arithmetic: a plan can hold points
+            // at opposite ends of `i32` (`Point::distance_to` says why), and framing one must
+            // give a silly zoom rather than overflow.
+            let (left, right) = (f64::from(low.x), f64::from(high.x));
+            let (top, bottom) = (f64::from(low.y), f64::from(high.y));
+            let (span_x, span_y) = ((right - left).max(100.0), (bottom - top).max(100.0));
+            Some(Framing {
+                scale: (room.0 / span_x)
+                    .min(room.1 / span_y)
+                    .clamp(MIN_SCALE, MAX_SCALE),
+                middle: ((left + right) / 2.0, (top + bottom) / 2.0),
+            })
         });
+        let Some(framing) = framing else { return };
+        let to = framing.view(middle);
+        view.set(to);
+        fitted.set(Some(to));
     };
+
+    // Makes the view as it stands this floor's Fit, or — with `None` — hands Fit back to
+    // framing the whole plan.
+    let set_fit = move |keep: bool| {
+        let Some(floor) = floor.get_untracked() else {
+            return;
+        };
+        let framing = keep
+            .then(|| clear().map(|(middle, _)| Framing::of(view.get_untracked(), middle)))
+            .flatten();
+        crate::devices::remember(
+            &fit_key(&floor),
+            &framing.map(Framing::written).unwrap_or_default(),
+        );
+        chosen_fit.set(framing);
+        if keep {
+            fitted.set(Some(view.get_untracked()));
+        } else {
+            fit();
+        }
+    };
+    // Whether the view has been moved off what Fit gives: the only time there is anything to
+    // set.
+    let off_fit = move || fitted.get() != Some(view.get());
 
     // A home that was already drawn should open framed rather than at whatever the default zoom
     // happens to show. Once only, and never while somebody is drawing: a view that reframed
@@ -578,10 +679,25 @@ pub fn Floorplan() -> impl IntoView {
         trouble.set(None);
     });
 
-    // The assistant's way to this page's working copy, for as long as the page is open: what
-    // it reads is the plan being drawn, and what it draws lands as one step to undo. Not while
-    // reading the plan — there is no working copy then, and the home's own plan is not a
-    // thing the assistant gets to change.
+    let start_editing = move || {
+        draft.set(live.home.get_untracked().floorplan.clone());
+        past.set(Vec::new());
+        future.set(Vec::new());
+        picked.set(None);
+        arming.set(None);
+        arming_area.set(None);
+        tool.set(Tool::Select);
+        stop_drawing();
+        trouble.set(None);
+        note.set(None);
+        editing.set(true);
+    };
+
+    // The assistant's way to this page's plan, for as long as the page is open. What it reads
+    // is the plan being drawn, or the home's own while nobody is drawing; what it draws lands
+    // in the working copy as one step to undo — opening Edit to make one if there wasn't,
+    // which is what pressing Edit and asking again would have come to. Either way nothing is
+    // written until Save.
     let assistant = expect_context::<crate::Assistant>();
     let chats = expect_context::<crate::assistant::Chats>();
     // The last plan the assistant handed over. An answer still being written is read again
@@ -592,7 +708,12 @@ pub fn Floorplan() -> impl IntoView {
         read: Callback::new(move |()| {
             // A new question is a new drawing, even one that comes out the same.
             drawn.set_value(None);
-            editing.get_untracked().then(|| draft.get_untracked())
+            floor.get_untracked()?;
+            Some(if editing.get_untracked() {
+                draft.get_untracked()
+            } else {
+                live.home.get_untracked().floorplan.clone()
+            })
         }),
         take: Callback::new(move |(scope, plan): (String, Floorplan)| {
             // Only for the floor on show. A drawing asked for on another floor, arriving
@@ -600,10 +721,17 @@ pub fn Floorplan() -> impl IntoView {
             let here = floor
                 .get_untracked()
                 .is_some_and(|floor| scope == format!("floorplan:{floor}"));
-            if !editing.get_untracked() || !here || drawn.get_value().as_ref() == Some(&plan) {
+            if !here || saving.get_untracked() || drawn.get_value().as_ref() == Some(&plan) {
                 return;
             }
             drawn.set_value(Some(plan.clone()));
+            if !editing.get_untracked() {
+                start_editing();
+                note.set(Some(
+                    "The assistant drew on the plan. Save keeps it; Cancel or Undo takes it away."
+                        .into(),
+                ));
+            }
             take.run(plan);
         }),
     }));
@@ -622,20 +750,6 @@ pub fn Floorplan() -> impl IntoView {
         });
     });
     on_cleanup(move || chats.lay(None));
-
-    let start_editing = move || {
-        draft.set(live.home.get_untracked().floorplan.clone());
-        past.set(Vec::new());
-        future.set(Vec::new());
-        picked.set(None);
-        arming.set(None);
-        arming_area.set(None);
-        tool.set(Tool::Select);
-        stop_drawing();
-        trouble.set(None);
-        note.set(None);
-        editing.set(true);
-    };
 
     let cancel = move || {
         editing.set(false);
@@ -1492,7 +1606,7 @@ pub fn Floorplan() -> impl IntoView {
                         let placed = editing.get().then(|| aimed.get()).flatten()?;
                         let here = view.get();
                         let size = 5.0 / here.scale;
-                        let caught = matches!(placed.caught, Caught::Middle(_));
+                        let caught = placed.on_the_middle();
                         let waiting = running.get().is_none();
                         Some(view! {
                             <g class="aids" transform=transform(here)>
@@ -1983,6 +2097,34 @@ pub fn Floorplan() -> impl IntoView {
                         <button type="button" aria-label="Zoom out" on:click=move |_| zoom_by(1.0 / 1.25)>"−"</button>
                         <button type="button" aria-label="Zoom in" on:click=move |_| zoom_by(1.25)>"+"</button>
                         <button type="button" on:click=move |_| fit()>"Fit"</button>
+                        // Only once the view has been moved: then what is on screen can be
+                        // made what Fit comes back to. And only on a Fit somebody set is there
+                        // anything to hand back.
+                        {move || if off_fit() {
+                            view! {
+                                <button
+                                    type="button"
+                                    class="set-fit"
+                                    title="Make this view what Fit comes back to, on this floor"
+                                    on:click=move |_| set_fit(true)
+                                >
+                                    "Set fit"
+                                </button>
+                            }.into_any()
+                        } else if chosen_fit.get().is_some() {
+                            view! {
+                                <button
+                                    type="button"
+                                    class="set-fit"
+                                    title="Go back to fitting the whole plan"
+                                    on:click=move |_| set_fit(false)
+                                >
+                                    "Reset fit"
+                                </button>
+                            }.into_any()
+                        } else {
+                            ().into_any()
+                        }}
                     </div>
                 </div>
                 {move || editing.get().then(|| view! { <SnapControl snap=snap /> })}
@@ -5239,6 +5381,27 @@ mod tests {
         assert_eq!(pick_at(&level, (200.0, 2.0), 20.0), Some(Pick::Wall(0)));
         assert_eq!(pick_at(&level, (200.0, 150.0), 20.0), Some(Pick::Area(0)));
         assert_eq!(pick_at(&level, (600.0, 150.0), 20.0), None);
+    }
+
+    /// A Fit somebody set is kept as a place on the plan, so it comes back the same in a
+    /// window of another size, and what is kept reads back as what was set.
+    #[test]
+    fn a_fit_somebody_set_is_a_place_on_the_plan() {
+        let view = Viewport {
+            scale: 0.8,
+            pan: (120.0, -40.0),
+        };
+        let framing = Framing::of(view, (500.0, 300.0));
+        let back = framing.view((500.0, 300.0));
+        assert!((back.scale - view.scale).abs() < 1e-9);
+        assert!((back.pan.0 - view.pan.0).abs() < 1e-9 && (back.pan.1 - view.pan.1).abs() < 1e-9);
+        // In a wider window the same place on the plan is still in the middle.
+        let wider = framing.view((800.0, 300.0));
+        assert_eq!(wider.world(800.0, 300.0), view.world(500.0, 300.0));
+        assert_eq!(Framing::read(&framing.written()), Some(framing));
+        for nothing in ["", "1,2", "1,2,3,4", "a,b,c", "0,1,1", "inf,1,1"] {
+            assert_eq!(Framing::read(nothing), None, "{nothing}");
+        }
     }
 
     #[test]

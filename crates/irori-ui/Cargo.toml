@@ -60,6 +60,12 @@ web-sys = { version = "0.3", features = [
     "KeyboardEvent",
     # The map (map.rs): a pin dragged, and the map zoomed with the wheel.
     "PointerEvent",
+    # A picture of a floorplan handed to the assistant (assistant.rs): the file chosen, and
+    # what is in it.
+    "HtmlInputElement",
+    "FileList",
+    "File",
+    "Blob",
 ] }
 # Already in the bundle transitively (leptos uses it); this is only so the copy button can await
 # the promise the clipboard API returns — no size cost of its own.

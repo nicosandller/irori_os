@@ -1333,7 +1333,7 @@
     .floorplan .handles circle { fill: var(--card); stroke: var(--ember); stroke-width: 2; }
 
     /* What a point being drawn has caught on. A line to the corner it is level with; the middle
-       of the wall beside it, as a diamond that swells when it takes hold; and the dot where a
+       of the wall beside it, as a diamond that swells when the point is on it; and the dot where a
        wall would start. */
     .floorplan .aids { pointer-events: none; }
     .floorplan .guide { stroke: var(--ember); stroke-width: 1; stroke-dasharray: 2 4;
@@ -1830,6 +1830,12 @@
     .floorplan .zoom { display: grid; gap: .4rem; pointer-events: auto; }
     .floorplan .zoom-buttons { display: flex; gap: .25rem; }
     .floorplan .zoom-buttons button { flex: 1; }
+    /* Offered only once the view has been moved off Fit, so it arrives: sliding out from
+       beside Fit, which is what it is about. */
+    .floorplan .zoom-buttons .set-fit { flex: 0 0 auto; white-space: nowrap; color: var(--ember);
+                                        border-color: color-mix(in srgb, var(--ember) 45%, var(--line));
+                                        animation: set-fit-in var(--dur-base) var(--ease-spring) backwards; }
+    @keyframes set-fit-in { from { opacity: 0; translate: -.5rem 0; scale: .9; } }
     /* The zoom wheel: a knurled strip seen edge on, faint until it is reached for. Its ridges
        are a pattern slid along by the zoom itself (`--roll`), so it turns whatever did the
        zooming, and springs to rest after a button's jump; held, it follows the hand exactly.
@@ -2498,6 +2504,30 @@
                          background: transparent; border: none; outline: none;
                          field-sizing: content; }
     .composer textarea::placeholder { color: var(--muted); }
+    /* A file to go with the question: a paperclip beside the box, and the file's name over it
+       once one is chosen, which drops in the way anything arriving in the chat does. */
+    .composer .attach { display: grid; place-items: center; width: 1.9rem; height: 1.9rem;
+                        flex: none; border-radius: 50%; color: var(--muted); cursor: pointer;
+                        transition: color var(--dur-fast) var(--ease-out),
+                                    background var(--dur-fast) var(--ease-out),
+                                    rotate var(--dur-base) var(--ease-spring); }
+    .composer .attach:hover { color: var(--ember); background: var(--sunk); rotate: -12deg; }
+    .composer .attach:focus-within { outline: 2px solid var(--ember); outline-offset: 1px; }
+    .composer .attach svg { width: 1.1rem; height: 1.1rem; }
+    .composer .attach input { position: absolute; width: 1px; height: 1px; opacity: 0;
+                              pointer-events: none; }
+    .attached { display: flex; align-items: center; gap: .4rem; margin: 0 .7rem .4rem;
+                padding: .3rem .4rem .3rem .6rem; font-size: .8rem; color: var(--fg);
+                background: var(--sunk); border: 1px solid var(--line); border-radius: .5rem;
+                animation: attached-in var(--dur-base) var(--ease-spring) backwards; }
+    @keyframes attached-in { from { opacity: 0; translate: 0 .4rem; scale: .96; } }
+    .attached svg { width: .95rem; height: .95rem; flex: none; color: var(--ember); }
+    .attached-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+                     white-space: nowrap; }
+    .attached button { flex: none; width: 1.4rem; height: 1.4rem; padding: 0; font: inherit;
+                       line-height: 1; color: var(--muted); background: none; border: 0;
+                       border-radius: 50%; cursor: pointer; }
+    .attached button:hover { color: var(--ember); background: var(--card); }
     .send { flex: none; display: grid; place-items: center; width: 2.1rem; height: 2.1rem;
             padding: 0; color: #fff; background: var(--ember); border: none; border-radius: 50%;
             cursor: pointer;

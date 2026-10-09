@@ -138,6 +138,67 @@ pub enum ChatEvent {
     Done,
 }
 
+/// A picture or a PDF given with a question, for the model to look at: a floorplan somebody
+/// already has, to draw the home from. Held for the one answer and never kept — the transcript
+/// only says that there was one.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Attachment {
+    pub name: String,
+    pub media_type: String,
+    /// The file itself, in base64.
+    pub data: String,
+}
+
+impl Attachment {
+    /// The most a file may be, in base64 characters: about 8 MB of file.
+    const MOST: usize = 11_000_000;
+
+    const KINDS: [&'static str; 5] = [
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+        "image/gif",
+        "application/pdf",
+    ];
+
+    fn is_pdf(&self) -> bool {
+        self.media_type == "application/pdf"
+    }
+
+    /// Why this can't be handed to a model, if it can't.
+    fn check(&self) -> Result<(), String> {
+        if !Self::KINDS.contains(&self.media_type.as_str()) {
+            return Err(
+                "That file isn't a picture or a PDF. A PNG, JPEG, WebP, GIF or PDF can be read."
+                    .into(),
+            );
+        }
+        if self.data.len() > Self::MOST {
+            return Err("That file is too big. Up to about 8 MB can be read.".into());
+        }
+        let base64 = |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=');
+        if self.data.is_empty() || !self.data.chars().all(base64) {
+            return Err("That file didn't arrive whole. Try attaching it again.".into());
+        }
+        Ok(())
+    }
+
+    /// Its name as it is said back: short, and nothing but the name.
+    fn said(&self) -> String {
+        let name: String = self
+            .name
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(80)
+            .collect();
+        if name.trim().is_empty() {
+            "a file".to_owned()
+        } else {
+            name
+        }
+    }
+}
+
 struct Env<'a> {
     core: &'a Core,
     config: &'a Config,
@@ -734,9 +795,22 @@ async fn answer(
     scope: String,
     message: String,
     plan: Option<Floorplan>,
+    attachment: Option<Attachment>,
     tx: mpsc::Sender<ChatEvent>,
 ) {
     if let Err(error) = check_scope(&scope) {
+        let _ = tx.send(ChatEvent::Error(error)).await;
+        return;
+    }
+    // A picture is for drawing a floor from, so it is taken where a floor can be drawn.
+    let refused = match &attachment {
+        Some(_) if floor_of(&scope).is_none() => {
+            Some("A picture can be given on the Floorplan page, to draw from.".to_owned())
+        }
+        Some(attachment) => attachment.check().err(),
+        None => None,
+    };
+    if let Some(error) = refused {
         let _ = tx.send(ChatEvent::Error(error)).await;
         return;
     }
@@ -824,6 +898,30 @@ async fn answer(
     // A small model on this machine is not offered the tools. It asks for the list it was
     // just given, then again, and never gets to the answer. The picture of the home is
     // already in front of it, and leaving the tools out is fewer words for it to read.
+    if provider.local() && attachment.as_ref().is_some_and(Attachment::is_pdf) {
+        let _ = tx
+            .send(ChatEvent::Error(
+                "A model on this machine can't read a PDF. Attach a picture of the plan, or \
+                 choose a cloud model in Settings."
+                    .into(),
+            ))
+            .await;
+        return;
+    }
+    let system = if attachment.is_some() {
+        format!(
+            "{system}The person attached a floorplan, as a picture or a PDF. To draw the home \
+             from it: read off each room and its measurements; where it gives none, assume \
+             ordinary sizes from the proportions and say what you assumed. Work in whole \
+             centimetres, start at [0,0] unless there is already a drawing to sit beside, keep \
+             walls square to each other where the picture's are, make walls that meet share \
+             their corner exactly, and put doors and windows where it shows them. Trace only \
+             rooms the home already has, by their ids; say which rooms on the picture have no \
+             room to be traced as.\n"
+        )
+    } else {
+        system
+    };
     let system = if provider.local() {
         format!(
             "{system}Answer only from what is written above. When the answer isn't there, say \
@@ -833,6 +931,16 @@ async fn answer(
         system
     };
     let mut conversation = Conversation::from_turns(&system, earlier, &message);
+    // What is remembered of a question with a file is that there was one.
+    let message = match &attachment {
+        Some(attachment) => format!("{message}\n\n(attached: {})", attachment.said()),
+        None => message,
+    };
+    if let Some(attachment) = attachment
+        && let Some(Item::User(text)) = conversation.items.pop()
+    {
+        conversation.items.push(Item::Shown(text, attachment));
+    }
     let _turn = if provider.local() {
         match LOCAL_TURN.try_lock() {
             Ok(turn) => Some(turn),
@@ -1037,6 +1145,8 @@ struct Conversation {
 
 enum Item {
     User(String),
+    /// What the person said, with the file they gave to look at.
+    Shown(String, Attachment),
     Assistant(String),
     Call(ToolCall),
     Result {
@@ -1080,6 +1190,8 @@ impl Conversation {
                 .iter()
                 .map(|item| match item {
                     Item::User(text) | Item::Assistant(text) => text.chars().count(),
+                    // A picture is read as about a thousand words, whatever its size.
+                    Item::Shown(text, _) => text.chars().count() + 6_000,
                     Item::Call(call) => call.name.len() + call.arguments.chars().count(),
                     Item::Result { body, .. } => body.chars().count(),
                 })
@@ -1130,7 +1242,8 @@ async fn complete(
         Provider::Anthropic { url, key, model } => {
             let mut body = json!({
                 "model": model,
-                "max_tokens": 1024,
+                // A whole floor is a long list of walls: drawing gets room to finish one.
+                "max_tokens": if tools_for.is_some_and(|(_, drawing)| drawing) { 4096 } else { 1024 },
                 "stream": true,
                 "system": conversation.system,
                 "messages": anthropic_messages(conversation),
@@ -1255,6 +1368,15 @@ fn openai_messages(conversation: &Conversation) -> Vec<Value> {
     for item in &conversation.items {
         messages.push(match item {
             Item::User(text) => json!({"role": "user", "content": text}),
+            Item::Shown(text, file) => {
+                let url = format!("data:{};base64,{}", file.media_type, file.data);
+                let shown = if file.is_pdf() {
+                    json!({"type": "file", "file": {"filename": file.said(), "file_data": url}})
+                } else {
+                    json!({"type": "image_url", "image_url": {"url": url}})
+                };
+                json!({"role": "user", "content": [{"type": "text", "text": text}, shown]})
+            }
             Item::Assistant(text) => json!({"role": "assistant", "content": text}),
             Item::Call(call) => json!({
                 "role": "assistant",
@@ -1278,6 +1400,9 @@ fn ollama_messages(conversation: &Conversation) -> Vec<Value> {
     for item in &conversation.items {
         messages.push(match item {
             Item::User(text) => json!({"role": "user", "content": text}),
+            Item::Shown(text, file) => {
+                json!({"role": "user", "content": text, "images": [file.data]})
+            }
             Item::Assistant(text) => json!({"role": "assistant", "content": text}),
             Item::Call(call) => json!({
                 "role": "assistant",
@@ -1302,6 +1427,20 @@ fn anthropic_messages(conversation: &Conversation) -> Vec<Value> {
     for item in &conversation.items {
         match item {
             Item::User(text) => messages.push(json!({"role": "user", "content": text})),
+            Item::Shown(text, file) => messages.push(json!({
+                "role": "user",
+                "content": [
+                    {
+                        "type": if file.is_pdf() { "document" } else { "image" },
+                        "source": {
+                            "type": "base64",
+                            "media_type": file.media_type,
+                            "data": file.data,
+                        },
+                    },
+                    {"type": "text", "text": text},
+                ]
+            })),
             Item::Assistant(text) => messages.push(json!({"role": "assistant", "content": text})),
             Item::Call(call) => messages.push(json!({
                 "role": "assistant",
@@ -2135,8 +2274,8 @@ async fn system_prompt(
                 unsound.unwrap_or_default()
             )),
             (true, false) => prompt.push_str(
-                "The person is editing the plan, and here you may draw on it with \
-                 `edit_floorplan`: walls, doors, windows, and the outlines of rooms the home \
+                "Here you may draw on the plan with `edit_floorplan`, whether or not the \
+                 person has pressed Edit — drawing opens the plan for editing if it wasn't: walls, doors, windows, and the outlines of rooms the home \
                  already has. Put everything a request needs into one call. Draw a room as \
                  walls that share their corners exactly, and trace the room on those same \
                  corners. When the person doesn't say where, draw beside what is there, not \
@@ -2716,9 +2855,10 @@ pub async fn take_turn(
     scope: String,
     message: String,
     plan: Option<Floorplan>,
+    attachment: Option<Attachment>,
     tx: mpsc::Sender<ChatEvent>,
 ) {
-    answer(turn.env(), scope, message, plan, tx).await
+    answer(turn.env(), scope, message, plan, attachment, tx).await
 }
 
 /// How a turn that is no longer running came out.
@@ -3076,6 +3216,67 @@ mod tests {
         assert_eq!(floor_of("device:ground"), None);
         assert!(check_scope("settings:lamp").is_err());
         assert!(check_scope("logs").is_err());
+    }
+
+    fn shown(media_type: &str) -> Conversation {
+        let mut conversation = Conversation::from_turns("system", &[], "Draw this.");
+        conversation.items.clear();
+        conversation.items.push(Item::Shown(
+            "Draw this.".into(),
+            Attachment {
+                name: "plan".into(),
+                media_type: media_type.into(),
+                data: "QUJD".into(),
+            },
+        ));
+        conversation
+    }
+
+    /// Each provider is handed a file in its own words, with the question beside it.
+    #[test]
+    fn a_file_goes_to_each_provider_the_way_it_reads_one() {
+        let png = shown("image/png");
+        let openai = &openai_messages(&png)[1]["content"];
+        assert_eq!(openai[0]["text"], "Draw this.");
+        assert_eq!(openai[1]["image_url"]["url"], "data:image/png;base64,QUJD");
+        let anthropic = &anthropic_messages(&png)[0]["content"];
+        assert_eq!(anthropic[0]["type"], "image");
+        assert_eq!(anthropic[0]["source"]["data"], "QUJD");
+        assert_eq!(anthropic[1]["text"], "Draw this.");
+        assert_eq!(ollama_messages(&png)[1]["images"][0], "QUJD");
+
+        let pdf = shown("application/pdf");
+        assert_eq!(
+            anthropic_messages(&pdf)[0]["content"][0]["type"],
+            "document"
+        );
+        let file = &openai_messages(&pdf)[1]["content"][1];
+        assert_eq!(file["type"], "file");
+        assert_eq!(
+            file["file"]["file_data"],
+            "data:application/pdf;base64,QUJD"
+        );
+    }
+
+    #[test]
+    fn a_file_has_to_be_a_picture_or_a_pdf_and_whole() {
+        let file = |media_type: &str, data: &str| Attachment {
+            name: "plan.png".into(),
+            media_type: media_type.into(),
+            data: data.into(),
+        };
+        assert!(file("image/png", "QUJD").check().is_ok());
+        assert!(file("application/pdf", "QUJD").check().is_ok());
+        assert!(file("text/html", "QUJD").check().is_err());
+        assert!(file("image/png", "").check().is_err());
+        assert!(file("image/png", "not base64!").check().is_err());
+        let huge = "A".repeat(Attachment::MOST + 1);
+        assert!(file("image/png", &huge).check().is_err());
+        let named = Attachment {
+            name: "a\nb".repeat(60),
+            ..file("image/png", "QUJD")
+        };
+        assert!(named.said().chars().count() <= 80 && !named.said().contains('\n'));
     }
 
     #[test]
