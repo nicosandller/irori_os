@@ -277,7 +277,11 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // own connection so a state change does not wait on a session or a chat.
             let history = history::History::open(&db.path, retain_days)
                 .context("failed to open entity history")?;
-            tokio::spawn(history::record(history.clone(), core.subscribe()));
+            tokio::spawn(history::record(
+                core.clone(),
+                history.clone(),
+                core.subscribe(),
+            ));
             // Engines that ask for history (`history:read`) read the same shelf, and engines
             // whose permissions name the config directory are told where it is.
             core.use_history(Arc::new(history.clone()));

@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use irori_config::{Problem, ServerSettings, Store};
+use irori_config::{Problem, RecorderSection, ServerSettings, Store};
 use irori_core::Core;
 use std::collections::BTreeSet;
 
@@ -27,9 +27,13 @@ const POLL: Duration = Duration::from_secs(2);
 #[derive(Debug, Clone)]
 pub struct Config(Arc<Mutex<Store>>);
 
-/// What `[server]` said when Irori started, so an edit can be told apart from what's in force.
+/// What the startup-only tables in `irori.toml` said, so an edit can be told apart from what's
+/// in force. `[server]` and `[recorder]` are both read once, when the process starts.
 #[derive(Debug)]
-struct Started(ServerSettings);
+struct Started {
+    server: ServerSettings,
+    recorder: RecorderSection,
+}
 
 /// Why an edit couldn't be made. Not an I/O failure — that's an `anyhow::Error`.
 #[derive(Debug)]
@@ -436,8 +440,13 @@ impl Config {
 
     /// Picks up edits made outside Irori. Runs until the process ends.
     pub async fn watch(self, core: Core) {
-        let started = Started(self.0.lock().await.irori().server);
-        let mut warned: Option<ServerSettings> = None;
+        let irori = self.0.lock().await.irori();
+        let started = Started {
+            server: irori.server,
+            recorder: irori.recorder,
+        };
+        let mut warned_server: Option<ServerSettings> = None;
+        let mut warned_recorder: Option<RecorderSection> = None;
         loop {
             tokio::time::sleep(POLL).await;
             let mut store = self.0.lock().await;
@@ -450,13 +459,22 @@ impl Config {
             let irori = store.irori();
             core.apply_disabled_extensions(irori.extensions.disabled);
             core.apply_home(store.home());
-            // Where Irori listens and logs can't change under a running server. Say so, once per
-            // edit, rather than leaving someone wondering why their change did nothing.
-            if irori.server != started.0 && warned.as_ref() != Some(&irori.server) {
+            // Where Irori listens, and how long it keeps history, can't change under a running
+            // server. Say so, once per edit, rather than leaving someone wondering why their
+            // change did nothing.
+            if irori.server != started.server && warned_server.as_ref() != Some(&irori.server) {
                 tracing::warn!(
                     "irori.toml's [server] settings changed; they take effect when Irori restarts"
                 );
-                warned = Some(irori.server);
+                warned_server = Some(irori.server);
+            }
+            if irori.recorder != started.recorder
+                && warned_recorder.as_ref() != Some(&irori.recorder)
+            {
+                tracing::warn!(
+                    "irori.toml's [recorder] retain_days changed; it takes effect when Irori restarts"
+                );
+                warned_recorder = Some(irori.recorder);
             }
         }
     }

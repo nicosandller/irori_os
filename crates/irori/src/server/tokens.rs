@@ -132,6 +132,7 @@ impl TokenStore {
 
     fn conn(&self) -> rusqlite::Result<Connection> {
         let conn = Connection::open(&self.db)?;
+        crate::db::wait_when_busy(&conn)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS tokens (
                 token_hash TEXT PRIMARY KEY,

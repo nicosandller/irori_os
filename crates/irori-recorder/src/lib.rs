@@ -1,29 +1,29 @@
-//! Entity history on disk.
+//! Entity history on disk, in the home's `irori.db`.
 //!
-//! The running process used to remember the last day of changes in memory, and forget them when
-//! it exited. This crate is that diary: each real change is appended to `state_history` in the
-//! home's `irori.db`, and a later start reads it back.
-//!
-//! One thread owns the connection. Everyone else sends it a message — save, forget, read, or
-//! stop — and the messages are applied in the order they were sent, so a read sees the saves
-//! that were asked for before it. A burst of saves shares one transaction. When the queue is
-//! full, a new change is dropped and counted rather than making the event loop wait. Forgetting
-//! an entity and reading its history do wait, because dropping either of those would be a wrong
-//! answer rather than a missed sample.
+//! Each real change is appended to `state_history`, so a later start still has it. One thread
+//! owns the connection. Everyone else sends it a message — save, forget, read, or stop — and
+//! the messages are applied in the order they were sent, so a read sees the saves that were
+//! asked for before it. A burst of saves shares one transaction. When too many saves are
+//! waiting, a new change is dropped and counted rather than making the event loop wait.
+//! Forgetting an entity and reading its history are not dropped, and they are not stuck behind
+//! a full save queue: a missed sample is a gap, and a forgotten delete would leave rows for
+//! something that has left the home.
 //!
 //! Automation traces are not stored here. The Automations extension keeps its own runs.
 
+use std::collections::{HashSet, VecDeque};
 use std::fmt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use irori_types::{EntityId, EntityState, Timestamp};
-use jiff::ToSpan as _;
 use rusqlite::Connection;
+
+#[cfg(test)]
+use jiff::ToSpan as _;
 
 /// How long readings are kept when a home does not say otherwise.
 pub const DEFAULT_RETAIN_DAYS: u32 = 7;
@@ -36,6 +36,16 @@ const QUEUE: usize = 1_024;
 
 /// Saves written in one transaction.
 const BURST: usize = 64;
+
+/// How often rows older than the retention window are deleted while the process is up.
+const PRUNE_EVERY: Duration = Duration::from_secs(60 * 60);
+
+/// How long to wait before trying a batch again after the write failed.
+const RETRY_WRITE: Duration = Duration::from_secs(1);
+
+/// How long this connection waits when another one holds the file. The same wait the rest of
+/// the process uses: the timeout belongs to the waiter.
+const BUSY: Duration = Duration::from_secs(5);
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS state_history (
@@ -73,13 +83,30 @@ impl Error {
 enum Job {
     Append(Box<EntityState>),
     Forget(EntityId),
+    /// Delete every row whose entity is not in this list. Sent when a listener fell behind and
+    /// may have missed a removal.
+    ForgetMissing(Vec<EntityId>),
     Query {
         entity_id: EntityId,
         since: Timestamp,
         reply: std::sync::mpsc::Sender<Vec<EntityState>>,
     },
     Check(std::sync::mpsc::Sender<bool>),
-    Shutdown,
+}
+
+struct Queue {
+    jobs: VecDeque<Job>,
+    /// `Append` jobs in `jobs`. Other jobs do not count: a removal has to get in even when
+    /// saves have filled the queue.
+    appends: usize,
+}
+
+struct Mailbox {
+    queue: Mutex<Queue>,
+    wake: Condvar,
+    /// False once the writer has stopped, so a caller does not wait for an answer that will
+    /// never come.
+    alive: AtomicBool,
 }
 
 /// The diary. Cloning shares the writer thread. The thread stops when the last clone is dropped.
@@ -89,7 +116,7 @@ pub struct Recorder {
 }
 
 struct Shared {
-    tx: SyncSender<Job>,
+    mailbox: Arc<Mailbox>,
     shutdown: Arc<AtomicBool>,
     dropped: Arc<AtomicU64>,
     thread: Mutex<Option<JoinHandle<()>>>,
@@ -104,13 +131,12 @@ impl fmt::Debug for Recorder {
 impl Drop for Shared {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::SeqCst);
-        // Wakes a thread that is waiting. If the queue is already full, the flag is what it
-        // sees once it finishes the batch it is in.
-        let _ = self.tx.try_send(Job::Shutdown);
+        // Wakes a thread that is waiting. The flag is what it sees if it is inside a batch.
+        self.mailbox.wake.notify_all();
         let handle = self
             .thread
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .take();
         if let Some(handle) = handle
             && let Err(error) = handle.join()
@@ -120,39 +146,96 @@ impl Drop for Shared {
     }
 }
 
+/// Answers anyone still waiting when the writer stops, including after a panic.
+struct MarkDead(Arc<Mailbox>);
+
+impl Drop for MarkDead {
+    fn drop(&mut self) {
+        let mut queue = lock(&self.0.queue);
+        self.0.alive.store(false, Ordering::SeqCst);
+        for job in queue.jobs.drain(..) {
+            abandon(job);
+        }
+    }
+}
+
+fn lock(queue: &Mutex<Queue>) -> MutexGuard<'_, Queue> {
+    queue.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn abandon(job: Job) {
+    match job {
+        Job::Query { reply, .. } => {
+            let _ = reply.send(Vec::new());
+        }
+        Job::Check(reply) => {
+            let _ = reply.send(false);
+        }
+        Job::Append(_) | Job::Forget(_) | Job::ForgetMissing(_) => {}
+    }
+}
+
 impl Recorder {
     /// Opens `path` (the home's `irori.db`) and starts the writer. `retain_days` is at least 1.
-    /// Rows older than that are deleted before this returns, and about once an hour after.
+    /// Rows older than that are deleted before this returns, and about once an hour after, even
+    /// while saves keep arriving.
     pub fn open(path: &Path, retain_days: u32) -> Result<Self, Error> {
+        Self::start(path, retain_days, PRUNE_EVERY)
+    }
+
+    /// `prune_every` is how often retention runs while the process is up. Tests pass a short one.
+    #[cfg(test)]
+    fn open_pruning_every(
+        path: &Path,
+        retain_days: u32,
+        prune_every: Duration,
+    ) -> Result<Self, Error> {
+        Self::start(path, retain_days, prune_every)
+    }
+
+    fn start(path: &Path, retain_days: u32, prune_every: Duration) -> Result<Self, Error> {
         if retain_days == 0 {
             return Err(Error::new("retain_days must be at least 1"));
         }
         let path = path.to_path_buf();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-        let (tx, rx) = sync_channel(QUEUE);
+        let mailbox = Arc::new(Mailbox {
+            queue: Mutex::new(Queue {
+                jobs: VecDeque::new(),
+                appends: 0,
+            }),
+            wake: Condvar::new(),
+            alive: AtomicBool::new(true),
+        });
         let shutdown = Arc::new(AtomicBool::new(false));
         let dropped = Arc::new(AtomicU64::new(0));
+        let mailbox_for_thread = Arc::clone(&mailbox);
         let shutdown_for_thread = Arc::clone(&shutdown);
         let handle = std::thread::Builder::new()
             .name("irori-recorder".to_owned())
-            .spawn(move || match open_connection(&path) {
-                Ok(connection) => {
-                    let mut last_write_ok = true;
-                    if let Err(error) = prune(&connection, retain_days) {
-                        last_write_ok = false;
-                        tracing::warn!(%error, "old history could not be deleted");
+            .spawn(move || {
+                // Runs on the way out, including a panic, so a waiting read is not left hanging.
+                let _mark_dead = MarkDead(Arc::clone(&mailbox_for_thread));
+                match open_connection(&path) {
+                    Ok(connection) => {
+                        let mut last_write_ok = true;
+                        if let Err(error) = prune(&connection, retain_days) {
+                            last_write_ok = false;
+                            tracing::warn!(%error, "old history could not be deleted");
+                        }
+                        let _ = ready_tx.send(Ok(()));
+                        serve(
+                            connection,
+                            &mailbox_for_thread,
+                            &shutdown_for_thread,
+                            retain_days,
+                            prune_every,
+                            last_write_ok,
+                        );
                     }
-                    let _ = ready_tx.send(Ok(()));
-                    serve(
-                        connection,
-                        rx,
-                        shutdown_for_thread,
-                        retain_days,
-                        last_write_ok,
-                    );
-                }
-                Err(error) => {
-                    let _ = ready_tx.send(Err(error));
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error));
+                    }
                 }
             })
             .map_err(|error| Error::new(format!("could not start the recorder thread: {error}")))?;
@@ -160,7 +243,7 @@ impl Recorder {
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(Self {
                 shared: Arc::new(Shared {
-                    tx,
+                    mailbox,
                     shutdown,
                     dropped,
                     thread: Mutex::new(Some(handle)),
@@ -182,9 +265,14 @@ impl Recorder {
     /// Remembers one change. If the writer is behind, the change is dropped and a warning is
     /// logged (the first time, and every thousand after).
     pub fn append(&self, state: EntityState) {
-        match self.shared.tx.try_send(Job::Append(Box::new(state))) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
+        {
+            let mut queue = lock(&self.shared.mailbox.queue);
+            if !self.shared.mailbox.alive.load(Ordering::SeqCst) {
+                tracing::warn!("the recorder has stopped; a state change was not saved");
+                return;
+            }
+            if queue.appends >= QUEUE {
+                drop(queue);
                 let dropped = self.shared.dropped.fetch_add(1, Ordering::Relaxed) + 1;
                 if dropped == 1 || dropped.is_multiple_of(1_000) {
                     tracing::warn!(
@@ -192,35 +280,54 @@ impl Recorder {
                         "the recorder fell behind and dropped state changes"
                     );
                 }
+                return;
             }
-            Err(TrySendError::Disconnected(_)) => {
-                tracing::warn!("the recorder has stopped; a state change was not saved");
-            }
+            queue.jobs.push_back(Job::Append(Box::new(state)));
+            queue.appends += 1;
         }
+        self.shared.mailbox.wake.notify_one();
     }
 
-    /// Deletes every stored change for this entity. Waits until the delete is in the queue, so
-    /// it lands after the changes that were already saved and is not itself dropped.
+    /// Deletes every stored change for this entity. The delete is queued behind the saves
+    /// already accepted, and it is not dropped when those saves have filled the queue.
     pub fn forget(&self, entity_id: &EntityId) {
-        if self.shared.tx.send(Job::Forget(entity_id.clone())).is_err() {
-            tracing::warn!("the recorder has stopped; a removed entity's history was not deleted");
+        self.enqueue(
+            Job::Forget(entity_id.clone()),
+            "a removed entity's history was not deleted",
+        );
+    }
+
+    /// Deletes history for every entity that is not in `live`. Same ordering rules as
+    /// [`Self::forget`]: it lands after saves already accepted, and a full save queue does not
+    /// drop it or make the caller wait.
+    pub fn forget_missing(&self, live: &[EntityId]) {
+        self.enqueue(
+            Job::ForgetMissing(live.to_vec()),
+            "history for entities that left could not be deleted",
+        );
+    }
+
+    fn enqueue(&self, job: Job, stopped: &str) {
+        {
+            let mut queue = lock(&self.shared.mailbox.queue);
+            if !self.shared.mailbox.alive.load(Ordering::SeqCst) {
+                tracing::warn!("the recorder has stopped; {stopped}");
+                return;
+            }
+            queue.jobs.push_back(job);
         }
+        self.shared.mailbox.wake.notify_one();
     }
 
     /// Changes for `entity_id` with `last_updated >= since`, oldest first. At most
     /// [`MAX_RETURNED`], keeping the newest when there are more.
     pub fn since(&self, entity_id: &EntityId, since: Timestamp) -> Vec<EntityState> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        if self
-            .shared
-            .tx
-            .send(Job::Query {
-                entity_id: entity_id.clone(),
-                since,
-                reply: reply_tx,
-            })
-            .is_err()
-        {
+        if !self.enqueue_waiting(Job::Query {
+            entity_id: entity_id.clone(),
+            since,
+            reply: reply_tx,
+        }) {
             tracing::warn!("the recorder has stopped; history could not be read");
             return Vec::new();
         }
@@ -230,10 +337,23 @@ impl Recorder {
     /// Whether a trivial read works and the last write succeeded.
     pub fn check(&self) -> bool {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        if self.shared.tx.send(Job::Check(reply_tx)).is_err() {
+        if !self.enqueue_waiting(Job::Check(reply_tx)) {
             return false;
         }
         reply_rx.recv().unwrap_or(false)
+    }
+
+    /// Queues `job` unless the writer has stopped. The caller holds the reply channel.
+    fn enqueue_waiting(&self, job: Job) -> bool {
+        {
+            let mut queue = lock(&self.shared.mailbox.queue);
+            if !self.shared.mailbox.alive.load(Ordering::SeqCst) {
+                return false;
+            }
+            queue.jobs.push_back(job);
+        }
+        self.shared.mailbox.wake.notify_one();
+        true
     }
 }
 
@@ -241,7 +361,7 @@ fn open_connection(path: &Path) -> Result<Connection, Error> {
     let connection = Connection::open(path)
         .map_err(|error| Error::new(format!("failed to open {}: {error}", path.display())))?;
     connection
-        .busy_timeout(Duration::from_secs(5))
+        .busy_timeout(BUSY)
         .map_err(|error| Error::new(format!("failed to set a busy timeout: {error}")))?;
     let journal: String = connection
         .pragma_update_and_check(None, "journal_mode", "wal", |row| row.get(0))
@@ -263,68 +383,93 @@ fn open_connection(path: &Path) -> Result<Connection, Error> {
 
 fn serve(
     mut connection: Connection,
-    rx: Receiver<Job>,
-    shutdown: Arc<AtomicBool>,
+    mailbox: &Mailbox,
+    shutdown: &AtomicBool,
     retain_days: u32,
+    prune_every: Duration,
     mut last_write_ok: bool,
 ) {
     let mut last_prune = Instant::now();
     let mut batch = Vec::new();
     loop {
         if shutdown.load(Ordering::SeqCst) {
-            drain(
-                &mut connection,
-                &rx,
-                &mut batch,
-                &mut last_write_ok,
-                &shutdown,
-            );
+            let rest = {
+                let mut queue = lock(&mailbox.queue);
+                queue.appends = 0;
+                std::mem::take(&mut queue.jobs)
+            };
+            for job in rest {
+                apply(job, &mut connection, &mut batch, &mut last_write_ok);
+            }
+            write_batch(&mut connection, &mut batch, &mut last_write_ok);
             break;
         }
-        let first = match rx.recv_timeout(Duration::from_secs(60)) {
-            Ok(job) => job,
-            Err(RecvTimeoutError::Timeout) => {
-                if last_prune.elapsed() >= Duration::from_secs(60 * 60) {
-                    note_write(&mut last_write_ok, prune(&connection, retain_days));
-                    last_prune = Instant::now();
+        // Checked on every turn, not only after a quiet minute. A page that polls health, or
+        // an entity that keeps changing, would otherwise never leave the queue idle long
+        // enough for the old timeout path to delete anything.
+        if last_prune.elapsed() >= prune_every {
+            write_batch(&mut connection, &mut batch, &mut last_write_ok);
+            // A prune that succeeds is a write, but it must not paint over a batch that just
+            // failed and is waiting to be tried again.
+            match prune(&connection, retain_days) {
+                Ok(()) if batch.is_empty() => last_write_ok = true,
+                Ok(()) => {}
+                Err(error) => {
+                    last_write_ok = false;
+                    tracing::warn!(%error, "old history could not be deleted");
                 }
-                continue;
             }
-            Err(RecvTimeoutError::Disconnected) => break,
-        };
-        let mut jobs = vec![first];
-        while jobs.len() < BURST {
-            match rx.try_recv() {
-                Ok(job) => jobs.push(job),
-                Err(_) => break,
-            }
+            last_prune = Instant::now();
+        } else if !batch.is_empty() {
+            write_batch(&mut connection, &mut batch, &mut last_write_ok);
         }
+        let jobs = recv_burst(mailbox, shutdown, wait_for(last_prune, prune_every, &batch));
         for job in jobs {
-            apply(
-                job,
-                &mut connection,
-                &mut batch,
-                &mut last_write_ok,
-                &shutdown,
-            );
+            apply(job, &mut connection, &mut batch, &mut last_write_ok);
         }
         write_batch(&mut connection, &mut batch, &mut last_write_ok);
     }
 }
 
-/// Applies whatever is already queued, then commits. Used when stopping, so a change that was
-/// accepted before shutdown is not left in the channel.
-fn drain(
-    connection: &mut Connection,
-    rx: &Receiver<Job>,
-    batch: &mut Vec<EntityState>,
-    last_write_ok: &mut bool,
-    shutdown: &AtomicBool,
-) {
-    while let Ok(job) = rx.try_recv() {
-        apply(job, connection, batch, last_write_ok, shutdown);
+/// How long to sleep when nothing is queued. A failed batch is retried soon; otherwise sleep
+/// until the next retention pass.
+fn wait_for(last_prune: Instant, prune_every: Duration, batch: &[EntityState]) -> Duration {
+    let until_prune = prune_every.saturating_sub(last_prune.elapsed());
+    if batch.is_empty() {
+        until_prune
+    } else {
+        until_prune.min(RETRY_WRITE)
     }
-    write_batch(connection, batch, last_write_ok);
+}
+
+fn recv_burst(mailbox: &Mailbox, shutdown: &AtomicBool, wait_for: Duration) -> Vec<Job> {
+    let mut queue = lock(&mailbox.queue);
+    let started = Instant::now();
+    while queue.jobs.is_empty() && !shutdown.load(Ordering::SeqCst) {
+        let remaining = wait_for.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        let (guard, waited) = mailbox
+            .wake
+            .wait_timeout(queue, remaining)
+            .unwrap_or_else(PoisonError::into_inner);
+        queue = guard;
+        if waited.timed_out() {
+            break;
+        }
+    }
+    let mut jobs = Vec::new();
+    while jobs.len() < BURST {
+        let Some(job) = queue.jobs.pop_front() else {
+            break;
+        };
+        if matches!(job, Job::Append(_)) {
+            queue.appends = queue.appends.saturating_sub(1);
+        }
+        jobs.push(job);
+    }
+    jobs
 }
 
 fn apply(
@@ -332,13 +477,21 @@ fn apply(
     connection: &mut Connection,
     batch: &mut Vec<EntityState>,
     last_write_ok: &mut bool,
-    shutdown: &AtomicBool,
 ) {
     match job {
         Job::Append(state) => batch.push(*state),
         Job::Forget(entity_id) => {
+            // Drop it from the batch too. A failed write keeps the batch, and writing it later
+            // would put the removed entity back.
+            batch.retain(|state| state.entity_id != entity_id);
             write_batch(connection, batch, last_write_ok);
             note_write(last_write_ok, forget(connection, &entity_id));
+        }
+        Job::ForgetMissing(live) => {
+            let keep: HashSet<&EntityId> = live.iter().collect();
+            batch.retain(|state| keep.contains(&state.entity_id));
+            write_batch(connection, batch, last_write_ok);
+            note_write(last_write_ok, forget_missing(connection, &live));
         }
         Job::Query {
             entity_id,
@@ -361,7 +514,6 @@ fn apply(
                 .is_ok();
             let _ = reply.send(*last_write_ok && readable);
         }
-        Job::Shutdown => shutdown.store(true, Ordering::SeqCst),
     }
 }
 
@@ -373,8 +525,18 @@ fn write_batch(
     if batch.is_empty() {
         return;
     }
-    note_write(last_write_ok, insert_many(connection, batch));
-    batch.clear();
+    // Keep the batch when the commit fails. The next turn tries it again. Clearing here would
+    // drop changes the queue had already accepted, which is not the full-queue drop policy.
+    match insert_many(connection, batch) {
+        Ok(()) => {
+            *last_write_ok = true;
+            batch.clear();
+        }
+        Err(error) => {
+            *last_write_ok = false;
+            tracing::warn!(%error, "history could not be written");
+        }
+    }
 }
 
 fn note_write(last_write_ok: &mut bool, result: Result<(), String>) {
@@ -432,6 +594,45 @@ fn forget(connection: &Connection, entity_id: &EntityId) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+/// Deletes rows for entities that are not in `live`. A temp table, so a large home is not
+/// limited by SQLite's bound-variable cap. An empty `live` deletes every row: nothing in the
+/// home means nothing to keep.
+fn forget_missing(connection: &mut Connection, live: &[EntityId]) -> Result<(), String> {
+    if live.is_empty() {
+        return connection
+            .execute("DELETE FROM state_history", [])
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+    }
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS history_live (entity_id TEXT PRIMARY KEY);
+             DELETE FROM history_live",
+        )
+        .map_err(|error| error.to_string())?;
+    {
+        let mut statement = transaction
+            .prepare("INSERT INTO history_live (entity_id) VALUES (?1)")
+            .map_err(|error| error.to_string())?;
+        for id in live {
+            statement
+                .execute([id.as_str()])
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    transaction
+        .execute(
+            "DELETE FROM state_history
+             WHERE entity_id NOT IN (SELECT entity_id FROM history_live)",
+            [],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())
+}
+
 fn read(
     connection: &Connection,
     entity_id: &EntityId,
@@ -484,9 +685,12 @@ fn prune(connection: &Connection, retain_days: u32) -> Result<(), String> {
 
 fn cutoff_ns(retain_days: u32) -> Option<i64> {
     // A timestamp has no calendar, so a day here is 24 hours. `Span::days` is refused on a
-    // timestamp for that reason.
+    // timestamp for that reason. `try_hours` instead of `hours`: a `u32` of days can ask for
+    // more hours than a span can hold, and the panicking constructor would take the writer
+    // thread down before the database was ready.
     let hours = i64::from(retain_days).checked_mul(24)?;
-    let cutoff = jiff::Timestamp::now().checked_sub(hours.hours()).ok()?;
+    let span = jiff::Span::new().try_hours(hours).ok()?;
+    let cutoff = jiff::Timestamp::now().checked_sub(span).ok()?;
     i64::try_from(cutoff.as_nanosecond()).ok()
 }
 
@@ -699,5 +903,90 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let error = Recorder::open(&dir.path().join("irori.db"), 0).expect_err("refused");
         assert_eq!(error.to_string(), "retain_days must be at least 1");
+    }
+
+    #[test]
+    fn retention_runs_while_saves_keep_arriving() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("irori.db");
+        let recorder =
+            Recorder::open_pruning_every(&path, 1, Duration::from_millis(200)).expect("open");
+        let plug = entity("switch.plug");
+        recorder.append(sample("switch.plug", true, at("2020-01-01T00:00:00Z")));
+        recorder.append(sample("switch.plug", false, now()));
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(2) {
+            // A check is a job. The old prune ran only after a minute with no jobs at all.
+            assert!(recorder.check(), "the writer is still up");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let seen = recorder.since(&plug, at("1970-01-01T00:00:00Z"));
+        assert_eq!(
+            seen.len(),
+            1,
+            "the 2020 reading was deleted while the writer was busy"
+        );
+        assert_ne!(seen[0].last_updated, at("2020-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn a_retention_longer_than_a_span_keeps_the_rows() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("irori.db");
+        let recorder = Recorder::open(&path, u32::MAX)
+            .expect("a span that does not fit does not stop the writer");
+        let when = now();
+        recorder.append(sample("switch.plug", true, when));
+        let seen = recorder.since(&entity("switch.plug"), at("1970-01-01T00:00:00Z"));
+        assert_eq!(seen.len(), 1, "rows stay when the cutoff cannot be built");
+        assert!(recorder.check());
+    }
+
+    #[test]
+    fn entities_that_are_no_longer_in_the_home_lose_their_rows() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let recorder = open(&dir);
+        let when = now();
+        let plug = entity("switch.plug");
+        let other = entity("switch.other");
+        recorder.append(sample("switch.plug", true, when));
+        recorder.append(sample("switch.other", false, when));
+        recorder.forget_missing(std::slice::from_ref(&other));
+        assert!(recorder.since(&plug, at("1970-01-01T00:00:00Z")).is_empty());
+        assert_eq!(recorder.since(&other, at("1970-01-01T00:00:00Z")).len(), 1);
+    }
+
+    #[test]
+    fn forgetting_does_not_wait_for_a_full_save_queue() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("irori.db");
+        let recorder = Recorder::open(&path, DEFAULT_RETAIN_DAYS).expect("open");
+        // Holds the write lock so the writer blocks inside its first save. The save queue can
+        // then fill without the writer draining it.
+        let held = Connection::open(&path).expect("a second connection");
+        held.execute_batch("BEGIN EXCLUSIVE")
+            .expect("the file can be locked");
+        let when = now();
+        let plug = entity("switch.plug");
+        recorder.append(sample("switch.plug", true, when));
+        for index in 0..QUEUE {
+            recorder.append(sample(
+                "switch.plug",
+                true,
+                later(when, i64::try_from(index + 1).expect("the index fits")),
+            ));
+        }
+        let started = Instant::now();
+        recorder.forget(&plug);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "forget waited on the save queue: {:?}",
+            started.elapsed()
+        );
+        drop(held);
+        assert!(
+            recorder.since(&plug, at("1970-01-01T00:00:00Z")).is_empty(),
+            "the delete still landed after the saves that were already queued"
+        );
     }
 }

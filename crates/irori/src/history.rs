@@ -9,9 +9,10 @@ use std::path::Path;
 #[cfg(test)]
 use std::sync::Arc;
 
-use irori_core::Event;
+use irori_core::{Core, Event};
 use irori_types::{EntityId, EntityState, Timestamp};
 use jiff::ToSpan as _;
+use tokio::runtime::RuntimeFlavor;
 use tokio::sync::broadcast;
 
 /// How far back the page looks. The database keeps longer; the page asks for a day.
@@ -66,18 +67,41 @@ impl History {
     /// Changes from the last day, oldest first. Empty when the entity has not changed in that
     /// day, including when the database has older rows the page does not ask for.
     pub fn for_entity(&self, entity_id: &EntityId) -> Vec<EntityState> {
-        self.recorder.since(entity_id, day_ago())
+        let recorder = self.recorder.clone();
+        let entity_id = entity_id.clone();
+        off_the_runtime(move || recorder.since(&entity_id, day_ago()))
     }
 
     /// Whether the database can be read and the last write succeeded.
     pub fn check(&self) -> bool {
-        self.recorder.check()
+        let recorder = self.recorder.clone();
+        off_the_runtime(move || recorder.check())
+    }
+
+    /// Drops history for every entity that is not in `live`. Used when this task fell behind
+    /// the core and may have missed a removal.
+    fn forget_missing(&self, live: &[EntityId]) {
+        self.recorder.forget_missing(live);
     }
 }
 
 impl irori_core::HistorySource for History {
     fn changes(&self, entity_id: &EntityId, since: Timestamp) -> Vec<EntityState> {
-        self.recorder.since(entity_id, since)
+        let recorder = self.recorder.clone();
+        let entity_id = entity_id.clone();
+        off_the_runtime(move || recorder.since(&entity_id, since))
+    }
+}
+
+/// A history read waits on the writer thread. On the multi-thread runtime that wait must not
+/// keep a worker, or a backed-up diary stalls the task that feeds it. A current-thread runtime
+/// (the tests) has nowhere else to run the wait, and the writer does not need that runtime.
+fn off_the_runtime<T>(work: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(work)
+        }
+        _ => work(),
     }
 }
 
@@ -90,10 +114,10 @@ fn day_ago() -> Timestamp {
 }
 
 /// Feeds [`History`] from the core's events, for the life of the server. The channel closing is
-/// the runtime shutting down. A listener that falls behind skips ahead to now, like the others
-/// (`crates/irori/src/extensions.rs`): a missed sample is better than grinding through the
-/// backlog. The recorder drops the same way when its own queue is full.
-pub async fn record(history: History, mut events: broadcast::Receiver<Event>) {
+/// the runtime shutting down. A listener that falls behind skips ahead to now: a missed change
+/// is a gap, which is better than grinding through the backlog. A missed removal is not a gap
+/// the file can keep, so a lag deletes history for every entity the core no longer has.
+pub async fn record(core: Core, history: History, mut events: broadcast::Receiver<Event>) {
     loop {
         match events.recv().await {
             Ok(Event::StateChanged {
@@ -102,7 +126,19 @@ pub async fn record(history: History, mut events: broadcast::Receiver<Event>) {
                 ..
             }) => history.record(entity_id, *new_state),
             Ok(Event::EntityRemoved { entity_id }) => history.forget(&entity_id),
-            Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+            Ok(_) => {}
+            Err(broadcast::error::RecvError::Lagged(missed)) => {
+                tracing::warn!(
+                    missed,
+                    "history fell behind; deleting rows for entities that have left"
+                );
+                let live: Vec<_> = core
+                    .entities()
+                    .into_iter()
+                    .map(|entity| entity.id)
+                    .collect();
+                history.forget_missing(&live);
+            }
             Err(broadcast::error::RecvError::Closed) => return,
         }
     }

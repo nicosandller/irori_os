@@ -5,9 +5,21 @@
 //! protocol remembers across restarts.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context as _, ensure};
 use rusqlite::Connection;
+
+/// How long a connection waits when another one is writing `irori.db`.
+///
+/// The timeout belongs to the connection that is waiting, not the one holding the lock. History
+/// batches are the usual holder, so a session, a token, or a protocol value that arrives during
+/// one waits this long instead of failing the write.
+pub const BUSY: Duration = Duration::from_secs(5);
+
+pub fn wait_when_busy(conn: &Connection) -> rusqlite::Result<()> {
+    conn.busy_timeout(BUSY)
+}
 
 #[derive(Debug)]
 pub struct Database {
@@ -22,6 +34,7 @@ pub fn open(data_dir: &Path) -> anyhow::Result<Database> {
     let path = data_dir.join("irori.db");
     let conn = Connection::open(&path)
         .with_context(|| format!("failed to open database {}", path.display()))?;
+    wait_when_busy(&conn)?;
 
     let journal_mode: String =
         conn.pragma_update_and_check(None, "journal_mode", "wal", |row| row.get(0))?;
@@ -54,6 +67,7 @@ impl SqliteStorage {
     pub fn open(db: &Database) -> anyhow::Result<Self> {
         let conn = Connection::open(&db.path)
             .with_context(|| format!("failed to open database {}", db.path.display()))?;
+        wait_when_busy(&conn)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS extension_kv (
                 extension TEXT NOT NULL,

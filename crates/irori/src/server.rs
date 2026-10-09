@@ -384,8 +384,7 @@ async fn restart(State(state): State<AppState>, request: axum::extract::Request)
 #[derive(Debug, Serialize)]
 struct HistoryView {
     entity: EntityId,
-    /// The changes, oldest first. Empty when the entity exists but has changed nothing since
-    /// this server started.
+    /// The changes, oldest first. Empty when the entity has no stored change in the last day.
     states: Vec<EntityState>,
 }
 

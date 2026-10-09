@@ -1334,7 +1334,7 @@ async fn run_tool(env: &Env<'_>, scope: &str, status: &Status, call: &ToolCall) 
             };
             let states = env.history.for_entity(&id);
             if states.is_empty() {
-                format!("{id} has not reported anything since Irori started.")
+                format!("{id} has no changes in the last 24 hours.")
             } else {
                 states
                     .iter()
@@ -2118,9 +2118,7 @@ pub fn check_scope(scope: &str) -> Result<(), String> {
 
 fn open_db(db: &Path) -> Result<rusqlite::Connection, String> {
     let conn = rusqlite::Connection::open(db).map_err(|error| error.to_string())?;
-    // The rest of the app writes this file too. Wait for it instead of failing at once.
-    conn.busy_timeout(Duration::from_secs(5))
-        .map_err(|error| error.to_string())?;
+    crate::db::wait_when_busy(&conn).map_err(|error| error.to_string())?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS assistant_message (
             scope TEXT NOT NULL,
