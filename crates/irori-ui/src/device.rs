@@ -735,9 +735,8 @@ fn EntityRow(
 /// A number's day is drawn as a chart and a state's — on and off, words — as a strip of how
 /// long each lasted, both with the table a click away. What only happens (a button's presses)
 /// or mustn't be shown (a password) is the table alone, newest first, in its own scroll so a
-/// sensor that changed a hundred times doesn't stretch the page. "As much as available" is what
-/// it says: the server keeps what happened while it's been running, and the long view is the
-/// recorder's job (M1.3).
+/// sensor that changed a hundred times doesn't stretch the page. The server keeps that day in
+/// the database, including across a restart. A gap is a period when Irori was not running.
 pub(crate) fn history_panel(
     entity: Entity,
     history: crate::history::Kept,
@@ -775,7 +774,8 @@ pub(crate) fn history_panel(
                 Some(Ok(states)) if states.is_empty() => view! {
                     <p class="muted small history-note">
                         "No changes in the last 24 hours. Irori records a change each time one "
-                        "happens, and keeps the last day while it's running."
+                        "happens, and keeps the last day, including across a restart. A gap is a "
+                        "period when it was not running."
                     </p>
                 }
                 .into_any(),

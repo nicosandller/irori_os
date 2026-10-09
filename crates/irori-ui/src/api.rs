@@ -999,9 +999,8 @@ pub struct EntityHistory {
     pub states: Vec<EntityState>,
 }
 
-/// The last day of an entity's changes, for the page's expandable table. What the table shows:
-/// the most recent day of changes the server has seen while it's been running. The real
-/// recorder (M1.3) keeps the long, surviving view; this is the honest "while it's up" slice.
+/// The last day of an entity's changes, for the page's expandable table. The server keeps that
+/// day in the database, so a restart does not blank it.
 pub async fn entity_history(entity_id: &EntityId) -> Result<Vec<EntityState>, String> {
     let response = Request::get(&format!("{HISTORY_URL}/{entity_id}"))
         .send()
