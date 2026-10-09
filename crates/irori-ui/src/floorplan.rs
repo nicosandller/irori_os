@@ -29,6 +29,7 @@ use crate::icons::icon;
 mod ambience;
 mod look;
 mod snapping;
+mod zoom;
 
 use look::{Look, look_for};
 use snapping::{Caught, Hosts, Placed, hosts, place, room_angles, twin};
@@ -162,6 +163,20 @@ impl Viewport {
 
     fn world(self, x: f64, y: f64) -> (f64, f64) {
         ((x - self.pan.0) / self.scale, (y - self.pan.1) / self.scale)
+    }
+
+    /// The same view at another zoom, with the place under `about` — a point on the screen —
+    /// still under it: the thing being looked at is what a zoom should leave where it is.
+    fn zoomed(self, scale: f64, about: (f64, f64)) -> Self {
+        let scale = scale.clamp(MIN_SCALE, MAX_SCALE);
+        let factor = scale / self.scale;
+        Self {
+            scale,
+            pan: (
+                about.0 - (about.0 - self.pan.0) * factor,
+                about.1 - (about.1 - self.pan.1) * factor,
+            ),
+        }
     }
 
     /// How many centimetres a screen pixel is worth here, for turning a reach in pixels into a
@@ -1281,20 +1296,10 @@ pub fn Floorplan() -> impl IntoView {
             f64::from(event.client_x()) - left,
             f64::from(event.client_y()) - top,
         );
-        view.update(|here| {
-            let step = if event.delta_y() < 0.0 {
-                1.12
-            } else {
-                1.0 / 1.12
-            };
-            let scale = (here.scale * step).clamp(MIN_SCALE, MAX_SCALE);
-            let factor = scale / here.scale;
-            here.pan = (
-                screen.0 - (screen.0 - here.pan.0) * factor,
-                screen.1 - (screen.1 - here.pan.1) * factor,
-            );
-            here.scale = scale;
-        });
+        // By as much as the wheel turned: a mouse's notch is a jump, and a trackpad's stream
+        // of slivers — or a pinch, which arrives as a scroll with Control held — is a glide.
+        let factor = zoom::scrolled(event.delta_y(), event.delta_mode(), event.ctrl_key());
+        view.update(|here| *here = here.zoomed(here.scale * factor, screen));
     };
 
     let zoom_by = move |step: f64| {
@@ -1303,15 +1308,7 @@ pub fn Floorplan() -> impl IntoView {
         };
         let rect = node.get_bounding_client_rect();
         let middle = (rect.width() / 2.0, rect.height() / 2.0);
-        view.update(|here| {
-            let scale = (here.scale * step).clamp(MIN_SCALE, MAX_SCALE);
-            let factor = scale / here.scale;
-            here.pan = (
-                middle.0 - (middle.0 - here.pan.0) * factor,
-                middle.1 - (middle.1 - here.pan.1) * factor,
-            );
-            here.scale = scale;
-        });
+        view.update(|here| *here = here.zoomed(here.scale * step, middle));
     };
 
     view! {
@@ -1857,9 +1854,17 @@ pub fn Floorplan() -> impl IntoView {
 
             <div class="plan-foot">
                 <div class="zoom">
-                    <button type="button" aria-label="Zoom out" on:click=move |_| zoom_by(1.0 / 1.25)>"−"</button>
-                    <button type="button" aria-label="Zoom in" on:click=move |_| zoom_by(1.25)>"+"</button>
-                    <button type="button" on:click=move |_| fit()>"Fit"</button>
+                    // Over the buttons, and quieter than them: the buttons get about, and
+                    // this is for the last little bit.
+                    <zoom::ZoomWheel
+                        scale=Signal::derive(move || view.get().scale)
+                        by=Callback::new(zoom_by)
+                    />
+                    <div class="zoom-buttons">
+                        <button type="button" aria-label="Zoom out" on:click=move |_| zoom_by(1.0 / 1.25)>"−"</button>
+                        <button type="button" aria-label="Zoom in" on:click=move |_| zoom_by(1.25)>"+"</button>
+                        <button type="button" on:click=move |_| fit()>"Fit"</button>
+                    </div>
                 </div>
                 {move || editing.get().then(|| view! { <SnapControl snap=snap /> })}
                 <p class="hint">
