@@ -28,8 +28,10 @@ use crate::icons::icon;
 
 mod ambience;
 mod look;
+mod snapping;
 
 use look::{Look, look_for};
+use snapping::{Caught, Hosts, Placed, hosts, place, room_angles, twin};
 
 /// What the editor rounds to by default, in centimetres. Fine enough to draw a real room,
 /// coarse enough that two walls meant to meet actually do.
@@ -291,6 +293,13 @@ pub fn Floorplan() -> impl IntoView {
     // happens to end at the same point.
     let wall_behind = RwSignal::new(None::<Point>);
     let pointer = RwSignal::new(None::<Point>);
+    // Where the next corner of a wall would go if the button were pressed now, and what it has
+    // caught on: kept whole, so the canvas can mark the middle of the wall or draw the line to
+    // the corner the point is level with.
+    let aimed = RwSignal::new(None::<Placed>);
+    // The walls the run started off, for the angle its first line makes with them. Asked when
+    // the run starts and only read until it has a wall of its own to turn on.
+    let started_on = RwSignal::new(Hosts::default());
     let arming = RwSignal::new(None::<DeviceId>);
     // The room being traced, and which room it is. A shape only becomes part of the plan when
     // it closes, so backing out of one leaves nothing behind.
@@ -360,6 +369,7 @@ pub fn Floorplan() -> impl IntoView {
         running.set(None);
         wall_behind.set(None);
         pointer.set(None);
+        aimed.set(None);
         tracing.set(Vec::new());
         arming.set(None);
         arming_area.set(None);
@@ -531,6 +541,7 @@ pub fn Floorplan() -> impl IntoView {
         running.set(None);
         wall_behind.set(None);
         pointer.set(None);
+        aimed.set(None);
         tracing.set(Vec::new());
     };
 
@@ -762,15 +773,22 @@ pub fn Floorplan() -> impl IntoView {
 
         if editing.get_untracked() {
             let tool = tool.get_untracked();
-            if running.get_untracked().is_some() {
-                let to = place(
+            if tool == Tool::Wall {
+                // Before the run starts as well as during it: where a wall would start is
+                // worth seeing before the click that starts it.
+                let from = running.get_untracked();
+                let placed = place(
                     &level.get_untracked(),
                     world,
                     here,
                     snap.get_untracked(),
                     None,
+                    from,
                 );
-                pointer.set(Some(to));
+                if from.is_some() {
+                    pointer.set(Some(placed.point));
+                }
+                aimed.set(Some(placed));
             } else if tool == Tool::Area && !tracing.get_untracked().is_empty() {
                 let to = trace_at(&level.get_untracked(), world, here, snap.get_untracked());
                 pointer.set(Some(to));
@@ -797,7 +815,15 @@ pub fn Floorplan() -> impl IntoView {
                 let Some(was) = here_level.walls.get(wall).map(|wall| ends(wall, to_end)) else {
                     return;
                 };
-                let to = place(&here_level, world, here, snap.get_untracked(), Some(was));
+                let to = place(
+                    &here_level,
+                    world,
+                    here,
+                    snap.get_untracked(),
+                    Some(was),
+                    None,
+                )
+                .point;
                 on_level(draft, floor, |level| shift(level, &[(was, to)]));
             }
             Drag::Wall { wall, grab } => {
@@ -999,6 +1025,58 @@ pub fn Floorplan() -> impl IntoView {
         }
         drag.set(None);
     };
+    // Off the canvas there is nowhere a wall would go.
+    let on_leave = move |event: ev::MouseEvent| {
+        aimed.set(None);
+        on_up(event);
+    };
+
+    // The corners the line being drawn turns on, each as the far end of the line already
+    // there, the corner, and the pointer: the run's own last wall once it has one, and until
+    // then the walls it started off.
+    let turning = move || -> Vec<(Point, Point, Point)> {
+        if tool.get() != Tool::Wall {
+            return Vec::new();
+        }
+        let (Some(node), Some(to)) = (running.get(), pointer.get()) else {
+            return Vec::new();
+        };
+        // The pointer back on the corner is no angle at all, just a line still at its start.
+        if node.distance_to(to) < 0.5 {
+            return Vec::new();
+        }
+        match wall_behind.get() {
+            Some(behind) => vec![(behind, node, to)],
+            None => started_on
+                .with(|hosts| hosts.readings(node, to))
+                .into_iter()
+                .map(|behind| (behind, node, to))
+                .collect(),
+        }
+    };
+    // The room whose corners are being read: the one being traced, out to the pointer, or the
+    // one picked up.
+    let cornered = move || -> Vec<Point> {
+        let mut traced = tracing.get();
+        if !traced.is_empty() {
+            if let Some(to) = pointer.get()
+                && traced.last() != Some(&to)
+                && traced.first() != Some(&to)
+            {
+                traced.push(to);
+            }
+            return traced;
+        }
+        match picked.get() {
+            Some(Pick::Area(a)) => level
+                .get()
+                .areas
+                .get(a)
+                .map(|placed| placed.points.clone())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    };
 
     // A click that was really the end of a drag isn't a click: panning the view an inch and
     // then finding a new wall corner there would be maddening.
@@ -1012,14 +1090,13 @@ pub fn Floorplan() -> impl IntoView {
         match tool.get_untracked() {
             Tool::Select => {}
             Tool::Wall => {
-                let to = place(
-                    &level.get_untracked(),
-                    world,
-                    here,
-                    snap.get_untracked(),
-                    None,
-                );
-                match running.get_untracked() {
+                let here_level = level.get_untracked();
+                let from = running.get_untracked();
+                let to = place(&here_level, world, here, snap.get_untracked(), None, from).point;
+                if from.is_none() {
+                    started_on.set(hosts(&here_level, to));
+                }
+                match from {
                     Some(from) if from != to => {
                         remember();
                         let built = Wall {
@@ -1246,7 +1323,7 @@ pub fn Floorplan() -> impl IntoView {
                 on:mousedown=on_down
                 on:mousemove=on_move
                 on:mouseup=on_up
-                on:mouseleave=on_up
+                on:mouseleave=on_leave
                 on:click=on_click
                 on:contextmenu=on_right_click
                 on:wheel=on_wheel
@@ -1326,38 +1403,93 @@ pub fn Floorplan() -> impl IntoView {
                         let corners = tracing.get();
                         (!corners.is_empty()).then(|| tracing_shape(&corners, pointer.get(), view.get()))
                     }}
+                    // What the point has caught on: the line to the corner it is level with,
+                    // the middle of the wall beside it, and where a wall would start.
                     {move || {
-                        let (behind, node) = drawing_junction(
-                            tool.get(),
-                            running.get(),
-                            wall_behind.get(),
-                            &tracing.get(),
-                        )?;
-                        let to = pointer.get()?;
-                        // The pointer back on the corner is no angle at all, just a line still
-                        // at its start.
-                        if node.distance_to(to) < 0.5 {
-                            return None;
-                        }
-                        // The corner's own arc, between the wall already there and the line
-                        // reaching for the pointer, tracing the angle the label says in words.
-                        let points = arc_points(behind, node, to, ANGLE_ARC);
-                        if points.is_empty() {
-                            return None;
-                        }
-                        let joined = points
-                            .iter()
-                            .map(|[x, y]| format!("{x},{y}"))
-                            .collect::<Vec<_>>()
-                            .join(" ");
+                        let placed = editing.get().then(|| aimed.get()).flatten()?;
+                        let here = view.get();
+                        let size = 5.0 / here.scale;
+                        let caught = matches!(placed.caught, Caught::Middle(_));
+                        let waiting = running.get().is_none();
                         Some(view! {
-                            <g class="angle-arc" transform=transform(view.get())>
-                                <polyline
-                                    points=joined
-                                    vector-effect="non-scaling-stroke"
-                                />
+                            <g class="aids" transform=transform(here)>
+                                {placed.guides.iter().map(|guide| view! {
+                                    <line
+                                        class="guide"
+                                        x1=guide.from.x y1=guide.from.y
+                                        x2=guide.to.x y2=guide.to.y
+                                        vector-effect="non-scaling-stroke"
+                                    />
+                                    <circle
+                                        class="guide-end"
+                                        cx=guide.from.x cy=guide.from.y r=size * 0.8
+                                        vector-effect="non-scaling-stroke"
+                                    />
+                                }).collect_view()}
+                                {placed.middle.map(|middle| view! {
+                                    <rect
+                                        class="middle"
+                                        class:caught=caught
+                                        x=f64::from(middle.x) - size
+                                        y=f64::from(middle.y) - size
+                                        width=size * 2.0
+                                        height=size * 2.0
+                                        vector-effect="non-scaling-stroke"
+                                    />
+                                })}
+                                {waiting.then(|| view! {
+                                    <circle
+                                        class="start"
+                                        cx=placed.point.x cy=placed.point.y r=size * 0.7
+                                        vector-effect="non-scaling-stroke"
+                                    />
+                                })}
                             </g>
                         })
+                    }}
+                    // Each corner's own arc, between the wall already there and the line
+                    // reaching for the pointer, tracing the angle the label says in words.
+                    {move || {
+                        let mut corners = turning();
+                        // A room being traced turns on its last corner, unless that corner is
+                        // a notch: then the short way round is the outside of the room, and
+                        // an arc there would be tracing the wrong angle.
+                        if let Some((behind, node)) = drawing_junction(
+                            tool.get(),
+                            None,
+                            None,
+                            &tracing.get(),
+                        ) && let Some(to) = pointer.get()
+                            && node.distance_to(to) >= 0.5
+                            && room_angles(&cornered())
+                                .iter()
+                                .all(|turned| turned.at != node || turned.degrees <= 180.5)
+                        {
+                            corners.push((behind, node, to));
+                        }
+                        let here = view.get();
+                        corners
+                            .into_iter()
+                            .filter_map(|(behind, node, to)| {
+                                let points = arc_points(behind, node, to, ANGLE_ARC);
+                                if points.is_empty() {
+                                    return None;
+                                }
+                                let joined = points
+                                    .iter()
+                                    .map(|[x, y]| format!("{x},{y}"))
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                Some(view! {
+                                    <g class="angle-arc" transform=transform(here)>
+                                        <polyline
+                                            points=joined
+                                            vector-effect="non-scaling-stroke"
+                                        />
+                                    </g>
+                                })
+                            })
+                            .collect_view()
                     }}
                     {move || {
                         let chosen = editing.get().then(|| picked.get()).flatten();
@@ -1517,55 +1649,83 @@ pub fn Floorplan() -> impl IntoView {
                     let from = running.get().or_else(|| tracing.get().last().copied())?;
                     let here = view.get();
                     let (x, y) = here.screen(to);
+                    // A wall alongside another and the same length says so: that is the
+                    // moment to click when a room's two sides are meant to match.
+                    let same = running.get().is_some() && twin(&level.get(), from, to);
                     Some(view! {
-                        <span class="measure" style=format!("left:{x}px;top:{y}px")>
+                        <span
+                            class="measure"
+                            class:twin=same
+                            style=format!("left:{x}px;top:{y}px")
+                        >
                             {metres(from.distance_to(to))}
+                            {same.then_some(" =")}
                         </span>
                     })
                 }}
 
-                // The angle of the corner the next line turns on, updating as it is dragged: at
-                // the node the new segment shares with the one before it, between that wall — or
-                // that side of a room — and the line reaching for the pointer. Straight through
-                // reads as 180°, a square corner as 90°, and a line that ran back over the wall
-                // as 0°.
+                // The angle of each corner the next wall turns on, updating as it is dragged: at
+                // the node the new wall shares with the one before it — or, for the first wall
+                // of a run started off another, with that one. Straight through reads as 180°, a
+                // square corner as 90°, and a line that ran back over the wall as 0°.
                 {move || {
                     if !editing.get() {
                         return None;
                     }
-                    let to = pointer.get()?;
-                    let (behind, node) = drawing_junction(
-                        tool.get(),
-                        running.get(),
-                        wall_behind.get(),
-                        &tracing.get(),
-                    )?;
-                    // The pointer back on the corner is no angle at all, just a line still at
-                    // its start.
-                    if node.distance_to(to) < 0.5 {
+                    let here = view.get();
+                    Some(
+                        turning()
+                            .into_iter()
+                            .map(|(behind, node, to)| {
+                                // Where the label goes: along the bisector of the corner, which
+                                // for a square corner is the 45° line into the room. A corner
+                                // that is a straight line has no bisector to speak of, so it
+                                // gets a label to one side instead.
+                                let (bx0, by0) = direction(node, behind);
+                                let (bx1, by1) = direction(node, to);
+                                let (mut bx, mut by) = (bx0 + bx1, by0 + by1);
+                                let reach = bx.hypot(by);
+                                if reach < 1e-6 {
+                                    (bx, by) = (-by0, bx0);
+                                } else {
+                                    (bx, by) = (bx / reach, by / reach);
+                                }
+                                let (x, y) = here.screen(node);
+                                let (lx, ly) = (x + bx * ANGLE_OFFSET, y + by * ANGLE_OFFSET);
+                                view! {
+                                    <span class="angle" style=format!("left:{lx}px;top:{ly}px")>
+                                        {format!("{:.0}°", angle_at(behind, node, to))}
+                                    </span>
+                                }
+                            })
+                            .collect_view(),
+                    )
+                }}
+
+                // Every corner of a room, read on the inside of it: the one being traced, as
+                // far as the pointer, and the one picked up, as its corners are dragged.
+                {move || {
+                    if !editing.get() {
                         return None;
                     }
-                    // Where the label goes: along the bisector of the corner, which for a square
-                    // corner is the 45° line into the room, and for a straight-through wall
-                    // reads as ahead of it. A corner that is a straight line has no bisector to
-                    // speak of, so it gets a label to one side instead.
-                    let (bx0, by0) = direction(node, behind);
-                    let (bx1, by1) = direction(node, to);
-                    let (mut bx, mut by) = (bx0 + bx1, by0 + by1);
-                    let reach = bx.hypot(by);
-                    if reach < 1e-6 {
-                        (bx, by) = (-by0, bx0);
-                    } else {
-                        (bx, by) = (bx / reach, by / reach);
-                    }
                     let here = view.get();
-                    let (x, y) = here.screen(node);
-                    let (lx, ly) = (x + bx * ANGLE_OFFSET, y + by * ANGLE_OFFSET);
-                    Some(view! {
-                        <span class="angle" style=format!("left:{lx}px;top:{ly}px")>
-                            {format!("{:.0}°", angle_at(behind, node, to))}
-                        </span>
-                    })
+                    Some(
+                        room_angles(&cornered())
+                            .into_iter()
+                            .map(|turned| {
+                                let (x, y) = here.screen(turned.at);
+                                let (lx, ly) = (
+                                    x + turned.inward.0 * ANGLE_OFFSET,
+                                    y + turned.inward.1 * ANGLE_OFFSET,
+                                );
+                                view! {
+                                    <span class="angle" style=format!("left:{lx}px;top:{ly}px")>
+                                        {format!("{:.0}°", turned.degrees)}
+                                    </span>
+                                }
+                            })
+                            .collect_view(),
+                    )
                 }}
             </div>
 
@@ -1575,6 +1735,28 @@ pub fn Floorplan() -> impl IntoView {
                     {move || if editing.get() {
                         view! {
                             <>
+                                // Beside Save and Cancel rather than among the tools: going
+                                // back is something done to the edit, not something drawn with.
+                                <button
+                                    type="button"
+                                    class="step"
+                                    title="Undo (⌘Z)"
+                                    aria-label="Undo"
+                                    disabled=move || past.get().is_empty()
+                                    on:click=move |_| step_back()
+                                >
+                                    <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=UNDO></svg>
+                                </button>
+                                <button
+                                    type="button"
+                                    class="step"
+                                    title="Redo (⇧⌘Z)"
+                                    aria-label="Redo"
+                                    disabled=move || future.get().is_empty()
+                                    on:click=move |_| step_forward()
+                                >
+                                    <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=REDO></svg>
+                                </button>
                                 <button
                                     type="button"
                                     // Not while a save is in flight. Cancelling would let a new
@@ -1641,25 +1823,6 @@ pub fn Floorplan() -> impl IntoView {
                             </button>
                         }
                     }).collect_view()}
-                    <span class="tool-gap"></span>
-                    <button
-                        type="button"
-                        title="Undo (⌘Z)"
-                        aria-label="Undo"
-                        disabled=move || past.get().is_empty()
-                        on:click=move |_| step_back()
-                    >
-                        <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=UNDO></svg>
-                    </button>
-                    <button
-                        type="button"
-                        title="Redo (⇧⌘Z)"
-                        aria-label="Redo"
-                        disabled=move || future.get().is_empty()
-                        on:click=move |_| step_forward()
-                    >
-                        <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=REDO></svg>
-                    </button>
                     <span class="tool-gap"></span>
                     <button
                         type="button"
@@ -2012,7 +2175,22 @@ fn SnapControl(snap: RwSignal<Snap>) -> impl IntoView {
                             }
                         }
                     />
-                    <output>{move || format!("{} cm", snap.get().step())}</output>
+                    <span class="typed">
+                        <input
+                            type="number"
+                            min=*SNAP_RANGE.start()
+                            max=*SNAP_RANGE.end()
+                            step="1"
+                            aria-label="Snap step in centimetres"
+                            prop:value=move || snap.get().step()
+                            on:change=move |event| {
+                                if let Ok(step) = event_target_value(&event).parse::<i32>() {
+                                    snap.set(Snap::Custom(step));
+                                }
+                            }
+                        />
+                        "cm"
+                    </span>
                 </label>
             })}
         </div>
@@ -2082,7 +2260,21 @@ fn Inspector(
                                     });
                                 }
                             />
-                            <output class="figure">{format!("{thick} cm")}</output>
+                            {typed(
+                                "Thickness in centimetres",
+                                thick,
+                                *Wall::THICKNESS_RANGE.start(),
+                                *Wall::THICKNESS_RANGE.end(),
+                                remember,
+                                move |next| {
+                                    thickness.set(next);
+                                    on_level(draft, floor, |level| {
+                                        if let Some(wall) = level.walls.get_mut(w) {
+                                            wall.thickness = next;
+                                        }
+                                    });
+                                },
+                            )}
                         </label>
                     </div>
                 }.into_any())
@@ -2152,7 +2344,23 @@ fn Inspector(
                                     });
                                 }
                             />
-                            <output class="figure">{format!("{width} cm")}</output>
+                            {typed(
+                                "Width in centimetres",
+                                width,
+                                1,
+                                widest,
+                                remember,
+                                move |next| on_level(draft, floor, |level| {
+                                    let Some(wall) = level.walls.get_mut(w) else { return };
+                                    let length = wall.length();
+                                    let Some(opening) = wall.openings.get_mut(o) else {
+                                        return;
+                                    };
+                                    opening.width = next;
+                                    opening.at =
+                                        fit_opening(f64::from(opening.at), next, length);
+                                }),
+                            )}
                         </label>
                         <div class="choice">
                             <span>"Opens to"</span>
@@ -2254,6 +2462,45 @@ fn Inspector(
                 )
             }
         }
+    }
+}
+
+/// A size typed rather than dragged, beside the slider that sets the same thing: a slider gets
+/// a door to about 80 cm, and a tape measure says 82.
+///
+/// Taken when it is finished — Enter, or leaving the box — and not a key at a time, so the 1 of
+/// 137 isn't a one-centimetre door on the way there. Held to the same limits as the slider, and
+/// one step to undo.
+fn typed(
+    label: &'static str,
+    value: u32,
+    least: u32,
+    most: u32,
+    remember: Callback<()>,
+    set: impl Fn(u32) + 'static,
+) -> impl IntoView {
+    view! {
+        <span class="typed figure">
+            <input
+                type="number"
+                min=least
+                max=most
+                step="1"
+                aria-label=label
+                prop:value=value
+                on:change=move |event| {
+                    let Ok(next) = event_target_value(&event).trim().parse::<u32>() else {
+                        return;
+                    };
+                    let next = next.clamp(least, most.max(least));
+                    if next != value {
+                        remember.run(());
+                        set(next);
+                    }
+                }
+            />
+            "cm"
+        </span>
     }
 }
 
@@ -3350,38 +3597,6 @@ fn round(value: f64, step: i32) -> i32 {
     steps * step
 }
 
-/// Where a new point goes: onto a corner that's already there if one is within reach, and onto
-/// the grid otherwise.
-///
-/// `except` leaves one corner out — the one being dragged. Without it a corner could never be
-/// moved off the grid square it started on, because it would keep snapping to itself.
-fn place(
-    level: &Level,
-    world: (f64, f64),
-    view: Viewport,
-    snap: Snap,
-    except: Option<Point>,
-) -> Point {
-    let reach = CORNER * view.cm_per_pixel();
-    let mut nearest: Option<(f64, Point)> = None;
-    for corner in level.walls.iter().flat_map(|wall| [wall.from, wall.to]) {
-        if Some(corner) == except {
-            continue;
-        }
-        let away = (world.0 - f64::from(corner.x)).hypot(world.1 - f64::from(corner.y));
-        if away <= reach && nearest.is_none_or(|(best, _)| away < best) {
-            nearest = Some((away, corner));
-        }
-    }
-    match nearest {
-        Some((_, corner)) => corner,
-        None => {
-            let step = snap.step();
-            Point::new(round(world.0, step), round(world.1, step))
-        }
-    }
-}
-
 /// Which end of a wall a drag has hold of.
 fn ends(wall: &Wall, to_end: bool) -> Point {
     if to_end { wall.to } else { wall.from }
@@ -4312,12 +4527,12 @@ mod tests {
             ..Level::default()
         };
         assert_eq!(
-            place(&plan, (399.0, 4.0), view, Snap::Grid, None),
+            place(&plan, (399.0, 4.0), view, Snap::Grid, None, None).point,
             Point::new(403, 0),
             "close to the far corner"
         );
         assert_eq!(
-            place(&plan, (252.0, 97.0), view, Snap::Grid, None),
+            place(&plan, (252.0, 97.0), view, Snap::Grid, None, None).point,
             Point::new(250, 100),
             "nowhere near one: the grid"
         );
@@ -4327,8 +4542,10 @@ mod tests {
                 (399.0, 4.0),
                 view,
                 Snap::Grid,
-                Some(Point::new(403, 0))
-            ),
+                Some(Point::new(403, 0)),
+                None,
+            )
+            .point,
             Point::new(400, 0),
             "the corner being dragged doesn't catch itself"
         );
@@ -4465,7 +4682,7 @@ mod tests {
             pan: (0.0, 0.0),
         };
         let empty = Level::default();
-        let at = |snap| place(&empty, (137.4, 62.6), view, snap, None);
+        let at = |snap| place(&empty, (137.4, 62.6), view, snap, None, None).point;
 
         assert_eq!(at(Snap::Grid), Point::new(140, 60));
         assert_eq!(
