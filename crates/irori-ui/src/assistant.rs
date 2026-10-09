@@ -1324,7 +1324,7 @@ pub fn Section() -> impl IntoView {
                         <p class="muted small">
                             "A cloud answer leaves the house: what you ask goes to the provider, \
                              with the names and states of your devices, your automations, \
-                             Irori's settings and lines of its log. The key stays on this \
+                             the floorplan, Irori's settings and lines of its log. The key stays on this \
                              machine and is never shown again."
                         </p>
                         {move || status().filter(|status| status.mode == "cloud").map(|status| {

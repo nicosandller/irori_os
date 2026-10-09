@@ -196,7 +196,7 @@ async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
         match file.mode {
             Mode::Local => format!("{} is running on this machine.", file.local.tag),
             Mode::Cloud => format!(
-                "Answers come from {} at {}. What you ask leaves the house, and with it device names and states, your automations, Irori's settings and lines of its log.",
+                "Answers come from {} at {}. What you ask leaves the house, and with it device names and states, your automations, the floorplan, Irori's settings and lines of its log.",
                 file.cloud.model, file.cloud.base_url
             ),
             Mode::Off => String::new(),
