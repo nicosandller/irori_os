@@ -13,6 +13,7 @@ use irori_types::Floorplan;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use serde_json::Value;
+use web_sys::wasm_bindgen::JsCast;
 
 /// How long the copy button says it copied.
 const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1600);
@@ -28,6 +29,7 @@ pub(super) fn Source(
     let text = RwSignal::new(written(&plan));
     let trouble = RwSignal::new(None::<String>);
     let copied = RwSignal::new(None::<bool>);
+    let painted = NodeRef::<leptos::html::Pre>::new();
     let copy = move |_| {
         let text = text.get_untracked();
         spawn_local(async move {
@@ -48,17 +50,42 @@ pub(super) fn Source(
                          here."
                     }}
                 </p>
-                <textarea
-                    spellcheck="false"
-                    autocomplete="off"
-                    aria-label="The plan as JSON"
-                    readonly=apply.is_none()
-                    prop:value=move || text.get()
-                    on:input=move |event| {
-                        text.set(event_target_value(&event));
-                        trouble.set(None);
-                    }
-                ></textarea>
+                // A text box can't colour what is in it, so the colour is a second copy of the
+                // text drawn underneath, in the same letters at the same place, and the box
+                // itself is typed into with its own letters see-through. The two scroll as one.
+                <div class="plan-code">
+                    <pre aria-hidden="true" node_ref=painted>
+                        {move || {
+                            text.with(|text| pieces(text))
+                                .into_iter()
+                                .map(|(kind, piece)| view! { <span class=kind.class()>{piece}</span> })
+                                .collect_view()
+                        }}
+                        // A last line with nothing on it still has to take up a line.
+                        "\n"
+                    </pre>
+                    <textarea
+                        spellcheck="false"
+                        autocomplete="off"
+                        aria-label="The plan as JSON"
+                        readonly=apply.is_none()
+                        prop:value=move || text.get()
+                        on:input=move |event| {
+                            text.set(event_target_value(&event));
+                            trouble.set(None);
+                        }
+                        on:scroll=move |event| {
+                            let Some(pre) = painted.get_untracked() else { return };
+                            if let Some(box_) = event
+                                .target()
+                                .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                            {
+                                pre.set_scroll_top(box_.scroll_top());
+                                pre.set_scroll_left(box_.scroll_left());
+                            }
+                        }
+                    ></textarea>
+                </div>
                 {move || trouble.get().map(|why| view! { <p class="why" role="alert">{why}</p> })}
                 <div class="plan-source-actions">
                     <button type="button" on:click=copy>
@@ -84,6 +111,99 @@ pub(super) fn Source(
             </div>
         </crate::modal::Modal>
     }
+}
+
+/// What a piece of the plan's text is, for the colour it is drawn in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Kind {
+    /// The name of a field: `"walls"`.
+    Name,
+    /// A piece of text that is a value: `"door"`.
+    Text,
+    Number,
+    /// `true`, `false` or `null`.
+    Word,
+    /// Brackets, commas, colons, the space between, and anything that isn't JSON at all.
+    Plain,
+}
+
+impl Kind {
+    fn class(self) -> &'static str {
+        match self {
+            Kind::Name => "json-name",
+            Kind::Text => "json-text",
+            Kind::Number => "json-number",
+            Kind::Word => "json-word",
+            Kind::Plain => "",
+        }
+    }
+}
+
+/// The plan's text cut into pieces by what each is, for colouring. Every character comes back
+/// in exactly one piece, in order, whatever was typed: this runs on each key, half-way through
+/// a word as often as not, so it reads what is there rather than deciding whether it is JSON.
+pub(super) fn pieces(text: &str) -> Vec<(Kind, String)> {
+    let mut pieces: Vec<(Kind, String)> = Vec::new();
+    let mut push = |kind: Kind, piece: &str| match pieces.last_mut() {
+        // Runs of the plain stuff are one piece, so a plan is hundreds of spans, not thousands.
+        Some((Kind::Plain, last)) if kind == Kind::Plain => last.push_str(piece),
+        _ if piece.is_empty() => {}
+        _ => pieces.push((kind, piece.to_owned())),
+    };
+    let bytes = text.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        let start = at;
+        match bytes[at] {
+            b'"' => {
+                at += 1;
+                // To the quote that closes it, or the end of the line if nothing does: a
+                // string being typed shouldn't colour the rest of the plan with it.
+                while at < bytes.len() && bytes[at] != b'"' && bytes[at] != b'\n' {
+                    at += if bytes[at] == b'\\' { 2 } else { 1 };
+                }
+                at = (at + 1).min(bytes.len());
+                // A name is a string with a colon after it.
+                let after = bytes[at..].iter().find(|byte| !byte.is_ascii_whitespace());
+                let kind = if after == Some(&b':') {
+                    Kind::Name
+                } else {
+                    Kind::Text
+                };
+                // Only ever cut on a quote or a line end, which are whole characters.
+                push(kind, text.get(start..at).unwrap_or_default());
+            }
+            b'-' | b'0'..=b'9' => {
+                while at < bytes.len()
+                    && matches!(bytes[at], b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9')
+                {
+                    at += 1;
+                }
+                push(Kind::Number, &text[start..at]);
+            }
+            b'a'..=b'z' => {
+                while at < bytes.len() && bytes[at].is_ascii_lowercase() {
+                    at += 1;
+                }
+                let word = &text[start..at];
+                let kind = if matches!(word, "true" | "false" | "null") {
+                    Kind::Word
+                } else {
+                    Kind::Plain
+                };
+                push(kind, word);
+            }
+            _ => {
+                // One whole character, however many bytes it is.
+                at += 1;
+                while !text.is_char_boundary(at) {
+                    at += 1;
+                }
+                push(Kind::Plain, &text[start..at]);
+            }
+        }
+    }
+    pieces
 }
 
 /// A plan out of what somebody typed, or why it isn't one: not JSON, not the shape of a plan,
@@ -187,6 +307,46 @@ mod tests {
             "{text}"
         );
         assert_eq!(written(&Floorplan::default()), "{}");
+    }
+
+    #[test]
+    fn the_text_is_coloured_by_what_each_piece_is() {
+        let got = pieces(r#"{"kind": "door", "at": -20, "open": true}"#);
+        let of = |kind: Kind| -> Vec<&str> {
+            got.iter()
+                .filter(|(each, _)| *each == kind)
+                .map(|(_, piece)| piece.as_str())
+                .collect()
+        };
+        assert_eq!(of(Kind::Name), [r#""kind""#, r#""at""#, r#""open""#]);
+        assert_eq!(of(Kind::Text), [r#""door""#]);
+        assert_eq!(of(Kind::Number), ["-20"]);
+        assert_eq!(of(Kind::Word), ["true"]);
+    }
+
+    /// The colouring runs on every key, so it sees every kind of half-typed nonsense, and what
+    /// it draws has to be the text that was typed, letter for letter, or the letters under
+    /// the caret are not the ones on the screen.
+    #[test]
+    fn whatever_is_typed_comes_back_whole() {
+        for text in [
+            PLAN,
+            "",
+            "{\"floors\": {\"gro",
+            "\"ends in an escape\\",
+            "\"a \\\" inside\": 1",
+            "café ☕ \"naïve\": nul",
+            "\"unclosed\n\"next\": [1,2",
+            "-",
+            "tru fals nulll",
+        ] {
+            let back: String = pieces(text).into_iter().map(|(_, piece)| piece).collect();
+            assert_eq!(back, text);
+        }
+        // A string left open stops at the end of its line.
+        let open = pieces("\"unclosed\n\"next\": 1");
+        assert_eq!(open[0], (Kind::Text, "\"unclosed\n".to_owned()));
+        assert_eq!(open[1], (Kind::Name, "\"next\"".to_owned()));
     }
 
     #[test]

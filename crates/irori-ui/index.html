@@ -1542,11 +1542,33 @@
     /* The plan as text. The window is the shell's; the box is the plan's. */
     .plan-source { display: grid; gap: .7rem; }
     .plan-source p { margin: 0; }
-    .plan-source textarea { width: 100%; height: min(58vh, 34rem); padding: .7rem .8rem;
-                            resize: vertical; font: .78rem/1.5 var(--mono); color: var(--fg);
-                            background: var(--sunk); border: 1px solid var(--line);
-                            border-radius: .4rem; tab-size: 2; white-space: pre; }
-    .plan-source textarea:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
+    /* The text is drawn twice: coloured underneath, and see-through in the box that is typed
+       into on top. Everything that decides where a letter falls is said once, for both. */
+    .plan-code { position: relative; height: min(58vh, 34rem); background: var(--sunk);
+                 border: 1px solid var(--line); border-radius: .4rem; }
+    .plan-code pre, .plan-code textarea { position: absolute; inset: 0; margin: 0;
+                                          padding: .7rem .8rem; border: 0; box-sizing: border-box;
+                                          font: .78rem/1.5 var(--mono); letter-spacing: 0;
+                                          tab-size: 2; white-space: pre; }
+    .plan-code pre { overflow: hidden; color: var(--muted); pointer-events: none; }
+    .plan-code textarea { width: 100%; height: 100%; resize: none; overflow: auto;
+                          color: transparent; caret-color: var(--fg); background: transparent;
+                          border-radius: .4rem; }
+    .plan-code textarea::selection { color: transparent;
+                                     background: color-mix(in srgb, var(--ember) 30%, transparent); }
+    .plan-code textarea:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
+    /* Names are what the eye looks for, so they are the page's own ink; what is said about
+       them takes a colour by its kind, from the tones the plan already uses. Deepened on the
+       light page, where a pastel on paper disappears. */
+    .plan-code .json-name { color: var(--fg); }
+    .plan-code .json-text { color: var(--tone-climate); }
+    .plan-code .json-number { color: var(--tone-light); }
+    .plan-code .json-word { color: var(--tone-media); }
+    @media (prefers-color-scheme: light) {
+      .plan-code .json-text { color: color-mix(in oklab, var(--tone-climate) 45%, var(--ink)); }
+      .plan-code .json-number { color: color-mix(in oklab, var(--ember) 80%, var(--ink)); }
+      .plan-code .json-word { color: color-mix(in oklab, var(--tone-media) 45%, var(--ink)); }
+    }
     .plan-source .why { color: var(--ember); font: .8rem var(--mono); overflow-wrap: anywhere; }
     .plan-source-actions { display: flex; justify-content: flex-end; gap: .5rem; }
     .plan-source-actions button { padding: .35rem .8rem; font: inherit; font-size: .85rem;

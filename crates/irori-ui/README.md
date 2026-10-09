@@ -89,7 +89,8 @@ file, and the app decides what to show.
 - Colours a room from a palette of ten named tints (`tint` in `floorplan.toml`), or leaves it
   the colour its id picks.
 - Shows the plan as JSON (`src/floorplan/source.rs`): every floor, the document
-  `/api/floorplan` holds. What is typed there is held to the rules a saved plan is, and lands
+  `/api/floorplan` holds, coloured by what each piece is — names, text, numbers — as it is
+  read and as it is typed. What is typed there is held to the rules a saved plan is, and lands
   in the working copy as one step to undo.
 - Answers questions about a floor from the Floorplan page — its rooms, the devices in them,
   the automations that act on them — in a conversation of its own per floor. While the plan is
