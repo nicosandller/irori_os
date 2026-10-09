@@ -27,12 +27,12 @@ const POLL: Duration = Duration::from_secs(2);
 #[derive(Debug, Clone)]
 pub struct Config(Arc<Mutex<Store>>);
 
-/// What the startup-only tables in `irori.toml` said, so an edit can be told apart from what's
-/// in force. `[server]` and `[recorder]` are both read once, when the process starts.
+/// What `[server]` said when the process started, so an edit can be told apart from what's in
+/// force. Where Irori listens is read once. How long history is kept is not: that is applied
+/// while Irori runs.
 #[derive(Debug)]
 struct Started {
     server: ServerSettings,
-    recorder: RecorderSection,
 }
 
 /// Why an edit couldn't be made. Not an I/O failure — that's an `anyhow::Error`.
@@ -287,6 +287,41 @@ impl Config {
         Ok(made)
     }
 
+    /// How long entity history is kept, as `irori.toml`'s `[recorder]` stands.
+    pub async fn recorder(&self) -> RecorderSection {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+        store.irori().recorder
+    }
+
+    /// Rewrites `[recorder]` and tells the running recorder. The rest of `irori.toml` is left
+    /// as it was, comments included. A value that can't stand is refused with nothing written.
+    pub async fn edit_recorder(
+        &self,
+        history: &crate::history::History,
+        section: RecorderSection,
+    ) -> Result<(), EditError> {
+        section
+            .check()
+            .map_err(|error| EditError::Refused(Refused(error)))?;
+        let retention = irori_recorder::Retention::new(section.retain_days, section.summary_days)
+            .map_err(|error| EditError::Refused(Refused(error.to_string())))?;
+        {
+            let mut store = self.0.lock().await;
+            report(&store.reload());
+            if store.save_recorder(&section).map_err(EditError::Io)? {
+                tracing::info!(file = "irori.toml", "config written");
+            }
+        }
+        if !history.configure(retention) {
+            return Err(EditError::Refused(Refused(
+                "the recorder has stopped, so the new retention was saved but not applied"
+                    .to_owned(),
+            )));
+        }
+        Ok(())
+    }
+
     /// Where the home is and its time zone, as `home.toml` stands.
     pub async fn home(&self) -> HomeSettings {
         let mut store = self.0.lock().await;
@@ -438,43 +473,55 @@ impl Config {
         Ok(made)
     }
 
-    /// Picks up edits made outside Irori. Runs until the process ends.
-    pub async fn watch(self, core: Core) {
+    /// Picks up edits made outside Irori. Runs until the process ends. A change to `[recorder]`
+    /// is applied to `history` here; `[server]` still waits for a restart.
+    pub async fn watch(self, core: Core, history: crate::history::History) {
         let irori = self.0.lock().await.irori();
         let started = Started {
             server: irori.server,
-            recorder: irori.recorder,
         };
+        let mut applied = irori.recorder;
         let mut warned_server: Option<ServerSettings> = None;
-        let mut warned_recorder: Option<RecorderSection> = None;
         loop {
             tokio::time::sleep(POLL).await;
-            let mut store = self.0.lock().await;
-            let problems = store.reload();
-            report(&problems);
-            // All of these publish nothing when nothing changed, so this is free on the
-            // overwhelming majority of ticks.
-            core.apply_settings(store.settings());
-            core.apply_extension_settings(store.extension_settings());
-            let irori = store.irori();
-            core.apply_disabled_extensions(irori.extensions.disabled);
-            core.apply_home(store.home());
-            // Where Irori listens, and how long it keeps history, can't change under a running
-            // server. Say so, once per edit, rather than leaving someone wondering why their
-            // change did nothing.
-            if irori.server != started.server && warned_server.as_ref() != Some(&irori.server) {
+            // The recorder is told after the lock is dropped. Summarizing can take a moment,
+            // and an edit of some other file should not wait on it.
+            let (recorder, server) = {
+                let mut store = self.0.lock().await;
+                let problems = store.reload();
+                report(&problems);
+                // All of these publish nothing when nothing changed, so this is free on the
+                // overwhelming majority of ticks.
+                core.apply_settings(store.settings());
+                core.apply_extension_settings(store.extension_settings());
+                let irori = store.irori();
+                core.apply_disabled_extensions(irori.extensions.disabled.clone());
+                core.apply_home(store.home());
+                (irori.recorder.clone(), irori.server.clone())
+            };
+            // Where Irori listens can't change under a running server. Say so, once per edit,
+            // rather than leaving someone wondering why their change did nothing.
+            if server != started.server && warned_server.as_ref() != Some(&server) {
                 tracing::warn!(
                     "irori.toml's [server] settings changed; they take effect when Irori restarts"
                 );
-                warned_server = Some(irori.server);
+                warned_server = Some(server);
             }
-            if irori.recorder != started.recorder
-                && warned_recorder.as_ref() != Some(&irori.recorder)
-            {
-                tracing::warn!(
-                    "irori.toml's [recorder] retain_days changed; it takes effect when Irori restarts"
-                );
-                warned_recorder = Some(irori.recorder);
+            if recorder != applied {
+                // The file was parsed, so this is a retention the recorder can apply. Doing it
+                // here as well as from the Settings page means an edit of the file itself
+                // takes effect without a restart. Applying it twice is the same as once.
+                match irori_recorder::Retention::new(recorder.retain_days, recorder.summary_days) {
+                    Ok(retention) => {
+                        if !history.configure(retention) {
+                            tracing::warn!("the recorder has stopped; [recorder] was not applied");
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "irori.toml's [recorder] was not applied");
+                    }
+                }
+                applied = recorder;
             }
         }
     }

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use irori_core::{CallError, Command, Core, Event, ExtensionHost, ExtensionOverview};
 use irori_types::{
     Area, AreaId, ContextId, Description, Device, DeviceId, Entity, EntityId, EntityState,
-    ExtensionId, Floor, FloorId, Floorplan, Name, Origin, Placement, UserId,
+    ExtensionId, Floor, FloorId, Floorplan, Name, Origin, Placement, Timestamp, UserId,
 };
 use tokio::sync::broadcast;
 
@@ -171,7 +171,9 @@ pub fn router(state: AppState) -> Router {
             "/api/states",
             get(|State(s): State<AppState>| async move { Json(s.0.core.states()) }),
         )
+        .route("/api/history/{entity_id}/summary", get(entity_summary))
         .route("/api/history/{entity_id}", get(entity_history))
+        .route("/api/recorder", get(recorder_settings).put(set_recorder))
         .route("/api/system", get(host_info))
         .route("/api/system/usage", get(usage))
         .route("/api/system/log", get(system_log))
@@ -403,6 +405,134 @@ async fn entity_history(
         states: state.0.history.for_entity(&entity_id),
     })
     .into_response()
+}
+
+/// How long history is kept. `summary_days` is absent when hourly summaries are kept.
+#[derive(Debug, Serialize, Deserialize)]
+struct RecorderBody {
+    retain_days: u32,
+    #[serde(default)]
+    summary_days: Option<u32>,
+}
+
+async fn recorder_settings(State(state): State<AppState>) -> Json<RecorderBody> {
+    let section = state.0.config.recorder().await;
+    Json(RecorderBody {
+        retain_days: section.retain_days,
+        summary_days: section.summary_days,
+    })
+}
+
+/// Replaces `[recorder]` and applies it to the running recorder. The rest of `irori.toml` is
+/// not touched.
+async fn set_recorder(State(state): State<AppState>, Json(body): Json<RecorderBody>) -> Response {
+    let section = irori_config::RecorderSection {
+        retain_days: body.retain_days,
+        summary_days: body.summary_days,
+    };
+    match state
+        .0
+        .config
+        .edit_recorder(&state.0.history, section)
+        .await
+    {
+        Ok(()) => Json(body).into_response(),
+        Err(EditError::Refused(why)) => refused(StatusCode::UNPROCESSABLE_ENTITY, why.to_string()),
+        Err(EditError::Io(error)) => {
+            tracing::error!(%error, "couldn't write the config directory");
+            refused(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("couldn't write the config directory: {error}"),
+            )
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct SummaryView {
+    entity: EntityId,
+    points: Vec<SummaryPointView>,
+}
+
+#[derive(Debug, Serialize)]
+struct SummaryPointView {
+    start: Timestamp,
+    value: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max: Option<f64>,
+}
+
+/// Hourly summaries for one entity, from `since`. The detailed history endpoint is the last
+/// day of changes; this is the longer chart.
+async fn entity_summary(
+    State(state): State<AppState>,
+    Path(entity_id): Path<EntityId>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    if state.0.core.state(&entity_id).is_none() {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("there's no entity `{entity_id}`"),
+        );
+    }
+    let Some(since_text) = query_value(query.as_deref(), "since") else {
+        return refused(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "say how far back, as since=2026-01-01T00:00:00Z".to_owned(),
+        );
+    };
+    let since = match since_text.parse::<Timestamp>() {
+        Ok(since) => since,
+        Err(error) => return refused(StatusCode::UNPROCESSABLE_ENTITY, error.to_string()),
+    };
+    let points = state
+        .0
+        .history
+        .summaries(&entity_id, since)
+        .into_iter()
+        .map(|point| SummaryPointView {
+            start: point.start,
+            value: point.value,
+            min: point.min,
+            max: point.max,
+        })
+        .collect();
+    Json(SummaryView {
+        entity: entity_id,
+        points,
+    })
+    .into_response()
+}
+
+/// One query parameter, percent-decoded. Absent when the query doesn't name it.
+fn query_value(query: Option<&str>, name: &str) -> Option<String> {
+    let query = query?;
+    let prefix = format!("{name}=");
+    query.split('&').find_map(|pair| {
+        let value = pair.strip_prefix(&prefix)?;
+        Some(percent_decode(value))
+    })
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("");
+            if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                out.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| text.to_owned())
 }
 
 // --- Rooms, names, and where things live ---------------------------------------------------
@@ -1995,7 +2125,7 @@ mod tests {
             let config = Config::open_dir(config_dir, &core);
             let history = History::open(
                 &dir.path().join("irori.db"),
-                irori_recorder::DEFAULT_RETAIN_DAYS,
+                irori_recorder::Retention::default(),
             )?;
             Ok(Self {
                 dir,
@@ -2445,7 +2575,7 @@ mod tests {
         let path = server.dir.path().join("irori.db");
         let closed = std::mem::replace(&mut server.history, History::temporary());
         drop(closed);
-        server.history = History::open(&path, irori_recorder::DEFAULT_RETAIN_DAYS)?;
+        server.history = History::open(&path, irori_recorder::Retention::default())?;
 
         let (status, body) = server
             .send(Request::get(format!("/api/history/{entity}")).body(Body::empty())?)
@@ -2457,6 +2587,86 @@ mod tests {
             !states.is_empty(),
             "the change is still there after the database is opened again: {history}"
         );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Retention is read and written from Settings. A bad value is refused, and the file keeps
+    /// every section except `[recorder]`.
+    #[tokio::test]
+    async fn recorder_settings_are_saved_and_checked() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core)?;
+        let body = server.read("/api/recorder").await?;
+        assert_eq!(body["retain_days"], 10);
+        assert!(body["summary_days"].is_null(), "{body}");
+
+        let (status, refused) = server
+            .json(
+                "PUT",
+                "/api/recorder",
+                serde_json::json!({"retain_days": 0}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("at least 1"),
+            "{refused}"
+        );
+
+        let (status, refused) = server
+            .json(
+                "PUT",
+                "/api/recorder",
+                serde_json::json!({"retain_days": 30, "summary_days": 7}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+
+        let (status, saved) = server
+            .json(
+                "PUT",
+                "/api/recorder",
+                serde_json::json!({"retain_days": 14, "summary_days": 365}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+        assert_eq!(saved["retain_days"], 14);
+        assert_eq!(saved["summary_days"], 365);
+
+        let body = server.read("/api/recorder").await?;
+        assert_eq!(body["retain_days"], 14);
+        assert_eq!(body["summary_days"], 365);
+        let text = std::fs::read_to_string(server.config_dir().join("irori.toml"))?;
+        assert!(text.contains("retain_days = 14\n"), "{text}");
+        assert!(text.contains("summary_days = 365\n"), "{text}");
+        assert!(
+            !text.contains("[server]"),
+            "writing history retention must not rewrite the rest of irori.toml: {text}"
+        );
+
+        let (status, _) = server
+            .send(
+                Request::get("/api/history/sensor.demo_hallway_sensor_temperature/summary")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let (status, bytes) = server
+            .send(
+                Request::get(
+                    "/api/history/sensor.demo_hallway_sensor_temperature/summary?since=1970-01-01T00:00:00Z",
+                )
+                .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK);
+        let summary: serde_json::Value = serde_json::from_slice(&bytes)?;
+        assert!(summary["points"].is_array(), "{summary}");
 
         host.shutdown().await;
         Ok(())

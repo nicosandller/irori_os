@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use irori_core::{Core, Event};
-use irori_types::{EntityId, EntityState, Timestamp};
+use irori_types::{Capabilities, Entity, EntityId, EntityState, StateClass, Timestamp};
 use jiff::ToSpan as _;
 use tokio::runtime::RuntimeFlavor;
 use tokio::sync::broadcast;
@@ -29,10 +29,10 @@ pub struct History {
 }
 
 impl History {
-    /// Opens the diary in `path` (the home's `irori.db`) and keeps `retain_days` of it.
-    pub fn open(path: &Path, retain_days: u32) -> anyhow::Result<Self> {
+    /// Opens the diary in `path` (the home's `irori.db`) and keeps `retention` of it.
+    pub fn open(path: &Path, retention: irori_recorder::Retention) -> anyhow::Result<Self> {
         Ok(Self {
-            recorder: irori_recorder::Recorder::open(path, retain_days)?,
+            recorder: irori_recorder::Recorder::open_keeping(path, retention)?,
             #[cfg(test)]
             _kept: None,
         })
@@ -44,17 +44,49 @@ impl History {
         let dir = tempfile::tempdir().expect("a temporary directory for history");
         let path = dir.path().join("irori.db");
         Self {
-            recorder: irori_recorder::Recorder::open(&path, irori_recorder::DEFAULT_RETAIN_DAYS)
-                .expect("a temporary recorder"),
+            recorder: irori_recorder::Recorder::open_keeping(
+                &path,
+                irori_recorder::Retention::default(),
+            )
+            .expect("a temporary recorder"),
             _kept: Some(Arc::new(dir)),
         }
     }
 
-    /// Remembers a change. The recorder drops it if its queue is full, rather than making the
-    /// event loop wait.
+    /// Remembers a change that is kept as itself, not summarized. The recorder drops it if its
+    /// queue is full, rather than making the event loop wait.
     pub fn record(&self, entity_id: EntityId, state: EntityState) {
+        self.record_with(entity_id, state, None);
+    }
+
+    /// [`Self::record`] for a sensor that measures or counts. `class` is what earns the
+    /// five-minute and hourly summaries; without one, the change is kept as itself.
+    pub fn record_with(&self, entity_id: EntityId, state: EntityState, class: Option<StateClass>) {
         debug_assert_eq!(entity_id, state.entity_id);
-        self.recorder.append(state);
+        self.recorder.append_with(state, class);
+    }
+
+    /// Marks a sensor for summaries before its next change, so history already on disk can be
+    /// rolled up. The first class is the one that sticks.
+    pub fn notice(&self, entity_id: &EntityId, class: StateClass) {
+        self.recorder.notice(entity_id, class);
+    }
+
+    /// Changes how long history is kept, on the running recorder.
+    pub fn configure(&self, retention: irori_recorder::Retention) -> bool {
+        self.recorder.configure(retention)
+    }
+
+    /// Hourly summaries from `since`, oldest first. Empty for an entity that is not summarized,
+    /// and for a range that has no finished hour yet.
+    pub fn summaries(
+        &self,
+        entity_id: &EntityId,
+        since: Timestamp,
+    ) -> Vec<irori_recorder::SummaryPoint> {
+        let recorder = self.recorder.clone();
+        let entity_id = entity_id.clone();
+        off_the_runtime(move || recorder.summaries(&entity_id, since))
     }
 
     /// Drops everything recorded for an entity: it has left the home, and a device removed from
@@ -105,6 +137,27 @@ fn off_the_runtime<T>(work: impl FnOnce() -> T) -> T {
     }
 }
 
+/// The statistic class of a sensor that measures or counts. Anything else is kept as raw
+/// changes only.
+fn class_of(entity: &Entity) -> Option<StateClass> {
+    match &entity.capabilities {
+        Capabilities::Sensor(sensor) => match sensor.state_class {
+            Some(
+                class @ (StateClass::Measurement | StateClass::Total | StateClass::TotalIncreasing),
+            ) => Some(class),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn class_in(core: &Core, entity_id: &EntityId) -> Option<StateClass> {
+    core.entities()
+        .into_iter()
+        .find(|entity| &entity.id == entity_id)
+        .and_then(|entity| class_of(&entity))
+}
+
 fn day_ago() -> Timestamp {
     Timestamp::from_jiff(
         jiff::Timestamp::now()
@@ -124,7 +177,15 @@ pub async fn record(core: Core, history: History, mut events: broadcast::Receive
                 entity_id,
                 new_state,
                 ..
-            }) => history.record(entity_id, *new_state),
+            }) => match class_in(&core, &entity_id) {
+                Some(class) => history.record_with(entity_id, *new_state, Some(class)),
+                None => history.record(entity_id, *new_state),
+            },
+            Ok(Event::EntityAdded { entity } | Event::EntityUpdated { entity }) => {
+                if let Some(class) = class_of(&entity) {
+                    history.notice(&entity.id, class);
+                }
+            }
             Ok(Event::EntityRemoved { entity_id }) => history.forget(&entity_id),
             Ok(_) => {}
             Err(broadcast::error::RecvError::Lagged(missed)) => {
@@ -256,13 +317,13 @@ mod tests {
         let path = dir.path().join("irori.db");
         let when = now();
         {
-            let history =
-                History::open(&path, irori_recorder::DEFAULT_RETAIN_DAYS).expect("the diary opens");
+            let history = History::open(&path, irori_recorder::Retention::default())
+                .expect("the diary opens");
             history.record(plug(), state("switch.plug", true, when));
             assert_eq!(history.for_entity(&plug()).len(), 1);
         }
         let history =
-            History::open(&path, irori_recorder::DEFAULT_RETAIN_DAYS).expect("the diary reopens");
+            History::open(&path, irori_recorder::Retention::default()).expect("the diary reopens");
         let seen = history.for_entity(&plug());
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].last_updated, when);

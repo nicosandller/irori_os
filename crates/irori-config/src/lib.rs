@@ -146,6 +146,22 @@ impl Store {
         self.users.value.clone()
     }
 
+    /// Rewrites only the `[recorder]` section of `irori.toml`, atomically, if that section would
+    /// change. The rest of the file, including comments on `[server]`, is kept. Says whether
+    /// it wrote.
+    pub fn save_recorder(&mut self, section: &RecorderSection) -> std::io::Result<bool> {
+        let path = self.path(File::Irori);
+        let existing = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error),
+        };
+        let changed = self.replace(&path, &files::upsert_recorder(&existing, section))?;
+        self.irori.value.recorder = section.clone();
+        *self.seen_mut(File::Irori) = look(&path);
+        Ok(changed)
+    }
+
     /// Replaces `home.toml`, atomically, if its contents would change. Says whether it wrote.
     pub fn save_home(&mut self, home: &HomeSettings) -> std::io::Result<bool> {
         let path = self.path(File::Home);

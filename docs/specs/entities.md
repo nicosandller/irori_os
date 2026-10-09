@@ -410,5 +410,5 @@ Recorded as D20 in the ROADMAP decision log.
 2. ~~**Text sensor values.**~~ Decided: a text sensor may list its `options` (§4.4), and rules are
    checked against them.
 3. **Units.** Temperatures are decided: °C in the model, converted by protocols (§4.4). Other
-   units are free-form strings today. Before AI dashboards and statistics, decide whether to
-   restrict them per `device_class` and normalize them too.
+   units are free-form strings today. Statistics use the number as reported. Before AI
+   dashboards, decide whether to restrict units per `device_class` and normalize them too.

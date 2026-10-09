@@ -207,8 +207,10 @@ Handled as a secret throughout:
 
 ### 3.5 `irori.toml`
 
-Settings for Irori itself. Irori only ever reads this file: nothing it serves can write it, which
-matters while there's no sign-in, because `allow_unauthenticated_lan` is here.
+Settings for Irori itself. The page may rewrite `[recorder]` and nothing else in this file.
+`allow_unauthenticated_lan` lives in `[server]`, and a page that could set it would let anyone
+who can reach Irori open it to the whole network. Rewriting `[recorder]` keeps every other
+line, including comments.
 
 ```toml
 [server]
@@ -223,7 +225,8 @@ data = "/var/lib/irori"       # relative paths are relative to this directory
 disabled = ["demo"]
 
 [recorder]
-retain_days = 7           # how long entity history is kept; at least 1
+retain_days = 10          # detailed history, in days; at least 1
+# summary_days = 365      # hourly summaries; leave out to keep them
 
 ```
 
@@ -232,9 +235,19 @@ default. `[server]` is read at startup; changing it while Irori runs logs that a
 needed. `[extensions] disabled` applies while Irori runs: naming an extension stops it, removing
 it starts it again.
 
-`[recorder] retain_days` is how many days of entity history are kept in the database. A day
-is 24 hours. Left out, it is 7, and `0` is refused. It is read at startup, like `[server]`:
-changing it needs a restart. The Devices page still shows only the last day of what was kept.
+`[recorder]` is how long entity history is kept. It applies while Irori runs: the History row
+in Settings writes it, and an edit of the file is picked up within a couple of seconds.
+
+- `retain_days` is the detailed history. Every change is kept that many days, and a sensor that
+  measures or counts (`state_class` of `measurement`, `total`, or `total_increasing`) also gets
+  a summary every five minutes, deleted on the same schedule. A day is 24 hours. Left out, it
+  is 10. `0` is refused. The Devices page still draws the last day from these changes.
+- `summary_days`, when set, is how many days of hourly summaries are kept. Those hours are
+  rolled up from the five-minute rows. Leave the key out and the hourly summaries are kept.
+  A set value is at least 1 and at least `retain_days`: the hours are not deleted while the
+  changes they came from are still there. The week, month, and year on a sensor's history are
+  drawn from these hours. A measurement is the average for the hour. A counter is how much it
+  changed. A `total_increasing` sensor treats a drop as a reset.
 
 If `bind` is already in use when Irori starts, it listens on `bind_fallback` instead (or, if none
 is set, on the first free port just above `bind`, up to nine ports higher) and logs a warning with

@@ -20,6 +20,7 @@ mod fold;
 mod gesture;
 mod glide;
 mod history;
+mod history_settings;
 mod icons;
 mod inline;
 mod log_window;

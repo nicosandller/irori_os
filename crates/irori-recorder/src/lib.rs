@@ -1,6 +1,8 @@
 //! Entity history on disk, in the home's `irori.db`.
 //!
-//! Each real change is appended to `state_history`, so a later start still has it. One thread
+//! Each real change is appended to `state_history`, so a later start still has it. A sensor
+//! that measures or counts also gets a five-minute summary, kept as long as the raw changes,
+//! and an hourly summary kept for longer — forever, unless the home says otherwise. One thread
 //! owns the connection. Everyone else sends it a message — save, forget, read, or stop — and
 //! the messages are applied in the order they were sent, so a read sees the saves that were
 //! asked for before it. A burst of saves shares one transaction. When too many saves are
@@ -19,14 +21,19 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use irori_types::{EntityId, EntityState, Timestamp};
+use irori_types::{EntityId, EntityState, StateClass, Timestamp};
 use rusqlite::Connection;
+
+mod stats;
+
+pub use stats::SummaryPoint;
 
 #[cfg(test)]
 use jiff::ToSpan as _;
 
-/// How long readings are kept when a home does not say otherwise.
-pub const DEFAULT_RETAIN_DAYS: u32 = 7;
+/// How long detailed history is kept when a home does not say otherwise. Ten days, which is
+/// Home Assistant's raw window: the changes themselves, and the five-minute summaries.
+pub const DEFAULT_RETAIN_DAYS: u32 = 10;
 
 /// The most changes one read returns. The newest are kept, and they come back oldest first.
 pub const MAX_RETURNED: usize = 2_000;
@@ -39,6 +46,17 @@ const BURST: usize = 64;
 
 /// How often rows older than the retention window are deleted while the process is up.
 const PRUNE_EVERY: Duration = Duration::from_secs(60 * 60);
+
+/// How often closed periods are summarized while the process is up.
+const COMPILE_EVERY: Duration = Duration::from_secs(30);
+
+/// Closed periods summarized on one ordinary turn. A restart catches up over many turns, so
+/// opening the database does not wait to summarize the whole window.
+const COMPILE_BUDGET: usize = 64;
+
+/// Closed periods summarized before answering a summary read. Ten days of five-minute periods
+/// is 2880, so one read finishes a sensor that is still inside the detailed window.
+const SUMMARY_BUDGET: usize = 4_096;
 
 /// How long to wait before trying a batch again after the write failed.
 const RETRY_WRITE: Duration = Duration::from_secs(1);
@@ -56,7 +74,83 @@ CREATE TABLE IF NOT EXISTS state_history (
 );
 CREATE INDEX IF NOT EXISTS state_history_entity_time
     ON state_history (entity_id, updated_ns, id);
+
+CREATE TABLE IF NOT EXISTS statistic_entities (
+    entity_id TEXT PRIMARY KEY,
+    class TEXT NOT NULL,
+    compiled_until_ns INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS statistics_short_term (
+    entity_id TEXT NOT NULL,
+    start_ns INTEGER NOT NULL,
+    mean REAL,
+    min REAL,
+    max REAL,
+    sum REAL,
+    last REAL,
+    PRIMARY KEY (entity_id, start_ns)
+);
+CREATE TABLE IF NOT EXISTS statistics (
+    entity_id TEXT NOT NULL,
+    start_ns INTEGER NOT NULL,
+    mean REAL,
+    min REAL,
+    max REAL,
+    sum REAL,
+    last REAL,
+    PRIMARY KEY (entity_id, start_ns)
+);
 ";
+
+/// How long history is kept. `retain_days` covers the changes and the five-minute summaries.
+/// `summary_days` covers the hourly summaries; `None` keeps them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retention {
+    pub retain_days: u32,
+    pub summary_days: Option<u32>,
+}
+
+impl Retention {
+    /// `retain_days` is at least 1. `summary_days`, when set, is at least 1 and at least
+    /// `retain_days`: the hourly rows are not deleted while the changes they came from are
+    /// still kept. Leave `summary_days` unset to keep the hourly rows.
+    pub fn new(retain_days: u32, summary_days: Option<u32>) -> Result<Self, Error> {
+        if retain_days == 0 {
+            return Err(Error::new("retain_days must be at least 1"));
+        }
+        if let Some(days) = summary_days {
+            if days == 0 {
+                return Err(Error::new(
+                    "summary_days must be at least 1, or be left unset to keep hourly summaries",
+                ));
+            }
+            if days < retain_days {
+                return Err(Error::new(
+                    "summary_days must be at least retain_days. Leave it unset to keep hourly summaries",
+                ));
+            }
+        }
+        Ok(Self {
+            retain_days,
+            summary_days,
+        })
+    }
+}
+
+impl Default for Retention {
+    fn default() -> Self {
+        Self {
+            retain_days: DEFAULT_RETAIN_DAYS,
+            summary_days: None,
+        }
+    }
+}
+
+/// A change waiting to be written, and the statistic class it had when it was recorded.
+struct Change {
+    state: EntityState,
+    class: Option<StateClass>,
+}
 
 /// Why the recorder could not be opened.
 #[derive(Debug)]
@@ -81,15 +175,31 @@ impl Error {
 }
 
 enum Job {
-    Append(Box<EntityState>),
+    Append(Box<Change>),
     Forget(EntityId),
     /// Delete every row whose entity is not in this list. Sent when a listener fell behind and
     /// may have missed a removal.
     ForgetMissing(Vec<EntityId>),
+    /// This entity is summarized. The class is recorded once; later notices do not change it.
+    Notice {
+        entity_id: EntityId,
+        class: StateClass,
+    },
     Query {
         entity_id: EntityId,
         since: Timestamp,
         reply: std::sync::mpsc::Sender<Vec<EntityState>>,
+    },
+    Summaries {
+        entity_id: EntityId,
+        since: Timestamp,
+        reply: std::sync::mpsc::Sender<Vec<SummaryPoint>>,
+    },
+    /// Replace how long history is kept, summarize what a shorter window would otherwise
+    /// delete, then delete.
+    Configure {
+        retention: Retention,
+        reply: std::sync::mpsc::Sender<()>,
     },
     Check(std::sync::mpsc::Sender<bool>),
 }
@@ -168,19 +278,31 @@ fn abandon(job: Job) {
         Job::Query { reply, .. } => {
             let _ = reply.send(Vec::new());
         }
+        Job::Summaries { reply, .. } => {
+            let _ = reply.send(Vec::new());
+        }
         Job::Check(reply) => {
             let _ = reply.send(false);
         }
-        Job::Append(_) | Job::Forget(_) | Job::ForgetMissing(_) => {}
+        Job::Configure { reply, .. } => {
+            let _ = reply.send(());
+        }
+        Job::Append(_) | Job::Forget(_) | Job::ForgetMissing(_) | Job::Notice { .. } => {}
     }
 }
 
 impl Recorder {
     /// Opens `path` (the home's `irori.db`) and starts the writer. `retain_days` is at least 1.
-    /// Rows older than that are deleted before this returns, and about once an hour after, even
-    /// while saves keep arriving.
+    /// Hourly summaries are kept. Rows older than the detailed window are deleted before this
+    /// returns, and about once an hour after, even while saves keep arriving. A sensor that is
+    /// still being summarized keeps its rows until that summary has caught up.
     pub fn open(path: &Path, retain_days: u32) -> Result<Self, Error> {
-        Self::start(path, retain_days, PRUNE_EVERY)
+        Self::open_keeping(path, Retention::new(retain_days, None)?)
+    }
+
+    /// Opens `path` and keeps history for `retention`.
+    pub fn open_keeping(path: &Path, retention: Retention) -> Result<Self, Error> {
+        Self::start(path, retention, PRUNE_EVERY)
     }
 
     /// `prune_every` is how often retention runs while the process is up. Tests pass a short one.
@@ -190,13 +312,10 @@ impl Recorder {
         retain_days: u32,
         prune_every: Duration,
     ) -> Result<Self, Error> {
-        Self::start(path, retain_days, prune_every)
+        Self::start(path, Retention::new(retain_days, None)?, prune_every)
     }
 
-    fn start(path: &Path, retain_days: u32, prune_every: Duration) -> Result<Self, Error> {
-        if retain_days == 0 {
-            return Err(Error::new("retain_days must be at least 1"));
-        }
+    fn start(path: &Path, retention: Retention, prune_every: Duration) -> Result<Self, Error> {
         let path = path.to_path_buf();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let mailbox = Arc::new(Mailbox {
@@ -219,7 +338,7 @@ impl Recorder {
                 match open_connection(&path) {
                     Ok(connection) => {
                         let mut last_write_ok = true;
-                        if let Err(error) = prune(&connection, retain_days) {
+                        if let Err(error) = prune(&connection, &retention) {
                             last_write_ok = false;
                             tracing::warn!(%error, "old history could not be deleted");
                         }
@@ -228,7 +347,7 @@ impl Recorder {
                             connection,
                             &mailbox_for_thread,
                             &shutdown_for_thread,
-                            retain_days,
+                            retention,
                             prune_every,
                             last_write_ok,
                         );
@@ -263,8 +382,14 @@ impl Recorder {
     }
 
     /// Remembers one change. If the writer is behind, the change is dropped and a warning is
-    /// logged (the first time, and every thousand after).
+    /// logged (the first time, and every thousand after). `class` is set for a sensor that
+    /// measures or counts, and those are the sensors that get five-minute and hourly summaries.
     pub fn append(&self, state: EntityState) {
+        self.append_with(state, None);
+    }
+
+    /// [`Self::append`] for a sensor whose `state_class` says it is summarized.
+    pub fn append_with(&self, state: EntityState, class: Option<StateClass>) {
         {
             let mut queue = lock(&self.shared.mailbox.queue);
             if !self.shared.mailbox.alive.load(Ordering::SeqCst) {
@@ -282,10 +407,38 @@ impl Recorder {
                 }
                 return;
             }
-            queue.jobs.push_back(Job::Append(Box::new(state)));
+            queue
+                .jobs
+                .push_back(Job::Append(Box::new(Change { state, class })));
             queue.appends += 1;
         }
         self.shared.mailbox.wake.notify_one();
+    }
+
+    /// Records that `entity_id` is summarized as `class`, even before its next change. The
+    /// first class is the one that sticks.
+    pub fn notice(&self, entity_id: &EntityId, class: StateClass) {
+        self.enqueue(
+            Job::Notice {
+                entity_id: entity_id.clone(),
+                class,
+            },
+            "a sensor was not marked for summaries",
+        );
+    }
+
+    /// Changes how long history is kept, on the running writer. Summarizes what it can before
+    /// a shorter window deletes the changes. Returns false when the writer has stopped.
+    pub fn configure(&self, retention: Retention) -> bool {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        if !self.enqueue_waiting(Job::Configure {
+            retention,
+            reply: reply_tx,
+        }) {
+            tracing::warn!("the recorder has stopped; retention was not changed");
+            return false;
+        }
+        reply_rx.recv().is_ok()
     }
 
     /// Deletes every stored change for this entity. The delete is queued behind the saves
@@ -329,6 +482,22 @@ impl Recorder {
             reply: reply_tx,
         }) {
             tracing::warn!("the recorder has stopped; history could not be read");
+            return Vec::new();
+        }
+        reply_rx.recv().unwrap_or_default()
+    }
+
+    /// Hourly summaries for `entity_id` with `start >= since`, oldest first. Closed periods are
+    /// summarized before the read, up to a few thousand of them, so a chart does not wait for
+    /// the half-minute compile pass.
+    pub fn summaries(&self, entity_id: &EntityId, since: Timestamp) -> Vec<SummaryPoint> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        if !self.enqueue_waiting(Job::Summaries {
+            entity_id: entity_id.clone(),
+            since,
+            reply: reply_tx,
+        }) {
+            tracing::warn!("the recorder has stopped; summaries could not be read");
             return Vec::new();
         }
         reply_rx.recv().unwrap_or_default()
@@ -385,11 +554,12 @@ fn serve(
     mut connection: Connection,
     mailbox: &Mailbox,
     shutdown: &AtomicBool,
-    retain_days: u32,
+    mut retention: Retention,
     prune_every: Duration,
     mut last_write_ok: bool,
 ) {
     let mut last_prune = Instant::now();
+    let mut last_compile = Instant::now();
     let mut batch = Vec::new();
     loop {
         if shutdown.load(Ordering::SeqCst) {
@@ -399,7 +569,13 @@ fn serve(
                 std::mem::take(&mut queue.jobs)
             };
             for job in rest {
-                apply(job, &mut connection, &mut batch, &mut last_write_ok);
+                apply(
+                    job,
+                    &mut connection,
+                    &mut batch,
+                    &mut last_write_ok,
+                    &mut retention,
+                );
             }
             write_batch(&mut connection, &mut batch, &mut last_write_ok);
             break;
@@ -407,39 +583,85 @@ fn serve(
         // Checked on every turn, not only after a quiet minute. A page that polls health, or
         // an entity that keeps changing, would otherwise never leave the queue idle long
         // enough for the old timeout path to delete anything.
+        if last_compile.elapsed() >= COMPILE_EVERY {
+            write_batch(&mut connection, &mut batch, &mut last_write_ok);
+            note_compile(&mut connection, &batch, &mut last_write_ok, COMPILE_BUDGET);
+            last_compile = Instant::now();
+        }
         if last_prune.elapsed() >= prune_every {
             write_batch(&mut connection, &mut batch, &mut last_write_ok);
             // A prune that succeeds is a write, but it must not paint over a batch that just
             // failed and is waiting to be tried again.
-            match prune(&connection, retain_days) {
-                Ok(()) if batch.is_empty() => last_write_ok = true,
-                Ok(()) => {}
-                Err(error) => {
-                    last_write_ok = false;
-                    tracing::warn!(%error, "old history could not be deleted");
-                }
-            }
+            note_prune(&connection, &retention, &batch, &mut last_write_ok);
             last_prune = Instant::now();
         } else if !batch.is_empty() {
             write_batch(&mut connection, &mut batch, &mut last_write_ok);
         }
-        let jobs = recv_burst(mailbox, shutdown, wait_for(last_prune, prune_every, &batch));
+        let jobs = recv_burst(
+            mailbox,
+            shutdown,
+            wait_for(last_prune, last_compile, prune_every, batch.is_empty()),
+        );
         for job in jobs {
-            apply(job, &mut connection, &mut batch, &mut last_write_ok);
+            apply(
+                job,
+                &mut connection,
+                &mut batch,
+                &mut last_write_ok,
+                &mut retention,
+            );
         }
         write_batch(&mut connection, &mut batch, &mut last_write_ok);
     }
 }
 
-/// How long to sleep when nothing is queued. A failed batch is retried soon; otherwise sleep
-/// until the next retention pass.
-fn wait_for(last_prune: Instant, prune_every: Duration, batch: &[EntityState]) -> Duration {
-    let until_prune = prune_every.saturating_sub(last_prune.elapsed());
-    if batch.is_empty() {
-        until_prune
-    } else {
-        until_prune.min(RETRY_WRITE)
+fn note_compile(
+    connection: &mut Connection,
+    batch: &[Change],
+    last_write_ok: &mut bool,
+    budget: usize,
+) {
+    let Some(now_ns) = now_ns() else {
+        return;
+    };
+    match stats::compile(connection, budget, None, now_ns) {
+        Ok(()) if batch.is_empty() => *last_write_ok = true,
+        Ok(()) => {}
+        Err(error) => {
+            *last_write_ok = false;
+            tracing::warn!(%error, "history could not be summarized");
+        }
     }
+}
+
+fn note_prune(
+    connection: &Connection,
+    retention: &Retention,
+    batch: &[Change],
+    last_write_ok: &mut bool,
+) {
+    match prune(connection, retention) {
+        Ok(()) if batch.is_empty() => *last_write_ok = true,
+        Ok(()) => {}
+        Err(error) => {
+            *last_write_ok = false;
+            tracing::warn!(%error, "old history could not be deleted");
+        }
+    }
+}
+
+/// How long to sleep when nothing is queued. A failed batch is retried soon; otherwise sleep
+/// until the next summary pass or the next retention pass, whichever is sooner.
+fn wait_for(
+    last_prune: Instant,
+    last_compile: Instant,
+    prune_every: Duration,
+    idle: bool,
+) -> Duration {
+    let until_prune = prune_every.saturating_sub(last_prune.elapsed());
+    let until_compile = COMPILE_EVERY.saturating_sub(last_compile.elapsed());
+    let until = until_prune.min(until_compile);
+    if idle { until } else { until.min(RETRY_WRITE) }
 }
 
 fn recv_burst(mailbox: &Mailbox, shutdown: &AtomicBool, wait_for: Duration) -> Vec<Job> {
@@ -475,21 +697,31 @@ fn recv_burst(mailbox: &Mailbox, shutdown: &AtomicBool, wait_for: Duration) -> V
 fn apply(
     job: Job,
     connection: &mut Connection,
-    batch: &mut Vec<EntityState>,
+    batch: &mut Vec<Change>,
     last_write_ok: &mut bool,
+    retention: &mut Retention,
 ) {
     match job {
-        Job::Append(state) => batch.push(*state),
+        Job::Append(change) => batch.push(*change),
+        Job::Notice { entity_id, class } => {
+            let Some(now) = now_ns() else {
+                return;
+            };
+            note_write(
+                last_write_ok,
+                stats::note_class(connection, &entity_id, class, now),
+            );
+        }
         Job::Forget(entity_id) => {
             // Drop it from the batch too. A failed write keeps the batch, and writing it later
             // would put the removed entity back.
-            batch.retain(|state| state.entity_id != entity_id);
+            batch.retain(|change| change.state.entity_id != entity_id);
             write_batch(connection, batch, last_write_ok);
             note_write(last_write_ok, forget(connection, &entity_id));
         }
         Job::ForgetMissing(live) => {
             let keep: HashSet<&EntityId> = live.iter().collect();
-            batch.retain(|state| keep.contains(&state.entity_id));
+            batch.retain(|change| keep.contains(&change.state.entity_id));
             write_batch(connection, batch, last_write_ok);
             note_write(last_write_ok, forget_missing(connection, &live));
         }
@@ -508,6 +740,33 @@ fn apply(
             };
             let _ = reply.send(rows);
         }
+        Job::Summaries {
+            entity_id,
+            since,
+            reply,
+        } => {
+            write_batch(connection, batch, last_write_ok);
+            let points = match summarize(connection, &entity_id, since, batch, last_write_ok) {
+                Ok(points) => points,
+                Err(error) => {
+                    tracing::warn!(%error, "summaries could not be read");
+                    Vec::new()
+                }
+            };
+            let _ = reply.send(points);
+        }
+        Job::Configure {
+            retention: next,
+            reply,
+        } => {
+            *retention = next;
+            write_batch(connection, batch, last_write_ok);
+            // Compile before deleting, so a shorter window still turns the changes it is
+            // about to drop into hourly rows.
+            note_compile(connection, batch, last_write_ok, SUMMARY_BUDGET);
+            note_prune(connection, retention, batch, last_write_ok);
+            let _ = reply.send(());
+        }
         Job::Check(reply) => {
             let readable = connection
                 .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
@@ -517,11 +776,30 @@ fn apply(
     }
 }
 
-fn write_batch(
+fn summarize(
     connection: &mut Connection,
-    batch: &mut Vec<EntityState>,
+    entity_id: &EntityId,
+    since: Timestamp,
+    batch: &[Change],
     last_write_ok: &mut bool,
-) {
+) -> Result<Vec<SummaryPoint>, String> {
+    if let Some(now) = now_ns() {
+        match stats::compile(connection, SUMMARY_BUDGET, Some(entity_id), now) {
+            Ok(()) if batch.is_empty() => *last_write_ok = true,
+            Ok(()) => {}
+            Err(error) => {
+                *last_write_ok = false;
+                return Err(error);
+            }
+        }
+    }
+    let Some(since_ns) = nanos(since) else {
+        return Ok(Vec::new());
+    };
+    stats::summaries(connection, entity_id, since_ns)
+}
+
+fn write_batch(connection: &mut Connection, batch: &mut Vec<Change>, last_write_ok: &mut bool) {
     if batch.is_empty() {
         return;
     }
@@ -549,7 +827,7 @@ fn note_write(last_write_ok: &mut bool, result: Result<(), String>) {
     }
 }
 
-fn insert_many(connection: &mut Connection, states: &[EntityState]) -> Result<(), String> {
+fn insert_many(connection: &mut Connection, changes: &[Change]) -> Result<(), String> {
     let transaction = connection
         .transaction()
         .map_err(|error| error.to_string())?;
@@ -557,7 +835,8 @@ fn insert_many(connection: &mut Connection, states: &[EntityState]) -> Result<()
         let mut statement = transaction
             .prepare("INSERT INTO state_history (entity_id, updated_ns, state) VALUES (?1, ?2, ?3)")
             .map_err(|error| error.to_string())?;
-        for state in states {
+        for change in changes {
+            let state = &change.state;
             let Some(updated) = nanos(state.last_updated) else {
                 tracing::warn!(
                     entity = %state.entity_id,
@@ -581,15 +860,39 @@ fn insert_many(connection: &mut Connection, states: &[EntityState]) -> Result<()
                 .map_err(|error| error.to_string())?;
         }
     }
+    let Some(now) = now_ns() else {
+        return transaction.commit().map_err(|error| error.to_string());
+    };
+    for change in changes {
+        if let Some(class) = change.class {
+            stats::note_class(&transaction, &change.state.entity_id, class, now)?;
+        }
+    }
     transaction.commit().map_err(|error| error.to_string())
 }
 
 fn forget(connection: &Connection, entity_id: &EntityId) -> Result<(), String> {
+    for table in [
+        "state_history",
+        "statistics_short_term",
+        "statistics",
+        "statistic_entities",
+    ] {
+        delete_entity(connection, table, entity_id)?;
+    }
+    Ok(())
+}
+
+fn delete_entity(connection: &Connection, table: &str, entity_id: &EntityId) -> Result<(), String> {
+    let sql = match table {
+        "state_history" => "DELETE FROM state_history WHERE entity_id = ?1",
+        "statistics_short_term" => "DELETE FROM statistics_short_term WHERE entity_id = ?1",
+        "statistics" => "DELETE FROM statistics WHERE entity_id = ?1",
+        "statistic_entities" => "DELETE FROM statistic_entities WHERE entity_id = ?1",
+        _ => return Err(format!("unknown history table {table}")),
+    };
     connection
-        .execute(
-            "DELETE FROM state_history WHERE entity_id = ?1",
-            [entity_id.as_str()],
-        )
+        .execute(sql, [entity_id.as_str()])
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
@@ -599,10 +902,15 @@ fn forget(connection: &Connection, entity_id: &EntityId) -> Result<(), String> {
 /// home means nothing to keep.
 fn forget_missing(connection: &mut Connection, live: &[EntityId]) -> Result<(), String> {
     if live.is_empty() {
-        return connection
-            .execute("DELETE FROM state_history", [])
-            .map(|_| ())
-            .map_err(|error| error.to_string());
+        connection
+            .execute_batch(
+                "DELETE FROM state_history;
+                 DELETE FROM statistics_short_term;
+                 DELETE FROM statistics;
+                 DELETE FROM statistic_entities",
+            )
+            .map_err(|error| error.to_string())?;
+        return Ok(());
     }
     let transaction = connection
         .transaction()
@@ -623,13 +931,20 @@ fn forget_missing(connection: &mut Connection, live: &[EntityId]) -> Result<(), 
                 .map_err(|error| error.to_string())?;
         }
     }
-    transaction
-        .execute(
-            "DELETE FROM state_history
-             WHERE entity_id NOT IN (SELECT entity_id FROM history_live)",
-            [],
-        )
-        .map_err(|error| error.to_string())?;
+    for sql in [
+        "DELETE FROM state_history
+         WHERE entity_id NOT IN (SELECT entity_id FROM history_live)",
+        "DELETE FROM statistics_short_term
+         WHERE entity_id NOT IN (SELECT entity_id FROM history_live)",
+        "DELETE FROM statistics
+         WHERE entity_id NOT IN (SELECT entity_id FROM history_live)",
+        "DELETE FROM statistic_entities
+         WHERE entity_id NOT IN (SELECT entity_id FROM history_live)",
+    ] {
+        transaction
+            .execute(sql, [])
+            .map_err(|error| error.to_string())?;
+    }
     transaction.commit().map_err(|error| error.to_string())
 }
 
@@ -671,16 +986,54 @@ fn read(
     Ok(states)
 }
 
-fn prune(connection: &Connection, retain_days: u32) -> Result<(), String> {
-    let Some(cutoff) = cutoff_ns(retain_days) else {
+fn prune(connection: &Connection, retention: &Retention) -> Result<(), String> {
+    let Some(cutoff) = cutoff_ns(retention.retain_days) else {
         // A span this long does not fit in a timestamp. Keeping the rows is the safe failure.
-        tracing::warn!(retain_days, "history retention is too long to apply");
+        tracing::warn!(
+            retain_days = retention.retain_days,
+            "history retention is too long to apply"
+        );
         return Ok(());
     };
+    // A sensor that has not been summarized through the cutoff keeps its rows. Deleting them
+    // first would leave a hole in the hourly history that nothing can fill back in.
     connection
-        .execute("DELETE FROM state_history WHERE updated_ns < ?1", [cutoff])
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+        .execute(
+            "DELETE FROM state_history
+             WHERE updated_ns < ?1
+               AND entity_id NOT IN (
+                   SELECT entity_id FROM statistic_entities WHERE compiled_until_ns < ?1
+               )",
+            [cutoff],
+        )
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "DELETE FROM statistics_short_term
+             WHERE start_ns < ?1
+               AND entity_id NOT IN (
+                   SELECT entity_id FROM statistic_entities WHERE compiled_until_ns < ?1
+               )",
+            [cutoff],
+        )
+        .map_err(|error| error.to_string())?;
+    if let Some(days) = retention.summary_days {
+        let Some(summary_cutoff) = cutoff_ns(days) else {
+            tracing::warn!(days, "summary retention is too long to apply");
+            return Ok(());
+        };
+        connection
+            .execute(
+                "DELETE FROM statistics WHERE start_ns < ?1",
+                [summary_cutoff],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn now_ns() -> Option<i64> {
+    i64::try_from(jiff::Timestamp::now().as_nanosecond()).ok()
 }
 
 fn cutoff_ns(retain_days: u32) -> Option<i64> {
@@ -700,7 +1053,7 @@ fn nanos(timestamp: Timestamp) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use irori_types::{Availability, Context, Origin, State, SwitchState};
+    use irori_types::{Availability, Context, Origin, State, StateClass, SwitchState};
 
     use super::*;
 
@@ -987,6 +1340,213 @@ mod tests {
         assert!(
             recorder.since(&plug, at("1970-01-01T00:00:00Z")).is_empty(),
             "the delete still landed after the saves that were already queued"
+        );
+    }
+
+    fn at_ns(ns: i64) -> Timestamp {
+        Timestamp::from_jiff(
+            jiff::Timestamp::from_nanosecond(i128::from(ns)).expect("the timestamp fits"),
+        )
+    }
+
+    fn reading(name: &str, value: f64, at: Timestamp) -> EntityState {
+        EntityState {
+            entity_id: entity(name),
+            availability: Availability::Available,
+            state: Some(State::Sensor(irori_types::SensorState {
+                value: irori_types::SensorValue::Number(value),
+            })),
+            attributes: Default::default(),
+            last_changed: at,
+            last_updated: at,
+            last_reported: at,
+            context: Context {
+                id: "01K5B2Q9A1B2C3D4E5F6G7H8J9"
+                    .parse()
+                    .expect("a valid context id"),
+                parent_id: None,
+                origin: Origin::System,
+            },
+        }
+    }
+
+    /// An hour that closed three days ago, aligned to the clock.
+    fn three_days_ago_hour() -> i64 {
+        let now = now_ns().expect("now fits in a timestamp");
+        stats::align_down(now, stats::HOUR_NS) - 3 * 24 * stats::HOUR_NS
+    }
+
+    #[test]
+    fn hourly_summaries_outlive_the_detailed_history() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("irori.db");
+        let recorder =
+            Recorder::open_keeping(&path, Retention::new(1, None).expect("one day")).expect("open");
+        let sensor = entity("sensor.temperature");
+        let old = three_days_ago_hour();
+        recorder.append_with(
+            reading("sensor.temperature", 21.5, at_ns(old)),
+            Some(irori_types::StateClass::Measurement),
+        );
+        recorder.append_with(
+            reading("sensor.temperature", 22.0, now()),
+            Some(irori_types::StateClass::Measurement),
+        );
+        let points = recorder.summaries(&sensor, at("1970-01-01T00:00:00Z"));
+        let kept = points
+            .iter()
+            .find(|point| nanos(point.start) == Some(old))
+            .expect("the hour from three days ago was summarized");
+        let difference = (kept.value - 21.5).abs();
+        assert!(
+            difference < 1e-6,
+            "the hour averaged 21.5, got {}",
+            kept.value
+        );
+        assert!(
+            recorder.configure(Retention::new(1, None).expect("one day")),
+            "retention was applied"
+        );
+        let seen = recorder.since(&sensor, at("1970-01-01T00:00:00Z"));
+        assert!(
+            seen.iter().all(|state| state.last_updated != at_ns(old)),
+            "the raw reading from three days ago was deleted"
+        );
+        assert!(
+            !seen.is_empty(),
+            "the reading from now is still inside the day"
+        );
+        let after = recorder.summaries(&sensor, at("1970-01-01T00:00:00Z"));
+        assert!(
+            after.iter().any(|point| nanos(point.start) == Some(old)),
+            "the hourly row stays when summaries are kept"
+        );
+        let short: i64 = Connection::open(&path)
+            .expect("a second connection")
+            .query_row(
+                "SELECT COUNT(*) FROM statistics_short_term WHERE start_ns = ?1",
+                [old],
+                |row| row.get(0),
+            )
+            .expect("the short-term table can be counted");
+        assert_eq!(
+            short, 0,
+            "five-minute rows are deleted with the raw changes"
+        );
+    }
+
+    #[test]
+    fn hourly_summaries_can_be_kept_for_a_limited_number_of_days() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("irori.db");
+        let recorder = Recorder::open_keeping(&path, Retention::new(1, Some(1)).expect("one day"))
+            .expect("open");
+        let sensor = entity("sensor.energy");
+        let old = three_days_ago_hour();
+        recorder.append_with(
+            reading("sensor.energy", 100.0, at_ns(old)),
+            Some(irori_types::StateClass::TotalIncreasing),
+        );
+        recorder.append_with(
+            reading("sensor.energy", 110.0, now()),
+            Some(irori_types::StateClass::TotalIncreasing),
+        );
+        let before = recorder.summaries(&sensor, at("1970-01-01T00:00:00Z"));
+        assert!(
+            before.iter().any(|point| nanos(point.start) == Some(old)),
+            "the old hour was summarized before retention deleted it"
+        );
+        assert!(recorder.configure(Retention::new(1, Some(1)).expect("one day")));
+        let after = recorder.summaries(&sensor, at("1970-01-01T00:00:00Z"));
+        assert!(
+            after.iter().all(|point| nanos(point.start) != Some(old)),
+            "an hourly row older than summary_days is deleted"
+        );
+    }
+
+    #[test]
+    fn changing_retention_deletes_old_rows_without_a_restart() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let recorder = Recorder::open(&dir.path().join("irori.db"), 10).expect("open");
+        let plug = entity("switch.plug");
+        recorder.append(sample("switch.plug", true, at("2020-01-01T00:00:00Z")));
+        recorder.append(sample("switch.plug", false, now()));
+        assert_eq!(recorder.since(&plug, at("1970-01-01T00:00:00Z")).len(), 2);
+        assert!(recorder.configure(Retention::new(1, None).expect("one day")));
+        let seen = recorder.since(&plug, at("1970-01-01T00:00:00Z"));
+        assert_eq!(
+            seen.len(),
+            1,
+            "the 2020 reading was dropped when retention shrank"
+        );
+        assert_ne!(seen[0].last_updated, at("2020-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn a_sensor_with_no_history_yet_is_still_marked_for_summaries() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("irori.db");
+        let recorder = Recorder::open(&path, 10).expect("open");
+        let sensor = entity("sensor.temp");
+        recorder.notice(&sensor, StateClass::Measurement);
+        assert!(
+            recorder.check(),
+            "noting a sensor that has not reported yet is not a failed write"
+        );
+        let connection = rusqlite::Connection::open(&path).expect("the file opens");
+        connection
+            .busy_timeout(BUSY)
+            .expect("the second connection can wait");
+        let class: String = connection
+            .query_row(
+                "SELECT class FROM statistic_entities WHERE entity_id = ?1",
+                [sensor.as_str()],
+                |row| row.get(0),
+            )
+            .expect("the sensor is marked");
+        assert_eq!(class, "measurement");
+    }
+
+    #[test]
+    fn summary_retention_cannot_be_shorter_than_the_detailed_history() {
+        assert!(Retention::new(0, None).is_err());
+        assert!(Retention::new(10, Some(0)).is_err());
+        assert!(Retention::new(10, Some(9)).is_err());
+        assert_eq!(
+            Retention::new(10, Some(10)).expect("equal windows are allowed"),
+            Retention {
+                retain_days: 10,
+                summary_days: Some(10),
+            }
+        );
+        assert!(
+            Retention::new(10, None)
+                .expect("forever")
+                .summary_days
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn forgetting_a_sensor_removes_its_summaries() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let recorder = open(&dir);
+        let sensor = entity("sensor.temperature");
+        let old = three_days_ago_hour();
+        recorder.append_with(
+            reading("sensor.temperature", 21.5, at_ns(old)),
+            Some(irori_types::StateClass::Measurement),
+        );
+        assert!(
+            !recorder
+                .summaries(&sensor, at("1970-01-01T00:00:00Z"))
+                .is_empty()
+        );
+        recorder.forget(&sensor);
+        assert!(
+            recorder
+                .summaries(&sensor, at("1970-01-01T00:00:00Z"))
+                .is_empty()
         );
     }
 }

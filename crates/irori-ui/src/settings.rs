@@ -4,7 +4,7 @@
 //! In the order someone setting a home up is likely to want them: the instance and the machine
 //! under it, how the page moves, whether a model answers, the floors and areas that say what's
 //! where, where the home is, the people allowed in, the programs that can reach the home,
-//! and what Irori has been saying. Every row starts
+//! the history it keeps, and what Irori has been saying. Every row starts
 //! folded; what it says beside its name is usually all that was wanted.
 
 use std::collections::BTreeSet;
@@ -19,7 +19,7 @@ use crate::fold::{Head, fold};
 use crate::icons::{Icon, icon};
 
 /// The rows, by the id each goes by in the address (`/settings#assistant`).
-const SECTIONS: [&str; 8] = [
+const SECTIONS: [&str; 9] = [
     "system",
     "appearance",
     "assistant",
@@ -27,6 +27,7 @@ const SECTIONS: [&str; 8] = [
     "floors-and-areas",
     "users",
     "programs",
+    "history",
     "logs",
 ];
 
@@ -136,6 +137,19 @@ pub fn Settings() -> impl IntoView {
     // How much Irori has said, for the Logs row while it's folded: asked once, as the page
     // opens. Opened, the log keeps itself up to date.
     let said = RwSignal::new(None::<(usize, usize, usize)>);
+    // How long history is kept, for the History row. The form writes it back when it saves.
+    let recorder = RwSignal::new(None::<api::RecorderSettings>);
+    spawn_local(async move {
+        if let Ok(settings) = api::fetch_recorder().await {
+            // A save that landed first already has the newer value. Filling an empty row is
+            // the only reason this answer may write.
+            recorder.update(|slot| {
+                if slot.is_none() {
+                    *slot = Some(settings);
+                }
+            });
+        }
+    });
     spawn_local(async move {
         if let Ok(lines) = api::fetch_system_log().await {
             said.set(Some(crate::log_window::tally(&lines)));
@@ -283,6 +297,19 @@ pub fn Settings() -> impl IntoView {
                 (move || programs.with(|programs| crate::programs::summary(programs))).into_any(),
                 view! { <crate::programs::Section /> }.into_any(),
             ))}
+            {row(
+                "history",
+                Icon::History,
+                "History",
+                (move || crate::history_settings::summary(recorder.get())).into_any(),
+                view! {
+                    <crate::history_settings::Section
+                        owner=Signal::derive(owner)
+                        current=recorder
+                    />
+                }
+                .into_any(),
+            )}
             {row(
                 "logs",
                 Icon::Logs,

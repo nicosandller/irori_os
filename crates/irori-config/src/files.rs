@@ -310,9 +310,10 @@ pub fn write_users(users: &[User]) -> String {
 
 /// Settings for Irori itself, from `irori.toml` (`docs/specs/config.md` §3.5).
 ///
-/// Irori only ever reads this file. Nothing it serves can write it, which matters while there's no
-/// sign-in: `allow_unauthenticated_lan` lives here, and a page that could set it would let anyone
-/// who can reach Irori open it to the whole network.
+/// The page may rewrite the `[recorder]` section and nothing else in this file.
+/// `allow_unauthenticated_lan` lives in `[server]`, and a page that could set it would let anyone
+/// who can reach Irori open it to the whole network. The general writer still refuses the file
+/// for that reason; history retention goes through [`upsert_recorder`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IroriSettings {
@@ -365,25 +366,119 @@ pub enum LogLevel {
     Trace,
 }
 
-/// `[recorder]`. How long entity history is kept. Read at startup, like `[server]`.
+/// `[recorder]`. How long entity history is kept. Applied while Irori runs: the Settings page
+/// rewrites this section, and an edit of the file is picked up within a couple of seconds.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecorderSection {
-    /// Days of history to keep. A day is 24 hours. At least 1; a missing value is 7.
+    /// Days of detailed history to keep: every change, and a five-minute summary for a sensor
+    /// that measures or counts. A day is 24 hours. At least 1; a missing value is 10.
     #[serde(default = "default_retain_days")]
     pub retain_days: u32,
+    /// Days of hourly summaries to keep. Absent means they are kept. When set, at least 1 and
+    /// at least `retain_days`.
+    #[serde(default)]
+    pub summary_days: Option<u32>,
 }
 
 fn default_retain_days() -> u32 {
-    7
+    10
 }
 
 impl Default for RecorderSection {
     fn default() -> Self {
         Self {
             retain_days: default_retain_days(),
+            summary_days: None,
         }
     }
+}
+
+impl RecorderSection {
+    /// Whether these settings can be stored. `0` is refused. Hourly summaries are kept at least
+    /// as long as the detailed history, or forever when `summary_days` is left out.
+    pub fn check(&self) -> Result<(), String> {
+        if self.retain_days == 0 {
+            return Err("recorder.retain_days must be at least 1".to_owned());
+        }
+        if let Some(days) = self.summary_days {
+            if days == 0 {
+                return Err(
+                    "recorder.summary_days must be at least 1, or be left out to keep hourly summaries"
+                        .to_owned(),
+                );
+            }
+            if days < self.retain_days {
+                return Err(
+                    "recorder.summary_days must be at least retain_days. Leave it out to keep hourly summaries"
+                        .to_owned(),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Replaces the `[recorder]` section of `text`, or appends one. Every other line is kept,
+/// including comments: this file also holds `[server]`, and rewriting it whole would drop those.
+pub fn upsert_recorder(text: &str, section: &RecorderSection) -> String {
+    let mut block = format!("[recorder]\nretain_days = {}\n", section.retain_days);
+    if let Some(days) = section.summary_days {
+        block.push_str(&format!("summary_days = {days}\n"));
+    }
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let start = lines
+        .iter()
+        .position(|line| section_name(line) == Some("recorder"));
+    let Some(start) = start else {
+        let mut out = text.to_owned();
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        if !out.is_empty() && !out.ends_with("\n\n") {
+            out.push('\n');
+        }
+        out.push_str(&block);
+        return out;
+    };
+    let end = lines
+        .iter()
+        .skip(start + 1)
+        .position(|line| section_name(line).is_some())
+        .map_or(lines.len(), |offset| start + 1 + offset);
+    let mut out = String::new();
+    for line in &lines[..start] {
+        out.push_str(line);
+    }
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    if out.ends_with("\n") && !out.ends_with("\n\n") {
+        out.push('\n');
+    }
+    out.push_str(&block);
+    if end < lines.len() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    for line in &lines[end..] {
+        out.push_str(line);
+    }
+    out
+}
+
+/// The TOML table a line opens, when the line is a section header. A comment is not one.
+fn section_name(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if trimmed.starts_with('#') {
+        return None;
+    }
+    let rest = trimmed.strip_prefix('[')?;
+    let (name, _) = rest.split_once(']')?;
+    let name = name.trim();
+    if name.is_empty() || name.contains('[') || name.contains(']') {
+        return None;
+    }
+    Some(name)
 }
 
 /// `[extensions]`. Applied while Irori runs: disabling one stops it, enabling it starts it.
@@ -397,9 +492,7 @@ pub struct ExtensionsSection {
 
 pub fn read_irori(text: &str) -> Result<IroriSettings, String> {
     let settings: IroriSettings = toml::from_str(text).map_err(|e| e.to_string())?;
-    if settings.recorder.retain_days == 0 {
-        return Err("recorder.retain_days must be at least 1".to_owned());
-    }
+    settings.recorder.check()?;
     Ok(settings)
 }
 
@@ -639,12 +732,15 @@ mod tests {
         let adding = read_irori("[devices]\nnew = \"add\"\n").expect("still valid");
         assert_eq!(adding.devices.new.as_deref(), Some("add"));
         assert_eq!(IroriSettings::default().devices.new, None);
-        assert_eq!(settings.recorder.retain_days, 7);
+        assert_eq!(settings.recorder.retain_days, 10);
+        assert_eq!(settings.recorder.summary_days, None);
     }
 
     #[test]
-    fn recorder_retention_defaults_to_a_week_and_refuses_zero() {
-        assert_eq!(read_irori("").expect("empty").recorder.retain_days, 7);
+    fn recorder_retention_defaults_to_ten_days_and_refuses_zero() {
+        let empty = read_irori("").expect("empty").recorder;
+        assert_eq!(empty.retain_days, 10);
+        assert_eq!(empty.summary_days, None);
         assert_eq!(
             read_irori("[recorder]\nretain_days = 30\n")
                 .expect("valid")
@@ -652,8 +748,51 @@ mod tests {
                 .retain_days,
             30
         );
+        assert_eq!(
+            read_irori("[recorder]\nretain_days = 30\nsummary_days = 365\n")
+                .expect("valid")
+                .recorder
+                .summary_days,
+            Some(365)
+        );
         assert!(read_irori("[recorder]\nretain_days = 0\n").is_err());
         assert!(read_irori("[recorder]\nretain_days = \"week\"\n").is_err());
+        assert!(read_irori("[recorder]\nretain_days = 30\nsummary_days = 0\n").is_err());
+        assert!(read_irori("[recorder]\nretain_days = 30\nsummary_days = 7\n").is_err());
+    }
+
+    #[test]
+    fn rewriting_recorder_keeps_the_rest_of_irori_toml() {
+        let text = "# keep me\n[server]\nbind = \"127.0.0.1:8480\"\n\n[extensions]\ndisabled = [\"demo\"]\n";
+        let written = upsert_recorder(
+            text,
+            &RecorderSection {
+                retain_days: 14,
+                summary_days: Some(365),
+            },
+        );
+        assert!(written.contains("# keep me\n"), "{written}");
+        assert!(written.contains("bind = \"127.0.0.1:8480\""), "{written}");
+        assert!(written.contains("[extensions]"), "{written}");
+        assert!(written.contains("retain_days = 14\n"), "{written}");
+        assert!(written.contains("summary_days = 365\n"), "{written}");
+        let again = upsert_recorder(
+            &written,
+            &RecorderSection {
+                retain_days: 10,
+                summary_days: None,
+            },
+        );
+        assert!(!again.contains("summary_days"), "{again}");
+        assert!(again.contains("# keep me\n"), "{again}");
+        assert!(again.contains("disabled = [\"demo\"]"), "{again}");
+        let settings = read_irori(&again).expect("still valid");
+        assert_eq!(settings.recorder.retain_days, 10);
+        assert_eq!(settings.recorder.summary_days, None);
+        assert_eq!(
+            settings.server.bind,
+            Some("127.0.0.1:8480".parse().expect("the bind survived"))
+        );
     }
 
     #[test]
