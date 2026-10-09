@@ -48,7 +48,9 @@ struct Thread {
 #[derive(Debug, Clone, Copy)]
 pub struct Desk {
     pub read: Callback<(), Option<irori_types::Floorplan>>,
-    pub take: Callback<irori_types::Floorplan>,
+    /// The conversation it was drawn in, and the plan: the page takes it only for the floor it
+    /// is showing.
+    pub take: Callback<(String, irori_types::Floorplan)>,
 }
 
 /// Every conversation this page has opened, by what it is about. Kept by the shell and not by
@@ -128,7 +130,8 @@ impl Thread {
     }
 
     /// What each piece of an answer does to the page.
-    fn hear(self) -> impl FnMut(Streamed) {
+    fn hear(self, scope: &str) -> impl FnMut(Streamed) + use<> {
+        let scope = scope.to_owned();
         move |event| match event {
             Streamed::Delta(delta) => {
                 self.writing.update(|answer| answer.push_str(&delta));
@@ -138,7 +141,7 @@ impl Thread {
             // Only the Floorplan page can take a plan, and only while it is there to.
             Streamed::Plan(plan) => {
                 if let Some(desk) = self.desk.get_value() {
-                    desk.take.run(*plan);
+                    desk.take.run((scope.clone(), *plan));
                 }
             }
             Streamed::Failed(_) | Streamed::Done => {}
@@ -209,7 +212,7 @@ impl Thread {
                 })
             });
             self.wait(pending.seconds);
-            let result = api::assistant_follow(&scope, self.hear()).await;
+            let result = api::assistant_follow(&scope, self.hear(&scope)).await;
             self.settle(&scope, pending.question, result).await;
         });
     }
@@ -241,7 +244,7 @@ impl Thread {
             .flatten()
             .and_then(|desk| desk.read.run(()));
         spawn_local(async move {
-            let result = api::assistant_ask(&scope, &text, plan.as_ref(), self.hear()).await;
+            let result = api::assistant_ask(&scope, &text, plan.as_ref(), self.hear(&scope)).await;
             self.settle(&scope, text, result).await;
         });
     }

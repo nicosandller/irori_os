@@ -745,7 +745,14 @@ async fn answer(
     // this copy of it, and what it drew goes back to the page to keep or undo. A plan sent to
     // any other conversation is nobody's business, and one that couldn't be saved as it stands
     // is no ground to draw on.
-    let mut drawing = plan.filter(|plan| floor_of(&scope).is_some() && plan.check().is_ok());
+    let plan = plan.filter(|_| floor_of(&scope).is_some());
+    // Why the plan sent can't be drawn on, when it can't: said to the model, so that it says
+    // so, and doesn't tell somebody who is already editing to go and press Edit.
+    let unsound = plan
+        .as_ref()
+        .and_then(|plan| plan.check().err())
+        .map(|why| why.to_string());
+    let mut drawing = plan.filter(|_| unsound.is_none());
     let message = message.trim().to_owned();
     if message.is_empty() {
         let _ = tx
@@ -774,7 +781,16 @@ async fn answer(
             return;
         }
     };
-    let system = match system_prompt(&env, &scope, &provider, &picture, drawing.as_ref()).await {
+    let system = match system_prompt(
+        &env,
+        &scope,
+        &provider,
+        &picture,
+        drawing.as_ref(),
+        unsound.as_deref(),
+    )
+    .await
+    {
         Ok(system) => system,
         Err(error) => {
             let _ = tx.send(ChatEvent::Error(error)).await;
@@ -1432,7 +1448,18 @@ async fn run_tool(
         }
         other => format!("there is no tool `{other}`"),
     };
-    text.chars().take(TOOL_ANSWER).collect()
+    fitted(&text, TOOL_ANSWER)
+}
+
+/// What a tool found, cut to a size a model can be handed — and saying so when it was cut, so
+/// that a list that stops is not read as a list that ended.
+fn fitted(text: &str, most: usize) -> String {
+    const CUT: &str = "\n(There is more than this; it was cut short here.)";
+    if text.chars().count() <= most {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(most.saturating_sub(CUT.len())).collect();
+    kept + CUT
 }
 
 /// The floor a conversation on the Floorplan page is about.
@@ -1978,6 +2005,8 @@ async fn system_prompt(
     // The plan the person is editing, when the conversation is the Floorplan page's and they
     // are.
     drawing: Option<&Floorplan>,
+    // Why the plan they are editing can't be drawn on as it stands, when it can't.
+    unsound: Option<&str>,
 ) -> Result<String, String> {
     let local = provider.context();
     // What something is cut to: `tight` for a model on this machine, grown with its context,
@@ -2099,6 +2128,12 @@ async fn system_prompt(
              4 m by 3 m is 400 by 300; up the page is smaller y.\n",
         );
         match (drawing.is_some(), local.is_some()) {
+            _ if unsound.is_some() => prompt.push_str(&format!(
+                "The person is editing the plan, but you cannot draw on it as it stands: {}. \
+                 If you are asked to draw, say that needs putting right first, and what it \
+                 is. What is described below is the plan as it was last saved.\n",
+                unsound.unwrap_or_default()
+            )),
             (true, false) => prompt.push_str(
                 "The person is editing the plan, and here you may draw on it with \
                  `edit_floorplan`: walls, doors, windows, and the outlines of rooms the home \
@@ -2702,8 +2737,9 @@ pub struct Progress {
     pub text: String,
     /// The tool being run, or `queued`. `None` while the model thinks or writes.
     pub step: Option<String>,
-    /// The plan as the model last drew it, when it has drawn on one.
-    pub plan: Option<Floorplan>,
+    /// The plan as the model last drew it, when it has drawn on one. Shared rather than held:
+    /// every word of the answer copies this whole struct to whoever is following it.
+    pub plan: Option<Arc<Floorplan>>,
     pub ended: Option<Ended>,
 }
 
@@ -2763,7 +2799,10 @@ impl Pending {
                 if now.plan != drawn {
                     drawn = now.plan.clone();
                     if let Some(plan) = now.plan
-                        && tx.send(ChatEvent::Plan(Box::new(plan))).await.is_err()
+                        && tx
+                            .send(ChatEvent::Plan(Box::new((*plan).clone())))
+                            .await
+                            .is_err()
                     {
                         return;
                     }
@@ -2889,7 +2928,7 @@ impl Turns {
                     ChatEvent::Plan(plan) => {
                         pending
                             .progress
-                            .send_modify(|progress| progress.plan = Some(*plan));
+                            .send_modify(|progress| progress.plan = Some(Arc::new(*plan)));
                     }
                     ChatEvent::Error(why) => return Ended::Failed(why),
                     ChatEvent::Done => return Ended::Done,
@@ -3037,6 +3076,14 @@ mod tests {
         assert_eq!(floor_of("device:ground"), None);
         assert!(check_scope("settings:lamp").is_err());
         assert!(check_scope("logs").is_err());
+    }
+
+    #[test]
+    fn what_a_tool_found_says_when_it_was_cut_short() {
+        assert_eq!(fitted("short", 100), "short");
+        let long = fitted(&"wall\n".repeat(100), 120);
+        assert_eq!(long.chars().count(), 120);
+        assert!(long.ends_with("cut short here.)"), "{long}");
     }
 
     #[test]

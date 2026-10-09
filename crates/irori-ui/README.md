@@ -80,7 +80,9 @@ file, and the app decides what to show.
   pulled, in this order, onto a corner already there, the middle of a wall (marked with a
   diamond that swells as it takes hold), the line of a wall, and level with the end of another
   wall — with a dashed line to the corner it is level with, and an `=` beside the length when
-  the wall is the twin of one alongside it. A wall started off another says the angle it makes
+  the wall is the twin of one alongside it. None of these beats the grid when the grid is
+  nearer, so the square beside a wall can always be reached, and holding Alt leaves only the
+  grid. A wall started off another says the angle it makes
   with it, and every corner of a room says its angle, on the inside, while the room is traced
   or picked up: the notch of an L-shaped room reads 270°.
 - Takes sizes typed as well as dragged: a wall's thickness, a door's or window's width and the
@@ -109,7 +111,8 @@ installing the firmware update whose version the device page shows (ROADMAP M1.8
 floorplan is mouse-driven and has no furniture and no stairs between floors. A wall started
 from the middle of another is not welded to it, so dragging the first leaves the second where
 it was; the assistant can't make rooms or move devices, and a plan it draws replaces the
-working copy as it stood when the question was asked. Its corners are solid wherever
+working copy as it stood when the question was asked. The chat belongs to the floor it was
+opened on and closes when the floor is changed. Its corners are solid wherever
 two walls meet at any angle, and where three or more do at right angles; a junction of three
 walls one of which runs at an odd angle can still nick the outside of the corner. The page
 hears the home on `/api/ws` and asks `/api/health` about once every 30 seconds. Log windows

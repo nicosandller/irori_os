@@ -33,7 +33,7 @@ mod source;
 mod zoom;
 
 use look::{Look, look_for};
-use snapping::{Caught, Hosts, Placed, hosts, place, room_angles, twin};
+use snapping::{Caught, Hosts, Placed, hosts, on_grid, place, room_angles, twin};
 
 /// What the editor rounds to by default, in centimetres. Fine enough to draw a real room,
 /// coarse enough that two walls meant to meet actually do.
@@ -222,7 +222,8 @@ impl Tool {
             }
             Tool::Wall => {
                 "Click to start a wall, then click for each corner. Right-click or Escape ends \
-                 the run. Ends snap to the corners already there."
+                 the run. Ends snap to corners, to the middle of a wall, and level with other \
+                 walls; hold Alt for the grid alone."
             }
             Tool::Door => "Click a wall to cut a door into it.",
             Tool::Window => "Click a wall to cut a window into it.",
@@ -563,10 +564,10 @@ pub fn Floorplan() -> impl IntoView {
         tracing.set(Vec::new());
     };
 
-    // Takes a whole plan from somewhere other than the pointer — the plan's own text — as one
-    // step to undo. Whatever was picked up or half-drawn belonged to the plan it replaced.
+    // Takes a whole plan from somewhere other than the pointer — the plan's own text, or the
+    // assistant — as one step to undo. Whatever was picked up or half-drawn belonged to the
+    // plan it replaced.
     let take = Callback::new(move |plan: Floorplan| {
-        sourcing.set(false);
         if draft.with_untracked(|draft| *draft == plan) {
             return;
         }
@@ -583,14 +584,43 @@ pub fn Floorplan() -> impl IntoView {
     // thing the assistant gets to change.
     let assistant = expect_context::<crate::Assistant>();
     let chats = expect_context::<crate::assistant::Chats>();
+    // The last plan the assistant handed over. An answer still being written is read again
+    // from its first word by a page that comes back to it, and the plan in it must not be
+    // taken twice: the second time it would undo the person's undo.
+    let drawn = StoredValue::new(None::<Floorplan>);
     chats.lay(Some(crate::assistant::Desk {
-        read: Callback::new(move |()| editing.get_untracked().then(|| draft.get_untracked())),
-        take: Callback::new(move |plan: Floorplan| {
-            if editing.get_untracked() {
-                take.run(plan);
+        read: Callback::new(move |()| {
+            // A new question is a new drawing, even one that comes out the same.
+            drawn.set_value(None);
+            editing.get_untracked().then(|| draft.get_untracked())
+        }),
+        take: Callback::new(move |(scope, plan): (String, Floorplan)| {
+            // Only for the floor on show. A drawing asked for on another floor, arriving
+            // after the person has moved on, would change a floor they aren't looking at.
+            let here = floor
+                .get_untracked()
+                .is_some_and(|floor| scope == format!("floorplan:{floor}"));
+            if !editing.get_untracked() || !here || drawn.get_value().as_ref() == Some(&plan) {
+                return;
             }
+            drawn.set_value(Some(plan.clone()));
+            take.run(plan);
         }),
     }));
+    // The chat is about the floor it was opened on, so changing floor closes it: left open it
+    // would go on answering about — and drawing on — the floor that is no longer on show.
+    let asking = expect_context::<crate::assistant::Asking>();
+    Effect::new(move |_| {
+        floor.track();
+        asking.0.update(|at| {
+            if at
+                .as_ref()
+                .is_some_and(|at| at.scope.starts_with("floorplan:"))
+            {
+                *at = None;
+            }
+        });
+    });
     on_cleanup(move || chats.lay(None));
 
     let start_editing = move || {
@@ -827,14 +857,20 @@ pub fn Floorplan() -> impl IntoView {
                 // Before the run starts as well as during it: where a wall would start is
                 // worth seeing before the click that starts it.
                 let from = running.get_untracked();
-                let placed = place(
-                    &level.get_untracked(),
-                    world,
-                    here,
-                    snap.get_untracked(),
-                    None,
-                    from,
-                );
+                // Alt holds off everything but the grid, for the point that something already
+                // drawn keeps taking.
+                let placed = if event.alt_key() {
+                    on_grid(world, snap.get_untracked())
+                } else {
+                    place(
+                        &level.get_untracked(),
+                        world,
+                        here,
+                        snap.get_untracked(),
+                        None,
+                        from,
+                    )
+                };
                 if from.is_some() {
                     pointer.set(Some(placed.point));
                 }
@@ -865,15 +901,19 @@ pub fn Floorplan() -> impl IntoView {
                 let Some(was) = here_level.walls.get(wall).map(|wall| ends(wall, to_end)) else {
                     return;
                 };
-                let to = place(
-                    &here_level,
-                    world,
-                    here,
-                    snap.get_untracked(),
-                    Some(was),
-                    None,
-                )
-                .point;
+                let to = if event.alt_key() {
+                    on_grid(world, snap.get_untracked()).point
+                } else {
+                    place(
+                        &here_level,
+                        world,
+                        here,
+                        snap.get_untracked(),
+                        Some(was),
+                        None,
+                    )
+                    .point
+                };
                 on_level(draft, floor, |level| shift(level, &[(was, to)]));
             }
             Drag::Wall { wall, grab } => {
@@ -1142,7 +1182,11 @@ pub fn Floorplan() -> impl IntoView {
             Tool::Wall => {
                 let here_level = level.get_untracked();
                 let from = running.get_untracked();
-                let to = place(&here_level, world, here, snap.get_untracked(), None, from).point;
+                let to = if event.alt_key() {
+                    on_grid(world, snap.get_untracked()).point
+                } else {
+                    place(&here_level, world, here, snap.get_untracked(), None, from).point
+                };
                 if from.is_none() {
                     started_on.set(hosts(&here_level, to));
                 }
@@ -1959,7 +2003,10 @@ pub fn Floorplan() -> impl IntoView {
             {move || sourcing.get().then(|| view! {
                 <source::Source
                     plan=shown.get_untracked()
-                    apply=editing.get_untracked().then_some(take)
+                    apply=editing.get_untracked().then_some(Callback::new(move |plan| {
+                        sourcing.set(false);
+                        take.run(plan);
+                    }))
                     on_close=move |()| sourcing.set(false)
                 />
             })}
@@ -2625,10 +2672,11 @@ fn typed(
                 aria-label=label
                 prop:value=value
                 on:change=move |event| {
-                    let Ok(next) = event_target_value(&event).trim().parse::<u32>() else {
-                        return;
-                    };
-                    let next = next.clamp(least, most.max(least));
+                    let typed = event_target_value(&event).trim().parse::<u32>().ok();
+                    let next = typed.map_or(value, |next| next.clamp(least, most.max(least)));
+                    // What the box says is what was taken: a number out of range, or not a
+                    // number at all, is put right where it was typed and not left standing.
+                    event_target::<web_sys::HtmlInputElement>(&event).set_value(&next.to_string());
                     if next != value {
                         remember.run(());
                         set(next);

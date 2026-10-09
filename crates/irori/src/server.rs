@@ -4499,6 +4499,26 @@ mod tests {
                 "{said}"
             );
 
+            // A plan that couldn't be saved as it stands is not drawn on, and the model is told
+            // why rather than left to say the plan isn't being edited.
+            let (status, body) = server
+                .json("PUT", "/api/assistant", configure(&base, "draws"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let broken = serde_json::json!({"floors": {"ground": {
+                "walls": [{"from": [0, 0], "to": [0, 0]}],
+            }}});
+            let events = asked_on_the_plan(&server, Some(&broken)).await?;
+            assert!(
+                events.iter().all(|event| event.get("plan").is_none()),
+                "{events:?}"
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|event| event["delta"] == "I can't draw here.")
+            );
+
             // The same tool, asked for from a conversation that isn't offered it.
             let reply = events_of(&server, "general", &draft).await?;
             assert!(!reply.contains("\"plan\""), "{reply}");

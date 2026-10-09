@@ -144,8 +144,12 @@ pub(super) fn place(
     }
 
     let step = snap.step();
+    let grid = Point::new(round(world.0, step), round(world.1, step));
     // Along a wall the grid still counts, measured from the wall's own end: a wall started
-    // "1.20 m from the corner" is what somebody with a tape measure means.
+    // "1.20 m from the corner" is what somebody with a tape measure means. And the wall only
+    // has the point while it is nearer than the grid is: a reach is in pixels, and zoomed out
+    // it is wider than a grid square, so without this a point one square off a wall could
+    // never be put down.
     let beside = level
         .walls
         .iter()
@@ -153,7 +157,7 @@ pub(super) fn place(
         .filter(|(_, wall)| free(wall))
         .filter_map(|(index, wall)| {
             let (at, off) = on_wall_at(wall.from, wall.to, world);
-            (off <= ON_WALL * per_pixel).then_some((off, index, at))
+            (off <= ON_WALL * per_pixel && off <= away(grid)).then_some((off, index, at))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0));
     if let Some((_, index, at)) = beside
@@ -168,7 +172,6 @@ pub(super) fn place(
         );
     }
 
-    let grid = Point::new(round(world.0, step), round(world.1, step));
     let Some(from) = run_from else {
         return placed(grid, Caught::Grid, Vec::new());
     };
@@ -200,15 +203,22 @@ fn level_with(
         .collect();
     let away = |point: &Point| (world.0 - f64::from(point.x)).hypot(world.1 - f64::from(point.y));
     // The nearest in the one direction, and of those the nearest corner to draw the line to.
-    let nearest = |off: &dyn Fn(&Point) -> f64| {
+    // A corner only holds the point while it is at least as near as the grid line is, for the
+    // reason a wall does: so that the square beside it can still be reached. A corner the
+    // grid lands level with anyway still gets its line, because it is still worth knowing.
+    let nearest = |along: &dyn Fn(&Point) -> i32, pointer: f64, grid: i32| {
+        let off = |corner: &Point| (pointer - f64::from(along(corner))).abs();
+        let to_grid = (pointer - f64::from(grid)).abs();
         corners
             .iter()
-            .filter(|corner| off(corner) <= reach)
+            .filter(|corner| {
+                off(corner) <= reach && (along(corner) == grid || off(corner) <= to_grid)
+            })
             .min_by(|a, b| off(a).total_cmp(&off(b)).then(away(a).total_cmp(&away(b))))
             .copied()
     };
-    let across = nearest(&|corner| (world.0 - f64::from(corner.x)).abs());
-    let down = nearest(&|corner| (world.1 - f64::from(corner.y)).abs());
+    let across = nearest(&|corner| corner.x, world.0, grid.x);
+    let down = nearest(&|corner| corner.y, world.1, grid.y);
     if across.is_some() || down.is_some() {
         let point = Point::new(
             across.map_or(grid.x, |corner| corner.x),
@@ -278,6 +288,18 @@ fn level_with(
                 }],
             )
         })
+}
+
+/// A point put on the grid and nothing else, for when the pull of everything already drawn is
+/// in the way: held off with a key, the pointer goes where the grid says.
+pub(super) fn on_grid(world: (f64, f64), snap: Snap) -> Placed {
+    let step = snap.step();
+    Placed {
+        point: Point::new(round(world.0, step), round(world.1, step)),
+        caught: Caught::Grid,
+        guides: Vec::new(),
+        middle: None,
+    }
 }
 
 /// Whether a point stands on a wall: at one of its ends, or along it.
@@ -472,7 +494,7 @@ mod tests {
 
         // Beside the wall but not near its middle: on the wall, on the grid along it, and the
         // middle still marked to aim at.
-        let along = at((118.0, 6.0));
+        let along = at((118.0, 4.0));
         assert_eq!(along.point, Point::new(120, 0));
         assert_eq!(along.caught, Caught::OnWall(0));
         assert_eq!(along.middle, Some(Point::new(200, 0)));
@@ -487,6 +509,34 @@ mod tests {
         assert_eq!(
             (open.caught, open.middle, open.point),
             (Caught::Grid, None, Point::new(200, 300))
+        );
+    }
+
+    /// A reach is in pixels, and zoomed out it is wider than a square of the grid. Whatever is
+    /// already drawn must not make the square beside it somewhere a point can't go.
+    #[test]
+    fn the_grid_square_beside_a_wall_or_a_corner_can_still_be_reached() {
+        let level = plan(&[((0, 0), (400, 0))]);
+        // A third of a pixel to the centimetre: every reach here is wider than the grid.
+        let far = Viewport {
+            scale: 0.3,
+            pan: (0.0, 0.0),
+        };
+        // One square below the wall, away from its middle and its ends.
+        let below = place(&level, (118.0, 9.0), far, Snap::Grid, None, None);
+        assert_eq!(below.point, Point::new(120, 10));
+        // A line ending one square past the corner above it, not level with it.
+        let from = Point::new(0, 300);
+        let past = place(&level, (409.0, 300.0), far, Snap::Grid, None, Some(from));
+        assert_eq!(past.point, Point::new(410, 300));
+        // And level with it when that is where the grid lands anyway, with the line to say so.
+        let level_with = place(&level, (402.0, 300.0), far, Snap::Grid, None, Some(from));
+        assert_eq!(level_with.point, Point::new(400, 300));
+        assert_eq!(level_with.guides.len(), 1);
+        // Held off, there is only the grid, even on top of a corner.
+        assert_eq!(
+            on_grid((397.0, 4.0), Snap::Custom(5)).point,
+            Point::new(395, 5)
         );
     }
 
