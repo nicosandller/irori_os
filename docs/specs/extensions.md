@@ -49,7 +49,7 @@ The manifest is TOML because people write it by hand. Irori reads it into the JS
 and checks it with the same types and JSON Schema (`schemas/extension-manifest.schema.json`)
 as everything else, so editors and LLM tooling can validate it too.
 
-Install (the Extensions page, or `POST /api/dev/extensions/<id>/install`) copies a package into
+Install (the Extensions page, or `POST /api/extensions/<id>/install`) copies a package into
 `$DATA/extensions/<id>/` and starts it. Official packages come from, in order: packages shipped
 beside the binary (`IRORI_OFFICIAL_PACKAGES` or `/usr/share/irori/extensions`), a git checkout of
 this repo (`cargo build`, only when this isn't the binary the release workflow built, and cargo
@@ -60,7 +60,7 @@ the page when the catalog's version isn't the installed one) stops the process, 
 package and starts it again: its devices, settings and `extension-data` are untouched, and what
 the old package had that the new one doesn't (what it downloaded for itself) is carried over.
 Updating Irori doesn't update installed extensions. A third-party tarball URL uses the same machinery
-(`POST /api/dev/extensions/install`); how those URLs are discovered is later.
+(`POST /api/extensions/install`); how those URLs are discovered is later.
 
 How packages are signed is still Phase 3 (ROADMAP §8.1).
 
@@ -98,6 +98,7 @@ More, valid and invalid, in `fixtures/types/extension-manifest/`.
 | `config_schema` | package path | no | JSON Schema (draft 2020-12) for its settings. External extensions only: a built-in extension's schema is generated from its Rust config type |
 | `icon` | package path | no | A square SVG shown beside the extension and its devices. Always displayed as an image (`<img>`, served with a no-script content policy), never inlined into a page. A built-in extension embeds the same file (`Protocol::ICON`), and the two must agree |
 | `entity_format` | integer ≥ 1 | no | The entity format it reads through the API (registry, states, history, events, its page's bridge). Default 1, the first. Irori sends it entities and states in that format, leaving out kinds and fields added since: see below |
+| `inbound` | bool | no | The program connects to Irori instead of Irori starting it (`docs/specs/api.md` §6). No `run` command. Only a protocol or an automation engine. Default false |
 
 **Versions** are [Semantic Versioning](https://semver.org) `MAJOR.MINOR.PATCH` with an optional
 pre-release: `1.4.0`, `0.3.0-beta.1`. No build metadata (`+abc`), so two equal versions are
@@ -263,12 +264,12 @@ So, for every extension run as its own process:
 - Its **stderr is piped, never inherited**, and the host reads it continuously — an unread pipe
   fills and the extension blocks on its own next line of output — keeping the most recent lines
   and echoing each to Irori's log. Both views show the same lines: this extension's own at
-  `GET /api/dev/extensions/<id>/log` (below), and in Irori's own log on the Settings page, tagged
+  `GET /api/extensions/<id>/log` (below), and in Irori's own log on the Settings page, tagged
   with the extension the line came from.
 - A **failure's reason is the host's own description plus the extension's last words**:
   `exited exit status: 1 — couldn't open /dev/ttyUSB0: No such file or directory`. The extension
   itself nearly always printed the real reason a moment before dying.
-- The rest of what it said is at **`GET /api/dev/extensions/<id>/log`**, and behind a link on its
+- The rest of what it said is at **`GET /api/extensions/<id>/log`**, and behind a link on its
   card, so one line on the card never has to be the whole story.
 - A state that only a person can clear says so as itself rather than as a crash — that is what
   `needs_setup` is, rather than letting the extension fail its own deserialization and reporting

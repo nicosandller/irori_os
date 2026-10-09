@@ -58,14 +58,14 @@ fi
 session="$(curl -fsS --max-time 2 "$base_url/api/session" 2>/dev/null)" || \
   fail "can't ask whether the home is locked"
 if grep -q '"locked":true' <<<"$session"; then
-  refused="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 2 "$base_url/api/dev/home")"
+  refused="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 2 "$base_url/api/home")"
   [[ "$refused" == 401 ]] || fail "a locked home answered $refused to a caller with no session"
   echo "locked: the home asks who is there, and refuses a caller with no session"
   echo "smoke test passed (the catalog, log and config checks need an open home; skipped)"
   exit 0
 fi
 
-catalog="$(curl -fsS --max-time 2 "$base_url/api/dev/catalog" 2>/dev/null)" || \
+catalog="$(curl -fsS --max-time 2 "$base_url/api/catalog" 2>/dev/null)" || \
   fail "can't read the official extensions catalog"
 grep -q '"id":"demo"' <<<"$catalog" || fail "catalog is missing demo: $catalog"
 grep -q '"id":"esphome"' <<<"$catalog" || fail "catalog is missing esphome: $catalog"
@@ -74,14 +74,14 @@ echo "extensions: official catalog lists demo and esphome"
 # The instance's own log, read the way the Settings page reads it. The only check that the log
 # writer really keeps what `tracing` writes: the unit tests put lines in that buffer by hand, so
 # nothing else would notice if the tee stopped being wired up.
-log="$(curl -fsS --max-time 2 "$base_url/api/dev/system/log" 2>/dev/null)" || \
+log="$(curl -fsS --max-time 2 "$base_url/api/system/log" 2>/dev/null)" || \
   fail "can't read the system log"
 grep -q 'irori is ready' <<<"$log" || fail "the system log doesn't carry what Irori logged: $log"
 echo "log: the system log carries this boot's own lines"
 
 # The config directory: a room can be made, is listed, and can be removed again. Writing is the
 # part worth testing — a read-only or missing directory fails here and nowhere else.
-room="$(curl -fsS --max-time 5 -X POST "$base_url/api/dev/areas" \
+room="$(curl -fsS --max-time 5 -X POST "$base_url/api/areas" \
   -H 'content-type: application/json' -d '{"name":"Smoke test room"}')" ||
   fail "couldn't make a room: is the config directory writable?"
 # Its id is whatever the server chose: against an instance that already has one (a persistent
@@ -90,15 +90,15 @@ room="$(curl -fsS --max-time 5 -X POST "$base_url/api/dev/areas" \
 room_id="$(sed -n 's/.*"id":"\([^"]*\)".*/\1/p' <<<"$room")"
 [[ -n "$room_id" ]] || fail "unexpected answer making a room: $room"
 # From here on the room exists, so every exit has to remove it.
-trap 'curl -fsS --max-time 5 -o /dev/null -X DELETE "$base_url/api/dev/areas/$room_id" || true' EXIT
+trap 'curl -fsS --max-time 5 -o /dev/null -X DELETE "$base_url/api/areas/$room_id" || true' EXIT
 
-areas="$(curl -fsS --max-time 5 "$base_url/api/dev/areas")" || fail "can't list rooms"
+areas="$(curl -fsS --max-time 5 "$base_url/api/areas")" || fail "can't list rooms"
 grep -q "\"id\":\"$room_id\"" <<<"$areas" || fail "the room wasn't listed: $areas"
 
-curl -fsS --max-time 5 -o /dev/null -X DELETE "$base_url/api/dev/areas/$room_id" ||
+curl -fsS --max-time 5 -o /dev/null -X DELETE "$base_url/api/areas/$room_id" ||
   fail "couldn't remove the room again"
 trap - EXIT
-areas="$(curl -fsS --max-time 5 "$base_url/api/dev/areas")" || fail "can't list rooms"
+areas="$(curl -fsS --max-time 5 "$base_url/api/areas")" || fail "can't list rooms"
 grep -q "\"id\":\"$room_id\"" <<<"$areas" && fail "the room is still there: $areas"
 echo "config: a room was made, listed, and removed ($room_id)"
 

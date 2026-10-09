@@ -1,7 +1,7 @@
-//! HTTP server: health, a temporary view of the core under `/api/dev/` (reads, plus the commands
-//! the Devices page sends), and the embedded UI. Who may ask for what is `server/auth.rs`: a
-//! home with no passwords is open to whoever can reach it, which is why `serve` binds loopback
-//! unless told otherwise. Tokens and the WebSocket API arrive with `irori-api` (ROADMAP C16).
+//! HTTP server: the public API (`docs/specs/api.md`), and the embedded UI. Who may ask for
+//! what is `server/auth.rs`: a home with no passwords is open to whoever can reach it, which
+//! is why `serve` binds loopback unless told otherwise. A program that isn't the page sends a
+//! bearer token. The page signs in with a cookie.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,7 +32,9 @@ mod apps;
 #[cfg(feature = "assist")]
 mod assistant;
 mod auth;
+mod live;
 mod people;
+mod tokens;
 
 /// Who commands are attributed to in a home where nobody has been set up.
 static UNAUTHENTICATED: LazyLock<UserId> =
@@ -140,100 +142,95 @@ pub fn router(state: AppState) -> Router {
                 .delete(auth::sign_out),
         )
         .route("/api/setup", post(auth::set_up))
-        .route("/api/dev/users", get(people::users).post(people::add_user))
+        .route("/api/users", get(people::users).post(people::add_user))
         .route(
-            "/api/dev/users/{id}",
+            "/api/users/{id}",
             patch(people::edit_user).delete(people::remove_user),
         )
-        .route("/api/dev/place", get(people::place).put(people::set_place))
-        // Unstable, for the UI and for trying things out until the real API (M0.5, M1.5) exists.
+        .route("/api/place", get(people::place).put(people::set_place))
+        // The public API (`docs/specs/api.md`). The page and other programs use the same paths.
         // Everything the Devices page shows, in one response; the rest are the same data split up.
-        .route("/api/dev/home", get(home))
-        .route("/api/dev/command", post(command))
+        .route("/api/home", get(home))
+        .route("/api/command", post(command))
+        .route("/api/ws", get(live::feed))
+        .route("/api/extension", get(live::extension))
+        .route("/api/tokens", get(tokens::list).post(tokens::create))
+        .route("/api/tokens/{id}", axum::routing::delete(tokens::revoke))
         .route(
-            "/api/dev/devices",
+            "/api/devices",
             get(|State(s): State<AppState>| async move { Json(s.0.core.devices()) }),
         )
         .route(
-            "/api/dev/entities",
+            "/api/entities",
             get(|State(s): State<AppState>| async move { Json(s.0.core.entities()) }),
         )
         .route(
-            "/api/dev/states",
+            "/api/states",
             get(|State(s): State<AppState>| async move { Json(s.0.core.states()) }),
         )
-        .route("/api/dev/history/{entity_id}", get(entity_history))
-        .route("/api/dev/system", get(host_info))
-        .route("/api/dev/system/usage", get(usage))
-        .route("/api/dev/system/log", get(system_log))
-        .route("/api/dev/serial-ports", get(serial_ports))
-        .route("/api/dev/restart", post(restart))
+        .route("/api/history/{entity_id}", get(entity_history))
+        .route("/api/system", get(host_info))
+        .route("/api/system/usage", get(usage))
+        .route("/api/system/log", get(system_log))
+        .route("/api/serial-ports", get(serial_ports))
+        .route("/api/restart", post(restart))
         .route(
-            "/api/dev/extensions",
+            "/api/extensions",
             get(|State(s): State<AppState>| async move { Json(s.0.core.extensions()) }),
         )
         // What a person has said about their home (`docs/specs/config.md`). These write files.
-        .route("/api/dev/areas", get(areas).post(add_area))
-        .route("/api/dev/floors", get(floors).post(add_floor))
+        .route("/api/areas", get(areas).post(add_area))
+        .route("/api/floors", get(floors).post(add_floor))
+        .route("/api/floors/{id}", patch(edit_floor).delete(remove_floor))
+        .route("/api/areas/{id}", patch(edit_area).delete(remove_area))
+        .route("/api/floorplan", get(floorplan).put(save_floorplan))
         .route(
-            "/api/dev/floors/{id}",
-            patch(edit_floor).delete(remove_floor),
-        )
-        .route("/api/dev/areas/{id}", patch(edit_area).delete(remove_area))
-        .route("/api/dev/floorplan", get(floorplan).put(save_floorplan))
-        .route(
-            "/api/dev/devices/{id}",
+            "/api/devices/{id}",
             patch(edit_device).delete(remove_device),
         )
-        .route("/api/dev/entities/{id}", patch(edit_entity))
-        .route("/api/dev/extensions/{id}/secrets", put(give_secret))
+        .route("/api/entities/{id}", patch(edit_entity))
+        .route("/api/extensions/{id}/secrets", put(give_secret))
         .route(
-            "/api/dev/extensions/{id}/settings",
+            "/api/extensions/{id}/settings",
             post(set_extension_settings),
         )
         .route(
-            "/api/dev/extensions/{id}/actions/{action_id}",
+            "/api/extensions/{id}/actions/{action_id}",
             post(trigger_extension_action).delete(stop_extension_action),
         )
-        .route("/api/dev/catalog", get(catalog))
-        .route("/api/dev/extensions/{id}/install", post(install_official))
-        .route("/api/dev/extensions/install", post(install_url))
-        .route("/api/dev/extensions/{id}", axum::routing::delete(uninstall))
-        .route("/api/dev/helpers/toggles", post(add_toggle))
+        .route("/api/catalog", get(catalog))
+        .route("/api/extensions/{id}/install", post(install_official))
+        .route("/api/extensions/install", post(install_url))
+        .route("/api/extensions/{id}", axum::routing::delete(uninstall))
+        .route("/api/helpers/toggles", post(add_toggle))
         .route(
-            "/api/dev/helpers/toggles/{id}",
+            "/api/helpers/toggles/{id}",
             axum::routing::delete(remove_toggle),
         )
-        .route("/api/dev/extensions/{id}/icon.svg", get(extension_icon))
-        .route("/api/dev/extensions/{id}/log", get(extension_log))
+        .route("/api/extensions/{id}/icon.svg", get(extension_icon))
+        .route("/api/extensions/{id}/log", get(extension_log))
         // Extensions' own pages and their engines (`docs/specs/automations.md` §B3).
-        .route("/api/dev/apps", get(apps::list))
-        .route("/api/dev/apps/{id}/rpc", post(apps::rpc))
+        .route("/api/apps", get(apps::list))
+        .route("/api/apps/{id}/rpc", post(apps::rpc))
         // Their files. Not under `/apps/`: those addresses are the shell's own pages that show
         // them, and must reach the shell when reloaded.
         .route("/pages/{id}/", get(apps::index))
         .route("/pages/{id}/{*path}", get(apps::file));
     #[cfg(feature = "assist")]
     let router = router
+        .route("/api/assistant", get(assistant::get).put(assistant::put))
+        .route("/api/assistant/turns", post(assistant::turns))
+        .route("/api/assistant/turns/{scope}", get(assistant::follow))
+        .route("/api/assistant/turns/{scope}/stop", post(assistant::stop))
+        .route("/api/assistant/pull", post(assistant::pull))
+        .route("/api/assistant/forget", post(assistant::forget))
+        .route("/api/assistant/install", post(assistant::install))
+        .route("/api/assistant/uninstall", post(assistant::uninstall))
+        .route("/api/assistant/log", get(assistant::model_log))
+        .route("/api/assistant/load", post(assistant::load))
+        .route("/api/assistant/unload", post(assistant::unload))
         .route(
-            "/api/dev/assistant",
-            get(assistant::get).put(assistant::put),
-        )
-        .route("/api/dev/assistant/turns", post(assistant::turns))
-        .route("/api/dev/assistant/turns/{scope}", get(assistant::follow))
-        .route(
-            "/api/dev/assistant/turns/{scope}/stop",
-            post(assistant::stop),
-        )
-        .route("/api/dev/assistant/pull", post(assistant::pull))
-        .route("/api/dev/assistant/forget", post(assistant::forget))
-        .route("/api/dev/assistant/install", post(assistant::install))
-        .route("/api/dev/assistant/uninstall", post(assistant::uninstall))
-        .route("/api/dev/assistant/log", get(assistant::model_log))
-        .route("/api/dev/assistant/load", post(assistant::load))
-        .route("/api/dev/assistant/unload", post(assistant::unload))
-        .route(
-            "/api/dev/assistant/transcript/{scope}",
+            "/api/assistant/transcript/{scope}",
             get(assistant::transcript).delete(assistant::clear),
         );
     router
@@ -247,8 +244,7 @@ pub fn router(state: AppState) -> Router {
 }
 
 /// Everything the Devices page shows, in one response: what exists, what it's doing, and how the
-/// extensions behind it are faring. The page asks for it every couple of seconds; it starts
-/// listening for changes instead once the WebSocket API lands (M1.5).
+/// extensions behind it are faring. `GET /api/home` and the first frame on `/api/ws` are this.
 #[derive(Debug, Serialize)]
 struct HomeView {
     devices: Vec<Device>,
@@ -268,9 +264,9 @@ struct HomeView {
     floorplan: Floorplan,
 }
 
-async fn home(State(state): State<AppState>) -> Json<HomeView> {
+fn snapshot(state: &AppState) -> HomeView {
     let core = &state.0.core;
-    Json(HomeView {
+    HomeView {
         devices: core.devices(),
         entities: core.entities(),
         states: core.states(),
@@ -279,7 +275,11 @@ async fn home(State(state): State<AppState>) -> Json<HomeView> {
         floors: core.floors(),
         held: core.held_devices(),
         floorplan: core.floorplan(),
-    })
+    }
+}
+
+async fn home(State(state): State<AppState>) -> Json<HomeView> {
+    Json(snapshot(&state))
 }
 
 /// The machine running Irori, for the Settings page's System menu. Read from the OS each time
@@ -1455,12 +1455,12 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                         irori_core::ExtensionStatus::Degraded { .. } => "degraded",
                         irori_core::ExtensionStatus::Failed { .. } => "failed",
                         irori_core::ExtensionStatus::NeedsSetup { .. } => "needs_setup",
+                        irori_core::ExtensionStatus::Waiting { .. } => "waiting",
                     }),
                     reason: overview.and_then(|o| match &o.status {
                         irori_core::ExtensionStatus::Degraded { reason }
-                        | irori_core::ExtensionStatus::Failed { reason, .. } => {
-                            Some(reason.clone())
-                        }
+                        | irori_core::ExtensionStatus::Failed { reason, .. }
+                        | irori_core::ExtensionStatus::Waiting { reason } => Some(reason.clone()),
                         irori_core::ExtensionStatus::NeedsSetup { missing } => {
                             Some(needs_setup_reason(missing))
                         }
@@ -1745,9 +1745,15 @@ async fn command(
         data: request.data.unwrap_or_default(),
     };
     let core = &state.0.core;
-    let who = core.new_context(Origin::User {
-        user_id: who.user_id(),
-    });
+    let origin = match who.token.as_ref() {
+        Some(token) => Origin::Api {
+            token_id: token.id.clone(),
+        },
+        None => Origin::User {
+            user_id: who.user_id(),
+        },
+    };
+    let who = core.new_context(origin);
     // Subscribed before the call: the protocol reports the new state and answers the call in
     // the same breath, and the report must not slip past while the call is still in flight.
     let changes = core.subscribe();
@@ -1958,7 +1964,7 @@ mod tests {
         // The log this instance is serving, so a test can put lines in it. The real one is filled
         // by the log subscriber's writer (`syslog::Tee`), which a test has no reason to stand up.
         log: Arc<syslog::Log>,
-        // The restart handle, held back so a test can check that POST /api/dev/restart woke the
+        // The restart handle, held back so a test can check that POST /api/restart woke the
         // shutdown and told it to restart, not just that it answered 202.
         restart: Arc<tokio::sync::Notify>,
         restarting: Arc<AtomicBool>,
@@ -2087,7 +2093,7 @@ mod tests {
     /// left out rather than made up.
     #[tokio::test]
     async fn system_describes_the_machine_the_instance_runs_on() -> anyhow::Result<()> {
-        let (status, _, body) = get("/api/dev/system").await?;
+        let (status, _, body) = get("/api/system").await?;
         assert_eq!(status, StatusCode::OK);
         let json: serde_json::Value = serde_json::from_slice(&body)?;
         assert!(
@@ -2109,7 +2115,7 @@ mod tests {
 
     #[tokio::test]
     async fn usage_says_what_is_running_and_what_is_kept() -> anyhow::Result<()> {
-        let (status, _, body) = get("/api/dev/system/usage").await?;
+        let (status, _, body) = get("/api/system/usage").await?;
         assert_eq!(status, StatusCode::OK);
         let json: serde_json::Value = serde_json::from_slice(&body)?;
         assert!(
@@ -2126,7 +2132,7 @@ mod tests {
     /// `crate::serial`'s own tests.
     #[tokio::test]
     async fn serial_ports_answers_with_a_list() -> anyhow::Result<()> {
-        let (status, _, body) = get("/api/dev/serial-ports").await?;
+        let (status, _, body) = get("/api/serial-ports").await?;
         assert_eq!(status, StatusCode::OK);
         let json: serde_json::Value = serde_json::from_slice(&body)?;
         assert!(json.is_array(), "{json}");
@@ -2149,7 +2155,7 @@ mod tests {
         assert!(shutdown.as_mut().poll(&mut cx).is_pending());
         let (status, _) = server
             .send(
-                Request::post("/api/dev/restart")
+                Request::post("/api/restart")
                     .header("x-irori-ui", "1")
                     .body(Body::empty())?,
             )
@@ -2175,7 +2181,7 @@ mod tests {
     async fn restart_without_the_page_header_is_refused() -> anyhow::Result<()> {
         let server = Server::new(core())?;
         let (status, body) = server
-            .send(Request::post("/api/dev/restart").body(Body::empty())?)
+            .send(Request::post("/api/restart").body(Body::empty())?)
             .await?;
         assert_eq!(status, StatusCode::FORBIDDEN);
         let body = String::from_utf8(body)?;
@@ -2201,7 +2207,7 @@ mod tests {
         // its own).
         let app = server.app()?;
         let ask = || {
-            Request::post("/api/dev/restart")
+            Request::post("/api/restart")
                 .header("x-irori-ui", "1")
                 .body(Body::empty())
         };
@@ -2286,7 +2292,7 @@ mod tests {
     #[tokio::test]
     async fn dev_home_describes_the_whole_home() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
-        let (status, _, body) = get_from(core.clone(), "/api/dev/home").await?;
+        let (status, _, body) = get_from(core.clone(), "/api/home").await?;
         assert_eq!(status, StatusCode::OK);
         let home: serde_json::Value = serde_json::from_slice(&body)?;
 
@@ -2333,7 +2339,7 @@ mod tests {
         for on in [true, false] {
             let (status, body) = post(
                 core.clone(),
-                "/api/dev/command",
+                "/api/command",
                 serde_json::json!({
                     "entity_id": lamp, "command": if on { "turn_on" } else { "turn_off" },
                 }),
@@ -2384,7 +2390,7 @@ mod tests {
         server.history.record(entity.clone(), earlier);
 
         let (status, body) = server
-            .send(Request::get(format!("/api/dev/history/{entity}")).body(Body::empty())?)
+            .send(Request::get(format!("/api/history/{entity}")).body(Body::empty())?)
             .await?;
         assert_eq!(status, StatusCode::OK);
         let history: serde_json::Value = serde_json::from_slice(&body)?;
@@ -2394,7 +2400,7 @@ mod tests {
 
         // An entity Irori has never heard of is refused, not answered with an empty table.
         let (status, _) = server
-            .send(Request::get("/api/dev/history/sensor.never_heard_of").body(Body::empty())?)
+            .send(Request::get("/api/history/sensor.never_heard_of").body(Body::empty())?)
             .await?;
         assert_eq!(status, StatusCode::NOT_FOUND);
 
@@ -2409,7 +2415,7 @@ mod tests {
 
         let (status, body) = post(
             core.clone(),
-            "/api/dev/command",
+            "/api/command",
             serde_json::json!({"entity_id": "light.nowhere", "command": "toggle"}),
         )
         .await?;
@@ -2419,7 +2425,7 @@ mod tests {
         // A sensor has nothing to turn on.
         let (status, body) = post(
             core.clone(),
-            "/api/dev/command",
+            "/api/command",
             serde_json::json!({"entity_id": "sensor.demo_hallway_sensor_temperature", "command": "toggle"}),
         )
         .await?;
@@ -2428,7 +2434,7 @@ mod tests {
         // Brightness belongs to `turn_on`, and nowhere else: the refusal names the service.
         let (status, body) = post(
             core.clone(),
-            "/api/dev/command",
+            "/api/command",
             serde_json::json!({
                 "entity_id": "light.demo_lamp", "command": "turn_off", "data": {"brightness": 5},
             }),
@@ -2445,7 +2451,7 @@ mod tests {
     #[tokio::test]
     async fn dev_view_lists_demo_devices_and_states() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
-        let (status, _, body) = get_from(core.clone(), "/api/dev/states").await?;
+        let (status, _, body) = get_from(core.clone(), "/api/states").await?;
         assert_eq!(status, StatusCode::OK);
         let states: serde_json::Value = serde_json::from_slice(&body)?;
         let lamp = states
@@ -2454,7 +2460,7 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("no demo lamp in {states}"))?;
         assert_eq!(lamp["state"]["kind"], "light");
 
-        let (_, _, body) = get_from(core.clone(), "/api/dev/extensions").await?;
+        let (_, _, body) = get_from(core.clone(), "/api/extensions").await?;
         let extensions: serde_json::Value = serde_json::from_slice(&body)?;
         assert_eq!(extensions["demo"]["state"], "running");
 
@@ -2468,7 +2474,7 @@ mod tests {
     #[tokio::test]
     async fn the_catalog_reports_whether_an_icon_is_actually_servable() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
-        let (status, _, body) = get_from(core.clone(), "/api/dev/catalog").await?;
+        let (status, _, body) = get_from(core.clone(), "/api/catalog").await?;
         assert_eq!(status, StatusCode::OK);
         let catalog: serde_json::Value = serde_json::from_slice(&body)?;
         let entries = catalog.as_array().expect("a list");
@@ -2505,7 +2511,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "POST",
-                "/api/dev/extensions/zigbee/install",
+                "/api/extensions/zigbee/install",
                 serde_json::json!({}),
             )
             .await?;
@@ -2594,11 +2600,7 @@ mod tests {
         let server = Server::new(core.clone())?;
 
         let (status, area) = server
-            .json(
-                "POST",
-                "/api/dev/areas",
-                serde_json::json!({"name": "Study"}),
-            )
+            .json("POST", "/api/areas", serde_json::json!({"name": "Study"}))
             .await?;
         assert_eq!(status, StatusCode::CREATED, "{area}");
         assert_eq!(area["id"], "study");
@@ -2606,7 +2608,7 @@ mod tests {
         let (status, device) = server
             .json(
                 "PATCH",
-                "/api/dev/devices/demo_lamp",
+                "/api/devices/demo_lamp",
                 serde_json::json!({
                     "name": "Reading lamp", "description": "On the desk", "area": "study",
                 }),
@@ -2631,7 +2633,7 @@ mod tests {
         assert!(devices.contains("name = \"Reading lamp\""), "{devices}");
 
         // And the page sees the same thing it would after a restart.
-        let home = server.read("/api/dev/home").await?;
+        let home = server.read("/api/home").await?;
         assert_eq!(home["areas"][0]["name"], "Study");
 
         host.shutdown().await;
@@ -2656,7 +2658,7 @@ mod tests {
         let (status, _) = server
             .json(
                 "PATCH",
-                "/api/dev/devices/demo_lamp",
+                "/api/devices/demo_lamp",
                 serde_json::json!({"name": "Reading lamp"}),
             )
             .await?;
@@ -2666,7 +2668,7 @@ mod tests {
         let (status, device) = server
             .json(
                 "PATCH",
-                "/api/dev/devices/demo_lamp",
+                "/api/devices/demo_lamp",
                 serde_json::json!({"name": null}),
             )
             .await?;
@@ -2687,7 +2689,7 @@ mod tests {
         let (status, entity) = server
             .json(
                 "PATCH",
-                "/api/dev/entities/light.demo_lamp",
+                "/api/entities/light.demo_lamp",
                 serde_json::json!({"name": "Reading light"}),
             )
             .await?;
@@ -2697,11 +2699,11 @@ mod tests {
         server
             .json(
                 "PATCH",
-                "/api/dev/devices/demo_lamp",
+                "/api/devices/demo_lamp",
                 serde_json::json!({"name": "Reading lamp"}),
             )
             .await?;
-        let home = server.read("/api/dev/home").await?;
+        let home = server.read("/api/home").await?;
         let named = home["entities"]
             .as_array()
             .and_then(|all| all.iter().find(|e| e["id"] == "light.demo_lamp"))
@@ -2719,22 +2721,18 @@ mod tests {
         let (core, host) = demo().await?;
         let server = Server::new(core.clone())?;
         server
-            .json(
-                "POST",
-                "/api/dev/areas",
-                serde_json::json!({"name": "Study"}),
-            )
+            .json("POST", "/api/areas", serde_json::json!({"name": "Study"}))
             .await?;
         server
             .json(
                 "PATCH",
-                "/api/dev/devices/demo_lamp",
+                "/api/devices/demo_lamp",
                 serde_json::json!({"area": "study"}),
             )
             .await?;
 
         let (status, _) = server
-            .json("DELETE", "/api/dev/areas/study", serde_json::json!(null))
+            .json("DELETE", "/api/areas/study", serde_json::json!(null))
             .await?;
         assert_eq!(status, StatusCode::NO_CONTENT);
         let placed = |core: &Core| {
@@ -2746,11 +2744,7 @@ mod tests {
         assert_eq!(placed(&core), None);
 
         server
-            .json(
-                "POST",
-                "/api/dev/areas",
-                serde_json::json!({"name": "Study"}),
-            )
+            .json("POST", "/api/areas", serde_json::json!({"name": "Study"}))
             .await?;
         assert_eq!(
             placed(&core).map(|id| id.to_string()).as_deref(),
@@ -2778,11 +2772,7 @@ mod tests {
         );
 
         let (status, _) = server
-            .json(
-                "DELETE",
-                "/api/dev/devices/demo_lamp",
-                serde_json::Value::Null,
-            )
+            .json("DELETE", "/api/devices/demo_lamp", serde_json::Value::Null)
             .await?;
         assert_eq!(status, StatusCode::NO_CONTENT);
         assert!(
@@ -2806,7 +2796,7 @@ mod tests {
         assert!(!devices.contains("demo_lamp"), "{devices}");
 
         // Found again straight away, for "+ Add device" to offer back.
-        let home = server.read("/api/dev/home").await?;
+        let home = server.read("/api/home").await?;
         assert!(
             home["held"]
                 .as_array()
@@ -2816,11 +2806,7 @@ mod tests {
 
         // Removing a device that isn't in the home is a 404, found or not.
         let (status, _) = server
-            .json(
-                "DELETE",
-                "/api/dev/devices/demo_lamp",
-                serde_json::Value::Null,
-            )
+            .json("DELETE", "/api/devices/demo_lamp", serde_json::Value::Null)
             .await?;
         assert_eq!(status, StatusCode::NOT_FOUND);
 
@@ -2843,11 +2829,7 @@ mod tests {
                 .map(|id| id.to_string())
         };
         server
-            .json(
-                "POST",
-                "/api/dev/areas",
-                serde_json::json!({"name": "Study"}),
-            )
+            .json("POST", "/api/areas", serde_json::json!({"name": "Study"}))
             .await?;
         assert_eq!(
             placed(&core).as_deref(),
@@ -2858,7 +2840,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "PATCH",
-                "/api/dev/devices/demo_lamp",
+                "/api/devices/demo_lamp",
                 serde_json::json!({"area": false}),
             )
             .await?;
@@ -2870,7 +2852,7 @@ mod tests {
         server
             .json(
                 "PATCH",
-                "/api/dev/devices/demo_lamp",
+                "/api/devices/demo_lamp",
                 serde_json::json!({"area": null}),
             )
             .await?;
@@ -2883,7 +2865,7 @@ mod tests {
         let (status, _) = server
             .json(
                 "PATCH",
-                "/api/dev/devices/demo_lamp",
+                "/api/devices/demo_lamp",
                 serde_json::json!({"area": true}),
             )
             .await?;
@@ -2902,7 +2884,7 @@ mod tests {
         let (core, host) = demo().await?;
         let server = Server::new(core.clone())?;
 
-        let home = server.read("/api/dev/home").await?;
+        let home = server.read("/api/home").await?;
         assert!(
             home.get("floorplan").is_none(),
             "a home nobody has drawn sends no plan: {home}"
@@ -2925,9 +2907,7 @@ mod tests {
                 },
             },
         });
-        let (status, body) = server
-            .json("PUT", "/api/dev/floorplan", plan.clone())
-            .await?;
+        let (status, body) = server.json("PUT", "/api/floorplan", plan.clone()).await?;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(
             body["placed"], 0,
@@ -2940,33 +2920,25 @@ mod tests {
         assert!(written.contains("area = \"kitchen\""), "{written}");
         assert!(written.contains("device = \"demo_lamp\""), "{written}");
 
-        let home = server.read("/api/dev/home").await?;
+        let home = server.read("/api/home").await?;
         assert_eq!(
             home["floorplan"]["floors"]["ground"]["walls"][0]["to"][0], 400,
             "{home}"
         );
-        assert_eq!(server.read("/api/dev/floorplan").await?, plan);
+        assert_eq!(server.read("/api/floorplan").await?, plan);
 
         // Make the room the lamp was drawn standing in, and saving the same plan again puts the
         // lamp in it: dragging a device onto a floor is a person saying where it is.
         server
-            .json(
-                "POST",
-                "/api/dev/areas",
-                serde_json::json!({"name": "Kitchen"}),
-            )
+            .json("POST", "/api/areas", serde_json::json!({"name": "Kitchen"}))
             .await?;
-        let (_, body) = server
-            .json("PUT", "/api/dev/floorplan", plan.clone())
-            .await?;
+        let (_, body) = server.json("PUT", "/api/floorplan", plan.clone()).await?;
         assert_eq!(body["placed"], 1, "{body}");
         let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
         assert!(devices.contains("area = \"kitchen\""), "{devices}");
 
         // Saying so again moves nothing: it is where the plan says already.
-        let (_, body) = server
-            .json("PUT", "/api/dev/floorplan", plan.clone())
-            .await?;
+        let (_, body) = server.json("PUT", "/api/floorplan", plan.clone()).await?;
         assert_eq!(body["placed"], 0, "{body}");
 
         // A device deliberately in no room stays in none. That answer exists so a guess can't
@@ -2974,14 +2946,12 @@ mod tests {
         let (status, body) = server
             .json(
                 "PATCH",
-                "/api/dev/devices/demo_lamp",
+                "/api/devices/demo_lamp",
                 serde_json::json!({"area": false}),
             )
             .await?;
         assert_eq!(status, StatusCode::OK, "{body}");
-        let (_, body) = server
-            .json("PUT", "/api/dev/floorplan", plan.clone())
-            .await?;
+        let (_, body) = server.json("PUT", "/api/floorplan", plan.clone()).await?;
         assert_eq!(body["placed"], 0, "{body}");
         let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
         assert!(devices.contains("area = false"), "{devices}");
@@ -2999,7 +2969,7 @@ mod tests {
         let (_, body) = server
             .json(
                 "PUT",
-                "/api/dev/floorplan",
+                "/api/floorplan",
                 serde_json::json!({
                     "floors": {
                         "ground": {
@@ -3017,15 +2987,13 @@ mod tests {
         let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
         assert!(!devices.contains("a_device_nobody_has"), "{devices}");
         // Put the drawn plan back, for what follows.
-        server
-            .json("PUT", "/api/dev/floorplan", plan.clone())
-            .await?;
+        server.json("PUT", "/api/floorplan", plan.clone()).await?;
 
         // A door wider than the wall it's in would have to be drawn hanging off the end.
         let (status, why) = server
             .json(
                 "PUT",
-                "/api/dev/floorplan",
+                "/api/floorplan",
                 serde_json::json!({
                     "floors": {
                         "ground": {
@@ -3047,7 +3015,7 @@ mod tests {
             "{why}"
         );
         // And the refused plan changed nothing: the drawn one is still there.
-        assert_eq!(server.read("/api/dev/floorplan").await?, plan);
+        assert_eq!(server.read("/api/floorplan").await?, plan);
 
         host.shutdown().await;
         Ok(())
@@ -3061,7 +3029,7 @@ mod tests {
         let (status, upstairs) = server
             .json(
                 "POST",
-                "/api/dev/floors",
+                "/api/floors",
                 serde_json::json!({"name": "Upstairs", "level": 1}),
             )
             .await?;
@@ -3069,21 +3037,21 @@ mod tests {
         server
             .json(
                 "POST",
-                "/api/dev/floors",
+                "/api/floors",
                 serde_json::json!({"name": "Ground floor"}),
             )
             .await?;
         let (status, room) = server
             .json(
                 "POST",
-                "/api/dev/areas",
+                "/api/areas",
                 serde_json::json!({"name": "Bedroom", "floor": "upstairs"}),
             )
             .await?;
         assert_eq!(status, StatusCode::CREATED, "{room}");
         assert_eq!(room["floor_id"], "upstairs");
 
-        let home = server.read("/api/dev/home").await?;
+        let home = server.read("/api/home").await?;
         assert_eq!(
             home["floors"][0]["id"], "ground_floor",
             "lowest first: {home}"
@@ -3097,27 +3065,23 @@ mod tests {
         let (status, _) = server
             .json(
                 "POST",
-                "/api/dev/areas",
+                "/api/areas",
                 serde_json::json!({"name": "Attic", "floor": "nowhere"}),
             )
             .await?;
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
         let (status, _) = server
-            .json(
-                "DELETE",
-                "/api/dev/floors/upstairs",
-                serde_json::json!(null),
-            )
+            .json("DELETE", "/api/floors/upstairs", serde_json::json!(null))
             .await?;
         assert_eq!(status, StatusCode::NO_CONTENT);
-        let home = server.read("/api/dev/home").await?;
+        let home = server.read("/api/home").await?;
         assert_eq!(home["areas"][0]["name"], "Bedroom", "the room stayed");
 
         let (status, moved) = server
             .json(
                 "PATCH",
-                "/api/dev/areas/bedroom",
+                "/api/areas/bedroom",
                 serde_json::json!({"floor": "ground_floor"}),
             )
             .await?;
@@ -3140,7 +3104,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "PATCH",
-                "/api/dev/devices/demo_lamp",
+                "/api/devices/demo_lamp",
                 serde_json::json!({"area": "nowhere"}),
             )
             .await?;
@@ -3150,7 +3114,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "PATCH",
-                "/api/dev/devices/not_a_device",
+                "/api/devices/not_a_device",
                 serde_json::json!({"name": "Nope"}),
             )
             .await?;
@@ -3159,7 +3123,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "PATCH",
-                "/api/dev/areas/nowhere",
+                "/api/areas/nowhere",
                 serde_json::json!({"name": "Nope"}),
             )
             .await?;
@@ -3167,7 +3131,7 @@ mod tests {
 
         // A name that isn't a name at all, rather than one that's merely wrong.
         let (status, body) = server
-            .json("POST", "/api/dev/areas", serde_json::json!({"name": ""}))
+            .json("POST", "/api/areas", serde_json::json!({"name": ""}))
             .await?;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 
@@ -3397,13 +3361,13 @@ mod tests {
     async fn removing_a_paired_device_takes_it_off_its_network() -> anyhow::Result<()> {
         let (core, host) = mesh().await?;
         let server = Server::new(core.clone())?;
-        let home = server.read("/api/dev/home").await?;
+        let home = server.read("/api/home").await?;
         assert_eq!(home["extensions"]["mesh"]["unpairs"], true, "{home}");
 
         let (status, body) = server
             .json(
                 "PATCH",
-                "/api/dev/devices/mesh_bulb",
+                "/api/devices/mesh_bulb",
                 serde_json::json!({"name": "Reading lamp"}),
             )
             .await?;
@@ -3413,11 +3377,7 @@ mod tests {
         assert!(written.contains("mesh_bulb"), "{written}");
 
         let (status, body) = server
-            .json(
-                "DELETE",
-                "/api/dev/devices/mesh_bulb",
-                serde_json::Value::Null,
-            )
+            .json("DELETE", "/api/devices/mesh_bulb", serde_json::Value::Null)
             .await?;
         assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
         assert!(!known(&core, "mesh_bulb"), "neither in the home nor found");
@@ -3447,7 +3407,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "DELETE",
-                "/api/dev/devices/mesh_sleepy",
+                "/api/devices/mesh_sleepy",
                 serde_json::Value::Null,
             )
             .await?;
@@ -3459,7 +3419,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "DELETE",
-                "/api/dev/devices/mesh_sleepy?force=true",
+                "/api/devices/mesh_sleepy?force=true",
                 serde_json::Value::Null,
             )
             .await?;
@@ -3485,21 +3445,21 @@ mod tests {
         };
         let remove = |path: &'static str| server.json("DELETE", path, serde_json::Value::Null);
 
-        let (status, body) = remove("/api/dev/devices/mesh_stuck").await?;
+        let (status, body) = remove("/api/devices/mesh_stuck").await?;
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
         assert_eq!(body["code"], "unpair_failed");
         assert!(in_home("mesh_stuck"));
-        let (status, body) = remove("/api/dev/devices/mesh_stuck?force=true").await?;
+        let (status, body) = remove("/api/devices/mesh_stuck?force=true").await?;
         assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
         assert!(!in_home("mesh_stuck") && found("mesh_stuck"));
         // Only found now, there's nothing left that forcing could do for it.
-        let (status, body) = remove("/api/dev/devices/mesh_stuck?force=true").await?;
+        let (status, body) = remove("/api/devices/mesh_stuck?force=true").await?;
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
 
-        let (status, body) = remove("/api/dev/devices/mesh_hub").await?;
+        let (status, body) = remove("/api/devices/mesh_hub").await?;
         assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
         assert!(!in_home("mesh_hub") && found("mesh_hub"));
-        let (status, body) = remove("/api/dev/devices/mesh_hub").await?;
+        let (status, body) = remove("/api/devices/mesh_hub").await?;
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
         assert!(
             body["error"]
@@ -3524,19 +3484,19 @@ mod tests {
         let open = |home: &serde_json::Value| {
             home["extensions"]["mesh"]["open_actions"]["join"]["closes_in_ms"].as_u64()
         };
-        assert_eq!(open(&server.read("/api/dev/home").await?), None);
+        assert_eq!(open(&server.read("/api/home").await?), None);
 
         let (status, body) = server
             .json(
                 "POST",
-                "/api/dev/extensions/mesh/actions/join",
+                "/api/extensions/mesh/actions/join",
                 serde_json::Value::Null,
             )
             .await?;
         assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
         let mut left = None;
         for _ in 0..500 {
-            left = open(&server.read("/api/dev/home").await?);
+            left = open(&server.read("/api/home").await?);
             if left.is_some() {
                 break;
             }
@@ -3550,13 +3510,13 @@ mod tests {
         let (status, body) = server
             .json(
                 "DELETE",
-                "/api/dev/extensions/mesh/actions/join",
+                "/api/extensions/mesh/actions/join",
                 serde_json::Value::Null,
             )
             .await?;
         assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
         for _ in 0..500 {
-            left = open(&server.read("/api/dev/home").await?);
+            left = open(&server.read("/api/home").await?);
             if left.is_none() {
                 break;
             }
@@ -3616,7 +3576,7 @@ mod tests {
         let (core, host) = safe().await?;
         let server = Server::new(core.clone())?;
 
-        let home = server.read("/api/dev/home").await?;
+        let home = server.read("/api/home").await?;
         assert_eq!(home["extensions"]["safe"]["waiting"][0]["name"], "Vault");
         assert_eq!(
             home["extensions"]["safe"]["waiting"][0]["secret"]["path"],
@@ -3626,7 +3586,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "PUT",
-                "/api/dev/extensions/safe/secrets",
+                "/api/extensions/safe/secrets",
                 serde_json::json!({"path": ["code"], "value": "1234-5678"}),
             )
             .await?;
@@ -3650,7 +3610,7 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600, "{mode:o}");
         }
-        let home = server.read("/api/dev/home").await?;
+        let home = server.read("/api/home").await?;
         assert!(
             !home.to_string().contains("1234"),
             "a secret leaked into the home view"
@@ -3670,7 +3630,7 @@ mod tests {
         let (status, _) = server
             .json(
                 "PUT",
-                "/api/dev/extensions/safe/secrets",
+                "/api/extensions/safe/secrets",
                 serde_json::json!({"path": ["something_else"], "value": "x"}),
             )
             .await?;
@@ -3679,7 +3639,7 @@ mod tests {
         let (status, _) = server
             .json(
                 "PUT",
-                "/api/dev/extensions/nope/secrets",
+                "/api/extensions/nope/secrets",
                 serde_json::json!({"path": ["code"], "value": "x"}),
             )
             .await?;
@@ -3688,7 +3648,7 @@ mod tests {
         let (status, _) = server
             .json(
                 "PUT",
-                "/api/dev/extensions/safe/secrets",
+                "/api/extensions/safe/secrets",
                 serde_json::json!({"path": ["code"], "value": "   "}),
             )
             .await?;
@@ -3714,7 +3674,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "POST",
-                "/api/dev/extensions/safe/settings",
+                "/api/extensions/safe/settings",
                 serde_json::json!({"code": "1234-5678"}),
             )
             .await?;
@@ -3742,7 +3702,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "POST",
-                "/api/dev/extensions/safe/settings",
+                "/api/extensions/safe/settings",
                 serde_json::json!({"code": "1234-5678"}),
             )
             .await?;
@@ -3751,7 +3711,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "POST",
-                "/api/dev/extensions/safe/settings",
+                "/api/extensions/safe/settings",
                 serde_json::json!({"code": null}),
             )
             .await?;
@@ -3777,7 +3737,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "POST",
-                "/api/dev/extensions/safe/settings",
+                "/api/extensions/safe/settings",
                 serde_json::json!({"key": "shh"}),
             )
             .await?;
@@ -3810,7 +3770,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "POST",
-                "/api/dev/extensions/safe/settings",
+                "/api/extensions/safe/settings",
                 serde_json::json!({"code": "1234-5678", "key": 42}),
             )
             .await?;
@@ -3838,7 +3798,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "POST",
-                "/api/dev/extensions/safe/settings",
+                "/api/extensions/safe/settings",
                 serde_json::json!({"not_a_real_field": "x"}),
             )
             .await?;
@@ -3851,7 +3811,7 @@ mod tests {
         let (status, _) = server
             .json(
                 "POST",
-                "/api/dev/extensions/nope/settings",
+                "/api/extensions/nope/settings",
                 serde_json::json!({"code": "x"}),
             )
             .await?;
@@ -3873,7 +3833,7 @@ mod tests {
         server
             .json(
                 "PUT",
-                "/api/dev/extensions/safe/secrets",
+                "/api/extensions/safe/secrets",
                 serde_json::json!({"path": ["code"], "value": "1234-5678"}),
             )
             .await?;
@@ -3883,7 +3843,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "POST",
-                "/api/dev/extensions/safe/actions/open",
+                "/api/extensions/safe/actions/open",
                 serde_json::json!(null),
             )
             .await?;
@@ -3903,7 +3863,7 @@ mod tests {
         let (status, _) = server
             .json(
                 "POST",
-                "/api/dev/extensions/safe/actions/not_a_real_action",
+                "/api/extensions/safe/actions/not_a_real_action",
                 serde_json::json!(null),
             )
             .await?;
@@ -3913,7 +3873,7 @@ mod tests {
         let (status, _) = server
             .json(
                 "POST",
-                "/api/dev/extensions/safe/actions/open",
+                "/api/extensions/safe/actions/open",
                 serde_json::json!(null),
             )
             .await?;
@@ -3922,7 +3882,7 @@ mod tests {
         let (status, _) = server
             .json(
                 "POST",
-                "/api/dev/extensions/nope/actions/open",
+                "/api/extensions/nope/actions/open",
                 serde_json::json!(null),
             )
             .await?;
@@ -3947,7 +3907,7 @@ mod tests {
             .edit(&core, |_| Ok(()))
             .await
             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-        let home = server.read("/api/dev/home").await?;
+        let home = server.read("/api/home").await?;
         assert!(
             home["devices"].as_array().is_some_and(Vec::is_empty),
             "nothing joins on its own: {home}"
@@ -3964,12 +3924,12 @@ mod tests {
         let (status, body) = server
             .json(
                 "PATCH",
-                "/api/dev/devices/demo_lamp",
+                "/api/devices/demo_lamp",
                 serde_json::json!({"added": true}),
             )
             .await?;
         assert_eq!(status, StatusCode::OK, "{body}");
-        let home = server.read("/api/dev/home").await?;
+        let home = server.read("/api/home").await?;
         assert!(
             home["entities"]
                 .as_array()
@@ -3982,7 +3942,7 @@ mod tests {
         let (status, _) = server
             .json(
                 "PATCH",
-                "/api/dev/devices/demo_plug",
+                "/api/devices/demo_plug",
                 serde_json::json!({"ignored": true}),
             )
             .await?;
@@ -4028,7 +3988,7 @@ mod tests {
         let (status, made) = server
             .json(
                 "POST",
-                "/api/dev/helpers/toggles",
+                "/api/helpers/toggles",
                 serde_json::json!({"name": "Guests are over"}),
             )
             .await?;
@@ -4043,7 +4003,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "POST",
-                "/api/dev/command",
+                "/api/command",
                 serde_json::json!({"entity_id": guests, "command": "turn_on"}),
             )
             .await?;
@@ -4053,7 +4013,7 @@ mod tests {
         server
             .json(
                 "POST",
-                "/api/dev/helpers/toggles",
+                "/api/helpers/toggles",
                 serde_json::json!({"name": "Holiday"}),
             )
             .await?;
@@ -4076,7 +4036,7 @@ mod tests {
         let (status, _) = server
             .json(
                 "PATCH",
-                "/api/dev/entities/switch.guests_are_over",
+                "/api/entities/switch.guests_are_over",
                 serde_json::json!({"name": "Visitors"}),
             )
             .await?;
@@ -4107,7 +4067,7 @@ mod tests {
         let (status, _) = server
             .json(
                 "DELETE",
-                "/api/dev/helpers/toggles/holiday",
+                "/api/helpers/toggles/holiday",
                 serde_json::json!(null),
             )
             .await?;
@@ -4125,12 +4085,12 @@ mod tests {
     async fn an_extensions_icon_is_served_as_a_locked_down_image() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
         let server = Server::new(core.clone())?;
-        let home = server.read("/api/dev/home").await?;
+        let home = server.read("/api/home").await?;
         assert_eq!(home["extensions"]["demo"]["has_icon"], true);
 
         let res = server
             .app()?
-            .oneshot(Request::get("/api/dev/extensions/demo/icon.svg").body(Body::empty())?)
+            .oneshot(Request::get("/api/extensions/demo/icon.svg").body(Body::empty())?)
             .await?;
         assert_eq!(res.status(), StatusCode::OK);
         let headers = res.headers().clone();
@@ -4148,7 +4108,7 @@ mod tests {
         );
 
         let (status, _) = server
-            .send(Request::get("/api/dev/extensions/nope/icon.svg").body(Body::empty())?)
+            .send(Request::get("/api/extensions/nope/icon.svg").body(Body::empty())?)
             .await?;
         assert_eq!(status, StatusCode::NOT_FOUND);
         host.shutdown().await;
@@ -4161,7 +4121,7 @@ mod tests {
     async fn the_system_log_is_whatever_this_process_has_said() -> anyhow::Result<()> {
         let server = Server::new(core())?;
 
-        let empty = server.read("/api/dev/system/log").await?;
+        let empty = server.read("/api/system/log").await?;
         assert_eq!(
             empty["lines"],
             serde_json::json!([]),
@@ -4173,7 +4133,7 @@ mod tests {
             .log
             .keep("2026-09-26T10:00:01Z  WARN listening beyond this machine");
 
-        let log = server.read("/api/dev/system/log").await?;
+        let log = server.read("/api/system/log").await?;
         assert_eq!(
             log["lines"],
             serde_json::json!([
@@ -4196,7 +4156,7 @@ mod tests {
     /// asking for JSON must not read a 200 as "that worked".
     #[tokio::test]
     async fn a_missing_endpoint_is_not_found() -> anyhow::Result<()> {
-        for path in ["/api/dev/not-real", "/api/nope", "/api"] {
+        for path in ["/api/not-real", "/api/nope", "/api"] {
             let (status, _, _) = get(path).await?;
             assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
         }
@@ -4282,7 +4242,7 @@ mod tests {
         async fn events(server: &Server, scope: &str, message: &str) -> anyhow::Result<String> {
             let (status, bytes) = server
                 .send(
-                    Request::post("/api/dev/assistant/turns")
+                    Request::post("/api/assistant/turns")
                         .header("content-type", "application/json")
                         .body(Body::from(serde_json::to_vec(&serde_json::json!({
                             "scope": scope,
@@ -4299,7 +4259,7 @@ mod tests {
             let base = cloud().await;
             let server = Server::new(core())?;
             let (status, body) = server
-                .json("PUT", "/api/dev/assistant", configure(&base, "test-model"))
+                .json("PUT", "/api/assistant", configure(&base, "test-model"))
                 .await?;
             assert_eq!(status, StatusCode::OK, "{body}");
             assert_eq!(body["ready"], true);
@@ -4319,9 +4279,9 @@ mod tests {
             let automation = events(&server, "automation:kettle", "Why this one?").await?;
             assert!(automation.contains("Hello from the model"), "{automation}");
 
-            let home = server.read("/api/dev/assistant/transcript/general").await?;
+            let home = server.read("/api/assistant/transcript/general").await?;
             let flow = server
-                .read("/api/dev/assistant/transcript/automation:kettle")
+                .read("/api/assistant/transcript/automation:kettle")
                 .await?;
             assert_eq!(home["turns"][0]["body"], "What is on?");
             assert_eq!(home["turns"][1]["body"], "Hello from the model");
@@ -4331,38 +4291,36 @@ mod tests {
 
             let (status, _) = server
                 .send(
-                    Request::delete("/api/dev/assistant/transcript/automation:kettle")
+                    Request::delete("/api/assistant/transcript/automation:kettle")
                         .body(Body::empty())?,
                 )
                 .await?;
             assert_eq!(status, StatusCode::NO_CONTENT);
             let flow = server
-                .read("/api/dev/assistant/transcript/automation:kettle")
+                .read("/api/assistant/transcript/automation:kettle")
                 .await?;
             assert_eq!(flow["turns"], serde_json::json!([]));
-            let home = server.read("/api/dev/assistant/transcript/general").await?;
+            let home = server.read("/api/assistant/transcript/general").await?;
             assert_eq!(home["turns"][1]["body"], "Hello from the model");
 
             // Settings has a conversation of its own, and is told what Settings holds.
             let settings = events(&server, "settings", "Which floors are there?").await?;
             assert!(settings.contains("Hello from the model"), "{settings}");
-            let kept = server
-                .read("/api/dev/assistant/transcript/settings")
-                .await?;
+            let kept = server.read("/api/assistant/transcript/settings").await?;
             assert_eq!(kept["turns"][0]["body"], "Which floors are there?");
             assert_eq!(home["turns"].as_array().map(Vec::len), Some(2));
 
             let (status, body) = server
                 .json(
                     "PUT",
-                    "/api/dev/assistant",
+                    "/api/assistant",
                     serde_json::json!({ "model": "broken" }),
                 )
                 .await?;
             assert_eq!(status, StatusCode::OK, "{body}");
             let failed = events(&server, "general", "Again").await?;
             assert!(failed.contains("error"), "{failed}");
-            let home = server.read("/api/dev/assistant/transcript/general").await?;
+            let home = server.read("/api/assistant/transcript/general").await?;
             assert_eq!(home["turns"].as_array().map(Vec::len), Some(2));
             Ok(())
         }
@@ -4372,13 +4330,13 @@ mod tests {
             let base = cloud().await;
             let server = Server::new(core())?;
             let (status, body) = server
-                .json("PUT", "/api/dev/assistant", configure(&base, "looks-first"))
+                .json("PUT", "/api/assistant", configure(&base, "looks-first"))
                 .await?;
             assert_eq!(status, StatusCode::OK, "{body}");
             let reply = events(&server, "general", "What is on?").await?;
             assert!(reply.contains("Let me check."), "{reply}");
             assert!(reply.contains("Nothing is on."), "{reply}");
-            let home = server.read("/api/dev/assistant/transcript/general").await?;
+            let home = server.read("/api/assistant/transcript/general").await?;
             assert_eq!(home["turns"][1]["body"], "Let me check.\n\nNothing is on.");
             Ok(())
         }
@@ -4388,7 +4346,7 @@ mod tests {
             let base = cloud().await;
             let server = Server::new(core())?;
             let (status, body) = server
-                .json("PUT", "/api/dev/assistant", configure(&base, "no-tools"))
+                .json("PUT", "/api/assistant", configure(&base, "no-tools"))
                 .await?;
             assert_eq!(status, StatusCode::OK, "{body}");
             let reply = events(&server, "general", "What is on?").await?;
@@ -4403,7 +4361,7 @@ mod tests {
             let base = cloud().await;
             let server = Server::new(core())?;
             let (status, body) = server
-                .json("PUT", "/api/dev/assistant", configure(&base, "test-model"))
+                .json("PUT", "/api/assistant", configure(&base, "test-model"))
                 .await?;
             assert_eq!(status, StatusCode::OK, "{body}");
             let db = crate::db::open(server.dir.path())?;
@@ -4471,7 +4429,7 @@ mod tests {
                 .log
                 .keep("2026-01-01T00:00:01Z  WARN the port was taken");
             let (status, body) = server
-                .json("PUT", "/api/dev/assistant", configure(&base, "test-model"))
+                .json("PUT", "/api/assistant", configure(&base, "test-model"))
                 .await?;
             assert_eq!(status, StatusCode::OK, "{body}");
             events(&server, "settings", "Anything wrong?").await?;
@@ -4516,7 +4474,7 @@ mod tests {
             let (status, body) = server
                 .json(
                     "PUT",
-                    "/api/dev/assistant",
+                    "/api/assistant",
                     serde_json::json!({ "instructions": "  Always answer in Spanish. " }),
                 )
                 .await?;
@@ -4536,7 +4494,7 @@ mod tests {
             let (status, body) = server
                 .json(
                     "PUT",
-                    "/api/dev/assistant",
+                    "/api/assistant",
                     serde_json::json!({ "instructions": "" }),
                 )
                 .await?;
@@ -4556,28 +4514,26 @@ mod tests {
             let base = cloud().await;
             let server = Server::new(core())?;
             let (status, body) = server
-                .json("PUT", "/api/dev/assistant", configure(&base, "test-model"))
+                .json("PUT", "/api/assistant", configure(&base, "test-model"))
                 .await?;
             assert_eq!(status, StatusCode::OK, "{body}");
-            let before = server.read("/api/dev/assistant/transcript/general").await?;
+            let before = server.read("/api/assistant/transcript/general").await?;
             assert!(before["context"].is_null(), "{before}");
             events(&server, "general", "What is on?").await?;
-            let after = server.read("/api/dev/assistant/transcript/general").await?;
+            let after = server.read("/api/assistant/transcript/general").await?;
             assert!(
                 after["context"]["used"].as_u64().is_some_and(|n| n > 100),
                 "{after}"
             );
             assert!(after["context"]["size"].is_null(), "{after}");
             // Another conversation has taken nothing yet, and clearing this one forgets it.
-            let other = server
-                .read("/api/dev/assistant/transcript/settings")
-                .await?;
+            let other = server.read("/api/assistant/transcript/settings").await?;
             assert!(other["context"].is_null(), "{other}");
             let (status, _) = server
-                .send(Request::delete("/api/dev/assistant/transcript/general").body(Body::empty())?)
+                .send(Request::delete("/api/assistant/transcript/general").body(Body::empty())?)
                 .await?;
             assert_eq!(status, StatusCode::NO_CONTENT);
-            let cleared = server.read("/api/dev/assistant/transcript/general").await?;
+            let cleared = server.read("/api/assistant/transcript/general").await?;
             assert!(cleared["context"].is_null(), "{cleared}");
             Ok(())
         }
@@ -4585,13 +4541,13 @@ mod tests {
         #[tokio::test]
         async fn a_local_models_context_is_set_within_bounds() -> anyhow::Result<()> {
             let server = Server::new(core())?;
-            let status = server.read("/api/dev/assistant").await?;
+            let status = server.read("/api/assistant").await?;
             assert_eq!(status["local_context"], 4096);
             assert_eq!(status["context"], 4096);
             let (code, body) = server
                 .json(
                     "PUT",
-                    "/api/dev/assistant",
+                    "/api/assistant",
                     serde_json::json!({ "context": 8192 }),
                 )
                 .await?;
@@ -4605,13 +4561,13 @@ mod tests {
                 let (code, body) = server
                     .json(
                         "PUT",
-                        "/api/dev/assistant",
+                        "/api/assistant",
                         serde_json::json!({ "context": wrong }),
                     )
                     .await?;
                 assert_eq!(code, StatusCode::BAD_REQUEST, "{body}");
             }
-            let status = server.read("/api/dev/assistant").await?;
+            let status = server.read("/api/assistant").await?;
             assert_eq!(status["local_context"], 8192);
             Ok(())
         }
@@ -4622,7 +4578,7 @@ mod tests {
             let (status, body) = server
                 .json(
                     "PUT",
-                    "/api/dev/assistant",
+                    "/api/assistant",
                     serde_json::json!({ "mode": "local", "local_tag": "qwen3:1.7b" }),
                 )
                 .await?;
@@ -4635,7 +4591,7 @@ mod tests {
             );
             let (status, bytes) = server
                 .send(
-                    Request::post("/api/dev/assistant/pull")
+                    Request::post("/api/assistant/pull")
                         .header("content-type", "application/json")
                         .body(Body::from(serde_json::to_vec(&serde_json::json!({
                             "tag": "qwen3:1.7b",
@@ -4721,12 +4677,12 @@ mod tests {
             serde_json::json!({ "owner": false, "place": false })
         );
         // And everything works as it always did, with no header and no cookie.
-        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, None, false).await?;
+        let (status, _, _) = ask(&app, "GET", "/api/home", None, None, false).await?;
         assert_eq!(status, StatusCode::OK);
         let (status, _, _) = ask(
             &app,
             "POST",
-            "/api/dev/areas",
+            "/api/areas",
             Some(serde_json::json!({ "name": "Hall" })),
             None,
             false,
@@ -4857,7 +4813,7 @@ mod tests {
         );
 
         // Nobody's request is refused, and says what to do.
-        let (status, why, _) = ask(&app, "GET", "/api/dev/home", None, None, false).await?;
+        let (status, why, _) = ask(&app, "GET", "/api/home", None, None, false).await?;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert!(why["error"].as_str().is_some_and(|e| e.contains("sign in")));
         // What it takes to get in stays open, and so does being told you're alive.
@@ -4873,7 +4829,7 @@ mod tests {
         assert!(!session.to_string().contains("Nico"), "{session}");
 
         // The owner's is let through.
-        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, Some(&cookie), false).await?;
+        let (status, _, _) = ask(&app, "GET", "/api/home", None, Some(&cookie), false).await?;
         assert_eq!(status, StatusCode::OK);
         let (_, session, _) = ask(&app, "GET", "/api/session", None, Some(&cookie), false).await?;
         assert_eq!(session["user"]["id"], "nico");
@@ -4938,13 +4894,12 @@ mod tests {
 
         // The session is kept in the database: a restarted server still knows it.
         let again = server.app()?;
-        let (status, _, _) =
-            ask(&again, "GET", "/api/dev/home", None, Some(&cookie), false).await?;
+        let (status, _, _) = ask(&again, "GET", "/api/home", None, Some(&cookie), false).await?;
         assert_eq!(status, StatusCode::OK);
 
         let (status, _, _) = ask(&app, "DELETE", "/api/session", None, Some(&cookie), true).await?;
         assert_eq!(status, StatusCode::NO_CONTENT);
-        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, Some(&cookie), false).await?;
+        let (status, _, _) = ask(&app, "GET", "/api/home", None, Some(&cookie), false).await?;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         Ok(())
     }
@@ -4987,7 +4942,7 @@ mod tests {
         let (status, why, _) = ask(
             &app,
             "POST",
-            "/api/dev/areas",
+            "/api/areas",
             Some(area.clone()),
             Some(&cookie),
             false,
@@ -4999,15 +4954,8 @@ mod tests {
                 .as_str()
                 .is_some_and(|e| e.contains("x-irori-ui"))
         );
-        let (status, _, _) = ask(
-            &app,
-            "POST",
-            "/api/dev/areas",
-            Some(area),
-            Some(&cookie),
-            true,
-        )
-        .await?;
+        let (status, _, _) =
+            ask(&app, "POST", "/api/areas", Some(area), Some(&cookie), true).await?;
         assert_eq!(status, StatusCode::CREATED);
         Ok(())
     }
@@ -5020,7 +4968,7 @@ mod tests {
         let (status, users, _) = ask(
             &app,
             "POST",
-            "/api/dev/users",
+            "/api/users",
             Some(serde_json::json!({ "name": "Guest", "role": "user", "password": "let me in!" })),
             Some(&owner),
             true,
@@ -5045,12 +4993,12 @@ mod tests {
         let guest = guest.expect("a session");
 
         // Sees everything, and switches a light.
-        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, Some(&guest), false).await?;
+        let (status, _, _) = ask(&app, "GET", "/api/home", None, Some(&guest), false).await?;
         assert_eq!(status, StatusCode::OK);
         let (status, state, _) = ask(
             &app,
             "POST",
-            "/api/dev/command",
+            "/api/command",
             Some(serde_json::json!({ "entity_id": "switch.demo_plug", "command": "turn_on" })),
             Some(&guest),
             true,
@@ -5060,41 +5008,33 @@ mod tests {
 
         // Changes nothing about how the home is set up.
         let refused = [
-            (
-                "POST",
-                "/api/dev/areas",
-                serde_json::json!({ "name": "Hall" }),
-            ),
+            ("POST", "/api/areas", serde_json::json!({ "name": "Hall" })),
             (
                 "PUT",
-                "/api/dev/place",
+                "/api/place",
                 serde_json::json!({ "time_zone": "Europe/Brussels" }),
             ),
             (
                 "POST",
-                "/api/dev/users",
+                "/api/users",
                 serde_json::json!({ "name": "Friend", "password": "open sesame" }),
             ),
-            ("DELETE", "/api/dev/users/nico", serde_json::Value::Null),
-            ("POST", "/api/dev/restart", serde_json::Value::Null),
+            ("DELETE", "/api/users/nico", serde_json::Value::Null),
+            ("POST", "/api/restart", serde_json::Value::Null),
             (
                 "POST",
-                "/api/dev/extensions/demo/install",
+                "/api/extensions/demo/install",
                 serde_json::json!({}),
             ),
-            (
-                "POST",
-                "/api/dev/apps/automations/rpc",
-                serde_json::json!({}),
-            ),
+            ("POST", "/api/apps/automations/rpc", serde_json::json!({})),
             (
                 "PATCH",
-                "/api/dev/users/nico",
+                "/api/users/nico",
                 serde_json::json!({ "password": "mine now!" }),
             ),
             (
                 "PATCH",
-                "/api/dev/users/guest",
+                "/api/users/guest",
                 serde_json::json!({ "role": "owner" }),
             ),
         ];
@@ -5115,7 +5055,7 @@ mod tests {
             let (status, why, _) = ask(
                 &app,
                 "PATCH",
-                "/api/dev/users/guest",
+                "/api/users/guest",
                 Some(
                     serde_json::json!({ "password": "a better one", "current_password": current }),
                 ),
@@ -5129,7 +5069,7 @@ mod tests {
         let (status, _, _) = ask(
             &app,
             "PATCH",
-            "/api/dev/users/guest",
+            "/api/users/guest",
             Some(serde_json::json!({ "password": "reset by owner" })),
             Some(&owner),
             true,
@@ -5145,15 +5085,8 @@ mod tests {
         let app = server.app()?;
         // Nobody is let in before the home has its owner.
         let guest = serde_json::json!({ "name": "Guest", "password": "let me in!" });
-        let (status, why, _) = ask(
-            &app,
-            "POST",
-            "/api/dev/users",
-            Some(guest.clone()),
-            None,
-            false,
-        )
-        .await?;
+        let (status, why, _) =
+            ask(&app, "POST", "/api/users", Some(guest.clone()), None, false).await?;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert!(
             why["error"]
@@ -5174,30 +5107,16 @@ mod tests {
                 "already somebody",
             ),
         ] {
-            let (status, why, _) = ask(
-                &app,
-                "POST",
-                "/api/dev/users",
-                Some(body),
-                Some(&owner),
-                true,
-            )
-            .await?;
+            let (status, why, _) =
+                ask(&app, "POST", "/api/users", Some(body), Some(&owner), true).await?;
             assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{why}");
             assert!(
                 why["error"].as_str().is_some_and(|e| e.contains(said)),
                 "{why}"
             );
         }
-        let (status, _, _) = ask(
-            &app,
-            "POST",
-            "/api/dev/users",
-            Some(guest),
-            Some(&owner),
-            true,
-        )
-        .await?;
+        let (status, _, _) =
+            ask(&app, "POST", "/api/users", Some(guest), Some(&owner), true).await?;
         assert_eq!(status, StatusCode::CREATED);
         Ok(())
     }
@@ -5209,7 +5128,7 @@ mod tests {
         ask(
             &app,
             "POST",
-            "/api/dev/users",
+            "/api/users",
             Some(serde_json::json!({ "name": "Guest", "password": "let me in!" })),
             Some(&owner),
             true,
@@ -5223,7 +5142,7 @@ mod tests {
             let (status, why, _) = ask(
                 &app,
                 method,
-                "/api/dev/users/nico",
+                "/api/users/nico",
                 Some(body),
                 Some(&owner),
                 true,
@@ -5241,7 +5160,7 @@ mod tests {
         let (status, why, _) = ask(
             &app,
             "PATCH",
-            "/api/dev/users/nico",
+            "/api/users/nico",
             Some(serde_json::json!({ "password": "", "current_password": "correct horse" })),
             Some(&owner),
             true,
@@ -5266,18 +5185,11 @@ mod tests {
         )
         .await?;
         let guest = guest.expect("a session");
-        let (status, users, _) = ask(
-            &app,
-            "DELETE",
-            "/api/dev/users/guest",
-            None,
-            Some(&owner),
-            true,
-        )
-        .await?;
+        let (status, users, _) =
+            ask(&app, "DELETE", "/api/users/guest", None, Some(&owner), true).await?;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(users.as_array().map(Vec::len), Some(1));
-        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, Some(&guest), false).await?;
+        let (status, _, _) = ask(&app, "GET", "/api/home", None, Some(&guest), false).await?;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         let secrets = std::fs::read_to_string(server.config_dir().join("secrets.toml"))?;
         assert!(!secrets.contains("guest"), "{secrets}");
@@ -5287,14 +5199,14 @@ mod tests {
         let (status, why, _) = ask(
             &app,
             "PATCH",
-            "/api/dev/users/nico",
+            "/api/users/nico",
             Some(serde_json::json!({ "password": "", "current_password": "correct horse" })),
             Some(&owner),
             true,
         )
         .await?;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{why}");
-        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, None, false).await?;
+        let (status, _, _) = ask(&app, "GET", "/api/home", None, None, false).await?;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         Ok(())
     }
@@ -5303,15 +5215,14 @@ mod tests {
     async fn where_the_home_is_lands_in_home_toml_and_reaches_the_core() -> anyhow::Result<()> {
         let server = Server::new(core())?;
         let app = server.app()?;
-        let (status, home, _) = ask(&app, "GET", "/api/dev/place", None, None, false).await?;
+        let (status, home, _) = ask(&app, "GET", "/api/place", None, None, false).await?;
         assert_eq!((status, home), (StatusCode::OK, serde_json::json!({})));
 
         let place = serde_json::json!({
             "time_zone": "Europe/Brussels",
             "location": { "latitude": 50.846_712_3, "longitude": 4.3525, "label": "Brussels, Belgium" },
         });
-        let (status, kept, _) =
-            ask(&app, "PUT", "/api/dev/place", Some(place), None, false).await?;
+        let (status, kept, _) = ask(&app, "PUT", "/api/place", Some(place), None, false).await?;
         assert_eq!(status, StatusCode::OK, "{kept}");
         // To about a metre, which is what's written down.
         assert_eq!(kept["location"]["latitude"], 50.84671);
@@ -5349,15 +5260,8 @@ mod tests {
                 "from -90 to 90",
             ),
         ] {
-            let (status, why, _) = ask(
-                &app,
-                "PUT",
-                "/api/dev/place",
-                Some(place.clone()),
-                None,
-                false,
-            )
-            .await?;
+            let (status, why, _) =
+                ask(&app, "PUT", "/api/place", Some(place.clone()), None, false).await?;
             assert!(status.is_client_error(), "{place}: {status}");
             let text = why["error"]
                 .as_str()
@@ -5385,7 +5289,7 @@ mod tests {
         )?;
         // Picked up the way every file is: the next time the directory is read.
         server.config.home().await;
-        let (_, users, _) = ask(&server.app()?, "GET", "/api/dev/users", None, None, false).await?;
+        let (_, users, _) = ask(&server.app()?, "GET", "/api/users", None, None, false).await?;
         assert_eq!(users[0]["name"], "Ana");
         assert_eq!(users[0]["has_password"], false);
         Ok(())
@@ -5446,7 +5350,7 @@ mod tests {
         let (status, why, _) = ask(
             &app,
             "PUT",
-            "/api/dev/place",
+            "/api/place",
             Some(serde_json::json!({ "location": { "latitude": 50.8, "longitude": 4.3 } })),
             None,
             false,
@@ -5462,7 +5366,7 @@ mod tests {
         let (status, kept, _) = ask(
             &app,
             "PUT",
-            "/api/dev/place",
+            "/api/place",
             Some(serde_json::json!({ "time_zone": "Asia/Tokyo" })),
             None,
             false,
@@ -5486,7 +5390,7 @@ mod tests {
         let (status, why, _) = ask(
             &app,
             "PATCH",
-            "/api/dev/users/bo",
+            "/api/users/bo",
             Some(serde_json::json!({ "password": "let me in!" })),
             None,
             false,
@@ -5500,7 +5404,7 @@ mod tests {
             "{why}"
         );
         // Still open, and nothing secret was written.
-        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, None, false).await?;
+        let (status, _, _) = ask(&app, "GET", "/api/home", None, None, false).await?;
         assert_eq!(status, StatusCode::OK);
         assert!(!server.config_dir().join("secrets.toml").exists());
         Ok(())
@@ -5543,9 +5447,9 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED);
         let new = new.expect("a session");
         // The lost phone is out; the screen that set the password is in.
-        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, Some(&old), false).await?;
+        let (status, _, _) = ask(&app, "GET", "/api/home", None, Some(&old), false).await?;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
-        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, Some(&new), false).await?;
+        let (status, _, _) = ask(&app, "GET", "/api/home", None, Some(&new), false).await?;
         assert_eq!(status, StatusCode::OK);
         Ok(())
     }
@@ -5558,7 +5462,7 @@ mod tests {
         ask(
             &app,
             "POST",
-            "/api/dev/users",
+            "/api/users",
             Some(serde_json::json!({ "name": "Guest", "password": "let me in!" })),
             Some(&owner),
             true,
@@ -5571,7 +5475,7 @@ mod tests {
         let (_, session, _) = ask(&app, "GET", "/api/session", None, None, false).await?;
         assert_eq!(session["locked"], true);
         assert_eq!(session["setup"]["owner"], false);
-        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, None, false).await?;
+        let (status, _, _) = ask(&app, "GET", "/api/home", None, None, false).await?;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
 
         let (status, session, cookie) = ask(
@@ -5609,6 +5513,394 @@ mod tests {
         )
         .await?;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        Ok(())
+    }
+
+    /// One request carrying `Authorization: Bearer`, and no cookie. A token is the whole
+    /// credential: the page's header is not required, and a bad header is not a cookie.
+    async fn bearer(
+        app: &Router,
+        method: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+        secret: &str,
+    ) -> anyhow::Result<(StatusCode, serde_json::Value)> {
+        let request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("authorization", format!("Bearer {secret}"));
+        let request = match body {
+            Some(body) => request
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body)?))?,
+            None => request.body(Body::empty())?,
+        };
+        let response = app.clone().oneshot(request).await?;
+        let status = response.status();
+        let bytes = response.into_body().collect().await?.to_bytes();
+        Ok((
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        ))
+    }
+
+    fn token_count(dir: &std::path::Path) -> anyhow::Result<i64> {
+        let conn = rusqlite::Connection::open(dir.join("irori.db"))?;
+        conn.query_row("SELECT COUNT(*) FROM tokens", [], |row| row.get(0))
+            .map_err(Into::into)
+    }
+
+    fn database_holds(dir: &std::path::Path, secret: &str) -> bool {
+        ["irori.db", "irori.db-wal", "irori.db-shm"]
+            .into_iter()
+            .any(|name| {
+                std::fs::read(dir.join(name)).is_ok_and(|bytes| {
+                    bytes
+                        .windows(secret.len())
+                        .any(|window| window == secret.as_bytes())
+                })
+            })
+    }
+
+    /// An owner makes a token, the program uses only what it was given, and the secret is
+    /// shown once (`docs/specs/api.md` §2).
+    #[tokio::test]
+    async fn a_program_uses_a_scoped_token_and_cannot_run_the_home() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let app = server.app()?;
+        let (status, created, _) = ask(
+            &app,
+            "POST",
+            "/api/tokens",
+            Some(serde_json::json!({
+                "name": "Tablet",
+                "scopes": ["states:read"],
+            })),
+            None,
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        assert_eq!(created["id"], "tablet");
+        assert_eq!(created["scopes"], serde_json::json!(["states:read"]));
+        let secret = created["secret"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("the secret is shown once: {created}"))?
+            .to_owned();
+        assert!(
+            secret.starts_with("irori_") && secret.len() == "irori_".len() + 64,
+            "a secret is irori_ and 32 random bytes, got {secret}"
+        );
+        assert!(
+            secret["irori_".len()..]
+                .chars()
+                .all(|c| c.is_ascii_hexdigit()),
+            "{secret}"
+        );
+        assert!(
+            !database_holds(server.dir.path(), &secret),
+            "the database keeps the hash, never the secret"
+        );
+
+        let (status, listed, _) = ask(&app, "GET", "/api/tokens", None, None, false).await?;
+        assert_eq!(status, StatusCode::OK);
+        let listed_text = listed.to_string();
+        assert!(!listed_text.contains(&secret), "{listed}");
+        assert!(!listed_text.contains("token_hash"), "{listed}");
+        assert_eq!(listed[0]["id"], "tablet");
+        assert!(listed[0].get("secret").is_none(), "{listed}");
+
+        // The same name again is the same token, not a second secret.
+        let (status, why, _) = ask(
+            &app,
+            "POST",
+            "/api/tokens",
+            Some(serde_json::json!({ "name": "Tablet", "scopes": ["states:read"] })),
+            None,
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CONFLICT, "{why}");
+        assert!(
+            why["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("already a token")),
+            "{why}"
+        );
+
+        for (body, said) in [
+            (serde_json::json!({ "name": "Empty" }), "needs a scope"),
+            (
+                serde_json::json!({ "name": "Twice", "scopes": ["states:read", "states:read"] }),
+                "more than once",
+            ),
+            (
+                serde_json::json!({ "name": "...", "scopes": ["states:read"] }),
+                "no letters or numbers",
+            ),
+            (
+                serde_json::json!({
+                    "name": "Both",
+                    "scopes": ["states:read"],
+                    "extension": "bridge",
+                }),
+                "not both",
+            ),
+            (
+                serde_json::json!({ "name": "Bridge", "extension": "bridge" }),
+                "irori-extension.toml",
+            ),
+        ] {
+            let (status, why, _) =
+                ask(&app, "POST", "/api/tokens", Some(body), None, false).await?;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{why}");
+            assert!(
+                why["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains(said)),
+                "expected {said} in {why}"
+            );
+        }
+
+        // A header that isn't a token Irori issued is refused, even while the home is open
+        // and a missing header would be treated as the owner.
+        for header in ["Bearer nope", "nope", "Bearer "] {
+            let (status, body) = server
+                .send(
+                    Request::get("/api/home")
+                        .header("authorization", header)
+                        .body(Body::empty())?,
+                )
+                .await?;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{header}: {body:?}");
+        }
+
+        // states:read sees states, and nothing that needs the registry or a service call.
+        let (status, _) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(status, StatusCode::OK);
+        let (status, why) = bearer(&app, "GET", "/api/devices", None, &secret).await?;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{why}");
+        assert!(
+            why["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("registry:read")),
+            "{why}"
+        );
+        let (status, why) = bearer(
+            &app,
+            "POST",
+            "/api/command",
+            Some(serde_json::json!({ "entity_id": "light.hall", "command": "turn_on" })),
+            &secret,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{why}");
+        assert!(
+            why["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("services:call")),
+            "{why}"
+        );
+        let (status, why) = bearer(
+            &app,
+            "POST",
+            "/api/tokens",
+            Some(serde_json::json!({ "name": "Another", "scopes": ["states:read"] })),
+            &secret,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{why}");
+        assert!(
+            why["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("can't change how the home is set up")),
+            "{why}"
+        );
+
+        let (status, _) = bearer(&app, "DELETE", "/api/tokens/tablet", None, &secret).await?;
+        // Revoking is running the home. The page does it; the token does not.
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, _) = ask(&app, "DELETE", "/api/tokens/tablet", None, None, false).await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, why) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{why}");
+        let (status, why, _) = ask(&app, "DELETE", "/api/tokens/tablet", None, None, false).await?;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{why}");
+        assert!(
+            why["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("there's no token called `tablet`")),
+            "{why}"
+        );
+        Ok(())
+    }
+
+    /// Setting the home up again is also how a forgotten password is replaced, so every token
+    /// from before that stops working.
+    #[tokio::test]
+    async fn setting_the_home_up_revokes_every_token() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let app = server.app()?;
+        let (status, created, _) = ask(
+            &app,
+            "POST",
+            "/api/tokens",
+            Some(serde_json::json!({ "name": "Tablet", "scopes": ["states:read"] })),
+            None,
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let secret = created["secret"].as_str().expect("shown once").to_owned();
+        assert_eq!(token_count(server.dir.path())?, 1);
+
+        let (status, _, _) = ask(
+            &app,
+            "POST",
+            "/api/setup",
+            Some(serde_json::json!({ "name": "Nico", "password": "correct horse" })),
+            None,
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(token_count(server.dir.path())?, 0);
+        let (status, _) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        Ok(())
+    }
+
+    /// A command from a program is the program's, not the person's who made the token. Changing
+    /// that person's password signs their browsers out and leaves the token in place.
+    #[tokio::test]
+    async fn a_token_calls_a_service_as_itself_and_survives_a_password_change() -> anyhow::Result<()>
+    {
+        let (core, host) = demo().await?;
+        let mut events = core.subscribe();
+        let server = Server::new(core)?;
+        let (app, owner) = locked_home(&server).await?;
+        let (status, created, _) = ask(
+            &app,
+            "POST",
+            "/api/tokens",
+            Some(serde_json::json!({
+                "name": "Tablet",
+                "scopes": ["services:call", "states:read", "registry:read"],
+            })),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let secret = created["secret"].as_str().expect("shown once").to_owned();
+
+        let (status, state) = bearer(
+            &app,
+            "POST",
+            "/api/command",
+            Some(serde_json::json!({ "entity_id": "light.demo_lamp", "command": "turn_on" })),
+            &secret,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{state}");
+        // The device changed. The call that asked it to is the token's, on the event.
+        assert_eq!(state["context"]["origin"]["type"], "device", "{state}");
+        assert!(state["context"]["parent_id"].is_string(), "{state}");
+        let mut saw_token = false;
+        while let Ok(event) = events.try_recv() {
+            if let Event::ServiceCalled { context, .. } = event {
+                saw_token |= matches!(
+                    context.origin,
+                    Origin::Api { ref token_id } if token_id.as_str() == "tablet"
+                );
+            }
+        }
+        assert!(
+            saw_token,
+            "the service call should be attributed to the token"
+        );
+
+        // The page's cookie still needs the header only the page sends. The token did not.
+        let (status, why, _) = ask(
+            &app,
+            "POST",
+            "/api/command",
+            Some(serde_json::json!({ "entity_id": "light.demo_lamp", "command": "turn_off" })),
+            Some(&owner),
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{why}");
+        assert!(
+            why["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("x-irori-ui")),
+            "{why}"
+        );
+
+        let (status, _, _) = ask(
+            &app,
+            "PATCH",
+            "/api/users/nico",
+            Some(serde_json::json!({
+                "password": "a longer phrase",
+                "current_password": "correct horse",
+            })),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        let (status, state) = bearer(
+            &app,
+            "POST",
+            "/api/command",
+            Some(serde_json::json!({ "entity_id": "light.demo_lamp", "command": "turn_off" })),
+            &secret,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{state}");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// The socket pushes the home as its first frame and takes nothing from the client.
+    #[tokio::test]
+    async fn the_live_socket_opens_with_the_home() -> anyhow::Result<()> {
+        use futures_util::StreamExt as _;
+
+        let server = Server::new(core())?;
+        let app = server.app()?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let serve = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let url = format!("ws://{address}/api/ws");
+        let mut socket = None;
+        for _ in 0..50 {
+            match tokio_tungstenite::connect_async(&url).await {
+                Ok((connected, _)) => {
+                    socket = Some(connected);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+        let mut socket = socket.ok_or_else(|| anyhow::anyhow!("the live socket did not open"))?;
+        let frame = socket
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("the socket closed before a frame"))??;
+        let text = match frame {
+            tokio_tungstenite::tungstenite::Message::Text(text) => text.to_string(),
+            other => anyhow::bail!("the first frame should be text, got {other:?}"),
+        };
+        let message: serde_json::Value = serde_json::from_str(&text)?;
+        assert_eq!(message["type"], "snapshot");
+        assert!(message["home"]["devices"].is_array(), "{message}");
+        serve.abort();
         Ok(())
     }
 }

@@ -28,6 +28,7 @@ mod map;
 mod modal;
 mod place;
 mod places;
+mod programs;
 mod removal;
 mod rich;
 mod segmented;
@@ -53,13 +54,12 @@ use leptos_router::path;
 use crate::api::{Health, Home};
 use crate::devices::Controls;
 
-/// How often the page asks the core what changed. Polling is temporary: the WebSocket API
-/// (M1.5) pushes changes instead, and then this disappears.
-const REFRESH: Duration = Duration::from_secs(2);
+/// How long to wait before opening the live socket again after it closes.
+const RECONNECT: Duration = Duration::from_secs(1);
 
-/// How many refreshes between asking Irori about itself. Its version and database don't change
-/// while it runs, and its uptime only needs to be roughly right.
-const HEALTH_EVERY: u32 = 15;
+/// How often to ask about Irori itself. The home arrives on the socket; version and uptime
+/// only need to be roughly right.
+const HEALTH_EVERY: Duration = Duration::from_secs(30);
 
 /// What every page is given: the home as it currently stands, and whether the core is answering.
 #[derive(Debug, Clone, Copy)]
@@ -105,6 +105,8 @@ fn App() -> impl IntoView {
     provide_context(place::Place(place));
     let people = RwSignal::new(Vec::new());
     provide_context(users::People(people));
+    let programs = RwSignal::new(Vec::new());
+    provide_context(programs::Programs(programs));
     let welcoming = RwSignal::new(false);
     provide_context(welcome::Showing(welcoming));
     let must_sign_in =
@@ -121,12 +123,19 @@ fn App() -> impl IntoView {
         if session.with(|s| s.as_ref().is_none_or(api::Session::shut_out)) {
             return;
         }
+        // Tokens are an owner's. The check above has already waited until the session answered.
+        let ask_programs = session.with(|s| s.as_ref().is_some_and(|s| s.owner));
         spawn_local(async move {
             if let Ok(home) = api::fetch_place().await {
                 place.set(Some(home));
             }
             if let Ok(users) = api::fetch_users().await {
                 people.set(users);
+            }
+            if !ask_programs {
+                programs.set(Vec::new());
+            } else if let Ok(tokens) = api::fetch_tokens().await {
+                programs.set(tokens);
             }
         });
     });
@@ -171,59 +180,30 @@ fn App() -> impl IntoView {
     provide_context(controls);
 
     spawn_local(async move {
-        let mut ticks: u32 = 0;
         loop {
             // Nobody is signed in: there is nothing this browser may ask for yet.
             if session.with_untracked(|s| s.as_ref().is_some_and(api::Session::shut_out)) {
-                gloo_timers::future::sleep(REFRESH).await;
+                gloo_timers::future::sleep(RECONNECT).await;
                 continue;
             }
-            match api::fetch_home().await {
-                Ok(mut fetched) => {
-                    let shown = live.home.get_untracked();
-                    // This snapshot can be older than a change the page already has from a
-                    // command it sent, so the fresher of the two wins per entity.
-                    for state in &shown.states {
-                        fetched.accept(state.clone());
-                    }
-                    // Set it only when something actually changed: an unchanged home would
-                    // rebuild the list under the pointer twice a second for nothing.
-                    if fetched != shown {
-                        live.home.set(fetched);
-                    }
-                    live.trouble.set(None);
+            follow_home(live, session).await;
+            gloo_timers::future::sleep(RECONNECT).await;
+        }
+    });
+    spawn_local(async move {
+        loop {
+            if !session.with_untracked(|s| s.as_ref().is_some_and(api::Session::shut_out)) {
+                // What Irori itself is doing changes far less often than what the devices
+                // are. A failure here changes nothing: the banner already says the core
+                // isn't answering, and the last known facts are better than a blank card.
+                if let Ok(health) = api::fetch_health().await {
+                    live.health.set(Some(health));
                 }
-                Err(why) => {
-                    live.trouble.set(Some(why));
-                    // It may be that the home started asking who is there (a password set
-                    // from another screen), or that this browser was signed out.
-                    if let Ok(now) = api::fetch_session().await
-                        && session.get_untracked().as_ref() != Some(&now)
-                    {
-                        session.set(Some(now));
-                    }
+                if let Ok(status) = api::fetch_assistant().await {
+                    assistant.set(Some(status));
                 }
             }
-            // What Irori itself is doing changes far less often than what the devices are, so
-            // it's asked for less often — but it is asked again: the uptime moves, and a
-            // restart onto a different build should show, not sit there as the version the
-            // page happened to load with.
-            // A failure here changes nothing on purpose: the banner already says the core
-            // isn't answering, and the last known facts are better than a blank card.
-            if ticks.is_multiple_of(HEALTH_EVERY)
-                && let Ok(health) = api::fetch_health().await
-            {
-                live.health.set(Some(health));
-            }
-            // Same slow cadence: a model being ready changes rarely, and a chat must not
-            // wait on the two-second home poll.
-            if ticks.is_multiple_of(HEALTH_EVERY)
-                && let Ok(status) = api::fetch_assistant().await
-            {
-                assistant.set(Some(status));
-            }
-            ticks = ticks.wrapping_add(1);
-            gloo_timers::future::sleep(REFRESH).await;
+            gloo_timers::future::sleep(HEALTH_EVERY).await;
         }
     });
 
@@ -503,7 +483,7 @@ fn AppLinks() -> impl IntoView {
                     <A href=format!("/apps/{id}/") attr:title=title>
                         {if has_icon {
                             view! {
-                                <img src=format!("/api/dev/extensions/{id}/icon.svg") alt="" />
+                                <img src=format!("/api/extensions/{id}/icon.svg") alt="" />
                             }
                             .into_any()
                         } else {
@@ -552,11 +532,100 @@ fn NotFound() -> impl IntoView {
     }
 }
 
-/// Asks the core for the home again, now, rather than waiting for the next poll.
+/// The address of the live socket: the page's own host, with `ws` or `wss` to match it.
+fn live_url() -> Option<String> {
+    let location = web_sys::window()?.location();
+    let protocol = location.protocol().ok()?;
+    let host = location.host().ok()?;
+    let scheme = if protocol == "https:" { "wss:" } else { "ws:" };
+    Some(format!("{scheme}//{host}/api/ws"))
+}
+
+fn cant_reach(live: Live) {
+    live.trouble
+        .set(Some("Can't reach Irori. Is it still running?".to_owned()));
+}
+
+/// Reads the socket until it closes. The caller waits and opens it again.
+async fn follow_home(live: Live, session: RwSignal<Option<api::Session>>) {
+    use futures_util::StreamExt as _;
+
+    let Some(url) = live_url() else {
+        cant_reach(live);
+        return;
+    };
+    let mut socket = match gloo_net::websocket::futures::WebSocket::open(&url) {
+        Ok(socket) => socket,
+        Err(error) => {
+            leptos::logging::error!("{error}");
+            cant_reach(live);
+            notice_session(session).await;
+            return;
+        }
+    };
+    while let Some(message) = socket.next().await {
+        let text = match message {
+            Ok(gloo_net::websocket::Message::Text(text)) => text,
+            Ok(gloo_net::websocket::Message::Bytes(_)) => continue,
+            Err(error) => {
+                leptos::logging::error!("{error}");
+                cant_reach(live);
+                notice_session(session).await;
+                return;
+            }
+        };
+        let Ok(message) = serde_json::from_str::<irori_types::LiveMessage>(&text) else {
+            leptos::logging::error!("a live message this page can't read");
+            continue;
+        };
+        match message {
+            irori_types::LiveMessage::Snapshot { home } => match serde_json::from_value(home) {
+                Ok(fetched) => show_home(live, fetched),
+                Err(error) => leptos::logging::error!("{error}"),
+            },
+            irori_types::LiveMessage::State { state, .. } => {
+                let mut next = live.home.get_untracked();
+                if next.accept(*state) {
+                    live.home.set(next);
+                }
+            }
+            irori_types::LiveMessage::Changed => {
+                if let Ok(fetched) = api::fetch_home().await {
+                    show_home(live, fetched);
+                }
+            }
+        }
+    }
+}
+
+/// Keeps a state the page already showed when it is newer than this picture, then shows it.
+fn show_home(live: Live, mut fetched: Home) {
+    let shown = live.home.get_untracked();
+    // A command can land a newer state while this picture was on its way. Keep that one.
+    for state in shown.states.iter().cloned() {
+        fetched.accept(state);
+    }
+    if fetched != shown {
+        live.home.set(fetched);
+    }
+    live.trouble.set(None);
+}
+
+/// A failed socket may mean the home started asking who is there, or this browser was signed out.
+async fn notice_session(session: RwSignal<Option<api::Session>>) {
+    if let Ok(now) = api::fetch_session().await
+        && session.get_untracked().as_ref() != Some(&now)
+    {
+        session.set(Some(now));
+    }
+}
+
+/// Asks the core for the home again, now.
 ///
 /// Renaming and moving things change more than the thing that was changed — an entity with no
 /// name of its own follows its device, and an area that goes away unplaces everything in it — so
 /// after one of those the whole picture is refetched rather than patched.
+///
 pub fn refresh(live: Live) {
     spawn_local(async move {
         match api::fetch_home().await {

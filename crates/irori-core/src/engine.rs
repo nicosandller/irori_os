@@ -121,6 +121,7 @@ impl EngineLink {
             | Event::EntityUpdated { .. }
             | Event::EntityRemoved { .. }
             | Event::PlaceChanged { .. }
+            | Event::SettingsChanged
                 if self.registry =>
             {
                 Some(ToExt::RegistryChanged {})

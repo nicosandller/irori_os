@@ -51,7 +51,8 @@ enum Command {
         #[arg(long, env = "IRORI_DATA")]
         data: Option<PathBuf>,
         /// Address to listen on. Anything other than loopback also needs
-        /// --allow-unauthenticated-lan until authentication exists. Also `[server] bind`;
+        /// --allow-unauthenticated-lan. A home with no password is open to whoever can reach
+        /// it, and that stays even though the page can sign in. Also `[server] bind`;
         /// default 127.0.0.1:8480.
         #[arg(long, env = "IRORI_BIND")]
         bind: Option<SocketAddr>,
@@ -61,8 +62,8 @@ enum Command {
         /// you where it ended up instead of failing.
         #[arg(long, env = "IRORI_BIND_FALLBACK")]
         bind_fallback: Option<SocketAddr>,
-        /// Allow a non-loopback --bind even though this build has no authentication yet.
-        /// Temporary: removed when login and access tokens land (ROADMAP D12, M1.5).
+        /// Allow a non-loopback --bind. A home that has no password yet is open to whoever
+        /// can reach it, so listening beyond this machine has to be asked for.
         #[arg(long, env = "IRORI_ALLOW_UNAUTHENTICATED_LAN", num_args = 0..=1, default_missing_value = "true")]
         allow_unauthenticated_lan: Option<bool>,
         /// Serve over https, so passwords and sign-ins travel encrypted. Uses tls/cert.pem and

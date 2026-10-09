@@ -28,7 +28,7 @@ pub struct Reply {
     pub value: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// For an event: `theme` or `path`.
+    /// For an event: `theme`, `path`, or `changed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event: Option<String>,
 }

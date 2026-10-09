@@ -311,6 +311,10 @@
           "description": "Also the id of the protocol it contributes, if any (ROADMAP D25).",
           "$ref": "#/$defs/ExtensionId"
         },
+        "inbound": {
+          "description": "The program connects to Irori, instead of Irori starting it (`docs/specs/api.md` §6).\nNo `run` command: there is no binary in the package to launch.",
+          "type": "boolean"
+        },
         "irori": {
           "description": "Which versions of Irori it works with, e.g. `>=0.1.0, <0.2.0`.",
           "$ref": "#/$defs/CoreRequirement"
@@ -443,7 +447,7 @@
       "type": "object",
       "properties": {
         "id": {
-          "description": "Its own id, unique within this protocol, e.g. `permit_join`.\n\nA slug — the same shape as an extension id — because the UI and the API place it in a\nURL as one path segment (`/api/dev/extensions/{id}/actions/{action_id}`) without\nencoding. Anything with a `/`, `?`, or `#` would not round-trip through that route.\n\n`validate` is the authority: a manifest is always parsed through it, whatever a JSON\nSchema consumer independently accepts. The pattern here is the same slug, so the schema\nrejects the same ids. Uniqueness across `actions` can't be expressed in JSON Schema —\nthere is no keyword for \"unique by one field of an array item\" — so `validate` remains\nthe only place that catches a repeated id.",
+          "description": "Its own id, unique within this protocol, e.g. `permit_join`.\n\nA slug — the same shape as an extension id — because the UI and the API place it in a\nURL as one path segment (`/api/extensions/{id}/actions/{action_id}`) without\nencoding. Anything with a `/`, `?`, or `#` would not round-trip through that route.\n\n`validate` is the authority: a manifest is always parsed through it, whatever a JSON\nSchema consumer independently accepts. The pattern here is the same slug, so the schema\nrejects the same ids. Uniqueness across `actions` can't be expressed in JSON Schema —\nthere is no keyword for \"unique by one field of an array item\" — so `validate` remains\nthe only place that catches a repeated id.",
           "type": "string",
           "maxLength": 64,
           "minLength": 1,

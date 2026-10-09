@@ -16,7 +16,10 @@ irori-types = { path = "../irori-types" }
 irori-ui-kit = { path = "../irori-ui-kit" }
 
 console_error_panic_hook = "0.1.7"
-gloo-net = { version = "0.7.0", default-features = false, features = ["http", "json"] }
+gloo-net = { version = "0.7.0", default-features = false, features = ["http", "json", "websocket"] }
+# `StreamExt` for the live socket. Already in the bundle through gloo-net; named here so this
+# crate can use it.
+futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
 gloo-timers = { version = "0.3.0", features = ["futures"] }
 leptos = { version = "0.8.20", features = ["csr"] }
 leptos_router = { version = "0.8.15", default-features = false }
@@ -37,6 +40,7 @@ web-sys = { version = "0.3", features = [
     # The copy button: `navigator.clipboard` (log_window.rs). `Window` is what `web_sys::window`
     # comes back as, and `Clipboard` is what its `navigator` hands back.
     "Window",
+    "Location",
     "Navigator",
     "Clipboard",
     # Numbers that count to their new value (count.rs): finding them, and asking whether the

@@ -10,6 +10,7 @@ pub const VERSION: &str = env!("IRORI_VERSION");
 // `id` first: its `string_newtype!` macro is used by later modules.
 mod id;
 
+mod api;
 mod context;
 mod extension;
 mod floorplan;
@@ -29,6 +30,7 @@ mod time;
 pub mod units;
 mod users;
 
+pub use api::LiveMessage;
 pub use context::{Context, Origin};
 pub use extension::{
     ApiScope, AppContribution, AppPlacement, AutomationContribution, Contributions,
@@ -96,7 +98,8 @@ pub use settings::{
 pub use state::{Attributes, Availability, EntityState, State};
 pub use time::{Timestamp, TimestampError};
 pub use users::{
-    PASSWORD_MAX_LEN, PASSWORD_MIN_LEN, Role, User, check_password, check_users, user_id_from,
+    PASSWORD_MAX_LEN, PASSWORD_MIN_LEN, Role, User, check_password, check_users, token_id_from,
+    user_id_from,
 };
 
 /// A problem with a value that is well-formed JSON of the right shape but breaks a rule that

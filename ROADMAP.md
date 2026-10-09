@@ -24,8 +24,8 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | C12 | UI: Start & Settings | Start screen, Settings, restart button, motion with a switch to turn it off (`docs/motion_design.md`) | ✅ | C11 |
 | C13 | UI: Extensions page | Browse, install, uninstall official extensions | ✅ | C7 |
 | C14 | UI: First-run setup | A welcome that asks who you are and where the home is; a first run works without it (`docs/specs/config.md` §2), so it is a prompt, not a gate. Users in Settings: owner or user, each with a password, and a sign-in that never lists who lives here (`users.toml`); https with `--tls`. Location and time zone on a map (`home.toml`), which is what arms `time` and `sun` triggers in Automations | ✅ | |
-| C16 | API spec & auth | Public API protocol, tokens and scopes for programs that aren't the page (`docs/specs/api.md`). The page's own sign-in is C14 | - | |
-| C17 | Public API | Real API replacing `/api/dev/*`, push instead of polling, external extensions | - | C16 |
+| C16 | API spec & auth | Public API protocol, tokens and scopes for programs that aren't the page (`docs/specs/api.md`). The page's own sign-in is C14 | ✅ | |
+| C17 | Public API | HTTP at `/api/…`, scoped tokens, `/api/ws` push, inbound extensions on `/api/extension` | ✅ | C16 |
 | C18 | Recorder | History storage that survives restarts (`irori-recorder` is an empty crate; names, areas and settings already persist in the config dir) | - | C5 |
 | C21 | UI: Entity history | Last-24h list, chart and state timeline per entity. Kept in memory, so lost on restart until C18 | 🟠 | C18 |
 | C22 | CLI command tree | Full UI parity (`devices`, `rules`, `extensions`, `token`…) with `--json`. Only `serve` and `version` today | - | C17 |

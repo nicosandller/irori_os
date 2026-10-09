@@ -1466,3 +1466,142 @@ async fn updating_replaces_the_package_and_keeps_what_it_fetched_for_itself() {
 
     host.shutdown().await;
 }
+
+const INBOUND_MANIFEST: &str = r#"
+    [extension]
+    id = "bridge"
+    name = "Bridge"
+    version = "0.1.0"
+    irori = ">=0.0.0"
+    inbound = true
+
+    [[contributes.protocol]]
+    iot_class = "local_push"
+    entity_kinds = ["light"]
+"#;
+
+/// The two ends a program holds, and the link it hands to Irori.
+fn inbound_link() -> (
+    tokio::sync::mpsc::Sender<irori_protocol::FromExt>,
+    tokio::sync::mpsc::Receiver<irori_protocol::ToExt>,
+    irori_core::InboundLink,
+) {
+    let (to_host, incoming) = tokio::sync::mpsc::channel(64);
+    let (outgoing, from_host) = tokio::sync::mpsc::channel(64);
+    (
+        to_host,
+        from_host,
+        irori_core::InboundLink { incoming, outgoing },
+    )
+}
+
+fn write_manifest(dir: &std::path::Path, manifest: &str) {
+    std::fs::create_dir_all(dir).expect("made the package dir");
+    std::fs::write(dir.join("irori-extension.toml"), manifest).expect("wrote the manifest");
+}
+
+/// A program Irori does not start dials in, describes a device, and a second program is refused
+/// while the first is still connected (`docs/specs/api.md` §6).
+#[tokio::test]
+async fn an_inbound_program_connects_and_describes_its_device() {
+    use irori_protocol::{FromExt, ToExt};
+
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    write_manifest(&packages_dir.path().join("bridge"), INBOUND_MANIFEST);
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("starts");
+    let id = ExtensionId::try_from("bridge").expect("valid");
+    eventually("the extension is waiting for its program", || {
+        matches!(
+            status(&core, "bridge"),
+            Some(ExtensionStatus::Waiting { .. })
+        )
+    })
+    .await;
+
+    let (to_host, mut from_host, link) = inbound_link();
+    host.offer_inbound(&id, link).expect("the door is open");
+    let hello = from_host.recv().await.expect("hello");
+    assert!(matches!(hello, ToExt::Hello { .. }), "{hello:?}");
+
+    to_host
+        .send(FromExt::DescribeDevice {
+            id: 1,
+            device: DeviceDescription {
+                unique_id: uid("lamp"),
+                name: Name::try_from("Lamp").expect("valid"),
+                manufacturer: None,
+                model: None,
+                sw_version: None,
+                hw_version: None,
+                suggested_area: None,
+                via_device_unique_id: None,
+            },
+        })
+        .await
+        .expect("the host is listening");
+    let reply = from_host.recv().await.expect("the describe was answered");
+    match reply {
+        ToExt::Reply { id, error } => {
+            assert_eq!(id, 1);
+            assert!(error.is_none(), "{error:?}");
+        }
+        other => panic!("expected a reply, got {other:?}"),
+    }
+    assert_eq!(status(&core, "bridge"), Some(ExtensionStatus::Running));
+    assert!(
+        core.devices()
+            .iter()
+            .any(|device| device.name.as_str() == "Lamp"),
+        "the described lamp should be in the home: {:?}",
+        core.devices()
+    );
+
+    let (_to_host, _from_host, again) = inbound_link();
+    let busy = host
+        .offer_inbound(&id, again)
+        .expect_err("one program at a time");
+    assert!(busy.contains("already connected"), "{busy}");
+
+    host.shutdown().await;
+}
+
+/// Offering a connection is refused unless that extension is installed and waiting to connect.
+#[tokio::test]
+async fn an_offer_is_refused_unless_the_extension_is_waiting() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    // A package Irori starts itself. It has no `run`, so it never becomes a process; the
+    // manifest is still what an offer is checked against.
+    write_manifest(&packages_dir.path().join("lamp"), LAMP_MANIFEST);
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("starts");
+
+    let lamp = ExtensionId::try_from("lamp").expect("valid");
+    let (_to_host, _from_host, link) = inbound_link();
+    let started = host.offer_inbound(&lamp, link).expect_err("not inbound");
+    assert!(started.contains("started by Irori"), "{started}");
+
+    let missing = ExtensionId::try_from("missing").expect("valid");
+    let (_to_host, _from_host, link) = inbound_link();
+    let absent = host
+        .offer_inbound(&missing, link)
+        .expect_err("not installed");
+    assert!(
+        absent.contains("there's no extension `missing` waiting to connect"),
+        "{absent}"
+    );
+
+    host.shutdown().await;
+}

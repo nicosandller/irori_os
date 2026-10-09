@@ -407,6 +407,12 @@ impl Home {
                 entity: entity.clone(),
             });
         }
+        // Areas, floors, and the plan change nothing above when no device moved. One event
+        // so a listener reads the home again instead of guessing which part it was. A device
+        // or entity event already says that, so it isn't sent twice.
+        if events.is_empty() {
+            events.push(Event::SettingsChanged);
+        }
         events
     }
 
@@ -2439,6 +2445,18 @@ mod tests {
 
         assert_eq!(home.settle(settings.clone()).len(), 2);
         assert!(home.settle(settings).is_empty(), "applied twice");
+    }
+
+    /// A room on its own moves no device, and still has to be heard. The page reads the home
+    /// again from this one event.
+    #[test]
+    fn a_room_on_its_own_is_still_announced() {
+        let mut home = home_with_lamp();
+        let events = home.settle(Settings {
+            areas: vec![area("study", "Study")],
+            ..Settings::default()
+        });
+        assert_eq!(events, vec![Event::SettingsChanged]);
     }
 
     /// Settings are kept for things that aren't here: a device unplugged for a week comes back to

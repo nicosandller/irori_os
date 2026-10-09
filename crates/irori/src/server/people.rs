@@ -1,4 +1,4 @@
-//! `/api/dev/users` and `/api/dev/place`: the people allowed in, and where the home is.
+//! `/api/users` and `/api/place`: the people allowed in, and where the home is.
 //!
 //! Both are Settings rows, and both write files a person may also edit by hand (`users.toml`,
 //! `home.toml`), so every rule here is one the files are held to as well.
@@ -274,6 +274,7 @@ pub async fn remove_user(State(state): State<AppState>, Path(id): Path<UserId>) 
     match removed {
         Ok(()) => {
             state.0.auth.end_all(&id, None);
+            state.0.auth.revoke_user(&id);
             tracing::info!(user = %id, "somebody was removed from the home");
             Json(list(&state).await).into_response()
         }

@@ -44,6 +44,8 @@ pub enum Event {
     PlaceChanged {
         home: irori_types::HomeSettings,
     },
+    /// Names, areas, floors, or the floorplan changed. Listeners read the home again.
+    SettingsChanged,
     /// A service call was sent to a protocol.
     ServiceCalled {
         entity_id: EntityId,

@@ -226,7 +226,7 @@ pub fn icon(protocol: &str, has_icon: bool) -> AnyView {
         view! {
             <img
                 class="protocol-icon"
-                src=format!("/api/dev/extensions/{protocol}/icon.svg")
+                src=format!("/api/extensions/{protocol}/icon.svg")
                 alt=""
                 width="20"
                 height="20"

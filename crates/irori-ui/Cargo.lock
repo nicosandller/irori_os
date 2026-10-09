@@ -526,9 +526,13 @@ version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6420f887c48417e9e86c6cf61274eb231830cccc100e49613f7952e269a1fe1"
 dependencies = [
+ "futures-channel",
+ "futures-core",
+ "futures-sink",
  "gloo-utils 0.3.0",
  "http",
  "js-sys",
+ "pin-project",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -751,6 +755,7 @@ name = "irori-ui"
 version = "0.0.0"
 dependencies = [
  "console_error_panic_hook",
+ "futures-util",
  "gloo-net 0.7.0",
  "gloo-timers",
  "irori-types",

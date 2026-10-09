@@ -1426,7 +1426,7 @@ them without `irori-rules` depending on SQLite.
 ## 19. Security and privacy
 
 - Rules are owner-authored files in the config directory. Until D12, anything that can reach
-  the process can already call services through `/api/dev/command`; rules do not widen that.
+  the process can already call services through `/api/command`; rules do not widen that.
 - Do not invent per-rule permissions, sandboxes, or "this automation may only touch lights".
   When multi-user lands (Phase 3), enforcement is in the API layer that *writes* the files, not
   in the engine that *runs* them.

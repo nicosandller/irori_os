@@ -401,10 +401,14 @@ fn card(
     // Nothing is wrong with it — it just hasn't been told something it can't start without, and
     // the way out is the very button next to this.
     let needs_setup = entry.state.as_deref() == Some("needs_setup");
+    // Waiting for its program to dial in is not a failure. The reason is what it's waiting
+    // for, shown as ordinary text, and it doesn't mark the log button.
+    let waiting = entry.state.as_deref() == Some("waiting");
+    let waiting_for = if waiting { entry.reason.clone() } else { None };
     let schema = entry.config_schema.clone();
     // Irori's own word that something went wrong, or an error in what the extension wrote —
     // unless that very trouble has been read and cleared.
-    let reason = entry.reason.clone();
+    let reason = if waiting { None } else { entry.reason.clone() };
     let troubled = move || {
         log_errors.with(|errors| {
             cleared.with(|cleared| troubled(&id_marked, reason.as_deref(), errors, cleared))
@@ -437,6 +441,7 @@ fn card(
                         {state.replace('_', " ")}
                     </span>
                 })}
+                {waiting_for.map(|why| view! { <span class="muted small">{why}</span> })}
                 {full_access.then(|| view! { <span class="chip quiet ext-full">"full access"</span> })}
             </div>
             <p class="muted ext-description">{entry.description.clone()}</p>

@@ -63,7 +63,7 @@ anyhow = "1.0.104"
 # Only to check an ESPHome encryption key is well-formed before handing it to `esphome-client`,
 # which already depends on this version.
 base64 = "0.22.1"
-axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json", "ws"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 # The ESPHome native API: mDNS discovery, the protobuf protocol, and its Noise transport.
 # Pinned to one API version on purpose (the crate generates one per ESPHome release).

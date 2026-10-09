@@ -4,7 +4,7 @@
 //! Note when testing a change here: `install` copies this extension's files into
 //! `/var/lib/irori/extensions/<id>/`, and that copy is what the supervisor actually runs.
 //! Rebuilding the dev container's image alone leaves it stale — reinstall the extension (through
-//! the UI, or `DELETE`/`POST` on its `/api/dev/extensions/{id}` routes) to pick up a new binary
+//! the UI, or `DELETE`/`POST` on its `/api/extensions/{id}` routes) to pick up a new binary
 //! or schema.
 
 use std::ffi::OsString;

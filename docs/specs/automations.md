@@ -183,7 +183,7 @@ directory. `IRORI_EXTENSION_DATA` (its private state directory) is always set.
 
 For each running extension with an `app` contribution, the core:
 
-- lists it at `GET /api/dev/apps`:
+- lists it at `GET /api/apps`:
   `[{ "extension": "automations", "label": "Automations", "has_icon": true, "api": [scopes], "has_engine": true, "built": true }]`;
 - serves the package's files under `/pages/<extension>/…`, with `entry` at `/pages/<extension>/`
   and its sibling files beside it. (`/apps/<extension>/…` is the shell's own address for the page,
@@ -196,7 +196,7 @@ For each running extension with an `app` contribution, the core:
   cookie and free to ask for anything the person signed in may; inside the shell's frame it has
   an origin of its own and reaches only what the bridge hands it. The frame, the page's own
   scripts and images, and anything that isn't a browser are served as before.
-- relays `POST /api/dev/apps/<extension>/rpc` with body `{ "method": "…", "params": … }` to the
+- relays `POST /api/apps/<extension>/rpc` with body `{ "method": "…", "params": … }` to the
   engine as `app_request`, and returns `{ "value": … }` or an error status with `{ "error": "…" }`.
   30 s timeout (a backtest can take a moment). `503` if the engine isn't running.
 
@@ -208,7 +208,7 @@ What the core promises about the static files:
   sandboxed frame Safari and Firefox match `'self'` against the opaque origin, i.e. nothing.
 - `Access-Control-Allow-Origin: *` **on these files only** — the page runs in a sandboxed frame
   with an opaque origin, so its own script, wasm and stylesheet fetches are cross-origin. Never
-  on `/api/…`: until auth exists (C16), a CORS-open API would be open to any web page.
+  on `/api/…`. The API is not open to other websites (`docs/specs/api.md`).
 - Paths are package paths (§3 of extensions.md): no `..`, no hidden files.
 
 The **shell** (the core's own UI) adds an entry to the sidebar for each app, after its own
@@ -232,7 +232,7 @@ Page → shell: `{ irori: 1, id, op, args }`. Shell → page: `{ irori: 1, id, v
 | `op` | Needs | Does |
 |---|---|---|
 | `hello` | — | Answers `{ theme, path }` |
-| `rpc` `{ method, params }` | an engine | `POST /api/dev/apps/<id>/rpc` |
+| `rpc` `{ method, params }` | an engine | `POST /api/apps/<id>/rpc` |
 | `registry` | `registry:read` | Entities, devices and areas as the shell has them |
 | `states` | `states:read` | Current states |
 | `history` `{ entity_id }` | `history:read` | The last day of one entity's changes |
@@ -243,6 +243,7 @@ Page → shell: `{ irori: 1, id, op, args }`. Shell → page: `{ irori: 1, id, v
 |---|---|
 | `theme` `{ theme }` | Light/dark or motion preference changed |
 | `path` `{ path }` | Back/forward moved inside the page |
+| `changed` | The home changed. The payload is null. Read `registry` and `states` again |
 
 `theme` is `{ dark: bool, reduced_motion: bool, tokens: { "--bg": "…", … } }`: the shell's own
 CSS custom properties, so the page looks like the rest of Irori without shipping a copy of its
@@ -251,7 +252,7 @@ from here.
 
 The shell only answers messages whose `event.source` is the page's own frame — an opaque origin
 reports its origin as the string `"null"`, so that string proves nothing. It checks the op
-against the scopes in `/api/dev/apps`.
+against the scopes in `/api/apps`.
 
 ### B5. What the core shows
 
@@ -327,6 +328,6 @@ drawn from what each entity offers). Still to do: 4, 5, 7. Until 7, a call can't
 | Topic | Where |
 |---|---|
 | What a flow is, how it runs, its traces | [flows.md](flows.md) |
-| Push instead of polling for pages | C17 |
+| Push instead of polling for pages | The shell pushes. A page hears `changed` (§B4) |
 | Signing, approving permissions at install | C26 |
 | Engines receiving bus events from protocols | later; [rules.md](rules.md) open question 3 |

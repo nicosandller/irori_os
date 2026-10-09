@@ -28,7 +28,7 @@ more than volume: one verified finding beats five guesses.
   The catalog carries `full_access` (`extensions/official.toml`, checked against the manifest by
   `the_catalog_says_full_access_exactly_when_the_manifest_does`). The Extensions card says
   "Full access to this machine" and Install asks first. Both install routes
-  (`POST /api/dev/extensions/{id}/install` and `POST /api/dev/extensions/install`) read the
+  (`POST /api/extensions/{id}/install` and `POST /api/extensions/install`) read the
   staged package's own manifest and refuse when it has full access unless the request sends
   `approve_full_access`. The official route also refuses a staged manifest whose id isn't the
   one that was requested. There are no accounts yet, so this acknowledgement is not an owner
@@ -98,9 +98,12 @@ more than volume: one verified finding beats five guesses.
   placeholder page that any `cargo build` can serve; `crates/irori/ui/` is the built Leptos app,
   which wins when it's there (`crates/irori/src/server.rs`). Don't propose merging them or
   failing the build when the UI hasn't been built.
-- **The UI polls `/api/dev/home` every 2 seconds.** `/api/dev/*` is a temporary, unauthenticated
-  API, and pushing changes waits for the WebSocket API in M1.5. Don't propose WebSockets, SSE,
-  ETags, or caching headers for it yet.
+- **One HTTP tree, and the websocket only pushes.** Everything is `/api/…`. There is no
+  `/api/dev` alias and no second command channel on `GET /api/ws`: the client sends nothing,
+  and commands stay HTTP. Tokens are scoped and cannot administer the home (no minting tokens,
+  no setup, no restart). An extension that dials in speaks the existing host messages
+  (`FromExt` / `ToExt`) on `GET /api/extension`. CORS stays closed on `/api`. Don't propose
+  OAuth refresh tokens, a command vocabulary on the socket, or opening CORS.
 - **Plaintext ESPHome devices are adopted without authentication, on purpose and knowingly.**
   ESPHome's native API has no device authentication of its own, so `irori-protocol-esphome` connects
   to whatever announces `_esphomelib._tcp`. This is decision **D29**: the alternatives (an

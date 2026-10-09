@@ -10,7 +10,7 @@
   <a href="dev/README.md"><b>Try it on a Mac</b></a>
 </p>
 
-> Status: the core's registry, live state, and extension host run; a Devices page shows everything and switches it (M0.8, M1.6 first slice); **ESPHome devices on your network are found and connected automatically**, sensors and all (D26); and a **Floorplan** page draws the home — walls, doors and windows — with the devices live on it. Automations are an extension you install: flows drawn on a canvas, with every run traced, near-misses kept, dry runs and a 24-hour backtest (`docs/specs/flows.md`). A first run asks who you are, with a password that locks the home to you, and what time zone it is in (`docs/specs/config.md` §3.10); `--tls` serves it over https. Tokens and the public API are still to come.
+> Status: the core's registry, live state, and extension host run; a Devices page shows everything and switches it (M0.8, M1.6 first slice); **ESPHome devices on your network are found and connected automatically**, sensors and all (D26); and a **Floorplan** page draws the home — walls, doors and windows — with the devices live on it. Automations are an extension you install: flows drawn on a canvas, with every run traced, near-misses kept, dry runs and a 24-hour backtest (`docs/specs/flows.md`). A first run asks who you are, with a password that locks the home to you, and what time zone it is in (`docs/specs/config.md` §3.10); `--tls` serves it over https. A program that isn't the page uses a scoped token, and the page hears changes over `/api/ws` (`docs/specs/api.md`).
 
 ## Install
 
@@ -105,11 +105,12 @@ cargo run -- run --log-level debug
 cargo run --no-default-features -- run          # barebones: no extensions, no UI
 ```
 
-The temporary API, for looking at the home without the page:
+The HTTP API, for looking at the home without the page. An unlocked home answers without a
+token. Once the home has a password, a program sends the token from Settings → Programs:
 
 ```sh
-curl -s http://127.0.0.1:8480/api/dev/home     # the whole home in one response
-                                               # (also /api/dev/{devices,entities,states,extensions})
+curl -s http://127.0.0.1:8480/api/home
+curl -s -H "Authorization: Bearer irori_…" http://127.0.0.1:8480/api/states
 ```
 
 The **web UI** is a separate wasm crate, so `cargo build` alone doesn't need a wasm toolchain and
@@ -117,7 +118,7 @@ serves a placeholder page at `/`. `cargo xtask install` above builds it; `cargo 
 it without installing. It has a folding sidebar whose IroriOS mark opens the assistant once a
 model is set, and the pages are Devices (devices grouped by extension, entities with their
 switches, and an **Add device** panel), Extensions, and Settings (the IroriOS wordmark and what
-the instance holds, then the instance, areas & floors, users, and the machine itself). `/` goes
+the instance holds, then the instance, areas & floors, users, programs, and the machine itself). `/` goes
 to Settings.
 
 See [crates/irori-ui/README.md](crates/irori-ui/README.md) for working on the UI itself (live

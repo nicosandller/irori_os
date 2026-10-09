@@ -8,8 +8,9 @@
 //! [`needs`], says what each address asks of them. One table rather than a check in each
 //! handler, so a route added later is closed until somebody decides otherwise.
 //!
-//! This is the sign-in for Irori's own page. Tokens for other programs, and scopes on them,
-//! are the public API's (ROADMAP C16).
+//! This is the sign-in for Irori's own page. Tokens for other programs are the public API's
+//! (`docs/specs/api.md`): a bearer token is checked here, beside the cookie, because both
+//! arrive on the same requests.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -22,7 +23,8 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
-use irori_types::{Name, Role, User, UserId};
+use irori_api::missing_scope;
+use irori_types::{ApiScope, ExtensionId, Name, Role, TokenId, User, UserId};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -66,8 +68,19 @@ pub struct Client(pub Option<std::net::IpAddr>);
 pub struct Actor {
     /// The person signed in. `None` while Irori is open and nobody has been set up.
     pub user: Option<User>,
-    /// Whether they may change how the home is set up.
+    /// Whether they may change how the home is set up. A token is never an owner: setup
+    /// stays on the page (`docs/specs/api.md` §2).
     pub owner: bool,
+    /// The access token this request presented, when it presented one.
+    pub token: Option<TokenGrant>,
+}
+
+/// An access token a request presented. The secret is not here; this is who it is.
+#[derive(Debug, Clone)]
+pub struct TokenGrant {
+    pub id: TokenId,
+    /// Set when the token exists only to connect this extension.
+    pub extension: Option<ExtensionId>,
 }
 
 impl Actor {
@@ -101,15 +114,25 @@ pub fn needs(method: &Method, path: &str) -> Needs {
     if matches!(path, "/api/health" | "/api/session" | "/api/setup") {
         return Needs::Nothing;
     }
-    let Some(rest) = path.strip_prefix("/api/dev/") else {
+    let Some(rest) = path.strip_prefix("/api/") else {
         return Needs::Run;
     };
+    // Tokens, and the socket an extension dials in on, are how the home is set up. A person
+    // who isn't an owner doesn't create either. The guard still refuses a token that tries
+    // to call them: a token is not an owner.
+    if rest == "tokens" || rest.starts_with("tokens/") || rest == "extension" {
+        return Needs::Run;
+    }
     if method == Method::GET {
         // An icon is an `<img>` on the sign-in page's own shell.
-        return if rest.ends_with("/icon.svg") {
-            Needs::Nothing
-        } else {
+        if rest.ends_with("/icon.svg") {
+            return Needs::Nothing;
+        }
+        // A path nobody has named is closed. A new read has to be added to `named_read`.
+        return if named_read(rest) {
             Needs::Use
+        } else {
+            Needs::Run
         };
     }
     let using = rest == "command"
@@ -119,6 +142,38 @@ pub fn needs(method: &Method, path: &str) -> Needs {
         // A person's own name and password; the handler refuses anybody else's.
         || (method == Method::PATCH && rest.starts_with("users/"));
     if using { Needs::Use } else { Needs::Run }
+}
+
+/// A GET that reads the home, as opposed to one that runs it.
+///
+/// The list is the routes the page already fetches. A path that isn't here is `Run` until
+/// somebody decides a signed-in person may read it.
+fn named_read(rest: &str) -> bool {
+    matches!(
+        rest,
+        "home"
+            | "users"
+            | "place"
+            | "ws"
+            | "devices"
+            | "entities"
+            | "states"
+            | "areas"
+            | "floors"
+            | "floorplan"
+            | "extensions"
+            | "catalog"
+            | "apps"
+            | "system"
+            | "system/usage"
+            | "system/log"
+            | "serial-ports"
+            | "assistant"
+            | "assistant/log"
+    ) || rest.starts_with("history/")
+        || (rest.starts_with("extensions/") && rest.ends_with("/log"))
+        || rest.starts_with("assistant/turns/")
+        || rest.starts_with("assistant/transcript/")
 }
 
 #[derive(Debug, Clone)]
@@ -143,8 +198,52 @@ struct Attempts {
 pub struct Auth {
     db: PathBuf,
     sessions: Mutex<HashMap<String, Session>>,
+    /// Access tokens, keyed by the SHA-256 of the secret. The secret itself is never here.
+    tokens: Mutex<HashMap<String, AccessToken>>,
     attempts: Mutex<HashMap<Trier, Attempts>>,
 }
+
+/// One access token, as it's kept (`docs/specs/api.md` §2). The secret is not one of these
+/// fields: only its hash is, and only as the map's key.
+#[derive(Debug, Clone)]
+pub struct AccessToken {
+    pub id: TokenId,
+    pub name: String,
+    pub user: UserId,
+    pub scopes: Vec<ApiScope>,
+    pub extension: Option<ExtensionId>,
+    /// Seconds since 1970.
+    pub created: u64,
+}
+
+/// A secret just created, with the token it belongs to. `Debug` leaves the secret out.
+pub struct Issued {
+    pub secret: String,
+    pub token: AccessToken,
+}
+
+impl std::fmt::Debug for Issued {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Issued")
+            .field("token", &self.token)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Why a token wasn't created.
+#[derive(Debug)]
+pub enum IssueError {
+    /// The home already holds [`MAX_TOKENS`].
+    Full,
+    /// Another token already has this id.
+    Taken,
+    /// The database didn't take it.
+    Store(String),
+}
+
+/// How many tokens one home holds. Plenty for the programs a home runs, and a bound so a
+/// bug that creates them in a loop can't fill the database.
+const MAX_TOKENS: usize = 32;
 
 fn now_seconds() -> u64 {
     SystemTime::now()
@@ -172,6 +271,7 @@ impl Auth {
         let auth = Self {
             db: db.path.clone(),
             sessions: Mutex::default(),
+            tokens: Mutex::default(),
             attempts: Mutex::default(),
         };
         match auth.load() {
@@ -179,6 +279,12 @@ impl Auth {
                 *auth.sessions.lock().unwrap_or_else(PoisonError::into_inner) = sessions;
             }
             Err(error) => tracing::warn!(%error, "couldn't read who was signed in"),
+        }
+        match auth.load_tokens() {
+            Ok(tokens) => {
+                *auth.tokens.lock().unwrap_or_else(PoisonError::into_inner) = tokens;
+            }
+            Err(error) => tracing::warn!(%error, "couldn't read access tokens"),
         }
         auth
     }
@@ -190,6 +296,15 @@ impl Auth {
                 token_hash TEXT PRIMARY KEY,
                 user TEXT NOT NULL,
                 expires INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS tokens (
+                token_hash TEXT PRIMARY KEY,
+                id TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                user TEXT NOT NULL,
+                scopes TEXT NOT NULL,
+                extension TEXT,
+                created INTEGER NOT NULL
             )",
         )?;
         Ok(conn)
@@ -352,6 +467,190 @@ impl Auth {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(who);
     }
+
+    fn load_tokens(&self) -> rusqlite::Result<HashMap<String, AccessToken>> {
+        let conn = self.conn()?;
+        let mut rows = conn
+            .prepare("SELECT token_hash, id, name, user, scopes, extension, created FROM tokens")?;
+        let tokens = rows
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })?
+            .filter_map(Result::ok)
+            .filter_map(|(hash, id, name, user, scopes, extension, created)| {
+                let scopes = serde_json::from_str::<Vec<ApiScope>>(&scopes).ok()?;
+                let extension = match extension {
+                    Some(id) => Some(ExtensionId::try_from(id).ok()?),
+                    None => None,
+                };
+                Some((
+                    hash,
+                    AccessToken {
+                        id: TokenId::try_from(id).ok()?,
+                        name,
+                        user: UserId::try_from(user).ok()?,
+                        scopes,
+                        extension,
+                        created: u64::try_from(created).ok()?,
+                    },
+                ))
+            })
+            .collect();
+        Ok(tokens)
+    }
+
+    /// Creates a token and returns its secret, once. The database is written before the
+    /// secret is remembered here, so a secret that couldn't be kept is never handed out.
+    pub fn issue(
+        &self,
+        id: TokenId,
+        name: String,
+        user: UserId,
+        scopes: Vec<ApiScope>,
+        extension: Option<ExtensionId>,
+    ) -> Result<Issued, IssueError> {
+        let mut tokens = self.tokens.lock().unwrap_or_else(PoisonError::into_inner);
+        if tokens.len() >= MAX_TOKENS {
+            return Err(IssueError::Full);
+        }
+        if tokens.values().any(|token| token.id == id) {
+            return Err(IssueError::Taken);
+        }
+        let mut bytes = [0u8; 32];
+        getrandom::fill(&mut bytes)
+            .expect("the OS must be able to hand over random bytes for an access token");
+        let secret = format!("irori_{}", hex(&bytes));
+        let hash = fingerprint(&secret);
+        let token = AccessToken {
+            id: id.clone(),
+            name,
+            user,
+            scopes,
+            extension,
+            created: now_seconds(),
+        };
+        let scopes_json = serde_json::to_string(&token.scopes)
+            .map_err(|error| IssueError::Store(error.to_string()))?;
+        let stored = self.conn().and_then(|conn| {
+            conn.execute(
+                "INSERT INTO tokens (token_hash, id, name, user, scopes, extension, created)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    hash,
+                    token.id.as_str(),
+                    token.name,
+                    token.user.as_str(),
+                    scopes_json,
+                    token.extension.as_ref().map(ExtensionId::as_str),
+                    i64::try_from(token.created).unwrap_or(i64::MAX),
+                ],
+            )
+        });
+        if let Err(error) = stored {
+            // A unique-id race against a row this process didn't load. Rare, and the same
+            // answer as one we already know about.
+            let message = error.to_string();
+            if message.contains("UNIQUE") {
+                return Err(IssueError::Taken);
+            }
+            return Err(IssueError::Store(message));
+        }
+        tokens.insert(hash, token.clone());
+        Ok(Issued { secret, token })
+    }
+
+    /// Every token, oldest first. No secrets.
+    pub fn list(&self) -> Vec<AccessToken> {
+        let mut tokens: Vec<_> = self
+            .tokens
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        tokens.sort_by(|a, b| {
+            a.created
+                .cmp(&b.created)
+                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+        });
+        tokens
+    }
+
+    /// The token `secret` is, if it is one we issued.
+    pub fn find(&self, secret: &str) -> Option<AccessToken> {
+        let hash = fingerprint(secret);
+        self.tokens
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&hash)
+            .cloned()
+    }
+
+    /// Revokes the token with this id. `false` when there wasn't one.
+    pub fn revoke(&self, id: &TokenId) -> bool {
+        let hash = {
+            let tokens = self.tokens.lock().unwrap_or_else(PoisonError::into_inner);
+            tokens
+                .iter()
+                .find(|(_, token)| &token.id == id)
+                .map(|(hash, _)| hash.clone())
+        };
+        let Some(hash) = hash else {
+            return false;
+        };
+        self.drop_tokens(|other, _| other != hash);
+        // Dropped from memory only when the database forgot it too. If that failed, the
+        // token is still here, so this still reports that it wasn't revoked.
+        !self
+            .tokens
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(&hash)
+    }
+
+    /// Revokes every token that belongs to `user`.
+    pub fn revoke_user(&self, user: &UserId) {
+        self.drop_tokens(|_, token| &token.user != user);
+    }
+
+    /// Revokes every token. Setting the home up again does this: the welcome is also how a
+    /// forgotten password is replaced, and tokens from before that must not keep working.
+    pub fn revoke_all(&self) {
+        self.drop_tokens(|_, _| false);
+    }
+
+    fn drop_tokens(&self, keep: impl Fn(&str, &AccessToken) -> bool) {
+        let mut tokens = self.tokens.lock().unwrap_or_else(PoisonError::into_inner);
+        let gone: Vec<String> = tokens
+            .iter()
+            .filter(|(hash, token)| !keep(hash, token))
+            .map(|(hash, _)| hash.clone())
+            .collect();
+        if gone.is_empty() {
+            return;
+        }
+        let dropped = self.conn().and_then(|conn| {
+            for hash in &gone {
+                conn.execute("DELETE FROM tokens WHERE token_hash = ?1", [hash])?;
+            }
+            Ok(())
+        });
+        if let Err(error) = dropped {
+            tracing::warn!(%error, "couldn't revoke an access token");
+            return;
+        }
+        for hash in &gone {
+            tokens.remove(hash);
+        }
+    }
 }
 
 /// A password's hash, as it's kept: argon2id with a salt of its own, in the PHC string form.
@@ -426,6 +725,7 @@ fn actor(auth: &Auth, people: &People, headers: &HeaderMap) -> Option<Actor> {
                 .find(|user| user.role.runs_the_home())
                 .cloned(),
             owner: true,
+            token: None,
         });
     }
     // Somebody whose password has since been taken out of the files is nobody: a session is
@@ -437,43 +737,176 @@ fn actor(auth: &Auth, people: &People, headers: &HeaderMap) -> Option<Actor> {
     Some(Actor {
         owner: user.role.runs_the_home(),
         user: Some(user),
+        token: None,
     })
 }
 
-/// Lets a request through, or says why not. Over every route.
-pub async fn guard(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
-    let people = state.0.config.people().await;
-    let who = actor(&state.0.auth, &people, request.headers());
-    let needed = needs(request.method(), request.uri().path());
-    if needed != Needs::Nothing {
-        let Some(who) = &who else {
-            return refused(
-                StatusCode::UNAUTHORIZED,
-                "sign in first: this home asks who is there".to_owned(),
-            );
-        };
-        if needed == Needs::Run && !who.owner {
-            return refused(
-                StatusCode::FORBIDDEN,
-                "only an owner can change how the home is set up".to_owned(),
-            );
-        }
-        // A cookie is sent by the browser whoever wrote the page, so a change also has to
-        // carry the header only Irori's own page sends (see `UI_HEADER`).
-        let changes = !matches!(*request.method(), Method::GET | Method::HEAD);
-        if people.locked()
-            && changes
-            && !request
-                .headers()
-                .get(UI_HEADER)
-                .is_some_and(|value| value == "1")
-        {
-            return refused(
-                StatusCode::FORBIDDEN,
-                format!("a change needs the `{UI_HEADER}: 1` header, which only the page sends"),
-            );
-        }
+/// The bearer secret a request presents, or why the header isn't one.
+fn presented(headers: &HeaderMap) -> Result<&str, ()> {
+    let value = headers.get(header::AUTHORIZATION).ok_or(())?;
+    let text = value.to_str().map_err(|_| ())?;
+    let Some((scheme, secret)) = text.split_once(' ') else {
+        return Err(());
+    };
+    if !scheme.eq_ignore_ascii_case("bearer")
+        || secret.is_empty()
+        || secret.chars().any(char::is_whitespace)
+    {
+        return Err(());
     }
+    Ok(secret)
+}
+
+/// Whether this token still stands for someone. A locked home only honours a token whose
+/// person still has a password. An open home honours it either way (`docs/specs/api.md` §2).
+fn token_actor(people: &People, token: &AccessToken) -> Option<Actor> {
+    let user = people.user(&token.user).cloned();
+    if people.locked() && (user.is_none() || !people.hashes.contains_key(&token.user)) {
+        return None;
+    }
+    Some(Actor {
+        user,
+        owner: false,
+        token: Some(TokenGrant {
+            id: token.id.clone(),
+            extension: token.extension.clone(),
+        }),
+    })
+}
+
+fn extension_actor(
+    auth: &Auth,
+    people: &People,
+    headers: &HeaderMap,
+) -> Result<Actor, Box<Response>> {
+    let denied = || {
+        Box::new(refused(
+            StatusCode::UNAUTHORIZED,
+            "an extension connects with the token made for it".to_owned(),
+        ))
+    };
+    let secret = presented(headers).map_err(|()| denied())?;
+    let Some(token) = auth.find(secret) else {
+        return Err(denied());
+    };
+    let Some(who) = token_actor(people, &token) else {
+        return Err(denied());
+    };
+    if token.extension.is_none() {
+        return Err(Box::new(refused(
+            StatusCode::FORBIDDEN,
+            "this token isn't for connecting an extension".to_owned(),
+        )));
+    }
+    Ok(who)
+}
+
+fn bearer_actor(
+    auth: &Auth,
+    people: &People,
+    headers: &HeaderMap,
+    method: &Method,
+    path: &str,
+) -> Result<Actor, Box<Response>> {
+    let denied = || {
+        Box::new(refused(
+            StatusCode::UNAUTHORIZED,
+            "that access token isn't one Irori issued".to_owned(),
+        ))
+    };
+    let secret = presented(headers).map_err(|()| denied())?;
+    let Some(token) = auth.find(secret) else {
+        return Err(denied());
+    };
+    let Some(who) = token_actor(people, &token) else {
+        return Err(denied());
+    };
+    if token.extension.is_some() {
+        return Err(Box::new(refused(
+            StatusCode::FORBIDDEN,
+            "this token is only for connecting its extension".to_owned(),
+        )));
+    }
+    match irori_api::scopes_for(method.as_str(), path) {
+        Some(need) => {
+            if let Some(missing) = missing_scope(need, &token.scopes) {
+                return Err(Box::new(refused(
+                    StatusCode::FORBIDDEN,
+                    format!("this token doesn't include {missing}"),
+                )));
+            }
+        }
+        None if needs(method, path) != Needs::Nothing => {
+            return Err(Box::new(refused(
+                StatusCode::FORBIDDEN,
+                "a token can't change how the home is set up".to_owned(),
+            )));
+        }
+        None => {}
+    }
+    Ok(who)
+}
+
+/// Lets a request through, or says why not. Over every route.
+///
+/// A bearer token is that token, even when a cookie came along too. An extension's socket
+/// takes only the token made for that extension. Anything else is the page's cookie.
+pub async fn guard(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
+    let path = request.uri().path().to_owned();
+    let people = state.0.config.people().await;
+    let who = if path == "/api/extension" {
+        match extension_actor(&state.0.auth, &people, request.headers()) {
+            Ok(who) => Some(who),
+            Err(response) => return *response,
+        }
+    } else if request.headers().contains_key(header::AUTHORIZATION) {
+        match bearer_actor(
+            &state.0.auth,
+            &people,
+            request.headers(),
+            request.method(),
+            &path,
+        ) {
+            Ok(who) => Some(who),
+            Err(response) => return *response,
+        }
+    } else {
+        let who = actor(&state.0.auth, &people, request.headers());
+        let needed = needs(request.method(), &path);
+        if needed != Needs::Nothing {
+            let Some(who) = &who else {
+                return refused(
+                    StatusCode::UNAUTHORIZED,
+                    "sign in first: this home asks who is there".to_owned(),
+                );
+            };
+            if needed == Needs::Run && !who.owner {
+                return refused(
+                    StatusCode::FORBIDDEN,
+                    "only an owner can change how the home is set up".to_owned(),
+                );
+            }
+            // A cookie is sent by the browser whoever wrote the page, so a change also has to
+            // carry the header only Irori's own page sends (see `UI_HEADER`). A bearer token
+            // is a secret the program was given, so it doesn't.
+            let changes = !matches!(*request.method(), Method::GET | Method::HEAD);
+            if people.locked()
+                && changes
+                && !request
+                    .headers()
+                    .get(UI_HEADER)
+                    .is_some_and(|value| value == "1")
+            {
+                return refused(
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "a change needs the `{UI_HEADER}: 1` header, which only the page sends"
+                    ),
+                );
+            }
+        }
+        who
+    };
     let from = request
         .extensions()
         .get::<axum::extract::ConnectInfo<crate::tls::ClientAddr>>()
@@ -483,6 +916,7 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
     request.extensions_mut().insert(who.unwrap_or(Actor {
         user: None,
         owner: false,
+        token: None,
     }));
     next.run(request).await
 }
@@ -633,6 +1067,7 @@ pub async fn sign_in(
     let who = Actor {
         owner: user.role.runs_the_home(),
         user: Some(user),
+        token: None,
     };
     let mut response = Json(view(&state, &who).await).into_response();
     response
@@ -735,12 +1170,14 @@ pub async fn set_up(State(state): State<AppState>, Json(ask): Json<FirstOwner>) 
     // password is put right (its line taken out of the files, then this), and a browser that
     // was signed in under the old one, a lost phone say, must not still be.
     state.0.auth.forget(|_, _| false);
+    state.0.auth.revoke_all();
     // The home is locked from here on, so the person who just set it up is signed in rather
     // than shown the door.
     let token = state.0.auth.begin(&user.id);
     let who = Actor {
         user: Some(user),
         owner: true,
+        token: None,
     };
     let mut response = (StatusCode::CREATED, Json(view(&state, &who).await)).into_response();
     response
@@ -789,20 +1226,28 @@ mod tests {
             (Method::GET, "/api/health", Nothing),
             (Method::POST, "/api/session", Nothing),
             (Method::POST, "/api/setup", Nothing),
-            (Method::GET, "/api/dev/extensions/demo/icon.svg", Nothing),
-            (Method::GET, "/api/dev/home", Use),
-            (Method::GET, "/api/dev/users", Use),
-            (Method::POST, "/api/dev/command", Use),
-            (Method::POST, "/api/dev/assistant/turns", Use),
-            (Method::POST, "/api/dev/assistant/turns/general/stop", Use),
-            (Method::PATCH, "/api/dev/users/nico", Use),
-            (Method::POST, "/api/dev/users", Run),
-            (Method::DELETE, "/api/dev/users/nico", Run),
-            (Method::PUT, "/api/dev/place", Run),
-            (Method::POST, "/api/dev/restart", Run),
-            (Method::PUT, "/api/dev/assistant", Run),
-            (Method::POST, "/api/dev/apps/automations/rpc", Run),
-            (Method::PUT, "/api/dev/extensions/mqtt/secrets", Run),
+            (Method::GET, "/api/extensions/demo/icon.svg", Nothing),
+            (Method::GET, "/api/home", Use),
+            (Method::GET, "/api/users", Use),
+            (Method::GET, "/api/system", Use),
+            (Method::GET, "/api/history/light.hall", Use),
+            (Method::GET, "/api/extensions/demo/log", Use),
+            (Method::POST, "/api/command", Use),
+            (Method::POST, "/api/assistant/turns", Use),
+            (Method::POST, "/api/assistant/turns/general/stop", Use),
+            (Method::PATCH, "/api/users/nico", Use),
+            (Method::POST, "/api/users", Run),
+            (Method::DELETE, "/api/users/nico", Run),
+            (Method::PUT, "/api/place", Run),
+            (Method::POST, "/api/restart", Run),
+            (Method::PUT, "/api/assistant", Run),
+            (Method::POST, "/api/apps/automations/rpc", Run),
+            (Method::PUT, "/api/extensions/mqtt/secrets", Run),
+            (Method::GET, "/api/ws", Use),
+            (Method::GET, "/api/tokens", Run),
+            (Method::POST, "/api/tokens", Run),
+            (Method::DELETE, "/api/tokens/tablet", Run),
+            (Method::GET, "/api/extension", Run),
             // Nobody has named it, so it's closed.
             (Method::POST, "/api/something/new", Run),
             (Method::GET, "/api/something/new", Run),

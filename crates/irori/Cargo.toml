@@ -18,17 +18,19 @@ assist = [
     "dep:irori-assist",
     "dep:reqwest",
     "dep:tokio-stream",
-    "dep:futures-util",
 ]
 
 [dependencies]
+irori-api.workspace = true
 irori-config.workspace = true
 irori-core.workspace = true
 irori-helpers.workspace = true
 irori-protocol.workspace = true
 irori-types.workspace = true
 irori-assist = { workspace = true, optional = true }
-futures-util = { version = "0.3.32", default-features = false, features = ["std"], optional = true }
+# The live socket and the assistant's streams. Required, not behind `assist`, so a
+# barebones build still pushes home changes (`docs/specs/api.md` §4).
+futures-util = { version = "0.3.32", default-features = false, features = ["std", "sink"] }
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "stream", "rustls-tls"], optional = true }
 tokio-stream = { version = "0.1.17", features = ["sync"], optional = true }
 # The checksum of the Ollama release Irori downloads on request (ollama.rs).
@@ -68,6 +70,8 @@ http-body-util.workspace = true
 irori-protocol-demo.workspace = true
 schemars.workspace = true
 tempfile.workspace = true
+# The same websocket crate axum's `ws` feature uses, so a test can open `/api/ws`.
+tokio-tungstenite = "0.26"
 tower.workspace = true
 
 [lints]

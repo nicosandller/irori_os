@@ -1684,6 +1684,7 @@ async fn settings_picture(env: &Env<'_>, status: &Status) -> SettingsPicture {
                 irori_core::ExtensionStatus::NeedsSetup { missing } => {
                     format!("needs setting up; missing {}", missing.join(", "))
                 }
+                irori_core::ExtensionStatus::Waiting { reason } => reason.clone(),
             },
             settings,
         });
