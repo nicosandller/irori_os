@@ -222,12 +222,19 @@ data = "/var/lib/irori"       # relative paths are relative to this directory
 [extensions]
 disabled = ["demo"]
 
+[recorder]
+retain_days = 7           # how long entity history is kept; at least 1
+
 ```
 
 A command-line flag, or its environment variable, wins over the file, and the file wins over the
 default. `[server]` is read at startup; changing it while Irori runs logs that a restart is
 needed. `[extensions] disabled` applies while Irori runs: naming an extension stops it, removing
 it starts it again.
+
+`[recorder] retain_days` is how many days of entity history are kept in the database. A day
+is 24 hours. Left out, it is 7, and `0` is refused. It is read at startup, like `[server]`:
+changing it needs a restart. The Devices page still shows only the last day of what was kept.
 
 If `bind` is already in use when Irori starts, it listens on `bind_fallback` instead (or, if none
 is set, on the first free port just above `bind`, up to nine ports higher) and logs a warning with
@@ -638,7 +645,6 @@ flat and boring.
 
 Named here so the layout has room for them, specified when they are built:
 
-- **More of `irori.toml`** — recorder retention.
 - **More about people** — per-area permissions and an audit log (ROADMAP C28). Tokens for
   programs that aren't the page are `docs/specs/api.md`.
 - **Approved permissions** in `extensions/<id>.toml`, and validating it against the extension's

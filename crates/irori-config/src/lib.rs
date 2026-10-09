@@ -24,7 +24,10 @@ use irori_types::{
     FloorId, Floorplan, HomeSettings, Settings, SettingsKey, User,
 };
 
-pub use files::{DevicesSection, ExtensionsSection, File, IroriSettings, LogLevel, ServerSettings};
+pub use files::{
+    DevicesSection, ExtensionsSection, File, IroriSettings, LogLevel, RecorderSection,
+    ServerSettings,
+};
 
 /// Something wrong with one file, to be logged and shown. Never fatal: the file keeps whatever it
 /// last held.

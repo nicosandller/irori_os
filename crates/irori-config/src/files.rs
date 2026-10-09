@@ -322,6 +322,8 @@ pub struct IroriSettings {
     pub extensions: ExtensionsSection,
     #[serde(default)]
     pub devices: DevicesSection,
+    #[serde(default)]
+    pub recorder: RecorderSection,
 }
 
 /// `[devices]`. Nothing in it is used any more: a device joins the home only when a person adds
@@ -363,6 +365,27 @@ pub enum LogLevel {
     Trace,
 }
 
+/// `[recorder]`. How long entity history is kept. Read at startup, like `[server]`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecorderSection {
+    /// Days of history to keep. A day is 24 hours. At least 1; a missing value is 7.
+    #[serde(default = "default_retain_days")]
+    pub retain_days: u32,
+}
+
+fn default_retain_days() -> u32 {
+    7
+}
+
+impl Default for RecorderSection {
+    fn default() -> Self {
+        Self {
+            retain_days: default_retain_days(),
+        }
+    }
+}
+
 /// `[extensions]`. Applied while Irori runs: disabling one stops it, enabling it starts it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -373,7 +396,11 @@ pub struct ExtensionsSection {
 }
 
 pub fn read_irori(text: &str) -> Result<IroriSettings, String> {
-    toml::from_str(text).map_err(|e| e.to_string())
+    let settings: IroriSettings = toml::from_str(text).map_err(|e| e.to_string())?;
+    if settings.recorder.retain_days == 0 {
+        return Err("recorder.retain_days must be at least 1".to_owned());
+    }
+    Ok(settings)
 }
 
 /// Each extension's table in `secrets.toml`.
@@ -612,6 +639,21 @@ mod tests {
         let adding = read_irori("[devices]\nnew = \"add\"\n").expect("still valid");
         assert_eq!(adding.devices.new.as_deref(), Some("add"));
         assert_eq!(IroriSettings::default().devices.new, None);
+        assert_eq!(settings.recorder.retain_days, 7);
+    }
+
+    #[test]
+    fn recorder_retention_defaults_to_a_week_and_refuses_zero() {
+        assert_eq!(read_irori("").expect("empty").recorder.retain_days, 7);
+        assert_eq!(
+            read_irori("[recorder]\nretain_days = 30\n")
+                .expect("valid")
+                .recorder
+                .retain_days,
+            30
+        );
+        assert!(read_irori("[recorder]\nretain_days = 0\n").is_err());
+        assert!(read_irori("[recorder]\nretain_days = \"week\"\n").is_err());
     }
 
     #[test]
