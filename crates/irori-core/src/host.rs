@@ -3,7 +3,7 @@
 //! Its program dials in, and the same messages cross that socket (`docs/specs/api.md`).
 
 use std::any::Any;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,6 +19,8 @@ use std::collections::BTreeSet;
 use irori_types::{
     EntityKind, ExtensionId, ExtensionManifest, ExtensionSettings, PackagePath, ProtocolId,
 };
+use tokio::io::BufReader;
+use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
@@ -1080,10 +1082,7 @@ async fn supervise_package(
     manifest: ExtensionManifest,
     mut stop: watch::Receiver<bool>,
 ) {
-    if manifest.extension.inbound {
-        supervise_inbound(host, dir, manifest, stop).await;
-        return;
-    }
+    let inbound = manifest.extension.inbound;
     let core = host.core.clone();
     let timing = host.timing;
     let extension = manifest.extension.id.clone();
@@ -1125,17 +1124,23 @@ async fn supervise_package(
         core.set_status(&extension, crate::ExtensionStatus::Disabled);
         return;
     }
-    let Some(run) = manifest.run_command().cloned() else {
-        let reason = "external packages need `run.command` in the manifest".to_owned();
-        tracing::error!(%extension, "{reason}");
-        core.set_status(
-            &extension,
-            crate::ExtensionStatus::Failed {
-                reason,
-                retry_at: None,
-            },
-        );
-        return;
+    // A program that dials in has no command. One Irori starts must name one.
+    let run = if inbound {
+        None
+    } else {
+        let Some(run) = manifest.run_command().cloned() else {
+            let reason = "external packages need `run.command` in the manifest".to_owned();
+            tracing::error!(%extension, "{reason}");
+            core.set_status(
+                &extension,
+                crate::ExtensionStatus::Failed {
+                    reason,
+                    retry_at: None,
+                },
+            );
+            return;
+        };
+        Some(run)
     };
     let kinds = contribution
         .map(|contribution| contribution.entity_kinds.clone())
@@ -1244,58 +1249,117 @@ async fn supervise_package(
                 Ok(_) = disabled.wait_for(|disabled| disabled.contains(&extension)) => continue,
             }
         }
-        core.set_status(&extension, crate::ExtensionStatus::Starting);
-        let env = crate::engine::process_env(&core, &manifest);
-        let (mut child, stderr) = match spawn(&dir, &state_dir(&dir), &run, &env) {
-            Ok(started) => started,
-            Err(reason) => {
-                tracing::error!(%extension, %reason, "can't start extension");
+        let (mut link, baseline) = if inbound {
+            let ready = match wait_for_program(
+                &host,
+                &core,
+                &extension,
+                &mut stop,
+                &mut settings,
+                &mut disabled,
+            )
+            .await
+            {
+                Arrival::Stop => return,
+                Arrival::Again => continue,
+                Arrival::Ready(ready) => ready,
+            };
+            if ready
+                .outgoing
+                .send(ToExt::Hello {
+                    settings: ready.started_with.clone(),
+                })
+                .await
+                .is_err()
+            {
+                tracing::info!(%extension, "the program hung up before hello");
+                host.note_disconnected(&extension);
+                continue;
+            }
+            (
+                Link {
+                    outgoing: Outgoing::Inbound(ready.outgoing),
+                    incoming: Incoming::Inbound(ready.incoming),
+                    child: None,
+                    reading: None,
+                },
+                ready.started_with,
+            )
+        } else {
+            core.set_status(&extension, crate::ExtensionStatus::Starting);
+            let env = crate::engine::process_env(&core, &manifest);
+            let run = run
+                .as_ref()
+                .expect("a package Irori starts has a run command");
+            let (proc, stderr) = match spawn(&dir, &state_dir(&dir), run, &env) {
+                Ok(started) => started,
+                Err(reason) => {
+                    tracing::error!(%extension, %reason, "can't start extension");
+                    core.set_status(
+                        &extension,
+                        crate::ExtensionStatus::Failed {
+                            reason,
+                            retry_at: None,
+                        },
+                    );
+                    tokio::select! {
+                        biased;
+                        _ = stop.wait_for(|stop| *stop) => return,
+                        () = settings_changed(&mut settings, &extension, &started_with) => continue,
+                        Ok(_) = disabled.wait_for(|disabled| disabled.contains(&extension)) => {
+                            continue;
+                        }
+                    }
+                }
+            };
+            // Started before the first word is sent, and kept for exactly as long as this child
+            // lives: the pipe has to be read continuously or it fills and the extension blocks on
+            // its own next line of output.
+            let reading = tokio::spawn(keep_what_it_says(core.clone(), extension.clone(), stderr));
+            let ExtProcess {
+                mut child,
+                stdin,
+                stdout,
+            } = proc;
+            let mut outgoing = Outgoing::Process(stdin);
+            let incoming = Incoming::Process(stdout);
+            if let Err(reason) = outgoing
+                .deliver(ToExt::Hello {
+                    settings: started_with.clone(),
+                })
+                .await
+            {
+                tracing::error!(%extension, %reason, "can't talk to extension");
+                let _ = child.start_kill();
+                finish_reading(reading).await;
                 core.set_status(
                     &extension,
                     crate::ExtensionStatus::Failed {
-                        reason,
+                        reason: with_last_words(&core, &extension, reason),
                         retry_at: None,
                     },
                 );
                 tokio::select! {
                     biased;
                     _ = stop.wait_for(|stop| *stop) => return,
-                    () = settings_changed(&mut settings, &extension, &started_with) => continue,
-                    Ok(_) = disabled.wait_for(|disabled| disabled.contains(&extension)) => continue,
+                    () = tokio::time::sleep(delay) => {}
                 }
+                delay = delay.saturating_mul(2).min(timing.max_retry);
+                continue;
             }
-        };
-        // Started before the first word is sent, and kept for exactly as long as this child
-        // lives: the pipe has to be read continuously or it fills and the extension blocks on
-        // its own next line of output.
-        let reading = tokio::spawn(keep_what_it_says(core.clone(), extension.clone(), stderr));
-        if let Err(reason) = child
-            .send(&ToExt::Hello {
-                settings: started_with.clone(),
-            })
-            .await
-        {
-            tracing::error!(%extension, %reason, "can't talk to extension");
-            let _ = child.child.start_kill();
-            finish_reading(reading).await;
-            core.set_status(
-                &extension,
-                crate::ExtensionStatus::Failed {
-                    reason: with_last_words(&core, &extension, reason),
-                    retry_at: None,
+            (
+                Link {
+                    outgoing,
+                    incoming,
+                    child: Some(child),
+                    reading: Some(reading),
                 },
-            );
-            tokio::select! {
-                biased;
-                _ = stop.wait_for(|stop| *stop) => return,
-                () = tokio::time::sleep(delay) => {}
-            }
-            delay = delay.saturating_mul(2).min(timing.max_retry);
-            continue;
-        }
+                started_with.clone(),
+            )
+        };
 
-        let (calls_tx, calls_rx) = mpsc::channel(64);
-        let (actions_tx, actions_rx) = mpsc::channel(64);
+        let (calls_tx, mut calls_rx) = mpsc::channel(64);
+        let (actions_tx, mut actions_rx) = mpsc::channel(64);
         if is_protocol {
             core.link(&protocol, calls_tx);
             core.link_action(&extension, actions_tx);
@@ -1305,25 +1369,49 @@ async fn supervise_package(
             core.link_app(&extension, engine.app_sender());
         }
         core.set_status(&extension, crate::ExtensionStatus::Running);
-        tracing::info!(%extension, "extension started");
-        let outcome = pump_process(
-            &core,
-            &extension,
-            &protocol,
-            &kinds,
-            &mut child,
-            calls_rx,
-            actions_rx,
-            &mut engine,
-            Watching {
-                stop: &mut stop,
-                settings: &mut settings,
-                disabled: &mut disabled,
-                started_with: &started_with,
-            },
-            timing,
-        )
-        .await;
+        if inbound {
+            tracing::info!(%extension, "extension connected");
+        } else {
+            tracing::info!(%extension, "extension started");
+        }
+        let mut live = Live {
+            core: &core,
+            extension: &extension,
+            protocol: &protocol,
+            kinds: &kinds,
+            engine: &mut engine,
+            calls: &mut calls_rx,
+            actions: &mut actions_rx,
+        };
+        let outcome = if inbound {
+            // Dropping this when the pump ends, including if the task is cancelled, clears a
+            // door left Connected. A process has no door, so it doesn't need one.
+            let _end = EndConnection {
+                inner: host.as_ref(),
+                id: &extension,
+            };
+            drive(
+                &mut live,
+                &mut stop,
+                &mut settings,
+                &mut disabled,
+                &baseline,
+                &mut link,
+                None,
+            )
+            .await
+        } else {
+            drive(
+                &mut live,
+                &mut stop,
+                &mut settings,
+                &mut disabled,
+                &baseline,
+                &mut link,
+                Some(timing),
+            )
+            .await
+        };
         core.unlink_app(&extension);
         if is_protocol {
             core.unlink(&protocol);
@@ -1333,25 +1421,43 @@ async fn supervise_package(
         core.set_waiting(&extension, Vec::new());
         core.set_unmodeled(&extension, Vec::new());
         core.set_available_actions(&extension, Vec::new());
-        let _ = child.send(&ToExt::Stop).await;
-        let _ = child.child.start_kill();
-        // Until the pipe closes, not merely until we asked the process to die: the last lines
-        // are often still in the pipe, and aborting the reader here would discard them and
-        // stop the drain while the child can still be writing.
-        finish_reading(reading).await;
+        // The pump already asked a process to stop, and may have killed it. Say it once more
+        // on the way out. A program that dialed in only hears it here: there is nothing to kill.
+        let _ = link.outgoing.deliver(ToExt::Stop).await;
+        if let Some(child) = link.child.as_mut() {
+            let _ = child.start_kill();
+        }
+        if let Some(reading) = link.reading {
+            // Until the pipe closes, not merely until we asked the process to die: the last lines
+            // are often still in the pipe, and aborting the reader here would discard them and
+            // stop the drain while the child can still be writing.
+            finish_reading(reading).await;
+        }
         match outcome {
             Outcome::Stopped => {
                 tracing::info!(%extension, "extension stopped");
                 core.set_status(&extension, crate::ExtensionStatus::Disabled);
                 return;
             }
+            Outcome::Disabled if inbound => {
+                tracing::info!(%extension, "turned off; extension disconnected");
+                continue;
+            }
             Outcome::Disabled => {
                 tracing::info!(%extension, "turned off; extension stopped");
+                continue;
+            }
+            Outcome::Reconfigured if inbound => {
+                tracing::info!(%extension, "settings changed; waiting for the program again");
                 continue;
             }
             Outcome::Reconfigured => {
                 tracing::info!(%extension, "settings changed; restarting extension");
                 delay = timing.first_retry;
+                continue;
+            }
+            Outcome::Ended(reason) if inbound => {
+                tracing::info!(%extension, %reason, "extension disconnected; waiting for it again");
                 continue;
             }
             Outcome::Ended(reason) => {
@@ -1388,50 +1494,184 @@ async fn supervise_package(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn pump_process(
+/// Words the host sends, whether they go down a process's stdin or out to a program that dialed in.
+enum Outgoing {
+    Process(ChildStdin),
+    Inbound(mpsc::Sender<ToExt>),
+}
+
+/// Words the extension sends back.
+enum Incoming {
+    Process(BufReader<ChildStdout>),
+    Inbound(mpsc::Receiver<FromExt>),
+}
+
+/// One running extension: the pipes it speaks on, and, for a process, the child and its stderr.
+struct Link {
+    outgoing: Outgoing,
+    incoming: Incoming,
+    child: Option<Child>,
+    reading: Option<JoinHandle<()>>,
+}
+
+impl Outgoing {
+    async fn deliver(&mut self, message: ToExt) -> Result<(), String> {
+        match self {
+            Self::Process(stdin) => ExtProcess::send_on(stdin, &message).await,
+            Self::Inbound(outgoing) => outgoing
+                .send(message)
+                .await
+                .map_err(|_| "the program hung up".to_owned()),
+        }
+    }
+}
+
+impl Incoming {
+    async fn take(&mut self) -> Result<FromExt, String> {
+        match self {
+            Self::Process(stdout) => ExtProcess::recv_on(stdout).await,
+            Self::Inbound(incoming) => incoming
+                .recv()
+                .await
+                .ok_or_else(|| "the program hung up".to_owned()),
+        }
+    }
+}
+
+/// A program that dialed in, and the settings it was greeted with.
+struct DialedIn {
+    incoming: mpsc::Receiver<FromExt>,
+    outgoing: mpsc::Sender<ToExt>,
+    started_with: serde_json::Value,
+}
+
+enum Arrival {
+    Stop,
+    Again,
+    Ready(DialedIn),
+}
+
+/// Arms the door and waits. A hangup here is not a failure: the program may dial in again.
+async fn wait_for_program(
+    host: &HostInner,
     core: &Core,
     extension: &ExtensionId,
-    protocol: &ProtocolId,
-    kinds: &[EntityKind],
-    proc: &mut ExtProcess,
-    mut calls: mpsc::Receiver<IncomingCall>,
-    mut actions: mpsc::Receiver<IncomingAction>,
-    engine: &mut EngineLink,
-    watching: Watching<'_>,
-    timing: Timing,
-) -> Outcome {
-    use std::collections::HashMap;
+    stop: &mut watch::Receiver<bool>,
+    settings: &mut watch::Receiver<ExtensionSettings>,
+    disabled: &mut watch::Receiver<BTreeSet<ExtensionId>>,
+) -> Arrival {
+    let (door_tx, door_rx) = oneshot::channel();
+    host.abandon(extension);
+    host.arm(extension, door_tx);
+    core.set_status(
+        extension,
+        crate::ExtensionStatus::Waiting {
+            reason: "waiting for its program to connect".to_owned(),
+        },
+    );
+    let started_with = settings.borrow().of(extension);
+    let linked = tokio::select! {
+        biased;
+        _ = stop.wait_for(|stop| *stop) => {
+            host.abandon(extension);
+            core.set_status(extension, crate::ExtensionStatus::Disabled);
+            return Arrival::Stop;
+        }
+        Ok(_) = disabled.wait_for(|disabled| disabled.contains(extension)) => {
+            host.abandon(extension);
+            return Arrival::Again;
+        }
+        () = settings_changed(settings, extension, &started_with) => {
+            host.abandon(extension);
+            return Arrival::Again;
+        }
+        link = door_rx => link,
+    };
+    match linked {
+        Ok(InboundLink { incoming, outgoing }) => Arrival::Ready(DialedIn {
+            incoming,
+            outgoing,
+            started_with,
+        }),
+        Err(_) => {
+            host.abandon(extension);
+            Arrival::Again
+        }
+    }
+}
 
-    let Watching {
-        stop,
-        settings,
-        disabled,
-        started_with,
-    } = watching;
+/// What the pump needs from the core, apart from the pipes.
+struct Live<'a> {
+    core: &'a Core,
+    extension: &'a ExtensionId,
+    protocol: &'a ProtocolId,
+    kinds: &'a [EntityKind],
+    engine: &'a mut EngineLink,
+    calls: &'a mut mpsc::Receiver<IncomingCall>,
+    actions: &'a mut mpsc::Receiver<IncomingAction>,
+}
+
+fn exit_reason(status: std::io::Result<std::process::ExitStatus>) -> String {
+    match status {
+        Ok(status) if status.success() => "stopped on its own without being asked to".into(),
+        Ok(status) => format!("exited {status}"),
+        Err(error) => error.to_string(),
+    }
+}
+
+fn action_message(id: u64, incoming: &IncomingAction) -> ToExt {
+    match incoming.unpairing() {
+        Some((unique_id, force)) => ToExt::UnpairDevice {
+            id,
+            unique_id: unique_id.clone(),
+            force,
+        },
+        None => ToExt::ActionCall {
+            id,
+            action_id: incoming.action_id.clone(),
+            stop: incoming.stop,
+        },
+    }
+}
+
+/// Feeds one extension until it ends or Irori stops it.
+///
+/// `timing` is set for a process, which gets a grace period after being asked to stop and is
+/// killed if it is still there. A program that dialed in has neither: the socket closing is the end.
+async fn drive(
+    live: &mut Live<'_>,
+    stop: &mut watch::Receiver<bool>,
+    settings: &mut watch::Receiver<ExtensionSettings>,
+    disabled: &mut watch::Receiver<BTreeSet<ExtensionId>>,
+    started_with: &serde_json::Value,
+    link: &mut Link,
+    timing: Option<Timing>,
+) -> Outcome {
+    let Live {
+        core,
+        extension,
+        protocol,
+        kinds,
+        engine,
+        calls,
+        actions,
+    } = live;
     let mut pending_calls: HashMap<u64, IncomingCall> = HashMap::new();
     let mut pending_actions: HashMap<u64, IncomingAction> = HashMap::new();
     let mut next_call: u64 = 0;
     let mut next_action: u64 = 0;
-    let ExtProcess {
-        child,
-        stdin,
-        stdout,
-    } = proc;
+    let child = &mut link.child;
 
     let why = loop {
         tokio::select! {
             biased;
             () = async { let _ = stop.wait_for(|stop| *stop).await; } => break Outcome::Stopped,
-            status = child.wait() => {
-                return Outcome::Ended(match status {
-                    Ok(status) if status.success() => {
-                        "stopped on its own without being asked to".into()
-                    }
-                    Ok(status) => format!("exited {status}"),
-                    Err(e) => e.to_string(),
-                });
-            }
+            reason = async {
+                match child.as_mut() {
+                    Some(child) => exit_reason(child.wait().await),
+                    None => std::future::pending().await,
+                }
+            } => return Outcome::Ended(reason),
             () = settings_changed(settings, extension, started_with) => {
                 break Outcome::Reconfigured;
             }
@@ -1443,38 +1683,27 @@ async fn pump_process(
                 next_call += 1;
                 let call = incoming.call.clone();
                 pending_calls.insert(id, incoming);
-                if let Err(reason) = ExtProcess::send_on(stdin, &ToExt::ServiceCall { id, call }).await {
+                if let Err(reason) = link.outgoing.deliver(ToExt::ServiceCall { id, call }).await {
                     return Outcome::Ended(reason);
                 }
             }
             Some(incoming) = actions.recv() => {
                 let id = next_action;
                 next_action += 1;
-                let message = match incoming.unpairing() {
-                    Some((unique_id, force)) => ToExt::UnpairDevice {
-                        id,
-                        unique_id: unique_id.clone(),
-                        force,
-                    },
-                    None => ToExt::ActionCall {
-                        id,
-                        action_id: incoming.action_id.clone(),
-                        stop: incoming.stop,
-                    },
-                };
+                let message = action_message(id, &incoming);
                 pending_actions.insert(id, incoming);
-                if let Err(reason) = ExtProcess::send_on(stdin, &message).await {
+                if let Err(reason) = link.outgoing.deliver(message).await {
                     return Outcome::Ended(reason);
                 }
             }
             message = engine.next_outgoing(core) => {
                 if let Some(message) = message
-                    && let Err(reason) = ExtProcess::send_on(stdin, &message).await
+                    && let Err(reason) = link.outgoing.deliver(message).await
                 {
                     return Outcome::Ended(reason);
                 }
             }
-            msg = ExtProcess::recv_on(stdout) => {
+            msg = link.incoming.take() => {
                 match msg {
                     Ok(from) => {
                         let from = match engine.handle(core, extension, from) {
@@ -1486,7 +1715,7 @@ async fn pump_process(
                             &mut pending_actions,
                         ).await {
                             Ok(Some(reply)) => {
-                                if let Err(reason) = ExtProcess::send_on(stdin, &reply).await {
+                                if let Err(reason) = link.outgoing.deliver(reply).await {
                                     return Outcome::Ended(reason);
                                 }
                             }
@@ -1500,7 +1729,10 @@ async fn pump_process(
         }
     };
 
-    let _ = ExtProcess::send_on(stdin, &ToExt::Stop).await;
+    let (Some(child), Some(timing)) = (child.as_mut(), timing) else {
+        return why;
+    };
+    let _ = link.outgoing.deliver(ToExt::Stop).await;
     let grace = tokio::time::sleep(timing.stop_grace);
     tokio::pin!(grace);
     loop {
@@ -1515,7 +1747,7 @@ async fn pump_process(
                 let _ = child.start_kill();
                 return why;
             }
-            msg = ExtProcess::recv_on(stdout) => {
+            msg = link.incoming.take() => {
                 if let Ok(from) = msg
                     && let Some(from) = engine.handle(core, extension, from)
                     && let Ok(Some(reply)) = apply_from_ext(
@@ -1523,7 +1755,7 @@ async fn pump_process(
                         &mut pending_actions,
                     ).await
                 {
-                    let _ = ExtProcess::send_on(stdin, &reply).await;
+                    let _ = link.outgoing.deliver(reply).await;
                 }
             }
         }
@@ -1537,8 +1769,8 @@ async fn apply_from_ext(
     protocol: &ProtocolId,
     kinds: &[EntityKind],
     from: FromExt,
-    pending_calls: &mut std::collections::HashMap<u64, IncomingCall>,
-    pending_actions: &mut std::collections::HashMap<u64, IncomingAction>,
+    pending_calls: &mut HashMap<u64, IncomingCall>,
+    pending_actions: &mut HashMap<u64, IncomingAction>,
 ) -> Result<Option<ToExt>, String> {
     let reply_id = match &from {
         FromExt::DescribeDevice { id, .. }
@@ -1708,343 +1940,6 @@ async fn reply_message(
     ToExt::Reply {
         id: id.expect("op has id"),
         error,
-    }
-}
-
-/// Waits for the program to dial in, then runs the same describe and message path as a
-/// process. A dropped connection is the program going away: no backoff, it may dial in again.
-/// Nothing here reads stderr. An inbound program has no pipe, so its log window stays empty
-/// and its health is whatever it reports with protocol messages.
-async fn supervise_inbound(
-    host: Arc<HostInner>,
-    dir: PathBuf,
-    manifest: ExtensionManifest,
-    mut stop: watch::Receiver<bool>,
-) {
-    let core = host.core.clone();
-    let extension = manifest.extension.id.clone();
-    for warning in manifest.warnings() {
-        tracing::warn!(%extension, "{warning}");
-    }
-    let contribution = manifest.contributes.protocol.first();
-    let is_protocol = contribution.is_some();
-    let protocol = ProtocolId::try_from(extension.as_str())
-        .expect("extension ids and protocol ids share the slug format");
-    let app = crate::engine::app_info(&manifest);
-    let kinds = contribution
-        .map(|contribution| contribution.entity_kinds.clone())
-        .unwrap_or_default();
-    let icon = read_icon(&dir, &manifest);
-    let config_schema = match manifest
-        .extension
-        .config_schema
-        .as_ref()
-        .map(|path| load_config_schema(&dir, path))
-        .transpose()
-    {
-        Ok(schema) => schema,
-        Err(reason) => {
-            tracing::error!(%extension, "{reason}");
-            core.set_status(
-                &extension,
-                crate::ExtensionStatus::Failed {
-                    reason,
-                    retry_at: None,
-                },
-            );
-            return;
-        }
-    };
-    let schema = config_schema.clone();
-    core.describe_extension(
-        &extension,
-        crate::ExtensionInfo {
-            name: manifest.extension.name.clone(),
-            description: manifest.extension.description.clone(),
-            version: manifest.extension.version.clone(),
-            entity_kinds: kinds.clone(),
-            iot_class: contribution.map(|contribution| contribution.iot_class),
-            icon,
-            config_schema,
-            actions: contribution
-                .map(|contribution| contribution.actions.clone())
-                .unwrap_or_default(),
-            unpairs: contribution.is_some_and(|contribution| contribution.unpairs),
-            app: app.clone(),
-            engine: manifest.is_engine(),
-        },
-    );
-
-    if !manifest.extension.irori.matches(core.version()) {
-        let reason = format!(
-            "requires Irori {}, this is {}",
-            manifest.extension.irori,
-            core.version()
-        );
-        tracing::error!(%extension, "{reason}");
-        core.set_status(
-            &extension,
-            crate::ExtensionStatus::Failed {
-                reason,
-                retry_at: None,
-            },
-        );
-        return;
-    }
-
-    let mut settings = core.extension_settings();
-    let mut disabled = core.disabled_extensions();
-    loop {
-        if disabled.borrow_and_update().contains(&extension) {
-            core.set_status(&extension, crate::ExtensionStatus::Disabled);
-            tokio::select! {
-                biased;
-                _ = stop.wait_for(|stop| *stop) => return,
-                result = disabled.wait_for(|disabled| !disabled.contains(&extension)) => {
-                    if result.is_err() {
-                        return;
-                    }
-                    continue;
-                }
-            }
-        }
-        if *stop.borrow() {
-            core.set_status(&extension, crate::ExtensionStatus::Disabled);
-            return;
-        }
-        let started_with = settings.borrow_and_update().of(&extension);
-        let missing = missing_required(schema.as_ref(), &started_with);
-        if !missing.is_empty() {
-            tracing::info!(%extension, missing = %missing.join(", "), "extension needs setup");
-            core.set_status(&extension, crate::ExtensionStatus::NeedsSetup { missing });
-            tokio::select! {
-                biased;
-                _ = stop.wait_for(|stop| *stop) => {
-                    core.set_status(&extension, crate::ExtensionStatus::Disabled);
-                    return;
-                }
-                () = settings_changed(&mut settings, &extension, &started_with) => continue,
-                Ok(_) = disabled.wait_for(|disabled| disabled.contains(&extension)) => continue,
-            }
-        }
-
-        // The door is armed before the status, so a test that sees Waiting can offer.
-        let (door_tx, door_rx) = oneshot::channel();
-        host.abandon(&extension);
-        host.arm(&extension, door_tx);
-        core.set_status(
-            &extension,
-            crate::ExtensionStatus::Waiting {
-                reason: "waiting for its program to connect".to_owned(),
-            },
-        );
-        let waiting_with = settings.borrow().of(&extension);
-        let linked = tokio::select! {
-            biased;
-            _ = stop.wait_for(|stop| *stop) => {
-                host.abandon(&extension);
-                core.set_status(&extension, crate::ExtensionStatus::Disabled);
-                return;
-            }
-            Ok(_) = disabled.wait_for(|disabled| disabled.contains(&extension)) => {
-                host.abandon(&extension);
-                continue;
-            }
-            () = settings_changed(&mut settings, &extension, &waiting_with) => {
-                host.abandon(&extension);
-                continue;
-            }
-            link = door_rx => link,
-        };
-        let Ok(InboundLink {
-            mut incoming,
-            outgoing,
-        }) = linked
-        else {
-            host.abandon(&extension);
-            continue;
-        };
-        if outgoing
-            .send(ToExt::Hello {
-                settings: waiting_with.clone(),
-            })
-            .await
-            .is_err()
-        {
-            tracing::info!(%extension, "the program hung up before hello");
-            host.note_disconnected(&extension);
-            continue;
-        }
-
-        let (calls_tx, calls_rx) = mpsc::channel(64);
-        let (actions_tx, actions_rx) = mpsc::channel(64);
-        if is_protocol {
-            core.link(&protocol, calls_tx);
-            core.link_action(&extension, actions_tx);
-        }
-        let mut engine = EngineLink::new(&manifest);
-        if manifest.is_engine() && app.is_some() {
-            core.link_app(&extension, engine.app_sender());
-        }
-        core.set_status(&extension, crate::ExtensionStatus::Running);
-        tracing::info!(%extension, "extension connected");
-        let outcome = {
-            let _end = EndConnection {
-                inner: host.as_ref(),
-                id: &extension,
-            };
-            pump_inbound(
-                &core,
-                &extension,
-                &protocol,
-                &kinds,
-                &outgoing,
-                &mut incoming,
-                calls_rx,
-                actions_rx,
-                &mut engine,
-                Watching {
-                    stop: &mut stop,
-                    settings: &mut settings,
-                    disabled: &mut disabled,
-                    started_with: &waiting_with,
-                },
-            )
-            .await
-        };
-        core.unlink_app(&extension);
-        if is_protocol {
-            core.unlink(&protocol);
-            core.unlink_action(&extension);
-            core.mark_unavailable(&protocol);
-        }
-        core.set_waiting(&extension, Vec::new());
-        core.set_unmodeled(&extension, Vec::new());
-        core.set_available_actions(&extension, Vec::new());
-        // No grace period and no process to kill. Dropping the channel closes the socket.
-        let _ = outgoing.send(ToExt::Stop).await;
-        match outcome {
-            Outcome::Stopped => {
-                tracing::info!(%extension, "extension stopped");
-                core.set_status(&extension, crate::ExtensionStatus::Disabled);
-                return;
-            }
-            Outcome::Disabled => {
-                tracing::info!(%extension, "turned off; extension disconnected");
-                continue;
-            }
-            Outcome::Reconfigured => {
-                tracing::info!(%extension, "settings changed; waiting for the program again");
-                continue;
-            }
-            Outcome::Ended(reason) => {
-                tracing::info!(%extension, %reason, "extension disconnected; waiting for it again");
-                continue;
-            }
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn pump_inbound(
-    core: &Core,
-    extension: &ExtensionId,
-    protocol: &ProtocolId,
-    kinds: &[EntityKind],
-    outgoing: &mpsc::Sender<ToExt>,
-    incoming: &mut mpsc::Receiver<FromExt>,
-    mut calls: mpsc::Receiver<IncomingCall>,
-    mut actions: mpsc::Receiver<IncomingAction>,
-    engine: &mut EngineLink,
-    watching: Watching<'_>,
-) -> Outcome {
-    use std::collections::HashMap;
-
-    let Watching {
-        stop,
-        settings,
-        disabled,
-        started_with,
-    } = watching;
-    let mut pending_calls: HashMap<u64, IncomingCall> = HashMap::new();
-    let mut pending_actions: HashMap<u64, IncomingAction> = HashMap::new();
-    let mut next_call: u64 = 0;
-    let mut next_action: u64 = 0;
-
-    loop {
-        tokio::select! {
-            biased;
-            () = async { let _ = stop.wait_for(|stop| *stop).await; } => return Outcome::Stopped,
-            () = settings_changed(settings, extension, started_with) => {
-                return Outcome::Reconfigured;
-            }
-            () = async {
-                let _ = disabled.wait_for(|disabled| disabled.contains(extension)).await;
-            } => return Outcome::Disabled,
-            Some(incoming_call) = calls.recv() => {
-                let id = next_call;
-                next_call += 1;
-                let call = incoming_call.call.clone();
-                pending_calls.insert(id, incoming_call);
-                if outgoing.send(ToExt::ServiceCall { id, call }).await.is_err() {
-                    return Outcome::Ended("the program hung up".into());
-                }
-            }
-            Some(incoming_action) = actions.recv() => {
-                let id = next_action;
-                next_action += 1;
-                let message = match incoming_action.unpairing() {
-                    Some((unique_id, force)) => ToExt::UnpairDevice {
-                        id,
-                        unique_id: unique_id.clone(),
-                        force,
-                    },
-                    None => ToExt::ActionCall {
-                        id,
-                        action_id: incoming_action.action_id.clone(),
-                        stop: incoming_action.stop,
-                    },
-                };
-                pending_actions.insert(id, incoming_action);
-                if outgoing.send(message).await.is_err() {
-                    return Outcome::Ended("the program hung up".into());
-                }
-            }
-            message = engine.next_outgoing(core) => {
-                if let Some(message) = message
-                    && outgoing.send(message).await.is_err()
-                {
-                    return Outcome::Ended("the program hung up".into());
-                }
-            }
-            msg = incoming.recv() => {
-                let Some(from) = msg else {
-                    return Outcome::Ended("the program hung up".into());
-                };
-                let Some(from) = engine.handle(core, extension, from) else {
-                    continue;
-                };
-                match apply_from_ext(
-                    core,
-                    extension,
-                    protocol,
-                    kinds,
-                    from,
-                    &mut pending_calls,
-                    &mut pending_actions,
-                )
-                .await
-                {
-                    Ok(Some(reply)) => {
-                        if outgoing.send(reply).await.is_err() {
-                            return Outcome::Ended("the program hung up".into());
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(reason) => return Outcome::Ended(reason),
-                }
-            }
-        }
     }
 }
 

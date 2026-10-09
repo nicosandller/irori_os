@@ -90,7 +90,6 @@ COPY crates/irori-core/Cargo.toml crates/irori-core/Cargo.toml
 COPY crates/irori-flows/Cargo.toml crates/irori-flows/Cargo.toml
 COPY crates/irori-recorder/Cargo.toml crates/irori-recorder/Cargo.toml
 COPY crates/irori-config/Cargo.toml crates/irori-config/Cargo.toml
-COPY crates/irori-api/Cargo.toml crates/irori-api/Cargo.toml
 COPY crates/irori-client/Cargo.toml crates/irori-client/Cargo.toml
 COPY crates/irori-helpers/Cargo.toml crates/irori-helpers/Cargo.toml
 COPY extensions/demo/Cargo.toml extensions/demo/Cargo.toml
@@ -101,7 +100,7 @@ COPY extras/irori-assist/Cargo.toml extras/irori-assist/Cargo.toml
 # compiled here; the stub only lets `cargo xtask` parse the workspace.
 RUN for dir in \
       crates/irori crates/irori-core crates/irori-flows crates/irori-recorder \
-      crates/irori-config crates/irori-api crates/irori-client crates/irori-helpers \
+      crates/irori-config crates/irori-client crates/irori-helpers \
       extensions/demo extensions/automations extensions/protocols/esphome \
       extras/irori-assist ; do \
       mkdir -p "$dir/src" ; \

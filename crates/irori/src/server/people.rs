@@ -274,7 +274,7 @@ pub async fn remove_user(State(state): State<AppState>, Path(id): Path<UserId>) 
     match removed {
         Ok(()) => {
             state.0.auth.end_all(&id, None);
-            state.0.auth.revoke_user(&id);
+            state.0.auth.tokens.revoke_user(&id);
             tracing::info!(user = %id, "somebody was removed from the home");
             Json(list(&state).await).into_response()
         }

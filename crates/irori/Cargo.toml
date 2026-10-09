@@ -21,7 +21,6 @@ assist = [
 ]
 
 [dependencies]
-irori-api.workspace = true
 irori-config.workspace = true
 irori-core.workspace = true
 irori-helpers.workspace = true

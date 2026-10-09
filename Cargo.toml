@@ -9,7 +9,6 @@ members = [
     "crates/irori-flows",
     "crates/irori-recorder",
     "crates/irori-config",
-    "crates/irori-api",
     "crates/irori-client",
     "crates/irori-helpers",
     "crates/irori-ha-discovery",
@@ -47,7 +46,6 @@ irori-flow-types = { path = "crates/irori-flow-types" }
 irori-flows = { path = "crates/irori-flows" }
 irori-recorder = { path = "crates/irori-recorder" }
 irori-config = { path = "crates/irori-config" }
-irori-api = { path = "crates/irori-api" }
 irori-client = { path = "crates/irori-client" }
 irori-helpers = { path = "crates/irori-helpers" }
 irori-ha-discovery = { path = "crates/irori-ha-discovery" }

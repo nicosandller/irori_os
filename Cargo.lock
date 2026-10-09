@@ -1495,7 +1495,6 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "http-body-util",
- "irori-api",
  "irori-assist",
  "irori-config",
  "irori-core",
@@ -1525,13 +1524,6 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "irori-api"
-version = "0.0.0"
-dependencies = [
- "irori-types",
 ]
 
 [[package]]

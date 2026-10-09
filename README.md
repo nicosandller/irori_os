@@ -238,7 +238,7 @@ docs/specs/    specifications: entities.md, extensions.md, protocols.md, config.
 schemas/       JSON Schemas generated from irori-types (`cargo xtask schemas`)
 fixtures/      golden examples, valid and invalid, checked by the tests
 crates/        irori-types, irori-core, irori-protocol, irori-rules, irori-recorder,
-               irori-config, irori-api, irori-client, irori (the binary), and irori-ui
+               irori-config, irori-client, irori (the binary), and irori-ui
                (the Leptos web UI: wasm, built by `cargo xtask ui`, outside the workspace)
 extensions/    first-party extensions: protocols/mqtt, protocols/esphome, demo, helpers
 extras/        irori-assist (providers and prompts; the control plane is in the default build, weights are not)

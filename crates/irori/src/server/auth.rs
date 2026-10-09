@@ -9,8 +9,9 @@
 //! handler, so a route added later is closed until somebody decides otherwise.
 //!
 //! This is the sign-in for Irori's own page. Tokens for other programs are the public API's
-//! (`docs/specs/api.md`): a bearer token is checked here, beside the cookie, because both
-//! arrive on the same requests.
+//! (`docs/specs/api.md`): the guard below asks `tokens` to check a bearer, because both
+//! arrive on the same requests. What each address allows, for a cookie and for a token, is
+//! [`token_access`] and [`needs`].
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -23,7 +24,6 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
-use irori_api::missing_scope;
 use irori_types::{ApiScope, ExtensionId, Name, Role, TokenId, User, UserId};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -105,6 +105,10 @@ pub enum Needs {
 
 /// The one table of who may ask for what. Anything under `/api/` that isn't named is `Run`.
 pub fn needs(method: &Method, path: &str) -> Needs {
+    cookie_needs(method, strip_query(path))
+}
+
+fn cookie_needs(method: &Method, path: &str) -> Needs {
     // The page, its files, and extensions' pages. Those load in a sandboxed frame with an
     // origin of its own, where no cookie is sent; they are static files, and what they show
     // comes through the shell.
@@ -176,6 +180,75 @@ fn named_read(rest: &str) -> bool {
         || rest.starts_with("assistant/transcript/")
 }
 
+fn strip_query(path: &str) -> &str {
+    path.split_once('?').map_or(path, |(path, _)| path)
+}
+
+/// What a token may do at an address. A cookie is [`Needs`]; a token is this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TokenAccess {
+    /// Health, session, setup, icons, and the page: open to anyone who can reach Irori.
+    Open,
+    /// The token must hold every scope.
+    Scopes(&'static [ApiScope]),
+    /// Setup, logs, and any path the scope list does not name.
+    Closed,
+}
+
+const SCOPE_HOME: &[ApiScope] = &[ApiScope::RegistryRead, ApiScope::StatesRead];
+const SCOPE_STATES: &[ApiScope] = &[ApiScope::StatesRead];
+const SCOPE_HISTORY: &[ApiScope] = &[ApiScope::HistoryRead];
+const SCOPE_REGISTRY: &[ApiScope] = &[ApiScope::RegistryRead];
+const SCOPE_COMMAND: &[ApiScope] = &[ApiScope::ServicesCall];
+const SCOPE_LIVE: &[ApiScope] = &[
+    ApiScope::RegistryRead,
+    ApiScope::StatesRead,
+    ApiScope::EventsRead,
+];
+
+/// What a token may call (`docs/specs/api.md` §2.1).
+///
+/// A path in the scope list needs those scopes even where a cookie is judged differently.
+/// `HEAD` is not a read for a cookie, so `HEAD /api/home` is [`Needs::Run`] there and still
+/// the home's scopes here. `/api/ws` asks for the registry, the states, and events. Anything
+/// the list does not name is [`TokenAccess::Open`] only when a cookie would be
+/// [`Needs::Nothing`], and [`TokenAccess::Closed`] otherwise.
+pub(super) fn token_access(method: &Method, path: &str) -> TokenAccess {
+    let path = strip_query(path);
+    let reading = method == Method::GET || method == Method::HEAD;
+    let scopes = if path == "/api/ws" {
+        Some(SCOPE_LIVE)
+    } else if method == Method::POST && path == "/api/command" {
+        Some(SCOPE_COMMAND)
+    } else if reading && path == "/api/home" {
+        Some(SCOPE_HOME)
+    } else if reading && path == "/api/states" {
+        Some(SCOPE_STATES)
+    } else if reading && (path == "/api/history" || path.starts_with("/api/history/")) {
+        Some(SCOPE_HISTORY)
+    } else if reading
+        && matches!(
+            path,
+            "/api/devices"
+                | "/api/entities"
+                | "/api/areas"
+                | "/api/floors"
+                | "/api/floorplan"
+                | "/api/extensions"
+                | "/api/apps"
+        )
+    {
+        Some(SCOPE_REGISTRY)
+    } else {
+        None
+    };
+    match scopes {
+        Some(scopes) => TokenAccess::Scopes(scopes),
+        None if cookie_needs(method, path) == Needs::Nothing => TokenAccess::Open,
+        None => TokenAccess::Closed,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Session {
     user: UserId,
@@ -198,60 +271,18 @@ struct Attempts {
 pub struct Auth {
     db: PathBuf,
     sessions: Mutex<HashMap<String, Session>>,
-    /// Access tokens, keyed by the SHA-256 of the secret. The secret itself is never here.
-    tokens: Mutex<HashMap<String, AccessToken>>,
+    /// Access tokens. The secret itself is never here (`server/tokens.rs`).
+    pub(super) tokens: super::tokens::TokenStore,
     attempts: Mutex<HashMap<Trier, Attempts>>,
 }
 
-/// One access token, as it's kept (`docs/specs/api.md` §2). The secret is not one of these
-/// fields: only its hash is, and only as the map's key.
-#[derive(Debug, Clone)]
-pub struct AccessToken {
-    pub id: TokenId,
-    pub name: String,
-    pub user: UserId,
-    pub scopes: Vec<ApiScope>,
-    pub extension: Option<ExtensionId>,
-    /// Seconds since 1970.
-    pub created: u64,
-}
-
-/// A secret just created, with the token it belongs to. `Debug` leaves the secret out.
-pub struct Issued {
-    pub secret: String,
-    pub token: AccessToken,
-}
-
-impl std::fmt::Debug for Issued {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Issued")
-            .field("token", &self.token)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Why a token wasn't created.
-#[derive(Debug)]
-pub enum IssueError {
-    /// The home already holds [`MAX_TOKENS`].
-    Full,
-    /// Another token already has this id.
-    Taken,
-    /// The database didn't take it.
-    Store(String),
-}
-
-/// How many tokens one home holds. Plenty for the programs a home runs, and a bound so a
-/// bug that creates them in a loop can't fill the database.
-const MAX_TOKENS: usize = 32;
-
-fn now_seconds() -> u64 {
+pub(super) fn now_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_secs())
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(super) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut text = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -260,7 +291,7 @@ fn hex(bytes: &[u8]) -> String {
     text
 }
 
-fn fingerprint(token: &str) -> String {
+pub(super) fn fingerprint(token: &str) -> String {
     hex(&Sha256::digest(token.as_bytes()))
 }
 
@@ -271,7 +302,7 @@ impl Auth {
         let auth = Self {
             db: db.path.clone(),
             sessions: Mutex::default(),
-            tokens: Mutex::default(),
+            tokens: super::tokens::TokenStore::open(db),
             attempts: Mutex::default(),
         };
         match auth.load() {
@@ -279,12 +310,6 @@ impl Auth {
                 *auth.sessions.lock().unwrap_or_else(PoisonError::into_inner) = sessions;
             }
             Err(error) => tracing::warn!(%error, "couldn't read who was signed in"),
-        }
-        match auth.load_tokens() {
-            Ok(tokens) => {
-                *auth.tokens.lock().unwrap_or_else(PoisonError::into_inner) = tokens;
-            }
-            Err(error) => tracing::warn!(%error, "couldn't read access tokens"),
         }
         auth
     }
@@ -296,15 +321,6 @@ impl Auth {
                 token_hash TEXT PRIMARY KEY,
                 user TEXT NOT NULL,
                 expires INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS tokens (
-                token_hash TEXT PRIMARY KEY,
-                id TEXT NOT NULL UNIQUE,
-                name TEXT NOT NULL,
-                user TEXT NOT NULL,
-                scopes TEXT NOT NULL,
-                extension TEXT,
-                created INTEGER NOT NULL
             )",
         )?;
         Ok(conn)
@@ -467,190 +483,6 @@ impl Auth {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(who);
     }
-
-    fn load_tokens(&self) -> rusqlite::Result<HashMap<String, AccessToken>> {
-        let conn = self.conn()?;
-        let mut rows = conn
-            .prepare("SELECT token_hash, id, name, user, scopes, extension, created FROM tokens")?;
-        let tokens = rows
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, i64>(6)?,
-                ))
-            })?
-            .filter_map(Result::ok)
-            .filter_map(|(hash, id, name, user, scopes, extension, created)| {
-                let scopes = serde_json::from_str::<Vec<ApiScope>>(&scopes).ok()?;
-                let extension = match extension {
-                    Some(id) => Some(ExtensionId::try_from(id).ok()?),
-                    None => None,
-                };
-                Some((
-                    hash,
-                    AccessToken {
-                        id: TokenId::try_from(id).ok()?,
-                        name,
-                        user: UserId::try_from(user).ok()?,
-                        scopes,
-                        extension,
-                        created: u64::try_from(created).ok()?,
-                    },
-                ))
-            })
-            .collect();
-        Ok(tokens)
-    }
-
-    /// Creates a token and returns its secret, once. The database is written before the
-    /// secret is remembered here, so a secret that couldn't be kept is never handed out.
-    pub fn issue(
-        &self,
-        id: TokenId,
-        name: String,
-        user: UserId,
-        scopes: Vec<ApiScope>,
-        extension: Option<ExtensionId>,
-    ) -> Result<Issued, IssueError> {
-        let mut tokens = self.tokens.lock().unwrap_or_else(PoisonError::into_inner);
-        if tokens.len() >= MAX_TOKENS {
-            return Err(IssueError::Full);
-        }
-        if tokens.values().any(|token| token.id == id) {
-            return Err(IssueError::Taken);
-        }
-        let mut bytes = [0u8; 32];
-        getrandom::fill(&mut bytes)
-            .expect("the OS must be able to hand over random bytes for an access token");
-        let secret = format!("irori_{}", hex(&bytes));
-        let hash = fingerprint(&secret);
-        let token = AccessToken {
-            id: id.clone(),
-            name,
-            user,
-            scopes,
-            extension,
-            created: now_seconds(),
-        };
-        let scopes_json = serde_json::to_string(&token.scopes)
-            .map_err(|error| IssueError::Store(error.to_string()))?;
-        let stored = self.conn().and_then(|conn| {
-            conn.execute(
-                "INSERT INTO tokens (token_hash, id, name, user, scopes, extension, created)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                rusqlite::params![
-                    hash,
-                    token.id.as_str(),
-                    token.name,
-                    token.user.as_str(),
-                    scopes_json,
-                    token.extension.as_ref().map(ExtensionId::as_str),
-                    i64::try_from(token.created).unwrap_or(i64::MAX),
-                ],
-            )
-        });
-        if let Err(error) = stored {
-            // A unique-id race against a row this process didn't load. Rare, and the same
-            // answer as one we already know about.
-            let message = error.to_string();
-            if message.contains("UNIQUE") {
-                return Err(IssueError::Taken);
-            }
-            return Err(IssueError::Store(message));
-        }
-        tokens.insert(hash, token.clone());
-        Ok(Issued { secret, token })
-    }
-
-    /// Every token, oldest first. No secrets.
-    pub fn list(&self) -> Vec<AccessToken> {
-        let mut tokens: Vec<_> = self
-            .tokens
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .values()
-            .cloned()
-            .collect();
-        tokens.sort_by(|a, b| {
-            a.created
-                .cmp(&b.created)
-                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
-        });
-        tokens
-    }
-
-    /// The token `secret` is, if it is one we issued.
-    pub fn find(&self, secret: &str) -> Option<AccessToken> {
-        let hash = fingerprint(secret);
-        self.tokens
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&hash)
-            .cloned()
-    }
-
-    /// Revokes the token with this id. `false` when there wasn't one.
-    pub fn revoke(&self, id: &TokenId) -> bool {
-        let hash = {
-            let tokens = self.tokens.lock().unwrap_or_else(PoisonError::into_inner);
-            tokens
-                .iter()
-                .find(|(_, token)| &token.id == id)
-                .map(|(hash, _)| hash.clone())
-        };
-        let Some(hash) = hash else {
-            return false;
-        };
-        self.drop_tokens(|other, _| other != hash);
-        // Dropped from memory only when the database forgot it too. If that failed, the
-        // token is still here, so this still reports that it wasn't revoked.
-        !self
-            .tokens
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains_key(&hash)
-    }
-
-    /// Revokes every token that belongs to `user`.
-    pub fn revoke_user(&self, user: &UserId) {
-        self.drop_tokens(|_, token| &token.user != user);
-    }
-
-    /// Revokes every token. Setting the home up again does this: the welcome is also how a
-    /// forgotten password is replaced, and tokens from before that must not keep working.
-    pub fn revoke_all(&self) {
-        self.drop_tokens(|_, _| false);
-    }
-
-    fn drop_tokens(&self, keep: impl Fn(&str, &AccessToken) -> bool) {
-        let mut tokens = self.tokens.lock().unwrap_or_else(PoisonError::into_inner);
-        let gone: Vec<String> = tokens
-            .iter()
-            .filter(|(hash, token)| !keep(hash, token))
-            .map(|(hash, _)| hash.clone())
-            .collect();
-        if gone.is_empty() {
-            return;
-        }
-        let dropped = self.conn().and_then(|conn| {
-            for hash in &gone {
-                conn.execute("DELETE FROM tokens WHERE token_hash = ?1", [hash])?;
-            }
-            Ok(())
-        });
-        if let Err(error) = dropped {
-            tracing::warn!(%error, "couldn't revoke an access token");
-            return;
-        }
-        for hash in &gone {
-            tokens.remove(hash);
-        }
-    }
 }
 
 /// A password's hash, as it's kept: argon2id with a salt of its own, in the PHC string form.
@@ -741,112 +573,6 @@ fn actor(auth: &Auth, people: &People, headers: &HeaderMap) -> Option<Actor> {
     })
 }
 
-/// The bearer secret a request presents, or why the header isn't one.
-fn presented(headers: &HeaderMap) -> Result<&str, ()> {
-    let value = headers.get(header::AUTHORIZATION).ok_or(())?;
-    let text = value.to_str().map_err(|_| ())?;
-    let Some((scheme, secret)) = text.split_once(' ') else {
-        return Err(());
-    };
-    if !scheme.eq_ignore_ascii_case("bearer")
-        || secret.is_empty()
-        || secret.chars().any(char::is_whitespace)
-    {
-        return Err(());
-    }
-    Ok(secret)
-}
-
-/// Whether this token still stands for someone. A locked home only honours a token whose
-/// person still has a password. An open home honours it either way (`docs/specs/api.md` §2).
-fn token_actor(people: &People, token: &AccessToken) -> Option<Actor> {
-    let user = people.user(&token.user).cloned();
-    if people.locked() && (user.is_none() || !people.hashes.contains_key(&token.user)) {
-        return None;
-    }
-    Some(Actor {
-        user,
-        owner: false,
-        token: Some(TokenGrant {
-            id: token.id.clone(),
-            extension: token.extension.clone(),
-        }),
-    })
-}
-
-fn extension_actor(
-    auth: &Auth,
-    people: &People,
-    headers: &HeaderMap,
-) -> Result<Actor, Box<Response>> {
-    let denied = || {
-        Box::new(refused(
-            StatusCode::UNAUTHORIZED,
-            "an extension connects with the token made for it".to_owned(),
-        ))
-    };
-    let secret = presented(headers).map_err(|()| denied())?;
-    let Some(token) = auth.find(secret) else {
-        return Err(denied());
-    };
-    let Some(who) = token_actor(people, &token) else {
-        return Err(denied());
-    };
-    if token.extension.is_none() {
-        return Err(Box::new(refused(
-            StatusCode::FORBIDDEN,
-            "this token isn't for connecting an extension".to_owned(),
-        )));
-    }
-    Ok(who)
-}
-
-fn bearer_actor(
-    auth: &Auth,
-    people: &People,
-    headers: &HeaderMap,
-    method: &Method,
-    path: &str,
-) -> Result<Actor, Box<Response>> {
-    let denied = || {
-        Box::new(refused(
-            StatusCode::UNAUTHORIZED,
-            "that access token isn't one Irori issued".to_owned(),
-        ))
-    };
-    let secret = presented(headers).map_err(|()| denied())?;
-    let Some(token) = auth.find(secret) else {
-        return Err(denied());
-    };
-    let Some(who) = token_actor(people, &token) else {
-        return Err(denied());
-    };
-    if token.extension.is_some() {
-        return Err(Box::new(refused(
-            StatusCode::FORBIDDEN,
-            "this token is only for connecting its extension".to_owned(),
-        )));
-    }
-    match irori_api::scopes_for(method.as_str(), path) {
-        Some(need) => {
-            if let Some(missing) = missing_scope(need, &token.scopes) {
-                return Err(Box::new(refused(
-                    StatusCode::FORBIDDEN,
-                    format!("this token doesn't include {missing}"),
-                )));
-            }
-        }
-        None if needs(method, path) != Needs::Nothing => {
-            return Err(Box::new(refused(
-                StatusCode::FORBIDDEN,
-                "a token can't change how the home is set up".to_owned(),
-            )));
-        }
-        None => {}
-    }
-    Ok(who)
-}
-
 /// Lets a request through, or says why not. Over every route.
 ///
 /// A bearer token is that token, even when a cookie came along too. An extension's socket
@@ -855,12 +581,12 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
     let path = request.uri().path().to_owned();
     let people = state.0.config.people().await;
     let who = if path == "/api/extension" {
-        match extension_actor(&state.0.auth, &people, request.headers()) {
+        match super::tokens::extension_actor(&state.0.auth, &people, request.headers()) {
             Ok(who) => Some(who),
             Err(response) => return *response,
         }
     } else if request.headers().contains_key(header::AUTHORIZATION) {
-        match bearer_actor(
+        match super::tokens::bearer_actor(
             &state.0.auth,
             &people,
             request.headers(),
@@ -1170,7 +896,7 @@ pub async fn set_up(State(state): State<AppState>, Json(ask): Json<FirstOwner>) 
     // password is put right (its line taken out of the files, then this), and a browser that
     // was signed in under the old one, a lost phone say, must not still be.
     state.0.auth.forget(|_, _| false);
-    state.0.auth.revoke_all();
+    state.0.auth.tokens.revoke_all();
     // The home is locked from here on, so the person who just set it up is signed in rather
     // than shown the door.
     let token = state.0.auth.begin(&user.id);
@@ -1244,6 +970,8 @@ mod tests {
             (Method::POST, "/api/apps/automations/rpc", Run),
             (Method::PUT, "/api/extensions/mqtt/secrets", Run),
             (Method::GET, "/api/ws", Use),
+            // HEAD is not a read. A token still needs the home's scopes for this path.
+            (Method::HEAD, "/api/home", Run),
             (Method::GET, "/api/tokens", Run),
             (Method::POST, "/api/tokens", Run),
             (Method::DELETE, "/api/tokens/tablet", Run),

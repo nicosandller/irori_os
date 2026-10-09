@@ -62,8 +62,6 @@ const ALLOWED_WORKSPACE_DEPS: &[(&str, &[&str])] = &[
         ],
     ),
     ("irori-client", &["irori-types"]),
-    // Scope checks for access tokens. The HTTP server itself stays in the `irori` binary.
-    ("irori-api", &["irori-types"]),
     (
         "irori-protocol-*",
         &["irori-types", "irori-protocol", "irori-ha-discovery"],
