@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 use irori_types::{
     AreaId, Capabilities, Device, DeviceId, EntityId, FloorId, Floorplan, Level, Opening,
-    OpeningKind, PlacedArea, PlacedDevice, Point, Timestamp, Wall,
+    OpeningKind, PlacedArea, PlacedDevice, Point, Timestamp, Tint, Wall,
 };
 use leptos::ev;
 use leptos::html::Div;
@@ -1174,17 +1174,21 @@ pub fn Floorplan() -> impl IntoView {
                     on_level(draft, floor, |level| {
                         // Redrawing a room replaces its old shape: one shape per room per floor
                         // is what the plan allows, and moving a wall is why somebody would. The
-                        // label is attached to the room, not the shape, so its offset survives.
-                        let label = level
+                        // label and the colour are attached to the room, not the shape, so
+                        // they survive.
+                        let (label, tint) = level
                             .areas
                             .iter()
                             .find(|placed| placed.area == area)
-                            .map_or(Point::new(0, 0), |placed| placed.label);
+                            .map_or((Point::new(0, 0), None), |placed| {
+                                (placed.label, placed.tint)
+                            });
                         level.areas.retain(|placed| placed.area != area);
                         level.areas.push(PlacedArea {
                             area: area.clone(),
                             points,
                             label,
+                            tint,
                         });
                         picked.set(Some(Pick::Area(level.areas.len() - 1)));
                     });
@@ -1260,18 +1264,21 @@ pub fn Floorplan() -> impl IntoView {
             {
                 remember();
                 on_level(draft, floor, |level| {
-                    // Same rule as the click-to-close path: keep the room's label offset across
-                    // the shape it just replaced.
-                    let label = level
+                    // Same rule as the click-to-close path: keep the room's label offset and
+                    // its colour across the shape it just replaced.
+                    let (label, tint) = level
                         .areas
                         .iter()
                         .find(|placed| placed.area == area)
-                        .map_or(Point::new(0, 0), |placed| placed.label);
+                        .map_or((Point::new(0, 0), None), |placed| {
+                            (placed.label, placed.tint)
+                        });
                     level.areas.retain(|placed| placed.area != area);
                     level.areas.push(PlacedArea {
                         area: area.clone(),
                         points: corners,
                         label,
+                        tint,
                     });
                     picked.set(Some(Pick::Area(level.areas.len() - 1)));
                 });
@@ -2426,6 +2433,20 @@ fn Inspector(
                     // its id is more honest than showing nothing.
                     .unwrap_or_else(|| placed.area.to_string());
                 let corners = placed.points.len();
+                let (tint, own) = (placed.tint, Tint::of(&placed.area));
+                // Paints the room, as one step to undo. `None` hands the choice back to the
+                // room's own colour.
+                let paint = move |to: Option<Tint>| {
+                    if to == tint {
+                        return;
+                    }
+                    remember.run(());
+                    on_level(draft, floor, |level| {
+                        if let Some(placed) = level.areas.get_mut(a) {
+                            placed.tint = to;
+                        }
+                    });
+                };
                 Some(
                     view! {
                         <div class="inspector">
@@ -2435,6 +2456,40 @@ fn Inspector(
                                 <span>"Corners"</span>
                                 <span class="figure">{corners.to_string()}</span>
                             </p>
+                            <div class="choice">
+                                <span id="tint-label">"Colour"</span>
+                                <div class="swatches" role="radiogroup" aria-labelledby="tint-label">
+                                    // First, and wearing the colour the room would have
+                                    // anyway: what picking it gives is on show.
+                                    <button
+                                        type="button"
+                                        role="radio"
+                                        class=format!("swatch own tint-{}", own.name())
+                                        class:chosen=tint.is_none()
+                                        aria-checked=tint.is_none().to_string()
+                                        aria-label="Automatic"
+                                        title="Automatic"
+                                        on:click=move |_| paint(None)
+                                    >
+                                        "A"
+                                    </button>
+                                    {Tint::ALL
+                                        .into_iter()
+                                        .map(|each| view! {
+                                            <button
+                                                type="button"
+                                                role="radio"
+                                                class=format!("swatch tint-{}", each.name())
+                                                class:chosen=tint == Some(each)
+                                                aria-checked=(tint == Some(each)).to_string()
+                                                aria-label=each.name()
+                                                title=each.name()
+                                                on:click=move |_| paint(Some(each))
+                                            ></button>
+                                        })
+                                        .collect_view()}
+                                </div>
+                            </div>
                             <p class="muted small">"Drag it, drag a corner, or drag its name."</p>
                         </div>
                     }
@@ -3499,9 +3554,9 @@ fn handles(corners: &[Point], view: Viewport) -> impl IntoView + use<> {
 
 /// A room, as a shape under the walls with its floor tinted.
 ///
-/// The tint is picked from the room's id, so the same room is the same colour every time the
-/// page is opened and two rooms side by side are almost never the same. Low enough that it reads
-/// as a wash over the paper rather than as a block of colour — a plan is drawn in lines.
+/// In the colour picked for it, or — until somebody picks one — in a colour of its own, the
+/// same every time the page is opened. Low enough that it reads as a wash over the paper
+/// rather than as a block of colour: a plan is drawn in lines.
 fn drawn_area(placed: &PlacedArea, view: Viewport, chosen: bool) -> impl IntoView + use<> {
     let points = placed
         .points
@@ -3509,7 +3564,7 @@ fn drawn_area(placed: &PlacedArea, view: Viewport, chosen: bool) -> impl IntoVie
         .map(|point| format!("{},{}", point.x, point.y))
         .collect::<Vec<_>>()
         .join(" ");
-    let tint = tint_of(placed.area.as_str());
+    let tint = placed.shade().name();
     view! {
         <g class="areas" transform=transform(view)>
             <polygon
@@ -3520,15 +3575,6 @@ fn drawn_area(placed: &PlacedArea, view: Viewport, chosen: bool) -> impl IntoVie
             />
         </g>
     }
-}
-
-/// Which of the tints a room gets. A sum of its id's bytes: stable across restarts and across
-/// browsers, which a hash with a random seed would not be.
-fn tint_of(id: &str) -> u32 {
-    const TINTS: u32 = 6;
-    id.bytes().fold(0u32, |sum, byte| {
-        sum.wrapping_mul(31).wrapping_add(u32::from(byte))
-    }) % TINTS
 }
 
 /// The floor below, as an outline. Something to line an upstairs up with, and nothing more: no
@@ -4388,6 +4434,7 @@ mod tests {
             area: id.parse().expect("a valid area id"),
             points: points(corners),
             label: Point::new(0, 0),
+            tint: None,
         }
     }
 
@@ -5065,14 +5112,6 @@ mod tests {
         assert_eq!(pick_at(&level, (200.0, 2.0), 20.0), Some(Pick::Wall(0)));
         assert_eq!(pick_at(&level, (200.0, 150.0), 20.0), Some(Pick::Area(0)));
         assert_eq!(pick_at(&level, (600.0, 150.0), 20.0), None);
-    }
-
-    /// The same room is the same colour every time, whoever opens the page.
-    #[test]
-    fn a_rooms_tint_is_its_own_and_stays_put() {
-        assert_eq!(tint_of("kitchen"), tint_of("kitchen"));
-        assert!(tint_of("kitchen") < 6);
-        assert!(tint_of("") < 6, "even an id that is somehow empty");
     }
 
     #[test]

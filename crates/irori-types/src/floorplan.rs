@@ -143,10 +143,87 @@ pub struct PlacedArea {
         skip_serializing_if = "PlacedArea::label_is_middle"
     )]
     pub label: Point,
+    /// The colour its floor is washed with. Absent, the room gets one picked from its id, as
+    /// every room did before this could be said — so a plan nobody has coloured writes nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tint: Option<Tint>,
 }
 
 fn default_label() -> Point {
     Point::new(0, 0)
+}
+
+/// A colour a room's floor can be washed with.
+///
+/// A name rather than a colour value, because the plan is drawn on paper by day and on slate by
+/// night and no single value reads on both: the page decides what each name looks like on the
+/// surface it is drawing on. A short list rather than a free choice for the same reason — and
+/// because rooms side by side only need telling apart, not matching the curtains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Tint {
+    Ember,
+    Moss,
+    Slate,
+    Sand,
+    Plum,
+    Teal,
+    Rose,
+    Sky,
+    Olive,
+    Stone,
+}
+
+impl Tint {
+    /// Every tint, in the order a palette shows them.
+    pub const ALL: [Tint; 10] = [
+        Tint::Ember,
+        Tint::Moss,
+        Tint::Slate,
+        Tint::Sand,
+        Tint::Plum,
+        Tint::Teal,
+        Tint::Rose,
+        Tint::Sky,
+        Tint::Olive,
+        Tint::Stone,
+    ];
+
+    /// The word it is written as in the file, which is also what the page calls it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Tint::Ember => "ember",
+            Tint::Moss => "moss",
+            Tint::Slate => "slate",
+            Tint::Sand => "sand",
+            Tint::Plum => "plum",
+            Tint::Teal => "teal",
+            Tint::Rose => "rose",
+            Tint::Sky => "sky",
+            Tint::Olive => "olive",
+            Tint::Stone => "stone",
+        }
+    }
+
+    /// The tint a room has until somebody picks one: chosen from its id, so the same room is
+    /// the same colour every time and two rooms side by side are almost never alike. A sum of
+    /// the id's bytes rather than a hash with a random seed, which would differ between the
+    /// server and the page. From the first six only, which are the ones every plan drawn before
+    /// tints could be chosen already wears.
+    pub fn of(area: &AreaId) -> Tint {
+        const FIRST: u32 = 6;
+        let sum = area.as_str().bytes().fold(0u32, |sum, byte| {
+            sum.wrapping_mul(31).wrapping_add(u32::from(byte))
+        });
+        Tint::ALL[(sum % FIRST) as usize]
+    }
+}
+
+impl PlacedArea {
+    /// The colour this room is drawn in: the one picked for it, or its own.
+    pub fn shade(&self) -> Tint {
+        self.tint.unwrap_or_else(|| Tint::of(&self.area))
+    }
 }
 
 impl PlacedArea {
@@ -543,6 +620,7 @@ mod tests {
             area: id.parse().expect("a valid area id"),
             points: points.iter().map(|(x, y)| Point::new(*x, *y)).collect(),
             label: Point::new(0, 0),
+            tint: None,
         }
     }
 
@@ -772,6 +850,32 @@ mod tests {
         )
         .expect("an old plan, without a label");
         assert_eq!(from_file.label, Point::new(0, 0));
+    }
+
+    /// A room keeps the colour it was given, says it by name, and a room nobody coloured says
+    /// nothing and wears the colour its id picks — the same one every time.
+    #[test]
+    fn a_room_wears_the_colour_it_was_given_or_its_own() {
+        let square = &[(0, 0), (400, 0), (400, 300), (0, 300)][..];
+        let plain = area("kitchen", square);
+        assert!(!serde_json::to_string(&plain).expect("json").contains("tint"));
+        assert_eq!(plain.shade(), Tint::of(&plain.area));
+        assert_eq!(plain.shade(), area("kitchen", square).shade());
+
+        let painted = PlacedArea {
+            tint: Some(Tint::Sky),
+            ..plain
+        };
+        let json = serde_json::to_string(&painted).expect("json");
+        assert!(json.contains(r#""tint":"sky""#), "{json}");
+        let back: PlacedArea = serde_json::from_str(&json).expect("json");
+        assert_eq!(back.shade(), Tint::Sky);
+
+        for tint in Tint::ALL {
+            let written = serde_json::to_string(&tint).expect("json");
+            assert_eq!(written, format!("\"{}\"", tint.name()));
+        }
+        assert!(serde_json::from_str::<Tint>(r##""#c4552b""##).is_err());
     }
 
     /// A door drawn before it could be told which way it swings reads as it always did, and

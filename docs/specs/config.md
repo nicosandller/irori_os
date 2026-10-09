@@ -318,6 +318,7 @@ sensor = "binary_sensor.front_door_contact"   # optional: says whether it's open
 area = "kitchen"
 points = [[0, 0], [300, 0], [300, 250], [0, 250]]
 label = [0, -40]        # optional: how far the room's name is drawn from its middle
+tint = "sky"            # optional: the colour its floor is washed with
 
 [[floors.ground.devices]]
 device = "demo_lamp"
@@ -357,6 +358,13 @@ centimetres, that the name is drawn from the middle by. It is an offset rather t
 its own so a name somebody dragged travels with the room — stretch a wall and the label stays
 where it was put, relative to the room it belongs to. Omitted, the label sits at the middle, and
 a plan written before the field existed reads the same way.
+
+A room's floor is **washed with a colour**, and `tint` says which: one of `ember`, `moss`,
+`slate`, `sand`, `plum`, `teal`, `rose`, `sky`, `olive` or `stone`. A name rather than a colour
+value, because the plan is drawn on paper by day and on slate by night and the page decides what
+each name looks like on either. Omitted, the room wears a colour picked from its id — the same
+one every time — which is what every room did before the field existed. A binary older than the
+field refuses a plan that carries it, as it refuses any field it doesn't know.
 
 A device is placed by its id, the same one `devices.toml` uses. An entry for a device that isn't
 in the home right now is **kept and simply not drawn** (§4), as is an entry for a floor or room

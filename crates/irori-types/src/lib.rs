@@ -40,7 +40,7 @@ pub use extension::{
 };
 pub use floorplan::{
     Floorplan, Hinge, Level, Opening, OpeningKind, PlacedArea, PlacedDevice, PlanError, Point,
-    Side, Wall,
+    Side, Tint, Wall,
 };
 pub use home::{HomeSettings, Location, TimeZoneName};
 pub use id::{

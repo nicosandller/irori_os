@@ -1351,14 +1351,45 @@
 
     /* Rooms: the shape under the walls, tinted so two side by side can be told apart. Low
        enough to read as a wash over the paper — a plan is drawn in lines, not blocks. */
-    .floorplan .area { stroke: none; }
+    .floorplan .area { stroke: none; fill: var(--tint); fill-opacity: .13; }
     .floorplan .area.chosen { stroke: var(--ember); stroke-width: 2; stroke-dasharray: 6 4; }
-    .floorplan .tint-0 { fill: #c4552b; fill-opacity: .10; }
-    .floorplan .tint-1 { fill: #3f6f5b; fill-opacity: .12; }
-    .floorplan .tint-2 { fill: #5b6b9c; fill-opacity: .12; }
-    .floorplan .tint-3 { fill: #9c7a3f; fill-opacity: .12; }
-    .floorplan .tint-4 { fill: #8a5b7a; fill-opacity: .12; }
-    .floorplan .tint-5 { fill: #4f7f8a; fill-opacity: .12; }
+    /* The colours a room can be, by the names `floorplan.toml` knows them by. The first six
+       are the ones a room is given until somebody picks. Each is said twice: for paper, and
+       lighter for the dark plan, where the paper's own would sink into the slate. */
+    .floorplan .tint-ember { --tint: #c4552b; }
+    .floorplan .tint-moss { --tint: #3f6f5b; }
+    .floorplan .tint-slate { --tint: #5b6b9c; }
+    .floorplan .tint-sand { --tint: #9c7a3f; }
+    .floorplan .tint-plum { --tint: #8a5b7a; }
+    .floorplan .tint-teal { --tint: #4f7f8a; }
+    .floorplan .tint-rose { --tint: #c2536f; }
+    .floorplan .tint-sky { --tint: #3d86c6; }
+    .floorplan .tint-olive { --tint: #7c8a2e; }
+    .floorplan .tint-stone { --tint: #77706a; }
+    @media (prefers-color-scheme: dark) {
+      .floorplan .area { fill-opacity: .17; }
+      .floorplan .tint-ember { --tint: #e8825a; }
+      .floorplan .tint-moss { --tint: #6fb596; }
+      .floorplan .tint-slate { --tint: #8d9fd6; }
+      .floorplan .tint-sand { --tint: #d3ac66; }
+      .floorplan .tint-plum { --tint: #c48bb2; }
+      .floorplan .tint-teal { --tint: #74b6c4; }
+      .floorplan .tint-rose { --tint: #ec8aa2; }
+      .floorplan .tint-sky { --tint: #74b4ee; }
+      .floorplan .tint-olive { --tint: #b4c45c; }
+      .floorplan .tint-stone { --tint: #aaa39c; }
+    }
+    /* Picking one: a row of swatches, the room's own colour first. */
+    .floorplan .swatches { display: grid; grid-template-columns: repeat(6, 1fr); gap: .3rem; }
+    .floorplan .swatch { aspect-ratio: 1; padding: 0; border-radius: 50%; cursor: pointer;
+                         font: .6rem var(--mono); color: var(--fg);
+                         background: color-mix(in srgb, var(--tint) 55%, var(--card));
+                         border: 1px solid color-mix(in srgb, var(--tint) 70%, var(--line));
+                         transition: transform var(--dur-fast) var(--ease-spring),
+                                     box-shadow var(--dur-fast) var(--ease-out); }
+    .floorplan .swatch:hover { transform: scale(1.12); }
+    .floorplan .swatch.chosen { box-shadow: 0 0 0 2px var(--card), 0 0 0 3.5px var(--ember); }
+    .floorplan .swatch:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
     .floorplan .room-label { position: absolute; transform: translate(-50%, -50%);
                              pointer-events: none; color: var(--muted); white-space: nowrap;
                              font: .75rem var(--mono); letter-spacing: .06em;

@@ -649,6 +649,7 @@ mod tests {
             area: "hall".parse().expect("a valid area id"),
             points: ell.clone(),
             label: Point::new(0, 0),
+            tint: None,
         };
         for turned in room_angles(&ell) {
             let inside = Point::new(
