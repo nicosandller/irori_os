@@ -1668,3 +1668,50 @@ fn a_dry_run_of_a_time_trigger_ends() {
     .expect("runs");
     assert!(record.finished_at.is_some());
 }
+
+#[test]
+fn a_machine_that_slept_through_three_mornings_fires_once_when_it_wakes() {
+    let mut engine = Engine::dry(Box::new(CountingIds::default()));
+    engine.load_states([flag(LIGHT, false, 0)]);
+    // Monday 6 July 2026, 06:00 in Brussels: seven o'clock is an hour away.
+    let start = moment("2026-07-06T04:00:00Z");
+    engine.set_place(Some(brussels()), start);
+    engine.set_flows(armed(at_seven()), start);
+
+    // Nothing looks at the clock again until Thursday at noon.
+    let woke = moment("2026-07-09T10:00:00Z");
+    engine.advance(woke);
+    let runs = finished(&mut engine);
+    assert_eq!(
+        runs.len(),
+        1,
+        "one run, not one for every morning missed: {runs:?}"
+    );
+    assert_eq!(runs[0].started_at, woke);
+    // And the next is the next real seven o'clock, not one already gone by.
+    assert_eq!(engine.next_deadline(), Some(moment("2026-07-10T05:00:00Z")));
+}
+
+#[test]
+fn a_backtest_over_days_still_finds_every_morning() {
+    // A light that changed four days ago makes the window four days long.
+    let to = moment("2026-07-10T10:00:00Z"); // Friday noon
+    let first = EntityState {
+        last_changed: moment("2026-07-06T10:00:00Z"),
+        last_updated: moment("2026-07-06T10:00:00Z"),
+        last_reported: moment("2026-07-06T10:00:00Z"),
+        ..flag(LIGHT, false, 0)
+    };
+    let history = BTreeMap::from([(id(LIGHT), vec![first])]);
+    let (runs, _) = sim::backtest(&at_seven(), &history, &[], Some(brussels()), to);
+    let mornings: Vec<_> = runs.iter().map(|run| run.started_at).collect();
+    assert_eq!(
+        mornings,
+        [
+            moment("2026-07-07T05:00:00Z"),
+            moment("2026-07-08T05:00:00Z"),
+            moment("2026-07-09T05:00:00Z"),
+            moment("2026-07-10T05:00:00Z"),
+        ]
+    );
+}

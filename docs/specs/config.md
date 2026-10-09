@@ -552,9 +552,18 @@ The rules, held for a hand-edited file and for the page alike:
 A `users.toml` from before passwords were needed may hold an owner without one. That home is
 still open, and the welcome asks that owner for a password the next time the page is opened.
 
-**Forgetting a password** is put right from the machine, not from the page: delete that person's
-line under `[users.passwords]` in `secrets.toml`. If they were the only one with a password the
-home is open again and the welcome asks for a new one; otherwise an owner sets it in Settings.
+**Forgetting a password** is put right from the machine, not from the page: delete that
+person's line under `[users.passwords]` in `secrets.toml`.
+
+- For anybody but the last owner with a password, an owner then sets a new one in Settings.
+- For an owner, when no other owner has a password, the page opens on the welcome again and
+  asks them for a new one. This holds whoever else still has a password: they keep theirs, and
+  can sign in as before. Until the welcome is finished the home has nobody to run it, and
+  whoever opens the page first becomes that owner, as on a first run.
+
+Either way, a session is only as good as the password it was begun with. Taking a password out
+of the file ends that person's sessions, and setting the owner up through the welcome ends
+everybody's, so a browser signed in under the forgotten password (a lost phone, say) is out.
 
 Sessions are not config. A sign-in is a cookie (`HttpOnly`, `SameSite=Strict`, 30 days, and
 `Secure` when Irori serves https, §3.5) whose

@@ -428,8 +428,11 @@ fn actor(auth: &Auth, people: &People, headers: &HeaderMap) -> Option<Actor> {
             owner: true,
         });
     }
+    // Somebody whose password has since been taken out of the files is nobody: a session is
+    // only as good as the password it was begun with.
     let user = token_of(headers)
         .and_then(|token| auth.whose(token))
+        .filter(|id| people.hashes.contains_key(id))
         .and_then(|id| people.user(&id).cloned())?;
     Some(Actor {
         owner: user.role.runs_the_home(),
@@ -513,7 +516,7 @@ async fn view(state: &AppState, who: &Actor) -> SessionView {
         user: who.user.clone(),
         owner: who.owner,
         setup: Setup {
-            owner: people.locked(),
+            owner: people.owned(),
             place: home.time_zone.is_some(),
         },
     }
@@ -665,8 +668,11 @@ impl std::fmt::Debug for FirstOwner {
 }
 
 /// Sets up the home's owner, with the password that locks it. Open to anyone who can reach
-/// Irori, and only while nobody has a password: this is the first run, and whoever is setting
+/// Irori, and only while no owner has a password: this is the first run, and whoever is setting
 /// the home up is who is there. After it, people are added by an owner.
+///
+/// It is also the way back for an owner who forgot theirs: with their line taken out of
+/// `secrets.toml` no owner has a password, whoever else still does, and this sets a new one.
 ///
 /// A home from before passwords were required may already have an owner without one. They
 /// are the one set up: they keep their id and take the name and password given.
@@ -674,7 +680,7 @@ pub async fn set_up(State(state): State<AppState>, Json(ask): Json<FirstOwner>) 
     // Looked at before any hashing: this address is open to anyone, and a home that is
     // already locked mustn't be made to do slow work for whoever asks.
     const DONE: &str = "this home already has an owner; people are added in Settings";
-    if state.0.config.people().await.locked() {
+    if state.0.config.people().await.owned() {
         return refused(StatusCode::UNPROCESSABLE_ENTITY, DONE.to_owned());
     }
     let hash = match password_hash(Some(ask.password)).await {
@@ -693,7 +699,7 @@ pub async fn set_up(State(state): State<AppState>, Json(ask): Json<FirstOwner>) 
         .0
         .config
         .edit_people(&state.0.core, |people| {
-            if people.locked() {
+            if people.owned() {
                 return Err(Refused(DONE.to_owned()));
             }
             let owner = people
@@ -725,6 +731,10 @@ pub async fn set_up(State(state): State<AppState>, Json(ask): Json<FirstOwner>) 
         Err(error) => return edit_failed(error),
     };
     tracing::info!(user = %user.id, "the home has an owner, and asks who is there");
+    // Every sign-in from before this is over. Setting the owner up is also how a forgotten
+    // password is put right (its line taken out of the files, then this), and a browser that
+    // was signed in under the old one, a lost phone say, must not still be.
+    state.0.auth.forget(|_, _| false);
     // The home is locked from here on, so the person who just set it up is signed in rather
     // than shown the door.
     let token = state.0.auth.begin(&user.id);

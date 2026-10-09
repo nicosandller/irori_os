@@ -507,6 +507,14 @@ impl People {
         self.users.iter().find(|user| &user.id == id)
     }
 
+    /// Whether an owner has a password: the home has somebody who can sign in to run it. Until
+    /// it does, the welcome sets one up.
+    pub fn owned(&self) -> bool {
+        self.users
+            .iter()
+            .any(|user| user.role.runs_the_home() && self.hashes.contains_key(&user.id))
+    }
+
     /// Whether anyone has a password, which is what makes Irori ask who is there
     /// (`docs/specs/config.md` §3.10).
     pub fn locked(&self) -> bool {

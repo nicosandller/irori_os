@@ -312,20 +312,20 @@ async fn serial_ports() -> Json<Vec<String>> {
     Json(crate::serial::list())
 }
 
-/// The Settings page asks for a restart with this header. Nothing in `/api/dev/*` has
-/// authentication yet (that is M1.5), so this is a pre-auth stand-in and it is worth saying
-/// plainly what it is and isn't: it stops the *browser* vectors — a cross-site `<form>` POST
-/// carries no headers, and a fetch with a custom header is stopped by CORS preflight, so no
-/// website the operator happens to have open can silently restart a loopback install — but it
-/// is not authorization. A client that can already reach the server (`--allow-unauthenticated-lan`
-/// puts every network client in that position, for this route and every other `/api/dev/*`
-/// route) can simply send the header. What that client buys with it is capped by
-/// `RESTART_COOLDOWN`, and the real boundary — authentication — arrives with M1.5.
+/// The header only Irori's own page sends, on every change it asks for. It is not who you are:
+/// that is the session cookie, checked for every address by `auth::guard`. It is there because
+/// a browser sends the cookie along with a request whoever wrote the page that made it. A
+/// cross-site `<form>` POST carries no headers of its own, and a fetch with a custom header is
+/// stopped by the browser's CORS preflight, so a website somebody happens to have open can't
+/// change the home on their cookie.
+///
+/// The guard asks for it on every change once the home is locked. Restart asks for it always,
+/// a home with no owner yet included, where anything that can reach the server could send it;
+/// what that buys there is capped by `RESTART_COOLDOWN`.
 const UI_HEADER: &str = "x-irori-ui";
 
 /// How long after an accepted restart the endpoint answers 429 instead of accepting another
-/// one. A restart is an outage, so a caller who can reach this route at all (spoofing
-/// `UI_HEADER` is trivial pre-auth) should not be able to hammer it into a permanent one; this
+/// one. A restart is an outage, so a caller who can reach this route at all should not be able to hammer it into a permanent one; this
 /// bounds how often a boot can be taken down, and costs nothing for the real page — the button
 /// is disabled while the restart is in flight anyway.
 const RESTART_COOLDOWN: Duration = Duration::from_secs(30);
@@ -5503,6 +5503,112 @@ mod tests {
         let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, None, false).await?;
         assert_eq!(status, StatusCode::OK);
         assert!(!server.config_dir().join("secrets.toml").exists());
+        Ok(())
+    }
+
+    /// Takes one person's password out of `secrets.toml`, the way a person would by hand.
+    async fn forget_password_in_the_files(server: &Server, id: &str) -> anyhow::Result<()> {
+        let path = server.config_dir().join("secrets.toml");
+        let kept: String = std::fs::read_to_string(&path)?
+            .lines()
+            .filter(|line| !line.trim_start().starts_with(&format!("{id} =")))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        // Long enough after the last write for the file to read as changed.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        std::fs::write(&path, kept)?;
+        server.config.home().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_password_put_right_from_the_files_signs_every_old_screen_out() -> anyhow::Result<()>
+    {
+        let server = Server::new(core())?;
+        let (app, old) = locked_home(&server).await?;
+        forget_password_in_the_files(&server, "nico").await?;
+        // With its password gone, the session that was begun with it is nobody's.
+        let (_, session, _) = ask(&app, "GET", "/api/session", None, Some(&old), false).await?;
+        assert_eq!(session["setup"]["owner"], false, "{session}");
+
+        let (status, _, new) = ask(
+            &app,
+            "POST",
+            "/api/setup",
+            Some(serde_json::json!({ "name": "Nico", "password": "a new one, remembered" })),
+            None,
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED);
+        let new = new.expect("a session");
+        // The lost phone is out; the screen that set the password is in.
+        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, Some(&old), false).await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, Some(&new), false).await?;
+        assert_eq!(status, StatusCode::OK);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_owner_who_forgot_can_be_set_up_again_while_somebody_else_still_has_a_password()
+    -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, owner) = locked_home(&server).await?;
+        ask(
+            &app,
+            "POST",
+            "/api/dev/users",
+            Some(serde_json::json!({ "name": "Guest", "password": "let me in!" })),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        forget_password_in_the_files(&server, "nico").await?;
+
+        // Still locked, because the guest has a password, and with no owner who can sign in:
+        // the page is told so, and shows the welcome instead of a sign-in nobody could pass.
+        let (_, session, _) = ask(&app, "GET", "/api/session", None, None, false).await?;
+        assert_eq!(session["locked"], true);
+        assert_eq!(session["setup"]["owner"], false);
+        let (status, _, _) = ask(&app, "GET", "/api/dev/home", None, None, false).await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let (status, session, cookie) = ask(
+            &app,
+            "POST",
+            "/api/setup",
+            Some(serde_json::json!({ "name": "Nico", "password": "a new one, remembered" })),
+            None,
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{session}");
+        assert_eq!(session["user"]["id"], "nico");
+        assert_eq!(session["owner"], true);
+        assert!(cookie.is_some());
+        // The guest is still there, with the password they had.
+        let (status, _, _) = ask(
+            &app,
+            "POST",
+            "/api/session",
+            Some(serde_json::json!({ "user": "guest", "password": "let me in!" })),
+            None,
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        // And with the owner back, the door is shut again.
+        let (status, _, _) = ask(
+            &app,
+            "POST",
+            "/api/setup",
+            Some(serde_json::json!({ "name": "Mallory", "password": "let me in!" })),
+            None,
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         Ok(())
     }
 }

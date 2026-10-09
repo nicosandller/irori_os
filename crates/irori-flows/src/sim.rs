@@ -49,7 +49,7 @@ pub fn dry_run(
         now,
     );
     engine.fire(&id, trigger, Some(TestKind::Dry), now)?;
-    let mut records = settle(&mut engine, now, None);
+    let mut records = settle(&mut engine, None);
     let mut record = records
         .pop()
         .ok_or_else(|| "the run didn't finish".to_owned())?;
@@ -116,12 +116,12 @@ pub fn backtest(
     let replayed = changes.len();
     let mut records = Vec::new();
     for (at, state) in changes {
-        records.extend(settle(&mut engine, at, Some(at)));
+        records.extend(settle(&mut engine, Some(at)));
         let old = engine.state(&state.entity_id).cloned();
         engine.state_changed(old, state, at);
         records.extend(finished(&mut engine));
     }
-    records.extend(settle(&mut engine, to, Some(to)));
+    records.extend(settle(&mut engine, Some(to)));
     // A run still going at the end of the window is shown as far as it got.
     for run in engine.active(None) {
         records.push(run.record);
@@ -131,7 +131,7 @@ pub fn backtest(
 
 /// Follows the engine's timers — up to `until` if given, else until nothing is left — and
 /// answers the runs that finished.
-fn settle(engine: &mut Engine, now: Timestamp, until: Option<Timestamp>) -> Vec<RunRecord> {
+fn settle(engine: &mut Engine, until: Option<Timestamp>) -> Vec<RunRecord> {
     let mut records = finished(engine);
     let mut ticks = 0;
     while let Some(next) = engine.next_deadline() {
@@ -143,7 +143,9 @@ fn settle(engine: &mut Engine, now: Timestamp, until: Option<Timestamp>) -> Vec<
         if until.is_none() && engine.idle() {
             break;
         }
-        engine.advance(next.max(now));
+        // One deadline at a time, each at its own moment: a replay wants every time of day
+        // the window holds, where a live engine that woke late fires only once.
+        engine.advance(next);
         records.extend(finished(engine));
         ticks += 1;
     }

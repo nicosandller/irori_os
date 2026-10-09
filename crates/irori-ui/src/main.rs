@@ -111,14 +111,14 @@ fn App() -> impl IntoView {
         Memo::new(move |_| session.with(|s| s.as_ref().is_some_and(api::Session::must_sign_in)));
     spawn_local(async move {
         if let Ok(now) = api::fetch_session().await {
-            welcoming.set(now.wants_welcome() && now.owner);
+            welcoming.set(now.wants_welcome());
             session.set(Some(now));
         }
     });
     // Where the home is and who is in it, once this browser may ask: as the page opens, and
     // again when somebody signs in.
     Effect::new(move |_| {
-        if session.with(Option::is_none) || must_sign_in.get() {
+        if session.with(|s| s.as_ref().is_none_or(api::Session::shut_out)) {
             return;
         }
         spawn_local(async move {
@@ -174,7 +174,7 @@ fn App() -> impl IntoView {
         let mut ticks: u32 = 0;
         loop {
             // Nobody is signed in: there is nothing this browser may ask for yet.
-            if must_sign_in.get_untracked() {
+            if session.with_untracked(|s| s.as_ref().is_some_and(api::Session::shut_out)) {
                 gloo_timers::future::sleep(REFRESH).await;
                 continue;
             }

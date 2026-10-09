@@ -1516,9 +1516,16 @@ pub struct Session {
 }
 
 impl Session {
-    /// Locked, and this browser is nobody yet.
-    pub fn must_sign_in(&self) -> bool {
+    /// Locked, and this browser is nobody yet: nothing it asks for will be answered.
+    pub fn shut_out(&self) -> bool {
         self.locked && self.user.is_none()
+    }
+
+    /// Whether to show the sign-in page. Not while the home has no owner who could sign in
+    /// (theirs forgotten and taken out of the files, somebody else's still there): then it is
+    /// the welcome that is shown, to set the owner up again.
+    pub fn must_sign_in(&self) -> bool {
+        self.shut_out() && self.setup.owner
     }
 
     /// Whether the welcome should open by itself: the home has no owner who can sign in yet.

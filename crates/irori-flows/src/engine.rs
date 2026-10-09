@@ -563,6 +563,15 @@ impl Engine {
             let Some((at, _, timer)) = self.timers.pop_first() else {
                 break;
             };
+            // A wait inside a run ended when it was due, however late this is looked at. A time
+            // of day is different: it fires now, once, and its next moment is worked out from
+            // now. Worked out from when it was due, a machine that slept through three days
+            // would wake and fire every morning it missed, one after another.
+            let at = if matches!(timer, Timer::Clock { .. }) {
+                now
+            } else {
+                at
+            };
             self.timer(timer, at);
             self.drive(at);
         }

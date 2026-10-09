@@ -48,14 +48,37 @@ fn names(bind: SocketAddr) -> Vec<String> {
     if !bind.ip().is_unspecified() && !bind.ip().is_loopback() {
         names.push(bind.ip().to_string());
     }
-    if let Some(host) = sysinfo::System::host_name().filter(|host| !host.is_empty()) {
-        // As mDNS announces it, and bare.
-        if !host.contains('.') {
-            names.push(format!("{host}.local"));
-        }
-        names.push(host);
-    }
+    names.extend(host_names(sysinfo::System::host_name().as_deref()));
     names.dedup();
+    names
+}
+
+/// The machine's own name as a certificate can carry it: bare, and as mDNS announces it.
+/// Nothing, for a name a certificate can't hold. A certificate's names are plain ASCII letters,
+/// digits and hyphens, and a machine called "Büro" or "Nico's Mac" isn't one; leaving the name
+/// out still makes a certificate that is good for `localhost` and the machine's address, where
+/// keeping it would make none at all.
+fn host_names(host: Option<&str>) -> Vec<String> {
+    let Some(host) = host.map(str::trim).filter(|host| !host.is_empty()) else {
+        return Vec::new();
+    };
+    let label = |label: &str| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    };
+    if host.len() > 253 || !host.split('.').all(label) {
+        return Vec::new();
+    }
+    let mut names = Vec::new();
+    if !host.contains('.') {
+        names.push(format!("{host}.local"));
+    }
+    names.push(host.to_owned());
     names
 }
 
@@ -240,6 +263,16 @@ mod tests {
         let why = config(dir.path(), bind()).expect_err("no key");
         assert!(format!("{why:#}").contains("key.pem"), "{why:#}");
         Ok(())
+    }
+
+    #[test]
+    fn a_machine_name_a_certificate_cant_hold_is_left_out() {
+        assert_eq!(host_names(Some("hearth")), ["hearth.local", "hearth"]);
+        assert_eq!(host_names(Some("hearth.lan")), ["hearth.lan"]);
+        for unfit in ["Büro", "Nico's Mac", "-edge", "a..b", ""] {
+            assert!(host_names(Some(unfit)).is_empty(), "{unfit}");
+        }
+        assert!(host_names(None).is_empty());
     }
 
     #[test]

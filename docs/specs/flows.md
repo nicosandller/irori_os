@@ -167,6 +167,10 @@ Same meaning as rules.md §5, restated for what the engine watches:
   - The engine keeps each such trigger's next moment as a timer and winds it again after it
     fires, when the flows change, and when the home's place does. It never reads the clock
     itself, so a backtest replays the same moments on its virtual clock.
+  - An engine that looks at the clock late (the machine slept, the process was paused) fires
+    a missed time once, when it wakes, and works the next one out from then. It doesn't fire
+    once for every occurrence it slept through. A backtest steps through each moment in turn,
+    so it still shows every one.
   - Clocks going forward over a time skip it that day; going back over one fires it once, at the
     first (rules.md §5.2). A sun event that doesn't happen on a day is skipped.
   - The step's note says why it fired: "it's 07:00 on Friday", "30m before sunset (21:29)".
