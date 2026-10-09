@@ -65,6 +65,9 @@ fn log(event: &Event) {
         Event::SettingsChanged => {
             tracing::debug!("settings changed");
         }
+        Event::FoundChanged => {
+            tracing::debug!("a device waiting to be added changed");
+        }
         Event::DeviceUpdated { .. }
         | Event::DeviceRemoved { .. }
         | Event::EntityUpdated { .. }

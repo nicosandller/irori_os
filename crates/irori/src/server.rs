@@ -73,6 +73,8 @@ struct Inner {
     last_restart: Mutex<Option<Instant>>,
     /// Who is signed in, and who has been getting their password wrong.
     auth: auth::Auth,
+    /// Live sockets and extension sockets, so a sign-out or a revocation can close them.
+    sockets: live::Sockets,
     /// The questions the assistant is in the middle of answering, by conversation.
     #[cfg(feature = "assist")]
     turns: crate::assistant::Turns,
@@ -94,6 +96,7 @@ impl AppState {
             started: Instant::now(),
             boot_id: boot_id(),
             auth: auth::Auth::open(&db),
+            sockets: live::Sockets::default(),
             db,
             build: BuildInfo::current(),
             core,
@@ -5901,6 +5904,390 @@ mod tests {
         assert_eq!(message["type"], "snapshot");
         assert!(message["home"]["devices"].is_array(), "{message}");
         serve.abort();
+        Ok(())
+    }
+
+    /// Holds an exclusive lock on the database so the next write fails at once.
+    fn hold_database(dir: &std::path::Path) -> anyhow::Result<rusqlite::Connection> {
+        let conn = rusqlite::Connection::open(dir.join("irori.db"))?;
+        conn.execute_batch("BEGIN EXCLUSIVE")?;
+        Ok(conn)
+    }
+
+    async fn listen(app: Router) -> anyhow::Result<std::net::SocketAddr> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        Ok(address)
+    }
+
+    /// A header that names some other scheme is the cookie. A bearer token that isn't one
+    /// Irori issued is refused, and does not fall through onto a cookie that would have worked.
+    #[tokio::test]
+    async fn basic_auth_is_the_cookie_and_a_bad_bearer_is_not() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (status, bytes) = server
+            .send(
+                Request::get("/api/home")
+                    .header("authorization", "Basic bm9wZTpub3Bl")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let (status, bytes) = server
+            .send(
+                Request::get("/api/health")
+                    .header("authorization", "Basic bm9wZTpub3Bl")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+
+        let (app, cookie) = locked_home(&server).await?;
+        let (status, body, _) = ask(&app, "GET", "/api/home", None, Some(&cookie), false).await?;
+        // The cookie is what gets in. Basic came along and changed nothing.
+        let request = Request::get("/api/home")
+            .header("authorization", "Basic bm9wZTpub3Bl")
+            .header("cookie", &cookie)
+            .body(Body::empty())?;
+        let response = app.clone().oneshot(request).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let blocked = Request::get("/api/home")
+            .header("authorization", "Bearer nope")
+            .header("cookie", &cookie)
+            .body(Body::empty())?;
+        let response = app.clone().oneshot(blocked).await?;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let alone = Request::get("/api/home")
+            .header("authorization", "Basic bm9wZTpub3Bl")
+            .body(Body::empty())?;
+        let response = app.oneshot(alone).await?;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "{status} {body}"
+        );
+        Ok(())
+    }
+
+    /// Revoking has to fail where the token can still be used. A database that won't take
+    /// the delete leaves the token in place, and says so, instead of pretending it's gone.
+    #[tokio::test]
+    async fn a_revoke_that_cant_be_written_leaves_the_token_working() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let app = server.app()?;
+        let (status, created, _) = ask(
+            &app,
+            "POST",
+            "/api/tokens",
+            Some(serde_json::json!({ "name": "Tablet", "scopes": ["states:read"] })),
+            None,
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let secret = created["secret"].as_str().expect("shown once").to_owned();
+        let _lock = hold_database(server.dir.path())?;
+
+        let (status, why, _) = ask(&app, "DELETE", "/api/tokens/tablet", None, None, false).await?;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{why}");
+        assert!(
+            why["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("couldn't write it down")),
+            "{why}"
+        );
+        let (status, _) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, why, _) = ask(
+            &app,
+            "POST",
+            "/api/setup",
+            Some(serde_json::json!({ "name": "Nico", "password": "correct horse" })),
+            None,
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{why}");
+        let (status, home, _) = ask(&app, "GET", "/api/home", None, None, false).await?;
+        assert_eq!(status, StatusCode::OK, "{home}");
+        let (status, _) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(status, StatusCode::OK);
+        Ok(())
+    }
+
+    /// Removing somebody revokes their tokens first. If that can't be written, they stay.
+    #[tokio::test]
+    async fn a_person_stays_when_their_tokens_cant_be_revoked() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, owner) = locked_home(&server).await?;
+        // Somebody else is here, so the only owner can't be removed. That refusal has to
+        // come before any token of theirs is forgotten.
+        ask(
+            &app,
+            "POST",
+            "/api/users",
+            Some(serde_json::json!({ "name": "Guest", "password": "let me in!" })),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        let (status, created, _) = ask(
+            &app,
+            "POST",
+            "/api/tokens",
+            Some(serde_json::json!({ "name": "Phone", "scopes": ["states:read"] })),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let phone = created["secret"].as_str().expect("shown once").to_owned();
+        let (status, why, _) =
+            ask(&app, "DELETE", "/api/users/nico", None, Some(&owner), true).await?;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{why}");
+        let (status, _) = bearer(&app, "GET", "/api/states", None, &phone).await?;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _, _) = ask(
+            &app,
+            "POST",
+            "/api/users",
+            Some(serde_json::json!({
+                "name": "Ada",
+                "role": "owner",
+                "password": "correct horse",
+            })),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, _, ada_cookie) = ask(
+            &app,
+            "POST",
+            "/api/session",
+            Some(serde_json::json!({ "user": "Ada", "password": "correct horse" })),
+            None,
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        let ada_cookie = ada_cookie.expect("Ada is signed in");
+        let (status, created, _) = ask(
+            &app,
+            "POST",
+            "/api/tokens",
+            Some(serde_json::json!({ "name": "Tablet", "scopes": ["states:read"] })),
+            Some(&ada_cookie),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let secret = created["secret"].as_str().expect("shown once").to_owned();
+        let _lock = hold_database(server.dir.path())?;
+
+        let (status, why, _) =
+            ask(&app, "DELETE", "/api/users/ada", None, Some(&owner), true).await?;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{why}");
+        let (status, users, _) = ask(&app, "GET", "/api/users", None, Some(&owner), false).await?;
+        assert_eq!(status, StatusCode::OK, "{users}");
+        assert!(
+            users
+                .as_array()
+                .is_some_and(|users| { users.iter().any(|user| user["id"] == "ada") }),
+            "{users}"
+        );
+        let (status, _) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(status, StatusCode::OK);
+
+        Ok(())
+    }
+
+    async fn open_live(
+        address: std::net::SocketAddr,
+        headers: &[(&str, &str)],
+    ) -> anyhow::Result<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    > {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = format!("ws://{address}/api/ws").into_client_request()?;
+        for (name, value) in headers {
+            request.headers_mut().insert(
+                axum::http::HeaderName::from_bytes(name.as_bytes())
+                    .map_err(|error| anyhow::anyhow!("{error}"))?,
+                axum::http::HeaderValue::from_str(value)
+                    .map_err(|error| anyhow::anyhow!("{error}"))?,
+            );
+        }
+        let mut socket = None;
+        let mut last = None;
+        for _ in 0..50 {
+            match tokio_tungstenite::connect_async(request.clone()).await {
+                Ok((connected, _)) => {
+                    socket = Some(connected);
+                    break;
+                }
+                Err(error) => {
+                    last = Some(error);
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+        }
+        socket.ok_or_else(|| anyhow::anyhow!("the live socket did not open: {last:?}"))
+    }
+
+    /// The upgrade was refused, once the server is accepting. A connection that hasn't
+    /// started yet is tried again.
+    async fn refused_upgrade(
+        address: std::net::SocketAddr,
+        origin: &str,
+    ) -> anyhow::Result<StatusCode> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut last = None;
+        for _ in 0..50 {
+            let mut request = format!("ws://{address}/api/ws").into_client_request()?;
+            request.headers_mut().insert("origin", origin.parse()?);
+            match tokio_tungstenite::connect_async(request).await {
+                Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                    return Ok(response.status());
+                }
+                Err(error) => {
+                    last = Some(error);
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Ok(_) => anyhow::bail!("the socket opened for origin {origin}"),
+            }
+        }
+        Err(anyhow::anyhow!("the socket was not refused: {last:?}"))
+    }
+
+    /// Another website's page is refused. This server's page, and a program with no
+    /// origin, are not.
+    #[tokio::test]
+    async fn a_socket_from_another_site_is_refused() -> anyhow::Result<()> {
+        use futures_util::StreamExt as _;
+        let server = Server::new(core())?;
+        let address = listen(server.app()?).await?;
+        assert_eq!(
+            refused_upgrade(address, "http://evil.example").await?,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            refused_upgrade(address, "null").await?,
+            StatusCode::FORBIDDEN
+        );
+
+        let mut socket = open_live(address, &[("origin", &format!("http://{address}"))]).await?;
+        let frame = socket.next().await;
+        drop(socket);
+        let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) = frame else {
+            anyhow::bail!("this server's page should get a snapshot, got {frame:?}");
+        };
+        assert!(text.to_string().contains("snapshot"));
+        let mut program = open_live(address, &[]).await?;
+        let frame = program.next().await;
+        assert!(
+            matches!(
+                frame,
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Text(_)))
+            ),
+            "a program with no origin still connects, got {frame:?}"
+        );
+        Ok(())
+    }
+
+    /// Signing out, and revoking a token, closes the socket that was opened with it.
+    #[tokio::test]
+    async fn signing_out_and_revoking_close_the_socket() -> anyhow::Result<()> {
+        use futures_util::StreamExt as _;
+        let server = Server::new(core())?;
+        let (app, cookie) = locked_home(&server).await?;
+        let (status, created, _) = ask(
+            &app,
+            "POST",
+            "/api/tokens",
+            Some(serde_json::json!({
+                "name": "Tablet",
+                "scopes": ["registry:read", "states:read", "events:read"],
+            })),
+            Some(&cookie),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let secret = created["secret"].as_str().expect("shown once").to_owned();
+        let address = listen(app.clone()).await?;
+
+        let mut browser = open_live(address, &[("cookie", cookie.as_str())]).await?;
+        let mut program =
+            open_live(address, &[("authorization", &format!("Bearer {secret}"))]).await?;
+        for (who, socket) in [("the page", &mut browser), ("the program", &mut program)] {
+            let snapshot = socket.next().await;
+            assert!(
+                matches!(
+                    snapshot,
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Text(_)))
+                ),
+                "{who} should get a snapshot, got {snapshot:?}"
+            );
+        }
+
+        // The token's socket closes. The page's, opened with the cookie, stays.
+        let (status, _, _) = ask(
+            &app,
+            "DELETE",
+            "/api/tokens/tablet",
+            None,
+            Some(&cookie),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let closed = tokio::time::timeout(Duration::from_secs(2), program.next()).await;
+        assert!(
+            matches!(
+                closed,
+                Ok(None
+                    | Some(Err(_))
+                    | Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))))
+            ),
+            "revoking the token should close its socket, got {closed:?}"
+        );
+        let still = tokio::time::timeout(Duration::from_millis(200), browser.next()).await;
+        assert!(
+            still.is_err(),
+            "the page's socket stays until its sign-in ends, got {still:?}"
+        );
+
+        let (status, _, _) =
+            ask(&app, "DELETE", "/api/session", None, Some(&cookie), false).await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let closed = tokio::time::timeout(Duration::from_secs(2), browser.next()).await;
+        assert!(
+            matches!(
+                closed,
+                Ok(None
+                    | Some(Err(_))
+                    | Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))))
+            ),
+            "signing out should close the socket, got {closed:?}"
+        );
         Ok(())
     }
 }

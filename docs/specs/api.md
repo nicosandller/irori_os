@@ -28,7 +28,9 @@ program easy to write and leaves the rest out.
 | An extension that dials in | A token made for that extension, on `/api/extension` | Speak the extension protocol (§6) |
 
 A request that sends a bearer token is that token, even if a cookie is on it too. The page
-does not send a bearer token.
+does not send a bearer token. Only `Bearer`, or a header with no scheme, is a token. Another
+scheme, such as `Basic` from a reverse proxy, is ignored and the cookie is used. A bad
+bearer token is still refused: it does not fall through to the cookie.
 
 A bearer token does not need `x-irori-ui`. That header exists so a website cannot use the
 browser's cookie. A token is a secret the program was given.
@@ -101,6 +103,10 @@ protocol has confirmed, or an error.
 way as any other request. A rejected upgrade is a normal HTTP error. There is no
 auth-required round trip after the socket opens, and the client sends nothing.
 
+When the request carries `Origin`, that origin's host and port have to be this server's
+`Host`. A page on another site is refused. A program that sends no `Origin` still connects.
+The socket closes when the sign-in or the token that opened it ends.
+
 Each text frame is one JSON object.
 
 The first frame is the current picture:
@@ -116,7 +122,7 @@ After that, Irori pushes:
 | Frame | When |
 |---|---|
 | `{ "type": "state", "entity_id", "state" }` | One entity's state changed. `state` is an `EntityState`. |
-| `{ "type": "changed" }` | Anything else: a device or entity appeared or was renamed, an extension's status, the place, or settings (areas, floors, the plan). Read `GET /api/home` again. |
+| `{ "type": "changed" }` | Anything else: a device or entity appeared or was renamed, a device was found and is waiting to be added, an extension's status, the place, or settings (areas, floors, the plan). Read `GET /api/home` again. |
 
 A client that falls behind is sent a fresh `snapshot` instead of a gap. When the socket
 closes, the client connects again and gets a snapshot.
@@ -163,7 +169,9 @@ Each text frame is one JSON message, the same `FromExt` and `ToExt` a child proc
 writes as a line. Irori sends `hello` first, with the extension's settings, then the
 service calls and the rest. The extension sends `describe_device`, `state_report`, and
 the other messages a protocol already sends. One connection at a time. A second is
-refused while the first is open. When it drops, Irori waits for it to connect again.
+refused while the first is open. Irori pings the connection. If nothing comes back, or a
+frame isn't one of those messages, the link is dropped. When it drops, Irori waits for it
+to connect again. That wait is not a failure of the extension.
 
 The extension's declared API scopes are still enforced on the engine operations it sends
 (`docs/specs/automations.md` §B2). The token is who it is, not an extra set of scopes.

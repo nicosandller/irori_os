@@ -435,6 +435,13 @@ impl Auth {
         self.forget(|other, _| other != hash);
     }
 
+    /// The hash of the cookie's session, when that cookie is still a sign-in.
+    pub(super) fn live_session(&self, headers: &HeaderMap) -> Option<String> {
+        let token = token_of(headers)?;
+        self.whose(token)?;
+        Some(fingerprint(token))
+    }
+
     /// Ends every session of `user`, apart from the one `except` carries: a changed password
     /// signs the other screens out, not the one it was changed on.
     pub fn end_all(&self, user: &UserId, except: Option<&str>) {
@@ -575,8 +582,9 @@ fn actor(auth: &Auth, people: &People, headers: &HeaderMap) -> Option<Actor> {
 
 /// Lets a request through, or says why not. Over every route.
 ///
-/// A bearer token is that token, even when a cookie came along too. An extension's socket
-/// takes only the token made for that extension. Anything else is the page's cookie.
+/// A bearer token is that token, even when a cookie came along too. Any other
+/// `Authorization` scheme is the page's cookie, so a proxy's `Basic` header doesn't
+/// lock the page out. An extension's socket takes only the token made for that extension.
 pub async fn guard(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
     let path = request.uri().path().to_owned();
     let people = state.0.config.people().await;
@@ -585,7 +593,7 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
             Ok(who) => Some(who),
             Err(response) => return *response,
         }
-    } else if request.headers().contains_key(header::AUTHORIZATION) {
+    } else if super::tokens::authorization_is_a_token(request.headers()) {
         match super::tokens::bearer_actor(
             &state.0.auth,
             &people,
@@ -804,7 +812,9 @@ pub async fn sign_in(
 
 pub async fn sign_out(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Some(token) = token_of(&headers) {
+        let hash = fingerprint(token);
         state.0.auth.end(token);
+        state.0.sockets.close_session(&hash);
     }
     let mut response = StatusCode::NO_CONTENT.into_response();
     response
@@ -855,6 +865,16 @@ pub async fn set_up(State(state): State<AppState>, Json(ask): Json<FirstOwner>) 
             "that name has no letters or numbers to make an id from".to_owned(),
         );
     };
+    // Before the owner is written. The home is still open here, and an owner who keeps
+    // their id would honour every old token the moment they have a password. If the
+    // database can't forget them, nothing else happens.
+    if let Err(why) = state.0.auth.tokens.revoke_all() {
+        return refused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("couldn't write it down: {why}"),
+        );
+    }
+    state.0.sockets.close_all_tokens();
     let name = ask.name;
     let made = state
         .0
@@ -894,9 +914,10 @@ pub async fn set_up(State(state): State<AppState>, Json(ask): Json<FirstOwner>) 
     tracing::info!(user = %user.id, "the home has an owner, and asks who is there");
     // Every sign-in from before this is over. Setting the owner up is also how a forgotten
     // password is put right (its line taken out of the files, then this), and a browser that
-    // was signed in under the old one, a lost phone say, must not still be.
+    // was signed in under the old one, a lost phone say, must not still be. An open home's
+    // sockets had no sign-in at all; they close too, because the home now asks who is there.
     state.0.auth.forget(|_, _| false);
-    state.0.auth.tokens.revoke_all();
+    state.0.sockets.close_open_and_sessions();
     // The home is locked from here on, so the person who just set it up is signed in rather
     // than shown the door.
     let token = state.0.auth.begin(&user.id);

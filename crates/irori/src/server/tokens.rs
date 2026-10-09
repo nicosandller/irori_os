@@ -272,8 +272,9 @@ impl TokenStore {
             .cloned()
     }
 
-    /// Revokes the token with this id. `false` when there wasn't one.
-    fn revoke(&self, id: &TokenId) -> bool {
+    /// Revokes the token with this id. `Ok(false)` when there wasn't one. `Err` when the
+    /// database didn't forget it: the token stays, so a restart is not what brings it back.
+    fn revoke(&self, id: &TokenId) -> Result<bool, String> {
         let hash = {
             let tokens = self.tokens.lock().unwrap_or_else(PoisonError::into_inner);
             tokens
@@ -282,30 +283,24 @@ impl TokenStore {
                 .map(|(hash, _)| hash.clone())
         };
         let Some(hash) = hash else {
-            return false;
+            return Ok(false);
         };
-        self.drop_tokens(|other, _| other != hash);
-        // Dropped from memory only when the database forgot it too. If that failed, the
-        // token is still here, so this still reports that it wasn't revoked.
-        !self
-            .tokens
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains_key(&hash)
+        self.drop_tokens(|other, _| other != hash)?;
+        Ok(true)
     }
 
     /// Revokes every token that belongs to `user`.
-    pub(super) fn revoke_user(&self, user: &UserId) {
-        self.drop_tokens(|_, token| &token.user != user);
+    pub(super) fn revoke_user(&self, user: &UserId) -> Result<(), String> {
+        self.drop_tokens(|_, token| &token.user != user)
     }
 
     /// Revokes every token. Setting the home up again does this: the welcome is also how a
     /// forgotten password is replaced, and tokens from before that must not keep working.
-    pub(super) fn revoke_all(&self) {
-        self.drop_tokens(|_, _| false);
+    pub(super) fn revoke_all(&self) -> Result<(), String> {
+        self.drop_tokens(|_, _| false)
     }
 
-    fn drop_tokens(&self, keep: impl Fn(&str, &AccessToken) -> bool) {
+    fn drop_tokens(&self, keep: impl Fn(&str, &AccessToken) -> bool) -> Result<(), String> {
         let mut tokens = self.tokens.lock().unwrap_or_else(PoisonError::into_inner);
         let gone: Vec<String> = tokens
             .iter()
@@ -313,21 +308,26 @@ impl TokenStore {
             .map(|(hash, _)| hash.clone())
             .collect();
         if gone.is_empty() {
-            return;
+            return Ok(());
         }
-        let dropped = self.conn().and_then(|conn| {
+        // One transaction, so a failure leaves every row where it was. The hashes stay in
+        // memory in that case: forgetting them here would make a restart the only way back,
+        // and until then the token would already be gone from the check.
+        let dropped = self.conn().and_then(|mut conn| {
+            let transaction = conn.transaction()?;
             for hash in &gone {
-                conn.execute("DELETE FROM tokens WHERE token_hash = ?1", [hash])?;
+                transaction.execute("DELETE FROM tokens WHERE token_hash = ?1", [hash])?;
             }
-            Ok(())
+            transaction.commit()
         });
         if let Err(error) = dropped {
             tracing::warn!(%error, "couldn't revoke an access token");
-            return;
+            return Err(error.to_string());
         }
         for hash in &gone {
             tokens.remove(hash);
         }
+        Ok(())
     }
 }
 
@@ -416,14 +416,38 @@ pub async fn create(
 }
 
 pub async fn revoke(State(state): State<AppState>, Path(id): Path<TokenId>) -> Response {
-    if state.0.auth.tokens.revoke(&id) {
-        tracing::info!(token = %id, "an access token was revoked");
-        StatusCode::NO_CONTENT.into_response()
-    } else {
-        refused(
+    match state.0.auth.tokens.revoke(&id) {
+        Ok(true) => {
+            state.0.sockets.close_token(&id);
+            tracing::info!(token = %id, "an access token was revoked");
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(false) => refused(
             StatusCode::NOT_FOUND,
             format!("there's no token called `{id}`"),
-        )
+        ),
+        Err(why) => refused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("couldn't write it down: {why}"),
+        ),
+    }
+}
+
+/// Whether `Authorization` is an attempt to present a token.
+///
+/// `Bearer`, a header with no scheme (`nope`), and a value that isn't text are tokens:
+/// a bad one is refused, and is not the cookie that came along too. Another named scheme,
+/// such as `Basic` from a reverse proxy, is not a token and falls through to the cookie.
+pub(super) fn authorization_is_a_token(headers: &HeaderMap) -> bool {
+    let Some(value) = headers.get(header::AUTHORIZATION) else {
+        return false;
+    };
+    let Ok(text) = value.to_str() else {
+        return true;
+    };
+    match text.split_once(' ') {
+        Some((scheme, _)) => scheme.eq_ignore_ascii_case("bearer"),
+        None => true,
     }
 }
 
