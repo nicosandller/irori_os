@@ -51,7 +51,7 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | X3 | HA Discovery library | `irori-ha-discovery`: HA MQTT Discovery parsing, shared by MQTT and Zigbee | ✅ | C2 |
 | X4 | Zigbee | Self-installed Zigbee2MQTT, embedded broker, permit-join | ✅ | C6, X3 |
 | X5 | MQTT | Generic MQTT + HA Discovery against an external broker | ✅ | C6, X3 |
-| X6 | Floorplan | Walls, floors, rooms, drag devices into rooms, device glyphs, doors and windows that follow their contact sensor. Built into the UI. Still open: create/delete areas from the plan, exact lengths, per-device icon and label (#27) | 🟠 | C11 |
+| X6 | Floorplan | Walls, floors, rooms, drag devices into rooms, device glyphs, doors and windows that follow their contact sensor, snapping to midpoints and guides, angles, room colours, the plan as JSON, and an assistant that answers about a floor and draws on the plan being edited. Built into the UI. Still open: create/delete areas from the plan, a wall's length typed, per-device icon and label (#27) | 🟠 | C11 |
 | X7 | Shadow mode | Run alongside HA on the same devices to validate Irori | - | X5 |
 | X8 | Extension SDKs & templates | `cargo generate` templates, Python package, docs | - | C17 |
 | X9 | App contributions | Pages under `/apps/<id>/` beyond the sidebar slot that C31 delivered (config editor, log viewer, terminal) | - | C17, C26, C31 |

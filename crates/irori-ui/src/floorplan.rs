@@ -581,6 +581,7 @@ pub fn Floorplan() -> impl IntoView {
     // it reads is the plan being drawn, and what it draws lands as one step to undo. Not while
     // reading the plan — there is no working copy then, and the home's own plan is not a
     // thing the assistant gets to change.
+    let assistant = expect_context::<crate::Assistant>();
     let chats = expect_context::<crate::assistant::Chats>();
     chats.lay(Some(crate::assistant::Desk {
         read: Callback::new(move |()| editing.get_untracked().then(|| draft.get_untracked())),
@@ -1773,6 +1774,13 @@ pub fn Floorplan() -> impl IntoView {
                     // About the floor on show, by the name the home knows it by. Its own
                     // conversation per floor, so upstairs isn't answered with downstairs.
                     {move || {
+                        // With no model ready, Ask leads to Settings to set one up — and
+                        // leaving this page drops the plan being drawn. So while editing it is
+                        // only offered when it will answer.
+                        let ready = assistant.0.get().is_some_and(|status| status.ready);
+                        if editing.get() && !ready {
+                            return None;
+                        }
                         let id = floor.get()?;
                         let name = floors
                             .get()

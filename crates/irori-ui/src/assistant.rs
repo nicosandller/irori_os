@@ -296,6 +296,9 @@ pub struct ModelLog(pub RwSignal<bool>);
 #[derive(Debug, Clone, Copy)]
 pub struct Asking(pub RwSignal<Option<AskAt>>);
 
+/// How wide the chat window is drawn, in pixels: `.ask-pop`'s 26rem.
+const POP_WIDTH: f64 = 416.0;
+
 /// What an Ask button does: Settings while no model is ready, and otherwise a chat window
 /// under the button, whose bottom edge is `bottom` and right edge `right`. Asking the same
 /// thing again closes it.
@@ -335,7 +338,11 @@ pub fn ask(
         title,
         // Under the button, but never so low that the chat has no room to be a chat.
         top: (bottom + 8.0).min(height - 360.0).max(8.0),
-        right: (width - right).max(12.0),
+        // Its right edge under the button's, unless the button is so far left that the chat
+        // would hang off that side of the window: then as far left as it fits.
+        right: (width - right)
+            .min(width - POP_WIDTH.min(width - 24.0) - 12.0)
+            .max(12.0),
     }));
 }
 
