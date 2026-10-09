@@ -62,6 +62,8 @@ const ALLOWED_WORKSPACE_DEPS: &[(&str, &[&str])] = &[
         ],
     ),
     ("irori-client", &["irori-types"]),
+    // History on disk. The binary owns the thread; this crate does not know about the core.
+    ("irori-recorder", &["irori-types"]),
     (
         "irori-protocol-*",
         &["irori-types", "irori-protocol", "irori-ha-discovery"],

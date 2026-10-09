@@ -1739,6 +1739,11 @@ name = "irori-recorder"
 version = "0.0.0"
 dependencies = [
  "irori-types",
+ "jiff",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
