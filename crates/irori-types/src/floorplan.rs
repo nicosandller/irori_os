@@ -858,7 +858,11 @@ mod tests {
     fn a_room_wears_the_colour_it_was_given_or_its_own() {
         let square = &[(0, 0), (400, 0), (400, 300), (0, 300)][..];
         let plain = area("kitchen", square);
-        assert!(!serde_json::to_string(&plain).expect("json").contains("tint"));
+        assert!(
+            !serde_json::to_string(&plain)
+                .expect("json")
+                .contains("tint")
+        );
         assert_eq!(plain.shade(), Tint::of(&plain.area));
         assert_eq!(plain.shade(), area("kitchen", square).shade());
 

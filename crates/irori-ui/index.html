@@ -1539,6 +1539,22 @@
     .floorplan .plan-actions button.step { display: grid; place-items: center; padding: .3rem .45rem; }
     .floorplan .plan-actions button.step svg { width: 1.1rem; height: 1.1rem; display: block; }
     .floorplan .plan-actions button.step + button:not(.step) { margin-left: .4rem; }
+    /* The plan as text. The window is the shell's; the box is the plan's. */
+    .plan-source { display: grid; gap: .7rem; }
+    .plan-source p { margin: 0; }
+    .plan-source textarea { width: 100%; height: min(58vh, 34rem); padding: .7rem .8rem;
+                            resize: vertical; font: .78rem/1.5 var(--mono); color: var(--fg);
+                            background: var(--sunk); border: 1px solid var(--line);
+                            border-radius: .4rem; tab-size: 2; white-space: pre; }
+    .plan-source textarea:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
+    .plan-source .why { color: var(--ember); font: .8rem var(--mono); overflow-wrap: anywhere; }
+    .plan-source-actions { display: flex; justify-content: flex-end; gap: .5rem; }
+    .plan-source-actions button { padding: .35rem .8rem; font: inherit; font-size: .85rem;
+                                  color: var(--fg); background: var(--card); cursor: pointer;
+                                  border: 1px solid var(--line); border-radius: .4rem; }
+    .plan-source-actions button:hover { border-color: var(--ember); color: var(--ember); }
+    .plan-source-actions button.solid { background: var(--ember); border-color: var(--ember);
+                                        color: var(--card); }
     .floorplan .plan-actions button:disabled { opacity: .4; cursor: default;
                                                border-color: var(--line); color: var(--fg); }
     .floorplan .plan-actions button.solid { background: var(--ember); border-color: var(--ember);

@@ -29,6 +29,7 @@ use crate::icons::icon;
 mod ambience;
 mod look;
 mod snapping;
+mod source;
 mod zoom;
 
 use look::{Look, look_for};
@@ -330,6 +331,8 @@ pub fn Floorplan() -> impl IntoView {
     let drag = RwSignal::new(None::<Drag>);
     let dragged = RwSignal::new(false);
     let saving = RwSignal::new(false);
+    // Whether the plan is open as text.
+    let sourcing = RwSignal::new(false);
     let trouble = RwSignal::new(None::<String>);
     // Something that went right and is worth saying anyway — a save that also wrote
     // `devices.toml`. Kept apart from `trouble` so good news never wears the colour of bad.
@@ -560,6 +563,20 @@ pub fn Floorplan() -> impl IntoView {
         tracing.set(Vec::new());
     };
 
+    // Takes a whole plan from somewhere other than the pointer — the plan's own text — as one
+    // step to undo. Whatever was picked up or half-drawn belonged to the plan it replaced.
+    let take = Callback::new(move |plan: Floorplan| {
+        sourcing.set(false);
+        if draft.with_untracked(|draft| *draft == plan) {
+            return;
+        }
+        remember();
+        draft.set(plan);
+        picked.set(None);
+        stop_drawing();
+        trouble.set(None);
+    });
+
     let start_editing = move || {
         draft.set(live.home.get_untracked().floorplan.clone());
         past.set(Vec::new());
@@ -661,7 +678,9 @@ pub fn Floorplan() -> impl IntoView {
     // editing, and never while a text field has the keyboard — there are none on this page
     // today, and the guard is what keeps that from becoming a bug when there are.
     let keys = window_event_listener(ev::keydown, move |event: ev::KeyboardEvent| {
-        if !editing.get_untracked() || typing() {
+        // Not under the window the plan's text is in, either: Delete there is a key in a text
+        // box, even when the box hasn't got the keyboard yet.
+        if !editing.get_untracked() || typing() || sourcing.get_untracked() {
             return;
         }
         match event.key().as_str() {
@@ -1736,6 +1755,19 @@ pub fn Floorplan() -> impl IntoView {
             <div class="plan-head">
                 <h1>"Floorplan"</h1>
                 <div class="plan-actions">
+                    // The plan as text, to read and copy at any time and to change while
+                    // editing.
+                    {move || floor.get().is_some().then(|| view! {
+                        <button
+                            type="button"
+                            class="step"
+                            title="The plan as JSON"
+                            aria-label="The plan as JSON"
+                            on:click=move |_| sourcing.set(true)
+                        >
+                            <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=BRACES></svg>
+                        </button>
+                    })}
                     {move || if editing.get() {
                         view! {
                             <>
@@ -1887,6 +1919,14 @@ pub fn Floorplan() -> impl IntoView {
                     }}
                 </p>
             </div>
+
+            {move || sourcing.get().then(|| view! {
+                <source::Source
+                    plan=shown.get_untracked()
+                    apply=editing.get_untracked().then_some(take)
+                    on_close=move |()| sourcing.set(false)
+                />
+            })}
 
             {move || trouble.get().map(|why| view! { <p class="plan-banner">{why}</p> })}
             {move || note.get().map(|said| view! {
@@ -4413,6 +4453,9 @@ const TOOLS: [(Tool, &str, &str); 6] = [
 /// Back a step, and forward again.
 const UNDO: &str = r#"<path d="M4 9h10a5 5 0 0 1 0 10H8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 5 4 9l4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
 const REDO: &str = r#"<path d="M20 9H10a5 5 0 0 0 0 10h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="m16 5 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
+
+/// The plan as text: a pair of braces.
+const BRACES: &str = r#"<path d="M9 4c-2 0-3 1-3 3v2.5c0 1.4-.8 2.5-2 2.5 1.2 0 2 1.1 2 2.5V17c0 2 1 3 3 3M15 4c2 0 3 1 3 3v2.5c0 1.4.8 2.5 2 2.5-1.2 0-2 1.1-2 2.5V17c0 2-1 3-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
 
 /// Take away what's picked up.
 const BIN: &str = r#"<path d="M4 7h16M10 7V5h4v2M6 7l1 13h10l1-13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
