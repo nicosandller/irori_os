@@ -1365,6 +1365,15 @@ pub async fn assistant_uninstall() -> Result<AssistantStatus, String> {
     response.json().await.map_err(unreachable)
 }
 
+/// Asks the cloud model that is set up whether it answers, and says why when it doesn't.
+pub async fn assistant_check() -> Result<(), String> {
+    let response = post("/api/assistant/check")
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
 fn encode_scope(scope: &str) -> String {
     scope.replace(':', "%3A")
 }

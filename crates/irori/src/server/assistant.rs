@@ -32,6 +32,15 @@ pub async fn put(State(state): State<AppState>, Json(body): Json<serde_json::Val
     }
 }
 
+/// Whether the cloud model that is set up answers. Asked by the Settings card after a save, so
+/// a wrong key or a misspelt model is found out there and not by the first question.
+pub async fn check(State(state): State<AppState>) -> Response {
+    match assistant::check(&state.0.config).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => refused(StatusCode::BAD_REQUEST, error),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Ask {
     scope: String,

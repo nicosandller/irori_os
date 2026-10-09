@@ -467,7 +467,7 @@ pub(crate) async fn write_to_clipboard(text: &str) -> bool {
 }
 
 /// The copy button's picture: a clipboard, and the check it turns into once the copy worked.
-fn copy_icon() -> impl IntoView {
+pub(crate) fn copy_icon() -> impl IntoView {
     view! {
         <svg class="copy-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none"
              stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">

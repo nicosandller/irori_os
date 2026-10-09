@@ -1057,6 +1057,30 @@ async fn answer(
     let _ = tx.send(ChatEvent::Done).await;
 }
 
+/// Asks the cloud model that was just set up one small thing, to find out whether it answers:
+/// a key that is wrong, a model name with a typo and an endpoint that isn't one all look the
+/// same until somebody asks a question, and then the question is what fails. Nothing is
+/// remembered of it.
+pub async fn check(config: &Config) -> Result<(), String> {
+    let file = load_file(&config.dir().await);
+    if file.mode != Mode::Cloud {
+        return Err("No cloud model is chosen.".to_owned());
+    }
+    let key = config.assistant_key().await.unwrap_or_default();
+    let provider = provider_for(&file, &key, 0)?;
+    let conversation =
+        Conversation::from_turns("Answer with the one word: ok", &[], "Are you there?");
+    let (tx, mut rx) = mpsc::channel(64);
+    // Whatever it says is listened to and let go: that it said anything is the answer.
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let asked = complete(&provider, &conversation, None, &tx);
+    match tokio::time::timeout(Duration::from_secs(30), asked).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error)) => Err(explained(&scrub(&error, &key))),
+        Err(_) => Err("The provider didn't answer within half a minute.".to_owned()),
+    }
+}
+
 enum Outcome {
     Text(String),
     /// The model wants tools run. `said` is whatever it wrote first, already sent to the page.

@@ -2631,6 +2631,26 @@
     .chat-trouble-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
     .assistant-detail { margin: 0; font-size: .85rem; color: var(--warn); }
     .assistant-detail.ok { color: var(--muted); }
+    /* What came of asking a cloud model whether it answers, after a save. The tick draws
+       itself once, ring first, so a save that worked looks like one. */
+    .model-check { display: flex; align-items: flex-start; gap: .5rem; margin: 0;
+                   padding: .55rem .7rem; font-size: .85rem; border-radius: .5rem;
+                   border: 1px solid var(--line); background: var(--sunk);
+                   animation: check-in var(--dur-base) var(--ease-out) backwards; }
+    @keyframes check-in { from { opacity: 0; translate: 0 .3rem; } }
+    .model-check.asking { align-items: center; color: var(--muted); }
+    .model-check.there { border-color: color-mix(in srgb, #3f8f6b 45%, var(--line)); }
+    .model-check.there svg { flex: none; width: 1.25rem; height: 1.25rem; fill: none;
+                             stroke: #3f8f6b; stroke-width: 1.8; stroke-linecap: round;
+                             stroke-linejoin: round; }
+    .model-check.there svg circle { stroke-dasharray: 1; stroke-dashoffset: 1;
+                                    animation: draw-in var(--dur-expressive) var(--ease-out) forwards; }
+    .model-check.there svg path { stroke-dasharray: 1; stroke-dashoffset: 1;
+                                  animation: draw-in var(--dur-base) var(--ease-out)
+                                             var(--dur-base) forwards; }
+    @keyframes draw-in { to { stroke-dashoffset: 0; } }
+    .model-check.not-there { color: var(--error); border-color: color-mix(in srgb, var(--error) 45%, var(--line)); }
+    .about-form input:disabled { color: var(--muted); background: var(--sunk); cursor: default; }
     .assistant-off { margin: 1rem 0 0; padding-top: .8rem; border-top: 1px solid var(--line); }
 
     /* ---- Who is there, and where the home is (welcome.rs, users.rs, place.rs, map.rs) ---- */
@@ -2733,6 +2753,88 @@
     .person-form { display: grid; gap: .6rem; max-width: 24rem; }
     .drawer.open > .person-form { padding: .25rem 0 .5rem; }
     .people-out { display: flex; justify-content: flex-end; }
+
+    /* The Programs row: tokens. Each is a key with a name and, as small labels, what it may
+       do. They arrive one after another; the question a Revoke asks is asked where the
+       button was; and a new token's secret is its own card, with a tick that draws itself. */
+    .tokens { padding: 0; list-style: none; display: grid; gap: .45rem; }
+    .tokens-none { padding: .6rem .8rem; font-size: .85rem; border: 1px dashed var(--line);
+                   border-radius: .6rem; }
+    .token { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem;
+             padding: .6rem .75rem; background: var(--card); border: 1px solid var(--line);
+             border-radius: .6rem;
+             animation: token-in var(--dur-layout) var(--ease-emphasized) backwards;
+             animation-delay: calc(var(--place, 0) * 40ms);
+             transition: border-color var(--dur-fast) var(--ease-out),
+                         box-shadow var(--dur-base) var(--ease-out); }
+    @keyframes token-in { from { opacity: 0; translate: 0 .4rem; } }
+    .token:hover { border-color: color-mix(in srgb, var(--ember) 40%, var(--line));
+                   box-shadow: 0 1px 6px rgb(0 0 0 / .08); }
+    .token-mark { display: grid; place-items: center; flex: none; width: 2.1rem; height: 2.1rem;
+                  border-radius: 50%; color: var(--ember);
+                  background: color-mix(in srgb, var(--ember) 14%, var(--card));
+                  transition: rotate var(--dur-base) var(--ease-spring); }
+    .token-mark.connects { color: var(--fg);
+                           background: color-mix(in srgb, var(--tone-secure) 30%, var(--card)); }
+    .token:hover .token-mark { rotate: -18deg; }
+    .token-mark svg { width: 1.15rem; height: 1.15rem; }
+    .token-words { display: grid; gap: .3rem; flex: 1 1 12rem; min-width: 0; }
+    .token-name { font-weight: 500; overflow-wrap: anywhere; }
+    .token-may { display: flex; flex-wrap: wrap; gap: .25rem; }
+    .scope-chip { padding: .08rem .45rem; font-size: .72rem; color: var(--muted);
+                  background: var(--sunk); border-radius: 1rem; white-space: nowrap; }
+    .token-sure { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem;
+                  animation: from-right var(--dur-base) var(--ease-out) backwards; }
+    button.press.danger { color: var(--error); border-color: color-mix(in srgb, var(--error) 50%, var(--line)); }
+    button.press.danger:hover:not(:disabled) { color: var(--card); background: var(--error);
+                                               border-color: var(--error); }
+    .token-add span { margin-right: .3rem; color: var(--ember); font-weight: 600; }
+    .token-form { display: grid; gap: .8rem; max-width: 30rem; }
+    .drawer.open > .token-form { padding: .25rem 0 .5rem; }
+    .token-form .switcher { width: fit-content; background: var(--card); }
+    .token-kind-body { animation: check-in var(--dur-base) var(--ease-out) backwards; }
+    .scope-picks { display: grid; gap: .35rem; }
+    .scope-pick { display: flex; align-items: flex-start; gap: .6rem; width: 100%;
+                  padding: .5rem .65rem; font: inherit; text-align: left; color: var(--fg);
+                  background: var(--card); border: 1px solid var(--line); border-radius: .55rem;
+                  cursor: pointer;
+                  transition: border-color var(--dur-fast) var(--ease-out),
+                              background-color var(--dur-base) var(--ease-out); }
+    .scope-pick:hover { border-color: color-mix(in srgb, var(--ember) 50%, var(--line)); }
+    .scope-pick:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+    .scope-pick.on { border-color: var(--ember);
+                     background: color-mix(in srgb, var(--ember) 7%, var(--card)); }
+    .scope-words { display: grid; gap: .1rem; min-width: 0; font-size: .9rem; }
+    .scope-tick { flex: none; width: 1.2rem; height: 1.2rem; margin-top: .1rem; fill: none;
+                  stroke-linecap: round; stroke-linejoin: round; }
+    .scope-tick rect { stroke: var(--line); stroke-width: 1.6;
+                       transition: stroke var(--dur-fast), fill var(--dur-base) var(--ease-out); }
+    .scope-tick path { stroke: var(--card); stroke-width: 2.4; stroke-dasharray: 1;
+                       stroke-dashoffset: 1;
+                       transition: stroke-dashoffset var(--dur-base) var(--ease-spring); }
+    .scope-pick.on .scope-tick rect { stroke: var(--ember); fill: var(--ember); }
+    .scope-pick.on .scope-tick path { stroke-dashoffset: 0; }
+    .token-secret { display: grid; gap: .6rem; padding: .8rem .9rem; border-radius: .7rem;
+                    border: 1px solid color-mix(in srgb, #3f8f6b 45%, var(--line));
+                    background: var(--card); max-width: 34rem;
+                    animation: rise-in var(--dur-layout) var(--ease-emphasized) backwards; }
+    .token-secret-head { display: flex; align-items: flex-start; gap: .5rem; margin: 0;
+                         font-size: .9rem; }
+    .token-secret-head svg { flex: none; width: 1.25rem; height: 1.25rem; fill: none;
+                             stroke: #3f8f6b; stroke-width: 1.8; stroke-linecap: round;
+                             stroke-linejoin: round; }
+    .token-secret-head svg circle { stroke-dasharray: 1; stroke-dashoffset: 1;
+                                    animation: draw-in var(--dur-expressive) var(--ease-out) forwards; }
+    .token-secret-head svg path { stroke-dasharray: 1; stroke-dashoffset: 1;
+                                  animation: draw-in var(--dur-base) var(--ease-out)
+                                             var(--dur-base) forwards; }
+    .token-secret-row { display: flex; align-items: stretch; gap: .4rem; }
+    .token-secret-row code { flex: 1; min-width: 0; padding: .5rem .65rem; font: .8rem var(--mono);
+                             overflow-wrap: anywhere; user-select: all; background: var(--sunk);
+                             border: 1px solid var(--line); border-radius: .4rem; }
+    .token-secret-row .log-copy { flex: none; width: 2.3rem; display: grid; place-items: center; }
+    .token-secret-foot { display: flex; flex-wrap: wrap; align-items: center;
+                         justify-content: space-between; gap: .5rem; }
 
     /* Location and time zone. */
     .place { display: grid; gap: .6rem; }

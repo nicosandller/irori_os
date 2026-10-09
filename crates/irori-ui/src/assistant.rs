@@ -1047,6 +1047,57 @@ pub fn Section() -> impl IntoView {
         );
     };
     let has_key = move || status().is_some_and(|status| status.credential == "set");
+    // The cloud model as it was saved is shown, not offered for typing: the fields are still,
+    // the key is a row of dots, and Save has gone, so there is no wondering whether it took.
+    // `changing` is somebody having asked to type in them again.
+    let changing = RwSignal::new(false);
+    let settled = move || {
+        has_key() && status().is_some_and(|status| status.mode == "cloud") && !changing.get()
+    };
+    // Whether the model that was saved answers: being asked, and what came of it.
+    let checking = RwSignal::new(false);
+    let answered = RwSignal::new(None::<Result<(), String>>);
+    let check = move || {
+        if checking.get_untracked() {
+            return;
+        }
+        checking.set(true);
+        answered.set(None);
+        spawn_local(async move {
+            let result = api::assistant_check().await;
+            // A model that doesn't answer is one to go back and put right.
+            changing.set(result.is_err());
+            answered.set(Some(result));
+            checking.set(false);
+        });
+    };
+    // Saving the cloud model is two things: Irori keeping it, and the model being asked one
+    // small thing to find out whether the key, the name and the address are right. Only when
+    // it answers do the fields go still.
+    let save_cloud = move |body: serde_json::Value| {
+        if busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        trouble.set(None);
+        answered.set(None);
+        spawn_local(async move {
+            match api::save_assistant(&body).await {
+                Ok(status) => {
+                    apply(&status);
+                    api_key.set(String::new());
+                    let ready = status.ready && status.mode == "cloud";
+                    assistant.0.set(Some(status));
+                    changing.set(true);
+                    if ready {
+                        check();
+                    }
+                }
+                Err(error) => trouble.set(Some(error)),
+            }
+            busy.set(false);
+        });
+    };
     let ollama_up = move || status().is_some_and(|status| status.ollama == "up");
 
     view! {
@@ -1364,7 +1415,7 @@ pub fn Section() -> impl IntoView {
                         if !api_key.get_untracked().is_empty() {
                             body["api_key"] = serde_json::Value::String(api_key.get_untracked());
                         }
-                        save(body);
+                        save_cloud(body);
                     }>
                         <div class="field">
                             <span>"PROVIDER"</span>
@@ -1380,7 +1431,7 @@ pub fn Section() -> impl IntoView {
                                 .map(|(value, words)| (value.to_owned(), words.to_owned()))
                                 .collect(),
                                 move || Some(preset.get()),
-                                move || busy.get(),
+                                move || busy.get() || checking.get() || settled(),
                                 move |next| {
                                     if let Some(url) = preset_url(&next) {
                                         base_url.set(url.to_owned());
@@ -1393,6 +1444,7 @@ pub fn Section() -> impl IntoView {
                             <span>"ENDPOINT"</span>
                             <input
                                 type="url"
+                                disabled=move || settled() || checking.get()
                                 prop:value=move || base_url.get()
                                 on:input=move |event| base_url.set(event_target_value(&event))
                             />
@@ -1401,6 +1453,7 @@ pub fn Section() -> impl IntoView {
                             <span>"MODEL"</span>
                             <input
                                 type="text"
+                                disabled=move || settled() || checking.get()
                                 prop:value=move || model.get()
                                 on:input=move |event| model.set(event_target_value(&event))
                             />
@@ -1410,8 +1463,15 @@ pub fn Section() -> impl IntoView {
                             <input
                                 type="password"
                                 autocomplete="off"
+                                disabled=move || settled() || checking.get()
                                 placeholder=move || {
-                                    if has_key() { "Saved. Leave blank to keep it." } else { "" }
+                                    if settled() {
+                                        "•••••••••••••••• saved, and hidden"
+                                    } else if has_key() {
+                                        "Saved. Leave blank to keep it."
+                                    } else {
+                                        ""
+                                    }
                                 }
                                 prop:value=move || api_key.get()
                                 on:input=move |event| api_key.set(event_target_value(&event))
@@ -1426,10 +1486,44 @@ pub fn Section() -> impl IntoView {
                         {move || status().filter(|status| status.mode == "cloud").map(|status| {
                             view! { <p class="assistant-detail" class:ok=status.ready>{status.detail}</p> }
                         })}
+                        // What came of asking the model: on its way, there, or why not.
+                        {move || if checking.get() {
+                            view! {
+                                <p class="model-check asking" aria-live="polite">
+                                    <span class="dots"><i></i><i></i><i></i></span>
+                                    "Saved. Asking " {model.get()} " whether it answers"
+                                </p>
+                            }.into_any()
+                        } else {
+                            match answered.get() {
+                                Some(Ok(())) => view! {
+                                    <p class="model-check there" aria-live="polite">
+                                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                                            <circle cx="12" cy="12" r="9.5" pathLength="1" />
+                                            <path d="M7.5 12.5l3 3 6-6.5" pathLength="1" />
+                                        </svg>
+                                        <span>
+                                            <b>{model.get()}</b>
+                                            " answered. The key is right, and it's kept on this \
+                                             machine."
+                                        </span>
+                                    </p>
+                                }.into_any(),
+                                Some(Err(why)) => view! {
+                                    <p class="model-check not-there" role="alert">
+                                        <span>
+                                            "Saved, but " <b>{model.get()}</b> " didn't answer: "
+                                            {why}
+                                        </span>
+                                    </p>
+                                }.into_any(),
+                                None => ().into_any(),
+                            }
+                        }}
                         <div class="assistant-actions end">
                             {move || has_key().then(|| view! {
                                 <button type="button" class="quiet-button danger"
-                                    disabled=move || busy.get()
+                                    disabled=move || busy.get() || checking.get()
                                     on:click=move |_| {
                                         // The key going takes the cloud model with it. A local
                                         // model that is in use stays in use.
@@ -1437,14 +1531,61 @@ pub fn Section() -> impl IntoView {
                                         if status().is_some_and(|status| status.mode == "cloud") {
                                             body["mode"] = "off".into();
                                         }
+                                        answered.set(None);
+                                        changing.set(false);
                                         save(body);
                                     }>
                                     "Remove credentials"
                                 </button>
                             })}
-                            <button type="submit" class="primary" disabled=move || busy.get()>
-                                {move || if busy.get() { "Saving…" } else { "Save" }}
-                            </button>
+                            {move || if settled() {
+                                view! {
+                                    <button type="button" class="quiet-button"
+                                        disabled=move || checking.get()
+                                        on:click=move |_| check()>
+                                        "Check again"
+                                    </button>
+                                    <button type="button" class="quiet-button"
+                                        disabled=move || checking.get()
+                                        on:click=move |_| {
+                                            answered.set(None);
+                                            changing.set(true);
+                                        }>
+                                        "Change"
+                                    </button>
+                                }.into_any()
+                            } else {
+                                view! {
+                                    // Backing out of a change puts the fields back as Irori
+                                    // has them.
+                                    {move || (changing.get() && has_key()
+                                        && status().is_some_and(|status| status.mode == "cloud"))
+                                        .then(|| view! {
+                                            <button type="button" class="quiet-button"
+                                                disabled=move || busy.get() || checking.get()
+                                                on:click=move |_| {
+                                                    if let Some(status) = status() {
+                                                        apply(&status);
+                                                    }
+                                                    api_key.set(String::new());
+                                                    answered.set(None);
+                                                    changing.set(false);
+                                                }>
+                                                "Cancel"
+                                            </button>
+                                        })}
+                                    <button type="submit" class="primary"
+                                        disabled=move || busy.get() || checking.get()>
+                                        {move || if busy.get() {
+                                            "Saving…"
+                                        } else if checking.get() {
+                                            "Checking…"
+                                        } else {
+                                            "Save"
+                                        }}
+                                    </button>
+                                }.into_any()
+                            }}
                         </div>
                     </form>
                 }

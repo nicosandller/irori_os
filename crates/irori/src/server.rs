@@ -231,6 +231,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/assistant/turns/{scope}", get(assistant::follow))
         .route("/api/assistant/turns/{scope}/stop", post(assistant::stop))
+        .route("/api/assistant/check", post(assistant::check))
         .route("/api/assistant/pull", post(assistant::pull))
         .route("/api/assistant/forget", post(assistant::forget))
         .route("/api/assistant/install", post(assistant::install))
@@ -4550,6 +4551,43 @@ mod tests {
             // The same tool, asked for from a conversation that isn't offered it.
             let reply = events_of(&server, "general", &draft).await?;
             assert!(!reply.contains("\"plan\""), "{reply}");
+            Ok(())
+        }
+
+        /// Saving a cloud model doesn't say whether it works. Asking it does.
+        #[tokio::test]
+        async fn a_cloud_model_can_be_asked_whether_it_answers() -> anyhow::Result<()> {
+            let base = cloud().await;
+            let server = Server::new(core())?;
+            let (status, body) = server
+                .json("POST", "/api/assistant/check", serde_json::json!({}))
+                .await?;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "nothing is set up: {body}");
+
+            server
+                .json("PUT", "/api/assistant", configure(&base, "test-model"))
+                .await?;
+            let (status, body) = server
+                .json("POST", "/api/assistant/check", serde_json::json!({}))
+                .await?;
+            assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+            // Nothing of the asking is kept as a conversation.
+            let kept = server.read("/api/assistant/transcript/general").await?;
+            assert_eq!(kept["turns"], serde_json::json!([]));
+
+            server
+                .json("PUT", "/api/assistant", configure(&base, "broken"))
+                .await?;
+            let (status, body) = server
+                .json("POST", "/api/assistant/check", serde_json::json!({}))
+                .await?;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            let why = body["error"].as_str().unwrap_or_default();
+            assert!(why.contains("the provider said no"), "{body}");
+            assert!(
+                !body.to_string().contains("sk-test-key-should-not-leak"),
+                "{body}"
+            );
             Ok(())
         }
 
