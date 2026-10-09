@@ -92,6 +92,15 @@ pub fn check_password(password: &str) -> Result<(), InvariantError> {
 /// An id made from a name: "Nico S." becomes `nico_s`. `None` when nothing in the name can be
 /// part of an id.
 pub fn user_id_from(name: &str) -> Option<UserId> {
+    slug_from(name).and_then(|slug| UserId::try_from(slug).ok())
+}
+
+/// The id of an access token, made from the name its owner typed (`docs/specs/api.md` §2).
+pub fn token_id_from(name: &str) -> Option<crate::TokenId> {
+    slug_from(name).and_then(|slug| crate::TokenId::try_from(slug).ok())
+}
+
+fn slug_from(name: &str) -> Option<String> {
     let mut slug = String::new();
     for c in name.trim().chars() {
         if c.is_ascii_alphanumeric() {
@@ -101,7 +110,8 @@ pub fn user_id_from(name: &str) -> Option<UserId> {
         }
     }
     let slug: String = slug.trim_end_matches('_').chars().take(48).collect();
-    UserId::try_from(slug.trim_end_matches('_')).ok()
+    let slug = slug.trim_end_matches('_');
+    (!slug.is_empty()).then(|| slug.to_owned())
 }
 
 #[cfg(test)]

@@ -307,4 +307,4 @@ What the page calls through the bridge's `rpc`:
 ## 10. Not in this spec
 
 Flows calling flows; loops; custom protocol services; events from protocols; backtests longer
-than a day (C18); push to the page (C17).
+than a day (C18). The shell tells a page the home changed (`docs/specs/automations.md` §B4).

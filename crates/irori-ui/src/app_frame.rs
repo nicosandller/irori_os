@@ -130,6 +130,16 @@ fn Frame(id: String) -> impl IntoView {
         });
     }
 
+    // The home changed. A page reads the shell's picture through the bridge, and may hear
+    // this. The first run is before hello, so it doesn't announce a picture the page hasn't
+    // asked for yet.
+    Effect::new(move |_| {
+        live.home.track();
+        if greeted.get_untracked() {
+            post(&Reply::event("changed", serde_json::Value::Null));
+        }
+    });
+
     let listening = {
         let id = id.clone();
         window_event_listener(ev::message, move |message: web_sys::MessageEvent| {

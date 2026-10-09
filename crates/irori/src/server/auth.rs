@@ -8,8 +8,10 @@
 //! [`needs`], says what each address asks of them. One table rather than a check in each
 //! handler, so a route added later is closed until somebody decides otherwise.
 //!
-//! This is the sign-in for Irori's own page. Tokens for other programs, and scopes on them,
-//! are the public API's (ROADMAP C16).
+//! This is the sign-in for Irori's own page. Tokens for other programs are the public API's
+//! (`docs/specs/api.md`): the guard below asks `tokens` to check a bearer, because both
+//! arrive on the same requests. What each address allows, for a cookie and for a token, is
+//! [`token_access`] and [`needs`].
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -22,7 +24,7 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
-use irori_types::{Name, Role, User, UserId};
+use irori_types::{ApiScope, ExtensionId, Name, Role, TokenId, User, UserId};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -66,8 +68,19 @@ pub struct Client(pub Option<std::net::IpAddr>);
 pub struct Actor {
     /// The person signed in. `None` while Irori is open and nobody has been set up.
     pub user: Option<User>,
-    /// Whether they may change how the home is set up.
+    /// Whether they may change how the home is set up. A token is never an owner: setup
+    /// stays on the page (`docs/specs/api.md` §2).
     pub owner: bool,
+    /// The access token this request presented, when it presented one.
+    pub token: Option<TokenGrant>,
+}
+
+/// An access token a request presented. The secret is not here; this is who it is.
+#[derive(Debug, Clone)]
+pub struct TokenGrant {
+    pub id: TokenId,
+    /// Set when the token exists only to connect this extension.
+    pub extension: Option<ExtensionId>,
 }
 
 impl Actor {
@@ -92,6 +105,10 @@ pub enum Needs {
 
 /// The one table of who may ask for what. Anything under `/api/` that isn't named is `Run`.
 pub fn needs(method: &Method, path: &str) -> Needs {
+    cookie_needs(method, strip_query(path))
+}
+
+fn cookie_needs(method: &Method, path: &str) -> Needs {
     // The page, its files, and extensions' pages. Those load in a sandboxed frame with an
     // origin of its own, where no cookie is sent; they are static files, and what they show
     // comes through the shell.
@@ -101,15 +118,25 @@ pub fn needs(method: &Method, path: &str) -> Needs {
     if matches!(path, "/api/health" | "/api/session" | "/api/setup") {
         return Needs::Nothing;
     }
-    let Some(rest) = path.strip_prefix("/api/dev/") else {
+    let Some(rest) = path.strip_prefix("/api/") else {
         return Needs::Run;
     };
+    // Tokens, and the socket an extension dials in on, are how the home is set up. A person
+    // who isn't an owner doesn't create either. The guard still refuses a token that tries
+    // to call them: a token is not an owner.
+    if rest == "tokens" || rest.starts_with("tokens/") || rest == "extension" {
+        return Needs::Run;
+    }
     if method == Method::GET {
         // An icon is an `<img>` on the sign-in page's own shell.
-        return if rest.ends_with("/icon.svg") {
-            Needs::Nothing
-        } else {
+        if rest.ends_with("/icon.svg") {
+            return Needs::Nothing;
+        }
+        // A path nobody has named is closed. A new read has to be added to `named_read`.
+        return if named_read(rest) {
             Needs::Use
+        } else {
+            Needs::Run
         };
     }
     let using = rest == "command"
@@ -119,6 +146,107 @@ pub fn needs(method: &Method, path: &str) -> Needs {
         // A person's own name and password; the handler refuses anybody else's.
         || (method == Method::PATCH && rest.starts_with("users/"));
     if using { Needs::Use } else { Needs::Run }
+}
+
+/// A GET that reads the home, as opposed to one that runs it.
+///
+/// The list is the routes the page already fetches. A path that isn't here is `Run` until
+/// somebody decides a signed-in person may read it.
+fn named_read(rest: &str) -> bool {
+    matches!(
+        rest,
+        "home"
+            | "users"
+            | "place"
+            | "ws"
+            | "devices"
+            | "entities"
+            | "states"
+            | "areas"
+            | "floors"
+            | "floorplan"
+            | "extensions"
+            | "catalog"
+            | "apps"
+            | "system"
+            | "system/usage"
+            | "system/log"
+            | "serial-ports"
+            | "assistant"
+            | "assistant/log"
+    ) || rest.starts_with("history/")
+        || (rest.starts_with("extensions/") && rest.ends_with("/log"))
+        || rest.starts_with("assistant/turns/")
+        || rest.starts_with("assistant/transcript/")
+}
+
+fn strip_query(path: &str) -> &str {
+    path.split_once('?').map_or(path, |(path, _)| path)
+}
+
+/// What a token may do at an address. A cookie is [`Needs`]; a token is this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TokenAccess {
+    /// Health, session, setup, icons, and the page: open to anyone who can reach Irori.
+    Open,
+    /// The token must hold every scope.
+    Scopes(&'static [ApiScope]),
+    /// Setup, logs, and any path the scope list does not name.
+    Closed,
+}
+
+const SCOPE_HOME: &[ApiScope] = &[ApiScope::RegistryRead, ApiScope::StatesRead];
+const SCOPE_STATES: &[ApiScope] = &[ApiScope::StatesRead];
+const SCOPE_HISTORY: &[ApiScope] = &[ApiScope::HistoryRead];
+const SCOPE_REGISTRY: &[ApiScope] = &[ApiScope::RegistryRead];
+const SCOPE_COMMAND: &[ApiScope] = &[ApiScope::ServicesCall];
+const SCOPE_LIVE: &[ApiScope] = &[
+    ApiScope::RegistryRead,
+    ApiScope::StatesRead,
+    ApiScope::EventsRead,
+];
+
+/// What a token may call (`docs/specs/api.md` §2.1).
+///
+/// A path in the scope list needs those scopes even where a cookie is judged differently.
+/// `HEAD` is not a read for a cookie, so `HEAD /api/home` is [`Needs::Run`] there and still
+/// the home's scopes here. `/api/ws` asks for the registry, the states, and events. Anything
+/// the list does not name is [`TokenAccess::Open`] only when a cookie would be
+/// [`Needs::Nothing`], and [`TokenAccess::Closed`] otherwise.
+pub(super) fn token_access(method: &Method, path: &str) -> TokenAccess {
+    let path = strip_query(path);
+    let reading = method == Method::GET || method == Method::HEAD;
+    let scopes = if path == "/api/ws" {
+        Some(SCOPE_LIVE)
+    } else if method == Method::POST && path == "/api/command" {
+        Some(SCOPE_COMMAND)
+    } else if reading && path == "/api/home" {
+        Some(SCOPE_HOME)
+    } else if reading && path == "/api/states" {
+        Some(SCOPE_STATES)
+    } else if reading && (path == "/api/history" || path.starts_with("/api/history/")) {
+        Some(SCOPE_HISTORY)
+    } else if reading
+        && matches!(
+            path,
+            "/api/devices"
+                | "/api/entities"
+                | "/api/areas"
+                | "/api/floors"
+                | "/api/floorplan"
+                | "/api/extensions"
+                | "/api/apps"
+        )
+    {
+        Some(SCOPE_REGISTRY)
+    } else {
+        None
+    };
+    match scopes {
+        Some(scopes) => TokenAccess::Scopes(scopes),
+        None if cookie_needs(method, path) == Needs::Nothing => TokenAccess::Open,
+        None => TokenAccess::Closed,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -143,16 +271,18 @@ struct Attempts {
 pub struct Auth {
     db: PathBuf,
     sessions: Mutex<HashMap<String, Session>>,
+    /// Access tokens. The secret itself is never here (`server/tokens.rs`).
+    pub(super) tokens: super::tokens::TokenStore,
     attempts: Mutex<HashMap<Trier, Attempts>>,
 }
 
-fn now_seconds() -> u64 {
+pub(super) fn now_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_secs())
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(super) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut text = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -161,7 +291,7 @@ fn hex(bytes: &[u8]) -> String {
     text
 }
 
-fn fingerprint(token: &str) -> String {
+pub(super) fn fingerprint(token: &str) -> String {
     hex(&Sha256::digest(token.as_bytes()))
 }
 
@@ -172,6 +302,7 @@ impl Auth {
         let auth = Self {
             db: db.path.clone(),
             sessions: Mutex::default(),
+            tokens: super::tokens::TokenStore::open(db),
             attempts: Mutex::default(),
         };
         match auth.load() {
@@ -304,6 +435,13 @@ impl Auth {
         self.forget(|other, _| other != hash);
     }
 
+    /// The hash of the cookie's session, when that cookie is still a sign-in.
+    pub(super) fn live_session(&self, headers: &HeaderMap) -> Option<String> {
+        let token = token_of(headers)?;
+        self.whose(token)?;
+        Some(fingerprint(token))
+    }
+
     /// Ends every session of `user`, apart from the one `except` carries: a changed password
     /// signs the other screens out, not the one it was changed on.
     pub fn end_all(&self, user: &UserId, except: Option<&str>) {
@@ -426,6 +564,7 @@ fn actor(auth: &Auth, people: &People, headers: &HeaderMap) -> Option<Actor> {
                 .find(|user| user.role.runs_the_home())
                 .cloned(),
             owner: true,
+            token: None,
         });
     }
     // Somebody whose password has since been taken out of the files is nobody: a session is
@@ -437,43 +576,71 @@ fn actor(auth: &Auth, people: &People, headers: &HeaderMap) -> Option<Actor> {
     Some(Actor {
         owner: user.role.runs_the_home(),
         user: Some(user),
+        token: None,
     })
 }
 
 /// Lets a request through, or says why not. Over every route.
+///
+/// A bearer token is that token, even when a cookie came along too. Any other
+/// `Authorization` scheme is the page's cookie, so a proxy's `Basic` header doesn't
+/// lock the page out. An extension's socket takes only the token made for that extension.
 pub async fn guard(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
+    let path = request.uri().path().to_owned();
     let people = state.0.config.people().await;
-    let who = actor(&state.0.auth, &people, request.headers());
-    let needed = needs(request.method(), request.uri().path());
-    if needed != Needs::Nothing {
-        let Some(who) = &who else {
-            return refused(
-                StatusCode::UNAUTHORIZED,
-                "sign in first: this home asks who is there".to_owned(),
-            );
-        };
-        if needed == Needs::Run && !who.owner {
-            return refused(
-                StatusCode::FORBIDDEN,
-                "only an owner can change how the home is set up".to_owned(),
-            );
+    let who = if path == "/api/extension" {
+        match super::tokens::extension_actor(&state.0.auth, &people, request.headers()) {
+            Ok(who) => Some(who),
+            Err(response) => return *response,
         }
-        // A cookie is sent by the browser whoever wrote the page, so a change also has to
-        // carry the header only Irori's own page sends (see `UI_HEADER`).
-        let changes = !matches!(*request.method(), Method::GET | Method::HEAD);
-        if people.locked()
-            && changes
-            && !request
-                .headers()
-                .get(UI_HEADER)
-                .is_some_and(|value| value == "1")
-        {
-            return refused(
-                StatusCode::FORBIDDEN,
-                format!("a change needs the `{UI_HEADER}: 1` header, which only the page sends"),
-            );
+    } else if super::tokens::authorization_is_a_token(request.headers()) {
+        match super::tokens::bearer_actor(
+            &state.0.auth,
+            &people,
+            request.headers(),
+            request.method(),
+            &path,
+        ) {
+            Ok(who) => Some(who),
+            Err(response) => return *response,
         }
-    }
+    } else {
+        let who = actor(&state.0.auth, &people, request.headers());
+        let needed = needs(request.method(), &path);
+        if needed != Needs::Nothing {
+            let Some(who) = &who else {
+                return refused(
+                    StatusCode::UNAUTHORIZED,
+                    "sign in first: this home asks who is there".to_owned(),
+                );
+            };
+            if needed == Needs::Run && !who.owner {
+                return refused(
+                    StatusCode::FORBIDDEN,
+                    "only an owner can change how the home is set up".to_owned(),
+                );
+            }
+            // A cookie is sent by the browser whoever wrote the page, so a change also has to
+            // carry the header only Irori's own page sends (see `UI_HEADER`). A bearer token
+            // is a secret the program was given, so it doesn't.
+            let changes = !matches!(*request.method(), Method::GET | Method::HEAD);
+            if people.locked()
+                && changes
+                && !request
+                    .headers()
+                    .get(UI_HEADER)
+                    .is_some_and(|value| value == "1")
+            {
+                return refused(
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "a change needs the `{UI_HEADER}: 1` header, which only the page sends"
+                    ),
+                );
+            }
+        }
+        who
+    };
     let from = request
         .extensions()
         .get::<axum::extract::ConnectInfo<crate::tls::ClientAddr>>()
@@ -483,6 +650,7 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
     request.extensions_mut().insert(who.unwrap_or(Actor {
         user: None,
         owner: false,
+        token: None,
     }));
     next.run(request).await
 }
@@ -633,6 +801,7 @@ pub async fn sign_in(
     let who = Actor {
         owner: user.role.runs_the_home(),
         user: Some(user),
+        token: None,
     };
     let mut response = Json(view(&state, &who).await).into_response();
     response
@@ -643,7 +812,9 @@ pub async fn sign_in(
 
 pub async fn sign_out(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Some(token) = token_of(&headers) {
+        let hash = fingerprint(token);
         state.0.auth.end(token);
+        state.0.sockets.close_session(&hash);
     }
     let mut response = StatusCode::NO_CONTENT.into_response();
     response
@@ -694,6 +865,16 @@ pub async fn set_up(State(state): State<AppState>, Json(ask): Json<FirstOwner>) 
             "that name has no letters or numbers to make an id from".to_owned(),
         );
     };
+    // Before the owner is written. The home is still open here, and an owner who keeps
+    // their id would honour every old token the moment they have a password. If the
+    // database can't forget them, nothing else happens.
+    if let Err(why) = state.0.auth.tokens.revoke_all() {
+        return refused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("couldn't write it down: {why}"),
+        );
+    }
+    state.0.sockets.close_all_tokens();
     let name = ask.name;
     let made = state
         .0
@@ -733,14 +914,17 @@ pub async fn set_up(State(state): State<AppState>, Json(ask): Json<FirstOwner>) 
     tracing::info!(user = %user.id, "the home has an owner, and asks who is there");
     // Every sign-in from before this is over. Setting the owner up is also how a forgotten
     // password is put right (its line taken out of the files, then this), and a browser that
-    // was signed in under the old one, a lost phone say, must not still be.
+    // was signed in under the old one, a lost phone say, must not still be. An open home's
+    // sockets had no sign-in at all; they close too, because the home now asks who is there.
     state.0.auth.forget(|_, _| false);
+    state.0.sockets.close_open_and_sessions();
     // The home is locked from here on, so the person who just set it up is signed in rather
     // than shown the door.
     let token = state.0.auth.begin(&user.id);
     let who = Actor {
         user: Some(user),
         owner: true,
+        token: None,
     };
     let mut response = (StatusCode::CREATED, Json(view(&state, &who).await)).into_response();
     response
@@ -789,20 +973,30 @@ mod tests {
             (Method::GET, "/api/health", Nothing),
             (Method::POST, "/api/session", Nothing),
             (Method::POST, "/api/setup", Nothing),
-            (Method::GET, "/api/dev/extensions/demo/icon.svg", Nothing),
-            (Method::GET, "/api/dev/home", Use),
-            (Method::GET, "/api/dev/users", Use),
-            (Method::POST, "/api/dev/command", Use),
-            (Method::POST, "/api/dev/assistant/turns", Use),
-            (Method::POST, "/api/dev/assistant/turns/general/stop", Use),
-            (Method::PATCH, "/api/dev/users/nico", Use),
-            (Method::POST, "/api/dev/users", Run),
-            (Method::DELETE, "/api/dev/users/nico", Run),
-            (Method::PUT, "/api/dev/place", Run),
-            (Method::POST, "/api/dev/restart", Run),
-            (Method::PUT, "/api/dev/assistant", Run),
-            (Method::POST, "/api/dev/apps/automations/rpc", Run),
-            (Method::PUT, "/api/dev/extensions/mqtt/secrets", Run),
+            (Method::GET, "/api/extensions/demo/icon.svg", Nothing),
+            (Method::GET, "/api/home", Use),
+            (Method::GET, "/api/users", Use),
+            (Method::GET, "/api/system", Use),
+            (Method::GET, "/api/history/light.hall", Use),
+            (Method::GET, "/api/extensions/demo/log", Use),
+            (Method::POST, "/api/command", Use),
+            (Method::POST, "/api/assistant/turns", Use),
+            (Method::POST, "/api/assistant/turns/general/stop", Use),
+            (Method::PATCH, "/api/users/nico", Use),
+            (Method::POST, "/api/users", Run),
+            (Method::DELETE, "/api/users/nico", Run),
+            (Method::PUT, "/api/place", Run),
+            (Method::POST, "/api/restart", Run),
+            (Method::PUT, "/api/assistant", Run),
+            (Method::POST, "/api/apps/automations/rpc", Run),
+            (Method::PUT, "/api/extensions/mqtt/secrets", Run),
+            (Method::GET, "/api/ws", Use),
+            // HEAD is not a read. A token still needs the home's scopes for this path.
+            (Method::HEAD, "/api/home", Run),
+            (Method::GET, "/api/tokens", Run),
+            (Method::POST, "/api/tokens", Run),
+            (Method::DELETE, "/api/tokens/tablet", Run),
+            (Method::GET, "/api/extension", Run),
             // Nobody has named it, so it's closed.
             (Method::POST, "/api/something/new", Run),
             (Method::GET, "/api/something/new", Run),

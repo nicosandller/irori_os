@@ -464,10 +464,12 @@ as JSON messages over a connection to the core, with the payloads defined in §6
 | → core | `store/get`, `store/set` | key, JSON value |
 | → core | `log` | level, message, fields |
 
-The core starts the process from the manifest's `run` and supervises it like a built-in one (§3).
-The message envelope, the transport (WebSocket, and maybe a Unix socket: ROADMAP open question 6),
-and the token handshake are specified with the API (M0.5) and built in M1.5. Built-in and external
-protocols must be indistinguishable from the UI and CLI.
+The core starts a package that has `run` and supervises it like a built-in (§3). A package
+with `inbound = true` is not started. Its program connects to `GET /api/extension` with the
+token made for it. Each text frame is one `FromExt` or `ToExt`, the same JSON a child process
+writes as a line (`docs/specs/api.md` §6). The names in the table above are the operations.
+On the wire they are those messages, not a second vocabulary. There is no stderr pipe.
+Built-in and external protocols must be indistinguishable from the UI.
 
 ## 11. Not in this spec (on purpose)
 
@@ -475,8 +477,8 @@ protocols must be indistinguishable from the UI and CLI.
 |---|---|
 | Where settings live, and hot reload | [config.md](config.md) |
 | Settings that aren't secret (`extensions/<id>.toml`) | [config.md](config.md) §7, when a protocol needs one |
-| How people call services, including `toggle` and `brightness_pct` | API spec (M0.5) and rules spec (M0.3) |
-| Message envelope, transport, and tokens for external protocols | API spec (M0.5), M1.5 |
+| How people call services, including `toggle` and `brightness_pct` | [api.md](api.md) and [rules.md](rules.md) |
+| Message envelope, transport, and tokens for external protocols | [api.md](api.md) §2 and §6 |
 | Entity kinds beyond v1 (cover, button, select, …) | Additive changes to [entities.md](entities.md) §4.4, as protocols need them |
 | Discovery (mDNS, HA MQTT Discovery) | Inside each protocol; the contract only sees the resulting descriptions |
 

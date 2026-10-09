@@ -1,4 +1,4 @@
-//! `/api/dev/assistant`: whether a model is ready, and one turn of a remembered conversation.
+//! `/api/assistant`: whether a model is ready, and one turn of a remembered conversation.
 //!
 //! The key never leaves this process. A turn is a stream of server-sent events. The scope is a
 //! path segment (`general`, `device:<id>`, `automation:<id>`), not a query: this server's axum

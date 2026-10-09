@@ -1,8 +1,7 @@
-//! Talking to the core over HTTP.
+//! Talking to the core over HTTP (`docs/specs/api.md`).
 //!
-//! These are the temporary `/api/dev/*` endpoints (`crates/irori/src/server.rs`), polled every
-//! few seconds. The real API is a WebSocket that pushes changes, with typed messages shared
-//! through `irori-types` (M0.5, M1.5); this module is what goes away then.
+//! The home itself arrives on `/api/ws`. These calls read or change one thing, and the page's
+//! own sign-in cookie goes with them.
 
 use std::collections::BTreeMap;
 
@@ -13,13 +12,13 @@ use irori_types::{
 };
 use serde::{Deserialize, Serialize};
 
-const HOME_URL: &str = "/api/dev/home";
+const HOME_URL: &str = "/api/home";
 const HEALTH_URL: &str = "/api/health";
-const COMMAND_URL: &str = "/api/dev/command";
-const AREAS_URL: &str = "/api/dev/areas";
-const HISTORY_URL: &str = "/api/dev/history";
-const SYSTEM_URL: &str = "/api/dev/system";
-const RESTART_URL: &str = "/api/dev/restart";
+const COMMAND_URL: &str = "/api/command";
+const AREAS_URL: &str = "/api/areas";
+const HISTORY_URL: &str = "/api/history";
+const SYSTEM_URL: &str = "/api/system";
+const RESTART_URL: &str = "/api/restart";
 
 /// Everything the page shows. Mirrors `HomeView` on the server; the two meet again in
 /// `irori-types` when the real API lands.
@@ -129,7 +128,7 @@ pub struct Extension {
     /// What it found that Irori has no entity kind for yet, listed on its devices.
     #[serde(default)]
     pub unmodeled: Vec<irori_types::Unmodeled>,
-    /// Whether it has an icon, at `/api/dev/extensions/<id>/icon.svg`.
+    /// Whether it has an icon, at `/api/extensions/<id>/icon.svg`.
     #[serde(default)]
     pub has_icon: bool,
     /// Actions it declares (static, from its manifest) — the "+ Add device" button for a
@@ -172,7 +171,7 @@ fn first_format() -> u32 {
     1
 }
 
-/// One entry of `/api/dev/apps`: a running extension's page and whether its files are there.
+/// One entry of `/api/apps`: a running extension's page and whether its files are there.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct AppEntry {
     pub extension: String,
@@ -180,12 +179,12 @@ pub struct AppEntry {
 }
 
 pub async fn fetch_apps() -> Result<Vec<AppEntry>, String> {
-    let response = Request::get("/api/dev/apps")
+    let response = Request::get("/api/apps")
         .send()
         .await
         .map_err(unreachable)?;
     if !response.ok() {
-        return Err(format!("/api/dev/apps answered {}", response.status()));
+        return Err(format!("/api/apps answered {}", response.status()));
     }
     response
         .json::<Vec<AppEntry>>()
@@ -200,7 +199,7 @@ pub async fn app_rpc(
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let url = format!("/api/dev/apps/{extension}/rpc");
+    let url = format!("/api/apps/{extension}/rpc");
     let response = post(&url)
         .json(&serde_json::json!({ "method": method, "params": params }))
         .map_err(|e| e.to_string())?
@@ -297,7 +296,7 @@ pub struct Sqlite {
 }
 
 /// What the System section of Settings shows about the machine running Irori, from
-/// `/api/dev/system`. The server reads it from the OS each time it's asked, so an "Ask again"
+/// `/api/system`. The server reads it from the OS each time it's asked, so an "Ask again"
 /// sees the machine as it is — a disk that filled since the last ask is a disk that filled.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct System {
@@ -358,7 +357,7 @@ pub struct Disk {
     pub used: u64,
 }
 
-/// What is using the machine, from `/api/dev/system/usage`: the heaviest processes, and what
+/// What is using the machine, from `/api/system/usage`: the heaviest processes, and what
 /// Irori's data directory is made of. Slower to gather than [`System`], so it's asked for only
 /// while a meter is open.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -391,7 +390,7 @@ pub struct Stored {
 }
 
 pub async fn fetch_usage() -> Result<Usage, String> {
-    let url = "/api/dev/system/usage";
+    let url = "/api/system/usage";
     let response = Request::get(url).send().await.map_err(unreachable)?;
     if !response.ok() {
         return Err(format!("{url} answered {}", response.status()));
@@ -593,7 +592,7 @@ async fn checked(response: gloo_net::http::Response) -> Result<(), String> {
 }
 
 pub async fn edit_device(device_id: &DeviceId, edit: &DeviceEdit) -> Result<(), String> {
-    let response = patch(&format!("/api/dev/devices/{device_id}"))
+    let response = patch(&format!("/api/devices/{device_id}"))
         .json(edit)
         .map_err(|e| e.to_string())?
         .send()
@@ -623,7 +622,7 @@ pub async fn remove_device(device_id: &DeviceId, force: bool) -> Result<(), Remo
         code: Option<String>,
     }
     let query = if force { "?force=true" } else { "" };
-    let response = delete(&format!("/api/dev/devices/{device_id}{query}"))
+    let response = delete(&format!("/api/devices/{device_id}{query}"))
         .send()
         .await
         .map_err(|e| RemoveFailed::Other(unreachable(e)))?;
@@ -646,7 +645,7 @@ struct EntityEdit {
 }
 
 pub async fn rename_entity(entity_id: &EntityId, name: Option<Name>) -> Result<(), String> {
-    let response = patch(&format!("/api/dev/entities/{entity_id}"))
+    let response = patch(&format!("/api/entities/{entity_id}"))
         .json(&EntityEdit { name })
         .map_err(|e| e.to_string())?
         .send()
@@ -713,7 +712,7 @@ struct FloorRequest {
 }
 
 pub async fn add_floor(name: Name, level: i8) -> Result<(), String> {
-    let response = post("/api/dev/floors")
+    let response = post("/api/floors")
         .json(&FloorRequest { name, level })
         .map_err(|e| e.to_string())?
         .send()
@@ -737,7 +736,7 @@ pub async fn edit_floor(
     name: Option<Name>,
     level: Option<i8>,
 ) -> Result<(), String> {
-    let response = patch(&format!("/api/dev/floors/{id}"))
+    let response = patch(&format!("/api/floors/{id}"))
         .json(&FloorEdit { name, level })
         .map_err(|e| e.to_string())?
         .send()
@@ -747,7 +746,7 @@ pub async fn edit_floor(
 }
 
 pub async fn remove_floor(id: &irori_types::FloorId) -> Result<(), String> {
-    let response = delete(&format!("/api/dev/floors/{id}"))
+    let response = delete(&format!("/api/floors/{id}"))
         .send()
         .await
         .map_err(unreachable)?;
@@ -765,7 +764,7 @@ pub struct PlanSaved {
 /// Saves the plan of the home, whole. The editor keeps a working copy while somebody draws, so
 /// this is only ever sent by Save — and Cancel is simply never sending it.
 pub async fn save_floorplan(plan: &Floorplan) -> Result<PlanSaved, String> {
-    let response = put("/api/dev/floorplan")
+    let response = put("/api/floorplan")
         .json(plan)
         .map_err(|e| e.to_string())?
         .send()
@@ -794,7 +793,7 @@ pub async fn remove_area(id: &AreaId) -> Result<(), String> {
 /// Makes a toggle helper: a switch Irori keeps itself. Its entity appears a moment later, once
 /// the helpers extension has restarted with it.
 pub async fn add_toggle(name: Name) -> Result<(), String> {
-    let response = post("/api/dev/helpers/toggles")
+    let response = post("/api/helpers/toggles")
         .json(&AreaRequest { name, floor: None })
         .map_err(|e| e.to_string())?
         .send()
@@ -805,7 +804,7 @@ pub async fn add_toggle(name: Name) -> Result<(), String> {
 
 /// Removes a toggle helper by the id it was made with: the object id of its `switch.` entity.
 pub async fn remove_toggle(id: &str) -> Result<(), String> {
-    let response = delete(&format!("/api/dev/helpers/toggles/{id}"))
+    let response = delete(&format!("/api/helpers/toggles/{id}"))
         .send()
         .await
         .map_err(unreachable)?;
@@ -851,7 +850,7 @@ pub struct CatalogEntry {
 }
 
 pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {
-    let response = Request::get("/api/dev/catalog")
+    let response = Request::get("/api/catalog")
         .send()
         .await
         .map_err(unreachable)?;
@@ -867,18 +866,18 @@ pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {
 /// The tail of an extension's own output, oldest line first — what the log window shows, and
 /// where a failure's real reason is written out in full rather than summarised onto the card.
 pub async fn fetch_extension_log(id: &str) -> Result<Vec<String>, String> {
-    fetch_log(&format!("/api/dev/extensions/{id}/log")).await
+    fetch_log(&format!("/api/extensions/{id}/log")).await
 }
 
 /// Irori's own log, oldest line first: what this process has said since it started, which
 /// includes the lines an extension's output arrived as. The Settings page's log window shows it.
 pub async fn fetch_system_log() -> Result<Vec<String>, String> {
-    fetch_log("/api/dev/system/log").await
+    fetch_log("/api/system/log").await
 }
 
 /// What the Ollama Irori installed has said lately.
 pub async fn fetch_model_log() -> Result<Vec<String>, String> {
-    fetch_log("/api/dev/assistant/log").await
+    fetch_log("/api/assistant/log").await
 }
 
 /// Either log. The same `{"lines": [...]}` shape by design, so one window reads both, and always
@@ -903,7 +902,7 @@ async fn fetch_log(path: &str) -> Result<Vec<String>, String> {
 /// Serial devices plugged into the machine running Irori right now — suggestions for a
 /// `"format": "serial-port"` settings field, alongside the plain text box it always was.
 pub async fn fetch_serial_ports() -> Result<Vec<String>, String> {
-    let response = Request::get("/api/dev/serial-ports")
+    let response = Request::get("/api/serial-ports")
         .send()
         .await
         .map_err(unreachable)?;
@@ -923,7 +922,7 @@ pub async fn install_extension(
     approve_full_access: bool,
     update: bool,
 ) -> Result<(), String> {
-    let response = post(&format!("/api/dev/extensions/{id}/install"))
+    let response = post(&format!("/api/extensions/{id}/install"))
         .json(&serde_json::json!({
             "approve_full_access": approve_full_access,
             "update": update,
@@ -936,7 +935,7 @@ pub async fn install_extension(
 }
 
 pub async fn uninstall_extension(id: &str) -> Result<(), String> {
-    let response = delete(&format!("/api/dev/extensions/{id}"))
+    let response = delete(&format!("/api/extensions/{id}"))
         .send()
         .await
         .map_err(unreachable)?;
@@ -950,7 +949,7 @@ pub async fn set_extension_settings(
     id: &str,
     settings: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
-    let response = post(&format!("/api/dev/extensions/{id}/settings"))
+    let response = post(&format!("/api/extensions/{id}/settings"))
         .json(settings)
         .map_err(|e| e.to_string())?
         .send()
@@ -964,7 +963,7 @@ pub async fn give_secret(
     path: &[String],
     value: &str,
 ) -> Result<(), String> {
-    let response = put(&format!("/api/dev/extensions/{extension}/secrets"))
+    let response = put(&format!("/api/extensions/{extension}/secrets"))
         .json(&SecretGiven { path, value })
         .map_err(|e| e.to_string())?
         .send()
@@ -976,23 +975,19 @@ pub async fn give_secret(
 /// Triggers one of an extension's declared, currently-available actions — Zigbee's
 /// `permit_join`, say — from the "+ Add device" flow.
 pub async fn trigger_action(extension: &ExtensionId, action_id: &str) -> Result<(), String> {
-    let response = post(&format!(
-        "/api/dev/extensions/{extension}/actions/{action_id}"
-    ))
-    .send()
-    .await
-    .map_err(unreachable)?;
+    let response = post(&format!("/api/extensions/{extension}/actions/{action_id}"))
+        .send()
+        .await
+        .map_err(unreachable)?;
     checked(response).await
 }
 
 /// Ends an action that's open before its time is up: closes Zigbee's network to new devices.
 pub async fn stop_action(extension: &ExtensionId, action_id: &str) -> Result<(), String> {
-    let response = delete(&format!(
-        "/api/dev/extensions/{extension}/actions/{action_id}"
-    ))
-    .send()
-    .await
-    .map_err(unreachable)?;
+    let response = delete(&format!("/api/extensions/{extension}/actions/{action_id}"))
+        .send()
+        .await
+        .map_err(unreachable)?;
     checked(response).await
 }
 
@@ -1090,7 +1085,7 @@ pub struct AssistantMessage {
 }
 
 pub async fn fetch_assistant() -> Result<AssistantStatus, String> {
-    let response = Request::get("/api/dev/assistant")
+    let response = Request::get("/api/assistant")
         .send()
         .await
         .map_err(unreachable)?;
@@ -1104,7 +1099,7 @@ pub async fn fetch_assistant() -> Result<AssistantStatus, String> {
 }
 
 pub async fn save_assistant(body: &serde_json::Value) -> Result<AssistantStatus, String> {
-    let response = put("/api/dev/assistant")
+    let response = put("/api/assistant")
         .json(body)
         .map_err(|error| error.to_string())?
         .send()
@@ -1161,7 +1156,7 @@ pub struct AssistantContext {
 
 pub async fn assistant_transcript(scope: &str) -> Result<AssistantThread, String> {
     let response = Request::get(&format!(
-        "/api/dev/assistant/transcript/{}",
+        "/api/assistant/transcript/{}",
         encode_scope(scope)
     ))
     .send()
@@ -1178,7 +1173,7 @@ pub async fn assistant_transcript(scope: &str) -> Result<AssistantThread, String
 
 pub async fn assistant_clear(scope: &str) -> Result<(), String> {
     let response = delete(&format!(
-        "/api/dev/assistant/transcript/{}",
+        "/api/assistant/transcript/{}",
         encode_scope(scope)
     ))
     .send()
@@ -1213,20 +1208,20 @@ pub async fn assistant_ask(
     on: impl FnMut(Streamed),
 ) -> Result<(), String> {
     let body = serde_json::json!({ "scope": scope, "message": message });
-    stream("/api/dev/assistant/turns", &body, on).await
+    stream("/api/assistant/turns", &body, on).await
 }
 
 /// Joins the answer `scope` is in the middle of, from its first word. Irori carries on
 /// answering whether or not a page is reading, so this is how one that came back catches up.
 pub async fn assistant_follow(scope: &str, on: impl FnMut(Streamed)) -> Result<(), String> {
-    let url = format!("/api/dev/assistant/turns/{}", encode_scope(scope));
+    let url = format!("/api/assistant/turns/{}", encode_scope(scope));
     read_stream(Request::get(&url).send().await.map_err(unreachable)?, on).await
 }
 
 /// Stops the answer `scope` is in the middle of. Nothing of it is kept.
 pub async fn assistant_stop(scope: &str) -> Result<(), String> {
     let response = post(&format!(
-        "/api/dev/assistant/turns/{}/stop",
+        "/api/assistant/turns/{}/stop",
         encode_scope(scope)
     ))
     .send()
@@ -1238,7 +1233,7 @@ pub async fn assistant_stop(scope: &str) -> Result<(), String> {
 /// Installs Ollama if it is missing, then pulls a tag. `on` hears how far along it is.
 pub async fn assistant_pull(tag: &str, mut on: impl FnMut(Progress)) -> Result<(), String> {
     let body = serde_json::json!({ "tag": tag });
-    stream("/api/dev/assistant/pull", &body, |event| {
+    stream("/api/assistant/pull", &body, |event| {
         if let Streamed::Delta(line) = event
             && let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
         {
@@ -1254,26 +1249,22 @@ pub async fn assistant_pull(tag: &str, mut on: impl FnMut(Progress)) -> Result<(
 
 /// Installs and starts Irori's own Ollama, with no model. `on` hears how far along it is.
 pub async fn assistant_install(mut on: impl FnMut(Progress)) -> Result<(), String> {
-    stream(
-        "/api/dev/assistant/install",
-        &serde_json::json!({}),
-        |event| {
-            if let Streamed::Delta(line) = event
-                && let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
-            {
-                on(Progress {
-                    status: value["status"].as_str().unwrap_or_default().to_owned(),
-                    completed: value["completed"].as_u64().unwrap_or(0),
-                    total: value["total"].as_u64().unwrap_or(0),
-                });
-            }
-        },
-    )
+    stream("/api/assistant/install", &serde_json::json!({}), |event| {
+        if let Streamed::Delta(line) = event
+            && let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
+        {
+            on(Progress {
+                status: value["status"].as_str().unwrap_or_default().to_owned(),
+                completed: value["completed"].as_u64().unwrap_or(0),
+                total: value["total"].as_u64().unwrap_or(0),
+            });
+        }
+    })
     .await
 }
 
 pub async fn assistant_forget(tag: &str) -> Result<AssistantStatus, String> {
-    let response = post("/api/dev/assistant/forget")
+    let response = post("/api/assistant/forget")
         .json(&serde_json::json!({ "tag": tag }))
         .map_err(|error| error.to_string())?
         .send()
@@ -1291,9 +1282,9 @@ pub async fn assistant_forget(tag: &str) -> Result<AssistantStatus, String> {
 /// Loads a downloaded model into memory, or lets it go.
 pub async fn assistant_hold(tag: &str, load: bool) -> Result<AssistantStatus, String> {
     let url = if load {
-        "/api/dev/assistant/load"
+        "/api/assistant/load"
     } else {
-        "/api/dev/assistant/unload"
+        "/api/assistant/unload"
     };
     let response = post(url)
         .json(&serde_json::json!({ "tag": tag }))
@@ -1311,7 +1302,7 @@ pub async fn assistant_hold(tag: &str, load: bool) -> Result<AssistantStatus, St
 }
 
 pub async fn assistant_uninstall() -> Result<AssistantStatus, String> {
-    let response = post("/api/dev/assistant/uninstall")
+    let response = post("/api/assistant/uninstall")
         .send()
         .await
         .map_err(unreachable)?;
@@ -1500,8 +1491,8 @@ mod tests {
 // ---- who is there, and where the home is (`server/auth.rs`, `server/people.rs`) -----------
 
 const SESSION_URL: &str = "/api/session";
-const USERS_URL: &str = "/api/dev/users";
-const PLACE_URL: &str = "/api/dev/place";
+const USERS_URL: &str = "/api/users";
+const PLACE_URL: &str = "/api/place";
 
 /// What the page boots from: whether Irori asks who is there, who this browser is, and how
 /// far the home has been set up.
@@ -1631,6 +1622,53 @@ pub async fn edit_user(
         .await
         .map_err(unreachable)?;
     read(response).await
+}
+
+/// A program's access token, as Settings lists it. The secret is never in this.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TokenRow {
+    pub id: irori_types::TokenId,
+    pub name: String,
+    pub scopes: Vec<irori_types::ApiScope>,
+    #[serde(default)]
+    pub extension: Option<irori_types::ExtensionId>,
+    pub created: u64,
+}
+
+/// The secret, the only time the server sends it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct CreatedToken {
+    pub secret: String,
+}
+
+pub async fn fetch_tokens() -> Result<Vec<TokenRow>, String> {
+    read(
+        Request::get("/api/tokens")
+            .send()
+            .await
+            .map_err(unreachable)?,
+    )
+    .await
+}
+
+pub async fn create_token(body: &serde_json::Value) -> Result<CreatedToken, String> {
+    let response = post("/api/tokens")
+        .json(body)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read(response).await
+}
+
+pub async fn revoke_token(id: &irori_types::TokenId) -> Result<(), String> {
+    checked(
+        delete(&format!("/api/tokens/{id}"))
+            .send()
+            .await
+            .map_err(unreachable)?,
+    )
+    .await
 }
 
 pub async fn remove_user(id: &irori_types::UserId) -> Result<Vec<UserRow>, String> {

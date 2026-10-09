@@ -1,4 +1,4 @@
-//! `/api/dev/users` and `/api/dev/place`: the people allowed in, and where the home is.
+//! `/api/users` and `/api/place`: the people allowed in, and where the home is.
 //!
 //! Both are Settings rows, and both write files a person may also edit by hand (`users.toml`,
 //! `home.toml`), so every rule here is one the files are held to as well.
@@ -11,11 +11,11 @@ use irori_types::{HomeSettings, Location, Name, Role, TimeZoneName, User, UserId
 use serde::{Deserialize, Serialize};
 
 use super::auth::{
-    Actor, Client, NEEDS_PASSWORD, check_current, edit_failed, password_hash, session_cookie,
-    token_of,
+    Actor, Client, NEEDS_PASSWORD, check_current, edit_failed, fingerprint, password_hash,
+    session_cookie, token_of,
 };
 use super::{AppState, refused};
-use crate::config::Refused;
+use crate::config::{People, Refused};
 
 /// One person, as the page is shown them. Never their password, hashed or not.
 #[derive(Debug, Serialize)]
@@ -239,7 +239,10 @@ pub async fn edit_user(
         Ok(()) => {
             if changes_password {
                 // Every other screen signed in as them is signed out; this one stays.
+                // Its socket stays too. Tokens are not sessions: a password doesn't end them.
+                let kept = token_of(&headers).map(fingerprint);
                 state.0.auth.end_all(&id, token_of(&headers));
+                state.0.sockets.close_user_sessions(&id, kept.as_deref());
                 tracing::info!(user = %id, "a password was changed");
             }
             let mut response = Json(list(&state).await).into_response();
@@ -259,6 +262,19 @@ pub async fn edit_user(
 
 /// Takes a person out of the home, and signs them out everywhere.
 pub async fn remove_user(State(state): State<AppState>, Path(id): Path<UserId>) -> Response {
+    let people = state.0.config.people().await;
+    // The same refusals the write would give, before any token is forgotten. Revoking
+    // first and then being told the person has to stay would take their tokens anyway.
+    if let Err(why) = can_leave(&people, &id) {
+        return refused(StatusCode::UNPROCESSABLE_ENTITY, why);
+    }
+    if let Err(why) = state.0.auth.tokens.revoke_user(&id) {
+        return refused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("couldn't write it down: {why}"),
+        );
+    }
+    state.0.sockets.close_user_tokens(&id);
     let removed = state
         .0
         .config
@@ -274,11 +290,36 @@ pub async fn remove_user(State(state): State<AppState>, Path(id): Path<UserId>) 
     match removed {
         Ok(()) => {
             state.0.auth.end_all(&id, None);
+            state.0.sockets.close_user_sessions(&id, None);
             tracing::info!(user = %id, "somebody was removed from the home");
             Json(list(&state).await).into_response()
         }
         Err(error) => edit_failed(error),
     }
+}
+
+/// Whether `id` can leave, in the same words the write would use. Nothing is changed.
+fn can_leave(people: &People, id: &UserId) -> Result<(), String> {
+    if people.user(id).is_none() {
+        return Err(format!("there's nobody with the id `{id}`"));
+    }
+    let mut left = people.clone();
+    left.users.retain(|user| &user.id != id);
+    left.hashes.remove(id);
+    irori_types::check_users(&left.users).map_err(|error| error.to_string())?;
+    let has = |user: &User| left.hashes.contains_key(&user.id);
+    let owner_can_sign_in = left
+        .users
+        .iter()
+        .any(|user| user.role.runs_the_home() && has(user));
+    if left.users.iter().any(has) && !owner_can_sign_in {
+        return Err(
+            "an owner needs a password before anybody else has one: otherwise nobody \
+             could sign in to run the home"
+                .to_owned(),
+        );
+    }
+    Ok(())
 }
 
 pub async fn place(State(state): State<AppState>) -> Response {

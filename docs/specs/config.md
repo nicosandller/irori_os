@@ -563,14 +563,15 @@ person's line under `[users.passwords]` in `secrets.toml`.
 
 Either way, a session is only as good as the password it was begun with. Taking a password out
 of the file ends that person's sessions, and setting the owner up through the welcome ends
-everybody's, so a browser signed in under the forgotten password (a lost phone, say) is out.
+everybody's, and revokes every access token, so a browser signed in under the forgotten password (a lost phone, say) is out, and a program that had a token from before is out with it.
 
 Sessions are not config. A sign-in is a cookie (`HttpOnly`, `SameSite=Strict`, 30 days, and
 `Secure` when Irori serves https, §3.5) whose
 SHA-256 is kept in the database, so it survives a restart and can't be turned back into a cookie
 by somebody who reads the file. Because a cookie goes along with a request whoever wrote the page
 that made it, every change in a locked home must also carry the `x-irori-ui: 1` header, which only
-Irori's own page sends. Tokens for other programs are the public API's (ROADMAP C16).
+Irori's own page sends. Tokens for other programs are kept the same way, beside sessions
+(`docs/specs/api.md`).
 
 ## 4. What a decision is attached to
 
@@ -638,8 +639,8 @@ flat and boring.
 Named here so the layout has room for them, specified when they are built:
 
 - **More of `irori.toml`** — recorder retention.
-- **More about people** — per-area permissions and an audit log (ROADMAP C28), and tokens for
-  programs that aren't the page (C16).
+- **More about people** — per-area permissions and an audit log (ROADMAP C28). Tokens for
+  programs that aren't the page are `docs/specs/api.md`.
 - **Approved permissions** in `extensions/<id>.toml`, and validating it against the extension's
   `config_schema` before it starts (`docs/specs/extensions.md`). Today the extension's own config
   type checks it, and an extension with invalid settings waits for valid ones.

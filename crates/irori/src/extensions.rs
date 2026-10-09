@@ -62,6 +62,12 @@ fn log(event: &Event) {
             let zone = home.time_zone.as_ref().map(ToString::to_string);
             tracing::info!(time_zone = ?zone, located = home.location.is_some(), "the home's place changed");
         }
+        Event::SettingsChanged => {
+            tracing::debug!("settings changed");
+        }
+        Event::FoundChanged => {
+            tracing::debug!("a device waiting to be added changed");
+        }
         Event::DeviceUpdated { .. }
         | Event::DeviceRemoved { .. }
         | Event::EntityUpdated { .. }

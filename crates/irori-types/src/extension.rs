@@ -61,7 +61,21 @@ impl ExtensionManifest {
             ));
         }
         self.contributes.validate()?;
-        self.permissions.validate()
+        self.permissions.validate()?;
+        if self.extension.inbound {
+            if self.run_command().is_some() {
+                return Err(InvariantError(
+                    "an extension that connects to Irori has no `run` command; it dials in itself"
+                        .into(),
+                ));
+            }
+            if self.contributes.protocol.is_empty() && !self.is_engine() {
+                return Err(InvariantError(
+                    "`inbound` is for a protocol or an automation engine".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// The id of the protocol this extension contributes, if any. It's always the extension
@@ -154,6 +168,10 @@ pub struct ExtensionInfo {
     )]
     #[schemars(range(min = 1))]
     pub entity_format: u32,
+    /// The program connects to Irori, instead of Irori starting it (`docs/specs/api.md` §6).
+    /// No `run` command: there is no binary in the package to launch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inbound: bool,
 }
 
 /// The `[contributes]` table: one list per contribution kind.
@@ -315,7 +333,7 @@ impl ProtocolContribution {
         no_duplicates("contributes.protocol.actions ids", &action_ids)?;
         for action in &self.actions {
             // A slug, so the id is one URL path segment. The UI posts to
-            // `/api/dev/extensions/{id}/actions/{action_id}` without encoding; a `/`, `?`,
+            // `/api/extensions/{id}/actions/{action_id}` without encoding; a `/`, `?`,
             // or `#` would not round-trip.
             if let Err(error) = crate::id::check_slug("action id", &action.id) {
                 return Err(InvariantError(format!(
@@ -341,7 +359,7 @@ pub struct ProtocolAction {
     /// Its own id, unique within this protocol, e.g. `permit_join`.
     ///
     /// A slug — the same shape as an extension id — because the UI and the API place it in a
-    /// URL as one path segment (`/api/dev/extensions/{id}/actions/{action_id}`) without
+    /// URL as one path segment (`/api/extensions/{id}/actions/{action_id}`) without
     /// encoding. Anything with a `/`, `?`, or `#` would not round-trip through that route.
     ///
     /// `validate` is the authority: a manifest is always parsed through it, whatever a JSON

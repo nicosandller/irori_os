@@ -47,7 +47,7 @@ cd crates/irori-ui && trunk serve --open # the page on 8080, API proxied to 8480
 | **Devices** (`/devices`) | Two ways to read the same home, remembered per browser, both as compact rows in groups that fold: **Devices** is a row per device — make, model, battery, how many entities, and which area it's in — grouped by protocol, area or make; **Entities** is a row per entity — its icon (what kind of thing it is), its control, and its last 24 hours a click away: a number as a line, a state (on and off, a player's playing and paused) as a strip of how long each lasted, either as a table too — grouped by device, area, kind or protocol. **Add device** explains where devices come from — every installed extension, what it's for, and what it can provide — because nothing is typed in by hand yet. |
 | **A device** (`/devices/<id>`) | One device: which extension brought it in, what that extension knows it as (the MAC address, for ESPHome), make, model, firmware, hardware, what it's reached through, and every entity it provides with its controls. Its name, description and area are yours to decide, and so is each entity's name: each is changed where it stands, with a pencil beside it. |
 | **Extensions** (`/extensions`) | Official extensions from this repo (protocols, Demo, Helpers). Install copies a package into the instance and starts it; uninstall deletes the package and the devices it brought in. Every card is the same size, with the rest of what an extension says behind **Show more**; an installed one has its settings and its log beside the button, and the log button carries a mark when the log has an error in it. |
-| **Settings** (`/settings`) | One table: each row is a section that says how it stands beside its name and opens in place. **System** (the instance — version, uptime, database, features — and the machine under it, with a meter each for memory, disk, processor and temperature that opens to its last day and to what is using it: the heaviest processes, and what Irori's data directory is made of), **Appearance** (whether the page animates), **Assistant** (which model answers), **Location and time zone** (where the home is, on a map with an address search and a pin to drag, and the time zone that follows from it, which is what a time of day and the sun mean in an automation), **Floors and areas** (the home's arrangement, made and rearranged by dragging), **Users** (who is allowed in: an owner runs the home, a user sees everything and controls devices; everybody has a password) and **Logs** (what Irori has said since it started, with each extension's own output tagged with the extension). |
+| **Settings** (`/settings`) | One table: each row is a section that says how it stands beside its name and opens in place. **System** (the instance — version, uptime, database, features — and the machine under it, with a meter each for memory, disk, processor and temperature that opens to its last day and to what is using it: the heaviest processes, and what Irori's data directory is made of), **Appearance** (whether the page animates), **Assistant** (which model answers), **Location and time zone** (where the home is, on a map with an address search and a pin to drag, and the time zone that follows from it, which is what a time of day and the sun mean in an automation), **Floors and areas** (the home's arrangement, made and rearranged by dragging), **Users** (who is allowed in: an owner runs the home, a user sees everything and controls devices; everybody has a password), **Programs** (access tokens for programs that aren't this page: what each may do, created by an owner and shown once) and **Logs** (what Irori has said since it started, with each extension's own output tagged with the extension). |
 
 Routing is client-side (`leptos_router`), so the binary serves the app for any path that isn't a
 file, and the app decides what to show.
@@ -87,8 +87,8 @@ installing the firmware update whose version the device page shows (ROADMAP M1.8
 floorplan is mouse-driven and has no furniture and no stairs between floors. Its corners are solid wherever
 two walls meet at any angle, and where three or more do at right angles; a junction of three
 walls one of which runs at an odd angle can still nick the outside of the corner. The page
-**polls** `/api/dev/home` every 2 seconds; the WebSocket API (M1.5) will push changes instead,
-and `src/api.rs` is what goes away then. The binary also serves these files **uncompressed**
+hears the home on `/api/ws` and asks `/api/health` about once every 30 seconds. Log windows
+keep their own two-second refresh. The binary also serves these files **uncompressed**
 (see the budget below).
 
 ## Motion
@@ -147,7 +147,7 @@ the switch says.
 ## Why Leptos (ROADMAP D27)
 
 The M0.8 spike built this same page twice, once in Leptos and once in Dioxus, both fetching
-`/api/dev/states` and deserializing with `irori-types`. Measured after `trunk build --release`,
+`/api/states` and deserializing with `irori-types`. Measured after `trunk build --release`,
 `wasm-opt -Oz` and `brotli -q 11`:
 
 | | Leptos 0.8.20 | Dioxus 0.7.10 |

@@ -44,6 +44,12 @@ pub enum Event {
     PlaceChanged {
         home: irori_types::HomeSettings,
     },
+    /// Names, areas, floors, or the floorplan changed. Listeners read the home again.
+    SettingsChanged,
+    /// A device was found, or what was found about it changed, while it is still waiting
+    /// to be added. No payload: listeners read the home again. The same description
+    /// again says nothing.
+    FoundChanged,
     /// A service call was sent to a protocol.
     ServiceCalled {
         entity_id: EntityId,

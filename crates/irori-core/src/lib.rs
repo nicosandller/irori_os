@@ -28,7 +28,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 
 pub use clock::{Clock, SystemClock};
 pub use events::Event;
-pub use host::{ExtensionHost, Timing};
+pub use host::{ExtensionHost, InboundLink, Timing};
 pub use services::{CallError, Command};
 
 pub use home::{SYSTEM_PROTOCOL, device_id_for, new_area_id, new_floor_id};
@@ -112,6 +112,11 @@ pub enum ExtensionStatus {
     NeedsSetup {
         /// The `config_schema`-required settings that aren't set, by their own field names.
         missing: Vec<String>,
+    },
+    /// Installed, and waiting for its own program to dial in (`docs/specs/api.md` §6).
+    /// Not a failure: nothing is wrong until that program connects.
+    Waiting {
+        reason: String,
     },
 }
 
