@@ -1501,6 +1501,7 @@ dependencies = [
  "irori-helpers",
  "irori-protocol",
  "irori-protocol-demo",
+ "irori-recorder",
  "irori-types",
  "jiff",
  "mime_guess",

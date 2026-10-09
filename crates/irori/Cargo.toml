@@ -25,6 +25,7 @@ irori-config.workspace = true
 irori-core.workspace = true
 irori-helpers.workspace = true
 irori-protocol.workspace = true
+irori-recorder.workspace = true
 irori-types.workspace = true
 irori-assist = { workspace = true, optional = true }
 # The live socket and the assistant's streams. Required, not behind `assist`, so a

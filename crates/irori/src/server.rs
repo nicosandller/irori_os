@@ -379,9 +379,8 @@ async fn restart(State(state): State<AppState>, request: axum::extract::Request)
 }
 
 /// The last day of an entity's changes, for the expandable table under its row on the Devices
-/// page. In memory, and only what this server has seen: it starts empty at each start, and the
-/// SQLite recorder (M1.3, `irori-recorder`) keeps the surviving, longer view behind the same
-/// idea.
+/// page. Read from the recorder, so a restart still has it. Older than a day stays in the
+/// database and is not part of this answer.
 #[derive(Debug, Serialize)]
 struct HistoryView {
     entity: EntityId,
@@ -1854,11 +1853,13 @@ struct Health<'a> {
 struct SqliteHealth<'a> {
     version: &'static str,
     journal_mode: &'a str,
+    /// A trivial read succeeded, and the recorder's last write did too. The process can be up
+    /// when this is false: the file is the part that is unhappy.
+    ok: bool,
 }
 
-/// Liveness: the process is up and serving. The `sqlite` fields describe the database as it was
-/// opened at startup; they are not a live check. Real database health (read-only, disk full)
-/// arrives with `irori-recorder` in M1.3, which keeps the connection open.
+/// Liveness: the process is up and serving. `sqlite.ok` is a live check of the database the
+/// recorder keeps open (a read, and whether the last write failed).
 async fn health(State(state): State<AppState>) -> Response {
     let inner = &state.0;
     Json(Health {
@@ -1872,6 +1873,7 @@ async fn health(State(state): State<AppState>) -> Response {
         sqlite: SqliteHealth {
             version: inner.build.sqlite_version,
             journal_mode: &inner.db.journal_mode,
+            ok: inner.history.check(),
         },
     })
     .into_response()
@@ -1992,11 +1994,15 @@ mod tests {
                 .collect();
             std::fs::write(config_dir.join("devices.toml"), added)?;
             let config = Config::open_dir(config_dir, &core);
+            let history = History::open(
+                &dir.path().join("irori.db"),
+                irori_recorder::DEFAULT_RETAIN_DAYS,
+            )?;
             Ok(Self {
                 dir,
                 core,
                 config,
-                history: History::default(),
+                history,
                 log: Arc::new(syslog::Log::default()),
                 restart: Arc::new(tokio::sync::Notify::new()),
                 restarting: Arc::new(AtomicBool::new(false)),
@@ -2088,6 +2094,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body)?;
         assert_eq!(json["status"], "ok");
         assert_eq!(json["sqlite"]["journal_mode"], "wal");
+        assert_eq!(json["sqlite"]["ok"], true);
         Ok(())
     }
 
@@ -2381,8 +2388,8 @@ mod tests {
             .map(|state| state.entity_id.clone())
             .ok_or_else(|| anyhow::anyhow!("the demo reported nothing"))?;
 
-        // What the recorder would have kept: feed it the endpoint's history by hand here, since
-        // the server under test isn't the one subscribed to the core.
+        // The server under test isn't subscribed to the core, so the change is handed to the
+        // diary the endpoint reads.
         let today = core
             .state(&entity)
             .ok_or_else(|| anyhow::anyhow!("the demo entity vanished"))?;
@@ -2406,6 +2413,51 @@ mod tests {
             .send(Request::get("/api/history/sensor.never_heard_of").body(Body::empty())?)
             .await?;
         assert_eq!(status, StatusCode::NOT_FOUND);
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Closing the diary and opening the same file again still answers the history endpoint.
+    /// That is a restart: the process is gone, the database is not.
+    #[tokio::test]
+    async fn history_survives_reopening_the_database() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let mut server = Server::new(core.clone())?;
+        let entity = core
+            .states()
+            .first()
+            .map(|state| state.entity_id.clone())
+            .ok_or_else(|| anyhow::anyhow!("the demo reported nothing"))?;
+        let today = core
+            .state(&entity)
+            .ok_or_else(|| anyhow::anyhow!("the demo entity vanished"))?;
+        server.history.record(entity.clone(), today);
+
+        let (status, _) = server
+            .send(Request::get(format!("/api/history/{entity}")).body(Body::empty())?)
+            .await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the change is there before the close"
+        );
+
+        let path = server.dir.path().join("irori.db");
+        let closed = std::mem::replace(&mut server.history, History::temporary());
+        drop(closed);
+        server.history = History::open(&path, irori_recorder::DEFAULT_RETAIN_DAYS)?;
+
+        let (status, body) = server
+            .send(Request::get(format!("/api/history/{entity}")).body(Body::empty())?)
+            .await?;
+        assert_eq!(status, StatusCode::OK);
+        let history: serde_json::Value = serde_json::from_slice(&body)?;
+        let states = history["states"].as_array().expect("a list of states");
+        assert!(
+            !states.is_empty(),
+            "the change is still there after the database is opened again: {history}"
+        );
 
         host.shutdown().await;
         Ok(())

@@ -1,4 +1,8 @@
-//! Opens the bundled SQLite database. Placeholder until `irori-recorder` owns it (M1.3).
+//! Opens the home's SQLite database.
+//!
+//! Entity history lives in this same file, on the recorder's own connection (`irori-recorder`).
+//! What is opened here is everything else: a version row, and the small private values a
+//! protocol remembers across restarts.
 
 use std::path::{Path, PathBuf};
 

@@ -214,6 +214,7 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
     }
 
     let db = db::open(&data)?;
+    let retain_days = store.irori().recorder.retain_days;
     tracing::info!(path = %db.path.display(), journal_mode = %db.journal_mode, "database ready");
     // Irori's own device reports how full this volume is.
     let _ = system_device::DATA_DIR.set(db.path.clone());
@@ -271,9 +272,11 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             core.use_storage(storage);
             // Subscribe before any extension starts, so the log sees their first events.
             tokio::spawn(extensions::log_events(core.subscribe()));
-            // And the recorder feeding the page's per-entity "last 24 hours" table. In memory,
-            // so it starts empty with each server (the SQLite recorder, M1.3, keeps the rest).
-            let history = history::History::default();
+            // The diary the page's "last 24 hours" reads, and that engines read when they ask
+            // for history. It is the same database as everything else; the recorder keeps its
+            // own connection so a state change does not wait on a session or a chat.
+            let history = history::History::open(&db.path, retain_days)
+                .context("failed to open entity history")?;
             tokio::spawn(history::record(history.clone(), core.subscribe()));
             // Engines that ask for history (`history:read`) read the same shelf, and engines
             // whose permissions name the config directory are told where it is.
