@@ -1189,6 +1189,9 @@ pub enum Streamed {
     Delta(String),
     /// The model has gone to look something up. The tool's name.
     Step(String),
+    /// The model drew on the floorplan being edited. The whole plan as it now stands, for the
+    /// Floorplan page to take as its working copy; nothing has been saved.
+    Plan(Box<Floorplan>),
     Failed(String),
     Done,
 }
@@ -1201,13 +1204,19 @@ pub struct Progress {
     pub total: u64,
 }
 
-/// Asks, and hands each piece of the answer to `on` as it arrives.
+/// Asks, and hands each piece of the answer to `on` as it arrives. `plan` is the floorplan
+/// being edited, when the question comes from the page it is being edited on: what the model
+/// may draw on.
 pub async fn assistant_ask(
     scope: &str,
     message: &str,
+    plan: Option<&Floorplan>,
     on: impl FnMut(Streamed),
 ) -> Result<(), String> {
-    let body = serde_json::json!({ "scope": scope, "message": message });
+    let mut body = serde_json::json!({ "scope": scope, "message": message });
+    if let Some(plan) = plan {
+        body["plan"] = serde_json::to_value(plan).map_err(|error| error.to_string())?;
+    }
     stream("/api/assistant/turns", &body, on).await
 }
 
@@ -1403,6 +1412,12 @@ impl Events {
                 events.push(Streamed::Delta(delta.to_owned()));
             } else if let Some(step) = value["step"].as_str() {
                 events.push(Streamed::Step(step.to_owned()));
+            } else if let Some(plan) = value.get("plan") {
+                // A plan this page can't read is one it can't draw, so it is left alone
+                // rather than taken half-understood.
+                if let Ok(plan) = serde_json::from_value::<Floorplan>(plan.clone()) {
+                    events.push(Streamed::Plan(Box::new(plan)));
+                }
             } else if value["done"] == true {
                 events.push(Streamed::Done);
             }
@@ -1476,6 +1491,21 @@ mod tests {
                 "cut at {cut}"
             );
         }
+    }
+
+    /// A plan the model drew arrives whole, and one this page can't read is not taken.
+    #[test]
+    fn a_plan_the_model_drew_is_read_off_the_stream() {
+        let mut events = Events::default();
+        let got = events.push(
+            b"data: {\"plan\":{\"floors\":{\"ground\":{\"walls\":[{\"from\":[0,0],\"to\":[400,0]}]}}}}\n\n\
+              data: {\"plan\":{\"storeys\":{}}}\n\ndata: {\"done\":true}\n\n",
+        );
+        let [Streamed::Plan(plan), Streamed::Done] = got.as_slice() else {
+            panic!("{got:?}");
+        };
+        let ground = plan.floors.values().next().expect("one floor");
+        assert_eq!(ground.walls.len(), 1);
     }
 
     #[test]

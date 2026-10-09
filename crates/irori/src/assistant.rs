@@ -18,7 +18,9 @@ use irori_assist::{
     library_page, local_context, model_tag, openai_tools, settings_brief,
 };
 use irori_core::Core;
-use irori_types::{Availability, DeviceId, EntityId, EntityState, ExtensionId};
+use irori_types::{
+    Availability, DeviceId, EntityId, EntityState, ExtensionId, FloorId, Floorplan, Level, PlanOp,
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::{Notify, mpsc, watch};
@@ -54,6 +56,8 @@ const LOCAL_HISTORY_BYTES_TIGHT: usize = 1_500;
 /// model is sent, and what fits in front of a model on this machine with room left to answer.
 const AUTOMATION_BRIEF: usize = 12_000;
 const SETTINGS_BRIEF: usize = 8_000;
+/// One floor of the plan, in the prompt of the chat on the Floorplan page.
+const PLAN_BRIEF: usize = 8_000;
 const LOCAL_BRIEF: usize = 4_500;
 /// What the chat about the whole home is handed besides the home: Irori's settings in short,
 /// and a line for each automation. A cloud model reads the rest with tools.
@@ -127,6 +131,9 @@ pub enum ChatEvent {
     Delta(String),
     /// The model has gone to look something up. The tool's name.
     Step(String),
+    /// The model has drawn on the plan the person is editing. The whole plan as it now stands,
+    /// for the page to take as its working copy. Nothing has been written anywhere.
+    Plan(Box<Floorplan>),
     Error(String),
     Done,
 }
@@ -722,11 +729,23 @@ pub async fn uninstall(config: &Config, data_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<ChatEvent>) {
+async fn answer(
+    env: Env<'_>,
+    scope: String,
+    message: String,
+    plan: Option<Floorplan>,
+    tx: mpsc::Sender<ChatEvent>,
+) {
     if let Err(error) = check_scope(&scope) {
         let _ = tx.send(ChatEvent::Error(error)).await;
         return;
     }
+    // The plan the person is in the middle of editing, when they asked from the Floorplan page
+    // with it open. It is the page's working copy and stays the page's: the model draws on
+    // this copy of it, and what it drew goes back to the page to keep or undo. A plan sent to
+    // any other conversation is nobody's business, and one that couldn't be saved as it stands
+    // is no ground to draw on.
+    let mut drawing = plan.filter(|plan| floor_of(&scope).is_some() && plan.check().is_ok());
     let message = message.trim().to_owned();
     if message.is_empty() {
         let _ = tx
@@ -755,7 +774,7 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
             return;
         }
     };
-    let system = match system_prompt(&env, &scope, &provider, &picture).await {
+    let system = match system_prompt(&env, &scope, &provider, &picture, drawing.as_ref()).await {
         Ok(system) => system,
         Err(error) => {
             let _ = tx.send(ChatEvent::Error(error)).await;
@@ -826,7 +845,7 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
         match complete(
             &provider,
             &conversation,
-            with_tools.then_some(scope.as_str()),
+            with_tools.then_some((scope.as_str(), drawing.is_some())),
             &tx,
         )
         .await
@@ -853,7 +872,17 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
                     if tx.send(ChatEvent::Step(call.name.clone())).await.is_err() {
                         return;
                     }
-                    let result = run_tool(&env, &scope, &picture, &call).await;
+                    let before = drawing.clone();
+                    let result = run_tool(&env, &scope, &picture, &call, &mut drawing).await;
+                    if drawing != before
+                        && let Some(drawn) = &drawing
+                        && tx
+                            .send(ChatEvent::Plan(Box::new(drawn.clone())))
+                            .await
+                            .is_err()
+                    {
+                        return;
+                    }
                     conversation.tool(&call, &result);
                 }
                 rounds += 1;
@@ -1059,8 +1088,9 @@ pub struct Usage {
 async fn complete(
     provider: &Provider,
     conversation: &Conversation,
-    // The conversation whose tools are offered, when any are.
-    tools_for: Option<&str>,
+    // The conversation whose tools are offered, when any are, and whether the person asking
+    // sent a plan to draw on.
+    tools_for: Option<(&str, bool)>,
     tx: &mpsc::Sender<ChatEvent>,
 ) -> Result<(Outcome, u64), String> {
     let client = client();
@@ -1076,8 +1106,8 @@ async fn complete(
             if url.starts_with("https://api.openai.com/") || url.starts_with("https://api.x.ai/") {
                 body["stream_options"] = json!({ "include_usage": true });
             }
-            if let Some(scope) = tools_for {
-                body["tools"] = openai_tools(scope);
+            if let Some((scope, drawing)) = tools_for {
+                body["tools"] = openai_tools(scope, drawing);
             }
             (client.post(url).bearer_auth(key).json(&body), key.as_str())
         }
@@ -1089,8 +1119,8 @@ async fn complete(
                 "system": conversation.system,
                 "messages": anthropic_messages(conversation),
             });
-            if let Some(scope) = tools_for {
-                body["tools"] = anthropic_tools(scope);
+            if let Some((scope, drawing)) = tools_for {
+                body["tools"] = anthropic_tools(scope, drawing);
             }
             (
                 client
@@ -1117,8 +1147,8 @@ async fn complete(
             if *think {
                 body["think"] = json!(false);
             }
-            if let Some(scope) = tools_for {
-                body["tools"] = openai_tools(scope);
+            if let Some((scope, drawing)) = tools_for {
+                body["tools"] = openai_tools(scope, drawing);
             }
             (client.post(format!("{OLLAMA}/api/chat")).json(&body), "")
         }
@@ -1275,10 +1305,17 @@ fn anthropic_messages(conversation: &Conversation) -> Vec<Value> {
     messages
 }
 
-async fn run_tool(env: &Env<'_>, scope: &str, status: &Status, call: &ToolCall) -> String {
+async fn run_tool(
+    env: &Env<'_>,
+    scope: &str,
+    status: &Status,
+    call: &ToolCall,
+    // The plan the person is editing, when there is one. The only thing a tool may change.
+    drawing: &mut Option<Floorplan>,
+) -> String {
     let args: Value = serde_json::from_str(&call.arguments).unwrap_or(json!({}));
     // A model may ask for a tool it wasn't offered. It gets what it was offered, no more.
-    if !irori_assist::tool_offered(scope, &call.name) {
+    if !irori_assist::tool_offered(scope, drawing.is_some(), &call.name) {
         return format!("there is no tool `{}`", call.name);
     }
     let text = match call.name.as_str() {
@@ -1345,6 +1382,33 @@ async fn run_tool(env: &Env<'_>, scope: &str, status: &Status, call: &ToolCall) 
                     .join("\n")
             }
         }
+        "read_floorplan" => {
+            // What the person is drawing, when they are: that is the plan in front of them.
+            let plan = drawing.clone().unwrap_or_else(|| env.core.floorplan());
+            let asked = args.get("floor").and_then(|floor| floor.as_str());
+            let floors: Vec<FloorId> = match asked.map(str::parse::<FloorId>) {
+                Some(Ok(floor)) => vec![floor],
+                Some(Err(_)) => return format!("there's no floor `{}`", asked.unwrap_or("")),
+                None => match floor_of(scope) {
+                    Some(floor) => vec![floor],
+                    None => env
+                        .core
+                        .floors()
+                        .into_iter()
+                        .map(|floor| floor.id)
+                        .collect(),
+                },
+            };
+            if floors.is_empty() {
+                return "The home has no floors yet, so nothing is drawn.".to_owned();
+            }
+            floors
+                .iter()
+                .map(|floor| plan_brief(env.core, &plan, floor))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        "edit_floorplan" => return draw(env.core, scope, &args, drawing),
         "read_logs" => {
             let source = args
                 .get("source")
@@ -1369,6 +1433,181 @@ async fn run_tool(env: &Env<'_>, scope: &str, status: &Status, call: &ToolCall) 
         other => format!("there is no tool `{other}`"),
     };
     text.chars().take(TOOL_ANSWER).collect()
+}
+
+/// The floor a conversation on the Floorplan page is about.
+fn floor_of(scope: &str) -> Option<FloorId> {
+    scope.strip_prefix("floorplan:")?.parse().ok()
+}
+
+/// How many changes one call may ask for. A whole flat is a few dozen walls.
+const MOST_CHANGES: usize = 200;
+
+/// Makes the changes a model asked for to the plan the person is editing, and says what the
+/// floor reads as afterwards — or why nothing was changed, in words the model can act on.
+///
+/// Held to what the editor is held to: the changes are made to a copy, the copy has to pass
+/// the same check a saved plan does, and a room has to be one the home has. Nothing is written
+/// to the config directory from here. The page is sent the plan and keeps it or undoes it.
+fn draw(core: &Core, scope: &str, args: &Value, drawing: &mut Option<Floorplan>) -> String {
+    let (Some(plan), Some(floor)) = (drawing.as_mut(), floor_of(scope)) else {
+        return "The plan isn't open for editing. Ask the person to press Edit on the Floorplan \
+                page, then ask again."
+            .to_owned();
+    };
+    if !core.floors().iter().any(|known| known.id == floor) {
+        return format!("there's no floor `{floor}`");
+    }
+    // The array itself, or the array written out as text: models send either.
+    let ops: Result<Vec<PlanOp>, _> = match args.get("ops") {
+        Some(Value::String(text)) => serde_json::from_str(text),
+        Some(ops @ Value::Array(_)) => serde_json::from_value(ops.clone()),
+        _ => return "edit_floorplan needs ops: a JSON array of changes.".to_owned(),
+    };
+    let ops = match ops {
+        Ok(ops) => ops,
+        Err(error) => return format!("those changes can't be read: {error}. Nothing was changed."),
+    };
+    if ops.is_empty() {
+        return "There were no changes in that. Nothing was changed.".to_owned();
+    }
+    if ops.len() > MOST_CHANGES {
+        return format!("That is more than {MOST_CHANGES} changes at once. Nothing was changed.");
+    }
+    let areas = core.areas();
+    for op in &ops {
+        if let PlanOp::TraceArea { area, .. } = op
+            && !areas.iter().any(|known| &known.id == area)
+        {
+            let known = areas
+                .iter()
+                .map(|area| format!("`{}` ({})", area.id, area.name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return format!(
+                "there's no room `{area}`, and rooms are made in Settings, not here. The rooms \
+                 are: {known}. Nothing was changed."
+            );
+        }
+    }
+    let mut next = plan.clone();
+    let made = next
+        .level_mut(&floor)
+        .apply(&ops)
+        .and_then(|()| next.check());
+    if let Err(why) = made {
+        return format!("{why}. Nothing was changed.");
+    }
+    *plan = next;
+    format!(
+        "Done, and showing on the person's plan. It is not saved until they press Save.\n{}",
+        plan_brief(core, plan, &floor)
+    )
+}
+
+/// One floor as it is drawn, in words: its walls by number, the rooms traced on it and the
+/// ones that aren't yet, and where each device stands.
+fn plan_brief(core: &Core, plan: &Floorplan, floor: &FloorId) -> String {
+    let floors = core.floors();
+    let areas = core.areas();
+    let devices = core.devices();
+    let name = floors
+        .iter()
+        .find(|known| &known.id == floor)
+        .map(|known| known.name.to_string());
+    let Some(name) = name else {
+        return format!("there's no floor `{floor}`\n");
+    };
+    let nothing = Level::default();
+    let level = plan.level(floor).unwrap_or(&nothing);
+    let at = |point: irori_types::Point| format!("[{},{}]", point.x, point.y);
+    let room = |id: &irori_types::AreaId| {
+        areas.iter().find(|area| &area.id == id).map_or_else(
+            || format!("`{id}`"),
+            |area| format!("`{id}` ({})", area.name),
+        )
+    };
+    let mut text = format!(
+        "The floor `{floor}` ({name}) as drawn. Whole centimetres; x runs right and y runs down \
+         the page.\n"
+    );
+    if level.walls.is_empty() {
+        text.push_str("No walls are drawn.\n");
+    } else {
+        text.push_str("Walls:\n");
+    }
+    for (index, wall) in level.walls.iter().enumerate() {
+        text.push_str(&format!(
+            "{}. {} to {}, {:.0} cm long, {} cm thick",
+            index + 1,
+            at(wall.from),
+            at(wall.to),
+            wall.length(),
+            wall.thickness
+        ));
+        for (hole, opening) in wall.openings.iter().enumerate() {
+            text.push_str(&format!(
+                "; opening {}: {} at {}, {} wide",
+                hole + 1,
+                opening.kind.label().to_lowercase(),
+                opening.at,
+                opening.width
+            ));
+            if let Some(sensor) = &opening.sensor {
+                text.push_str(&format!(", follows {sensor}"));
+            }
+        }
+        text.push('\n');
+    }
+    if !level.areas.is_empty() {
+        text.push_str("Rooms traced:\n");
+    }
+    for placed in &level.areas {
+        let corners = placed
+            .points
+            .iter()
+            .map(|point| at(*point))
+            .collect::<Vec<_>>()
+            .join(" ");
+        text.push_str(&format!(
+            "- {}: {corners}, {}\n",
+            room(&placed.area),
+            placed.shade().name()
+        ));
+    }
+    // The rooms a drawing of this floor could still be given: the ones on it, and the ones
+    // nobody has put on a floor at all.
+    let untraced: Vec<String> = areas
+        .iter()
+        .filter(|area| area.floor_id.is_none() || area.floor_id.as_ref() == Some(floor))
+        .filter(|area| !level.areas.iter().any(|placed| placed.area == area.id))
+        .map(|area| room(&area.id))
+        .collect();
+    if !untraced.is_empty() {
+        text.push_str(&format!("Rooms not traced yet: {}\n", untraced.join(", ")));
+    }
+    if !level.devices.is_empty() {
+        text.push_str("Devices placed:\n");
+    }
+    for placed in &level.devices {
+        let known = devices
+            .iter()
+            .find(|device| device.id == placed.device)
+            .map_or_else(String::new, |device| format!(" ({})", device.name));
+        let standing = level
+            .areas
+            .iter()
+            .find(|area| area.contains(placed.at))
+            .map_or_else(String::new, |area| {
+                format!(", standing in {}", room(&area.area))
+            });
+        text.push_str(&format!(
+            "- `{}`{known} at {}{standing}\n",
+            placed.device,
+            at(placed.at)
+        ));
+    }
+    text
 }
 
 fn automations_extension() -> ExtensionId {
@@ -1736,6 +1975,9 @@ async fn system_prompt(
     scope: &str,
     provider: &Provider,
     status: &Status,
+    // The plan the person is editing, when the conversation is the Floorplan page's and they
+    // are.
+    drawing: Option<&Floorplan>,
 ) -> Result<String, String> {
     let local = provider.context();
     // What something is cut to: `tight` for a model on this machine, grown with its context,
@@ -1847,6 +2089,55 @@ async fn system_prompt(
              so.\n",
         );
         prompt.push_str(&brief);
+        return Ok(prompt);
+    }
+    if let Some(floor) = floor_of(scope) {
+        prompt.push_str(
+            "The person is on the Floorplan page, looking at one floor of the home as a drawing. \
+             Below is that floor as it is drawn, then the home's devices and its automations, \
+             so you can answer about the rooms, what is in them, and what acts on them. A room \
+             4 m by 3 m is 400 by 300; up the page is smaller y.\n",
+        );
+        match (drawing.is_some(), local.is_some()) {
+            (true, false) => prompt.push_str(
+                "The person is editing the plan, and here you may draw on it with \
+                 `edit_floorplan`: walls, doors, windows, and the outlines of rooms the home \
+                 already has. Put everything a request needs into one call. Draw a room as \
+                 walls that share their corners exactly, and trace the room on those same \
+                 corners. When the person doesn't say where, draw beside what is there, not \
+                 over it, and say where you put it. What you draw shows on their plan at once \
+                 as one step they can undo, and is saved only when they press Save: say so in \
+                 a few words. You cannot move devices or make new rooms; rooms are made in \
+                 Settings.\n",
+            ),
+            (true, true) => prompt.push_str(
+                "You cannot draw on the plan: drawing needs a cloud model, which is chosen in \
+                 Settings under Assistant. Say so if you are asked to draw.\n",
+            ),
+            (false, _) => prompt.push_str(
+                "You cannot draw on the plan now. If you are asked to, say the person needs to \
+                 press Edit on this page first.\n",
+            ),
+        }
+        if local.is_none() {
+            prompt.push_str(
+                "Tools read more than is pasted here: `read_floorplan` for this floor again or \
+                 another one, `list_automations` and `get_automation` for an automation's \
+                 logic.\n",
+            );
+        }
+        let plan = drawing.cloned().unwrap_or_else(|| env.core.floorplan());
+        let brief = plan_brief(env.core, &plan, &floor);
+        prompt.extend(brief.chars().take(within(LOCAL_BRIEF, PLAN_BRIEF)));
+        prompt.push('\n');
+        prompt.push_str(&home_brief(
+            &lines(env.core, None),
+            within(LOCAL_HOME, HOME_CAP),
+        ));
+        prompt.push_str(&automations_brief(
+            automations(env).await.as_deref().map_err(String::as_str),
+            within(LOCAL_GENERAL_AUTOMATIONS, GENERAL_AUTOMATIONS),
+        ));
         return Ok(prompt);
     }
     Err("that conversation doesn't exist".into())
@@ -2101,9 +2392,12 @@ pub fn check_scope(scope: &str) -> Result<(), String> {
         return Ok(());
     }
     let Some((kind, id)) = scope.split_once(':') else {
-        return Err("a conversation is general, settings, a device, or an automation".into());
+        return Err(
+            "a conversation is general, settings, a device, an automation, or a floor's plan"
+                .into(),
+        );
     };
-    let ok = matches!(kind, "device" | "automation")
+    let ok = matches!(kind, "device" | "automation" | "floorplan")
         && !id.is_empty()
         && id.len() <= 128
         && id
@@ -2380,13 +2674,16 @@ pub async fn read_status(turn: Turn<'_>, data_dir: &Path) -> Status {
     status(&env, data_dir).await
 }
 
+/// `plan` is the floorplan the person is editing, when they asked from the Floorplan page with
+/// it open: what the model may draw on, and nothing that is saved from here.
 pub async fn take_turn(
     turn: Turn<'_>,
     scope: String,
     message: String,
+    plan: Option<Floorplan>,
     tx: mpsc::Sender<ChatEvent>,
 ) {
-    answer(turn.env(), scope, message, tx).await
+    answer(turn.env(), scope, message, plan, tx).await
 }
 
 /// How a turn that is no longer running came out.
@@ -2405,6 +2702,8 @@ pub struct Progress {
     pub text: String,
     /// The tool being run, or `queued`. `None` while the model thinks or writes.
     pub step: Option<String>,
+    /// The plan as the model last drew it, when it has drawn on one.
+    pub plan: Option<Floorplan>,
     pub ended: Option<Ended>,
 }
 
@@ -2456,8 +2755,19 @@ impl Pending {
         tokio::spawn(async move {
             let mut sent = 0usize;
             let mut step = None;
+            let mut drawn = None;
             loop {
                 let now = progress.borrow_and_update().clone();
+                // The whole plan each time, so a page that reads it twice ends up where a page
+                // that read it once did.
+                if now.plan != drawn {
+                    drawn = now.plan.clone();
+                    if let Some(plan) = now.plan
+                        && tx.send(ChatEvent::Plan(Box::new(plan))).await.is_err()
+                    {
+                        return;
+                    }
+                }
                 // Text is only ever added to, so what was sent is a whole prefix of it.
                 if let Some(more) = now.text.get(sent..).filter(|more| !more.is_empty()) {
                     sent = now.text.len();
@@ -2575,6 +2885,11 @@ impl Turns {
                         pending
                             .progress
                             .send_modify(|progress| progress.step = Some(tool));
+                    }
+                    ChatEvent::Plan(plan) => {
+                        pending
+                            .progress
+                            .send_modify(|progress| progress.plan = Some(*plan));
                     }
                     ChatEvent::Error(why) => return Ended::Failed(why),
                     ChatEvent::Done => return Ended::Done,
@@ -2713,6 +3028,13 @@ mod tests {
         assert!(check_scope("settings").is_ok());
         assert!(check_scope("general").is_ok());
         assert!(check_scope("device:lamp").is_ok());
+        assert!(check_scope("floorplan:ground").is_ok());
+        assert!(check_scope("floorplan:").is_err());
+        assert_eq!(
+            floor_of("floorplan:ground").map(|floor| floor.to_string()),
+            Some("ground".to_owned())
+        );
+        assert_eq!(floor_of("device:ground"), None);
         assert!(check_scope("settings:lamp").is_err());
         assert!(check_scope("logs").is_err());
     }

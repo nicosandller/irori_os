@@ -1,7 +1,7 @@
 //! `/api/assistant`: whether a model is ready, and one turn of a remembered conversation.
 //!
 //! The key never leaves this process. A turn is a stream of server-sent events. The scope is a
-//! path segment (`general`, `device:<id>`, `automation:<id>`), not a query: this server's axum
+//! path segment (`general`, `device:<id>`, `automation:<id>`, `floorplan:<floor>`), not a query: this server's axum
 //! does not enable query parsing.
 
 use std::convert::Infallible;
@@ -36,6 +36,10 @@ pub async fn put(State(state): State<AppState>, Json(body): Json<serde_json::Val
 pub struct Ask {
     scope: String,
     message: String,
+    /// The floorplan the person is editing, sent by the Floorplan page while they are. The
+    /// model may draw on it and the page is sent the result; nothing here saves it.
+    #[serde(default)]
+    plan: Option<irori_types::Floorplan>,
 }
 
 /// Takes a question and streams its answer. The answer is Irori's to finish from here: the
@@ -56,7 +60,7 @@ pub async fn turns(State(state): State<AppState>, Json(ask): Json<Ask>) -> impl 
             .0
             .turns
             .run(&scope, pending, |tx| {
-                assistant::take_turn(turn(&state), scope.clone(), ask.message, tx)
+                assistant::take_turn(turn(&state), scope.clone(), ask.message, ask.plan, tx)
             })
             .await;
     });
@@ -193,6 +197,7 @@ fn events(
             ChatEvent::Delta(text) => serde_json::json!({ "delta": text }),
             ChatEvent::Error(text) => serde_json::json!({ "error": text }),
             ChatEvent::Step(tool) => serde_json::json!({ "step": tool }),
+            ChatEvent::Plan(plan) => serde_json::json!({ "plan": plan }),
             ChatEvent::Done => serde_json::json!({ "done": true }),
         };
         Ok(Event::default().data(data.to_string()))

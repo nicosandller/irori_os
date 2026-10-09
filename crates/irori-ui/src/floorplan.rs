@@ -577,6 +577,21 @@ pub fn Floorplan() -> impl IntoView {
         trouble.set(None);
     });
 
+    // The assistant's way to this page's working copy, for as long as the page is open: what
+    // it reads is the plan being drawn, and what it draws lands as one step to undo. Not while
+    // reading the plan — there is no working copy then, and the home's own plan is not a
+    // thing the assistant gets to change.
+    let chats = expect_context::<crate::assistant::Chats>();
+    chats.lay(Some(crate::assistant::Desk {
+        read: Callback::new(move |()| editing.get_untracked().then(|| draft.get_untracked())),
+        take: Callback::new(move |plan: Floorplan| {
+            if editing.get_untracked() {
+                take.run(plan);
+            }
+        }),
+    }));
+    on_cleanup(move || chats.lay(None));
+
     let start_editing = move || {
         draft.set(live.home.get_untracked().floorplan.clone());
         past.set(Vec::new());
@@ -1755,6 +1770,19 @@ pub fn Floorplan() -> impl IntoView {
             <div class="plan-head">
                 <h1>"Floorplan"</h1>
                 <div class="plan-actions">
+                    // About the floor on show, by the name the home knows it by. Its own
+                    // conversation per floor, so upstairs isn't answered with downstairs.
+                    {move || {
+                        let id = floor.get()?;
+                        let name = floors
+                            .get()
+                            .into_iter()
+                            .find(|known| known.id == id)
+                            .map(|known| known.name.to_string())?;
+                        Some(view! {
+                            <crate::assistant::Ask scope=format!("floorplan:{id}") title=name />
+                        })
+                    }}
                     // The plan as text, to read and copy at any time and to change while
                     // editing.
                     {move || floor.get().is_some().then(|| view! {

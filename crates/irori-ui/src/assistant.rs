@@ -35,6 +35,20 @@ struct Thread {
     round: RwSignal<u32>,
     /// How much of the model's context the last answer took.
     used: RwSignal<Option<api::AssistantContext>>,
+    /// The Floorplan page's working copy, while that page is open.
+    desk: StoredValue<Option<Desk>>,
+}
+
+/// The plan being edited on the Floorplan page, as the assistant reaches it: `read` is the
+/// working copy while somebody is editing (and nothing otherwise), and `take` hands the page a
+/// plan the model drew, to keep as one step it can undo.
+///
+/// The page lays this down while it is open and lifts it when it goes, so a conversation never
+/// holds on to an editor that is no longer there.
+#[derive(Debug, Clone, Copy)]
+pub struct Desk {
+    pub read: Callback<(), Option<irori_types::Floorplan>>,
+    pub take: Callback<irori_types::Floorplan>,
 }
 
 /// Every conversation this page has opened, by what it is about. Kept by the shell and not by
@@ -46,6 +60,7 @@ pub struct Chats {
     /// that first opened the conversation.
     owner: Owner,
     threads: StoredValue<HashMap<String, Thread>>,
+    desk: StoredValue<Option<Desk>>,
 }
 
 impl Chats {
@@ -54,7 +69,14 @@ impl Chats {
         Self {
             owner: Owner::current().unwrap_or_default(),
             threads: StoredValue::new(HashMap::new()),
+            desk: StoredValue::new(None),
         }
+    }
+
+    /// The Floorplan page saying where its working copy is, or — with `None` — that it has
+    /// gone.
+    pub fn lay(&self, desk: Option<Desk>) {
+        self.desk.set_value(desk);
     }
 
     fn thread(&self, scope: &str) -> Thread {
@@ -75,6 +97,7 @@ impl Chats {
             waited: RwSignal::new(0),
             round: RwSignal::new(0),
             used: RwSignal::new(None),
+            desk: self.desk,
         });
         self.threads.update_value(|threads| {
             threads.insert(scope.to_owned(), thread);
@@ -112,6 +135,12 @@ impl Thread {
                 self.phase.set(Phase::Writing);
             }
             Streamed::Step(tool) => self.phase.set(Phase::Looking(tool)),
+            // Only the Floorplan page can take a plan, and only while it is there to.
+            Streamed::Plan(plan) => {
+                if let Some(desk) = self.desk.get_value() {
+                    desk.take.run(*plan);
+                }
+            }
             Streamed::Failed(_) | Streamed::Done => {}
         }
     }
@@ -204,8 +233,15 @@ impl Thread {
                 body: text.clone(),
             })
         });
+        // The plan being edited goes with a question asked on the Floorplan page, so the model
+        // sees — and may draw on — what is on the screen and not what was last saved.
+        let plan = scope
+            .starts_with("floorplan:")
+            .then(|| self.desk.get_value())
+            .flatten()
+            .and_then(|desk| desk.read.run(()));
         spawn_local(async move {
-            let result = api::assistant_ask(&scope, &text, self.hear()).await;
+            let result = api::assistant_ask(&scope, &text, plan.as_ref(), self.hear()).await;
             self.settle(&scope, text, result).await;
         });
     }
@@ -443,6 +479,8 @@ impl Phase {
                 "read_settings" => "Reading Irori's settings",
                 "list_automations" => "Looking at the automations",
                 "get_automation" => "Reading an automation",
+                "read_floorplan" => "Looking at the plan",
+                "edit_floorplan" => "Drawing on the plan",
                 _ => "Looking something up",
             },
             Self::Writing => "Writing",
@@ -515,6 +553,14 @@ pub fn Chat(
 
     let empty = move || messages.with(Vec::is_empty) && !asking.get();
     let about = title.clone();
+    // The one conversation that can change something: the drawing on the Floorplan page.
+    let on_plan = scope.with_value(|scope| scope.starts_with("floorplan:"));
+    let local = move || {
+        assistant
+            .0
+            .get()
+            .is_some_and(|status| status.mode == "local")
+    };
 
     view! {
         <section class="chat">
@@ -568,11 +614,28 @@ pub fn Chat(
                 })}
             </header>
             <div class="chat-log" node_ref=log>
-                {move || empty().then(|| view! {
-                    <p class="chat-empty">
-                        "Ask about " {about.clone()} ". Answers come from what Irori can see right \
-                         now; nothing is changed."
-                    </p>
+                {move || empty().then(|| if on_plan {
+                    view! {
+                        <p class="chat-empty">
+                            "Ask about " {about.clone()} ": its rooms, what's in them, and the \
+                             automations that act on them. "
+                            {if local() {
+                                "Drawing on the plan needs a cloud model; the one on this \
+                                 machine can only answer."
+                            } else {
+                                "While you're editing it can draw too — walls, doors, windows \
+                                 and rooms — as one step you can undo. Nothing is saved until \
+                                 you press Save."
+                            }}
+                        </p>
+                    }.into_any()
+                } else {
+                    view! {
+                        <p class="chat-empty">
+                            "Ask about " {about.clone()} ". Answers come from what Irori can see \
+                             right now; nothing is changed."
+                        </p>
+                    }.into_any()
                 })}
                 {move || {
                     messages

@@ -4215,6 +4215,45 @@ mod tests {
                         )
                             .into_response();
                     }
+                    // Draws a room when it is offered the tool to, and says it can't when it
+                    // isn't. `draws-badly` asks for a room the home doesn't have.
+                    if body["model"] == "draws" || body["model"] == "draws-badly" {
+                        let offered = body["tools"].to_string().contains("edit_floorplan");
+                        let report = body["messages"].as_array().and_then(|messages| {
+                            messages
+                                .iter()
+                                .find(|m| m["role"] == "tool")
+                                .map(|m| m["content"].to_string())
+                        });
+                        let room = if body["model"] == "draws" { "study" } else { "attic" };
+                        let ops = serde_json::json!([
+                            {"op": "add_wall", "from": [500, 0], "to": [800, 0]},
+                            {"op": "add_wall", "from": [800, 0], "to": [800, 300]},
+                            {"op": "add_opening", "wall": 2, "kind": "door", "at": 150},
+                            {"op": "trace_area", "area": room,
+                             "points": [[500, 0], [800, 0], [800, 300], [500, 300]]},
+                        ])
+                        .to_string();
+                        let said = |text: &str| {
+                            serde_json::json!({"choices": [{"delta": {"content": text}}]})
+                        };
+                        let line = match report {
+                            Some(report) if report.contains("Done") => said("Drawn."),
+                            Some(report) => said(&format!("Refused: {report}")),
+                            None if offered => serde_json::json!({"choices": [{"delta": {
+                                "tool_calls": [{"index": 0, "id": "a", "function": {
+                                    "name": "edit_floorplan",
+                                    "arguments": serde_json::json!({"ops": ops}).to_string(),
+                                }}],
+                            }}]}),
+                            None => said("I can't draw here."),
+                        };
+                        return (
+                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                            format!("data: {line}\n\ndata: [DONE]\n\n"),
+                        )
+                            .into_response();
+                    }
                     (
                         [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
                         "data: {\"choices\":[{\"delta\":{\"content\":\"Hello from the model\"}}]}\n\ndata: [DONE]\n\n",
@@ -4358,6 +4397,134 @@ mod tests {
             Ok(())
         }
 
+        /// One question from the Floorplan page, with the plan being edited there or without.
+        async fn asked_on_the_plan(
+            server: &Server,
+            plan: Option<&serde_json::Value>,
+        ) -> anyhow::Result<Vec<serde_json::Value>> {
+            let mut body = serde_json::json!({
+                "scope": "floorplan:ground",
+                "message": "Draw the study to the right of the kitchen.",
+            });
+            if let Some(plan) = plan {
+                body["plan"] = plan.clone();
+            }
+            let (status, bytes) = server
+                .send(
+                    Request::post("/api/assistant/turns")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&body)?))?,
+                )
+                .await?;
+            assert_eq!(status, StatusCode::OK);
+            Ok(String::from_utf8(bytes)?
+                .lines()
+                .filter_map(|line| serde_json::from_str(line.strip_prefix("data:")?.trim()).ok())
+                .collect())
+        }
+
+        /// On the Floorplan page the assistant may draw — on the copy the person is editing,
+        /// which comes back to them to keep or undo, and never on the home's own plan.
+        #[tokio::test]
+        async fn the_assistant_draws_on_the_plan_being_edited_and_saves_nothing()
+        -> anyhow::Result<()> {
+            let base = cloud().await;
+            let server = Server::new(core())?;
+            for (path, body) in [
+                (
+                    "/api/floors",
+                    serde_json::json!({"name": "Ground", "level": 0}),
+                ),
+                ("/api/areas", serde_json::json!({"name": "Kitchen"})),
+                ("/api/areas", serde_json::json!({"name": "Study"})),
+            ] {
+                let (status, body) = server.json("POST", path, body).await?;
+                assert!(status.is_success(), "{path}: {body}");
+            }
+            let draft = serde_json::json!({"floors": {"ground": {
+                "walls": [{"from": [0, 0], "to": [400, 0]}],
+                "areas": [{"area": "kitchen", "points": [[0, 0], [400, 0], [400, 300], [0, 300]]}],
+            }}});
+            let (status, body) = server
+                .json("PUT", "/api/assistant", configure(&base, "draws"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+
+            let events = asked_on_the_plan(&server, Some(&draft)).await?;
+            let drawn = events
+                .iter()
+                .find_map(|event| event.get("plan"))
+                .unwrap_or_else(|| panic!("no plan came back: {events:?}"));
+            let ground = &drawn["floors"]["ground"];
+            assert_eq!(ground["walls"].as_array().map(Vec::len), Some(3), "{drawn}");
+            assert_eq!(ground["walls"][1]["openings"][0]["kind"], "door");
+            assert_eq!(ground["areas"][1]["area"], "study");
+            assert!(events.iter().any(|event| event["step"] == "edit_floorplan"));
+            assert!(
+                events.iter().any(|event| event["delta"] == "Drawn."),
+                "{events:?}"
+            );
+            // The home's own plan was never drawn at all, and still isn't.
+            assert_eq!(server.read("/api/floorplan").await?, serde_json::json!({}));
+            let file = std::fs::read_to_string(server.config_dir().join("floorplan.toml"))
+                .unwrap_or_default();
+            assert!(!file.contains("[[floors"), "{file}");
+
+            // Without the plan being edited there is nothing to draw on, and no tool to try.
+            let events = asked_on_the_plan(&server, None).await?;
+            assert!(
+                events.iter().all(|event| event.get("plan").is_none()),
+                "{events:?}"
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|event| event["delta"] == "I can't draw here.")
+            );
+
+            // A room the home doesn't have is refused, in words the model can act on, and the
+            // page is sent nothing to take.
+            let (status, body) = server
+                .json("PUT", "/api/assistant", configure(&base, "draws-badly"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let events = asked_on_the_plan(&server, Some(&draft)).await?;
+            assert!(
+                events.iter().all(|event| event.get("plan").is_none()),
+                "{events:?}"
+            );
+            let said = serde_json::Value::from(events).to_string();
+            assert!(
+                said.contains("no room `attic`") && said.contains("study"),
+                "{said}"
+            );
+
+            // The same tool, asked for from a conversation that isn't offered it.
+            let reply = events_of(&server, "general", &draft).await?;
+            assert!(!reply.contains("\"plan\""), "{reply}");
+            Ok(())
+        }
+
+        /// A question with a plan attached, from a conversation that has no use for one.
+        async fn events_of(
+            server: &Server,
+            scope: &str,
+            plan: &serde_json::Value,
+        ) -> anyhow::Result<String> {
+            let (_, bytes) = server
+                .send(
+                    Request::post("/api/assistant/turns")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&serde_json::json!({
+                            "scope": scope,
+                            "message": "Draw the study.",
+                            "plan": plan,
+                        }))?))?,
+                )
+                .await?;
+            Ok(String::from_utf8(bytes)?)
+        }
+
         /// Irori finishes an answer once it has been asked for, with nobody there to read it.
         #[tokio::test]
         async fn a_page_that_leaves_still_gets_its_answer_kept() -> anyhow::Result<()> {
@@ -4385,6 +4552,7 @@ mod tests {
                         },
                         "general".into(),
                         "hello".into(),
+                        None,
                         tx,
                     )
                 })

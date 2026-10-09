@@ -1,5 +1,6 @@
-//! The read-only tools a model may call. A few rounds, then a plain answer. Writing the home is
-//! not one of them.
+//! The tools a model may call. A few rounds, then a plain answer. All but one only read, and
+//! writing the home is not among them: the one that changes anything draws on the copy of the
+//! floorplan a person has open for editing, which is theirs to undo and theirs to save.
 
 use serde_json::{Value, json};
 
@@ -19,12 +20,18 @@ struct Tool {
     description: &'static str,
     /// Each parameter: its name, what it is, and whether the call must give it. All strings.
     params: &'static [(&'static str, &'static str, bool)],
-    /// Whether the conversation `scope` is offered it.
-    offered: fn(&str) -> bool,
+    /// Whether the conversation `scope` is offered it. The second is whether the person asking
+    /// has the floorplan open for editing, and sent the copy they are drawing on.
+    offered: fn(&str, bool) -> bool,
 }
 
-fn about_the_home(scope: &str) -> bool {
+fn about_the_home(scope: &str, _drawing: bool) -> bool {
     scope != "settings"
+}
+
+/// The chat on the Floorplan page, about one floor of the home.
+fn plan(scope: &str) -> bool {
+    scope.starts_with("floorplan:")
 }
 
 /// The chat about the whole home, which may ask about everything Irori holds.
@@ -32,18 +39,18 @@ fn general(scope: &str) -> bool {
     scope == "general"
 }
 
-const TOOLS: [Tool; 7] = [
+const TOOLS: [Tool; 9] = [
     Tool {
         name: "list_devices",
         description: "List the devices in the home, with the room and the word each entity is reporting.",
         params: &[],
-        offered: |_| true,
+        offered: |_, _| true,
     },
     Tool {
         name: "get_device",
         description: "One device's entities and what they report right now.",
         params: &[("id", "The device id.", true)],
-        offered: |_| true,
+        offered: |_, _| true,
     },
     Tool {
         name: "recent_states",
@@ -66,19 +73,19 @@ const TOOLS: [Tool; 7] = [
                 false,
             ),
         ],
-        offered: |scope| scope == "settings" || general(scope),
+        offered: |scope, _| scope == "settings" || general(scope),
     },
     Tool {
         name: "read_settings",
         description: "Everything Irori's Settings page holds: the machine it runs on, the assistant's own configuration, floors and areas with the devices in each, extensions and their settings, and the newest warnings and errors.",
         params: &[],
-        offered: general,
+        offered: |scope, _| general(scope),
     },
     Tool {
         name: "list_automations",
         description: "Every automation, with its id, whether it is on, how its last run came out, and how many problems it has.",
         params: &[],
-        offered: general,
+        offered: |scope, _| general(scope) || plan(scope),
     },
     Tool {
         name: "get_automation",
@@ -88,7 +95,38 @@ const TOOLS: [Tool; 7] = [
             "The automation's id, as list_automations gives it.",
             true,
         )],
-        offered: general,
+        offered: |scope, _| general(scope) || plan(scope),
+    },
+    Tool {
+        name: "read_floorplan",
+        description: "One floor of the home as it is drawn: its walls by number with their doors and windows, the rooms traced on it, and where each device stands. Whole centimetres, x rightwards and y down the page.",
+        params: &[(
+            "floor",
+            "The floor's id. Leave out for the floor being looked at, or for every floor when none is.",
+            false,
+        )],
+        offered: |scope, _| general(scope) || plan(scope),
+    },
+    Tool {
+        name: "edit_floorplan",
+        description: "Draw on the floor being looked at: add or remove walls, doors, windows, and the outlines of rooms. Every change in one call is made together or not at all. The person sees it on their plan at once and can undo it; nothing is saved until they press Save.",
+        params: &[(
+            "ops",
+            "A JSON array of changes. Each is an object with an `op`: \
+             {\"op\":\"add_wall\",\"from\":[x,y],\"to\":[x,y],\"thickness\":10} (thickness optional); \
+             {\"op\":\"add_opening\",\"wall\":1,\"kind\":\"door\",\"at\":200,\"width\":80,\"side\":\"left\",\"hinge\":\"near\"} \
+             (kind is door or window; at is centimetres along the wall from its `from` end to the \
+             middle of the opening; width, side (left or right) and hinge (near or far) optional); \
+             {\"op\":\"trace_area\",\"area\":\"kitchen\",\"points\":[[x,y],[x,y],[x,y]],\"tint\":\"sky\"} \
+             (area is the id of a room the home already has; at least three corners, not repeating \
+             the first; tint optional: ember, moss, slate, sand, plum, teal, rose, sky, olive or stone); \
+             {\"op\":\"remove_wall\",\"wall\":1}; {\"op\":\"remove_opening\",\"wall\":1,\"opening\":1}; \
+             {\"op\":\"remove_area\",\"area\":\"kitchen\"}. Whole centimetres, x rightwards and y down \
+             the page. Walls and openings are numbered from 1 as read_floorplan lists them, all \
+             the way through a call; the walls a call adds are numbered on from the last.",
+            true,
+        )],
+        offered: |scope, drawing| plan(scope) && drawing,
     },
 ];
 
@@ -117,19 +155,20 @@ fn schema(tool: &Tool) -> Value {
     })
 }
 
-/// Whether the conversation `scope` is offered the tool `name`.
-pub fn tool_offered(scope: &str, name: &str) -> bool {
+/// Whether the conversation `scope` is offered the tool `name`. `drawing` is whether the
+/// person asking sent the plan they are editing.
+pub fn tool_offered(scope: &str, drawing: bool, name: &str) -> bool {
     TOOLS
         .iter()
-        .any(|tool| tool.name == name && (tool.offered)(scope))
+        .any(|tool| tool.name == name && (tool.offered)(scope, drawing))
 }
 
 /// The tools the conversation `scope` is offered, in OpenAI's shape. Anthropic uses
 /// [`anthropic_tools`].
-pub fn openai_tools(scope: &str) -> Value {
+pub fn openai_tools(scope: &str, drawing: bool) -> Value {
     TOOLS
         .iter()
-        .filter(|tool| (tool.offered)(scope))
+        .filter(|tool| (tool.offered)(scope, drawing))
         .map(|tool| {
             json!({
                 "type": "function",
@@ -143,10 +182,10 @@ pub fn openai_tools(scope: &str) -> Value {
         .collect()
 }
 
-pub fn anthropic_tools(scope: &str) -> Value {
+pub fn anthropic_tools(scope: &str, drawing: bool) -> Value {
     TOOLS
         .iter()
-        .filter(|tool| (tool.offered)(scope))
+        .filter(|tool| (tool.offered)(scope, drawing))
         .map(|tool| {
             json!({
                 "name": tool.name,
@@ -286,25 +325,62 @@ mod tests {
             "read_settings",
             "list_automations",
             "get_automation",
+            "read_floorplan",
         ];
         for scope in ["device:lamp", "automation:kettle"] {
-            assert_eq!(names(&openai_tools(scope), "/function/name"), home);
-            assert_eq!(names(&anthropic_tools(scope), "/name"), home);
+            assert_eq!(names(&openai_tools(scope, false), "/function/name"), home);
+            assert_eq!(names(&anthropic_tools(scope, false), "/name"), home);
         }
-        assert_eq!(names(&openai_tools("general"), "/function/name"), general);
-        assert_eq!(names(&anthropic_tools("general"), "/name"), general);
-        assert_eq!(names(&openai_tools("settings"), "/function/name"), settings);
-        assert_eq!(names(&anthropic_tools("settings"), "/name"), settings);
-        let logs = &anthropic_tools("settings")[2];
+        let all = |scope| names(&openai_tools(scope, false), "/function/name");
+        assert_eq!(all("general"), general);
+        assert_eq!(names(&anthropic_tools("general", false), "/name"), general);
+        assert_eq!(all("settings"), settings);
+        assert_eq!(
+            names(&anthropic_tools("settings", false), "/name"),
+            settings
+        );
+        let logs = &anthropic_tools("settings", false)[2];
         assert_eq!(logs["input_schema"]["required"], json!(["source"]));
-        assert!(tool_offered("settings", "read_logs"));
-        assert!(tool_offered("general", "read_logs"));
-        assert!(tool_offered("general", "get_automation"));
-        assert!(!tool_offered("device:lamp", "read_logs"));
-        assert!(!tool_offered("automation:kettle", "list_automations"));
-        assert!(!tool_offered("settings", "read_settings"));
-        assert!(!tool_offered("settings", "recent_states"));
+        assert!(tool_offered("settings", false, "read_logs"));
+        assert!(tool_offered("general", false, "read_logs"));
+        assert!(tool_offered("general", false, "get_automation"));
+        assert!(!tool_offered("device:lamp", false, "read_logs"));
+        assert!(!tool_offered(
+            "automation:kettle",
+            false,
+            "list_automations"
+        ));
+        assert!(!tool_offered("settings", false, "read_settings"));
+        assert!(!tool_offered("settings", false, "recent_states"));
         assert!(logs["input_schema"]["properties"]["contains"].is_object());
+    }
+
+    /// The one tool that changes anything is offered in one place: the chat on the Floorplan
+    /// page, and only while the person there is editing and has sent what they are drawing.
+    #[test]
+    fn drawing_is_offered_only_on_a_plan_that_is_being_edited() {
+        let reading = [
+            "list_devices",
+            "get_device",
+            "recent_states",
+            "list_automations",
+            "get_automation",
+            "read_floorplan",
+        ];
+        assert_eq!(
+            names(&anthropic_tools("floorplan:ground", false), "/name"),
+            reading
+        );
+        let drawing = names(&openai_tools("floorplan:ground", true), "/function/name");
+        assert_eq!(drawing[..reading.len()], reading);
+        assert_eq!(drawing.last().map(String::as_str), Some("edit_floorplan"));
+        for scope in ["general", "settings", "device:lamp", "automation:kettle"] {
+            assert!(!tool_offered(scope, true, "edit_floorplan"), "{scope}");
+        }
+        assert!(!tool_offered("floorplan:ground", false, "edit_floorplan"));
+        assert!(tool_offered("general", false, "read_floorplan"));
+        let edit = &anthropic_tools("floorplan:ground", true)[6];
+        assert_eq!(edit["input_schema"]["required"], json!(["ops"]));
     }
 
     #[test]
