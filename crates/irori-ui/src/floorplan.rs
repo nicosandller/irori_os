@@ -357,6 +357,9 @@ enum Drag {
     /// Moving everything picked up together, keeping the offset it was grabbed at.
     Group {
         grab: (f64, f64),
+        /// Whether it hasn't moved yet. The plan is only remembered, for undoing, once it
+        /// does: a press that moves nothing is not a step.
+        still: bool,
     },
 }
 
@@ -561,17 +564,13 @@ pub fn Floorplan() -> impl IntoView {
 
     // Frames the plan: the way somebody set it for this floor, or else the whole of it with a
     // margin. Used once when a drawn home first arrives, and by the Fit button afterwards.
-    let fit = move || {
+    let home_view = move || -> Option<Viewport> {
         let chosen = chosen_fit.get_untracked();
         let drawn = extent(&level.get_untracked());
         if chosen.is_none() && drawn.is_none() {
-            view.set(Viewport::default());
-            fitted.set(Some(Viewport::default()));
-            return;
+            return Some(Viewport::default());
         }
-        let Some((middle, room)) = clear() else {
-            return;
-        };
+        let (middle, room) = clear()?;
         let framing = chosen.or_else(|| {
             let (low, high) = drawn?;
             // Every coordinate becomes a `f64` before any arithmetic: a plan can hold points
@@ -587,11 +586,22 @@ pub fn Floorplan() -> impl IntoView {
                 middle: ((left + right) / 2.0, (top + bottom) / 2.0),
             })
         });
-        let Some(framing) = framing else { return };
-        let to = framing.view(middle);
-        view.set(to);
-        fitted.set(Some(to));
+        Some(framing?.view(middle))
     };
+    let fit = move || {
+        if let Some(to) = home_view() {
+            view.set(to);
+            fitted.set(Some(to));
+        }
+    };
+    // Each floor has a home view of its own, and changing floor leaves the view where it was,
+    // so an upstairs can be lined up with what is under it. Whether that view *is* the new
+    // floor's home is therefore a fresh question each time.
+    Effect::new(move |_| {
+        floor.track();
+        chosen_fit.track();
+        fitted.set(home_view());
+    });
 
     // Makes the view as it stands this floor's Fit, or — with `None` — hands Fit back to
     // framing the whole plan.
@@ -615,7 +625,15 @@ pub fn Floorplan() -> impl IntoView {
     };
     // Whether the view has been moved off what Fit gives: the only time there is anything to
     // set.
-    let off_fit = move || fitted.get() != Some(view.get());
+    let off_fit = move || {
+        let now = view.get();
+        // To within what can be seen: a view worked out twice differs in its last decimal.
+        !fitted.get().is_some_and(|home| {
+            (home.scale / now.scale - 1.0).abs() < 1e-6
+                && (home.pan.0 - now.pan.0).abs() < 0.5
+                && (home.pan.1 - now.pan.1).abs() < 0.5
+        })
+    };
 
     // A home that was already drawn should open framed rather than at whatever the default zoom
     // happens to show. Once only, and never while somebody is drawing: a view that reframed
@@ -725,6 +743,31 @@ pub fn Floorplan() -> impl IntoView {
     // which is what pressing Edit and asking again would have come to. Either way nothing is
     // written until Save.
     let assistant = expect_context::<crate::Assistant>();
+    // A file let go of anywhere on a page is, to a browser, a file to open in place of the
+    // page — and this page invites files, onto its chat, while holding a plan that isn't
+    // saved. So a file that misses the chat is dropped on nothing.
+    let carries_files = |event: &ev::DragEvent| {
+        event.data_transfer().is_some_and(|carried| {
+            carried
+                .types()
+                .iter()
+                .any(|kind| kind.as_string().as_deref() == Some("Files"))
+        })
+    };
+    let over_page = window_event_listener(ev::dragover, move |event: ev::DragEvent| {
+        if carries_files(&event) {
+            event.prevent_default();
+        }
+    });
+    let on_page = window_event_listener(ev::drop, move |event: ev::DragEvent| {
+        if carries_files(&event) {
+            event.prevent_default();
+        }
+    });
+    on_cleanup(move || {
+        over_page.remove();
+        on_page.remove();
+    });
     let chats = expect_context::<crate::assistant::Chats>();
     // The last plan the assistant handed over. An answer still being written is read again
     // from its first word by a page that comes back to it, and the plan in it must not be
@@ -928,12 +971,22 @@ pub fn Floorplan() -> impl IntoView {
             let reach = REACH * here.cm_per_pixel();
             // What is picked up together is moved by the box it fills. Checked first: the box
             // is drawn over whatever is in it, so a press inside it means the box.
+            let here_level = level.get_untracked();
             let held = group.with_untracked(|group| {
-                !group.is_empty() && group.holds(&level.get_untracked(), world, reach)
+                // A wall that only crosses the box isn't part of what's picked up, and a press
+                // on it means that wall. A room under the box is different: the box may be
+                // sitting inside one, and then every press in it would be the room's.
+                let another = match pick_at(&here_level, world, reach) {
+                    Some(Pick::Wall(w) | Pick::Opening(w, _)) => !group.walls.contains(&w),
+                    _ => false,
+                };
+                !group.is_empty() && !another && group.holds(&here_level, world, reach)
             });
             if held && !event.shift_key() {
-                remember();
-                drag.set(Some(Drag::Group { grab: world }));
+                drag.set(Some(Drag::Group {
+                    grab: world,
+                    still: true,
+                }));
                 return;
             }
             // A box is dragged out with its own tool, or with Shift held on the ordinary one,
@@ -1182,18 +1235,22 @@ pub fn Floorplan() -> impl IntoView {
                 dragged.set(true);
                 marquee.set(Some((from, world)));
             }
-            Drag::Group { grab } => {
+            Drag::Group { grab, still } => {
                 dragged.set(true);
                 let step = snap.get_untracked().step();
                 let by = (round(world.0 - grab.0, step), round(world.1 - grab.1, step));
                 if by == (0, 0) {
                     return;
                 }
+                if still {
+                    remember();
+                }
                 let many = group.get_untracked();
                 on_level(draft, floor, |level| many.shift(level, by));
                 // The grab moves with the group, so the rounding can't accumulate into a drift.
                 drag.set(Some(Drag::Group {
                     grab: (grab.0 + f64::from(by.0), grab.1 + f64::from(by.1)),
+                    still: false,
                 }));
             }
             Drag::Device { device } => {
@@ -1879,6 +1936,9 @@ pub fn Floorplan() -> impl IntoView {
                                             }
                                             event.stop_propagation();
                                             dragged.set(false);
+                                            // One thing taken hold of puts down whatever was
+                                            // picked up together.
+                                            group.set(Group::default());
                                             picked.set(Some(Pick::Area(index)));
                                             remember();
                                             let grab = at(&event)
@@ -1969,6 +2029,7 @@ pub fn Floorplan() -> impl IntoView {
                                         || many.devices.contains(&index),
                                     controls,
                                     picked,
+                                    group,
                                     drag,
                                     dragged,
                                     dropped,
@@ -3427,6 +3488,7 @@ fn marker(
     chosen: bool,
     controls: Controls,
     picked: RwSignal<Option<Pick>>,
+    group: RwSignal<Group>,
     drag: RwSignal<Option<Drag>>,
     dragged: RwSignal<bool>,
     dropped: RwSignal<Option<usize>>,
@@ -3511,6 +3573,8 @@ fn marker(
                 }
                 event.stop_propagation();
                 dragged.set(false);
+                // One thing taken hold of puts down whatever was picked up together.
+                group.set(Group::default());
                 picked.set(Some(Pick::Device(index)));
                 remember.run(());
                 drag.set(Some(Drag::Device { device: index }));

@@ -970,6 +970,8 @@ async fn answer(
         None
     };
     let mut rounds = 0u8;
+    // How many floors and rooms this one question has had added, across every go at it.
+    let mut added = 0usize;
     let mut tools_work = !provider.local();
     // Everything the page was sent, so what is remembered is what was read.
     let mut text = String::new();
@@ -1019,8 +1021,16 @@ async fn answer(
                     }
                     let before = drawing.clone();
                     let mut removals = Vec::new();
-                    let result =
-                        run_tool(&env, &scope, &picture, &call, &mut drawing, &mut removals).await;
+                    let result = run_tool(
+                        &env,
+                        &scope,
+                        &picture,
+                        &call,
+                        &mut drawing,
+                        &mut removals,
+                        &mut added,
+                    )
+                    .await;
                     if !removals.is_empty() && tx.send(ChatEvent::Confirm(removals)).await.is_err()
                     {
                         return;
@@ -1520,6 +1530,8 @@ async fn run_tool(
     drawing: &mut Option<Floorplan>,
     // The floors and rooms the model asked to have removed, for the person to be asked about.
     removals: &mut Vec<Removal>,
+    // How many floors and rooms this question has had added so far.
+    added: &mut usize,
 ) -> String {
     let args: Value = serde_json::from_str(&call.arguments).unwrap_or(json!({}));
     // A model may ask for a tool it wasn't offered. It gets what it was offered, no more.
@@ -1617,7 +1629,7 @@ async fn run_tool(
                 .join("\n")
         }
         "edit_floorplan" => return draw(env.core, scope, &args, drawing),
-        "edit_home" => return arrange(env, scope, &args, removals).await,
+        "edit_home" => return arrange(env, scope, &args, removals, added).await,
         "read_logs" => {
             let source = args
                 .get("source")
@@ -1660,6 +1672,9 @@ fn floor_of(scope: &str) -> Option<FloorId> {
     scope.strip_prefix("floorplan:")?.parse().ok()
 }
 
+/// How many floors and rooms one question may have added.
+const MOST_ADDED: usize = 12;
+
 /// How many times the model may reach for a tool in the Floorplan's chat.
 const PLAN_ROUNDS: u8 = 4;
 
@@ -1693,7 +1708,13 @@ enum HomeOp {
 /// done from here at all. A floor or a room going takes things with it, a model can be wrong
 /// about what it was asked, and a picture it was shown can say anything; so the person is
 /// asked on the page, and the page removes what they say yes to, as themselves.
-async fn arrange(env: &Env<'_>, scope: &str, args: &Value, removals: &mut Vec<Removal>) -> String {
+async fn arrange(
+    env: &Env<'_>,
+    scope: &str,
+    args: &Value,
+    removals: &mut Vec<Removal>,
+    added: &mut usize,
+) -> String {
     if !env.owner {
         return "Only an owner of the home can add or remove floors and rooms. Nothing was \
                 changed."
@@ -1711,7 +1732,21 @@ async fn arrange(env: &Env<'_>, scope: &str, args: &Value, removals: &mut Vec<Re
     };
     let here = floor_of(scope);
     let mut said = Vec::new();
+    let before = *added;
     for op in ops {
+        // What is added is written at once and nobody is asked first, so one question only
+        // gets so many: a model that misread a plan, or was told to by something written in
+        // the picture it was shown, makes a handful of rooms and not a hundred.
+        if matches!(op, HomeOp::AddFloor { .. } | HomeOp::AddArea { .. }) {
+            if *added >= MOST_ADDED {
+                said.push(format!(
+                    "No more floors or rooms can be added for this one question ({MOST_ADDED} \
+                     is the most). The person can ask again for the rest."
+                ));
+                continue;
+            }
+            *added += 1;
+        }
         match op {
             HomeOp::AddFloor { name, level } => {
                 let made = env
@@ -1803,6 +1838,14 @@ async fn arrange(env: &Env<'_>, scope: &str, args: &Value, removals: &mut Vec<Re
     }
     if said.is_empty() {
         return "There were no changes in that. Nothing was changed.".to_owned();
+    }
+    if *added > before {
+        // Unlike a drawing, which Cancel takes away. The person should hear it from the reply.
+        said.push(
+            "Say plainly that what was added is saved already, and stays even if the drawing \
+             is cancelled; it can be removed in Settings."
+                .to_owned(),
+        );
     }
     said.join("\n")
 }

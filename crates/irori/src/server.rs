@@ -4223,19 +4223,36 @@ mod tests {
                             .into_response();
                     }
                     // Makes a room and asks for another to go, then says what came of it.
-                    if body["model"] == "arranges" {
+                    // `floods` asks for thirty rooms, and keeps asking.
+                    if body["model"] == "arranges" || body["model"] == "floods" {
                         let report = body["messages"].as_array().and_then(|messages| {
                             messages
                                 .iter()
                                 .find(|m| m["role"] == "tool")
                                 .and_then(|m| m["content"].as_str().map(str::to_owned))
                         });
-                        let ops = serde_json::json!([
-                            {"op": "add_area", "name": "Pantry"},
-                            {"op": "remove_area", "area": "kitchen"},
-                            {"op": "remove_floor", "floor": "attic"},
-                        ]);
+                        let flooding = body["model"] == "floods";
+                        let ops = if flooding {
+                            serde_json::Value::from(vec![
+                                serde_json::json!({"op": "add_area", "name": "Spare"});
+                                15
+                            ])
+                        } else {
+                            serde_json::json!([
+                                {"op": "add_area", "name": "Pantry"},
+                                {"op": "remove_area", "area": "kitchen"},
+                                {"op": "remove_floor", "floor": "attic"},
+                            ])
+                        };
+                        // Flooding, it asks twice before it says anything.
+                        let asked = body["messages"].as_array().map_or(0, |messages| {
+                            messages.iter().filter(|m| m["role"] == "tool").count()
+                        });
+                        let report = report.filter(|_| !flooding || asked >= 2);
                         let line = match report {
+                            Some(_) if flooding => serde_json::json!({"choices": [{"delta": {
+                                "content": body["messages"].to_string(),
+                            }}]}),
                             Some(report) => serde_json::json!({"choices": [{"delta": {
                                 "content": report,
                             }}]}),
@@ -4729,6 +4746,24 @@ mod tests {
                 &serde_json::json!([{"kind": "area", "id": "kitchen", "name": "Kitchen"}])
             );
             assert!(said.contains("There's no floor `attic`"), "{said}");
+            assert!(said.contains("saved already"), "{said}");
+
+            // One question gets only so many rooms added, however many it asks for.
+            let (status, body) = server
+                .json("PUT", "/api/assistant", configure(&base, "floods"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let events = asked_on_the_plan(&server, Some(&draft)).await?;
+            let said = serde_json::Value::from(events).to_string();
+            assert!(said.contains("No more floors or rooms"), "{said}");
+            let rooms = server.read("/api/areas").await?;
+            let spares = rooms
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|room| room["name"] == "Spare")
+                .count();
+            assert_eq!(spares, 12, "{rooms}");
             Ok(())
         }
 

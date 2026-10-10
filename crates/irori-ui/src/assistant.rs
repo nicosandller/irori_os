@@ -41,6 +41,9 @@ struct Thread {
     attached: RwSignal<Option<api::Attachment>>,
     /// Floors and rooms the assistant asked to have removed, waiting on a yes or a no.
     asked: RwSignal<Vec<api::Removal>>,
+    /// The ones already answered, for this question: an answer read again from its start
+    /// asks again, and somebody who said "keep it" has said it.
+    answered: StoredValue<Vec<api::Removal>>,
 }
 
 /// The plan being edited on the Floorplan page, as the assistant reaches it: `read` is the
@@ -106,6 +109,7 @@ impl Chats {
             desk: self.desk,
             attached: RwSignal::new(None),
             asked: RwSignal::new(Vec::new()),
+            answered: StoredValue::new(Vec::new()),
         });
         self.threads.update_value(|threads| {
             threads.insert(scope.to_owned(), thread);
@@ -153,7 +157,10 @@ impl Thread {
             // Each is asked once, however many times the answer is read from its start.
             Streamed::Confirm(removals) => self.asked.update(|asked| {
                 for removal in removals {
-                    if !asked.contains(&removal) {
+                    let settled = self
+                        .answered
+                        .with_value(|answered| answered.contains(&removal));
+                    if !settled && !asked.contains(&removal) {
                         asked.push(removal);
                     }
                 }
@@ -246,6 +253,9 @@ impl Thread {
         };
         self.draft.set(String::new());
         self.attached.set(None);
+        // A new question starts with nothing asked and nothing answered.
+        self.asked.set(Vec::new());
+        self.answered.set_value(Vec::new());
         self.trouble.set(None);
         self.unanswered.set(None);
         self.wait(0);
@@ -577,6 +587,7 @@ pub fn Chat(
         used,
         attached,
         asked,
+        answered,
         ..
     } = thread;
     let live = expect_context::<crate::Live>();
@@ -601,6 +612,7 @@ pub fn Chat(
                 }
                 Err(why) => trouble.set(Some(why)),
             }
+            answered.update_value(|answered| answered.push(removal.clone()));
             asked.update(|asked| asked.retain(|waiting| *waiting != removal));
         });
     };
@@ -674,6 +686,19 @@ pub fn Chat(
     // as it enters the next, so "over the chat" is counted, not switched on and off.
     let over = RwSignal::new(0i32);
     let held = move || over.get() > 0;
+    // A drag given up — let go of outside the window, or called off with Escape — never tells
+    // the chat it left, and the count would stand. So a file dropped anywhere, or a drag that
+    // leaves the window altogether, settles it.
+    let dropped_anywhere = window_event_listener(ev::drop, move |_| over.set(0));
+    let left_the_window = window_event_listener(ev::dragleave, move |event: ev::DragEvent| {
+        if event.related_target().is_none() {
+            over.set(0);
+        }
+    });
+    on_cleanup(move || {
+        dropped_anywhere.remove();
+        left_the_window.remove();
+    });
     // Only a file, and only where a file is taken: dragging a line of text across the chat
     // is not an offer of anything.
     let offered = move |event: &ev::DragEvent| {
@@ -888,6 +913,7 @@ pub fn Chat(
                             <button type="button" class="press"
                                 on:click=move |_| {
                                     let no = no.clone();
+                                    answered.update_value(|answered| answered.push(no.clone()));
                                     asked.update(|asked| asked.retain(|waiting| *waiting != no));
                                 }>
                                 "Keep it"
