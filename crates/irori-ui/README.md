@@ -41,7 +41,7 @@ cd crates/irori-ui && trunk serve --open # the page on 8080, API proxied to 8480
 
 | | |
 |---|---|
-| **Floorplan** (`/floorplan`) | The home as a drawing, a floor at a time, with the devices live on it: a lamp that's on glows, and clicking one switches it. A picker on the right says which floor, and the floor below shows faintly while you draw so an upstairs can be lined up with what holds it up. **Edit** (top right) puts a toolbar over the same canvas — walls, doors, windows, rooms, devices — and becomes **Save** and **Cancel**. Whatever is picked up gets a panel for the numbers that can't be dragged: a wall's thickness, an opening's width. Points land on a 10 cm grid, or on a step of your own; the grid drawn under the plan **is** that step, with heavier lines every metre, so what you see is where a point can go. Rooms are traced with corners that prefer the walls to the grid, and a device drawn standing in a room is put in that room in Settings when the plan is saved. Undo and redo (⌘Z, ⇧⌘Z, and the two arrows beside Save) go back a move at a time. The canvas is the whole view; scroll to zoom, turn the wheel over the zoom buttons to zoom by a little, press **Set fit** once the view has been moved to make it what Fit comes back to on that floor, drag the empty plan to move around. **{ }** opens the whole plan as JSON, to copy at any time and to change while editing. **Ask** opens a conversation about the floor on show, and while the plan is being edited a cloud model can draw on it. |
+| **Floorplan** (`/floorplan`) | The home as a drawing, a floor at a time, with the devices live on it: a lamp that's on glows, and clicking one switches it. A picker on the right says which floor, and the floor below shows faintly while you draw so an upstairs can be lined up with what holds it up. **Edit** (top right) puts a toolbar over the same canvas — walls, doors, windows, rooms, devices — and becomes **Save** and **Cancel**. Whatever is picked up gets a panel for the numbers that can't be dragged: a wall's thickness, an opening's width. Points land on a 10 cm grid, or on a step of your own; the grid drawn under the plan **is** that step, with heavier lines every metre, so what you see is where a point can go. Rooms are traced with corners that prefer the walls to the grid, and a device drawn standing in a room is put in that room in Settings when the plan is saved. Undo and redo (⌘Z, ⇧⌘Z, and the two arrows beside Save) go back a move at a time. The canvas is the whole view; scroll to zoom, turn the wheel over the zoom buttons to zoom by a little, press the house to come back to the home view (the whole plan, or the view you set for that floor once you've moved it), drag the empty plan to move around. **{ }** opens the whole plan as JSON, to copy at any time and to change while editing. **Ask** opens a conversation about the floor on show, and while the plan is being edited a cloud model can draw on it. |
 | **Welcome** | Until the home has an owner: who you are, with a password, and what time zone the home is in (putting it on the map is optional). After that the page opens on a sign-in, a name and a password both typed; it never lists who lives here. |
 | **Start** (`/`) | What IroriOS is: the wordmark the terminal prints when `irori serve` runs, and how many devices, entities and extensions it is looking after. |
 | **Devices** (`/devices`) | Two ways to read the same home, remembered per browser, both as compact rows in groups that fold: **Devices** is a row per device — make, model, battery, how many entities, and which area it's in — grouped by protocol, area or make; **Entities** is a row per entity — its icon (what kind of thing it is), its control, and its last 24 hours a click away: a number as a line, a state (on and off, a player's playing and paused) as a strip of how long each lasted, either as a table too — grouped by device, area, kind or protocol. **Add device** explains where devices come from — every installed extension, what it's for, and what it can provide — because nothing is typed in by hand yet. |
@@ -86,6 +86,10 @@ file, and the app decides what to show.
   grid. A wall started off another says the angle it makes
   with it, and every corner of a room says its angle, on the inside, while the room is traced
   or picked up: the notch of an L-shaped room reads 270°.
+- Picks up several things at once (`src/floorplan/many.rs`): a box dragged with the **Select
+  several** tool, or with Shift held on Select, takes everything wholly inside it — walls,
+  rooms, devices — to drag together or delete together, each as one step to undo. Only what
+  is in the box moves; a wall outside that shared a corner stays where it was.
 - Takes sizes typed as well as dragged: a wall's thickness, a door's or window's width and the
   snap step each have a box beside their slider, read when it is finished rather than a key at
   a time.
@@ -101,7 +105,10 @@ file, and the app decides what to show.
   and the outlines of rooms the home already has, from what it is told or from a picture or
   PDF of a floorplan attached to the question (up to 8 MB, read for that answer and not kept).
   What it draws comes back to the page as one step to undo, opening Edit if it wasn't open;
-  nothing is written until Save. A model on this
+  nothing is written until Save. A file can be dropped onto the chat as well as attached. For
+  an owner it can also add floors and rooms, which are saved at once as they are from
+  Settings; it can only *ask* for one to be removed, and the question is put in the chat for
+  the person to answer. A model on this
   machine is not given tools, so it answers and does not draw.
 - Lists the extensions behind it all, with their status and any reports they lost.
 - Shows what Irori and its extensions have said, in one window that keeps itself up to date:
@@ -113,7 +120,7 @@ file, and the app decides what to show.
 installing the firmware update whose version the device page shows (ROADMAP M1.8, D30). The
 floorplan is mouse-driven and has no furniture and no stairs between floors. A wall started
 from the middle of another is not welded to it, so dragging the first leaves the second where
-it was; the assistant can't make rooms or move devices, and a plan it draws replaces the
+it was; the assistant can't move devices, and a plan it draws replaces the
 working copy as it stood when the question was asked. The chat belongs to the floor it was
 opened on and closes when the floor is changed. Its corners are solid wherever
 two walls meet at any angle, and where three or more do at right angles; a junction of three

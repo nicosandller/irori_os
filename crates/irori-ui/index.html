@@ -1330,6 +1330,12 @@
     }
     .floorplan .pending line { stroke: var(--ember); stroke-width: 2; stroke-dasharray: 6 4; }
     .floorplan .pending circle { fill: var(--ember); stroke: none; }
+    /* A box dragged round several things, and the box round them once they are picked up:
+       marching like every other selection, and filled just enough to say "all of this". */
+    .floorplan .marquee { fill: var(--ember); fill-opacity: .06; stroke: var(--ember);
+                          stroke-width: 1.5; stroke-dasharray: 6 4; pointer-events: none;
+                          animation: march .8s linear infinite; }
+    .floorplan .marquee.held { fill-opacity: .04; cursor: move; }
     .floorplan .handles circle { fill: var(--card); stroke: var(--ember); stroke-width: 2; }
 
     /* What a point being drawn has caught on. A line to the corner it is level with; the middle
