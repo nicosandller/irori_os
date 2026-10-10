@@ -432,6 +432,14 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
             let Ask { trigger } = params(raw)?;
             answer(clock_next(service, trigger))
         }
+        "clock.holds" => {
+            #[derive(Deserialize)]
+            struct Ask {
+                conditions: Vec<Value>,
+            }
+            let Ask { conditions } = params(raw)?;
+            answer(clock_holds(service, conditions))
+        }
         other => Err(format!("the Automations engine has no `{other}`")),
     }
 }
@@ -507,7 +515,6 @@ struct ClockNext {
 /// When `trigger` next fires. The page asks instead of working it out, so the zone and the sun
 /// are only ever read in one place.
 fn clock_next(service: &Service, trigger: Value) -> ClockNext {
-    use irori_rules::SunEvent;
     use irori_rules::clock;
 
     let at = now();
@@ -522,19 +529,7 @@ fn clock_next(service: &Service, trigger: Value) -> ClockNext {
             sun: BTreeMap::new(),
         };
     };
-    let mut sun = BTreeMap::new();
-    for (name, event) in [
-        ("dawn", SunEvent::Dawn),
-        ("sunrise", SunEvent::Sunrise),
-        ("noon", SunEvent::Noon),
-        ("sunset", SunEvent::Sunset),
-        ("dusk", SunEvent::Dusk),
-        ("midnight", SunEvent::Midnight),
-    ] {
-        if let Ok(Some(when)) = clock::sun_today(place, event, at) {
-            sun.insert(name, clock::wall(place, when));
-        }
-    }
+    let sun = sun_today(place, at);
     let (next, problem) = match serde_json::from_value::<Trigger>(trigger) {
         Ok(trigger) => match trigger.validate() {
             Ok(()) => (next_moment(place, &trigger, at), None),
@@ -550,5 +545,129 @@ fn clock_next(service: &Service, trigger: Value) -> ClockNext {
         problem,
         now: Some(clock::wall(place, at)),
         sun,
+    }
+}
+
+/// Today's sun at home, each event that happens today as "HH:MM".
+fn sun_today(place: &irori_rules::clock::Place, at: Timestamp) -> BTreeMap<&'static str, String> {
+    use irori_rules::SunEvent;
+    use irori_rules::clock;
+
+    let mut sun = BTreeMap::new();
+    for (name, event) in [
+        ("dawn", SunEvent::Dawn),
+        ("sunrise", SunEvent::Sunrise),
+        ("noon", SunEvent::Noon),
+        ("sunset", SunEvent::Sunset),
+        ("dusk", SunEvent::Dusk),
+        ("midnight", SunEvent::Midnight),
+    ] {
+        if let Ok(Some(when)) = clock::sun_today(place, event, at) {
+            sun.insert(name, clock::wall(place, when));
+        }
+    }
+    sun
+}
+
+/// What the page is told about time and sun windows: whether each holds right now.
+#[derive(Debug, Serialize)]
+struct ClockHolds {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    time_zone: Option<String>,
+    location: bool,
+    /// The time on the wall at home now, "14:05".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    now: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    sun: BTreeMap<&'static str, String>,
+    /// One answer per condition asked about, in the order asked.
+    holds: Vec<Holds>,
+}
+
+/// Whether one window holds now. Neither `holds` nor a reason means it can't be told yet.
+#[derive(Debug, Default, Serialize)]
+struct Holds {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    holds: Option<bool>,
+    /// Why it can't be told: no time zone, no location, no sunset at home today.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    why: Option<String>,
+}
+
+/// Whether each time or sun window holds right now. The page asks instead of working it out,
+/// so a dot on the canvas and a run agree: both are the engine's own reading of the clock.
+fn clock_holds(service: &Service, conditions: Vec<Value>) -> ClockHolds {
+    use irori_rules::{CompactDuration, Condition, clock};
+
+    let at = now();
+    let place = service.engine.place();
+    let holds = conditions
+        .into_iter()
+        .map(|condition| {
+            let told = |result: Result<bool, String>| match result {
+                Ok(holds) => Holds {
+                    holds: Some(holds),
+                    why: None,
+                },
+                Err(why) => Holds {
+                    holds: None,
+                    why: Some(why),
+                },
+            };
+            let condition = match serde_json::from_value::<Condition>(condition) {
+                Ok(condition) => condition,
+                Err(error) => return told(Err(error.to_string())),
+            };
+            if let Err(error) = condition.validate(0) {
+                return told(Err(error.to_string()));
+            }
+            let Some(place) = place else {
+                return told(Err("the home has no time zone yet".to_owned()));
+            };
+            match &condition {
+                Condition::Time {
+                    after,
+                    before,
+                    weekday,
+                } => told(Ok(clock::in_time_window(
+                    place,
+                    after.as_ref(),
+                    before.as_ref(),
+                    weekday.as_deref(),
+                    at,
+                ))),
+                Condition::Sun {
+                    after,
+                    before,
+                    offset,
+                    after_offset,
+                    before_offset,
+                } => {
+                    let millis = |own: &Option<CompactDuration>| {
+                        own.as_ref()
+                            .or(offset.as_ref())
+                            .map_or(0, CompactDuration::millis)
+                    };
+                    told(clock::in_sun_window(
+                        place,
+                        *after,
+                        *before,
+                        millis(after_offset),
+                        millis(before_offset),
+                        at,
+                    ))
+                }
+                _ => told(Err(
+                    "only a time or a sun window is told by the clock".to_owned()
+                )),
+            }
+        })
+        .collect();
+    ClockHolds {
+        time_zone: place.map(|place| place.time_zone().to_owned()),
+        location: place.is_some_and(clock::Place::has_location),
+        now: place.map(|place| clock::wall(place, at)),
+        sun: place.map(|place| sun_today(place, at)).unwrap_or_default(),
+        holds,
     }
 }

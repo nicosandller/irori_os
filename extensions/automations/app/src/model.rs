@@ -28,13 +28,14 @@ pub fn height(node: &Node) -> f64 {
     HEAD_H + text_height(node) + PORT_H * node.ports().len() as f64
 }
 
-/// A condition's checks, when it has several: each gets its own line on the node.
+/// A condition's checks, when it is checks: each gets its own line on the node, with whether
+/// it holds right now.
 pub fn checks_of(node: &Node) -> Option<crate::checks::Checks> {
     let Node::Gate { condition } = node else {
         return None;
     };
     let value = serde_json::to_value(condition).ok()?;
-    crate::checks::Checks::from_condition(&value).filter(|checks| checks.clauses.len() > 1)
+    crate::checks::Checks::from_condition(&value).filter(|checks| !checks.clauses.is_empty())
 }
 
 /// How tall the part between a node's head and its ports is: its sentence, or its checks.
@@ -272,45 +273,9 @@ pub fn condition_words(condition: &Condition, home: &Home) -> String {
         },
         Condition::Expr { expr } => crate::checks::expr_words(expr.as_str(), home)
             .unwrap_or_else(|| expr.as_str().to_owned()),
-        Condition::Time {
-            after,
-            before,
-            weekday,
-        } => {
-            let days = weekday.as_ref().map(|days| days_written(days));
-            let days = days.as_deref().map(crate::clock_forms::days_words);
-            let hours = match (after, before) {
-                (Some(after), Some(before)) => {
-                    format!("it's between {} and {}", after.as_str(), before.as_str())
-                }
-                (Some(after), None) => format!("it's after {}", after.as_str()),
-                (None, Some(before)) => format!("it's before {}", before.as_str()),
-                (None, None) => "it's".to_owned(),
-            };
-            match days {
-                Some(days) => format!("{hours} {days}"),
-                None => hours,
-            }
-        }
-        Condition::Sun {
-            after,
-            before,
-            offset,
-        } => {
-            let moved = offset
-                .as_ref()
-                .map(|offset| format!(" ({})", offset.as_str()))
-                .unwrap_or_default();
-            let word = |event: &SunEvent| crate::clock_forms::sun_word(&sun_written(*event));
-            match (after, before) {
-                (Some(after), Some(before)) => {
-                    format!("it's between {} and {}{moved}", word(after), word(before))
-                }
-                (Some(after), None) => format!("it's after {}{moved}", word(after)),
-                (None, Some(before)) => format!("it's before {}{moved}", word(before)),
-                (None, None) => "the sun is anywhere".to_owned(),
-            }
-        }
+        Condition::Time { .. } | Condition::Sun { .. } => serde_json::to_value(condition)
+            .map(|window| crate::clock_forms::window_words(&window))
+            .unwrap_or_default(),
         Condition::All { conditions } => conditions
             .iter()
             .map(|c| condition_words(c, home))
@@ -436,7 +401,7 @@ pub fn sentence(node: &Node, home: &Home) -> String {
             // A light's level reads as a percentage, however it was written.
             let mut said: Vec<&str> = Vec::new();
             if entity.kind() == irori_types::EntityKind::Light {
-                said.extend(["brightness_pct", "brightness", "color_temp_kelvin"]);
+                said.extend(["brightness_pct", "brightness", "color_temp_kelvin", "rgb"]);
                 match (settings.get("brightness_pct"), settings.get("brightness")) {
                     (Some(Amount::Fixed(pct)), _) => text.push_str(&format!(" at {pct}%")),
                     (Some(Amount::Worked(w)), _) | (None, Some(Amount::Worked(w))) => {
@@ -454,6 +419,9 @@ pub fn sentence(node: &Node, home: &Home) -> String {
                         text.push_str(&format!(", {} K", worked_words(w.expr.as_str())));
                     }
                     None => {}
+                }
+                if let Some(rgb) = light_rgb(settings) {
+                    text.push_str(&format!(", in {}", irori_ui_kit::color::hex_from_rgb(rgb)));
                 }
             }
             // Every other setting, as its own name and value: "position 50", "hvac mode heat".
@@ -520,6 +488,38 @@ pub fn sentence(node: &Node, home: &Home) -> String {
             .map(|r| r.as_str().to_owned())
             .unwrap_or_else(|| "end the whole run".into()),
     }
+}
+
+/// The colour a light's call asks for, when it asks for one.
+pub fn light_rgb(settings: &irori_flow_types::FlowCallData) -> Option<[u8; 3]> {
+    match settings.get("rgb")? {
+        Amount::Fixed(value) => serde_json::from_value(value.clone()).ok(),
+        Amount::Worked(_) => None,
+    }
+}
+
+/// The colour to show beside a call that sets a light's colour or its warmth: the colour
+/// itself, or about what white of that warmth looks like.
+pub fn call_swatch(node: &Node) -> Option<String> {
+    let Node::Call {
+        entity,
+        data: Some(settings),
+        ..
+    } = node
+    else {
+        return None;
+    };
+    if entity.kind() != irori_types::EntityKind::Light {
+        return None;
+    }
+    let rgb = light_rgb(settings).or_else(|| match settings.get("color_temp_kelvin")? {
+        Amount::Fixed(kelvin) => kelvin
+            .as_u64()
+            .and_then(|kelvin| u16::try_from(kelvin).ok())
+            .map(irori_ui_kit::color::kelvin_rgb),
+        Amount::Worked(_) => None,
+    })?;
+    Some(irori_ui_kit::color::hex_from_rgb(rgb))
 }
 
 /// A worked-out setting as it reads on a node: the calculation's name, or the expression.
@@ -785,6 +785,18 @@ pub const TEMPLATES: &[Template] = &[
             serde_json::json!({ "type": "gate",
                 "condition": crate::checks::Checks::starter(home).render() })
         },
+    },
+    Template {
+        group: "Decide",
+        label: "Only at certain times",
+        base: "times",
+        make: |_| serde_json::json!({ "type": "gate", "condition": crate::checks::fresh_window(false) }),
+    },
+    Template {
+        group: "Decide",
+        label: "Only while the sun is…",
+        base: "sun",
+        make: |_| serde_json::json!({ "type": "gate", "condition": crate::checks::fresh_window(true) }),
     },
     Template {
         group: "Decide",

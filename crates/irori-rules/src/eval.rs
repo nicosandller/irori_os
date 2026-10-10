@@ -156,15 +156,26 @@ impl Evaluator {
                 after,
                 before,
                 offset,
+                after_offset,
+                before_offset,
             } => Outcome {
                 result: match &self.place {
-                    Some(place) => clock::in_sun_window(
-                        place,
-                        *after,
-                        *before,
-                        offset.as_ref().map_or(0, crate::CompactDuration::millis),
-                        snapshot.now,
-                    ),
+                    Some(place) => {
+                        // An end's own offset, or the one that moves both.
+                        let millis = |own: &Option<crate::CompactDuration>| {
+                            own.as_ref()
+                                .or(offset.as_ref())
+                                .map_or(0, crate::CompactDuration::millis)
+                        };
+                        clock::in_sun_window(
+                            place,
+                            *after,
+                            *before,
+                            millis(after_offset),
+                            millis(before_offset),
+                            snapshot.now,
+                        )
+                    }
                     None => Err(NO_ZONE.to_owned()),
                 },
                 reads: Vec::new(),

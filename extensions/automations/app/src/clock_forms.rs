@@ -23,6 +23,8 @@ use leptos::task::spawn_local;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::windows::Windows;
+
 type Edit = Box<dyn FnOnce(&mut Value)>;
 
 /// How long a hand or the sun takes to get where it's going, in milliseconds: the page's
@@ -56,15 +58,43 @@ thread_local! {
     static LAST_HAND: Cell<Option<f64>> = const { Cell::new(None) };
     /// Where the sun last stood on its arc, as a part of the day.
     static LAST_SUN: Cell<Option<f64>> = const { Cell::new(None) };
+    /// Which way a time window was last said: between, after, or before.
+    static LAST_SPAN: Cell<Option<f64>> = const { Cell::new(None) };
+    /// Which end of a sun window a press on the arc sets: its start, or its end.
+    static SUN_END: Cell<usize> = const { Cell::new(0) };
 }
 
 // ---- plain arithmetic, tested on the host ---------------------------------------------------
 
-/// `HH:MM` (or `HH:MM:SS`) as minutes of the day.
+/// A time of day as minutes of it, however it was typed: `14:00`, `14.00`, `14`, `2pm`,
+/// `2:30 pm`, and `HH:MM:SS` with its seconds left off.
 pub fn minutes_of(text: &str) -> Option<i32> {
-    let mut parts = text.trim().split(':');
+    let text = text.trim().to_ascii_lowercase();
+    let (clock, half) = match text
+        .strip_suffix("am")
+        .or_else(|| text.strip_suffix("a.m."))
+    {
+        Some(clock) => (clock, Some(false)),
+        None => match text
+            .strip_suffix("pm")
+            .or_else(|| text.strip_suffix("p.m."))
+        {
+            Some(clock) => (clock, Some(true)),
+            None => (text.as_str(), None),
+        },
+    };
+    let mut parts = clock.trim().split([':', '.']);
     let hour: i32 = parts.next()?.trim().parse().ok()?;
-    let minute: i32 = parts.next()?.trim().parse().ok()?;
+    let minute: i32 = match parts.next() {
+        Some(minute) => minute.trim().parse().ok()?,
+        None => 0,
+    };
+    let hour = match half {
+        // Twelve on a twelve-hour clock is the start of its half: 12am is midnight.
+        Some(afternoon) if (1..=12).contains(&hour) => hour % 12 + if afternoon { 12 } else { 0 },
+        Some(_) => return None,
+        None => hour,
+    };
     ((0..24).contains(&hour) && (0..60).contains(&minute)).then_some(hour * 60 + minute)
 }
 
@@ -216,6 +246,51 @@ pub fn sun_words(event: &str, offset: i32) -> String {
         0 => format!("at {event}"),
         early if early < 0 => format!("{} before {event}", span_words(early)),
         late => format!("{} after {event}", span_words(late)),
+    }
+}
+
+/// One end of a sun window: "sunset", "30 min before sunset". An offset the words can't hold
+/// (seconds) is said as it's written.
+pub fn sun_end_words(event: &str, offset: Option<&str>) -> String {
+    match offset.map(|text| (text, offset_minutes(text))) {
+        None | Some((_, Some(0))) => sun_word(event).to_owned(),
+        Some((_, Some(minutes))) => sun_words(event, minutes),
+        Some((text, None)) => format!("{} ({text})", sun_word(event)),
+    }
+}
+
+/// The offset an end of a sun window has: its own, or the one that moves both ends.
+fn end_offset<'a>(window: &'a Value, own: &str) -> Option<&'a str> {
+    window[own].as_str().or_else(|| window["offset"].as_str())
+}
+
+/// A window of the day in a few words: "between 22:00 and 06:00 on weekdays", "after 14:00",
+/// "from 30 min before sunset until sunrise". `window` is a `time` or a `sun` condition.
+pub fn window_words(window: &Value) -> String {
+    let (after, before) = (window["after"].as_str(), window["before"].as_str());
+    if window["type"] == "sun" {
+        let from = after.map(|event| sun_end_words(event, end_offset(window, "after_offset")));
+        let until = before.map(|event| sun_end_words(event, end_offset(window, "before_offset")));
+        return match (from, until) {
+            (Some(from), Some(until)) => format!("from {from} until {until}"),
+            (Some(from), None) => format!("from {from} on"),
+            (None, Some(until)) => format!("until {until}"),
+            (None, None) => "whatever the sun is doing".to_owned(),
+        };
+    }
+    // A time is said the way the dial reads it, whatever seconds it was written with.
+    let said = |text: &str| minutes_of(text).map_or_else(|| text.to_owned(), hhmm);
+    let hours = match (after.map(said), before.map(said)) {
+        (Some(after), Some(before)) => Some(format!("between {after} and {before}")),
+        (Some(after), None) => Some(format!("after {after}")),
+        (None, Some(before)) => Some(format!("before {before}")),
+        (None, None) => None,
+    };
+    let days = days_of(window);
+    match (hours, days.is_empty()) {
+        (Some(hours), true) => hours,
+        (Some(hours), false) => format!("{hours} {}", days_words(&days)),
+        (None, _) => days_words(&days),
     }
 }
 
@@ -414,6 +489,50 @@ fn next_line(clock: RwSignal<Option<Clock>>, needs_location: bool) -> impl IntoV
     }
 }
 
+/// The line under a window's form: whether it holds right now by the clock at home, or what
+/// the home is missing for it ever to.
+fn holds_line(window: Value, needs_location: bool) -> impl IntoView {
+    let windows = expect_context::<Windows>();
+    move || {
+        let told = windows.told(&window);
+        // Nothing until the engine has answered: a line that arrives says more than one that
+        // changes its mind.
+        let at_home = windows.at_home.get()?;
+        let missing = |what: &'static str| {
+            view! {
+                <p class="clock-next missing">
+                    "This never holds yet: " {what} " Set it in "
+                    <strong>"Settings → Location and time zone"</strong>"."
+                </p>
+            }
+            .into_any()
+        };
+        let line = if at_home.time_zone.is_none() {
+            missing("the home has no time zone.")
+        } else if needs_location && !at_home.location {
+            missing("Irori doesn't know where the home is.")
+        } else {
+            let told = told?;
+            let clock = at_home.now.unwrap_or_default();
+            let zone = at_home.time_zone.unwrap_or_default();
+            match (told.holds, told.why) {
+                (Some(holds), _) => view! {
+                    <p class="clock-next">
+                        <span class=if holds { "check-dot holds" } else { "check-dot fails" }
+                            aria-hidden="true"></span>
+                        <strong>{if holds { "Holds now" } else { "Doesn't hold now" }}</strong>
+                        <span class="muted">" · " {clock} " at home · " {zone}</span>
+                    </p>
+                }
+                .into_any(),
+                (None, Some(why)) => view! { <p class="clock-next missing">{why}</p> }.into_any(),
+                (None, None) => return None,
+            }
+        };
+        Some(line)
+    }
+}
+
 // ---- a time of day --------------------------------------------------------------------------
 
 fn days_of(value: &Value) -> Vec<String> {
@@ -508,11 +627,25 @@ fn days_field(value: &Value, edit: impl Fn(Edit) + Clone + Send + Sync + 'static
     }
 }
 
-/// The 24-hour dial. `hands` are the times on it (one for a trigger, two for a window);
-/// dragging the dial moves the one nearest the pointer. `commit` is handed which hand and its
-/// new time once it is let go.
+/// What of the dial's ring is lit: the stretch of the day a window holds for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lit {
+    /// Nothing: a trigger is a moment, not a stretch.
+    Nothing,
+    /// From the first hand round to the second.
+    Between,
+    /// From the hand to the day's end.
+    After,
+    /// From the day's start to the hand.
+    Before,
+}
+
+/// The 24-hour dial. `hands` are the times on it (one for a trigger or an open window, two
+/// for a window with both ends); dragging the dial moves the one nearest the pointer.
+/// `commit` is handed which hand and its new time once it is let go.
 fn dial(
     hands: Vec<(&'static str, i32)>,
+    lit: Lit,
     clock: RwSignal<Option<Clock>>,
     commit: impl Fn(usize, i32) + Clone + 'static,
 ) -> impl IntoView {
@@ -547,6 +680,9 @@ fn dial(
         Some(minutes_at(dx, dy, 5))
     };
     let down = move |event: ev::PointerEvent| {
+        // A drag across the dial is a hand being turned, not text being selected: without
+        // this the hours, and whatever is around the dial, light up blue as it goes.
+        event.prevent_default();
         let Some(minutes) = minutes_under(&event) else {
             return;
         };
@@ -610,8 +746,18 @@ fn dial(
     };
     let window = hands.len() == 2;
     let span = move || {
-        window
-            .then(|| shown.with_value(|shown| arc_path(shown[0].get(), shown[1].get(), 92.0, 70.0)))
+        shown.with_value(|shown| {
+            let hand = |i: usize| shown.get(i).map(RwSignal::get);
+            // Midnight is where the day ends and starts: the bottom of the dial, both times.
+            let (from, to) = match lit {
+                Lit::Nothing => return None,
+                Lit::Between => (hand(0)?, hand(1)?),
+                Lit::After => (hand(0)?, 1440.0),
+                Lit::Before => (0.0, hand(0)?),
+            };
+            // A window with no length is not drawn as one a whole day long.
+            ((to - from).rem_euclid(1440.0) > 0.5).then(|| arc_path(from, to, 92.0, 70.0))
+        })
     };
 
     view! {
@@ -696,7 +842,7 @@ pub fn time_form(trigger: &Value, edit: impl Fn(Edit) + Clone + Send + Sync + 's
     let trouble = RwSignal::new(false);
     view! {
         <div class="clock-form">
-            {dial(vec![("The time", minutes)], clock, move |_, minutes| {
+            {dial(vec![("The time", minutes)], Lit::Nothing, clock, move |_, minutes| {
                 let text = hhmm(minutes);
                 turned(Box::new(move |t: &mut Value| t["at"] = json!(text)));
             })}
@@ -731,58 +877,156 @@ pub fn time_form(trigger: &Value, edit: impl Fn(Edit) + Clone + Send + Sync + 's
     .into_any()
 }
 
-/// A window of time: from one time to another, on some days. The same dial, with two hands
-/// and the window lit between them.
+/// The three ways a time window is said, as one switch. The chosen one slides under its
+/// name from wherever it last was: the form is built again by the edit that chose it.
+fn span_switch(chosen: Option<usize>, pick: impl Fn(usize) + Clone + 'static) -> impl IntoView {
+    let to = chosen.map(|index| index as f64);
+    let from = LAST_SPAN.with(Cell::get).or(to).unwrap_or(0.0);
+    LAST_SPAN.with(|last| last.set(to));
+    let at = RwSignal::new(from);
+    if let Some(to) = to {
+        glide(at, to - from);
+    }
+    view! {
+        <div class="spans" role="group" aria-label="Which part of the day">
+            {chosen.map(|_| view! {
+                <span class="spans-thumb" style=move || format!("--at: {:.3}", at.get())></span>
+            })}
+            {["Between", "After", "Before"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, label)| {
+                    let pick = pick.clone();
+                    view! {
+                        <button type="button" class:on={chosen == Some(index)}
+                            aria-pressed=(chosen == Some(index)).to_string()
+                            on:click=move |_| pick(index)>
+                            {label}
+                        </button>
+                    }
+                })
+                .collect_view()}
+        </div>
+    }
+}
+
+/// A window of time: between two times, after one, or before one; on some days. The same
+/// dial as a trigger's, with the stretch of the day it holds for lit.
 pub fn time_window_form(
     condition: &Value,
     edit: impl Fn(Edit) + Clone + Send + Sync + 'static,
 ) -> AnyView {
     // The dial's night comes from the sun at home; any trigger asks for it.
     let clock = ask(json!({ "type": "time", "at": "12:00" }));
-    let after = condition["after"]
-        .as_str()
-        .and_then(minutes_of)
-        .unwrap_or(22 * 60);
-    let before = condition["before"]
-        .as_str()
-        .and_then(minutes_of)
-        .unwrap_or(6 * 60);
-    let turned = edit.clone();
-    let field = |label: &'static str, key: &'static str, minutes: i32| {
+    let after = condition["after"].as_str().and_then(minutes_of);
+    let before = condition["before"].as_str().and_then(minutes_of);
+    let (chosen, lit, hands) = match (after, before) {
+        (Some(after), Some(before)) => (
+            Some(0),
+            Lit::Between,
+            vec![("From", "after", after), ("Until", "before", before)],
+        ),
+        (Some(after), None) => (Some(1), Lit::After, vec![("After", "after", after)]),
+        (None, Some(before)) => (Some(2), Lit::Before, vec![("Before", "before", before)]),
+        // Days alone: any time of day, on those days.
+        (None, None) => (None, Lit::Nothing, Vec::new()),
+    };
+    let switch = {
         let edit = edit.clone();
-        view! {
-            <div>
-                <label>{label}</label>
-                <input type="text" class="clock-typed" inputmode="numeric" prop:value=hhmm(minutes)
-                    on:change=move |event| {
-                        if let Some(minutes) = minutes_of(&event_target_value(&event)) {
-                            let text = hhmm(minutes);
-                            edit(Box::new(move |c: &mut Value| c[key] = json!(text)));
-                        }
-                    } />
-            </div>
+        move |to: usize| {
+            if chosen == Some(to) {
+                return;
+            }
+            edit(Box::new(move |c: &mut Value| {
+                // The time that's there stays where it is; the one that's missing starts an
+                // hour from it, so the new window is somewhere near the old one.
+                let (after, before) = match (after, before) {
+                    (Some(after), Some(before)) => (after, before),
+                    (Some(after), None) => (after, after + 60),
+                    (None, Some(before)) => (before - 60, before),
+                    (None, None) => (22 * 60, 6 * 60),
+                };
+                let Some(object) = c.as_object_mut() else {
+                    return;
+                };
+                object.remove("after");
+                object.remove("before");
+                match to {
+                    0 => {
+                        object.insert("after".into(), json!(hhmm(after)));
+                        object.insert("before".into(), json!(hhmm(before)));
+                    }
+                    // Whichever time the eye was on is the one that's kept.
+                    1 => {
+                        object.insert("after".into(), json!(hhmm(after)));
+                    }
+                    _ => {
+                        let kept = if chosen == Some(1) { after } else { before };
+                        object.insert("before".into(), json!(hhmm(kept)));
+                    }
+                }
+            }));
         }
     };
+    let keys: Vec<&'static str> = hands.iter().map(|(_, key, _)| *key).collect();
+    let turned = edit.clone();
+    let fields = hands
+        .iter()
+        .map(|(label, key, minutes)| {
+            let (label, key, minutes) = (*label, *key, *minutes);
+            let edit = edit.clone();
+            let trouble = RwSignal::new(false);
+            view! {
+                <div>
+                    <label>{label}</label>
+                    <input type="text" class="clock-typed" class:wrong=move || trouble.get()
+                        inputmode="text" prop:value=hhmm(minutes)
+                        aria-label=format!("{label}, as a time of day")
+                        on:change=move |event| match minutes_of(&event_target_value(&event)) {
+                            Some(minutes) => {
+                                trouble.set(false);
+                                let text = hhmm(minutes);
+                                edit(Box::new(move |c: &mut Value| c[key] = json!(text)));
+                            }
+                            None => trouble.set(true),
+                        } />
+                </div>
+            }
+        })
+        .collect_view();
+    let said = match (after, before) {
+        (Some(after), Some(before)) if after > before => {
+            "Through the night: from the first time, past midnight, until the second."
+        }
+        (Some(after), Some(before)) if after == before => {
+            "The same time twice is no time at all: move one of them."
+        }
+        (Some(_), Some(_)) => "From the first time until the second.",
+        (Some(_), None) => "From then until midnight.",
+        (None, Some(_)) => "From midnight until then.",
+        (None, None) => "Any time of day, on the days below.",
+    };
     view! {
+        {span_switch(chosen, switch)}
         <div class="clock-form">
-            {dial(vec![("From", after), ("Until", before)], clock, move |hand, minutes| {
-                let (key, text) = (if hand == 0 { "after" } else { "before" }, hhmm(minutes));
-                turned(Box::new(move |c: &mut Value| c[key] = json!(text)));
-            })}
+            {dial(
+                hands.iter().map(|(label, _, minutes)| (*label, *minutes)).collect(),
+                lit,
+                clock,
+                move |hand, minutes| {
+                    let (Some(key), text) = (keys.get(hand).copied(), hhmm(minutes)) else {
+                        return;
+                    };
+                    turned(Box::new(move |c: &mut Value| c[key] = json!(text)));
+                },
+            )}
             <div class="clock-side">
-                {field("From", "after", after)}
-                {field("Until", "before", before)}
-                <p class="muted clock-hint">
-                    {if after > before {
-                        "Through the night: it holds from the first time, past midnight, until \
-                         the second."
-                    } else {
-                        "It holds from the first time until the second."
-                    }}
-                </p>
+                {fields}
+                <p class="muted clock-hint">{said}" Type it like 14:00 or 2pm."</p>
             </div>
         </div>
         {days_field(condition, edit.clone())}
+        {holds_line(condition.clone(), false)}
     }
     .into_any()
 }
@@ -799,11 +1043,12 @@ fn part_of(event: &str, offset: i32) -> f64 {
     stop + f64::from(offset) / 1440.0
 }
 
-/// The sun on its arc. `at` is where it stands, `stops` the moments that can be picked and
-/// whether each is the one chosen.
+/// The sun on its arc. `at` is where it stands, `chosen` the moments that are picked, and
+/// `lit` the stretch of the day a window holds for, as the parts of the day it runs between.
 fn arc(
     at: RwSignal<f64>,
     chosen: Vec<&'static str>,
+    lit: Signal<Option<(f64, f64)>>,
     pick: impl Fn(&'static str) + Clone + 'static,
 ) -> impl IntoView {
     // The day's path over the horizon, and the night's under it, as drawn lines.
@@ -824,6 +1069,13 @@ fn arc(
                 style=move || format!("opacity: {:.3}", (1.0 - height(at.get()) * 4.0).clamp(0.0, 1.0) * 0.55) />
             <path class="sun-path day" d=path(0.25, 0.75) />
             <path class="sun-path night" d=path(0.75, 1.25) />
+            // The window: along the sun's own path from where it opens to where it closes,
+            // on through the night if that is the way round.
+            {move || lit.get().map(|(from, to)| {
+                let (from, to) = (from.rem_euclid(1.0), to.rem_euclid(1.0));
+                let to = if to > from { to } else { to + 1.0 };
+                view! { <path class="sun-span" d=path(from, to) /> }
+            })}
             <line class="sun-horizon" x1="12" y1="100" x2="268" y2="100" />
             {SUN
                 .iter()
@@ -868,51 +1120,58 @@ fn travelling(part: f64) -> RwSignal<f64> {
     at
 }
 
-/// The offset as a slider, from two hours before to two hours after, with what it reads as.
+/// An offset as a slider, from two hours before to two hours after, with what it reads as.
+/// `said` puts the minutes into words; `moved` follows the thumb while it's dragged, and
+/// `commit` is handed the minutes once it's let go.
 fn offset_field(
-    event: String,
     offset: i32,
-    at: RwSignal<f64>,
-    edit: impl Fn(Edit) + Clone + Send + Sync + 'static,
+    said: impl Fn(i32) -> String + Send + Sync + 'static,
+    moved: impl Fn(i32) + 'static,
+    commit: impl Fn(i32) + 'static,
 ) -> impl IntoView {
     let live = RwSignal::new(offset);
-    let named = event.clone();
     view! {
-        <label>{move || sun_words(&named, live.get())}</label>
+        <label>{move || said(live.get())}</label>
         <input type="range" class="sun-offset" min="-120" max="120" step="5"
             prop:value=offset.to_string()
             style=move || format!("--fill: {:.1}%", f64::from(live.get() + 120) / 240.0 * 100.0)
             aria-label="How long before or after"
             // While it's dragged the sun goes with it; letting go is what writes it down.
-            on:input={
-                let event = event.clone();
-                move |input| {
-                    if let Ok(minutes) = event_target_value(&input).parse::<i32>() {
-                        live.set(minutes);
-                        at.set(part_of(&event, minutes));
-                    }
+            on:input=move |input| {
+                if let Ok(minutes) = event_target_value(&input).parse::<i32>() {
+                    live.set(minutes);
+                    moved(minutes);
                 }
             }
             on:change=move |input| {
-                let Ok(minutes) = event_target_value(&input).parse::<i32>() else {
-                    return;
-                };
-                LAST_SUN.with(|last| last.set(Some(part_of(&event, minutes))));
-                edit(Box::new(move |t: &mut Value| match offset_text(minutes) {
-                    Some(text) => t["offset"] = json!(text),
-                    None => {
-                        t.as_object_mut().map(|object| object.remove("offset"));
-                    }
-                }));
+                if let Ok(minutes) = event_target_value(&input).parse::<i32>() {
+                    commit(minutes);
+                }
             } />
         <div class="sun-offset-ends muted"><span>"2 h before"</span><span>"2 h after"</span></div>
+    }
+}
+
+/// An offset the slider can't hold (seconds, or half a day), typed as it's written.
+fn offset_typed(
+    label: &'static str,
+    written: String,
+    commit: impl Fn(Option<String>) + 'static,
+) -> impl IntoView {
+    view! {
+        <label>{label}</label>
+        <input type="text" class="mono" prop:value=written
+            on:change=move |input| {
+                let text = event_target_value(&input).trim().to_owned();
+                commit((!text.is_empty()).then_some(text));
+            } />
     }
 }
 
 /// Today's time for each of the sun's moments, as chips to pick from.
 fn sun_chips(
     clock: RwSignal<Option<Clock>>,
-    chosen: String,
+    chosen: Signal<Option<String>>,
     pick: impl Fn(&'static str) + Clone + 'static,
 ) -> impl IntoView {
     view! {
@@ -926,7 +1185,7 @@ fn sun_chips(
                     };
                     view! {
                         <button type="button" class="sun-chip"
-                            aria-pressed=(chosen == *name).to_string()
+                            aria-pressed=move || (chosen.get().as_deref() == Some(*name)).to_string()
                             on:click=move |_| pick(name)>
                             <span>{*label}</span>
                             <span class="sun-chip-time">
@@ -937,6 +1196,21 @@ fn sun_chips(
                 })
                 .collect_view()}
         </div>
+    }
+}
+
+/// Writes `text` at `key`, or takes `key` away when there is nothing to write.
+fn write_or_remove(value: &mut Value, key: &str, text: Option<String>) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    match text {
+        Some(text) => {
+            object.insert(key.to_owned(), json!(text));
+        }
+        None => {
+            object.remove(key);
+        }
     }
 }
 
@@ -955,104 +1229,247 @@ pub fn sun_form(trigger: &Value, edit: impl Fn(Edit) + Clone + Send + Sync + 'st
     // An offset the slider can't hold (seconds, or half a day) is shown as it's written.
     let beyond =
         matches!(offset, Some(None)) || offset.flatten().is_some_and(|minutes| minutes.abs() > 120);
-    let typed = edit.clone();
+    let chosen = Signal::stored(Some(event.clone()));
     view! {
-        {arc(at, SUN.iter().map(|(name, _, _)| *name).filter(|name| *name == event).collect(), pick.clone())}
-        {sun_chips(clock, event.clone(), pick)}
+        {arc(
+            at,
+            SUN.iter().map(|(name, _, _)| *name).filter(|name| *name == event).collect(),
+            Signal::stored(None),
+            pick.clone(),
+        )}
+        {sun_chips(clock, chosen, pick)}
         {if beyond {
-            view! {
-                <label>"Before or after it (like -45m or 1h30m)"</label>
-                <input type="text" class="mono" prop:value=offset_as_written.unwrap_or_default()
-                    on:change=move |input| {
-                        let text = event_target_value(&input).trim().to_owned();
-                        typed(Box::new(move |t: &mut Value| {
-                            if text.is_empty() {
-                                t.as_object_mut().map(|object| object.remove("offset"));
-                            } else {
-                                t["offset"] = json!(text);
-                            }
-                        }));
-                    } />
-            }
+            offset_typed(
+                "Before or after it (like -45m or 1h30m)",
+                offset_as_written.unwrap_or_default(),
+                move |text| edit(Box::new(move |t: &mut Value| write_or_remove(t, "offset", text))),
+            )
             .into_any()
         } else {
-            offset_field(event, minutes, at, edit).into_any()
+            let (said, moved) = (event.clone(), event.clone());
+            offset_field(
+                minutes,
+                move |minutes| sun_words(&said, minutes),
+                {
+                    let event = moved.clone();
+                    move |minutes| at.set(part_of(&event, minutes))
+                },
+                move |minutes| {
+                    LAST_SUN.with(|last| last.set(Some(part_of(&moved, minutes))));
+                    edit(Box::new(move |t: &mut Value| {
+                        write_or_remove(t, "offset", offset_text(minutes));
+                    }));
+                },
+            )
+            .into_any()
         }}
         {next_line(clock, true)}
     }
     .into_any()
 }
 
-/// The sun as a window: after one moment, before another, or both.
+/// The two ends of a sun window: how each is written, and what it's called.
+const ENDS: [(&str, &str, &str); 2] = [
+    ("after", "after_offset", "From"),
+    ("before", "before_offset", "Until"),
+];
+
+/// An offset that moves both ends, written out as each end's own: the form sets them apart.
+fn own_offsets(window: &mut Value) {
+    let Some(shared) = window
+        .as_object_mut()
+        .and_then(|object| object.remove("offset"))
+    else {
+        return;
+    };
+    for (end, own, _) in ENDS {
+        if !window[end].is_null() && window[own].is_null() {
+            window[own] = shared.clone();
+        }
+    }
+}
+
+/// The sun as a window: from one moment, until another, or both, each with its own offset
+/// ("from 30 min before sunset until sunrise"). The stretch of the day it holds for is lit
+/// along the sun's path, and a press on the arc sets whichever end is being set.
 pub fn sun_window_form(
     condition: &Value,
     edit: impl Fn(Edit) + Clone + Send + Sync + 'static,
 ) -> AnyView {
     let clock = ask(json!({ "type": "sun", "event": "sunset" }));
-    let after = condition["after"].as_str().map(str::to_owned);
-    let before = condition["before"].as_str().map(str::to_owned);
-    // The disc stands at the start of the window, which is the moment it opens.
-    let at = travelling(part_of(
-        after.as_deref().or(before.as_deref()).unwrap_or("sunset"),
-        0,
-    ));
-    let row = |label: &'static str, key: &'static str, value: Option<String>, other: bool| {
+    // Each end: its moment, its offset as written, and that offset in minutes if a slider
+    // can hold it.
+    let ends: Vec<(Option<String>, Option<String>, Option<i32>)> = ENDS
+        .iter()
+        .map(|(end, own, _)| {
+            let event = condition[*end].as_str().map(str::to_owned);
+            let written = end_offset(condition, own).map(str::to_owned);
+            let minutes = match written.as_deref() {
+                None => Some(0),
+                Some(text) => offset_minutes(text).filter(|minutes| minutes.abs() <= 120),
+            };
+            (event, written, minutes)
+        })
+        .collect();
+    // An end with no moment can't be the one being set by the arc's stops alone, but it can
+    // be given one: so whichever was last being set still is.
+    let setting = RwSignal::new(SUN_END.with(Cell::get).min(1));
+    let part = |i: usize| {
+        let (event, _, minutes) = &ends[i];
+        event
+            .as_deref()
+            .map(|event| part_of(event, minutes.unwrap_or(0)))
+    };
+    // Where each end stands on the arc, following its slider while that is dragged.
+    let parts = [RwSignal::new(part(0)), RwSignal::new(part(1))];
+    // The disc stands at the end being set: the one that last moved.
+    let here = setting.get_untracked();
+    let at = travelling(part(here).or(part(1 - here)).unwrap_or(0.75));
+    let lit = Signal::derive(move || match (parts[0].get(), parts[1].get()) {
+        (Some(from), Some(to)) => Some((from, to)),
+        // Open at one end: to where the day ends, or from where it starts.
+        (Some(from), None) => Some((from, 1.0)),
+        (None, Some(to)) => Some((0.0, to)),
+        (None, None) => None,
+    });
+    let pick = {
         let edit = edit.clone();
-        let current = value.clone().unwrap_or_default();
-        view! {
-            <label>{label}</label>
-            <select on:change=move |input| {
-                let picked = event_target_value(&input);
-                edit(Box::new(move |c: &mut Value| {
-                    if picked.is_empty() {
-                        c.as_object_mut().map(|object| object.remove(key));
-                    } else {
-                        c[key] = json!(picked);
-                    }
-                }));
-            }>
-                // One end may be left open, never both.
-                {other.then(|| view! {
-                    <option value="" selected=current.is_empty()>"any time"</option>
-                })}
-                {SUN
-                    .iter()
-                    .map(|(name, label, _)| {
-                        let today = clock
-                            .get_untracked()
-                            .and_then(|clock| clock.sun.get(*name).cloned());
-                        view! {
-                            <option value=*name selected={current == *name}>
-                                {match today {
-                                    Some(today) => format!("{label} ({today} today)"),
-                                    None => (*label).to_owned(),
-                                }}
-                            </option>
-                        }
-                    })
-                    .collect_view()}
-            </select>
+        move |name: &'static str| {
+            let (end, _, _) = ENDS[setting.get_untracked()];
+            edit(Box::new(move |c: &mut Value| c[end] = json!(name)));
         }
     };
     let chosen: Vec<&'static str> = SUN
         .iter()
         .map(|(name, _, _)| *name)
-        .filter(|name| after.as_deref() == Some(name) || before.as_deref() == Some(name))
+        .filter(|name| {
+            ends.iter()
+                .any(|(event, _, _)| event.as_deref() == Some(name))
+        })
         .collect();
-    let said = match (&after, &before) {
-        (Some(after), Some(before)) => {
-            format!("From {} until {}.", sun_word(after), sun_word(before))
-        }
-        (Some(after), None) => format!("From {} until the day ends.", sun_word(after)),
-        (None, Some(before)) => format!("From the start of the day until {}.", sun_word(before)),
-        (None, None) => "Pick when it starts, when it ends, or both.".to_owned(),
-    };
+    let events: [Option<String>; 2] = [ends[0].0.clone(), ends[1].0.clone()];
+    let chips_chosen = Signal::derive(move || events[setting.get()].clone());
+
+    let rows = ENDS
+        .iter()
+        .enumerate()
+        .map(|(i, (end, own, label))| {
+            let (end, own, label) = (*end, *own, *label);
+            let (event, written, minutes) = ends[i].clone();
+            let other_is_set = ends[1 - i].0.is_some();
+            let open = {
+                let edit = edit.clone();
+                move |_| {
+                    edit(Box::new(move |c: &mut Value| {
+                        own_offsets(c);
+                        if let Some(object) = c.as_object_mut() {
+                            object.remove(end);
+                            object.remove(own);
+                        }
+                    }));
+                }
+            };
+            // The moment itself; how far it's moved is said over its slider.
+            let said = match &event {
+                Some(event) => SUN
+                    .iter()
+                    .find(|(name, _, _)| name == event)
+                    .map_or("The sun", |(_, label, _)| *label),
+                None if i == 0 => "The start of the day",
+                None => "The end of the day",
+            };
+            let today = {
+                let event = event.clone();
+                move || {
+                    let event = event.clone()?;
+                    clock.get()?.sun.get(event.as_str()).cloned()
+                }
+            };
+            let offset = event.clone().map(|event| match minutes {
+                Some(minutes) => {
+                    let (said, moved, kept) = (event.clone(), event.clone(), event);
+                    let edit = edit.clone();
+                    offset_field(
+                        minutes,
+                        move |minutes| match minutes {
+                            0 => format!("Right at {}", sun_word(&said)),
+                            minutes => sun_words(&said, minutes),
+                        },
+                        move |minutes| {
+                            let part = part_of(&moved, minutes);
+                            parts[i].set(Some(part));
+                            setting.set(i);
+                            at.set(part);
+                        },
+                        move |minutes| {
+                            SUN_END.with(|last| last.set(i));
+                            LAST_SUN.with(|last| last.set(Some(part_of(&kept, minutes))));
+                            edit(Box::new(move |c: &mut Value| {
+                                own_offsets(c);
+                                write_or_remove(c, own, offset_text(minutes));
+                            }));
+                        },
+                    )
+                    .into_any()
+                }
+                None => {
+                    let edit = edit.clone();
+                    offset_typed(
+                        "Before or after it (like -45m or 1h30m)",
+                        written.clone().unwrap_or_default(),
+                        move |text| {
+                            edit(Box::new(move |c: &mut Value| {
+                                own_offsets(c);
+                                write_or_remove(c, own, text);
+                            }));
+                        },
+                    )
+                    .into_any()
+                }
+            });
+            view! {
+                <div class="sun-end" class:setting=move || setting.get() == i>
+                    <button type="button" class="sun-end-head"
+                        aria-pressed=move || (setting.get() == i).to_string()
+                        title="Set this end from the arc and the moments below"
+                        on:click=move |_| {
+                            SUN_END.with(|last| last.set(i));
+                            setting.set(i);
+                            if let Some(part) = parts[i].get_untracked() {
+                                let from = at.get_untracked();
+                                glide(at, (part - from + 0.5).rem_euclid(1.0) - 0.5);
+                                LAST_SUN.with(|last| last.set(Some(part)));
+                            }
+                        }>
+                        <span class="sun-end-label">{label}</span>
+                        <span class="sun-end-said">{said}</span>
+                        <span class="sun-end-time">
+                            {move || today().map(|at| format!("{at} today")).unwrap_or_default()}
+                        </span>
+                    </button>
+                    {offset}
+                    // One end may be left open, never both.
+                    {(event.is_some() && other_is_set).then(|| view! {
+                        <button type="button" class="link clock-switch" on:click=open>
+                            {if i == 0 { "Leave the start open" } else { "Leave the end open" }}
+                        </button>
+                    })}
+                </div>
+            }
+        })
+        .collect_view();
     view! {
-        {arc(at, chosen, |_| {})}
-        {row("From", "after", after.clone(), before.is_some())}
-        {row("Until", "before", before.clone(), after.is_some())}
-        <p class="muted clock-hint">{said}</p>
-        {next_line(clock, true)}
+        {arc(at, chosen, lit, pick.clone())}
+        <p class="muted clock-hint sun-setting">
+            {move || if setting.get() == 0 {
+                "Pick the moment it starts:"
+            } else {
+                "Pick the moment it ends:"
+            }}
+        </p>
+        {sun_chips(clock, chips_chosen, pick)}
+        <div class="sun-ends">{rows}</div>
+        {holds_line(condition.clone(), true)}
     }
     .into_any()
 }
@@ -1074,6 +1491,87 @@ mod tests {
         assert_eq!(minutes_of("seven"), None);
         assert_eq!(hhmm(425), "07:05");
         assert_eq!(hhmm(1440), "00:00");
+    }
+
+    #[test]
+    fn a_time_is_read_however_it_was_typed() {
+        assert_eq!(minutes_of("14"), Some(840));
+        assert_eq!(minutes_of("2pm"), Some(840));
+        assert_eq!(minutes_of("2 PM"), Some(840));
+        assert_eq!(minutes_of("2:30 pm"), Some(870));
+        assert_eq!(minutes_of("2.30pm"), Some(870));
+        assert_eq!(minutes_of("2am"), Some(120));
+        // Twelve starts its half of the day.
+        assert_eq!(minutes_of("12am"), Some(0));
+        assert_eq!(minutes_of("12pm"), Some(720));
+        assert_eq!(minutes_of("13pm"), None);
+        assert_eq!(minutes_of("0am"), None);
+        assert_eq!(minutes_of(""), None);
+        assert_eq!(minutes_of("pm"), None);
+    }
+
+    #[test]
+    fn a_window_is_said_in_a_few_words() {
+        let said = |window: Value| window_words(&window);
+        assert_eq!(
+            said(json!({ "type": "time", "after": "14:00", "before": "15:00" })),
+            "between 14:00 and 15:00"
+        );
+        assert_eq!(
+            said(json!({ "type": "time", "after": "14:00:00" })),
+            "after 14:00"
+        );
+        assert_eq!(
+            said(json!({ "type": "time", "before": "02:00", "weekday": ["sat", "sun"] })),
+            "before 02:00 at the weekend"
+        );
+        assert_eq!(
+            said(json!({ "type": "time", "weekday": ["mon", "tue", "wed", "thu", "fri"] })),
+            "on weekdays"
+        );
+        assert_eq!(
+            said(json!({ "type": "sun", "after": "sunset", "before": "sunrise" })),
+            "from sunset until sunrise"
+        );
+        assert_eq!(
+            said(
+                json!({ "type": "sun", "after": "sunset", "before": "sunrise",
+                "after_offset": "-30m", "before_offset": "15m" })
+            ),
+            "from 30 min before sunset until 15 min after sunrise"
+        );
+        // One offset written the old way moves both ends.
+        assert_eq!(
+            said(json!({ "type": "sun", "after": "sunset", "offset": "1h" })),
+            "from 1 h after sunset on"
+        );
+        assert_eq!(
+            said(json!({ "type": "sun", "before": "dusk" })),
+            "until dusk"
+        );
+        assert_eq!(
+            said(json!({ "type": "sun", "after": "dawn", "after_offset": "90s" })),
+            "from dawn (90s) on"
+        );
+    }
+
+    #[test]
+    fn an_offset_for_both_ends_becomes_each_end_s_own() {
+        let mut window = json!({ "type": "sun", "after": "sunset", "before": "sunrise",
+            "offset": "-30m" });
+        own_offsets(&mut window);
+        assert_eq!(
+            window,
+            json!({ "type": "sun", "after": "sunset", "before": "sunrise",
+                "after_offset": "-30m", "before_offset": "-30m" })
+        );
+        // An end that isn't there has nothing to move.
+        let mut open = json!({ "type": "sun", "after": "sunset", "offset": "1h" });
+        own_offsets(&mut open);
+        assert_eq!(
+            open,
+            json!({ "type": "sun", "after": "sunset", "after_offset": "1h" })
+        );
     }
 
     #[test]

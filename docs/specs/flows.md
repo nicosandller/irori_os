@@ -294,6 +294,7 @@ What the page calls through the bridge's `rpc`:
 | `test` | §7 | The run record |
 | `backtest` | §7 | Would-be runs, actual runs, covered window |
 | `clock.next` | `trigger` | For a `time` or `sun` trigger as it stands in the form: when it next fires (`next`, and `spoken`: "tomorrow at 06:52"), the home's `time_zone` and whether it has a `location`, the time at home `now`, and today's `sun` (each event as `HH:MM`, only those that happen today). Read-only. The page asks rather than working it out, so the zone and the sun are read in one place |
+| `clock.holds` | `conditions`: `time` and `sun` conditions | For each, whether it holds right now (`holds`), or `why` that can't be told (no time zone, no location, no sunset at home today, or a window that isn't well formed). With the home's `time_zone`, `location`, `now` and today's `sun`, as `clock.next`. Read-only. It is what colours a window's dot on the canvas, so the dot and a run read the same clock |
 | `live` | `id`, `after?` | What the canvas plays while the flow is open: runs finished and near-misses since `after` (none without it; at most 5 each, oldest first), the triggers holding a `for` and when they'd fire, and `now` to ask with next time |
 | `tests.get` / `tests.save` | `id`, `settings` | How the page last set up a test of this flow (up to 16 KB, kept as given), so it runs again the same way. Deleted with the flow |
 

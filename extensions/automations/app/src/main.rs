@@ -18,6 +18,7 @@ mod panels;
 mod time;
 mod triggers;
 mod widgets;
+mod windows;
 
 use std::cell::OnceCell;
 use std::collections::BTreeMap;
@@ -248,6 +249,7 @@ fn App() -> impl IntoView {
         seen: RwSignal::new(BTreeMap::new()),
     };
     provide_context(home);
+    provide_context(windows::Windows::start());
     let trouble = RwSignal::new(None::<String>);
 
     spawn_local(async move {
