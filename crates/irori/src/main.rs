@@ -4,6 +4,7 @@
 mod assistant;
 mod banner;
 mod build_info;
+mod cli;
 mod config;
 mod db;
 mod extensions;
@@ -25,69 +26,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context as _;
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use irori_core::{Core, ExtensionHost, SystemClock, Timing};
 use tokio::sync::Notify;
 
-#[derive(Debug, Parser)]
-#[command(name = "irori", version = build_info::VERSION, about = "A fast, modular smart home core")]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
-}
-
-#[derive(Debug, Subcommand)]
-enum Command {
-    /// Run the Irori server. Also spelled `run`.
-    #[command(visible_alias = "run")]
-    Serve {
-        /// Directory for what you've said about your home, and for irori.toml: rooms, names,
-        /// keys, and Irori's own settings. Plain TOML you can edit by hand; see
-        /// docs/specs/config.md.
-        #[arg(long, env = "IRORI_CONFIG", default_value = "./config")]
-        config: PathBuf,
-        /// Directory for runtime data (SQLite database). Also `[server] data` in irori.toml;
-        /// default ./data.
-        #[arg(long, env = "IRORI_DATA")]
-        data: Option<PathBuf>,
-        /// Address to listen on. Anything other than loopback also needs
-        /// --allow-unauthenticated-lan. A home with no password is open to whoever can reach
-        /// it, and that stays even though the page can sign in. Also `[server] bind`;
-        /// default 127.0.0.1:8480.
-        #[arg(long, env = "IRORI_BIND")]
-        bind: Option<SocketAddr>,
-        /// Address to fall back to when --bind is already taken. Also `[server] bind_fallback`.
-        /// Setting it equal to --bind locks the port: a taken one fails instead of stepping.
-        /// Without one, Irori steps up past the taken address (8480 -> 8481 -> ...) and tells
-        /// you where it ended up instead of failing.
-        #[arg(long, env = "IRORI_BIND_FALLBACK")]
-        bind_fallback: Option<SocketAddr>,
-        /// Allow a non-loopback --bind. A home that has no password yet is open to whoever
-        /// can reach it, so listening beyond this machine has to be asked for.
-        #[arg(long, env = "IRORI_ALLOW_UNAUTHENTICATED_LAN", num_args = 0..=1, default_missing_value = "true")]
-        allow_unauthenticated_lan: Option<bool>,
-        /// Serve over https, so passwords and sign-ins travel encrypted. Uses tls/cert.pem and
-        /// tls/key.pem in the data directory, and makes its own certificate the first time if
-        /// they aren't there (a browser asks about that one once). Also `[server] tls`.
-        #[arg(long, env = "IRORI_TLS", num_args = 0..=1, default_missing_value = "true")]
-        tls: Option<bool>,
-        /// How much to log: error, warn, info, debug, or trace. `debug` shows every device and
-        /// state change. Also `[server] log_level`; default info.
-        #[arg(long, env = "IRORI_LOG_LEVEL")]
-        log_level: Option<tracing::Level>,
-    },
-    /// Print version and build information.
-    Version {
-        /// Output as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-}
-
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let cli = cli::Cli::parse();
     match cli.command {
-        Command::Serve {
+        cli::Command::Serve {
             data,
             config,
             bind,
@@ -106,15 +52,7 @@ fn main() -> anyhow::Result<()> {
             };
             serve(config, flags)
         }
-        Command::Version { json } => {
-            let info = build_info::BuildInfo::current();
-            if json {
-                println!("{}", serde_json::to_string_pretty(&info)?);
-            } else {
-                println!("{info}");
-            }
-            Ok(())
-        }
+        other => cli::execute(other),
     }
 }
 
@@ -245,6 +183,9 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // unauthenticated warning names the address we really ended up on (a fallback may
             // differ from `bind`, e.g. a loopback bind falling back to a LAN address).
             let address = listener.local_addr()?;
+            // The CLI on this machine reads this. A wildcard bind is written as loopback:
+            // 0.0.0.0 is not an address a client can connect to.
+            write_cli_url(&data, address, tls);
             // Read, or made, before anything is served: a certificate that can't be used is a
             // reason not to start, not a reason to quietly serve in the clear.
             let tls_config = if tls {
@@ -350,11 +291,45 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             host.shutdown().await;
             if restarting.load(Ordering::SeqCst) {
                 // Never returns: the current image is replaced by a fresh `irori serve`. Only a
-                // failed exec comes back here.
-                return restart_process(address, carry_bind);
+                // failed exec comes back here. Leave cli.url for the new process to replace.
+                let failed = restart_process(address, carry_bind);
+                remove_cli_url(&data);
+                return failed;
             }
+            // A stop, not a restart: the next `irori` must not keep talking to a server
+            // that is gone. The new process writes the file again when it binds.
+            remove_cli_url(&data);
             served
         })
+}
+
+/// `http://127.0.0.1:8480`, with a wildcard address rewritten to this machine.
+fn cli_origin(address: SocketAddr, tls: bool) -> String {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    let ip = match address.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        other => other,
+    };
+    let scheme = if tls { "https" } else { "http" };
+    format!("{scheme}://{}", SocketAddr::new(ip, address.port()))
+}
+
+fn write_cli_url(data: &std::path::Path, address: SocketAddr, tls: bool) {
+    let path = data.join("cli.url");
+    let body = format!("{}\n", cli_origin(address, tls));
+    if let Err(error) = std::fs::write(&path, body) {
+        tracing::warn!(path = %path.display(), %error, "couldn't write cli.url");
+    }
+}
+
+fn remove_cli_url(data: &std::path::Path) {
+    let path = data.join("cli.url");
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => tracing::warn!(path = %path.display(), %error, "couldn't remove cli.url"),
+    }
 }
 
 /// How many ports above the requested one Irori steps up before giving up, when no explicit
@@ -529,9 +504,23 @@ fn restart_process(_bind: SocketAddr, _carry_bind: bool) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::{Cli, Command};
 
     fn addr(s: &str) -> SocketAddr {
         s.parse().expect("valid socket address")
+    }
+
+    #[test]
+    fn a_wildcard_bind_is_written_as_loopback() {
+        assert_eq!(
+            cli_origin(addr("0.0.0.0:8480"), false),
+            "http://127.0.0.1:8480"
+        );
+        assert_eq!(cli_origin(addr("[::]:8480"), true), "https://[::1]:8480");
+        assert_eq!(
+            cli_origin(addr("192.168.1.10:9000"), false),
+            "http://192.168.1.10:9000"
+        );
     }
 
     #[test]

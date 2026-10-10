@@ -16,11 +16,11 @@ ui = ["dep:rust-embed", "dep:mime_guess"]
 # downloaded, not compiled in. `--no-default-features` still builds without it.
 assist = [
     "dep:irori-assist",
-    "dep:reqwest",
     "dep:tokio-stream",
 ]
 
 [dependencies]
+irori-client.workspace = true
 irori-config.workspace = true
 irori-core.workspace = true
 irori-helpers.workspace = true
@@ -31,11 +31,17 @@ irori-assist = { workspace = true, optional = true }
 # The live socket and the assistant's streams. Required, not behind `assist`, so a
 # barebones build still pushes home changes (`docs/specs/api.md` §4).
 futures-util = { version = "0.3.32", default-features = false, features = ["std", "sink"] }
-reqwest = { version = "0.12.24", default-features = false, features = ["json", "stream", "rustls-tls"], optional = true }
+# The CLI talks to a running Irori. Linked in every build, including barebones.
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "stream", "rustls-tls"] }
 tokio-stream = { version = "0.1.17", features = ["sync"], optional = true }
 # The checksum of the Ollama release Irori downloads on request (ollama.rs).
 
 anyhow.workspace = true
+clap_complete = "4.6.7"
+# Passwords on a terminal, without turning the echo off ourselves.
+rpassword = "7.4.0"
+# `irori watch`. rustls so wss uses the same roots as the HTTP client.
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 # Passwords (`server/auth.rs`): argon2id hashes, and the SHA-256 a session's token is kept as.
 argon2 = "0.5.3"
 sha2.workspace = true
@@ -70,8 +76,6 @@ http-body-util.workspace = true
 irori-protocol-demo.workspace = true
 schemars.workspace = true
 tempfile.workspace = true
-# The same websocket crate axum's `ws` feature uses, so a test can open `/api/ws`.
-tokio-tungstenite = "0.26"
 tower.workspace = true
 
 [lints]
