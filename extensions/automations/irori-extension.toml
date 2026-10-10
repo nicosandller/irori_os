@@ -1,7 +1,7 @@
 [extension]
 id = "automations"
 name = "Automations"
-version = "0.4.0"
+version = "0.4.1"
 irori = ">=0.7.0"
 # 0.7.0 reads entity categories, text sensor options, the unmodeled list and entity formats.
 description = "Build automations as flows on a canvas, watch them run, and see why one didn't."

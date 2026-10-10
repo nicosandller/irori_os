@@ -532,7 +532,12 @@
     .clock-typed { font-family: var(--mono); font-size: 1.05rem; letter-spacing: .04em; }
     .clock-typed.wrong { border-color: var(--error); }
     .dial { flex: none; width: 9.5rem; height: 9.5rem; cursor: grab; touch-action: none;
-            user-select: none; overflow: visible; }
+            user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+            overflow: visible; }
+    /* Nothing drawn on a dial or an arc is text to pick up, and while a hand is held
+       nothing beside the dial is either. */
+    .dial *, .sun-arc, .sun-arc * { user-select: none; -webkit-user-select: none; }
+    .clock-form:has(.dial.holding) { user-select: none; -webkit-user-select: none; }
     .dial.holding { cursor: grabbing; }
     .dial-ring { fill: none; stroke: var(--sunk); stroke-width: 22; }
     .dial-night { fill: color-mix(in srgb, var(--k-time) 30%, transparent);
@@ -713,14 +718,31 @@
     /* A flow as JSON. The text is drawn twice: coloured underneath, and see-through in the box
        that is typed into on top. Everything that decides where a letter falls is said once,
        for both. */
-    .json-fold > summary { cursor: pointer; font-size: .85rem; color: var(--muted);
-                           transition: color var(--dur-fast); }
-    .json-fold > summary:hover, .json-fold[open] > summary { color: var(--fg); }
-    .json-box { position: relative; height: min(52vh, 26rem); margin-top: .4rem;
+    .json-open { display: inline-flex; align-items: center; gap: .4rem; }
+    .json-braces { font-family: var(--mono); font-size: .8em; color: var(--ember); white-space: nowrap; }
+    /* The window: it rises into place while the page dims behind it, as the shell's do. */
+    .json-backdrop { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center;
+                     justify-content: center; padding: 1.5rem; background: rgb(0 0 0 / .45);
+                     animation: clock-fade var(--dur-base) var(--ease-out) backwards; }
+    .json-window { width: 100%; max-width: 52rem; max-height: 100%; display: flex;
+                   flex-direction: column; background: var(--card); border: 1px solid var(--line);
+                   border-radius: .9rem; box-shadow: 0 24px 56px rgb(0 0 0 / .3);
+                   animation: rise-in 240ms cubic-bezier(.2, 0, 0, 1) backwards; }
+    .json-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+                 padding: .8rem .8rem .7rem 1.2rem; border-bottom: 1px solid var(--line); }
+    .json-head h2 { margin: 0; font-size: 1.05rem; }
+    .json-head .x { width: 1.9rem; height: 1.9rem; border-radius: 50%; border: 1px solid var(--line);
+                    background: var(--bg); font-size: 1.1rem; line-height: 1; display: grid;
+                    place-items: center; transition: background-color var(--dur-fast),
+                    scale var(--dur-fast) var(--ease-out); }
+    .json-head .x:hover { background: var(--sunk); }
+    .json-head .x:active { scale: .92; }
+    .json-body { padding: .9rem 1.2rem 1.1rem; overflow-y: auto; }
+    .json-body > p { margin: 0 0 .6rem; font-size: .85rem; }
+    html[data-motion="off"] .json-window { animation: none; }
+    .json-box { position: relative; height: min(58vh, 34rem); margin-top: .4rem;
                 resize: vertical; overflow: hidden; min-height: 6rem;
                 background: var(--sunk); border: 1px solid var(--line); border-radius: .55rem; }
-    /* A node is a few lines; a whole flow is a page of them. */
-    .node-panel .json-box { height: 13rem; }
     .json-box pre, .json-box textarea { position: absolute; inset: 0; margin: 0; padding: .7rem .8rem;
         border: 0; box-sizing: border-box; font: .78rem/1.5 var(--mono); letter-spacing: 0;
         tab-size: 2; white-space: pre; min-height: 0; }

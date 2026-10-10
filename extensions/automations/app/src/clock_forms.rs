@@ -680,6 +680,9 @@ fn dial(
         Some(minutes_at(dx, dy, 5))
     };
     let down = move |event: ev::PointerEvent| {
+        // A drag across the dial is a hand being turned, not text being selected: without
+        // this the hours, and whatever is around the dial, light up blue as it goes.
+        event.prevent_default();
         let Some(minutes) = minutes_under(&event) else {
             return;
         };

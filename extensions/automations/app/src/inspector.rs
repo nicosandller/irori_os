@@ -148,22 +148,31 @@ pub fn FlowForm() -> impl IntoView {
                 }).collect_view().into_any()
             }
         }}
-        <details class="json-fold" style="margin-top:1.2rem">
-            <summary>"Edit this flow as JSON"</summary>
-            <p class="muted" style="font-size:.8rem;margin:.4rem 0">
-                "The same flow, as the file it's kept in. Copy it to share it or keep it; paste one in and press Apply to bring it onto the canvas. Nothing is saved until you press Save."
-            </p>
-            <JsonEditor
-                label="The whole flow as JSON"
-                text=move || flow().map(|f| written(&f)).unwrap_or_default()
-                apply=move |text: String| {
-                    let flow: Flow = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-                    ed.edit(|draft| *draft = flow);
-                    Ok(())
-                }
-            />
-        </details>
+        <h2 style="margin-top:1.2rem">"As JSON"</h2>
+        <p class="muted" style="font-size:.85rem">
+            "The same flow, as the file it's kept in: to read, copy, or paste one in."
+        </p>
+        <FlowJson />
         <DeleteFlow />
+    }
+}
+
+/// The whole flow as JSON: the button, in the editor's bar and on its Edit tab.
+#[component]
+pub fn FlowJson(#[prop(default = "btn small")] class: &'static str) -> impl IntoView {
+    let ed = expect_context::<Editing>();
+    view! {
+        <JsonButton
+            class=class
+            title="This flow as JSON"
+            blurb="The whole flow, as the file it's kept in. Copy it to share it or keep it; paste one in and press Apply to bring it onto the canvas. Nothing is saved until you press Save."
+            text=move || ed.draft.get().map(|f| written(&f)).unwrap_or_default()
+            apply=move |text: String| {
+                let flow: Flow = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+                ed.edit(|draft| *draft = flow);
+                Ok(())
+            }
+        />
     }
 }
 
@@ -200,7 +209,74 @@ fn DeleteFlow() -> impl IntoView {
 /// How long the copy button says it copied.
 const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1600);
 
-/// A flow, or one node of it, as JSON to read, copy and change.
+/// A flow, or one node of it, as JSON to read, copy and change: a button, and the window it
+/// opens over the page, as the Floorplan's plan has.
+///
+/// The window is put on the page itself, not inside whatever holds the button: a node's
+/// panel is moved about and clipped, and a window has to stand clear of both. It closes by
+/// its ×, the page around it, or Escape; what was typed and not applied goes with it.
+#[component]
+pub fn JsonButton(
+    /// The window's heading, and what a screen reader calls it.
+    title: &'static str,
+    /// A line or two under the heading: what this is, and what Apply does.
+    blurb: &'static str,
+    text: impl Fn() -> String + Send + Sync + 'static,
+    apply: impl Fn(String) -> Result<(), String> + Send + Sync + 'static,
+    /// The button's own classes, for where it stands.
+    #[prop(default = "btn small")]
+    class: &'static str,
+) -> impl IntoView {
+    let open = RwSignal::new(false);
+    // Kept where the window can reach them each time it's drawn.
+    let text = StoredValue::new(text);
+    let apply = StoredValue::new(apply);
+    view! {
+        <button type="button" class=format!("{class} json-open") on:click=move |_| open.set(true)
+            title=title>
+            <span class="json-braces" aria-hidden="true">"{ }"</span>
+            "JSON"
+        </button>
+        {move || open.get().then(|| {
+            view! {
+                <leptos::portal::Portal>
+                    <div class="json-backdrop"
+                        on:click=move |_| open.set(false)
+                        // Escape closes this window and goes no further: the node's panel
+                        // behind it listens for the same key.
+                        on:keydown=move |e| {
+                            if e.key() == "Escape" {
+                                e.stop_propagation();
+                                open.set(false);
+                            }
+                        }>
+                        <div class="json-window" role="dialog" aria-modal="true" aria-label=title
+                            on:click=|e| e.stop_propagation()
+                            on:pointerdown=|e| e.stop_propagation()>
+                            <div class="json-head">
+                                <h2>{title}</h2>
+                                <button type="button" class="x" aria-label="Close"
+                                    on:click=move |_| open.set(false)>"×"</button>
+                            </div>
+                            <div class="json-body">
+                                <p class="muted">{blurb}</p>
+                                <JsonEditor label=title
+                                    text=move || text.with_value(|text| text())
+                                    apply=move |typed: String| {
+                                        apply.with_value(|apply| apply(typed))?;
+                                        open.set(false);
+                                        Ok(())
+                                    } />
+                            </div>
+                        </div>
+                    </div>
+                </leptos::portal::Portal>
+            }
+        })}
+    }
+}
+
+/// The box itself: the text coloured by what each piece is, with Copy, Format and Apply.
 ///
 /// A text box can't colour what is in it, so the colour is a second copy of the text drawn
 /// underneath, in the same letters at the same place, and the box itself is typed into with
@@ -218,6 +294,13 @@ fn JsonEditor(
     let draft = RwSignal::new(None::<String>);
     let copied = RwSignal::new(None::<bool>);
     let painted = NodeRef::<leptos::html::Pre>::new();
+    let typed_into = NodeRef::<leptos::html::Textarea>::new();
+    // The caret goes in the box as the window opens, so Escape and typing are heard there.
+    Effect::new(move |_| {
+        if let Some(area) = typed_into.get() {
+            let _ = area.focus();
+        }
+    });
     let shown = Signal::derive(move || draft.get().unwrap_or_else(&text));
     let copy = move |_| {
         let text = shown.get_untracked();
@@ -250,7 +333,7 @@ fn JsonEditor(
                 // A last line with nothing on it still has to take up a line.
                 "\n"
             </pre>
-            <textarea spellcheck="false" autocomplete="off" aria-label=label
+            <textarea spellcheck="false" autocomplete="off" aria-label=label node_ref=typed_into
                 prop:value=move || shown.get()
                 on:input=move |e| {
                     draft.set(Some(event_target_value(&e)));
@@ -1336,10 +1419,10 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
             });
             ed.selected.set(Selected::Node(new));
         } />
-        <details class="json-fold" style="margin-top:.8rem">
-            <summary>"Edit as JSON"</summary>
-            <JsonEditor
-                label="This node as JSON"
+        <div class="row" style="margin-top:1rem">
+            <JsonButton
+                title="This node as JSON"
+                blurb="Just this node, as it's written in the flow. Change it and press Apply: it lands in the flow you're editing, and nothing is saved until you press Save."
                 text=move || node.get().map(|n| written(&n)).unwrap_or_default()
                 apply=move |text: String| {
                     let parsed: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
@@ -1347,8 +1430,7 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
                     change(&ed, &json_id, move |v: &mut Value| *v = parsed)
                 }
             />
-        </details>
-        <div class="row" style="margin-top:1rem">
+            <span class="grow"></span>
             <button class="btn danger" on:click=move |_| remove_node(&ed, &delete_id)>"Delete node"</button>
         </div>
     }
