@@ -3,8 +3,9 @@
 Status: **shipped** (ROADMAP C16, C17).
 
 This is the door for a program that is not Irori's own page. The page signs in with a
-session cookie (`docs/specs/config.md` §3.10). A script, a wall tablet, the CLI, or an
-extension that dials in uses a token.
+session cookie (`docs/specs/config.md` §3.10). A script, a wall tablet, or an extension
+that dials in uses a token. The CLI (`docs/specs/cli.md`) does both: `irori login` keeps
+the page's session, and `--token` is a program token.
 
 Home Assistant's API is the reference for the shape: an HTTP API plus a websocket, and a
 long-lived token sent as `Authorization: Bearer`. Irori keeps the parts that make a
@@ -24,6 +25,7 @@ program easy to write and leaves the rest out.
 | Caller | Credential | May |
 |---|---|---|
 | The page | Session cookie, and `x-irori-ui: 1` on every change | Whatever that person's role allows (C14) |
+| Irori's CLI, signed in | The same session cookie, and `x-irori-ui: 1` on every change | Whatever that person's role allows. It is Irori's own program, so it sends the header the page sends |
 | A program | `Authorization: Bearer <secret>` | The scopes on its token |
 | An extension that dials in | A token made for that extension, on `/api/extension` | Speak the extension protocol (§6) |
 
@@ -33,7 +35,9 @@ scheme, such as `Basic` from a reverse proxy, is ignored and the cookie is used.
 bearer token is still refused: it does not fall through to the cookie.
 
 A bearer token does not need `x-irori-ui`. That header exists so a website cannot use the
-browser's cookie. A token is a secret the program was given.
+browser's cookie. A token is a secret the program was given. The CLI does not send the
+header with a token, and a token that tries to change how the home is set up gets the
+same refusal the page's API already returns.
 
 The API is not open to other websites. There is no CORS header on `/api/…`. A program calls
 Irori directly. A page on another origin cannot.
@@ -185,6 +189,5 @@ There is no log message on this socket.
 | Topic | Where |
 |---|---|
 | Per-area permissions, an audit log | C28 |
-| The CLI's `token` command | C22 |
 | Signing extension packages | C26 |
 | CORS, refresh tokens, a command channel on the websocket | Left out on purpose (§1) |
