@@ -950,7 +950,7 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
     };
     let rename_id = id.clone();
     let delete_id = id.clone();
-    let json_edit = edit.clone();
+    let json_id = id.clone();
 
     let body = move || {
         // Showing a condition as its expression changes the form, not the node.
@@ -1343,9 +1343,8 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
                 text=move || node.get().map(|n| written(&n)).unwrap_or_default()
                 apply=move |text: String| {
                     let parsed: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-                    serde_json::from_value::<Node>(parsed.clone()).map_err(|e| e.to_string())?;
-                    json_edit(Box::new(move |v: &mut Value| *v = parsed));
-                    Ok(())
+                    // Refused here, under the box, with what was typed still in it.
+                    change(&ed, &json_id, move |v: &mut Value| *v = parsed)
                 }
             />
         </details>
