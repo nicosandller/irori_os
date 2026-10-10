@@ -60,7 +60,11 @@ pub const MOST_ASKED: usize = 14 * 1024 * 1024;
 
 /// Takes a question and streams its answer. The answer is Irori's to finish from here: the
 /// page leaving stops the stream, not the answer.
-pub async fn turns(State(state): State<AppState>, Json(ask): Json<Ask>) -> impl IntoResponse {
+pub async fn turns(
+    State(state): State<AppState>,
+    axum::Extension(who): axum::Extension<super::auth::Actor>,
+    Json(ask): Json<Ask>,
+) -> impl IntoResponse {
     let pending = match state.0.turns.begin(&ask.scope, &ask.message) {
         Ok(pending) => pending,
         Err(error) => {
@@ -77,7 +81,10 @@ pub async fn turns(State(state): State<AppState>, Json(ask): Json<Ask>) -> impl 
             .turns
             .run(&scope, pending, |tx| {
                 assistant::take_turn(
-                    turn(&state),
+                    Turn {
+                        owner: who.owner,
+                        ..turn(&state)
+                    },
                     scope.clone(),
                     ask.message,
                     ask.plan,
@@ -221,6 +228,7 @@ fn events(
             ChatEvent::Error(text) => serde_json::json!({ "error": text }),
             ChatEvent::Step(tool) => serde_json::json!({ "step": tool }),
             ChatEvent::Plan(plan) => serde_json::json!({ "plan": plan }),
+            ChatEvent::Confirm(removals) => serde_json::json!({ "confirm": removals }),
             ChatEvent::Done => serde_json::json!({ "done": true }),
         };
         Ok(Event::default().data(data.to_string()))
@@ -234,6 +242,7 @@ fn turn(state: &AppState) -> Turn<'_> {
         history: &state.0.history,
         db: &state.0.db.path,
         log: &state.0.log,
+        owner: false,
     }
 }
 

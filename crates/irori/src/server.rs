@@ -4222,6 +4222,36 @@ mod tests {
                         )
                             .into_response();
                     }
+                    // Makes a room and asks for another to go, then says what came of it.
+                    if body["model"] == "arranges" {
+                        let report = body["messages"].as_array().and_then(|messages| {
+                            messages
+                                .iter()
+                                .find(|m| m["role"] == "tool")
+                                .and_then(|m| m["content"].as_str().map(str::to_owned))
+                        });
+                        let ops = serde_json::json!([
+                            {"op": "add_area", "name": "Pantry"},
+                            {"op": "remove_area", "area": "kitchen"},
+                            {"op": "remove_floor", "floor": "attic"},
+                        ]);
+                        let line = match report {
+                            Some(report) => serde_json::json!({"choices": [{"delta": {
+                                "content": report,
+                            }}]}),
+                            None => serde_json::json!({"choices": [{"delta": {
+                                "tool_calls": [{"index": 0, "id": "a", "function": {
+                                    "name": "edit_home",
+                                    "arguments": serde_json::json!({"ops": ops}).to_string(),
+                                }}],
+                            }}]}),
+                        };
+                        return (
+                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                            format!("data: {line}\n\ndata: [DONE]\n\n"),
+                        )
+                            .into_response();
+                    }
                     // Says whether it was shown a picture, and how much of one.
                     if body["model"] == "looks" {
                         let shown = body["messages"]
@@ -4653,6 +4683,55 @@ mod tests {
             Ok(())
         }
 
+        /// From the Floorplan's chat the assistant may make a room, which is saved as a room
+        /// made in Settings is. It may not remove one: the person is asked, and until they
+        /// answer the room is still there.
+        #[tokio::test]
+        async fn the_assistant_adds_a_room_and_only_asks_to_remove_one() -> anyhow::Result<()> {
+            let base = cloud().await;
+            let server = Server::new(core())?;
+            for (path, body) in [
+                (
+                    "/api/floors",
+                    serde_json::json!({"name": "Ground", "level": 0}),
+                ),
+                ("/api/areas", serde_json::json!({"name": "Kitchen"})),
+            ] {
+                let (status, body) = server.json("POST", path, body).await?;
+                assert!(status.is_success(), "{path}: {body}");
+            }
+            let (status, body) = server
+                .json("PUT", "/api/assistant", configure(&base, "arranges"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let draft = serde_json::json!({});
+            let events = asked_on_the_plan(&server, Some(&draft)).await?;
+            let said = serde_json::Value::from(events.clone()).to_string();
+
+            let rooms = server.read("/api/areas").await?;
+            let pantry = rooms
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|room| room["id"] == "pantry")
+                .unwrap_or_else(|| panic!("no pantry was made: {rooms} / {said}"));
+            assert_eq!(pantry["floor_id"], "ground", "on the floor being looked at");
+            assert!(
+                rooms.to_string().contains("\"kitchen\""),
+                "the kitchen was removed without anybody saying yes: {rooms}"
+            );
+            let asked = events
+                .iter()
+                .find_map(|event| event.get("confirm"))
+                .unwrap_or_else(|| panic!("nobody was asked: {said}"));
+            assert_eq!(
+                asked,
+                &serde_json::json!([{"kind": "area", "id": "kitchen", "name": "Kitchen"}])
+            );
+            assert!(said.contains("There's no floor `attic`"), "{said}");
+            Ok(())
+        }
+
         /// A question with a plan attached, from a conversation that has no use for one.
         async fn events_of(
             server: &Server,
@@ -4697,6 +4776,7 @@ mod tests {
                             history: &server.history,
                             db: &db.path,
                             log: &server.log,
+                            owner: false,
                         },
                         "general".into(),
                         "hello".into(),

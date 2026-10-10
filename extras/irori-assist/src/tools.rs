@@ -39,7 +39,7 @@ fn general(scope: &str) -> bool {
     scope == "general"
 }
 
-const TOOLS: [Tool; 9] = [
+const TOOLS: [Tool; 10] = [
     Tool {
         name: "list_devices",
         description: "List the devices in the home, with the room and the word each entity is reporting.",
@@ -124,6 +124,22 @@ const TOOLS: [Tool; 9] = [
              {\"op\":\"remove_area\",\"area\":\"kitchen\"}. Whole centimetres, x rightwards and y down \
              the page. Walls and openings are numbered from 1 as read_floorplan lists them, all \
              the way through a call; the walls a call adds are numbered on from the last.",
+            true,
+        )],
+        offered: |scope, drawing| plan(scope) && drawing,
+    },
+    Tool {
+        name: "edit_home",
+        description: "Add floors and rooms to the home, or ask for one to be removed. What is added is saved at once. Nothing is removed by this: the person is asked to confirm on the page first.",
+        params: &[(
+            "ops",
+            "A JSON array of changes. Each is an object with an `op`: \
+             {\"op\":\"add_floor\",\"name\":\"Upstairs\",\"level\":1} (level 0 is the entrance \
+             floor, negative is below ground; optional); \
+             {\"op\":\"add_area\",\"name\":\"Study\",\"floor\":\"ground\"} (floor is a floor's id; \
+             left out, the floor being looked at); {\"op\":\"remove_area\",\"area\":\"study\"}; \
+             {\"op\":\"remove_floor\",\"floor\":\"attic\"}. What comes back gives the id of each \
+             floor and room that was made.",
             true,
         )],
         offered: |scope, drawing| plan(scope) && drawing,
@@ -373,10 +389,16 @@ mod tests {
         );
         let drawing = names(&openai_tools("floorplan:ground", true), "/function/name");
         assert_eq!(drawing[..reading.len()], reading);
-        assert_eq!(drawing.last().map(String::as_str), Some("edit_floorplan"));
+        assert_eq!(
+            drawing[reading.len()..],
+            ["edit_floorplan", "edit_home"],
+            "the two that change anything"
+        );
         for scope in ["general", "settings", "device:lamp", "automation:kettle"] {
             assert!(!tool_offered(scope, true, "edit_floorplan"), "{scope}");
+            assert!(!tool_offered(scope, true, "edit_home"), "{scope}");
         }
+        assert!(!tool_offered("floorplan:ground", false, "edit_home"));
         assert!(!tool_offered("floorplan:ground", false, "edit_floorplan"));
         assert!(tool_offered("general", false, "read_floorplan"));
         let edit = &anthropic_tools("floorplan:ground", true)[6];

@@ -2096,7 +2096,15 @@ pub fn Floorplan() -> impl IntoView {
                     <div class="zoom-buttons">
                         <button type="button" aria-label="Zoom out" on:click=move |_| zoom_by(1.0 / 1.25)>"−"</button>
                         <button type="button" aria-label="Zoom in" on:click=move |_| zoom_by(1.25)>"+"</button>
-                        <button type="button" on:click=move |_| fit()>"Fit"</button>
+                        <button
+                            type="button"
+                            class="home"
+                            aria-label="Home view"
+                            title="Home view: the whole plan, or the view you set"
+                            on:click=move |_| fit()
+                        >
+                            <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=HOME></svg>
+                        </button>
                         // Only once the view has been moved: then what is on screen can be
                         // made what Fit comes back to. And only on a Fit somebody set is there
                         // anything to hand back.
@@ -2105,10 +2113,13 @@ pub fn Floorplan() -> impl IntoView {
                                 <button
                                     type="button"
                                     class="set-fit"
-                                    title="Make this view what Fit comes back to, on this floor"
+                                    aria-label="Set home view"
+                                    title="Make this view the home view, on this floor"
                                     on:click=move |_| set_fit(true)
                                 >
-                                    "Set fit"
+                                    "Set "
+                                    <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=HOME></svg>
+                                    " view"
                                 </button>
                             }.into_any()
                         } else if chosen_fit.get().is_some() {
@@ -2116,10 +2127,13 @@ pub fn Floorplan() -> impl IntoView {
                                 <button
                                     type="button"
                                     class="set-fit"
-                                    title="Go back to fitting the whole plan"
+                                    aria-label="Reset home view"
+                                    title="Go back to the whole plan as the home view"
                                     on:click=move |_| set_fit(false)
                                 >
-                                    "Reset fit"
+                                    "Reset "
+                                    <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=HOME></svg>
+                                    " view"
                                 </button>
                             }.into_any()
                         } else {
@@ -4679,6 +4693,9 @@ const TOOLS: [(Tool, &str, &str); 6] = [
 /// Back a step, and forward again.
 const UNDO: &str = r#"<path d="M4 9h10a5 5 0 0 1 0 10H8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 5 4 9l4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
 const REDO: &str = r#"<path d="M20 9H10a5 5 0 0 0 0 10h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="m16 5 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
+
+/// Home: the view the plan comes back to.
+const HOME: &str = r#"<path d="M4 11.2 12 4l8 7.2M6.2 9.6V20h4.3v-5.4h3V20h4.3V9.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
 
 /// The plan as text: a pair of braces.
 const BRACES: &str = r#"<path d="M9 4c-2 0-3 1-3 3v2.5c0 1.4-.8 2.5-2 2.5 1.2 0 2 1.1 2 2.5V17c0 2 1 3 3 3M15 4c2 0 3 1 3 3v2.5c0 1.4.8 2.5 2 2.5-1.2 0-2 1.1-2 2.5V17c0 2-1 3-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;

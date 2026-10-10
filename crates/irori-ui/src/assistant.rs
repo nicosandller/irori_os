@@ -39,6 +39,8 @@ struct Thread {
     desk: StoredValue<Option<Desk>>,
     /// The picture or PDF that will go with the next question.
     attached: RwSignal<Option<api::Attachment>>,
+    /// Floors and rooms the assistant asked to have removed, waiting on a yes or a no.
+    asked: RwSignal<Vec<api::Removal>>,
 }
 
 /// The plan being edited on the Floorplan page, as the assistant reaches it: `read` is the
@@ -103,6 +105,7 @@ impl Chats {
             used: RwSignal::new(None),
             desk: self.desk,
             attached: RwSignal::new(None),
+            asked: RwSignal::new(Vec::new()),
         });
         self.threads.update_value(|threads| {
             threads.insert(scope.to_owned(), thread);
@@ -147,6 +150,14 @@ impl Thread {
                     desk.take.run((scope.clone(), *plan));
                 }
             }
+            // Each is asked once, however many times the answer is read from its start.
+            Streamed::Confirm(removals) => self.asked.update(|asked| {
+                for removal in removals {
+                    if !asked.contains(&removal) {
+                        asked.push(removal);
+                    }
+                }
+            }),
             Streamed::Failed(_) | Streamed::Done => {}
         }
     }
@@ -538,6 +549,7 @@ impl Phase {
                 "get_automation" => "Reading an automation",
                 "read_floorplan" => "Looking at the plan",
                 "edit_floorplan" => "Drawing on the plan",
+                "edit_home" => "Arranging floors and rooms",
                 _ => "Looking something up",
             },
             Self::Writing => "Writing",
@@ -564,8 +576,34 @@ pub fn Chat(
         waited,
         used,
         attached,
+        asked,
         ..
     } = thread;
+    let live = expect_context::<crate::Live>();
+    // Removes what the person said yes to, as the person: the same request Settings makes,
+    // held to the same rules about who may.
+    let remove = move |removal: api::Removal| {
+        spawn_local(async move {
+            let done = match removal.kind.as_str() {
+                "floor" => match removal.id.parse() {
+                    Ok(id) => api::remove_floor(&id).await,
+                    Err(_) => Err(format!("there's no floor `{}`", removal.id)),
+                },
+                _ => match removal.id.parse() {
+                    Ok(id) => api::remove_area(&id).await,
+                    Err(_) => Err(format!("there's no room `{}`", removal.id)),
+                },
+            };
+            match done {
+                Ok(()) => {
+                    trouble.set(None);
+                    crate::refresh(live);
+                }
+                Err(why) => trouble.set(Some(why)),
+            }
+            asked.update(|asked| asked.retain(|waiting| *waiting != removal));
+        });
+    };
     let log = NodeRef::<leptos::html::Div>::new();
     let scope = StoredValue::new(scope);
     let assistant = expect_context::<Assistant>();
@@ -829,6 +867,39 @@ pub fn Chat(
                     </div>
                 })}
             </div>
+            // What the assistant asked to have removed. It can't remove anything itself, so
+            // each is put here as a question, and the answer is the person's.
+            {move || asked.get().into_iter().map(|removal| {
+                let (yes, no) = (removal.clone(), removal.clone());
+                let what = if removal.kind == "floor" { "floor" } else { "room" };
+                view! {
+                    <div class="chat-confirm" role="alertdialog" aria-label="Remove?">
+                        <p>
+                            "Remove the " {what} " " <b>{removal.name.clone()}</b> "? "
+                            <span class="muted">
+                                {if removal.kind == "floor" {
+                                    "Its rooms stay, on no floor. This is done at once, not on Save."
+                                } else {
+                                    "Its devices stay, in no room. This is done at once, not on Save."
+                                }}
+                            </span>
+                        </p>
+                        <span class="chat-confirm-actions">
+                            <button type="button" class="press"
+                                on:click=move |_| {
+                                    let no = no.clone();
+                                    asked.update(|asked| asked.retain(|waiting| *waiting != no));
+                                }>
+                                "Keep it"
+                            </button>
+                            <button type="button" class="press danger"
+                                on:click=move |_| remove(yes.clone())>
+                                "Remove"
+                            </button>
+                        </span>
+                    </div>
+                }
+            }).collect_view()}
             // The file that will go with the next question, and the way to take it back.
             {move || attached.get().map(|file| view! {
                 <p class="attached">

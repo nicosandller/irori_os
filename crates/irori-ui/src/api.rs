@@ -1192,6 +1192,9 @@ pub enum Streamed {
     /// The model drew on the floorplan being edited. The whole plan as it now stands, for the
     /// Floorplan page to take as its working copy; nothing has been saved.
     Plan(Box<Floorplan>),
+    /// The model asked for floors or rooms to be removed. It can't remove them: the person is
+    /// asked here, and the page removes what they say yes to.
+    Confirm(Vec<Removal>),
     Failed(String),
     Done,
 }
@@ -1202,6 +1205,15 @@ pub struct Progress {
     pub status: String,
     pub completed: u64,
     pub total: u64,
+}
+
+/// A floor or a room the assistant asked to have removed.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Removal {
+    /// `floor` or `area`.
+    pub kind: String,
+    pub id: String,
+    pub name: String,
 }
 
 /// A picture or a PDF given with a question: a floorplan somebody already has, for the model
@@ -1462,6 +1474,10 @@ impl Events {
                 events.push(Streamed::Delta(delta.to_owned()));
             } else if let Some(step) = value["step"].as_str() {
                 events.push(Streamed::Step(step.to_owned()));
+            } else if let Some(asked) = value.get("confirm") {
+                if let Ok(asked) = serde_json::from_value::<Vec<Removal>>(asked.clone()) {
+                    events.push(Streamed::Confirm(asked));
+                }
             } else if let Some(plan) = value.get("plan") {
                 // A plan this page can't read is one it can't draw, so it is left alone
                 // rather than taken half-understood.

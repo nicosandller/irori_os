@@ -134,6 +134,9 @@ pub enum ChatEvent {
     /// The model has drawn on the plan the person is editing. The whole plan as it now stands,
     /// for the page to take as its working copy. Nothing has been written anywhere.
     Plan(Box<Floorplan>),
+    /// The model wants floors or rooms removed. It can't: the person is asked, on the page,
+    /// and the page removes what they say yes to.
+    Confirm(Vec<Removal>),
     Error(String),
     Done,
 }
@@ -199,12 +202,23 @@ impl Attachment {
     }
 }
 
+/// A floor or a room the model asked to have removed, for the person to say yes or no to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Removal {
+    /// `floor` or `area`.
+    pub kind: &'static str,
+    pub id: String,
+    pub name: String,
+}
+
 struct Env<'a> {
     core: &'a Core,
     config: &'a Config,
     history: &'a History,
     db: &'a Path,
     log: &'a syslog::Log,
+    /// Whether whoever is asking may change how the home is set up.
+    owner: bool,
 }
 
 async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
@@ -915,9 +929,9 @@ async fn answer(
              ordinary sizes from the proportions and say what you assumed. Work in whole \
              centimetres, start at [0,0] unless there is already a drawing to sit beside, keep \
              walls square to each other where the picture's are, make walls that meet share \
-             their corner exactly, and put doors and windows where it shows them. Trace only \
-             rooms the home already has, by their ids; say which rooms on the picture have no \
-             room to be traced as.\n"
+             their corner exactly, and put doors and windows where it shows them. Where it \
+             shows rooms the home doesn't have yet, make them first with `edit_home`, then \
+             trace each by the id you are given back.\n"
         )
     } else {
         system
@@ -965,7 +979,14 @@ async fn answer(
         if tx.is_closed() {
             return;
         }
-        let with_tools = tools_work && execute_round(rounds);
+        // Drawing a floor takes more goes than looking something up: rooms may have to be
+        // made first, and a batch that was refused is worth one more try.
+        let with_tools = tools_work
+            && if floor_of(&scope).is_some() {
+                rounds < PLAN_ROUNDS
+            } else {
+                execute_round(rounds)
+            };
         match complete(
             &provider,
             &conversation,
@@ -997,7 +1018,13 @@ async fn answer(
                         return;
                     }
                     let before = drawing.clone();
-                    let result = run_tool(&env, &scope, &picture, &call, &mut drawing).await;
+                    let mut removals = Vec::new();
+                    let result =
+                        run_tool(&env, &scope, &picture, &call, &mut drawing, &mut removals).await;
+                    if !removals.is_empty() && tx.send(ChatEvent::Confirm(removals)).await.is_err()
+                    {
+                        return;
+                    }
                     if drawing != before
                         && let Some(drawn) = &drawing
                         && tx
@@ -1489,8 +1516,10 @@ async fn run_tool(
     scope: &str,
     status: &Status,
     call: &ToolCall,
-    // The plan the person is editing, when there is one. The only thing a tool may change.
+    // The plan the person is editing, when there is one.
     drawing: &mut Option<Floorplan>,
+    // The floors and rooms the model asked to have removed, for the person to be asked about.
+    removals: &mut Vec<Removal>,
 ) -> String {
     let args: Value = serde_json::from_str(&call.arguments).unwrap_or(json!({}));
     // A model may ask for a tool it wasn't offered. It gets what it was offered, no more.
@@ -1588,6 +1617,7 @@ async fn run_tool(
                 .join("\n")
         }
         "edit_floorplan" => return draw(env.core, scope, &args, drawing),
+        "edit_home" => return arrange(env, scope, &args, removals).await,
         "read_logs" => {
             let source = args
                 .get("source")
@@ -1628,6 +1658,161 @@ fn fitted(text: &str, most: usize) -> String {
 /// The floor a conversation on the Floorplan page is about.
 fn floor_of(scope: &str) -> Option<FloorId> {
     scope.strip_prefix("floorplan:")?.parse().ok()
+}
+
+/// How many times the model may reach for a tool in the Floorplan's chat.
+const PLAN_ROUNDS: u8 = 4;
+
+/// One change to how the home is arranged, asked for from the Floorplan's chat.
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+enum HomeOp {
+    AddFloor {
+        name: irori_types::Name,
+        #[serde(default)]
+        level: i8,
+    },
+    AddArea {
+        name: irori_types::Name,
+        #[serde(default)]
+        floor: Option<FloorId>,
+    },
+    RemoveFloor {
+        floor: FloorId,
+    },
+    RemoveArea {
+        area: irori_types::AreaId,
+    },
+}
+
+/// Adds floors and rooms the model asked for, and puts to the person the ones it asked to
+/// have removed.
+///
+/// Adding is what Settings does and is held to what Settings is: only an owner, and written to
+/// `areas.toml` at once — a room has to exist before its shape can be traced. Removing is not
+/// done from here at all. A floor or a room going takes things with it, a model can be wrong
+/// about what it was asked, and a picture it was shown can say anything; so the person is
+/// asked on the page, and the page removes what they say yes to, as themselves.
+async fn arrange(env: &Env<'_>, scope: &str, args: &Value, removals: &mut Vec<Removal>) -> String {
+    if !env.owner {
+        return "Only an owner of the home can add or remove floors and rooms. Nothing was \
+                changed."
+            .to_owned();
+    }
+    let ops: Result<Vec<HomeOp>, _> = match args.get("ops") {
+        Some(Value::String(text)) => serde_json::from_str(text),
+        Some(ops @ Value::Array(_)) => serde_json::from_value(ops.clone()),
+        _ => return "edit_home needs ops: a JSON array of changes.".to_owned(),
+    };
+    let ops = match ops {
+        Ok(ops) if ops.len() <= 40 => ops,
+        Ok(_) => return "That is more than 40 changes at once. Nothing was changed.".to_owned(),
+        Err(error) => return format!("those changes can't be read: {error}. Nothing was changed."),
+    };
+    let here = floor_of(scope);
+    let mut said = Vec::new();
+    for op in ops {
+        match op {
+            HomeOp::AddFloor { name, level } => {
+                let made = env
+                    .config
+                    .edit(env.core, |settings| {
+                        let floor = irori_types::Floor {
+                            id: irori_core::new_floor_id(&name, &settings.floors),
+                            name: name.clone(),
+                            level,
+                        };
+                        settings.floors.push(floor.clone());
+                        settings.floors.sort_by(|a, b| a.id.cmp(&b.id));
+                        Ok(floor)
+                    })
+                    .await;
+                said.push(match made {
+                    Ok(floor) => format!("Added the floor `{}` ({}), saved.", floor.id, floor.name),
+                    Err(error) => format!("Couldn't add the floor {name}: {}.", edit_error(error)),
+                });
+            }
+            HomeOp::AddArea { name, floor } => {
+                let floor = floor.or_else(|| here.clone());
+                let made = env
+                    .config
+                    .edit(env.core, |settings| {
+                        if let Some(floor) = &floor
+                            && settings.floor(floor).is_none()
+                        {
+                            return Err(crate::config::Refused(format!(
+                                "there's no floor `{floor}`"
+                            )));
+                        }
+                        let area = irori_types::Area {
+                            id: irori_core::new_area_id(&name, &settings.areas),
+                            name: name.clone(),
+                            floor_id: floor.clone(),
+                        };
+                        settings.areas.push(area.clone());
+                        settings.areas.sort_by(|a, b| a.id.cmp(&b.id));
+                        Ok(area)
+                    })
+                    .await;
+                said.push(match made {
+                    Ok(area) => format!(
+                        "Added the room `{}` ({}), saved. It can be traced now, by that id.",
+                        area.id, area.name
+                    ),
+                    Err(error) => format!("Couldn't add the room {name}: {}.", edit_error(error)),
+                });
+            }
+            HomeOp::RemoveFloor { floor } => {
+                match env
+                    .core
+                    .floors()
+                    .into_iter()
+                    .find(|known| known.id == floor)
+                {
+                    Some(known) => {
+                        removals.push(Removal {
+                            kind: "floor",
+                            id: known.id.to_string(),
+                            name: known.name.to_string(),
+                        });
+                        said.push(format!(
+                            "The person is being asked whether to remove the floor `{floor}`. \
+                             It is still there until they say yes."
+                        ));
+                    }
+                    None => said.push(format!("There's no floor `{floor}`.")),
+                }
+            }
+            HomeOp::RemoveArea { area } => {
+                match env.core.areas().into_iter().find(|known| known.id == area) {
+                    Some(known) => {
+                        removals.push(Removal {
+                            kind: "area",
+                            id: known.id.to_string(),
+                            name: known.name.to_string(),
+                        });
+                        said.push(format!(
+                            "The person is being asked whether to remove the room `{area}`. It \
+                             is still there until they say yes."
+                        ));
+                    }
+                    None => said.push(format!("There's no room `{area}`.")),
+                }
+            }
+        }
+    }
+    if said.is_empty() {
+        return "There were no changes in that. Nothing was changed.".to_owned();
+    }
+    said.join("\n")
+}
+
+/// Why an edit to the home's own files didn't happen, in words for the model to pass on.
+fn edit_error(error: EditError) -> String {
+    match error {
+        EditError::Refused(why) => why.to_string(),
+        EditError::Io(error) => format!("the config directory couldn't be written ({error})"),
+    }
 }
 
 /// How many changes one call may ask for. A whole flat is a few dozen walls.
@@ -2305,8 +2490,14 @@ async fn system_prompt(
                  corners. When the person doesn't say where, draw beside what is there, not \
                  over it, and say where you put it. What you draw shows on their plan at once \
                  as one step they can undo, and is saved only when they press Save: say so in \
-                 a few words. You cannot move devices or make new rooms; rooms are made in \
-                 Settings.\n",
+                 a few words. You cannot move devices.\n\
+                 With `edit_home` you may add floors and rooms, which are saved at once, not \
+                 with the drawing: make a room before tracing it, then trace it by the id you \
+                 are given back. Add only what the person asked for or what the plan they \
+                 attached shows. You may also ask for a floor or a room to be removed, only \
+                 when the person plainly asked for that; they are then asked to confirm on \
+                 the page, and nothing is removed until they do, so say that it is waiting on \
+                 them. Only an owner of the home can do either.\n",
             ),
             (true, true) => prompt.push_str(
                 "You cannot draw on the plan: drawing needs a cloud model, which is chosen in \
@@ -2853,6 +3044,9 @@ pub struct Turn<'a> {
     pub history: &'a History,
     pub db: &'a Path,
     pub log: &'a syslog::Log,
+    /// Whether whoever is asking may change how the home is set up: what adding a floor or a
+    /// room from the Floorplan's chat is held to, the same as adding one in Settings.
+    pub owner: bool,
 }
 
 impl<'a> Turn<'a> {
@@ -2863,6 +3057,7 @@ impl<'a> Turn<'a> {
             history: self.history,
             db: self.db,
             log: self.log,
+            owner: self.owner,
         }
     }
 }
@@ -2901,6 +3096,8 @@ pub struct Progress {
     pub text: String,
     /// The tool being run, or `queued`. `None` while the model thinks or writes.
     pub step: Option<String>,
+    /// The floors and rooms the person is being asked whether to remove.
+    pub asked: Vec<Removal>,
     /// The plan as the model last drew it, when it has drawn on one. Shared rather than held:
     /// every word of the answer copies this whole struct to whoever is following it.
     pub plan: Option<Arc<Floorplan>>,
@@ -2956,8 +3153,16 @@ impl Pending {
             let mut sent = 0usize;
             let mut step = None;
             let mut drawn = None;
+            let mut asked = 0usize;
             loop {
                 let now = progress.borrow_and_update().clone();
+                // Only ever added to, like the text: what was sent is a prefix of it.
+                if let Some(more) = now.asked.get(asked..).filter(|more| !more.is_empty()) {
+                    asked = now.asked.len();
+                    if tx.send(ChatEvent::Confirm(more.to_vec())).await.is_err() {
+                        return;
+                    }
+                }
                 // The whole plan each time, so a page that reads it twice ends up where a page
                 // that read it once did.
                 if now.plan != drawn {
@@ -3088,6 +3293,11 @@ impl Turns {
                         pending
                             .progress
                             .send_modify(|progress| progress.step = Some(tool));
+                    }
+                    ChatEvent::Confirm(removals) => {
+                        pending
+                            .progress
+                            .send_modify(|progress| progress.asked.extend(removals));
                     }
                     ChatEvent::Plan(plan) => {
                         pending

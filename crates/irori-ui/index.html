@@ -1830,6 +1830,9 @@
     .floorplan .zoom { display: grid; gap: .4rem; pointer-events: auto; }
     .floorplan .zoom-buttons { display: flex; gap: .25rem; }
     .floorplan .zoom-buttons button { flex: 1; }
+    .floorplan .zoom-buttons button svg { width: 1rem; height: 1rem; display: block; }
+    .floorplan .zoom-buttons .home { display: grid; place-items: center; }
+    .floorplan .zoom-buttons .set-fit { display: inline-flex; align-items: center; gap: .25rem; }
     /* Offered only once the view has been moved off Fit, so it arrives: sliding out from
        beside Fit, which is what it is about. */
     .floorplan .zoom-buttons .set-fit { flex: 0 0 auto; white-space: nowrap; color: var(--ember);
@@ -2532,6 +2535,14 @@
     .composer .attach svg { width: 1.1rem; height: 1.1rem; }
     .composer .attach input { position: absolute; width: 1px; height: 1px; opacity: 0;
                               pointer-events: none; }
+    /* The assistant asking to remove a floor or a room: a question in the chat, over the
+       box, that waits for a yes or a no. */
+    .chat-confirm { display: grid; gap: .5rem; margin: 0 .7rem .5rem; padding: .6rem .7rem;
+                    font-size: .85rem; background: var(--sunk); border-radius: .6rem;
+                    border: 1px solid color-mix(in srgb, var(--error) 45%, var(--line));
+                    animation: attached-in var(--dur-base) var(--ease-spring) backwards; }
+    .chat-confirm p { margin: 0; }
+    .chat-confirm-actions { display: flex; justify-content: flex-end; gap: .4rem; }
     .attached { display: flex; align-items: center; gap: .4rem; margin: 0 .7rem .4rem;
                 padding: .3rem .4rem .3rem .6rem; font-size: .8rem; color: var(--fg);
                 background: var(--sunk); border: 1px solid var(--line); border-radius: .5rem;
