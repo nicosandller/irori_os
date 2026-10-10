@@ -118,6 +118,10 @@ impl Home {
         self.entities.values()
     }
 
+    pub fn entity(&self, id: &EntityId) -> Option<&Entity> {
+        self.entities.get(id)
+    }
+
     pub fn states(&self) -> impl Iterator<Item = &EntityState> {
         self.states.values()
     }

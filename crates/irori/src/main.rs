@@ -214,6 +214,12 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
     }
 
     let db = db::open(&data)?;
+    let recorder_settings = store.irori().recorder.clone();
+    let retention = irori_recorder::Retention::new(
+        recorder_settings.retain_days,
+        recorder_settings.summary_days,
+    )
+    .context("invalid [recorder] settings")?;
     tracing::info!(path = %db.path.display(), journal_mode = %db.journal_mode, "database ready");
     // Irori's own device reports how full this volume is.
     let _ = system_device::DATA_DIR.set(db.path.clone());
@@ -271,10 +277,16 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             core.use_storage(storage);
             // Subscribe before any extension starts, so the log sees their first events.
             tokio::spawn(extensions::log_events(core.subscribe()));
-            // And the recorder feeding the page's per-entity "last 24 hours" table. In memory,
-            // so it starts empty with each server (the SQLite recorder, M1.3, keeps the rest).
-            let history = history::History::default();
-            tokio::spawn(history::record(history.clone(), core.subscribe()));
+            // The diary the page's "last 24 hours" reads, and that engines read when they ask
+            // for history. It is the same database as everything else; the recorder keeps its
+            // own connection so a state change does not wait on a session or a chat.
+            let history = history::History::open(&db.path, retention)
+                .context("failed to open entity history")?;
+            tokio::spawn(history::record(
+                core.clone(),
+                history.clone(),
+                core.subscribe(),
+            ));
             // Engines that ask for history (`history:read`) read the same shelf, and engines
             // whose permissions name the config directory are told where it is.
             core.use_history(Arc::new(history.clone()));
@@ -283,7 +295,7 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // the name and the room its owner gave it, rather than appearing under its old name
             // and moving a moment later.
             let settings = config::Config::open(store, &problems, &core);
-            tokio::spawn(settings.clone().watch(core.clone()));
+            tokio::spawn(settings.clone().watch(core.clone(), history.clone()));
             // The Ollama Irori installed for a local model, if there is one, comes up with the
             // server, and the model in use is loaded again. Nothing waits on it: the assistant
             // says "not ready" until it is.

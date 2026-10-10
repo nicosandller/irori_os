@@ -74,7 +74,7 @@ it needs and no others.
 | `registry:read` | `GET /api/devices`, `/api/entities`, `/api/areas`, `/api/floors`, `/api/floorplan`, `/api/extensions`, `/api/apps` |
 | `states:read` | `GET /api/states` |
 | `registry:read` and `states:read` | `GET /api/home` (the whole picture) |
-| `history:read` | `GET /api/history/<entity_id>` |
+| `history:read` | `GET /api/history/<entity_id>`, `GET /api/history/<entity_id>/summary?since=<RFC3339>` |
 | `services:call` | `POST /api/command` |
 | `events:read`, with the two reads above | `GET /api/ws` |
 

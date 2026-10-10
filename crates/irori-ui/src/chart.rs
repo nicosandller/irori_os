@@ -1,4 +1,4 @@
-//! A number's last 24 hours, as a line.
+//! A number over time, as a line.
 //!
 //! A step line, not a slope: Irori records a reading each time it changes, so a value holds
 //! until the next one arrives — drawing a slope between two readings would invent every value in
@@ -151,7 +151,7 @@ fn layout(readings: &[Reading], now_ms: f64) -> Layout {
 
 #[component]
 pub fn StepChart(
-    /// The day so far, oldest first.
+    /// The series, oldest first.
     readings: Vec<Reading>,
     /// The reading as it is now, as each one arrives: the line runs on with it.
     live: Signal<Option<Reading>>,
@@ -159,6 +159,8 @@ pub fn StepChart(
     unit: String,
     /// What the chart is of, for a screen reader.
     name: String,
+    /// What the series covers, in the screen-reader summary: "last 24 hours", "hourly summaries".
+    span: &'static str,
 ) -> impl IntoView {
     let series = RwSignal::new(readings);
     // A reading joins the day if it's newer than the last one and says something different —
@@ -225,7 +227,7 @@ pub fn StepChart(
                 .map(|reading| with_unit(reading.value))
                 .unwrap_or_default();
             format!(
-                "{name}, last 24 hours: between {} and {}, now {latest}. Arrow keys step \
+                "{name}, {span}: between {} and {}, now {latest}. Arrow keys step \
                  through the readings.",
                 with_unit(layout.min),
                 with_unit(layout.max),

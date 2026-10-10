@@ -7,7 +7,7 @@
 
 use irori_types::{
     Area, AreaId, Availability, Capabilities, Device, Entity, EntityCategory, EntityId,
-    EntityState, SensorValue, State,
+    EntityState, SensorValue, State, StateClass,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -731,13 +731,12 @@ fn EntityRow(
     }
 }
 
-/// The unrolled "last 24 hours": the day of changes the server has recorded for this entity.
-/// A number's day is drawn as a chart and a state's — on and off, words — as a strip of how
-/// long each lasted, both with the table a click away. What only happens (a button's presses)
-/// or mustn't be shown (a password) is the table alone, newest first, in its own scroll so a
-/// sensor that changed a hundred times doesn't stretch the page. "As much as available" is what
-/// it says: the server keeps what happened while it's been running, and the long view is the
-/// recorder's job (M1.3).
+/// The unrolled history. The day of changes is drawn as a chart for a number and as a strip
+/// for a state that lasts, both with the table a click away. A sensor that measures or counts
+/// can also show a week, a month, or a year, drawn from the hourly summaries. What only happens
+/// (a button's presses) or mustn't be shown (a password) is the table alone. The server keeps
+/// the day in the database, including across a restart. A gap is a period when Irori was not
+/// running.
 pub(crate) fn history_panel(
     entity: Entity,
     history: crate::history::Kept,
@@ -753,37 +752,233 @@ pub(crate) fn history_panel(
             kept.note(state);
         }
     });
-    let (history, kept) = (history.day.clone(), history);
+    if !summarizes(&entity) {
+        return view! {
+            <div class="history">
+                {day_body(entity, history, live, numeric)}
+            </div>
+        }
+        .into_any();
+    }
+    let window = RwSignal::new(Window::Day);
+    // Which side the next range arrives from. Read when the body is drawn, not tracked: setting
+    // it and the window together would draw the old range once on its way out.
+    let step = StoredValue::new(String::new());
+    let pick = move |chosen: Window| {
+        let before = window.get_untracked();
+        if before == chosen {
+            return;
+        }
+        let side = if span_days(chosen) > span_days(before) {
+            "right"
+        } else {
+            "left"
+        };
+        // Two names for the same direction, so a second step the same way plays again.
+        let letter = if step.get_value().ends_with('b') {
+            "a"
+        } else {
+            "b"
+        };
+        step.set_value(format!("{side}-{letter}"));
+        window.set(chosen);
+    };
     view! {
         <div class="history">
-            {move || match history.get().map(|day| day.map(|states| kept.with_later(states))) {
-                // A number's chart will need the room: keep it, so the drawer doesn't jump
-                // when the day arrives.
-                None if numeric => view! {
-                    <div class="chart-waiting" aria-label="Looking for the last 24 hours…"></div>
+            <div class="history-head">
+                {crate::segmented::segmented(
+                    "Range",
+                    vec![
+                        (Window::Day, "Day"),
+                        (Window::Week, "Week"),
+                        (Window::Month, "Month"),
+                        (Window::Year, "Year"),
+                    ],
+                    window.into(),
+                    pick,
+                )}
+            </div>
+            {move || {
+                let next = window.get();
+                let raw = step.get_value();
+                let arrived = (!raw.is_empty()).then_some(raw);
+                view! {
+                    <div class="history-swap" data-step=arrived>
+                        {match next {
+                            Window::Day => day_body(entity.clone(), history.clone(), live, numeric),
+                            _ => view! { <HourlyHistory entity=entity.clone() window=window /> }
+                                .into_any(),
+                        }}
+                    </div>
                 }
-                .into_any(),
-                None => view! {
-                    <p class="muted small history-note">"Looking for the last 24 hours…"</p>
-                }
-                .into_any(),
-                Some(Err(why)) => view! {
-                    <p class="why">{why}</p>
-                    <p class="muted small history-note">"Nothing to show until it can be asked again."</p>
-                }
-                .into_any(),
-                Some(Ok(states)) if states.is_empty() => view! {
-                    <p class="muted small history-note">
-                        "No changes in the last 24 hours. Irori records a change each time one "
-                        "happens, and keeps the last day while it's running."
-                    </p>
-                }
-                .into_any(),
-                Some(Ok(states)) => drawn_day(&entity, states, live),
             }}
         </div>
     }
     .into_any()
+}
+
+/// How far back the drawer is looking. Day is the raw changes. The others are hourly summaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Window {
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+fn span_days(window: Window) -> i64 {
+    match window {
+        Window::Day => 1,
+        Window::Week => 7,
+        Window::Month => 30,
+        Window::Year => 365,
+    }
+}
+
+/// A sensor with a `state_class` is the one Home Assistant would keep statistics for.
+fn summarizes(entity: &Entity) -> bool {
+    matches!(
+        &entity.capabilities,
+        Capabilities::Sensor(sensor) if matches!(
+            sensor.state_class,
+            Some(
+                StateClass::Measurement | StateClass::Total | StateClass::TotalIncreasing
+            )
+        )
+    )
+}
+
+fn day_body(
+    entity: Entity,
+    history: crate::history::Kept,
+    live: Signal<Option<EntityState>>,
+    numeric: bool,
+) -> AnyView {
+    let kept = history.clone();
+    let history = history.day;
+    view! {
+        {move || match history.get().map(|day| day.map(|states| kept.with_later(states))) {
+            // A number's chart will need the room: keep it, so the drawer doesn't jump
+            // when the day arrives.
+            None if numeric => view! {
+                <div class="chart-waiting" aria-label="Looking for the last 24 hours…"></div>
+            }
+            .into_any(),
+            None => view! {
+                <p class="muted small history-note">"Looking for the last 24 hours…"</p>
+            }
+            .into_any(),
+            Some(Err(why)) => view! {
+                <p class="why">{why}</p>
+                <p class="muted small history-note">"Nothing to show until it can be asked again."</p>
+            }
+            .into_any(),
+            Some(Ok(states)) if states.is_empty() => view! {
+                <p class="muted small history-note">
+                    "No changes in the last 24 hours. Irori records a change each time one "
+                    "happens and keeps that detailed history for the number of days in Settings, "
+                    "including across a restart. A gap is a period when it was not running."
+                </p>
+            }
+            .into_any(),
+            Some(Ok(states)) => drawn_day(&entity, states, live),
+        }}
+    }
+    .into_any()
+}
+
+/// A week, a month, or a year of hourly summaries. The line is the average for a measurement
+/// and the change during the hour for a counter. It does not follow the live reading: that
+/// reading is one sample, and these points are hours.
+#[component]
+fn HourlyHistory(entity: Entity, window: RwSignal<Window>) -> impl IntoView {
+    let points = RwSignal::new(None::<Result<Vec<crate::api::SummaryPoint>, String>>);
+    // A slower answer for the previous range must not replace the one now on screen.
+    let ticket = RwSignal::new(0_u32);
+    let id = entity.id.clone();
+    Effect::new(move |_| {
+        let days = span_days(window.get());
+        let mine = ticket
+            .try_update(|n| {
+                *n += 1;
+                *n
+            })
+            .unwrap_or(0);
+        points.set(None);
+        let id = id.clone();
+        spawn_local(async move {
+            let got = crate::api::entity_summary(&id, &since_iso(days)).await;
+            if ticket.get_untracked() == mine {
+                points.set(Some(got));
+            }
+        });
+    });
+    let unit = devices::unit_of(&entity.capabilities);
+    let name = entity.name.to_string();
+    view! {
+        {move || match points.get() {
+            None => view! {
+                <div class="chart-waiting" aria-label="Looking for hourly summaries…"></div>
+            }
+            .into_any(),
+            Some(Err(why)) => view! {
+                <p class="why">{why}</p>
+                <p class="muted small history-note">"Nothing to show until it can be asked again."</p>
+            }
+            .into_any(),
+            Some(Ok(points)) if points.is_empty() => view! {
+                <p class="muted small history-note">
+                    "No hourly summaries in this range yet. Irori saves one each hour for a \
+                     sensor that measures or counts, and keeps those after the detailed history \
+                     is deleted."
+                </p>
+            }
+            .into_any(),
+            Some(Ok(points)) => {
+                let readings = points
+                    .iter()
+                    .map(|point| chart::Reading {
+                        at_ms: point.start.as_jiff().as_millisecond() as f64,
+                        at: hour_label(point.start),
+                        value: point.value,
+                    })
+                    .collect();
+                let quiet: Signal<Option<chart::Reading>> = Signal::derive(|| None);
+                view! {
+                    <p class="muted small history-note">
+                        "Each point is one hour. A measurement is the average for that hour. A \
+                         counter is how much it changed."
+                    </p>
+                    <chart::StepChart
+                        readings
+                        live=quiet
+                        unit=unit.clone()
+                        name=name.clone()
+                        span="hourly summaries"
+                    />
+                }
+                .into_any()
+            }
+        }}
+    }
+}
+
+fn since_iso(days: i64) -> String {
+    let ms = web_sys::js_sys::Date::now() - (days as f64) * 86_400_000.0;
+    let init = web_sys::wasm_bindgen::JsValue::from_f64(ms);
+    web_sys::js_sys::Date::new(&init)
+        .to_iso_string()
+        .as_string()
+        .unwrap_or_else(|| "1970-01-01T00:00:00.000Z".to_owned())
+}
+
+/// A date and a clock time, for a point that may be months back. The timestamp is UTC.
+fn hour_label(at: irori_types::Timestamp) -> String {
+    let text = at.to_string();
+    match (text.get(0..10), text.get(11..16)) {
+        (Some(date), Some(time)) => format!("{date} {time}"),
+        _ => text,
+    }
 }
 
 /// A day with something in it: a number's as a chart, a state's as a strip, anything else as the
@@ -851,25 +1046,12 @@ fn charted(
             live=Signal::derive(move || live.get().as_ref().and_then(as_reading))
             unit=unit
             name=name
+            span="last 24 hours"
         />
     }
     .into_any();
     let table = table(entity, states);
-    view! {
-        <div class="history-head">
-            {crate::segmented::segmented(
-                "Show as",
-                vec![(false, "Chart"), (true, "Table")],
-                as_table.into(),
-                move |table| as_table.set(table),
-            )}
-        </div>
-        // Both drawn once and kept, so switching is instant and loses nothing. Coming back to
-        // the chart draws its line in again — the same day, arriving again.
-        <div hidden=move || as_table.get()>{chart}</div>
-        <div hidden=move || !as_table.get()>{table}</div>
-    }
-    .into_any()
+    shown_as("Chart", as_table, chart, table)
 }
 
 /// A day of states as the strip's spans, for an entity whose value is a state that lasts: on
@@ -984,19 +1166,73 @@ fn timelined(
     }
     .into_any();
     let table = table(entity, states);
+    shown_as("Timeline", as_table, strip, table)
+}
+
+/// The picture and the table, with the switch above them. Both stay drawn, so nothing is
+/// fetched again and the chart's line is still there. The one coming on arrives from the side
+/// its choice sits on.
+fn shown_as(
+    picture_name: &'static str,
+    as_table: RwSignal<bool>,
+    picture: AnyView,
+    table: AnyView,
+) -> AnyView {
+    // Read when a pane draws, not tracked: setting it and the switch together would slide the
+    // pane that's still on screen.
+    let step = StoredValue::new(String::new());
+    let pick = move |table_on: bool| {
+        if as_table.get_untracked() == table_on {
+            return;
+        }
+        let side = if table_on { "right" } else { "left" };
+        let letter = if step.get_value().ends_with('b') {
+            "a"
+        } else {
+            "b"
+        };
+        step.set_value(format!("{side}-{letter}"));
+        as_table.set(table_on);
+    };
     view! {
         <div class="history-head">
             {crate::segmented::segmented(
                 "Show as",
-                vec![(false, "Timeline"), (true, "Table")],
+                vec![(false, picture_name), (true, "Table")],
                 as_table.into(),
-                move |table| as_table.set(table),
+                pick,
             )}
         </div>
-        <div hidden=move || as_table.get()>{strip}</div>
-        <div hidden=move || !as_table.get()>{table}</div>
+        <div
+            class="history-swap"
+            data-step=pane_step(step, as_table, false)
+            hidden=move || as_table.get()
+        >
+            {picture}
+        </div>
+        <div
+            class="history-swap"
+            data-step=pane_step(step, as_table, true)
+            hidden=move || !as_table.get()
+        >
+            {table}
+        </div>
     }
     .into_any()
+}
+
+/// The step token for one of the two panes, and only while that pane is the one on screen.
+/// Empty until the first switch, so the day itself arrives by drawing its line, not by sliding.
+fn pane_step(
+    step: StoredValue<String>,
+    as_table: RwSignal<bool>,
+    mine: bool,
+) -> impl Fn() -> Option<String> + Copy {
+    move || {
+        let on = as_table.get() == mine;
+        let raw = step.get_value();
+        (on && !raw.is_empty()).then_some(raw)
+    }
 }
 
 fn table(entity: &Entity, states: Vec<EntityState>) -> AnyView {

@@ -999,9 +999,8 @@ pub struct EntityHistory {
     pub states: Vec<EntityState>,
 }
 
-/// The last day of an entity's changes, for the page's expandable table. What the table shows:
-/// the most recent day of changes the server has seen while it's been running. The real
-/// recorder (M1.3) keeps the long, surviving view; this is the honest "while it's up" slice.
+/// The last day of an entity's changes, for the page's expandable table. The server keeps that
+/// day in the database, so a restart does not blank it.
 pub async fn entity_history(entity_id: &EntityId) -> Result<Vec<EntityState>, String> {
     let response = Request::get(&format!("{HISTORY_URL}/{entity_id}"))
         .send()
@@ -1020,6 +1019,77 @@ pub async fn entity_history(entity_id: &EntityId) -> Result<Vec<EntityState>, St
         .await
         .map(|history| history.states)
         .map_err(|e| format!("Irori sent something this page can't read: {e}"))
+}
+
+/// How long history is kept. `summary_days` is absent when hourly summaries are kept.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecorderSettings {
+    pub retain_days: u32,
+    #[serde(default)]
+    pub summary_days: Option<u32>,
+}
+
+pub async fn fetch_recorder() -> Result<RecorderSettings, String> {
+    read(
+        Request::get("/api/recorder")
+            .send()
+            .await
+            .map_err(unreachable)?,
+    )
+    .await
+}
+
+pub async fn save_recorder(settings: &RecorderSettings) -> Result<RecorderSettings, String> {
+    let response = put("/api/recorder")
+        .json(settings)
+        .map_err(|error| error.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read(response).await
+}
+
+/// One hour of a sensor that measures or counts. `value` is the average, or how much a counter
+/// changed during that hour.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SummaryPoint {
+    pub start: irori_types::Timestamp,
+    pub value: f64,
+    #[serde(default)]
+    pub min: Option<f64>,
+    #[serde(default)]
+    pub max: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SummaryResponse {
+    points: Vec<SummaryPoint>,
+}
+
+/// Hourly summaries from `since`, an RFC 3339 timestamp. Oldest first.
+pub async fn entity_summary(
+    entity_id: &EntityId,
+    since: &str,
+) -> Result<Vec<SummaryPoint>, String> {
+    let since = web_sys::js_sys::encode_uri_component(since)
+        .as_string()
+        .unwrap_or_else(|| since.to_owned());
+    let response = Request::get(&format!("{HISTORY_URL}/{entity_id}/summary?since={since}"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        let status = response.status();
+        return Err(match response.json::<Refused>().await {
+            Ok(refused) => refused.error,
+            Err(_) => format!("Irori refused that ({status})"),
+        });
+    }
+    response
+        .json::<SummaryResponse>()
+        .await
+        .map(|summary| summary.points)
+        .map_err(|error| format!("Irori sent something this page can't read: {error}"))
 }
 
 /// Whether a model can answer, and the fields the Settings card edits. The key itself is absent.

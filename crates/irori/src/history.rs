@@ -1,113 +1,204 @@
-//! The last day of state changes, kept in memory for the Devices page's per-entity table.
+//! The last day of state changes, for the Devices page's per-entity table.
 //!
-//! "Last 24 hours" can only honestly mean what this process has seen: the real recorder, the
-//! one that survives restarts and keeps the long view, is `irori-recorder` (M1.3, ROADMAP §2.1).
-//! Until then, every [`Event::StateChanged`] the core publishes is remembered here, pruned to a
-//! day, and served to the page's expandable table. An entity that leaves the home takes its
-//! history with it.
+//! The changes themselves live in `irori-recorder`, in the home's `irori.db`, so they are still
+//! there after a restart. This module is the small front the server already had: it listens to
+//! the core, asks the recorder for the last day when the page does, and for everything since a
+//! timestamp when an engine does. An entity that leaves the home takes its history with it.
 
-use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::path::Path;
+#[cfg(test)]
+use std::sync::Arc;
 
-use irori_core::Event;
-use irori_types::{EntityId, EntityState};
+use irori_core::{Core, Event};
+use irori_types::{Capabilities, Entity, EntityId, EntityState, StateClass, Timestamp};
+use jiff::ToSpan as _;
+use tokio::runtime::RuntimeFlavor;
 use tokio::sync::broadcast;
 
-/// How long a change stays in the table.
-const WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
+/// How far back the page looks. The database keeps longer; the page asks for a day.
+const PAGE_WINDOW_HOURS: i64 = 24;
 
-/// The most changes kept per entity: a sensor that starts reporting a different value every
-/// second would otherwise hold ~86k entries a day, which is the page's little table, not the
-/// recorder's long view.
-const MAX_PER_ENTITY: usize = 2_000;
-
-/// One change: the state it became, and when this process stored it. The state carries its own
-/// timestamps; `at` is only for the day-long shelf life.
-#[derive(Debug, Clone)]
-struct Entry {
-    at: Instant,
-    state: EntityState,
+/// The diary the page and the engines read.
+#[derive(Clone, Debug)]
+pub struct History {
+    recorder: irori_recorder::Recorder,
+    /// Holds a throwaway directory open for tests that do not name a file. Dropped with the
+    /// last clone, which is after the recorder thread has stopped.
+    #[cfg(test)]
+    _kept: Option<Arc<tempfile::TempDir>>,
 }
 
-/// The last day of changes, one queue per entity, oldest at the front.
-#[derive(Debug, Clone, Default)]
-pub struct History(Arc<Mutex<BTreeMap<EntityId, VecDeque<Entry>>>>);
-
 impl History {
-    /// Remembers a change. Once the queue is a day long, the oldest go before the newest arrive.
-    pub fn record(&self, entity_id: EntityId, state: EntityState) {
-        let now = Instant::now();
-        let mut by_entity = self.0.lock().expect("history not poisoned");
-        let entries = by_entity.entry(entity_id).or_default();
-        // A server that started minutes ago has nothing a day old to forget; `checked_sub` is
-        // `None` until it has been up a whole day, when `None` would mean "forget everything".
-        prune(entries, now.checked_sub(WINDOW));
-        entries.push_back(Entry { at: now, state });
-        while entries.len() > MAX_PER_ENTITY {
-            entries.pop_front();
+    /// Opens the diary in `path` (the home's `irori.db`) and keeps `retention` of it.
+    pub fn open(path: &Path, retention: irori_recorder::Retention) -> anyhow::Result<Self> {
+        Ok(Self {
+            recorder: irori_recorder::Recorder::open_keeping(path, retention)?,
+            #[cfg(test)]
+            _kept: None,
+        })
+    }
+
+    /// A diary in a directory that lives as long as this value does. For tests.
+    #[cfg(test)]
+    pub(crate) fn temporary() -> Self {
+        let dir = tempfile::tempdir().expect("a temporary directory for history");
+        let path = dir.path().join("irori.db");
+        Self {
+            recorder: irori_recorder::Recorder::open_keeping(
+                &path,
+                irori_recorder::Retention::default(),
+            )
+            .expect("a temporary recorder"),
+            _kept: Some(Arc::new(dir)),
         }
+    }
+
+    /// Remembers a change that is kept as itself, not summarized. The recorder drops it if its
+    /// queue is full, rather than making the event loop wait.
+    pub fn record(&self, entity_id: EntityId, state: EntityState) {
+        self.record_with(entity_id, state, None);
+    }
+
+    /// [`Self::record`] for a sensor that measures or counts. `class` is what earns the
+    /// five-minute and hourly summaries; without one, the change is kept as itself.
+    pub fn record_with(&self, entity_id: EntityId, state: EntityState, class: Option<StateClass>) {
+        debug_assert_eq!(entity_id, state.entity_id);
+        self.recorder.append_with(state, class);
+    }
+
+    /// Marks a sensor for summaries before its next change, so history already on disk can be
+    /// rolled up. The first class is the one that sticks.
+    pub fn notice(&self, entity_id: &EntityId, class: StateClass) {
+        self.recorder.notice(entity_id, class);
+    }
+
+    /// Changes how long history is kept, on the running recorder. The wait is the same as a
+    /// read: a compile of the window about to be deleted must not hold a runtime worker.
+    pub fn configure(&self, retention: irori_recorder::Retention) -> bool {
+        let recorder = self.recorder.clone();
+        off_the_runtime(move || recorder.configure(retention))
+    }
+
+    /// Hourly summaries from `since`, oldest first. Empty for an entity that is not summarized,
+    /// and for a range that has no finished hour yet.
+    pub fn summaries(
+        &self,
+        entity_id: &EntityId,
+        since: Timestamp,
+    ) -> Vec<irori_recorder::SummaryPoint> {
+        let recorder = self.recorder.clone();
+        let entity_id = entity_id.clone();
+        off_the_runtime(move || recorder.summaries(&entity_id, since))
     }
 
     /// Drops everything recorded for an entity: it has left the home, and a device removed from
     /// the home takes its history with it (`docs/specs/config.md` §3.2). Were it added again, its
     /// table starts from then.
     pub fn forget(&self, entity_id: &EntityId) {
-        self.0
-            .lock()
-            .expect("history not poisoned")
-            .remove(entity_id);
+        self.recorder.forget(entity_id);
     }
 
-    /// Everything recorded for an entity within the last day, oldest first. Empty when the
-    /// entity is known but has changed nothing since the server started.
+    /// Changes from the last day, oldest first. Empty when the entity has not changed in that
+    /// day, including when the database has older rows the page does not ask for.
     pub fn for_entity(&self, entity_id: &EntityId) -> Vec<EntityState> {
-        let by_entity = self.0.lock().expect("history not poisoned");
-        by_entity
-            .get(entity_id)
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter(|entry| entry.at.elapsed() <= WINDOW)
-                    .map(|entry| entry.state.clone())
-                    .collect()
-            })
-            .unwrap_or_default()
+        let recorder = self.recorder.clone();
+        let entity_id = entity_id.clone();
+        off_the_runtime(move || recorder.since(&entity_id, day_ago()))
+    }
+
+    /// Whether the database can be read and the last write succeeded.
+    pub fn check(&self) -> bool {
+        let recorder = self.recorder.clone();
+        off_the_runtime(move || recorder.check())
+    }
+
+    /// Drops history for every entity that is not in `live`. Used when this task fell behind
+    /// the core and may have missed a removal.
+    fn forget_missing(&self, live: &[EntityId]) {
+        self.recorder.forget_missing(live);
     }
 }
 
 impl irori_core::HistorySource for History {
-    fn changes(&self, entity_id: &EntityId, since: irori_types::Timestamp) -> Vec<EntityState> {
-        self.for_entity(entity_id)
-            .into_iter()
-            .filter(|state| state.last_updated >= since)
-            .collect()
+    fn changes(&self, entity_id: &EntityId, since: Timestamp) -> Vec<EntityState> {
+        let recorder = self.recorder.clone();
+        let entity_id = entity_id.clone();
+        off_the_runtime(move || recorder.since(&entity_id, since))
     }
 }
 
-/// Drops everything recorded at or before `cutoff`. Nothing happens without a cutoff: a server
-/// that started minutes ago has nothing a day old to forget.
-fn prune(entries: &mut VecDeque<Entry>, cutoff: Option<Instant>) {
-    let Some(cutoff) = cutoff else { return };
-    while entries.front().is_some_and(|entry| entry.at <= cutoff) {
-        entries.pop_front();
+/// A history read waits on the writer thread. On the multi-thread runtime that wait must not
+/// keep a worker, or a backed-up diary stalls the task that feeds it. A current-thread runtime
+/// (the tests) has nowhere else to run the wait, and the writer does not need that runtime.
+fn off_the_runtime<T>(work: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(work)
+        }
+        _ => work(),
     }
+}
+
+/// The statistic class of a sensor that measures or counts. Anything else is kept as raw
+/// changes only.
+fn class_of(entity: &Entity) -> Option<StateClass> {
+    match &entity.capabilities {
+        Capabilities::Sensor(sensor) => match sensor.state_class {
+            Some(
+                class @ (StateClass::Measurement | StateClass::Total | StateClass::TotalIncreasing),
+            ) => Some(class),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn class_in(core: &Core, entity_id: &EntityId) -> Option<StateClass> {
+    core.entity(entity_id).as_ref().and_then(class_of)
+}
+
+fn day_ago() -> Timestamp {
+    Timestamp::from_jiff(
+        jiff::Timestamp::now()
+            .checked_sub(PAGE_WINDOW_HOURS.hours())
+            .expect("a day ago is a representable timestamp"),
+    )
 }
 
 /// Feeds [`History`] from the core's events, for the life of the server. The channel closing is
-/// the runtime shutting down. A listener that falls behind skips ahead to now, like the others
-/// (`crates/irori/src/extensions.rs`); the recorder would rather miss the oldest changes than
-/// grind through them.
-pub async fn record(history: History, mut events: broadcast::Receiver<Event>) {
+/// the runtime shutting down. A listener that falls behind skips ahead to now: a missed change
+/// is a gap, which is better than grinding through the backlog. A missed removal is not a gap
+/// the file can keep, so a lag deletes history for every entity the core no longer has.
+pub async fn record(core: Core, history: History, mut events: broadcast::Receiver<Event>) {
     loop {
         match events.recv().await {
             Ok(Event::StateChanged {
                 entity_id,
                 new_state,
                 ..
-            }) => history.record(entity_id, *new_state),
+            }) => match class_in(&core, &entity_id) {
+                Some(class) => history.record_with(entity_id, *new_state, Some(class)),
+                None => history.record(entity_id, *new_state),
+            },
+            Ok(Event::EntityAdded { entity } | Event::EntityUpdated { entity }) => {
+                if let Some(class) = class_of(&entity) {
+                    history.notice(&entity.id, class);
+                }
+            }
             Ok(Event::EntityRemoved { entity_id }) => history.forget(&entity_id),
-            Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+            Ok(_) => {}
+            Err(broadcast::error::RecvError::Lagged(missed)) => {
+                tracing::warn!(
+                    missed,
+                    "history fell behind; deleting rows for entities that have left"
+                );
+                let live: Vec<_> = core
+                    .entities()
+                    .into_iter()
+                    .map(|entity| entity.id)
+                    .collect();
+                history.forget_missing(&live);
+            }
             Err(broadcast::error::RecvError::Closed) => return,
         }
     }
@@ -115,13 +206,30 @@ pub async fn record(history: History, mut events: broadcast::Receiver<Event>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use irori_types::{Availability, Context, Origin, State, SwitchState, Timestamp};
+    use irori_core::HistorySource as _;
+    use irori_types::{Availability, Context, Origin, State, SwitchState};
 
-    fn state(on: bool, at: &str) -> EntityState {
-        let at: Timestamp = at.parse().expect("a valid timestamp");
+    use super::*;
+
+    fn at(text: &str) -> Timestamp {
+        text.parse().expect("a valid timestamp")
+    }
+
+    fn now() -> Timestamp {
+        Timestamp::from_jiff(jiff::Timestamp::now())
+    }
+
+    fn later(base: Timestamp, millis: i64) -> Timestamp {
+        Timestamp::from_jiff(
+            base.as_jiff()
+                .checked_add(millis.milliseconds())
+                .expect("the test timestamp stays in range"),
+        )
+    }
+
+    fn state(name: &str, on: bool, at: Timestamp) -> EntityState {
         EntityState {
-            entity_id: "switch.plug".parse().expect("a valid entity id"),
+            entity_id: name.parse().expect("a valid entity id"),
             availability: Availability::Available,
             state: Some(State::Switch(SwitchState { on })),
             attributes: Default::default(),
@@ -144,9 +252,10 @@ mod tests {
 
     #[test]
     fn changes_come_back_oldest_first() {
-        let history = History::default();
-        history.record(plug(), state(true, "2026-09-16T10:00:00Z"));
-        history.record(plug(), state(false, "2026-09-16T10:00:01Z"));
+        let history = History::temporary();
+        let first = now();
+        history.record(plug(), state("switch.plug", true, first));
+        history.record(plug(), state("switch.plug", false, later(first, 1)));
         let seen = history.for_entity(&plug());
         assert_eq!(seen.len(), 2);
         assert_eq!(seen[0].state, Some(State::Switch(SwitchState { on: true })));
@@ -158,19 +267,20 @@ mod tests {
 
     #[test]
     fn an_entitys_history_is_its_own() {
-        let history = History::default();
-        history.record(plug(), state(true, "2026-09-16T10:00:00Z"));
+        let history = History::temporary();
+        let when = now();
+        history.record(plug(), state("switch.plug", true, when));
         history.record(
             "switch.other".parse().expect("a valid entity id"),
-            state(false, "2026-09-16T10:00:01Z"),
+            state("switch.other", false, later(when, 1)),
         );
         assert_eq!(history.for_entity(&plug()).len(), 1);
     }
 
     #[test]
     fn unknown_entities_have_no_history() {
-        let history = History::default();
-        history.record(plug(), state(true, "2026-09-16T10:00:00Z"));
+        let history = History::temporary();
+        history.record(plug(), state("switch.plug", true, now()));
         assert!(
             history
                 .for_entity(&"switch.somewhere_else".parse().expect("a valid entity id"))
@@ -179,47 +289,43 @@ mod tests {
     }
 
     #[test]
-    fn the_cap_drops_the_oldest_first() {
-        let history = History::default();
-        for _ in 0..(MAX_PER_ENTITY + 10) {
-            history.record(plug(), state(true, "2026-09-16T10:00:00Z"));
+    fn the_page_asks_for_a_day_and_an_engine_can_ask_for_longer() {
+        let history = History::temporary();
+        let three_days_ago = Timestamp::from_jiff(
+            jiff::Timestamp::now()
+                .checked_sub((3 * PAGE_WINDOW_HOURS).hours())
+                .expect("three days ago is in range"),
+        );
+        history.record(plug(), state("switch.plug", true, three_days_ago));
+        history.record(plug(), state("switch.plug", false, now()));
+        assert_eq!(
+            history.for_entity(&plug()).len(),
+            1,
+            "the page is the last day"
+        );
+        assert_eq!(
+            history.changes(&plug(), at("2020-01-01T00:00:00Z")).len(),
+            2,
+            "an engine's since reaches the older row the page does not show"
+        );
+    }
+
+    #[test]
+    fn a_change_is_still_there_after_the_file_is_reopened() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("irori.db");
+        let when = now();
+        {
+            let history = History::open(&path, irori_recorder::Retention::default())
+                .expect("the diary opens");
+            history.record(plug(), state("switch.plug", true, when));
+            assert_eq!(history.for_entity(&plug()).len(), 1);
         }
+        let history =
+            History::open(&path, irori_recorder::Retention::default()).expect("the diary reopens");
         let seen = history.for_entity(&plug());
-        assert_eq!(
-            seen.len(),
-            MAX_PER_ENTITY,
-            "kept at most the cap, oldest dropped"
-        );
-    }
-
-    #[test]
-    fn pruning_forgets_anything_a_day_old() {
-        let now = Instant::now();
-        let mut entries = VecDeque::new();
-        entries.push_back(Entry {
-            at: now - WINDOW - Duration::from_secs(1),
-            state: state(true, "2026-09-16T10:00:00Z"),
-        });
-        entries.push_back(Entry {
-            at: now,
-            state: state(false, "2026-09-16T10:00:01Z"),
-        });
-        prune(&mut entries, now.checked_sub(WINDOW));
-        assert_eq!(entries.len(), 1);
-        assert_eq!(
-            entries.front().map(|entry| entry.state.clone()),
-            Some(state(false, "2026-09-16T10:00:01Z"))
-        );
-    }
-
-    #[test]
-    fn pruning_waits_until_the_server_has_a_day_of_uptime() {
-        let mut entries = VecDeque::new();
-        entries.push_back(Entry {
-            at: Instant::now(),
-            state: state(true, "2026-09-16T10:00:00Z"),
-        });
-        prune(&mut entries, None);
-        assert_eq!(entries.len(), 1, "no cutoff yet, nothing is a day old");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].last_updated, when);
+        assert!(history.check());
     }
 }

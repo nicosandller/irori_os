@@ -174,6 +174,7 @@ fn named_read(rest: &str) -> bool {
             | "serial-ports"
             | "assistant"
             | "assistant/log"
+            | "recorder"
     ) || rest.starts_with("history/")
         || (rest.starts_with("extensions/") && rest.ends_with("/log"))
         || rest.starts_with("assistant/turns/")
@@ -316,6 +317,7 @@ impl Auth {
 
     fn conn(&self) -> rusqlite::Result<Connection> {
         let conn = Connection::open(&self.db)?;
+        crate::db::wait_when_busy(&conn)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS sessions (
                 token_hash TEXT PRIMARY KEY,
@@ -978,6 +980,9 @@ mod tests {
             (Method::GET, "/api/users", Use),
             (Method::GET, "/api/system", Use),
             (Method::GET, "/api/history/light.hall", Use),
+            (Method::GET, "/api/history/sensor.temp/summary", Use),
+            (Method::GET, "/api/recorder", Use),
+            (Method::PUT, "/api/recorder", Run),
             (Method::GET, "/api/extensions/demo/log", Use),
             (Method::POST, "/api/command", Use),
             (Method::POST, "/api/assistant/turns", Use),

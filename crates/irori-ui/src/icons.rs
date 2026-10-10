@@ -23,6 +23,8 @@ pub enum Icon {
     /// A program's access token.
     Key,
     Logs,
+    /// How long history is kept: a clock.
+    History,
     // What the machine is short of, or isn't.
     Memory,
     Disk,
@@ -105,6 +107,7 @@ fn drawing(icon: Icon) -> &'static str {
         Icon::Logs => {
             r#"<rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/>"#
         }
+        Icon::History => r#"<circle cx="12" cy="12" r="8"/><path d="M12 8v5l3 2"/>"#,
         Icon::Memory => concat!(
             r#"<rect x="3" y="7" width="18" height="10" rx="1.5"/>"#,
             r#"<path d="M7 10.5v3M11 10.5v3M15 10.5v3M6 17v2.5M10 17v2.5M14 17v2.5M18 17v2.5"/>"#,

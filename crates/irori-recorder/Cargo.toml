@@ -1,6 +1,6 @@
 [package]
 name = "irori-recorder"
-description = "SQLite recorder: dedicated writer thread, history, traces, retention."
+description = "SQLite recorder: a writer thread, entity history, and retention."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -9,6 +9,13 @@ license.workspace = true
 
 [dependencies]
 irori-types.workspace = true
+jiff.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
