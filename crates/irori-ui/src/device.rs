@@ -761,6 +761,28 @@ pub(crate) fn history_panel(
         .into_any();
     }
     let window = RwSignal::new(Window::Day);
+    // Which side the next range arrives from. Read when the body is drawn, not tracked: setting
+    // it and the window together would draw the old range once on its way out.
+    let step = StoredValue::new(String::new());
+    let pick = move |chosen: Window| {
+        let before = window.get_untracked();
+        if before == chosen {
+            return;
+        }
+        let side = if span_days(chosen) > span_days(before) {
+            "right"
+        } else {
+            "left"
+        };
+        // Two names for the same direction, so a second step the same way plays again.
+        let letter = if step.get_value().ends_with('b') {
+            "a"
+        } else {
+            "b"
+        };
+        step.set_value(format!("{side}-{letter}"));
+        window.set(chosen);
+    };
     view! {
         <div class="history">
             <div class="history-head">
@@ -773,12 +795,22 @@ pub(crate) fn history_panel(
                         (Window::Year, "Year"),
                     ],
                     window.into(),
-                    move |chosen| window.set(chosen),
+                    pick,
                 )}
             </div>
-            {move || match window.get() {
-                Window::Day => day_body(entity.clone(), history.clone(), live, numeric),
-                _ => view! { <HourlyHistory entity=entity.clone() window=window /> }.into_any(),
+            {move || {
+                let next = window.get();
+                let raw = step.get_value();
+                let arrived = (!raw.is_empty()).then_some(raw);
+                view! {
+                    <div class="history-swap" data-step=arrived>
+                        {match next {
+                            Window::Day => day_body(entity.clone(), history.clone(), live, numeric),
+                            _ => view! { <HourlyHistory entity=entity.clone() window=window /> }
+                                .into_any(),
+                        }}
+                    </div>
+                }
             }}
         </div>
     }
@@ -1019,21 +1051,7 @@ fn charted(
     }
     .into_any();
     let table = table(entity, states);
-    view! {
-        <div class="history-head">
-            {crate::segmented::segmented(
-                "Show as",
-                vec![(false, "Chart"), (true, "Table")],
-                as_table.into(),
-                move |table| as_table.set(table),
-            )}
-        </div>
-        // Both drawn once and kept, so switching is instant and loses nothing. Coming back to
-        // the chart draws its line in again — the same day, arriving again.
-        <div hidden=move || as_table.get()>{chart}</div>
-        <div hidden=move || !as_table.get()>{table}</div>
-    }
-    .into_any()
+    shown_as("Chart", as_table, chart, table)
 }
 
 /// A day of states as the strip's spans, for an entity whose value is a state that lasts: on
@@ -1148,19 +1166,73 @@ fn timelined(
     }
     .into_any();
     let table = table(entity, states);
+    shown_as("Timeline", as_table, strip, table)
+}
+
+/// The picture and the table, with the switch above them. Both stay drawn, so nothing is
+/// fetched again and the chart's line is still there. The one coming on arrives from the side
+/// its choice sits on.
+fn shown_as(
+    picture_name: &'static str,
+    as_table: RwSignal<bool>,
+    picture: AnyView,
+    table: AnyView,
+) -> AnyView {
+    // Read when a pane draws, not tracked: setting it and the switch together would slide the
+    // pane that's still on screen.
+    let step = StoredValue::new(String::new());
+    let pick = move |table_on: bool| {
+        if as_table.get_untracked() == table_on {
+            return;
+        }
+        let side = if table_on { "right" } else { "left" };
+        let letter = if step.get_value().ends_with('b') {
+            "a"
+        } else {
+            "b"
+        };
+        step.set_value(format!("{side}-{letter}"));
+        as_table.set(table_on);
+    };
     view! {
         <div class="history-head">
             {crate::segmented::segmented(
                 "Show as",
-                vec![(false, "Timeline"), (true, "Table")],
+                vec![(false, picture_name), (true, "Table")],
                 as_table.into(),
-                move |table| as_table.set(table),
+                pick,
             )}
         </div>
-        <div hidden=move || as_table.get()>{strip}</div>
-        <div hidden=move || !as_table.get()>{table}</div>
+        <div
+            class="history-swap"
+            data-step=pane_step(step, as_table, false)
+            hidden=move || as_table.get()
+        >
+            {picture}
+        </div>
+        <div
+            class="history-swap"
+            data-step=pane_step(step, as_table, true)
+            hidden=move || !as_table.get()
+        >
+            {table}
+        </div>
     }
     .into_any()
+}
+
+/// The step token for one of the two panes, and only while that pane is the one on screen.
+/// Empty until the first switch, so the day itself arrives by drawing its line, not by sliding.
+fn pane_step(
+    step: StoredValue<String>,
+    as_table: RwSignal<bool>,
+    mine: bool,
+) -> impl Fn() -> Option<String> + Copy {
+    move || {
+        let on = as_table.get() == mine;
+        let raw = step.get_value();
+        (on && !raw.is_empty()).then_some(raw)
+    }
 }
 
 fn table(entity: &Entity, states: Vec<EntityState>) -> AnyView {
