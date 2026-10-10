@@ -72,9 +72,11 @@ impl History {
         self.recorder.notice(entity_id, class);
     }
 
-    /// Changes how long history is kept, on the running recorder.
+    /// Changes how long history is kept, on the running recorder. The wait is the same as a
+    /// read: a compile of the window about to be deleted must not hold a runtime worker.
     pub fn configure(&self, retention: irori_recorder::Retention) -> bool {
-        self.recorder.configure(retention)
+        let recorder = self.recorder.clone();
+        off_the_runtime(move || recorder.configure(retention))
     }
 
     /// Hourly summaries from `since`, oldest first. Empty for an entity that is not summarized,
@@ -152,10 +154,7 @@ fn class_of(entity: &Entity) -> Option<StateClass> {
 }
 
 fn class_in(core: &Core, entity_id: &EntityId) -> Option<StateClass> {
-    core.entities()
-        .into_iter()
-        .find(|entity| &entity.id == entity_id)
-        .and_then(|entity| class_of(&entity))
+    core.entity(entity_id).as_ref().and_then(class_of)
 }
 
 fn day_ago() -> Timestamp {

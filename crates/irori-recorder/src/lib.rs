@@ -995,8 +995,14 @@ fn prune(connection: &Connection, retention: &Retention) -> Result<(), String> {
         );
         return Ok(());
     };
-    // A sensor that has not been summarized through the cutoff keeps its rows. Deleting them
-    // first would leave a hole in the hourly history that nothing can fill back in.
+    prune_before(connection, retention, cutoff)
+}
+
+/// Deletes rows older than `cutoff` nanoseconds. `cutoff` is passed in so a test can put an
+/// hour across it; [`prune`] is what the writer calls, with the cutoff taken from the clock.
+fn prune_before(connection: &Connection, retention: &Retention, cutoff: i64) -> Result<(), String> {
+    // A sensor that has not been summarized through the cutoff keeps its raw rows. Deleting
+    // them first would leave a hole in the hourly history that nothing can fill back in.
     connection
         .execute(
             "DELETE FROM state_history
@@ -1007,14 +1013,23 @@ fn prune(connection: &Connection, retention: &Retention) -> Result<(), String> {
             [cutoff],
         )
         .map_err(|error| error.to_string())?;
+    // Five-minute rows of an hour that is still open have to stay. The hour is written only
+    // when its last period is compiled, and compilation can already be past the cutoff while
+    // that hour is unfinished. Deleting those rows would make the hour short, and it is never
+    // compiled again. A finished hour starts before `compiled_until` aligned down to the hour.
     connection
         .execute(
             "DELETE FROM statistics_short_term
              WHERE start_ns < ?1
-               AND entity_id NOT IN (
-                   SELECT entity_id FROM statistic_entities WHERE compiled_until_ns < ?1
+               AND (
+                   entity_id NOT IN (SELECT entity_id FROM statistic_entities)
+                   OR start_ns < (
+                       SELECT compiled_until_ns - (compiled_until_ns % ?2)
+                       FROM statistic_entities
+                       WHERE statistic_entities.entity_id = statistics_short_term.entity_id
+                   )
                )",
-            [cutoff],
+            rusqlite::params![cutoff, stats::HOUR_NS],
         )
         .map_err(|error| error.to_string())?;
     if let Some(days) = retention.summary_days {
@@ -1548,5 +1563,214 @@ mod tests {
                 .summaries(&sensor, at("1970-01-01T00:00:00Z"))
                 .is_empty()
         );
+    }
+
+    fn memory() -> Connection {
+        let connection = Connection::open_in_memory().expect("a memory database");
+        connection
+            .execute_batch(SCHEMA)
+            .expect("the history tables");
+        connection
+    }
+
+    fn plant(connection: &Connection, state: &EntityState) {
+        connection
+            .execute(
+                "INSERT INTO state_history (entity_id, updated_ns, state) VALUES (?1, ?2, ?3)",
+                (
+                    state.entity_id.as_str(),
+                    nanos(state.last_updated).expect("the timestamp fits"),
+                    serde_json::to_string(state).expect("the state can be stored"),
+                ),
+            )
+            .expect("the row is planted");
+    }
+
+    fn unavailable(name: &str, value: f64, at: Timestamp) -> EntityState {
+        let mut state = reading(name, value, at);
+        state.availability = Availability::Unavailable;
+        state
+    }
+
+    fn short_sum(connection: &Connection, entity_id: &EntityId, start: i64) -> f64 {
+        connection
+            .query_row(
+                "SELECT sum FROM statistics_short_term WHERE entity_id = ?1 AND start_ns = ?2",
+                (entity_id.as_str(), start),
+                |row| row.get::<_, Option<f64>>(0),
+            )
+            .expect("the five-minute row was written")
+            .expect("the counter's change was recorded")
+    }
+
+    #[test]
+    fn a_counter_keeps_its_change_when_unavailable_crosses_a_compile() {
+        let mut connection = memory();
+        let sensor = entity("sensor.energy");
+        plant(&connection, &reading("sensor.energy", 100.0, at_ns(1_000)));
+        stats::note_class(&connection, &sensor, StateClass::TotalIncreasing, 1_000)
+            .expect("the sensor is marked");
+        stats::compile(&mut connection, 8, Some(&sensor), stats::FIVE_MIN_NS).expect("period 0");
+
+        // The outage is the newest row when the next compile starts, so the baseline is not
+        // the single latest raw row.
+        plant(
+            &connection,
+            &unavailable("sensor.energy", 100.0, at_ns(stats::FIVE_MIN_NS + 1_000)),
+        );
+        stats::compile(&mut connection, 8, Some(&sensor), 2 * stats::FIVE_MIN_NS)
+            .expect("period 1");
+
+        plant(
+            &connection,
+            &reading(
+                "sensor.energy",
+                130.0,
+                at_ns(2 * stats::FIVE_MIN_NS + 1_000),
+            ),
+        );
+        stats::compile(&mut connection, 8, Some(&sensor), 3 * stats::FIVE_MIN_NS)
+            .expect("period 2");
+
+        let sum = short_sum(&connection, &sensor, 2 * stats::FIVE_MIN_NS);
+        assert!(
+            (sum - 30.0).abs() < 1e-6,
+            "the change across the outage was {sum}, not 30"
+        );
+    }
+
+    #[test]
+    fn a_counter_uses_the_compiled_last_when_the_raw_reading_is_gone() {
+        let mut connection = memory();
+        let sensor = entity("sensor.energy");
+        plant(&connection, &reading("sensor.energy", 100.0, at_ns(1_000)));
+        stats::note_class(&connection, &sensor, StateClass::TotalIncreasing, 1_000)
+            .expect("the sensor is marked");
+        stats::compile(&mut connection, 8, Some(&sensor), stats::FIVE_MIN_NS).expect("period 0");
+        connection
+            .execute("DELETE FROM state_history", [])
+            .expect("retention removed the raw rows");
+
+        plant(
+            &connection,
+            &reading("sensor.energy", 140.0, at_ns(stats::FIVE_MIN_NS + 1_000)),
+        );
+        stats::compile(&mut connection, 8, Some(&sensor), 2 * stats::FIVE_MIN_NS)
+            .expect("period 1");
+
+        let sum = short_sum(&connection, &sensor, stats::FIVE_MIN_NS);
+        assert!(
+            (sum - 40.0).abs() < 1e-6,
+            "the change from the stored last was {sum}, not 40"
+        );
+    }
+
+    #[test]
+    fn a_counter_uses_the_hourly_last_when_the_finer_rows_are_gone() {
+        let mut connection = memory();
+        let sensor = entity("sensor.energy");
+        // The raw rows and the five-minute rows are gone. The hour still stores the last
+        // reading, and the next compile starts after that hour.
+        connection
+            .execute(
+                "INSERT INTO statistic_entities (entity_id, class, compiled_until_ns)
+                 VALUES ('sensor.energy', 'total_increasing', ?1)",
+                [stats::HOUR_NS],
+            )
+            .expect("the sensor is marked");
+        connection
+            .execute(
+                "INSERT INTO statistics (entity_id, start_ns, mean, min, max, sum, last)
+                 VALUES ('sensor.energy', 0, NULL, NULL, NULL, 50.0, 50.0)",
+                [],
+            )
+            .expect("the hour stores the last reading");
+        plant(
+            &connection,
+            &reading("sensor.energy", 80.0, at_ns(stats::HOUR_NS + 1_000)),
+        );
+        stats::compile(
+            &mut connection,
+            8,
+            Some(&sensor),
+            stats::HOUR_NS + stats::FIVE_MIN_NS,
+        )
+        .expect("the next five minutes");
+
+        let sum = short_sum(&connection, &sensor, stats::HOUR_NS);
+        assert!(
+            (sum - 30.0).abs() < 1e-6,
+            "the change from the hourly last was {sum}, not 30"
+        );
+    }
+
+    #[test]
+    fn prune_keeps_five_minute_rows_of_an_hour_that_is_not_finished() {
+        let connection = memory();
+        let hour = 10 * stats::HOUR_NS;
+        // Twenty minutes into the hour: past the cutoff, still before the hour is rolled up.
+        let cutoff = hour + 3 * stats::FIVE_MIN_NS;
+        let compiled_until = hour + 4 * stats::FIVE_MIN_NS;
+        let finished = hour + stats::HOUR_NS;
+        connection
+            .execute(
+                "INSERT INTO statistic_entities (entity_id, class, compiled_until_ns)
+                 VALUES ('sensor.open', 'total_increasing', ?1),
+                        ('sensor.done', 'total_increasing', ?2)",
+                (compiled_until, finished),
+            )
+            .expect("the sensors are marked");
+        for (id, start, sum) in [
+            ("sensor.open", hour - stats::FIVE_MIN_NS, 1.0),
+            ("sensor.open", hour, 2.0),
+            ("sensor.open", hour + 2 * stats::FIVE_MIN_NS, 3.0),
+            ("sensor.open", hour + 4 * stats::FIVE_MIN_NS, 4.0),
+            ("sensor.done", hour, 9.0),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO statistics_short_term
+                        (entity_id, start_ns, mean, min, max, sum, last)
+                     VALUES (?1, ?2, NULL, NULL, NULL, ?3, ?3)",
+                    (id, start, sum),
+                )
+                .expect("a five-minute row");
+        }
+
+        prune_before(
+            &connection,
+            &Retention::new(1, None).expect("one day"),
+            cutoff,
+        )
+        .expect("prune");
+
+        let mut listed = connection
+            .prepare(
+                "SELECT start_ns FROM statistics_short_term
+                 WHERE entity_id = 'sensor.open' ORDER BY start_ns",
+            )
+            .expect("the table can be read");
+        let kept: Vec<i64> = listed
+            .query_map([], |row| row.get(0))
+            .expect("the rows can be listed")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("every row parses");
+        assert_eq!(
+            kept,
+            vec![
+                hour,
+                hour + 2 * stats::FIVE_MIN_NS,
+                hour + 4 * stats::FIVE_MIN_NS
+            ],
+            "the open hour stays, including the periods already past the cutoff"
+        );
+        let done: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM statistics_short_term WHERE entity_id = 'sensor.done'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the finished sensor can be counted");
+        assert_eq!(done, 0, "a finished hour's five-minute rows are deleted");
     }
 }

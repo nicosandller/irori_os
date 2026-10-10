@@ -1161,9 +1161,9 @@
     /* The digits hop in ember, and stay inside the stepper: a reading's rise would carry the
        whole box into the buttons beside it. Two names, so the next nudge plays it again. */
     .history-settings .days input[data-moved="up-a"],
-    .history-settings .days input[data-moved="down-a"] { animation: days-tick-a 700ms var(--ease-out); }
+    .history-settings .days input[data-moved="down-a"] { animation: days-tick-a var(--dur-expressive) var(--ease-out); }
     .history-settings .days input[data-moved="up-b"],
-    .history-settings .days input[data-moved="down-b"] { animation: days-tick-b 700ms var(--ease-out); }
+    .history-settings .days input[data-moved="down-b"] { animation: days-tick-b var(--dur-expressive) var(--ease-out); }
     @keyframes days-tick-a { from { color: var(--ember); scale: 1.08; } }
     @keyframes days-tick-b { from { color: var(--ember); scale: 1.08; } }
     .history-settings .drawer .setting { padding-top: .85rem; }

@@ -456,6 +456,11 @@ impl Core {
         read(&self.0.home).entities().cloned().collect()
     }
 
+    /// One entity, when it is in the home.
+    pub fn entity(&self, id: &EntityId) -> Option<Entity> {
+        read(&self.0.home).entity(id).cloned()
+    }
+
     pub fn states(&self) -> Vec<EntityState> {
         read(&self.0.home).states().cloned().collect()
     }

@@ -18,6 +18,23 @@ pub fn summary(settings: Option<RecorderSettings>) -> String {
     }
 }
 
+/// A finite hourly window is never shorter than the detailed history. The API refuses that pair.
+fn hourly_days(retain_days: u32, days: u32) -> u32 {
+    days.max(retain_days.max(1))
+}
+
+fn draft_from(retain_days: u32, kept_forever: bool, summary: u32) -> RecorderSettings {
+    let retain_days = retain_days.max(1);
+    RecorderSettings {
+        retain_days,
+        summary_days: if kept_forever {
+            None
+        } else {
+            Some(hourly_days(retain_days, summary))
+        },
+    }
+}
+
 #[component]
 pub fn Section(
     /// Whether this person may change how the home is set up. Anyone can read the row.
@@ -42,12 +59,13 @@ pub fn Section(
             return;
         }
         if let Some(settings) = settings {
-            retain.set(settings.retain_days.max(1));
+            let retain_days = settings.retain_days.max(1);
+            retain.set(retain_days);
             match settings.summary_days {
                 None => kept.set(true),
                 Some(days) => {
                     kept.set(false);
-                    summary_days.set(days.max(1));
+                    summary_days.set(hourly_days(retain_days, days));
                 }
             }
         }
@@ -56,19 +74,8 @@ pub fn Section(
     // What's unsaved. Nothing is, until the home has answered: saving the defaults over a
     // slower answer would throw away whatever the file already says.
     let changed = move || {
-        current.with(|saved| {
-            saved.as_ref().is_some_and(|saved| {
-                saved
-                    != &RecorderSettings {
-                        retain_days: retain.get().max(1),
-                        summary_days: if kept.get() {
-                            None
-                        } else {
-                            Some(summary_days.get().max(1))
-                        },
-                    }
-            })
-        })
+        let draft = draft_from(retain.get(), kept.get(), summary_days.get());
+        current.with(|saved| saved.as_ref().is_some_and(|saved| saved != &draft))
     };
 
     let save = move |_| {
@@ -77,25 +84,19 @@ pub fn Section(
         }
         saving.set(true);
         trouble.set(None);
-        let sent = RecorderSettings {
-            retain_days: retain.get_untracked().max(1),
-            summary_days: if kept.get_untracked() {
-                None
-            } else {
-                Some(summary_days.get_untracked().max(1))
-            },
-        };
+        let sent = draft_from(
+            retain.get_untracked(),
+            kept.get_untracked(),
+            summary_days.get_untracked(),
+        );
         spawn_local(async move {
             match api::save_recorder(&sent).await {
                 Ok(saved) => {
-                    let still = RecorderSettings {
-                        retain_days: retain.get_untracked().max(1),
-                        summary_days: if kept.get_untracked() {
-                            None
-                        } else {
-                            Some(summary_days.get_untracked().max(1))
-                        },
-                    };
+                    let still = draft_from(
+                        retain.get_untracked(),
+                        kept.get_untracked(),
+                        summary_days.get_untracked(),
+                    );
                     // They kept editing while this was in flight: the answer is for the older
                     // numbers, so the form stays where their hands are and the check waits.
                     let settled = still == sent;
@@ -126,7 +127,12 @@ pub fn Section(
                          for the same days."
                     </p>
                 </div>
-                {days("Detailed history, in days", retain, owner, touched)}
+                {days("Detailed history, in days", retain, owner, touched, || 1, move |next| {
+                    // The hourly window has to stay at least this long, or Save would be refused.
+                    if !kept.get_untracked() && summary_days.get_untracked() < next {
+                        summary_days.set(next);
+                    }
+                })}
             </div>
             <div>
                 <div class="setting">
@@ -151,7 +157,8 @@ pub fn Section(
                                 // Start from a year, or from the detailed history when that is
                                 // already longer.
                                 if !forever && kept.get_untracked() {
-                                    summary_days.set(365.max(retain.get_untracked()));
+                                    summary_days
+                                        .set(hourly_days(retain.get_untracked(), 365));
                                 }
                                 kept.set(forever);
                             },
@@ -169,7 +176,14 @@ pub fn Section(
                                     "At least as many days as the detailed history."
                                 </p>
                             </div>
-                            {days("Days of hourly summaries", summary_days, owner, touched)}
+                            {days(
+                                "Days of hourly summaries",
+                                summary_days,
+                                owner,
+                                touched,
+                                move || retain.get().max(1),
+                                |_| {},
+                            )}
                         </div>
                     </div>
                 </div>
@@ -220,10 +234,17 @@ fn days(
     value: RwSignal<u32>,
     owner: Signal<bool>,
     touched: RwSignal<bool>,
+    // The smallest number this stepper can land on. One, or the detailed history for the
+    // hourly window.
+    floor: impl Fn() -> u32 + Copy + Send + Sync + 'static,
+    // Called with the number that was stored, so a longer detailed history can lift the
+    // hourly window with it.
+    after: impl Fn(u32) + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
     let way = RwSignal::new(None::<&'static str>);
+    let field = NodeRef::<leptos::html::Input>::new();
     let put = move |next: u32| {
-        let next = next.max(1);
+        let next = next.max(floor());
         let before = value.get_untracked();
         if next == before {
             return;
@@ -237,6 +258,7 @@ fn days(
         }));
         touched.set(true);
         value.set(next);
+        after(next);
     };
     view! {
         <span class="days-control">
@@ -244,7 +266,7 @@ fn days(
                 <button
                     type="button"
                     aria-label="One day fewer"
-                    disabled=move || !owner.get() || value.get() <= 1
+                    disabled=move || !owner.get() || value.get() <= floor()
                     on:click=move |_| put(value.get_untracked().saturating_sub(1))
                 >
                     "−"
@@ -255,15 +277,27 @@ fn days(
                     inputmode="numeric"
                     autocomplete="off"
                     aria-label=label
+                    node_ref=field
                     disabled=move || !owner.get()
                     data-moved=move || way.get()
                     prop:value=move || value.get().to_string()
                     on:input=move |event| {
-                        touched.set(true);
-                        if let Ok(days) = event_target_value(&event).parse::<u32>()
-                            && days >= 1
+                        let Some(days) = event_target_value(&event)
+                            .parse::<u32>()
+                            .ok()
+                            .filter(|days| *days >= 1)
+                        else {
+                            touched.set(true);
+                            return;
+                        };
+                        let next = days.max(floor());
+                        put(next);
+                        // A typed number below the floor never becomes the value. Put the box
+                        // back, or it keeps showing the digits that were not stored.
+                        if days != next
+                            && let Some(field) = field.get_untracked()
                         {
-                            put(days);
+                            field.set_value(&next.to_string());
                         }
                     }
                 />
@@ -278,5 +312,25 @@ fn days(
             </span>
             <span class="muted small">"days"</span>
         </span>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hourly_days_are_at_least_the_detailed_history() {
+        assert_eq!(hourly_days(10, 365), 365);
+        assert_eq!(hourly_days(400, 365), 400);
+        assert_eq!(hourly_days(12, 1), 12);
+        assert_eq!(
+            draft_from(12, false, 1),
+            RecorderSettings {
+                retain_days: 12,
+                summary_days: Some(12),
+            }
+        );
+        assert!(draft_from(12, true, 1).summary_days.is_none());
     }
 }

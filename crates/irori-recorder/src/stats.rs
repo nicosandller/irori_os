@@ -493,23 +493,73 @@ pub(crate) fn summaries(
     Ok(points)
 }
 
+/// The value a period carries in. An unavailable row still stores the last number, but it is
+/// not a reading, and it is often the newest row when a compile starts on a new call. Once
+/// retention has deleted the raw rows, the `last` already stored on a summary is that value.
 fn value_before(
     connection: &Connection,
     entity_id: &str,
     before: i64,
 ) -> Result<Option<f64>, String> {
-    let text: Option<String> = connection
-        .query_row(
+    if let Some(value) = latest_numeric(connection, entity_id, before)? {
+        return Ok(Some(value));
+    }
+    if let Some(value) = compiled_last(connection, "statistics_short_term", entity_id, before)? {
+        return Ok(Some(value));
+    }
+    compiled_last(connection, "statistics", entity_id, before)
+}
+
+fn latest_numeric(
+    connection: &Connection,
+    entity_id: &str,
+    before: i64,
+) -> Result<Option<f64>, String> {
+    let mut statement = connection
+        .prepare(
             "SELECT state FROM state_history
              WHERE entity_id = ?1 AND updated_ns < ?2
-             ORDER BY updated_ns DESC, id DESC
-             LIMIT 1",
-            rusqlite::params![entity_id, before],
-            |row| row.get(0),
+             ORDER BY updated_ns DESC, id DESC",
         )
-        .optional()
         .map_err(|error| error.to_string())?;
-    Ok(text.as_deref().and_then(number_in))
+    let rows = statement
+        .query_map(rusqlite::params![entity_id, before], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| error.to_string())?;
+    for row in rows {
+        let text = row.map_err(|error| error.to_string())?;
+        if let Some(value) = number_in(&text) {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
+}
+
+fn compiled_last(
+    connection: &Connection,
+    table: &str,
+    entity_id: &str,
+    before: i64,
+) -> Result<Option<f64>, String> {
+    // The table is one of the two this module creates. It is not a value from outside.
+    let sql = match table {
+        "statistics_short_term" => {
+            "SELECT last FROM statistics_short_term
+             WHERE entity_id = ?1 AND start_ns < ?2 AND last IS NOT NULL
+             ORDER BY start_ns DESC LIMIT 1"
+        }
+        "statistics" => {
+            "SELECT last FROM statistics
+             WHERE entity_id = ?1 AND start_ns < ?2 AND last IS NOT NULL
+             ORDER BY start_ns DESC LIMIT 1"
+        }
+        _ => return Err(format!("unknown statistics table {table}")),
+    };
+    connection
+        .query_row(sql, rusqlite::params![entity_id, before], |row| row.get(0))
+        .optional()
+        .map_err(|error| error.to_string())
 }
 
 fn values_between(
