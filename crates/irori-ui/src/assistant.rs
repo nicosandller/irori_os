@@ -620,8 +620,78 @@ pub fn Chat(
             .is_some_and(|status| status.mode == "local")
     };
 
+    // Takes a file to go with the next question, however it arrived: chosen, or dropped.
+    let attach = move |file: web_sys::File| {
+        spawn_local(async move {
+            match read_file(file).await {
+                Ok(file) => {
+                    trouble.set(None);
+                    attached.set(Some(file));
+                }
+                Err(why) => trouble.set(Some(why)),
+            }
+        });
+    };
+    // How many of the chat's parts a dragged file is over. A drag leaves one part of the chat
+    // as it enters the next, so "over the chat" is counted, not switched on and off.
+    let over = RwSignal::new(0i32);
+    let held = move || over.get() > 0;
+    // Only a file, and only where a file is taken: dragging a line of text across the chat
+    // is not an offer of anything.
+    let offered = move |event: &ev::DragEvent| {
+        on_plan
+            && event.data_transfer().is_some_and(|carried| {
+                carried
+                    .types()
+                    .iter()
+                    .any(|kind| kind.as_string().as_deref() == Some("Files"))
+            })
+    };
+
     view! {
-        <section class="chat">
+        <section
+            class="chat"
+            class:dropping=held
+            on:dragenter=move |event: ev::DragEvent| {
+                if offered(&event) {
+                    event.prevent_default();
+                    over.update(|over| *over += 1);
+                }
+            }
+            on:dragover=move |event: ev::DragEvent| {
+                // Without this the browser doesn't let the drop happen here at all, and
+                // opens the file in place of the page.
+                if offered(&event) {
+                    event.prevent_default();
+                }
+            }
+            on:dragleave=move |event: ev::DragEvent| {
+                if offered(&event) {
+                    over.update(|over| *over = (*over - 1).max(0));
+                }
+            }
+            on:drop=move |event: ev::DragEvent| {
+                if !offered(&event) {
+                    return;
+                }
+                event.prevent_default();
+                over.set(0);
+                let dropped = event
+                    .data_transfer()
+                    .and_then(|carried| carried.files())
+                    .and_then(|files| files.get(0));
+                if let Some(file) = dropped {
+                    attach(file);
+                }
+            }
+        >
+            // What letting go here will do, said over the chat while a file is held over it.
+            {move || held().then(|| view! {
+                <div class="chat-drop" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" inner_html=CLIP></svg>
+                    <span>"Drop a picture or PDF of a floorplan"</span>
+                </div>
+            })}
             <header class="chat-head">
                 <Spark />
                 <span class="chat-title">{title}</span>
@@ -682,8 +752,8 @@ pub fn Chat(
                                  machine can only answer."
                             } else {
                                 "It can draw too — walls, doors, windows and rooms, from what you \
-                                 tell it or from a picture or PDF of a plan you attach — as one \
-                                 step you can undo. Nothing is saved until you press Save."
+                                 tell it or from a picture or PDF of a plan you attach or drop \
+                                 here — as one step you can undo. Nothing is saved until you press Save."
                             }}
                         </p>
                     }.into_any()
@@ -794,16 +864,9 @@ pub fn Chat(
                                 let file = input.files().and_then(|files| files.get(0));
                                 // The same file can be chosen again after it's taken back.
                                 input.set_value("");
-                                let Some(file) = file else { return };
-                                spawn_local(async move {
-                                    match read_file(file).await {
-                                        Ok(file) => {
-                                            trouble.set(None);
-                                            attached.set(Some(file));
-                                        }
-                                        Err(why) => trouble.set(Some(why)),
-                                    }
-                                });
+                                if let Some(file) = file {
+                                    attach(file);
+                                }
                             }
                         />
                     </label>

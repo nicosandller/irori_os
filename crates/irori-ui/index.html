@@ -2428,6 +2428,22 @@
 
     .chat { display: flex; flex-direction: column; min-height: 0; background: var(--card);
             border: 1px solid var(--line); border-radius: 1rem; overflow: hidden; }
+    /* A file held over the chat: the chat lights at its edge, and says what letting go will
+       do. The words sit over everything and take no pointer, so the drag stays the chat's. */
+    .chat { position: relative; transition: border-color var(--dur-fast) var(--ease-out),
+                                            box-shadow var(--dur-base) var(--ease-out); }
+    .chat.dropping { border-color: var(--ember);
+                     box-shadow: 0 0 0 3px color-mix(in srgb, var(--ember) 25%, transparent); }
+    .chat-drop { position: absolute; inset: 0; z-index: 3; display: grid; place-content: center;
+                 justify-items: center; gap: .5rem; padding: 1rem; text-align: center;
+                 pointer-events: none; color: var(--ember); font-size: .9rem;
+                 background: color-mix(in srgb, var(--card) 88%, transparent);
+                 border-radius: inherit;
+                 animation: drop-in var(--dur-base) var(--ease-out) backwards; }
+    @keyframes drop-in { from { opacity: 0; } }
+    .chat-drop svg { width: 2rem; height: 2rem;
+                     animation: drop-nod .9s var(--ease-out) infinite alternate; }
+    @keyframes drop-nod { to { translate: 0 .3rem; } }
     .chat-head { display: flex; align-items: center; gap: .5rem; padding: .6rem .6rem .6rem .9rem;
                  border-bottom: 1px solid var(--line); }
     .chat-head .spark { flex: none; width: .9rem; height: .9rem; color: var(--ember); }
