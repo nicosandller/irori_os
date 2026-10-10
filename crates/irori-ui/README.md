@@ -41,13 +41,13 @@ cd crates/irori-ui && trunk serve --open # the page on 8080, API proxied to 8480
 
 | | |
 |---|---|
-| **Floorplan** (`/floorplan`) | The home as a drawing, a floor at a time, with the devices live on it: a lamp that's on glows, and clicking one switches it. A picker on the right says which floor, and the floor below shows faintly while you draw so an upstairs can be lined up with what holds it up. **Edit** (top right) puts a toolbar over the same canvas — walls, doors, windows, rooms, devices — and becomes **Save** and **Cancel**. Whatever is picked up gets a panel for the numbers that can't be dragged: a wall's thickness, an opening's width. Points land on a 10 cm grid, or on a step of your own; the grid drawn under the plan **is** that step, with heavier lines every metre, so what you see is where a point can go. Rooms are traced with corners that prefer the walls to the grid, and a device drawn standing in a room is put in that room in Settings when the plan is saved. Undo and redo (⌘Z, ⇧⌘Z) go back a move at a time. The canvas is the whole view; scroll to zoom, drag the empty plan to move around. |
+| **Floorplan** (`/floorplan`) | The home as a drawing, a floor at a time, with the devices live on it: a lamp that's on glows, and clicking one switches it. A picker on the right says which floor, and the floor below shows faintly while you draw so an upstairs can be lined up with what holds it up. **Edit** (top right) puts a toolbar over the same canvas — walls, doors, windows, rooms, devices — and becomes **Save** and **Cancel**. Whatever is picked up gets a panel for the numbers that can't be dragged: a wall's thickness, an opening's width. Points land on a 10 cm grid, or on a step of your own; the grid drawn under the plan **is** that step, with heavier lines every metre, so what you see is where a point can go. Rooms are traced with corners that prefer the walls to the grid, and a device drawn standing in a room is put in that room in Settings when the plan is saved. Undo and redo (⌘Z, ⇧⌘Z, and the two arrows beside Save) go back a move at a time. The canvas is the whole view; scroll to zoom, turn the wheel over the zoom buttons to zoom by a little, press the house to come back to the home view (the whole plan, or the view you set for that floor once you've moved it), drag the empty plan to move around. **{ }** opens the whole plan as JSON, to copy at any time and to change while editing. **Ask** opens a conversation about the floor on show, and while the plan is being edited a cloud model can draw on it. |
 | **Welcome** | Until the home has an owner: who you are, with a password, and what time zone the home is in (putting it on the map is optional). After that the page opens on a sign-in, a name and a password both typed; it never lists who lives here. |
 | **Start** (`/`) | What IroriOS is: the wordmark the terminal prints when `irori serve` runs, and how many devices, entities and extensions it is looking after. |
 | **Devices** (`/devices`) | Two ways to read the same home, remembered per browser, both as compact rows in groups that fold: **Devices** is a row per device — make, model, battery, how many entities, and which area it's in — grouped by protocol, area or make; **Entities** is a row per entity — its icon (what kind of thing it is), its control, and its last 24 hours a click away: a number as a line, a state (on and off, a player's playing and paused) as a strip of how long each lasted, either as a table too — grouped by device, area, kind or protocol. **Add device** explains where devices come from — every installed extension, what it's for, and what it can provide — because nothing is typed in by hand yet. |
 | **A device** (`/devices/<id>`) | One device: which extension brought it in, what that extension knows it as (the MAC address, for ESPHome), make, model, firmware, hardware, what it's reached through, and every entity it provides with its controls. Its name, description and area are yours to decide, and so is each entity's name: each is changed where it stands, with a pencil beside it. |
 | **Extensions** (`/extensions`) | Official extensions from this repo (protocols, Demo, Helpers). Install copies a package into the instance and starts it; uninstall deletes the package and the devices it brought in. Every card is the same size, with the rest of what an extension says behind **Show more**; an installed one has its settings and its log beside the button, and the log button carries a mark when the log has an error in it. |
-| **Settings** (`/settings`) | One table: each row is a section that says how it stands beside its name and opens in place. **System** (the instance — version, uptime, database, features — and the machine under it, with a meter each for memory, disk, processor and temperature that opens to its last day and to what is using it: the heaviest processes, and what Irori's data directory is made of), **Appearance** (whether the page animates), **Assistant** (which model answers), **Location and time zone** (where the home is, on a map with an address search and a pin to drag, and the time zone that follows from it, which is what a time of day and the sun mean in an automation), **Floors and areas** (the home's arrangement, made and rearranged by dragging), **Users** (who is allowed in: an owner runs the home, a user sees everything and controls devices; everybody has a password), **Programs** (access tokens for programs that aren't this page: what each may do, created by an owner and shown once) and **Logs** (what Irori has said since it started, with each extension's own output tagged with the extension). |
+| **Settings** (`/settings`) | One table: each row is a section that says how it stands beside its name and opens in place. **System** (the instance — version, uptime, database, features — and the machine under it, with a meter each for memory, disk, processor and temperature that opens to its last day and to what is using it: the heaviest processes, and what Irori's data directory is made of), **Appearance** (whether the page animates), **Assistant** (which model answers; a cloud model is asked one small thing when it is saved, and its fields go still once it has answered), **Location and time zone** (where the home is, on a map with an address search and a pin to drag, and the time zone that follows from it, which is what a time of day and the sun mean in an automation), **Floors and areas** (the home's arrangement, made and rearranged by dragging), **Users** (who is allowed in: an owner runs the home, a user sees everything and controls devices; everybody has a password), **Programs** (access tokens for programs that aren't this page: each a card saying what it may do, made by an owner from a short form, its secret shown once with a button to copy it, and revoked where it stands) and **Logs** (what Irori has said since it started, with each extension's own output tagged with the extension). |
 
 Routing is client-side (`leptos_router`), so the binary serves the app for any path that isn't a
 file, and the app decides what to show.
@@ -76,6 +76,40 @@ file, and the app decides what to show.
   Cancel is simply never sending it, and undo goes back through that copy a move at a time.
   Saving also writes `devices.toml` for any device drawn standing in a room, and says how many
   it moved; a device deliberately in no room is left alone.
+- Helps a wall land where it was meant to (`src/floorplan/snapping.rs`). A point being drawn is
+  pulled, in this order, onto a corner already there, the line of a wall, and level with the
+  end of another wall. The middle of a wall is marked with a diamond, which swells when the
+  point is on it, and is not pulled towards. A point level with another wall's end gets a
+  dashed line to the corner it is level with, and an `=` beside the length when the wall is
+  the twin of one alongside it. None of these beats the grid when the grid is
+  nearer, so the square beside a wall can always be reached, and holding Alt leaves only the
+  grid. A wall started off another says the angle it makes
+  with it, and every corner of a room says its angle, on the inside, while the room is traced
+  or picked up: the notch of an L-shaped room reads 270°.
+- Picks up several things at once (`src/floorplan/many.rs`): a box dragged with the **Select
+  several** tool, or with Shift held on Select, takes everything wholly inside it — walls,
+  rooms, devices — to drag together or delete together, each as one step to undo. Only what
+  is in the box moves; a wall outside that shared a corner stays where it was.
+- Takes sizes typed as well as dragged: a wall's thickness, a door's or window's width and the
+  snap step each have a box beside their slider, read when it is finished rather than a key at
+  a time.
+- Colours a room from a palette of ten named tints (`tint` in `floorplan.toml`), or leaves it
+  the colour its id picks.
+- Shows the plan as JSON (`src/floorplan/source.rs`): every floor, the document
+  `/api/floorplan` holds, coloured by what each piece is — names, text, numbers — as it is
+  read and as it is typed. What is typed there is held to the rules a saved plan is, and lands
+  in the working copy as one step to undo.
+- Answers questions about a floor from the Floorplan page — its rooms, the devices in them,
+  the automations that act on them — in a conversation of its own per floor. The page sends
+  the plan on show with the question, and a cloud model may draw on it: walls, doors, windows,
+  and the outlines of rooms the home already has, from what it is told or from a picture or
+  PDF of a floorplan attached to the question (up to 8 MB, read for that answer and not kept).
+  What it draws comes back to the page as one step to undo, opening Edit if it wasn't open;
+  nothing is written until Save. A file can be dropped onto the chat as well as attached. For
+  an owner it can also add floors and rooms, which are saved at once as they are from
+  Settings; it can only *ask* for one to be removed, and the question is put in the chat for
+  the person to answer. A model on this
+  machine is not given tools, so it answers and does not draw.
 - Lists the extensions behind it all, with their status and any reports they lost.
 - Shows what Irori and its extensions have said, in one window that keeps itself up to date:
   the log button on an extension's card for that extension's own output, in a window, and the
@@ -84,7 +118,11 @@ file, and the app decides what to show.
 
 **Not yet:** permissions finer than owner and user, history beyond a device's last 24 hours, and
 installing the firmware update whose version the device page shows (ROADMAP M1.8, D30). The
-floorplan is mouse-driven and has no furniture and no stairs between floors. Its corners are solid wherever
+floorplan is mouse-driven and has no furniture and no stairs between floors. A wall started
+from the middle of another is not welded to it, so dragging the first leaves the second where
+it was; the assistant can't move devices, and a plan it draws replaces the
+working copy as it stood when the question was asked. The chat belongs to the floor it was
+opened on and closes when the floor is changed. Its corners are solid wherever
 two walls meet at any angle, and where three or more do at right angles; a junction of three
 walls one of which runs at an odd angle can still nick the outside of the corner. The page
 hears the home on `/api/ws` and asks `/api/health` about once every 30 seconds. Log windows
@@ -129,7 +167,9 @@ off everything.
   button's flashes once when it's pressed (a doorbell's bell swings too); a door or window with
   a contact sensor swings open and shut on its hinge; what's picked, and the line being drawn, march like any drawing tool's
   selection. Its sliders (a wall's thickness, an opening's width, the snap step) are drawn like
-  the lights'.
+  the lights'. The zoom wheel's ridges roll with the zoom, whatever did the zooming, and spring
+  to rest after a button's jump; the mark on the middle of a wall swells as it takes hold of
+  the point being drawn.
 - **Ambient:** the Live dot breathes while the core answers and goes still when it doesn't, the
   ember on Start flickers, the Start tiles come in one after another, and a banner drops in
   when something goes wrong.

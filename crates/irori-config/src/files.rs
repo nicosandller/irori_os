@@ -806,6 +806,7 @@ mod tests {
                     Point::new(0, 300),
                 ],
                 label: Point::new(0, 0),
+                tint: Some(irori_types::Tint::Moss),
             }],
             devices: vec![PlacedDevice {
                 facing: Some(90),

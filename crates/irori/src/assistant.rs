@@ -18,7 +18,9 @@ use irori_assist::{
     library_page, local_context, model_tag, openai_tools, settings_brief,
 };
 use irori_core::Core;
-use irori_types::{Availability, DeviceId, EntityId, EntityState, ExtensionId};
+use irori_types::{
+    Availability, DeviceId, EntityId, EntityState, ExtensionId, FloorId, Floorplan, Level, PlanOp,
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::{Notify, mpsc, watch};
@@ -54,6 +56,8 @@ const LOCAL_HISTORY_BYTES_TIGHT: usize = 1_500;
 /// model is sent, and what fits in front of a model on this machine with room left to answer.
 const AUTOMATION_BRIEF: usize = 12_000;
 const SETTINGS_BRIEF: usize = 8_000;
+/// One floor of the plan, in the prompt of the chat on the Floorplan page.
+const PLAN_BRIEF: usize = 8_000;
 const LOCAL_BRIEF: usize = 4_500;
 /// What the chat about the whole home is handed besides the home: Irori's settings in short,
 /// and a line for each automation. A cloud model reads the rest with tools.
@@ -127,8 +131,84 @@ pub enum ChatEvent {
     Delta(String),
     /// The model has gone to look something up. The tool's name.
     Step(String),
+    /// The model has drawn on the plan the person is editing. The whole plan as it now stands,
+    /// for the page to take as its working copy. Nothing has been written anywhere.
+    Plan(Box<Floorplan>),
+    /// The model wants floors or rooms removed. It can't: the person is asked, on the page,
+    /// and the page removes what they say yes to.
+    Confirm(Vec<Removal>),
     Error(String),
     Done,
+}
+
+/// A picture or a PDF given with a question, for the model to look at: a floorplan somebody
+/// already has, to draw the home from. Held for the one answer and never kept — the transcript
+/// only says that there was one.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Attachment {
+    pub name: String,
+    pub media_type: String,
+    /// The file itself, in base64.
+    pub data: String,
+}
+
+impl Attachment {
+    /// The most a file may be, in base64 characters: about 8 MB of file.
+    const MOST: usize = 11_000_000;
+
+    const KINDS: [&'static str; 5] = [
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+        "image/gif",
+        "application/pdf",
+    ];
+
+    fn is_pdf(&self) -> bool {
+        self.media_type == "application/pdf"
+    }
+
+    /// Why this can't be handed to a model, if it can't.
+    fn check(&self) -> Result<(), String> {
+        if !Self::KINDS.contains(&self.media_type.as_str()) {
+            return Err(
+                "That file isn't a picture or a PDF. A PNG, JPEG, WebP, GIF or PDF can be read."
+                    .into(),
+            );
+        }
+        if self.data.len() > Self::MOST {
+            return Err("That file is too big. Up to about 8 MB can be read.".into());
+        }
+        let base64 = |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=');
+        if self.data.is_empty() || !self.data.chars().all(base64) {
+            return Err("That file didn't arrive whole. Try attaching it again.".into());
+        }
+        Ok(())
+    }
+
+    /// Its name as it is said back: short, and nothing but the name.
+    fn said(&self) -> String {
+        let name: String = self
+            .name
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(80)
+            .collect();
+        if name.trim().is_empty() {
+            "a file".to_owned()
+        } else {
+            name
+        }
+    }
+}
+
+/// A floor or a room the model asked to have removed, for the person to say yes or no to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Removal {
+    /// `floor` or `area`.
+    pub kind: &'static str,
+    pub id: String,
+    pub name: String,
 }
 
 struct Env<'a> {
@@ -137,6 +217,8 @@ struct Env<'a> {
     history: &'a History,
     db: &'a Path,
     log: &'a syslog::Log,
+    /// Whether whoever is asking may change how the home is set up.
+    owner: bool,
 }
 
 async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
@@ -189,7 +271,7 @@ async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
         match file.mode {
             Mode::Local => format!("{} is running on this machine.", file.local.tag),
             Mode::Cloud => format!(
-                "Answers come from {} at {}. What you ask leaves the house, and with it device names and states, your automations, Irori's settings and lines of its log.",
+                "Answers come from {} at {}. What you ask leaves the house, and with it device names and states, your automations, the floorplan, Irori's settings and lines of its log.",
                 file.cloud.model, file.cloud.base_url
             ),
             Mode::Off => String::new(),
@@ -722,11 +804,43 @@ pub async fn uninstall(config: &Config, data_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<ChatEvent>) {
+async fn answer(
+    env: Env<'_>,
+    scope: String,
+    message: String,
+    plan: Option<Floorplan>,
+    attachment: Option<Attachment>,
+    tx: mpsc::Sender<ChatEvent>,
+) {
     if let Err(error) = check_scope(&scope) {
         let _ = tx.send(ChatEvent::Error(error)).await;
         return;
     }
+    // A picture is for drawing a floor from, so it is taken where a floor can be drawn.
+    let refused = match &attachment {
+        Some(_) if floor_of(&scope).is_none() => {
+            Some("A picture can be given on the Floorplan page, to draw from.".to_owned())
+        }
+        Some(attachment) => attachment.check().err(),
+        None => None,
+    };
+    if let Some(error) = refused {
+        let _ = tx.send(ChatEvent::Error(error)).await;
+        return;
+    }
+    // The plan the person is in the middle of editing, when they asked from the Floorplan page
+    // with it open. It is the page's working copy and stays the page's: the model draws on
+    // this copy of it, and what it drew goes back to the page to keep or undo. A plan sent to
+    // any other conversation is nobody's business, and one that couldn't be saved as it stands
+    // is no ground to draw on.
+    let plan = plan.filter(|_| floor_of(&scope).is_some());
+    // Why the plan sent can't be drawn on, when it can't: said to the model, so that it says
+    // so, and doesn't tell somebody who is already editing to go and press Edit.
+    let unsound = plan
+        .as_ref()
+        .and_then(|plan| plan.check().err())
+        .map(|why| why.to_string());
+    let mut drawing = plan.filter(|_| unsound.is_none());
     let message = message.trim().to_owned();
     if message.is_empty() {
         let _ = tx
@@ -755,7 +869,16 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
             return;
         }
     };
-    let system = match system_prompt(&env, &scope, &provider, &picture).await {
+    let system = match system_prompt(
+        &env,
+        &scope,
+        &provider,
+        &picture,
+        drawing.as_ref(),
+        unsound.as_deref(),
+    )
+    .await
+    {
         Ok(system) => system,
         Err(error) => {
             let _ = tx.send(ChatEvent::Error(error)).await;
@@ -789,6 +912,30 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
     // A small model on this machine is not offered the tools. It asks for the list it was
     // just given, then again, and never gets to the answer. The picture of the home is
     // already in front of it, and leaving the tools out is fewer words for it to read.
+    if provider.local() && attachment.as_ref().is_some_and(Attachment::is_pdf) {
+        let _ = tx
+            .send(ChatEvent::Error(
+                "A model on this machine can't read a PDF. Attach a picture of the plan, or \
+                 choose a cloud model in Settings."
+                    .into(),
+            ))
+            .await;
+        return;
+    }
+    let system = if attachment.is_some() {
+        format!(
+            "{system}The person attached a floorplan, as a picture or a PDF. To draw the home \
+             from it: read off each room and its measurements; where it gives none, assume \
+             ordinary sizes from the proportions and say what you assumed. Work in whole \
+             centimetres, start at [0,0] unless there is already a drawing to sit beside, keep \
+             walls square to each other where the picture's are, make walls that meet share \
+             their corner exactly, and put doors and windows where it shows them. Where it \
+             shows rooms the home doesn't have yet, make them first with `edit_home`, then \
+             trace each by the id you are given back.\n"
+        )
+    } else {
+        system
+    };
     let system = if provider.local() {
         format!(
             "{system}Answer only from what is written above. When the answer isn't there, say \
@@ -798,6 +945,16 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
         system
     };
     let mut conversation = Conversation::from_turns(&system, earlier, &message);
+    // What is remembered of a question with a file is that there was one.
+    let message = match &attachment {
+        Some(attachment) => format!("{message}\n\n(attached: {})", attachment.said()),
+        None => message,
+    };
+    if let Some(attachment) = attachment
+        && let Some(Item::User(text)) = conversation.items.pop()
+    {
+        conversation.items.push(Item::Shown(text, attachment));
+    }
     let _turn = if provider.local() {
         match LOCAL_TURN.try_lock() {
             Ok(turn) => Some(turn),
@@ -813,6 +970,8 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
         None
     };
     let mut rounds = 0u8;
+    // How many floors and rooms this one question has had added, across every go at it.
+    let mut added = 0usize;
     let mut tools_work = !provider.local();
     // Everything the page was sent, so what is remembered is what was read.
     let mut text = String::new();
@@ -822,11 +981,18 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
         if tx.is_closed() {
             return;
         }
-        let with_tools = tools_work && execute_round(rounds);
+        // Drawing a floor takes more goes than looking something up: rooms may have to be
+        // made first, and a batch that was refused is worth one more try.
+        let with_tools = tools_work
+            && if floor_of(&scope).is_some() {
+                rounds < PLAN_ROUNDS
+            } else {
+                execute_round(rounds)
+            };
         match complete(
             &provider,
             &conversation,
-            with_tools.then_some(scope.as_str()),
+            with_tools.then_some((scope.as_str(), drawing.is_some())),
             &tx,
         )
         .await
@@ -853,7 +1019,31 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
                     if tx.send(ChatEvent::Step(call.name.clone())).await.is_err() {
                         return;
                     }
-                    let result = run_tool(&env, &scope, &picture, &call).await;
+                    let before = drawing.clone();
+                    let mut removals = Vec::new();
+                    let result = run_tool(
+                        &env,
+                        &scope,
+                        &picture,
+                        &call,
+                        &mut drawing,
+                        &mut removals,
+                        &mut added,
+                    )
+                    .await;
+                    if !removals.is_empty() && tx.send(ChatEvent::Confirm(removals)).await.is_err()
+                    {
+                        return;
+                    }
+                    if drawing != before
+                        && let Some(drawn) = &drawing
+                        && tx
+                            .send(ChatEvent::Plan(Box::new(drawn.clone())))
+                            .await
+                            .is_err()
+                    {
+                        return;
+                    }
                     conversation.tool(&call, &result);
                 }
                 rounds += 1;
@@ -902,6 +1092,30 @@ async fn answer(env: Env<'_>, scope: String, message: String, tx: mpsc::Sender<C
         return;
     }
     let _ = tx.send(ChatEvent::Done).await;
+}
+
+/// Asks the cloud model that was just set up one small thing, to find out whether it answers:
+/// a key that is wrong, a model name with a typo and an endpoint that isn't one all look the
+/// same until somebody asks a question, and then the question is what fails. Nothing is
+/// remembered of it.
+pub async fn check(config: &Config) -> Result<(), String> {
+    let file = load_file(&config.dir().await);
+    if file.mode != Mode::Cloud {
+        return Err("No cloud model is chosen.".to_owned());
+    }
+    let key = config.assistant_key().await.unwrap_or_default();
+    let provider = provider_for(&file, &key, 0)?;
+    let conversation =
+        Conversation::from_turns("Answer with the one word: ok", &[], "Are you there?");
+    let (tx, mut rx) = mpsc::channel(64);
+    // Whatever it says is listened to and let go: that it said anything is the answer.
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let asked = complete(&provider, &conversation, None, &tx);
+    match tokio::time::timeout(Duration::from_secs(30), asked).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error)) => Err(explained(&scrub(&error, &key))),
+        Err(_) => Err("The provider didn't answer within half a minute.".to_owned()),
+    }
 }
 
 enum Outcome {
@@ -992,6 +1206,8 @@ struct Conversation {
 
 enum Item {
     User(String),
+    /// What the person said, with the file they gave to look at.
+    Shown(String, Attachment),
     Assistant(String),
     Call(ToolCall),
     Result {
@@ -1035,6 +1251,8 @@ impl Conversation {
                 .iter()
                 .map(|item| match item {
                     Item::User(text) | Item::Assistant(text) => text.chars().count(),
+                    // A picture is read as about a thousand words, whatever its size.
+                    Item::Shown(text, _) => text.chars().count() + 6_000,
                     Item::Call(call) => call.name.len() + call.arguments.chars().count(),
                     Item::Result { body, .. } => body.chars().count(),
                 })
@@ -1059,8 +1277,9 @@ pub struct Usage {
 async fn complete(
     provider: &Provider,
     conversation: &Conversation,
-    // The conversation whose tools are offered, when any are.
-    tools_for: Option<&str>,
+    // The conversation whose tools are offered, when any are, and whether the person asking
+    // sent a plan to draw on.
+    tools_for: Option<(&str, bool)>,
     tx: &mpsc::Sender<ChatEvent>,
 ) -> Result<(Outcome, u64), String> {
     let client = client();
@@ -1076,21 +1295,22 @@ async fn complete(
             if url.starts_with("https://api.openai.com/") || url.starts_with("https://api.x.ai/") {
                 body["stream_options"] = json!({ "include_usage": true });
             }
-            if let Some(scope) = tools_for {
-                body["tools"] = openai_tools(scope);
+            if let Some((scope, drawing)) = tools_for {
+                body["tools"] = openai_tools(scope, drawing);
             }
             (client.post(url).bearer_auth(key).json(&body), key.as_str())
         }
         Provider::Anthropic { url, key, model } => {
             let mut body = json!({
                 "model": model,
-                "max_tokens": 1024,
+                // A whole floor is a long list of walls: drawing gets room to finish one.
+                "max_tokens": if tools_for.is_some_and(|(_, drawing)| drawing) { 4096 } else { 1024 },
                 "stream": true,
                 "system": conversation.system,
                 "messages": anthropic_messages(conversation),
             });
-            if let Some(scope) = tools_for {
-                body["tools"] = anthropic_tools(scope);
+            if let Some((scope, drawing)) = tools_for {
+                body["tools"] = anthropic_tools(scope, drawing);
             }
             (
                 client
@@ -1117,8 +1337,8 @@ async fn complete(
             if *think {
                 body["think"] = json!(false);
             }
-            if let Some(scope) = tools_for {
-                body["tools"] = openai_tools(scope);
+            if let Some((scope, drawing)) = tools_for {
+                body["tools"] = openai_tools(scope, drawing);
             }
             (client.post(format!("{OLLAMA}/api/chat")).json(&body), "")
         }
@@ -1209,6 +1429,15 @@ fn openai_messages(conversation: &Conversation) -> Vec<Value> {
     for item in &conversation.items {
         messages.push(match item {
             Item::User(text) => json!({"role": "user", "content": text}),
+            Item::Shown(text, file) => {
+                let url = format!("data:{};base64,{}", file.media_type, file.data);
+                let shown = if file.is_pdf() {
+                    json!({"type": "file", "file": {"filename": file.said(), "file_data": url}})
+                } else {
+                    json!({"type": "image_url", "image_url": {"url": url}})
+                };
+                json!({"role": "user", "content": [{"type": "text", "text": text}, shown]})
+            }
             Item::Assistant(text) => json!({"role": "assistant", "content": text}),
             Item::Call(call) => json!({
                 "role": "assistant",
@@ -1232,6 +1461,9 @@ fn ollama_messages(conversation: &Conversation) -> Vec<Value> {
     for item in &conversation.items {
         messages.push(match item {
             Item::User(text) => json!({"role": "user", "content": text}),
+            Item::Shown(text, file) => {
+                json!({"role": "user", "content": text, "images": [file.data]})
+            }
             Item::Assistant(text) => json!({"role": "assistant", "content": text}),
             Item::Call(call) => json!({
                 "role": "assistant",
@@ -1256,6 +1488,20 @@ fn anthropic_messages(conversation: &Conversation) -> Vec<Value> {
     for item in &conversation.items {
         match item {
             Item::User(text) => messages.push(json!({"role": "user", "content": text})),
+            Item::Shown(text, file) => messages.push(json!({
+                "role": "user",
+                "content": [
+                    {
+                        "type": if file.is_pdf() { "document" } else { "image" },
+                        "source": {
+                            "type": "base64",
+                            "media_type": file.media_type,
+                            "data": file.data,
+                        },
+                    },
+                    {"type": "text", "text": text},
+                ]
+            })),
             Item::Assistant(text) => messages.push(json!({"role": "assistant", "content": text})),
             Item::Call(call) => messages.push(json!({
                 "role": "assistant",
@@ -1275,10 +1521,21 @@ fn anthropic_messages(conversation: &Conversation) -> Vec<Value> {
     messages
 }
 
-async fn run_tool(env: &Env<'_>, scope: &str, status: &Status, call: &ToolCall) -> String {
+async fn run_tool(
+    env: &Env<'_>,
+    scope: &str,
+    status: &Status,
+    call: &ToolCall,
+    // The plan the person is editing, when there is one.
+    drawing: &mut Option<Floorplan>,
+    // The floors and rooms the model asked to have removed, for the person to be asked about.
+    removals: &mut Vec<Removal>,
+    // How many floors and rooms this question has had added so far.
+    added: &mut usize,
+) -> String {
     let args: Value = serde_json::from_str(&call.arguments).unwrap_or(json!({}));
     // A model may ask for a tool it wasn't offered. It gets what it was offered, no more.
-    if !irori_assist::tool_offered(scope, &call.name) {
+    if !irori_assist::tool_offered(scope, drawing.is_some(), &call.name) {
         return format!("there is no tool `{}`", call.name);
     }
     let text = match call.name.as_str() {
@@ -1345,6 +1602,34 @@ async fn run_tool(env: &Env<'_>, scope: &str, status: &Status, call: &ToolCall) 
                     .join("\n")
             }
         }
+        "read_floorplan" => {
+            // What the person is drawing, when they are: that is the plan in front of them.
+            let plan = drawing.clone().unwrap_or_else(|| env.core.floorplan());
+            let asked = args.get("floor").and_then(|floor| floor.as_str());
+            let floors: Vec<FloorId> = match asked.map(str::parse::<FloorId>) {
+                Some(Ok(floor)) => vec![floor],
+                Some(Err(_)) => return format!("there's no floor `{}`", asked.unwrap_or("")),
+                None => match floor_of(scope) {
+                    Some(floor) => vec![floor],
+                    None => env
+                        .core
+                        .floors()
+                        .into_iter()
+                        .map(|floor| floor.id)
+                        .collect(),
+                },
+            };
+            if floors.is_empty() {
+                return "The home has no floors yet, so nothing is drawn.".to_owned();
+            }
+            floors
+                .iter()
+                .map(|floor| plan_brief(env.core, &plan, floor))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        "edit_floorplan" => return draw(env.core, scope, &args, drawing),
+        "edit_home" => return arrange(env, scope, &args, removals, added).await,
         "read_logs" => {
             let source = args
                 .get("source")
@@ -1368,7 +1653,379 @@ async fn run_tool(env: &Env<'_>, scope: &str, status: &Status, call: &ToolCall) 
         }
         other => format!("there is no tool `{other}`"),
     };
-    text.chars().take(TOOL_ANSWER).collect()
+    fitted(&text, TOOL_ANSWER)
+}
+
+/// What a tool found, cut to a size a model can be handed — and saying so when it was cut, so
+/// that a list that stops is not read as a list that ended.
+fn fitted(text: &str, most: usize) -> String {
+    const CUT: &str = "\n(There is more than this; it was cut short here.)";
+    if text.chars().count() <= most {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(most.saturating_sub(CUT.len())).collect();
+    kept + CUT
+}
+
+/// The floor a conversation on the Floorplan page is about.
+fn floor_of(scope: &str) -> Option<FloorId> {
+    scope.strip_prefix("floorplan:")?.parse().ok()
+}
+
+/// How many floors and rooms one question may have added.
+const MOST_ADDED: usize = 12;
+
+/// How many times the model may reach for a tool in the Floorplan's chat.
+const PLAN_ROUNDS: u8 = 4;
+
+/// One change to how the home is arranged, asked for from the Floorplan's chat.
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+enum HomeOp {
+    AddFloor {
+        name: irori_types::Name,
+        #[serde(default)]
+        level: i8,
+    },
+    AddArea {
+        name: irori_types::Name,
+        #[serde(default)]
+        floor: Option<FloorId>,
+    },
+    RemoveFloor {
+        floor: FloorId,
+    },
+    RemoveArea {
+        area: irori_types::AreaId,
+    },
+}
+
+/// Adds floors and rooms the model asked for, and puts to the person the ones it asked to
+/// have removed.
+///
+/// Adding is what Settings does and is held to what Settings is: only an owner, and written to
+/// `areas.toml` at once — a room has to exist before its shape can be traced. Removing is not
+/// done from here at all. A floor or a room going takes things with it, a model can be wrong
+/// about what it was asked, and a picture it was shown can say anything; so the person is
+/// asked on the page, and the page removes what they say yes to, as themselves.
+async fn arrange(
+    env: &Env<'_>,
+    scope: &str,
+    args: &Value,
+    removals: &mut Vec<Removal>,
+    added: &mut usize,
+) -> String {
+    if !env.owner {
+        return "Only an owner of the home can add or remove floors and rooms. Nothing was \
+                changed."
+            .to_owned();
+    }
+    let ops: Result<Vec<HomeOp>, _> = match args.get("ops") {
+        Some(Value::String(text)) => serde_json::from_str(text),
+        Some(ops @ Value::Array(_)) => serde_json::from_value(ops.clone()),
+        _ => return "edit_home needs ops: a JSON array of changes.".to_owned(),
+    };
+    let ops = match ops {
+        Ok(ops) if ops.len() <= 40 => ops,
+        Ok(_) => return "That is more than 40 changes at once. Nothing was changed.".to_owned(),
+        Err(error) => return format!("those changes can't be read: {error}. Nothing was changed."),
+    };
+    let here = floor_of(scope);
+    let mut said = Vec::new();
+    let before = *added;
+    for op in ops {
+        // What is added is written at once and nobody is asked first, so one question only
+        // gets so many: a model that misread a plan, or was told to by something written in
+        // the picture it was shown, makes a handful of rooms and not a hundred.
+        if matches!(op, HomeOp::AddFloor { .. } | HomeOp::AddArea { .. }) {
+            if *added >= MOST_ADDED {
+                said.push(format!(
+                    "No more floors or rooms can be added for this one question ({MOST_ADDED} \
+                     is the most). The person can ask again for the rest."
+                ));
+                continue;
+            }
+            *added += 1;
+        }
+        match op {
+            HomeOp::AddFloor { name, level } => {
+                let made = env
+                    .config
+                    .edit(env.core, |settings| {
+                        let floor = irori_types::Floor {
+                            id: irori_core::new_floor_id(&name, &settings.floors),
+                            name: name.clone(),
+                            level,
+                        };
+                        settings.floors.push(floor.clone());
+                        settings.floors.sort_by(|a, b| a.id.cmp(&b.id));
+                        Ok(floor)
+                    })
+                    .await;
+                said.push(match made {
+                    Ok(floor) => format!("Added the floor `{}` ({}), saved.", floor.id, floor.name),
+                    Err(error) => format!("Couldn't add the floor {name}: {}.", edit_error(error)),
+                });
+            }
+            HomeOp::AddArea { name, floor } => {
+                let floor = floor.or_else(|| here.clone());
+                let made = env
+                    .config
+                    .edit(env.core, |settings| {
+                        if let Some(floor) = &floor
+                            && settings.floor(floor).is_none()
+                        {
+                            return Err(crate::config::Refused(format!(
+                                "there's no floor `{floor}`"
+                            )));
+                        }
+                        let area = irori_types::Area {
+                            id: irori_core::new_area_id(&name, &settings.areas),
+                            name: name.clone(),
+                            floor_id: floor.clone(),
+                        };
+                        settings.areas.push(area.clone());
+                        settings.areas.sort_by(|a, b| a.id.cmp(&b.id));
+                        Ok(area)
+                    })
+                    .await;
+                said.push(match made {
+                    Ok(area) => format!(
+                        "Added the room `{}` ({}), saved. It can be traced now, by that id.",
+                        area.id, area.name
+                    ),
+                    Err(error) => format!("Couldn't add the room {name}: {}.", edit_error(error)),
+                });
+            }
+            HomeOp::RemoveFloor { floor } => {
+                match env
+                    .core
+                    .floors()
+                    .into_iter()
+                    .find(|known| known.id == floor)
+                {
+                    Some(known) => {
+                        removals.push(Removal {
+                            kind: "floor",
+                            id: known.id.to_string(),
+                            name: known.name.to_string(),
+                        });
+                        said.push(format!(
+                            "The person is being asked whether to remove the floor `{floor}`. \
+                             It is still there until they say yes."
+                        ));
+                    }
+                    None => said.push(format!("There's no floor `{floor}`.")),
+                }
+            }
+            HomeOp::RemoveArea { area } => {
+                match env.core.areas().into_iter().find(|known| known.id == area) {
+                    Some(known) => {
+                        removals.push(Removal {
+                            kind: "area",
+                            id: known.id.to_string(),
+                            name: known.name.to_string(),
+                        });
+                        said.push(format!(
+                            "The person is being asked whether to remove the room `{area}`. It \
+                             is still there until they say yes."
+                        ));
+                    }
+                    None => said.push(format!("There's no room `{area}`.")),
+                }
+            }
+        }
+    }
+    if said.is_empty() {
+        return "There were no changes in that. Nothing was changed.".to_owned();
+    }
+    if *added > before {
+        // Unlike a drawing, which Cancel takes away. The person should hear it from the reply.
+        said.push(
+            "Say plainly that what was added is saved already, and stays even if the drawing \
+             is cancelled; it can be removed in Settings."
+                .to_owned(),
+        );
+    }
+    said.join("\n")
+}
+
+/// Why an edit to the home's own files didn't happen, in words for the model to pass on.
+fn edit_error(error: EditError) -> String {
+    match error {
+        EditError::Refused(why) => why.to_string(),
+        EditError::Io(error) => format!("the config directory couldn't be written ({error})"),
+    }
+}
+
+/// How many changes one call may ask for. A whole flat is a few dozen walls.
+const MOST_CHANGES: usize = 200;
+
+/// Makes the changes a model asked for to the plan the person is editing, and says what the
+/// floor reads as afterwards — or why nothing was changed, in words the model can act on.
+///
+/// Held to what the editor is held to: the changes are made to a copy, the copy has to pass
+/// the same check a saved plan does, and a room has to be one the home has. Nothing is written
+/// to the config directory from here. The page is sent the plan and keeps it or undoes it.
+fn draw(core: &Core, scope: &str, args: &Value, drawing: &mut Option<Floorplan>) -> String {
+    let (Some(plan), Some(floor)) = (drawing.as_mut(), floor_of(scope)) else {
+        return "The plan isn't open for editing. Ask the person to press Edit on the Floorplan \
+                page, then ask again."
+            .to_owned();
+    };
+    if !core.floors().iter().any(|known| known.id == floor) {
+        return format!("there's no floor `{floor}`");
+    }
+    // The array itself, or the array written out as text: models send either.
+    let ops: Result<Vec<PlanOp>, _> = match args.get("ops") {
+        Some(Value::String(text)) => serde_json::from_str(text),
+        Some(ops @ Value::Array(_)) => serde_json::from_value(ops.clone()),
+        _ => return "edit_floorplan needs ops: a JSON array of changes.".to_owned(),
+    };
+    let ops = match ops {
+        Ok(ops) => ops,
+        Err(error) => return format!("those changes can't be read: {error}. Nothing was changed."),
+    };
+    if ops.is_empty() {
+        return "There were no changes in that. Nothing was changed.".to_owned();
+    }
+    if ops.len() > MOST_CHANGES {
+        return format!("That is more than {MOST_CHANGES} changes at once. Nothing was changed.");
+    }
+    let areas = core.areas();
+    for op in &ops {
+        if let PlanOp::TraceArea { area, .. } = op
+            && !areas.iter().any(|known| &known.id == area)
+        {
+            let known = areas
+                .iter()
+                .map(|area| format!("`{}` ({})", area.id, area.name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return format!(
+                "there's no room `{area}`, and rooms are made in Settings, not here. The rooms \
+                 are: {known}. Nothing was changed."
+            );
+        }
+    }
+    let mut next = plan.clone();
+    let made = next
+        .level_mut(&floor)
+        .apply(&ops)
+        .and_then(|()| next.check());
+    if let Err(why) = made {
+        return format!("{why}. Nothing was changed.");
+    }
+    *plan = next;
+    format!(
+        "Done, and showing on the person's plan. It is not saved until they press Save.\n{}",
+        plan_brief(core, plan, &floor)
+    )
+}
+
+/// One floor as it is drawn, in words: its walls by number, the rooms traced on it and the
+/// ones that aren't yet, and where each device stands.
+fn plan_brief(core: &Core, plan: &Floorplan, floor: &FloorId) -> String {
+    let floors = core.floors();
+    let areas = core.areas();
+    let devices = core.devices();
+    let name = floors
+        .iter()
+        .find(|known| &known.id == floor)
+        .map(|known| known.name.to_string());
+    let Some(name) = name else {
+        return format!("there's no floor `{floor}`\n");
+    };
+    let nothing = Level::default();
+    let level = plan.level(floor).unwrap_or(&nothing);
+    let at = |point: irori_types::Point| format!("[{},{}]", point.x, point.y);
+    let room = |id: &irori_types::AreaId| {
+        areas.iter().find(|area| &area.id == id).map_or_else(
+            || format!("`{id}`"),
+            |area| format!("`{id}` ({})", area.name),
+        )
+    };
+    let mut text = format!(
+        "The floor `{floor}` ({name}) as drawn. Whole centimetres; x runs right and y runs down \
+         the page.\n"
+    );
+    if level.walls.is_empty() {
+        text.push_str("No walls are drawn.\n");
+    } else {
+        text.push_str("Walls:\n");
+    }
+    for (index, wall) in level.walls.iter().enumerate() {
+        text.push_str(&format!(
+            "{}. {} to {}, {:.0} cm long, {} cm thick",
+            index + 1,
+            at(wall.from),
+            at(wall.to),
+            wall.length(),
+            wall.thickness
+        ));
+        for (hole, opening) in wall.openings.iter().enumerate() {
+            text.push_str(&format!(
+                "; opening {}: {} at {}, {} wide",
+                hole + 1,
+                opening.kind.label().to_lowercase(),
+                opening.at,
+                opening.width
+            ));
+            if let Some(sensor) = &opening.sensor {
+                text.push_str(&format!(", follows {sensor}"));
+            }
+        }
+        text.push('\n');
+    }
+    if !level.areas.is_empty() {
+        text.push_str("Rooms traced:\n");
+    }
+    for placed in &level.areas {
+        let corners = placed
+            .points
+            .iter()
+            .map(|point| at(*point))
+            .collect::<Vec<_>>()
+            .join(" ");
+        text.push_str(&format!(
+            "- {}: {corners}, {}\n",
+            room(&placed.area),
+            placed.shade().name()
+        ));
+    }
+    // The rooms a drawing of this floor could still be given: the ones on it, and the ones
+    // nobody has put on a floor at all.
+    let untraced: Vec<String> = areas
+        .iter()
+        .filter(|area| area.floor_id.is_none() || area.floor_id.as_ref() == Some(floor))
+        .filter(|area| !level.areas.iter().any(|placed| placed.area == area.id))
+        .map(|area| room(&area.id))
+        .collect();
+    if !untraced.is_empty() {
+        text.push_str(&format!("Rooms not traced yet: {}\n", untraced.join(", ")));
+    }
+    if !level.devices.is_empty() {
+        text.push_str("Devices placed:\n");
+    }
+    for placed in &level.devices {
+        let known = devices
+            .iter()
+            .find(|device| device.id == placed.device)
+            .map_or_else(String::new, |device| format!(" ({})", device.name));
+        let standing = level
+            .areas
+            .iter()
+            .find(|area| area.contains(placed.at))
+            .map_or_else(String::new, |area| {
+                format!(", standing in {}", room(&area.area))
+            });
+        text.push_str(&format!(
+            "- `{}`{known} at {}{standing}\n",
+            placed.device,
+            at(placed.at)
+        ));
+    }
+    text
 }
 
 fn automations_extension() -> ExtensionId {
@@ -1736,6 +2393,11 @@ async fn system_prompt(
     scope: &str,
     provider: &Provider,
     status: &Status,
+    // The plan the person is editing, when the conversation is the Floorplan page's and they
+    // are.
+    drawing: Option<&Floorplan>,
+    // Why the plan they are editing can't be drawn on as it stands, when it can't.
+    unsound: Option<&str>,
 ) -> Result<String, String> {
     let local = provider.context();
     // What something is cut to: `tight` for a model on this machine, grown with its context,
@@ -1847,6 +2509,67 @@ async fn system_prompt(
              so.\n",
         );
         prompt.push_str(&brief);
+        return Ok(prompt);
+    }
+    if let Some(floor) = floor_of(scope) {
+        prompt.push_str(
+            "The person is on the Floorplan page, looking at one floor of the home as a drawing. \
+             Below is that floor as it is drawn, then the home's devices and its automations, \
+             so you can answer about the rooms, what is in them, and what acts on them. A room \
+             4 m by 3 m is 400 by 300; up the page is smaller y.\n",
+        );
+        match (drawing.is_some(), local.is_some()) {
+            _ if unsound.is_some() => prompt.push_str(&format!(
+                "The person is editing the plan, but you cannot draw on it as it stands: {}. \
+                 If you are asked to draw, say that needs putting right first, and what it \
+                 is. What is described below is the plan as it was last saved.\n",
+                unsound.unwrap_or_default()
+            )),
+            (true, false) => prompt.push_str(
+                "Here you may draw on the plan with `edit_floorplan`, whether or not the \
+                 person has pressed Edit — drawing opens the plan for editing if it wasn't: walls, doors, windows, and the outlines of rooms the home \
+                 already has. Put everything a request needs into one call. Draw a room as \
+                 walls that share their corners exactly, and trace the room on those same \
+                 corners. When the person doesn't say where, draw beside what is there, not \
+                 over it, and say where you put it. What you draw shows on their plan at once \
+                 as one step they can undo, and is saved only when they press Save: say so in \
+                 a few words. You cannot move devices.\n\
+                 With `edit_home` you may add floors and rooms, which are saved at once, not \
+                 with the drawing: make a room before tracing it, then trace it by the id you \
+                 are given back. Add only what the person asked for or what the plan they \
+                 attached shows. You may also ask for a floor or a room to be removed, only \
+                 when the person plainly asked for that; they are then asked to confirm on \
+                 the page, and nothing is removed until they do, so say that it is waiting on \
+                 them. Only an owner of the home can do either.\n",
+            ),
+            (true, true) => prompt.push_str(
+                "You cannot draw on the plan: drawing needs a cloud model, which is chosen in \
+                 Settings under Assistant. Say so if you are asked to draw.\n",
+            ),
+            (false, _) => prompt.push_str(
+                "You cannot draw on the plan now. If you are asked to, say the person needs to \
+                 press Edit on this page first.\n",
+            ),
+        }
+        if local.is_none() {
+            prompt.push_str(
+                "Tools read more than is pasted here: `read_floorplan` for this floor again or \
+                 another one, `list_automations` and `get_automation` for an automation's \
+                 logic.\n",
+            );
+        }
+        let plan = drawing.cloned().unwrap_or_else(|| env.core.floorplan());
+        let brief = plan_brief(env.core, &plan, &floor);
+        prompt.extend(brief.chars().take(within(LOCAL_BRIEF, PLAN_BRIEF)));
+        prompt.push('\n');
+        prompt.push_str(&home_brief(
+            &lines(env.core, None),
+            within(LOCAL_HOME, HOME_CAP),
+        ));
+        prompt.push_str(&automations_brief(
+            automations(env).await.as_deref().map_err(String::as_str),
+            within(LOCAL_GENERAL_AUTOMATIONS, GENERAL_AUTOMATIONS),
+        ));
         return Ok(prompt);
     }
     Err("that conversation doesn't exist".into())
@@ -2101,9 +2824,12 @@ pub fn check_scope(scope: &str) -> Result<(), String> {
         return Ok(());
     }
     let Some((kind, id)) = scope.split_once(':') else {
-        return Err("a conversation is general, settings, a device, or an automation".into());
+        return Err(
+            "a conversation is general, settings, a device, an automation, or a floor's plan"
+                .into(),
+        );
     };
-    let ok = matches!(kind, "device" | "automation")
+    let ok = matches!(kind, "device" | "automation" | "floorplan")
         && !id.is_empty()
         && id.len() <= 128
         && id
@@ -2361,6 +3087,9 @@ pub struct Turn<'a> {
     pub history: &'a History,
     pub db: &'a Path,
     pub log: &'a syslog::Log,
+    /// Whether whoever is asking may change how the home is set up: what adding a floor or a
+    /// room from the Floorplan's chat is held to, the same as adding one in Settings.
+    pub owner: bool,
 }
 
 impl<'a> Turn<'a> {
@@ -2371,6 +3100,7 @@ impl<'a> Turn<'a> {
             history: self.history,
             db: self.db,
             log: self.log,
+            owner: self.owner,
         }
     }
 }
@@ -2380,13 +3110,17 @@ pub async fn read_status(turn: Turn<'_>, data_dir: &Path) -> Status {
     status(&env, data_dir).await
 }
 
+/// `plan` is the floorplan the person is editing, when they asked from the Floorplan page with
+/// it open: what the model may draw on, and nothing that is saved from here.
 pub async fn take_turn(
     turn: Turn<'_>,
     scope: String,
     message: String,
+    plan: Option<Floorplan>,
+    attachment: Option<Attachment>,
     tx: mpsc::Sender<ChatEvent>,
 ) {
-    answer(turn.env(), scope, message, tx).await
+    answer(turn.env(), scope, message, plan, attachment, tx).await
 }
 
 /// How a turn that is no longer running came out.
@@ -2405,6 +3139,11 @@ pub struct Progress {
     pub text: String,
     /// The tool being run, or `queued`. `None` while the model thinks or writes.
     pub step: Option<String>,
+    /// The floors and rooms the person is being asked whether to remove.
+    pub asked: Vec<Removal>,
+    /// The plan as the model last drew it, when it has drawn on one. Shared rather than held:
+    /// every word of the answer copies this whole struct to whoever is following it.
+    pub plan: Option<Arc<Floorplan>>,
     pub ended: Option<Ended>,
 }
 
@@ -2456,8 +3195,30 @@ impl Pending {
         tokio::spawn(async move {
             let mut sent = 0usize;
             let mut step = None;
+            let mut drawn = None;
+            let mut asked = 0usize;
             loop {
                 let now = progress.borrow_and_update().clone();
+                // Only ever added to, like the text: what was sent is a prefix of it.
+                if let Some(more) = now.asked.get(asked..).filter(|more| !more.is_empty()) {
+                    asked = now.asked.len();
+                    if tx.send(ChatEvent::Confirm(more.to_vec())).await.is_err() {
+                        return;
+                    }
+                }
+                // The whole plan each time, so a page that reads it twice ends up where a page
+                // that read it once did.
+                if now.plan != drawn {
+                    drawn = now.plan.clone();
+                    if let Some(plan) = now.plan
+                        && tx
+                            .send(ChatEvent::Plan(Box::new((*plan).clone())))
+                            .await
+                            .is_err()
+                    {
+                        return;
+                    }
+                }
                 // Text is only ever added to, so what was sent is a whole prefix of it.
                 if let Some(more) = now.text.get(sent..).filter(|more| !more.is_empty()) {
                     sent = now.text.len();
@@ -2575,6 +3336,16 @@ impl Turns {
                         pending
                             .progress
                             .send_modify(|progress| progress.step = Some(tool));
+                    }
+                    ChatEvent::Confirm(removals) => {
+                        pending
+                            .progress
+                            .send_modify(|progress| progress.asked.extend(removals));
+                    }
+                    ChatEvent::Plan(plan) => {
+                        pending
+                            .progress
+                            .send_modify(|progress| progress.plan = Some(Arc::new(*plan)));
                     }
                     ChatEvent::Error(why) => return Ended::Failed(why),
                     ChatEvent::Done => return Ended::Done,
@@ -2713,8 +3484,84 @@ mod tests {
         assert!(check_scope("settings").is_ok());
         assert!(check_scope("general").is_ok());
         assert!(check_scope("device:lamp").is_ok());
+        assert!(check_scope("floorplan:ground").is_ok());
+        assert!(check_scope("floorplan:").is_err());
+        assert_eq!(
+            floor_of("floorplan:ground").map(|floor| floor.to_string()),
+            Some("ground".to_owned())
+        );
+        assert_eq!(floor_of("device:ground"), None);
         assert!(check_scope("settings:lamp").is_err());
         assert!(check_scope("logs").is_err());
+    }
+
+    fn shown(media_type: &str) -> Conversation {
+        let mut conversation = Conversation::from_turns("system", &[], "Draw this.");
+        conversation.items.clear();
+        conversation.items.push(Item::Shown(
+            "Draw this.".into(),
+            Attachment {
+                name: "plan".into(),
+                media_type: media_type.into(),
+                data: "QUJD".into(),
+            },
+        ));
+        conversation
+    }
+
+    /// Each provider is handed a file in its own words, with the question beside it.
+    #[test]
+    fn a_file_goes_to_each_provider_the_way_it_reads_one() {
+        let png = shown("image/png");
+        let openai = &openai_messages(&png)[1]["content"];
+        assert_eq!(openai[0]["text"], "Draw this.");
+        assert_eq!(openai[1]["image_url"]["url"], "data:image/png;base64,QUJD");
+        let anthropic = &anthropic_messages(&png)[0]["content"];
+        assert_eq!(anthropic[0]["type"], "image");
+        assert_eq!(anthropic[0]["source"]["data"], "QUJD");
+        assert_eq!(anthropic[1]["text"], "Draw this.");
+        assert_eq!(ollama_messages(&png)[1]["images"][0], "QUJD");
+
+        let pdf = shown("application/pdf");
+        assert_eq!(
+            anthropic_messages(&pdf)[0]["content"][0]["type"],
+            "document"
+        );
+        let file = &openai_messages(&pdf)[1]["content"][1];
+        assert_eq!(file["type"], "file");
+        assert_eq!(
+            file["file"]["file_data"],
+            "data:application/pdf;base64,QUJD"
+        );
+    }
+
+    #[test]
+    fn a_file_has_to_be_a_picture_or_a_pdf_and_whole() {
+        let file = |media_type: &str, data: &str| Attachment {
+            name: "plan.png".into(),
+            media_type: media_type.into(),
+            data: data.into(),
+        };
+        assert!(file("image/png", "QUJD").check().is_ok());
+        assert!(file("application/pdf", "QUJD").check().is_ok());
+        assert!(file("text/html", "QUJD").check().is_err());
+        assert!(file("image/png", "").check().is_err());
+        assert!(file("image/png", "not base64!").check().is_err());
+        let huge = "A".repeat(Attachment::MOST + 1);
+        assert!(file("image/png", &huge).check().is_err());
+        let named = Attachment {
+            name: "a\nb".repeat(60),
+            ..file("image/png", "QUJD")
+        };
+        assert!(named.said().chars().count() <= 80 && !named.said().contains('\n'));
+    }
+
+    #[test]
+    fn what_a_tool_found_says_when_it_was_cut_short() {
+        assert_eq!(fitted("short", 100), "short");
+        let long = fitted(&"wall\n".repeat(100), 120);
+        assert_eq!(long.chars().count(), 120);
+        assert!(long.ends_with("cut short here.)"), "{long}");
     }
 
     #[test]

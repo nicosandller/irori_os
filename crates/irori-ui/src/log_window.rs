@@ -457,7 +457,7 @@ fn looks_like_timestamp(word: &str) -> bool {
 /// the write was actually allowed — it rejects without a user gesture, without permission, or
 /// outside a secure context — so it is awaited rather than fired and forgotten. Reporting
 /// "Copied" for a copy that didn't happen is the one thing a copy button must not do.
-async fn write_to_clipboard(text: &str) -> bool {
+pub(crate) async fn write_to_clipboard(text: &str) -> bool {
     let Some(window) = web_sys::window() else {
         return false;
     };
@@ -467,7 +467,7 @@ async fn write_to_clipboard(text: &str) -> bool {
 }
 
 /// The copy button's picture: a clipboard, and the check it turns into once the copy worked.
-fn copy_icon() -> impl IntoView {
+pub(crate) fn copy_icon() -> impl IntoView {
     view! {
         <svg class="copy-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none"
              stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">

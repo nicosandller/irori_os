@@ -143,10 +143,87 @@ pub struct PlacedArea {
         skip_serializing_if = "PlacedArea::label_is_middle"
     )]
     pub label: Point,
+    /// The colour its floor is washed with. Absent, the room gets one picked from its id, as
+    /// every room did before this could be said — so a plan nobody has coloured writes nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tint: Option<Tint>,
 }
 
 fn default_label() -> Point {
     Point::new(0, 0)
+}
+
+/// A colour a room's floor can be washed with.
+///
+/// A name rather than a colour value, because the plan is drawn on paper by day and on slate by
+/// night and no single value reads on both: the page decides what each name looks like on the
+/// surface it is drawing on. A short list rather than a free choice for the same reason — and
+/// because rooms side by side only need telling apart, not matching the curtains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Tint {
+    Ember,
+    Moss,
+    Slate,
+    Sand,
+    Plum,
+    Teal,
+    Rose,
+    Sky,
+    Olive,
+    Stone,
+}
+
+impl Tint {
+    /// Every tint, in the order a palette shows them.
+    pub const ALL: [Tint; 10] = [
+        Tint::Ember,
+        Tint::Moss,
+        Tint::Slate,
+        Tint::Sand,
+        Tint::Plum,
+        Tint::Teal,
+        Tint::Rose,
+        Tint::Sky,
+        Tint::Olive,
+        Tint::Stone,
+    ];
+
+    /// The word it is written as in the file, which is also what the page calls it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Tint::Ember => "ember",
+            Tint::Moss => "moss",
+            Tint::Slate => "slate",
+            Tint::Sand => "sand",
+            Tint::Plum => "plum",
+            Tint::Teal => "teal",
+            Tint::Rose => "rose",
+            Tint::Sky => "sky",
+            Tint::Olive => "olive",
+            Tint::Stone => "stone",
+        }
+    }
+
+    /// The tint a room has until somebody picks one: chosen from its id, so the same room is
+    /// the same colour every time and two rooms side by side are almost never alike. A sum of
+    /// the id's bytes rather than a hash with a random seed, which would differ between the
+    /// server and the page. From the first six only, which are the ones every plan drawn before
+    /// tints could be chosen already wears.
+    pub fn of(area: &AreaId) -> Tint {
+        const FIRST: u32 = 6;
+        let sum = area.as_str().bytes().fold(0u32, |sum, byte| {
+            sum.wrapping_mul(31).wrapping_add(u32::from(byte))
+        });
+        Tint::ALL[(sum % FIRST) as usize]
+    }
+}
+
+impl PlacedArea {
+    /// The colour this room is drawn in: the one picked for it, or its own.
+    pub fn shade(&self) -> Tint {
+        self.tint.unwrap_or_else(|| Tint::of(&self.area))
+    }
 }
 
 impl PlacedArea {
@@ -520,6 +597,154 @@ impl Level {
     }
 }
 
+/// One change to a floor's drawing, said in words rather than made with a pointer: what the
+/// assistant asks for when it is asked to draw.
+///
+/// Walls and openings are named by **number**, counted from one, as a description of the plan
+/// lists them — the same numbers [`Floorplan::check`] uses when it says which wall is wrong. A
+/// batch of these is read against the plan as it stood before the batch: nothing is taken away
+/// until everything has been added, so removing wall 2 doesn't turn wall 3 into wall 2 halfway
+/// through, and the walls a batch adds are numbered on from the last one that was there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PlanOp {
+    AddWall {
+        from: Point,
+        to: Point,
+        #[serde(default)]
+        thickness: Option<u32>,
+    },
+    /// Cuts a door or a window into a wall, `at` centimetres along it from its `from` end.
+    AddOpening {
+        wall: usize,
+        kind: OpeningKind,
+        at: i32,
+        #[serde(default)]
+        width: Option<u32>,
+        #[serde(default)]
+        side: Option<Side>,
+        #[serde(default)]
+        hinge: Option<Hinge>,
+    },
+    /// Gives a room its shape, in place of the one it had on this floor if it had one.
+    TraceArea {
+        area: AreaId,
+        points: Vec<Point>,
+        #[serde(default)]
+        tint: Option<Tint>,
+    },
+    RemoveWall {
+        wall: usize,
+    },
+    RemoveOpening {
+        wall: usize,
+        opening: usize,
+    },
+    RemoveArea {
+        area: AreaId,
+    },
+}
+
+impl Level {
+    /// Makes a batch of changes to this floor, all of them or none: a batch that asks for
+    /// something that can't be done leaves the floor as it was and says which change it was.
+    ///
+    /// Only what a single floor can know is judged here — that a numbered wall exists, that a
+    /// door fits. Whether a room is one the home has is the caller's to ask, and whether the
+    /// result can be drawn is [`Floorplan::check`]'s.
+    pub fn apply(&mut self, ops: &[PlanOp]) -> Result<(), PlanError> {
+        let mut next = self.clone();
+        let mut walls_gone = std::collections::BTreeSet::new();
+        let mut openings_gone = std::collections::BTreeSet::new();
+        let numbered = |count: usize, number: usize, what: &str| -> Result<usize, PlanError> {
+            number
+                .checked_sub(1)
+                .filter(|index| *index < count)
+                .ok_or_else(|| PlanError(format!("there is no {what} {number}")))
+        };
+        for (step, op) in ops.iter().enumerate() {
+            let said = |PlanError(why): PlanError| PlanError(format!("change {}: {why}", step + 1));
+            match op {
+                PlanOp::AddWall {
+                    from,
+                    to,
+                    thickness,
+                } => {
+                    let thickness = thickness.unwrap_or(Wall::DEFAULT_THICKNESS);
+                    if !Wall::THICKNESS_RANGE.contains(&thickness) {
+                        return Err(said(PlanError(format!(
+                            "a wall is {} to {} cm thick, not {thickness}",
+                            Wall::THICKNESS_RANGE.start(),
+                            Wall::THICKNESS_RANGE.end()
+                        ))));
+                    }
+                    next.walls.push(Wall {
+                        thickness,
+                        ..Wall::new(*from, *to)
+                    });
+                }
+                PlanOp::AddOpening {
+                    wall,
+                    kind,
+                    at,
+                    width,
+                    side,
+                    hinge,
+                } => {
+                    let index = numbered(next.walls.len(), *wall, "wall").map_err(said)?;
+                    next.walls[index].openings.push(Opening {
+                        side: side.unwrap_or_default(),
+                        hinge: hinge.unwrap_or_default(),
+                        ..Opening::new(*kind, *at, width.unwrap_or(kind.default_width()))
+                    });
+                }
+                PlanOp::TraceArea { area, points, tint } => {
+                    // The name stays where it was dragged to, and the colour stays unless a
+                    // new one is asked for: both belong to the room, not to its outline.
+                    let before = next.areas.iter().find(|placed| &placed.area == area);
+                    let label = before.map_or(default_label(), |placed| placed.label);
+                    let tint = tint.or(before.and_then(|placed| placed.tint));
+                    next.areas.retain(|placed| &placed.area != area);
+                    next.areas.push(PlacedArea {
+                        area: area.clone(),
+                        points: points.clone(),
+                        label,
+                        tint,
+                    });
+                }
+                PlanOp::RemoveWall { wall } => {
+                    let index = numbered(next.walls.len(), *wall, "wall").map_err(said)?;
+                    walls_gone.insert(index);
+                }
+                PlanOp::RemoveOpening { wall, opening } => {
+                    let index = numbered(next.walls.len(), *wall, "wall").map_err(said)?;
+                    let hole = numbered(next.walls[index].openings.len(), *opening, "opening")
+                        .map_err(|PlanError(why)| PlanError(format!("{why} in wall {wall}")))
+                        .map_err(said)?;
+                    openings_gone.insert((index, hole));
+                }
+                PlanOp::RemoveArea { area } => {
+                    if !next.areas.iter().any(|placed| &placed.area == area) {
+                        return Err(said(PlanError(format!(
+                            "`{area}` isn't drawn on this floor"
+                        ))));
+                    }
+                    next.areas.retain(|placed| &placed.area != area);
+                }
+            }
+        }
+        // From the far end back, so taking one away doesn't renumber the ones still to go.
+        for (wall, opening) in openings_gone.into_iter().rev() {
+            next.walls[wall].openings.remove(opening);
+        }
+        for wall in walls_gone.into_iter().rev() {
+            next.walls.remove(wall);
+        }
+        *self = next;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,6 +768,7 @@ mod tests {
             area: id.parse().expect("a valid area id"),
             points: points.iter().map(|(x, y)| Point::new(*x, *y)).collect(),
             label: Point::new(0, 0),
+            tint: None,
         }
     }
 
@@ -774,6 +1000,36 @@ mod tests {
         assert_eq!(from_file.label, Point::new(0, 0));
     }
 
+    /// A room keeps the colour it was given, says it by name, and a room nobody coloured says
+    /// nothing and wears the colour its id picks — the same one every time.
+    #[test]
+    fn a_room_wears_the_colour_it_was_given_or_its_own() {
+        let square = &[(0, 0), (400, 0), (400, 300), (0, 300)][..];
+        let plain = area("kitchen", square);
+        assert!(
+            !serde_json::to_string(&plain)
+                .expect("json")
+                .contains("tint")
+        );
+        assert_eq!(plain.shade(), Tint::of(&plain.area));
+        assert_eq!(plain.shade(), area("kitchen", square).shade());
+
+        let painted = PlacedArea {
+            tint: Some(Tint::Sky),
+            ..plain
+        };
+        let json = serde_json::to_string(&painted).expect("json");
+        assert!(json.contains(r#""tint":"sky""#), "{json}");
+        let back: PlacedArea = serde_json::from_str(&json).expect("json");
+        assert_eq!(back.shade(), Tint::Sky);
+
+        for tint in Tint::ALL {
+            let written = serde_json::to_string(&tint).expect("json");
+            assert_eq!(written, format!("\"{}\"", tint.name()));
+        }
+        assert!(serde_json::from_str::<Tint>(r##""#c4552b""##).is_err());
+    }
+
     /// A door drawn before it could be told which way it swings reads as it always did, and
     /// writes nothing new; one that has been told keeps what it was told.
     #[test]
@@ -847,6 +1103,133 @@ mod tests {
             r#"{"device":"demo_lamp","at":[120,90]}"#,
             "and nothing new is written for it"
         );
+    }
+
+    fn ops(json: &str) -> Vec<PlanOp> {
+        serde_json::from_str(json).expect("a batch of changes")
+    }
+
+    /// A room is four walls, a door and an outline, asked for in one go — which is how the
+    /// assistant asks, because it gets few goes.
+    #[test]
+    fn a_batch_of_changes_draws_a_room() {
+        let mut level = Level::default();
+        level
+            .apply(&ops(
+                r#"[
+                    {"op":"add_wall","from":[0,0],"to":[400,0],"thickness":20},
+                    {"op":"add_wall","from":[400,0],"to":[400,300]},
+                    {"op":"add_wall","from":[400,300],"to":[0,300]},
+                    {"op":"add_wall","from":[0,300],"to":[0,0]},
+                    {"op":"add_opening","wall":3,"kind":"door","at":200},
+                    {"op":"add_opening","wall":1,"kind":"window","at":200,"width":120,"side":"right"},
+                    {"op":"trace_area","area":"kitchen","points":[[0,0],[400,0],[400,300],[0,300]],"tint":"sky"}
+                ]"#,
+            ))
+            .expect("a room");
+        assert_eq!(level.walls.len(), 4);
+        assert_eq!(
+            (level.walls[0].thickness, level.walls[1].thickness),
+            (20, Wall::DEFAULT_THICKNESS)
+        );
+        assert_eq!(
+            level.walls[2].openings,
+            vec![Opening::new(OpeningKind::Door, 200, 80)]
+        );
+        assert_eq!(level.walls[0].openings[0].side, Side::Right);
+        assert_eq!(level.areas[0].shade(), Tint::Sky);
+        assert!(on_ground(level).check().is_ok());
+    }
+
+    /// Numbers mean the plan as it was described, all the way through a batch.
+    #[test]
+    fn what_a_batch_removes_is_named_by_the_numbers_it_was_read_with() {
+        let mut level = Level {
+            walls: vec![
+                wall((0, 0), (400, 0)),
+                wall((400, 0), (400, 300)),
+                wall((400, 300), (0, 300)),
+            ],
+            ..Level::default()
+        };
+        level.walls[2].openings = vec![
+            Opening::new(OpeningKind::Door, 100, 80),
+            Opening::new(OpeningKind::Window, 300, 100),
+        ];
+        level
+            .apply(&ops(r#"[
+                    {"op":"remove_wall","wall":1},
+                    {"op":"remove_wall","wall":2},
+                    {"op":"remove_opening","wall":3,"opening":1},
+                    {"op":"add_wall","from":[0,300],"to":[0,0]},
+                    {"op":"add_opening","wall":4,"kind":"door","at":150}
+                ]"#))
+            .expect("changes that can all be made");
+        assert_eq!(
+            level
+                .walls
+                .iter()
+                .map(|wall| (wall.from, wall.openings.len()))
+                .collect::<Vec<_>>(),
+            vec![(Point::new(400, 300), 1), (Point::new(0, 300), 1)]
+        );
+        assert_eq!(level.walls[0].openings[0].kind, OpeningKind::Window);
+    }
+
+    /// A room traced again keeps what was said about the room, and a batch that can't be made
+    /// in full isn't made at all.
+    #[test]
+    fn a_batch_is_all_or_nothing_and_says_which_change_was_wrong() {
+        let square = &[(0, 0), (400, 0), (400, 300), (0, 300)][..];
+        let mut level = Level {
+            walls: vec![wall((0, 0), (400, 0))],
+            areas: vec![PlacedArea {
+                label: Point::new(30, -40),
+                tint: Some(Tint::Moss),
+                ..area("kitchen", square)
+            }],
+            ..Level::default()
+        };
+        let before = level.clone();
+
+        let refused = |level: &mut Level, json: &str| {
+            let error = level
+                .apply(&ops(json))
+                .expect_err("a change that can't be made");
+            error.to_string()
+        };
+        let why = refused(
+            &mut level,
+            r#"[{"op":"add_wall","from":[0,0],"to":[0,300]},{"op":"remove_wall","wall":7}]"#,
+        );
+        assert!(why.contains("change 2") && why.contains("wall 7"), "{why}");
+        assert_eq!(level, before, "the wall before it wasn't added either");
+        let why = refused(
+            &mut level,
+            r#"[{"op":"remove_opening","wall":1,"opening":1}]"#,
+        );
+        assert!(why.contains("opening 1 in wall 1"), "{why}");
+        let why = refused(&mut level, r#"[{"op":"remove_area","area":"hall"}]"#);
+        assert!(why.contains("hall"), "{why}");
+        let why = refused(
+            &mut level,
+            r#"[{"op":"add_wall","from":[0,0],"to":[0,300],"thickness":0}]"#,
+        );
+        assert!(why.contains("thick"), "{why}");
+        assert!(serde_json::from_str::<Vec<PlanOp>>(r#"[{"op":"paint_wall","wall":1}]"#).is_err());
+        assert_eq!(level, before);
+
+        level
+            .apply(&ops(
+                r#"[{"op":"trace_area","area":"kitchen","points":[[0,0],[500,0],[500,300],[0,300]]}]"#,
+            ))
+            .expect("a room traced again");
+        assert_eq!(level.areas.len(), 1);
+        assert_eq!(
+            (level.areas[0].label, level.areas[0].tint),
+            (Point::new(30, -40), Some(Tint::Moss))
+        );
+        assert_eq!(level.areas[0].points[1], Point::new(500, 0));
     }
 
     /// The plan a first run has: one that says nothing, and writes nothing.

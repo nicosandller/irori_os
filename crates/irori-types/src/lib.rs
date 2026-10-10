@@ -39,8 +39,8 @@ pub use extension::{
     RunCommand, SerialPath, Version,
 };
 pub use floorplan::{
-    Floorplan, Hinge, Level, Opening, OpeningKind, PlacedArea, PlacedDevice, PlanError, Point,
-    Side, Wall,
+    Floorplan, Hinge, Level, Opening, OpeningKind, PlacedArea, PlacedDevice, PlanError, PlanOp,
+    Point, Side, Tint, Wall,
 };
 pub use home::{HomeSettings, Location, TimeZoneName};
 pub use id::{

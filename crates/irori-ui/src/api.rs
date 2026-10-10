@@ -1189,6 +1189,12 @@ pub enum Streamed {
     Delta(String),
     /// The model has gone to look something up. The tool's name.
     Step(String),
+    /// The model drew on the floorplan being edited. The whole plan as it now stands, for the
+    /// Floorplan page to take as its working copy; nothing has been saved.
+    Plan(Box<Floorplan>),
+    /// The model asked for floors or rooms to be removed. It can't remove them: the person is
+    /// asked here, and the page removes what they say yes to.
+    Confirm(Vec<Removal>),
     Failed(String),
     Done,
 }
@@ -1201,13 +1207,69 @@ pub struct Progress {
     pub total: u64,
 }
 
-/// Asks, and hands each piece of the answer to `on` as it arrives.
+/// A floor or a room the assistant asked to have removed.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Removal {
+    /// `floor` or `area`.
+    pub kind: String,
+    pub id: String,
+    pub name: String,
+}
+
+/// A picture or a PDF given with a question: a floorplan somebody already has, for the model
+/// to draw the home from. `data` is the file in base64.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Attachment {
+    pub name: String,
+    pub media_type: String,
+    pub data: String,
+}
+
+/// A file's bytes as base64, which is how it travels inside a question.
+pub fn base64(bytes: &[u8]) -> String {
+    const LETTERS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut text = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let three = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let sixes = [
+            three[0] >> 2,
+            (three[0] & 0b11) << 4 | three[1] >> 4,
+            (three[1] & 0b1111) << 2 | three[2] >> 6,
+            three[2] & 0b11_1111,
+        ];
+        for (place, six) in sixes.into_iter().enumerate() {
+            // Past the end of the file there is nothing to say, and `=` says so.
+            if place <= chunk.len() {
+                text.push(char::from(LETTERS[usize::from(six)]));
+            } else {
+                text.push('=');
+            }
+        }
+    }
+    text
+}
+
+/// Asks, and hands each piece of the answer to `on` as it arrives. `plan` is the floorplan on
+/// the page the question comes from — what the model may draw on — and `attachment` a picture
+/// or PDF to draw it from.
 pub async fn assistant_ask(
     scope: &str,
     message: &str,
+    plan: Option<&Floorplan>,
+    attachment: Option<&Attachment>,
     on: impl FnMut(Streamed),
 ) -> Result<(), String> {
-    let body = serde_json::json!({ "scope": scope, "message": message });
+    let mut body = serde_json::json!({ "scope": scope, "message": message });
+    if let Some(plan) = plan {
+        body["plan"] = serde_json::to_value(plan).map_err(|error| error.to_string())?;
+    }
+    if let Some(attachment) = attachment {
+        body["attachment"] = serde_json::to_value(attachment).map_err(|error| error.to_string())?;
+    }
     stream("/api/assistant/turns", &body, on).await
 }
 
@@ -1315,6 +1377,15 @@ pub async fn assistant_uninstall() -> Result<AssistantStatus, String> {
     response.json().await.map_err(unreachable)
 }
 
+/// Asks the cloud model that is set up whether it answers, and says why when it doesn't.
+pub async fn assistant_check() -> Result<(), String> {
+    let response = post("/api/assistant/check")
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
 fn encode_scope(scope: &str) -> String {
     scope.replace(':', "%3A")
 }
@@ -1403,6 +1474,16 @@ impl Events {
                 events.push(Streamed::Delta(delta.to_owned()));
             } else if let Some(step) = value["step"].as_str() {
                 events.push(Streamed::Step(step.to_owned()));
+            } else if let Some(asked) = value.get("confirm") {
+                if let Ok(asked) = serde_json::from_value::<Vec<Removal>>(asked.clone()) {
+                    events.push(Streamed::Confirm(asked));
+                }
+            } else if let Some(plan) = value.get("plan") {
+                // A plan this page can't read is one it can't draw, so it is left alone
+                // rather than taken half-understood.
+                if let Ok(plan) = serde_json::from_value::<Floorplan>(plan.clone()) {
+                    events.push(Streamed::Plan(Box::new(plan)));
+                }
             } else if value["done"] == true {
                 events.push(Streamed::Done);
             }
@@ -1476,6 +1557,30 @@ mod tests {
                 "cut at {cut}"
             );
         }
+    }
+
+    #[test]
+    fn a_file_is_written_in_base64_whatever_its_length() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"A"), "QQ==");
+        assert_eq!(base64(b"AB"), "QUI=");
+        assert_eq!(base64(b"ABC"), "QUJD");
+        assert_eq!(base64(&[0xff, 0xfe, 0xfd, 0xfc]), "//79/A==");
+    }
+
+    /// A plan the model drew arrives whole, and one this page can't read is not taken.
+    #[test]
+    fn a_plan_the_model_drew_is_read_off_the_stream() {
+        let mut events = Events::default();
+        let got = events.push(
+            b"data: {\"plan\":{\"floors\":{\"ground\":{\"walls\":[{\"from\":[0,0],\"to\":[400,0]}]}}}}\n\n\
+              data: {\"plan\":{\"storeys\":{}}}\n\ndata: {\"done\":true}\n\n",
+        );
+        let [Streamed::Plan(plan), Streamed::Done] = got.as_slice() else {
+            panic!("{got:?}");
+        };
+        let ground = plan.floors.values().next().expect("one floor");
+        assert_eq!(ground.walls.len(), 1);
     }
 
     #[test]

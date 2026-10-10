@@ -35,6 +35,29 @@ struct Thread {
     round: RwSignal<u32>,
     /// How much of the model's context the last answer took.
     used: RwSignal<Option<api::AssistantContext>>,
+    /// The Floorplan page's working copy, while that page is open.
+    desk: StoredValue<Option<Desk>>,
+    /// The picture or PDF that will go with the next question.
+    attached: RwSignal<Option<api::Attachment>>,
+    /// Floors and rooms the assistant asked to have removed, waiting on a yes or a no.
+    asked: RwSignal<Vec<api::Removal>>,
+    /// The ones already answered, for this question: an answer read again from its start
+    /// asks again, and somebody who said "keep it" has said it.
+    answered: StoredValue<Vec<api::Removal>>,
+}
+
+/// The plan being edited on the Floorplan page, as the assistant reaches it: `read` is the
+/// working copy while somebody is editing (and nothing otherwise), and `take` hands the page a
+/// plan the model drew, to keep as one step it can undo.
+///
+/// The page lays this down while it is open and lifts it when it goes, so a conversation never
+/// holds on to an editor that is no longer there.
+#[derive(Debug, Clone, Copy)]
+pub struct Desk {
+    pub read: Callback<(), Option<irori_types::Floorplan>>,
+    /// The conversation it was drawn in, and the plan: the page takes it only for the floor it
+    /// is showing.
+    pub take: Callback<(String, irori_types::Floorplan)>,
 }
 
 /// Every conversation this page has opened, by what it is about. Kept by the shell and not by
@@ -46,6 +69,7 @@ pub struct Chats {
     /// that first opened the conversation.
     owner: Owner,
     threads: StoredValue<HashMap<String, Thread>>,
+    desk: StoredValue<Option<Desk>>,
 }
 
 impl Chats {
@@ -54,7 +78,14 @@ impl Chats {
         Self {
             owner: Owner::current().unwrap_or_default(),
             threads: StoredValue::new(HashMap::new()),
+            desk: StoredValue::new(None),
         }
+    }
+
+    /// The Floorplan page saying where its working copy is, or — with `None` — that it has
+    /// gone.
+    pub fn lay(&self, desk: Option<Desk>) {
+        self.desk.set_value(desk);
     }
 
     fn thread(&self, scope: &str) -> Thread {
@@ -75,6 +106,10 @@ impl Chats {
             waited: RwSignal::new(0),
             round: RwSignal::new(0),
             used: RwSignal::new(None),
+            desk: self.desk,
+            attached: RwSignal::new(None),
+            asked: RwSignal::new(Vec::new()),
+            answered: StoredValue::new(Vec::new()),
         });
         self.threads.update_value(|threads| {
             threads.insert(scope.to_owned(), thread);
@@ -105,13 +140,31 @@ impl Thread {
     }
 
     /// What each piece of an answer does to the page.
-    fn hear(self) -> impl FnMut(Streamed) {
+    fn hear(self, scope: &str) -> impl FnMut(Streamed) + use<> {
+        let scope = scope.to_owned();
         move |event| match event {
             Streamed::Delta(delta) => {
                 self.writing.update(|answer| answer.push_str(&delta));
                 self.phase.set(Phase::Writing);
             }
             Streamed::Step(tool) => self.phase.set(Phase::Looking(tool)),
+            // Only the Floorplan page can take a plan, and only while it is there to.
+            Streamed::Plan(plan) => {
+                if let Some(desk) = self.desk.get_value() {
+                    desk.take.run((scope.clone(), *plan));
+                }
+            }
+            // Each is asked once, however many times the answer is read from its start.
+            Streamed::Confirm(removals) => self.asked.update(|asked| {
+                for removal in removals {
+                    let settled = self
+                        .answered
+                        .with_value(|answered| answered.contains(&removal));
+                    if !settled && !asked.contains(&removal) {
+                        asked.push(removal);
+                    }
+                }
+            }),
             Streamed::Failed(_) | Streamed::Done => {}
         }
     }
@@ -180,7 +233,7 @@ impl Thread {
                 })
             });
             self.wait(pending.seconds);
-            let result = api::assistant_follow(&scope, self.hear()).await;
+            let result = api::assistant_follow(&scope, self.hear(&scope)).await;
             self.settle(&scope, pending.question, result).await;
         });
     }
@@ -190,11 +243,19 @@ impl Thread {
         if self.asking.get_untracked() {
             return;
         }
+        let attachment = self.attached.get_untracked();
         let text = self.draft.get_untracked().trim().to_owned();
-        if text.is_empty() {
-            return;
-        }
+        // A picture with nothing said about it is a request to draw it.
+        let text = match (&attachment, text.is_empty()) {
+            (Some(_), true) => "Draw this floorplan.".to_owned(),
+            (None, true) => return,
+            _ => text,
+        };
         self.draft.set(String::new());
+        self.attached.set(None);
+        // A new question starts with nothing asked and nothing answered.
+        self.asked.set(Vec::new());
+        self.answered.set_value(Vec::new());
         self.trouble.set(None);
         self.unanswered.set(None);
         self.wait(0);
@@ -204,8 +265,22 @@ impl Thread {
                 body: text.clone(),
             })
         });
+        // The plan being edited goes with a question asked on the Floorplan page, so the model
+        // sees — and may draw on — what is on the screen and not what was last saved.
+        let plan = scope
+            .starts_with("floorplan:")
+            .then(|| self.desk.get_value())
+            .flatten()
+            .and_then(|desk| desk.read.run(()));
         spawn_local(async move {
-            let result = api::assistant_ask(&scope, &text, self.hear()).await;
+            let result = api::assistant_ask(
+                &scope,
+                &text,
+                plan.as_ref(),
+                attachment.as_ref(),
+                self.hear(&scope),
+            )
+            .await;
             self.settle(&scope, text, result).await;
         });
     }
@@ -260,6 +335,41 @@ pub struct ModelLog(pub RwSignal<bool>);
 #[derive(Debug, Clone, Copy)]
 pub struct Asking(pub RwSignal<Option<AskAt>>);
 
+/// A paperclip: a file to go with the question.
+const CLIP: &str = r#"<path d="M20 11.5l-8 8a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7L9.8 17a1.7 1.7 0 0 1-2.4-2.4L15 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
+
+/// The most a file to attach may be: what Irori will take (`Attachment::MOST` on the server).
+const MOST_ATTACHED: f64 = 8.0 * 1024.0 * 1024.0;
+
+/// Reads a chosen file into what goes with a question, or says why it can't go.
+async fn read_file(file: web_sys::File) -> Result<api::Attachment, String> {
+    let media_type = file.type_();
+    let known = matches!(
+        media_type.as_str(),
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "application/pdf"
+    );
+    if !known {
+        return Err(
+            "That isn't a picture or a PDF. A PNG, JPEG, WebP, GIF or PDF can be read.".into(),
+        );
+    }
+    if file.size() > MOST_ATTACHED {
+        return Err("That file is too big. Up to 8 MB can be read.".into());
+    }
+    let buffer = wasm_bindgen_futures::JsFuture::from(file.array_buffer())
+        .await
+        .map_err(|_| "That file couldn't be read.".to_owned())?;
+    let bytes = web_sys::js_sys::Uint8Array::new(&buffer).to_vec();
+    Ok(api::Attachment {
+        name: file.name(),
+        media_type,
+        data: api::base64(&bytes),
+    })
+}
+
+/// How wide the chat window is drawn, in pixels: `.ask-pop`'s 26rem.
+const POP_WIDTH: f64 = 416.0;
+
 /// What an Ask button does: Settings while no model is ready, and otherwise a chat window
 /// under the button, whose bottom edge is `bottom` and right edge `right`. Asking the same
 /// thing again closes it.
@@ -299,7 +409,11 @@ pub fn ask(
         title,
         // Under the button, but never so low that the chat has no room to be a chat.
         top: (bottom + 8.0).min(height - 360.0).max(8.0),
-        right: (width - right).max(12.0),
+        // Its right edge under the button's, unless the button is so far left that the chat
+        // would hang off that side of the window: then as far left as it fits.
+        right: (width - right)
+            .min(width - POP_WIDTH.min(width - 24.0) - 12.0)
+            .max(12.0),
     }));
 }
 
@@ -443,6 +557,9 @@ impl Phase {
                 "read_settings" => "Reading Irori's settings",
                 "list_automations" => "Looking at the automations",
                 "get_automation" => "Reading an automation",
+                "read_floorplan" => "Looking at the plan",
+                "edit_floorplan" => "Drawing on the plan",
+                "edit_home" => "Arranging floors and rooms",
                 _ => "Looking something up",
             },
             Self::Writing => "Writing",
@@ -468,8 +585,37 @@ pub fn Chat(
         unanswered,
         waited,
         used,
+        attached,
+        asked,
+        answered,
         ..
     } = thread;
+    let live = expect_context::<crate::Live>();
+    // Removes what the person said yes to, as the person: the same request Settings makes,
+    // held to the same rules about who may.
+    let remove = move |removal: api::Removal| {
+        spawn_local(async move {
+            let done = match removal.kind.as_str() {
+                "floor" => match removal.id.parse() {
+                    Ok(id) => api::remove_floor(&id).await,
+                    Err(_) => Err(format!("there's no floor `{}`", removal.id)),
+                },
+                _ => match removal.id.parse() {
+                    Ok(id) => api::remove_area(&id).await,
+                    Err(_) => Err(format!("there's no room `{}`", removal.id)),
+                },
+            };
+            match done {
+                Ok(()) => {
+                    trouble.set(None);
+                    crate::refresh(live);
+                }
+                Err(why) => trouble.set(Some(why)),
+            }
+            answered.update_value(|answered| answered.push(removal.clone()));
+            asked.update(|asked| asked.retain(|waiting| *waiting != removal));
+        });
+    };
     let log = NodeRef::<leptos::html::Div>::new();
     let scope = StoredValue::new(scope);
     let assistant = expect_context::<Assistant>();
@@ -515,9 +661,100 @@ pub fn Chat(
 
     let empty = move || messages.with(Vec::is_empty) && !asking.get();
     let about = title.clone();
+    // The one conversation that can change something: the drawing on the Floorplan page.
+    let on_plan = scope.with_value(|scope| scope.starts_with("floorplan:"));
+    let local = move || {
+        assistant
+            .0
+            .get()
+            .is_some_and(|status| status.mode == "local")
+    };
+
+    // Takes a file to go with the next question, however it arrived: chosen, or dropped.
+    let attach = move |file: web_sys::File| {
+        spawn_local(async move {
+            match read_file(file).await {
+                Ok(file) => {
+                    trouble.set(None);
+                    attached.set(Some(file));
+                }
+                Err(why) => trouble.set(Some(why)),
+            }
+        });
+    };
+    // How many of the chat's parts a dragged file is over. A drag leaves one part of the chat
+    // as it enters the next, so "over the chat" is counted, not switched on and off.
+    let over = RwSignal::new(0i32);
+    let held = move || over.get() > 0;
+    // A drag given up — let go of outside the window, or called off with Escape — never tells
+    // the chat it left, and the count would stand. So a file dropped anywhere, or a drag that
+    // leaves the window altogether, settles it.
+    let dropped_anywhere = window_event_listener(ev::drop, move |_| over.set(0));
+    let left_the_window = window_event_listener(ev::dragleave, move |event: ev::DragEvent| {
+        if event.related_target().is_none() {
+            over.set(0);
+        }
+    });
+    on_cleanup(move || {
+        dropped_anywhere.remove();
+        left_the_window.remove();
+    });
+    // Only a file, and only where a file is taken: dragging a line of text across the chat
+    // is not an offer of anything.
+    let offered = move |event: &ev::DragEvent| {
+        on_plan
+            && event.data_transfer().is_some_and(|carried| {
+                carried
+                    .types()
+                    .iter()
+                    .any(|kind| kind.as_string().as_deref() == Some("Files"))
+            })
+    };
 
     view! {
-        <section class="chat">
+        <section
+            class="chat"
+            class:dropping=held
+            on:dragenter=move |event: ev::DragEvent| {
+                if offered(&event) {
+                    event.prevent_default();
+                    over.update(|over| *over += 1);
+                }
+            }
+            on:dragover=move |event: ev::DragEvent| {
+                // Without this the browser doesn't let the drop happen here at all, and
+                // opens the file in place of the page.
+                if offered(&event) {
+                    event.prevent_default();
+                }
+            }
+            on:dragleave=move |event: ev::DragEvent| {
+                if offered(&event) {
+                    over.update(|over| *over = (*over - 1).max(0));
+                }
+            }
+            on:drop=move |event: ev::DragEvent| {
+                if !offered(&event) {
+                    return;
+                }
+                event.prevent_default();
+                over.set(0);
+                let dropped = event
+                    .data_transfer()
+                    .and_then(|carried| carried.files())
+                    .and_then(|files| files.get(0));
+                if let Some(file) = dropped {
+                    attach(file);
+                }
+            }
+        >
+            // What letting go here will do, said over the chat while a file is held over it.
+            {move || held().then(|| view! {
+                <div class="chat-drop" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" inner_html=CLIP></svg>
+                    <span>"Drop a picture or PDF of a floorplan"</span>
+                </div>
+            })}
             <header class="chat-head">
                 <Spark />
                 <span class="chat-title">{title}</span>
@@ -568,11 +805,28 @@ pub fn Chat(
                 })}
             </header>
             <div class="chat-log" node_ref=log>
-                {move || empty().then(|| view! {
-                    <p class="chat-empty">
-                        "Ask about " {about.clone()} ". Answers come from what Irori can see right \
-                         now; nothing is changed."
-                    </p>
+                {move || empty().then(|| if on_plan {
+                    view! {
+                        <p class="chat-empty">
+                            "Ask about " {about.clone()} ": its rooms, what's in them, and the \
+                             automations that act on them. "
+                            {if local() {
+                                "Drawing on the plan needs a cloud model; the one on this \
+                                 machine can only answer."
+                            } else {
+                                "It can draw too — walls, doors, windows and rooms, from what you \
+                                 tell it or from a picture or PDF of a plan you attach or drop \
+                                 here — as one step you can undo. Nothing is saved until you press Save."
+                            }}
+                        </p>
+                    }.into_any()
+                } else {
+                    view! {
+                        <p class="chat-empty">
+                            "Ask about " {about.clone()} ". Answers come from what Irori can see \
+                             right now; nothing is changed."
+                        </p>
+                    }.into_any()
                 })}
                 {move || {
                     messages
@@ -638,6 +892,55 @@ pub fn Chat(
                     </div>
                 })}
             </div>
+            // What the assistant asked to have removed. It can't remove anything itself, so
+            // each is put here as a question, and the answer is the person's.
+            {move || asked.get().into_iter().map(|removal| {
+                let (yes, no) = (removal.clone(), removal.clone());
+                let what = if removal.kind == "floor" { "floor" } else { "room" };
+                view! {
+                    <div class="chat-confirm" role="alertdialog" aria-label="Remove?">
+                        <p>
+                            "Remove the " {what} " " <b>{removal.name.clone()}</b> "? "
+                            <span class="muted">
+                                {if removal.kind == "floor" {
+                                    "Its rooms stay, on no floor. This is done at once, not on Save."
+                                } else {
+                                    "Its devices stay, in no room. This is done at once, not on Save."
+                                }}
+                            </span>
+                        </p>
+                        <span class="chat-confirm-actions">
+                            <button type="button" class="press"
+                                on:click=move |_| {
+                                    let no = no.clone();
+                                    answered.update_value(|answered| answered.push(no.clone()));
+                                    asked.update(|asked| asked.retain(|waiting| *waiting != no));
+                                }>
+                                "Keep it"
+                            </button>
+                            <button type="button" class="press danger"
+                                on:click=move |_| remove(yes.clone())>
+                                "Remove"
+                            </button>
+                        </span>
+                    </div>
+                }
+            }).collect_view()}
+            // The file that will go with the next question, and the way to take it back.
+            {move || attached.get().map(|file| view! {
+                <p class="attached">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=CLIP></svg>
+                    <span class="attached-name">{file.name}</span>
+                    <button
+                        type="button"
+                        aria-label="Don't send this file"
+                        title="Don't send this file"
+                        on:click=move |_| attached.set(None)
+                    >
+                        "×"
+                    </button>
+                </p>
+            })}
             <form
                 class="composer"
                 on:submit=move |event: ev::SubmitEvent| {
@@ -645,6 +948,26 @@ pub fn Chat(
                     send.run(());
                 }
             >
+                // Only where there is something to draw from a picture: the Floorplan's chat.
+                {on_plan.then(|| view! {
+                    <label class="attach" title="Attach a picture or PDF of a floorplan">
+                        <span class="visually-hidden">"Attach a picture or PDF of a floorplan"</span>
+                        <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=CLIP></svg>
+                        <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp,image/gif,application/pdf"
+                            on:change=move |event| {
+                                let input = event_target::<web_sys::HtmlInputElement>(&event);
+                                let file = input.files().and_then(|files| files.get(0));
+                                // The same file can be chosen again after it's taken back.
+                                input.set_value("");
+                                if let Some(file) = file {
+                                    attach(file);
+                                }
+                            }
+                        />
+                    </label>
+                })}
                 <textarea
                     rows="1"
                     aria-label="Message"
@@ -684,7 +1007,10 @@ pub fn Chat(
                             type="submit"
                             class="send"
                             aria-label="Send"
-                            disabled=move || draft.with(|text| text.trim().is_empty())
+                            disabled=move || {
+                                draft.with(|text| text.trim().is_empty())
+                                    && attached.with(Option::is_none)
+                            }
                         >
                             <svg viewBox="0 0 24 24" aria-hidden="true">
                                 <path d="M12 19V5M5.5 11.5L12 5l6.5 6.5" fill="none"
@@ -881,6 +1207,57 @@ pub fn Section() -> impl IntoView {
         );
     };
     let has_key = move || status().is_some_and(|status| status.credential == "set");
+    // The cloud model as it was saved is shown, not offered for typing: the fields are still,
+    // the key is a row of dots, and Save has gone, so there is no wondering whether it took.
+    // `changing` is somebody having asked to type in them again.
+    let changing = RwSignal::new(false);
+    let settled = move || {
+        has_key() && status().is_some_and(|status| status.mode == "cloud") && !changing.get()
+    };
+    // Whether the model that was saved answers: being asked, and what came of it.
+    let checking = RwSignal::new(false);
+    let answered = RwSignal::new(None::<Result<(), String>>);
+    let check = move || {
+        if checking.get_untracked() {
+            return;
+        }
+        checking.set(true);
+        answered.set(None);
+        spawn_local(async move {
+            let result = api::assistant_check().await;
+            // A model that doesn't answer is one to go back and put right.
+            changing.set(result.is_err());
+            answered.set(Some(result));
+            checking.set(false);
+        });
+    };
+    // Saving the cloud model is two things: Irori keeping it, and the model being asked one
+    // small thing to find out whether the key, the name and the address are right. Only when
+    // it answers do the fields go still.
+    let save_cloud = move |body: serde_json::Value| {
+        if busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        trouble.set(None);
+        answered.set(None);
+        spawn_local(async move {
+            match api::save_assistant(&body).await {
+                Ok(status) => {
+                    apply(&status);
+                    api_key.set(String::new());
+                    let ready = status.ready && status.mode == "cloud";
+                    assistant.0.set(Some(status));
+                    changing.set(true);
+                    if ready {
+                        check();
+                    }
+                }
+                Err(error) => trouble.set(Some(error)),
+            }
+            busy.set(false);
+        });
+    };
     let ollama_up = move || status().is_some_and(|status| status.ollama == "up");
 
     view! {
@@ -1198,7 +1575,7 @@ pub fn Section() -> impl IntoView {
                         if !api_key.get_untracked().is_empty() {
                             body["api_key"] = serde_json::Value::String(api_key.get_untracked());
                         }
-                        save(body);
+                        save_cloud(body);
                     }>
                         <div class="field">
                             <span>"PROVIDER"</span>
@@ -1214,7 +1591,7 @@ pub fn Section() -> impl IntoView {
                                 .map(|(value, words)| (value.to_owned(), words.to_owned()))
                                 .collect(),
                                 move || Some(preset.get()),
-                                move || busy.get(),
+                                move || busy.get() || checking.get() || settled(),
                                 move |next| {
                                     if let Some(url) = preset_url(&next) {
                                         base_url.set(url.to_owned());
@@ -1227,6 +1604,7 @@ pub fn Section() -> impl IntoView {
                             <span>"ENDPOINT"</span>
                             <input
                                 type="url"
+                                disabled=move || settled() || checking.get()
                                 prop:value=move || base_url.get()
                                 on:input=move |event| base_url.set(event_target_value(&event))
                             />
@@ -1235,6 +1613,7 @@ pub fn Section() -> impl IntoView {
                             <span>"MODEL"</span>
                             <input
                                 type="text"
+                                disabled=move || settled() || checking.get()
                                 prop:value=move || model.get()
                                 on:input=move |event| model.set(event_target_value(&event))
                             />
@@ -1244,8 +1623,15 @@ pub fn Section() -> impl IntoView {
                             <input
                                 type="password"
                                 autocomplete="off"
+                                disabled=move || settled() || checking.get()
                                 placeholder=move || {
-                                    if has_key() { "Saved. Leave blank to keep it." } else { "" }
+                                    if settled() {
+                                        "•••••••••••••••• saved, and hidden"
+                                    } else if has_key() {
+                                        "Saved. Leave blank to keep it."
+                                    } else {
+                                        ""
+                                    }
                                 }
                                 prop:value=move || api_key.get()
                                 on:input=move |event| api_key.set(event_target_value(&event))
@@ -1254,16 +1640,50 @@ pub fn Section() -> impl IntoView {
                         <p class="muted small">
                             "A cloud answer leaves the house: what you ask goes to the provider, \
                              with the names and states of your devices, your automations, \
-                             Irori's settings and lines of its log. The key stays on this \
+                             the floorplan, Irori's settings and lines of its log. The key stays on this \
                              machine and is never shown again."
                         </p>
                         {move || status().filter(|status| status.mode == "cloud").map(|status| {
                             view! { <p class="assistant-detail" class:ok=status.ready>{status.detail}</p> }
                         })}
+                        // What came of asking the model: on its way, there, or why not.
+                        {move || if checking.get() {
+                            view! {
+                                <p class="model-check asking" aria-live="polite">
+                                    <span class="dots"><i></i><i></i><i></i></span>
+                                    "Saved. Asking " {model.get()} " whether it answers"
+                                </p>
+                            }.into_any()
+                        } else {
+                            match answered.get() {
+                                Some(Ok(())) => view! {
+                                    <p class="model-check there" aria-live="polite">
+                                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                                            <circle cx="12" cy="12" r="9.5" pathLength="1" />
+                                            <path d="M7.5 12.5l3 3 6-6.5" pathLength="1" />
+                                        </svg>
+                                        <span>
+                                            <b>{model.get()}</b>
+                                            " answered. The key is right, and it's kept on this \
+                                             machine."
+                                        </span>
+                                    </p>
+                                }.into_any(),
+                                Some(Err(why)) => view! {
+                                    <p class="model-check not-there" role="alert">
+                                        <span>
+                                            "Saved, but " <b>{model.get()}</b> " didn't answer: "
+                                            {why}
+                                        </span>
+                                    </p>
+                                }.into_any(),
+                                None => ().into_any(),
+                            }
+                        }}
                         <div class="assistant-actions end">
                             {move || has_key().then(|| view! {
                                 <button type="button" class="quiet-button danger"
-                                    disabled=move || busy.get()
+                                    disabled=move || busy.get() || checking.get()
                                     on:click=move |_| {
                                         // The key going takes the cloud model with it. A local
                                         // model that is in use stays in use.
@@ -1271,14 +1691,61 @@ pub fn Section() -> impl IntoView {
                                         if status().is_some_and(|status| status.mode == "cloud") {
                                             body["mode"] = "off".into();
                                         }
+                                        answered.set(None);
+                                        changing.set(false);
                                         save(body);
                                     }>
                                     "Remove credentials"
                                 </button>
                             })}
-                            <button type="submit" class="primary" disabled=move || busy.get()>
-                                {move || if busy.get() { "Saving…" } else { "Save" }}
-                            </button>
+                            {move || if settled() {
+                                view! {
+                                    <button type="button" class="quiet-button"
+                                        disabled=move || checking.get()
+                                        on:click=move |_| check()>
+                                        "Check again"
+                                    </button>
+                                    <button type="button" class="quiet-button"
+                                        disabled=move || checking.get()
+                                        on:click=move |_| {
+                                            answered.set(None);
+                                            changing.set(true);
+                                        }>
+                                        "Change"
+                                    </button>
+                                }.into_any()
+                            } else {
+                                view! {
+                                    // Backing out of a change puts the fields back as Irori
+                                    // has them.
+                                    {move || (changing.get() && has_key()
+                                        && status().is_some_and(|status| status.mode == "cloud"))
+                                        .then(|| view! {
+                                            <button type="button" class="quiet-button"
+                                                disabled=move || busy.get() || checking.get()
+                                                on:click=move |_| {
+                                                    if let Some(status) = status() {
+                                                        apply(&status);
+                                                    }
+                                                    api_key.set(String::new());
+                                                    answered.set(None);
+                                                    changing.set(false);
+                                                }>
+                                                "Cancel"
+                                            </button>
+                                        })}
+                                    <button type="submit" class="primary"
+                                        disabled=move || busy.get() || checking.get()>
+                                        {move || if busy.get() {
+                                            "Saving…"
+                                        } else if checking.get() {
+                                            "Checking…"
+                                        } else {
+                                            "Save"
+                                        }}
+                                    </button>
+                                }.into_any()
+                            }}
                         </div>
                     </form>
                 }

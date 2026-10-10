@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 use irori_types::{
     AreaId, Capabilities, Device, DeviceId, EntityId, FloorId, Floorplan, Level, Opening,
-    OpeningKind, PlacedArea, PlacedDevice, Point, Timestamp, Wall,
+    OpeningKind, PlacedArea, PlacedDevice, Point, Timestamp, Tint, Wall,
 };
 use leptos::ev;
 use leptos::html::Div;
@@ -28,8 +28,14 @@ use crate::icons::icon;
 
 mod ambience;
 mod look;
+mod many;
+mod snapping;
+mod source;
+mod zoom;
 
 use look::{Look, look_for};
+use many::Group;
+use snapping::{Hosts, Placed, hosts, on_grid, place, room_angles, twin};
 
 /// What the editor rounds to by default, in centimetres. Fine enough to draw a real room,
 /// coarse enough that two walls meant to meet actually do.
@@ -109,6 +115,57 @@ const HISTORY: usize = 100;
 /// something about the home, so it belongs to the browser.
 const FLOOR_KEY: &str = "irori.floorplan.floor";
 
+/// Where a floor's own Fit is remembered, in this browser.
+fn fit_key(floor: &FloorId) -> String {
+    format!("irori.floorplan.fit.{floor}")
+}
+
+/// A way of framing the plan that doesn't depend on the window: how far in, and which place on
+/// the plan sits in the middle of the room there is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Framing {
+    scale: f64,
+    /// In the plan's own centimetres.
+    middle: (f64, f64),
+}
+
+impl Framing {
+    /// The framing a view amounts to, given where the middle of the clear canvas is.
+    fn of(view: Viewport, middle: (f64, f64)) -> Self {
+        Self {
+            scale: view.scale,
+            middle: view.world(middle.0, middle.1),
+        }
+    }
+
+    /// The view that puts this framing's middle at `middle` on the screen.
+    fn view(self, middle: (f64, f64)) -> Viewport {
+        let scale = self.scale.clamp(MIN_SCALE, MAX_SCALE);
+        Viewport {
+            scale,
+            pan: (
+                middle.0 - self.middle.0 * scale,
+                middle.1 - self.middle.1 * scale,
+            ),
+        }
+    }
+
+    fn written(self) -> String {
+        format!("{},{},{}", self.scale, self.middle.0, self.middle.1)
+    }
+
+    /// What was kept, if it still reads as a framing. Nothing at all is how one is forgotten.
+    fn read(kept: &str) -> Option<Self> {
+        let mut parts = kept.split(',').map(|part| part.trim().parse::<f64>().ok());
+        let (scale, x, y) = (parts.next()??, parts.next()??, parts.next()??);
+        (parts.next().is_none() && [scale, x, y].iter().all(|n| n.is_finite()) && scale > 0.0)
+            .then_some(Self {
+                scale,
+                middle: (x, y),
+            })
+    }
+}
+
 /// What's drawn on one floor, or nothing at all — which is what a home with no floors has, and
 /// what a floor nobody has drawn on has.
 fn on_floor(plan: &Floorplan, floor: Option<&FloorId>) -> Level {
@@ -162,6 +219,20 @@ impl Viewport {
         ((x - self.pan.0) / self.scale, (y - self.pan.1) / self.scale)
     }
 
+    /// The same view at another zoom, with the place under `about` — a point on the screen —
+    /// still under it: the thing being looked at is what a zoom should leave where it is.
+    fn zoomed(self, scale: f64, about: (f64, f64)) -> Self {
+        let scale = scale.clamp(MIN_SCALE, MAX_SCALE);
+        let factor = scale / self.scale;
+        Self {
+            scale,
+            pan: (
+                about.0 - (about.0 - self.pan.0) * factor,
+                about.1 - (about.1 - self.pan.1) * factor,
+            ),
+        }
+    }
+
     /// How many centimetres a screen pixel is worth here, for turning a reach in pixels into a
     /// distance on the plan.
     fn cm_per_pixel(self) -> f64 {
@@ -174,6 +245,8 @@ impl Viewport {
 enum Tool {
     /// Pick things up: select, move, and pan the view.
     Select,
+    /// Drag a box round several things, to move or remove them together.
+    Many,
     /// Click to start a wall, click again to end it — and again, and again, because walls come
     /// in runs and a room is four of them.
     Wall,
@@ -200,11 +273,17 @@ impl Tool {
         match self {
             Tool::Select => {
                 "Click something to pick it up. Drag it to move it, or press Delete to take it \
-                 away. Drag the empty plan to move around, and scroll to zoom."
+                 away. Drag the empty plan to move around, and scroll to zoom. Shift-drag a \
+                 box to pick up several things."
+            }
+            Tool::Many => {
+                "Drag a box round what you want: everything wholly inside it is picked up. \
+                 Drag inside the box to move it all, or press Delete to take it all away."
             }
             Tool::Wall => {
                 "Click to start a wall, then click for each corner. Right-click or Escape ends \
-                 the run. Ends snap to the corners already there."
+                 the run. Ends snap to corners, onto walls, and level with other walls; a \
+                 wall's middle is marked. Hold Alt for the grid alone."
             }
             Tool::Door => "Click a wall to cut a door into it.",
             Tool::Window => "Click a wall to cut a window into it.",
@@ -271,6 +350,17 @@ enum Drag {
     Device {
         device: usize,
     },
+    /// Dragging a box out, from where the pointer went down on the plan.
+    Marquee {
+        from: (f64, f64),
+    },
+    /// Moving everything picked up together, keeping the offset it was grabbed at.
+    Group {
+        grab: (f64, f64),
+        /// Whether it hasn't moved yet. The plan is only remembered, for undoing, once it
+        /// does: a press that moves nothing is not a step.
+        still: bool,
+    },
 }
 
 #[component]
@@ -284,6 +374,10 @@ pub fn Floorplan() -> impl IntoView {
     let draft = RwSignal::new(irori_types::Floorplan::default());
     let tool = RwSignal::new(Tool::Select);
     let picked = RwSignal::new(None::<Pick>);
+    // Several things picked up together, by a box dragged round them, and the box while it is
+    // being dragged. Places in this floor's lists, like a pick, so put down whenever one is.
+    let group = RwSignal::new(Group::default());
+    let marquee = RwSignal::new(None::<many::Span>);
     // Where the current run of wall has got to, and where the pointer is, both snapped.
     let running = RwSignal::new(None::<Point>);
     // The corner the run's last committed segment came from — `None` until the run has laid at
@@ -291,6 +385,13 @@ pub fn Floorplan() -> impl IntoView {
     // happens to end at the same point.
     let wall_behind = RwSignal::new(None::<Point>);
     let pointer = RwSignal::new(None::<Point>);
+    // Where the next corner of a wall would go if the button were pressed now, and what it has
+    // caught on: kept whole, so the canvas can mark the middle of the wall or draw the line to
+    // the corner the point is level with.
+    let aimed = RwSignal::new(None::<Placed>);
+    // The walls the run started off, for the angle its first line makes with them. Asked when
+    // the run starts and only read until it has a wall of its own to turn on.
+    let started_on = RwSignal::new(Hosts::default());
     let arming = RwSignal::new(None::<DeviceId>);
     // The room being traced, and which room it is. A shape only becomes part of the plan when
     // it closes, so backing out of one leaves nothing behind.
@@ -306,6 +407,8 @@ pub fn Floorplan() -> impl IntoView {
     let drag = RwSignal::new(None::<Drag>);
     let dragged = RwSignal::new(false);
     let saving = RwSignal::new(false);
+    // Whether the plan is open as text.
+    let sourcing = RwSignal::new(false);
     let trouble = RwSignal::new(None::<String>);
     // Something that went right and is worth saying anyway — a save that also wrote
     // `devices.toml`. Kept apart from `trouble` so good news never wears the colour of bad.
@@ -357,9 +460,11 @@ pub fn Floorplan() -> impl IntoView {
     Effect::new(move |_| {
         floor.track();
         picked.set(None);
+        group.set(Group::default());
         running.set(None);
         wall_behind.set(None);
         pointer.set(None);
+        aimed.set(None);
         tracing.set(Vec::new());
         arming.set(None);
         arming_area.set(None);
@@ -407,25 +512,32 @@ pub fn Floorplan() -> impl IntoView {
         ))
     };
 
-    // Frames the whole plan, with a margin. Used once when a drawn home first arrives, and by
-    // the Fit button afterwards.
-    let fit = move || {
-        let Some((low, high)) = extent(&level.get_untracked()) else {
-            view.set(Viewport::default());
-            return;
-        };
-        let Some(node) = canvas.get_untracked() else {
-            return;
-        };
-        let rect = node.get_bounding_client_rect();
+    // The view somebody chose to be this floor's Fit, when they have: how far in, and what
+    // sits in the middle. A preference about this screen, so it is the browser's to keep, and
+    // it is said as a place on the plan rather than as a pan in pixels, so it still means the
+    // same thing in a window of another size.
+    let chosen_fit = RwSignal::new(None::<Framing>);
+    Effect::new(move |_| {
+        chosen_fit.set(
+            floor
+                .get()
+                .and_then(|floor| crate::devices::stored(&fit_key(&floor)))
+                .and_then(|kept| Framing::read(&kept)),
+        );
+    });
+    // What Fit last set the view to, to tell whether the view has since been moved off it.
+    let fitted = RwSignal::new(Some(Viewport::default()));
+
+    // The middle of what's *left* of the canvas, and how much room that is: the title sits
+    // over the top, the tools down the left, the zoom and the hint along the bottom, and the
+    // floors and the inspector down the right. A plan framed into the whole rectangle would
+    // come out with a wall under the panels, which is exactly what "Fit" is pressed to undo.
+    let clear = move || -> Option<((f64, f64), (f64, f64))> {
+        let rect = canvas.get_untracked()?.get_bounding_client_rect();
         let (width, height) = (rect.width(), rect.height());
         if width <= 0.0 || height <= 0.0 {
-            return;
+            return None;
         }
-        // Fitting means fitting into what's *left* of the canvas: the title sits over the top,
-        // the tools down the left, the zoom and the hint along the bottom, and the floors and
-        // the inspector down the right. A plan framed into the whole rectangle would come out
-        // with a wall under the panels, which is exactly what "Fit" is pressed to undo.
         let margin = 24.0;
         let gutters = Insets {
             top: 56.0 + margin,
@@ -442,27 +554,85 @@ pub fn Floorplan() -> impl IntoView {
             width - gutters.left - gutters.right,
             height - gutters.top - gutters.bottom,
         );
-        if room.0 <= 0.0 || room.1 <= 0.0 {
-            return;
+        (room.0 > 0.0 && room.1 > 0.0).then(|| {
+            (
+                (gutters.left + room.0 / 2.0, gutters.top + room.1 / 2.0),
+                room,
+            )
+        })
+    };
+
+    // Frames the plan: the way somebody set it for this floor, or else the whole of it with a
+    // margin. Used once when a drawn home first arrives, and by the Fit button afterwards.
+    let home_view = move || -> Option<Viewport> {
+        let chosen = chosen_fit.get_untracked();
+        let drawn = extent(&level.get_untracked());
+        if chosen.is_none() && drawn.is_none() {
+            return Some(Viewport::default());
         }
-        // Every coordinate becomes a `f64` before any arithmetic: a plan can hold points at
-        // opposite ends of `i32` (`Point::distance_to` says why), and framing one must give a
-        // silly zoom rather than overflow.
-        let (left, right) = (f64::from(low.x), f64::from(high.x));
-        let (top, bottom) = (f64::from(low.y), f64::from(high.y));
-        let (span_x, span_y) = ((right - left).max(100.0), (bottom - top).max(100.0));
-        let scale = (room.0 / span_x)
-            .min(room.1 / span_y)
-            .clamp(MIN_SCALE, MAX_SCALE);
-        // The middle of what's left, not the middle of the canvas.
-        let middle = (gutters.left + room.0 / 2.0, gutters.top + room.1 / 2.0);
-        view.set(Viewport {
-            scale,
-            pan: (
-                middle.0 - (left + right) / 2.0 * scale,
-                middle.1 - (top + bottom) / 2.0 * scale,
-            ),
+        let (middle, room) = clear()?;
+        let framing = chosen.or_else(|| {
+            let (low, high) = drawn?;
+            // Every coordinate becomes a `f64` before any arithmetic: a plan can hold points
+            // at opposite ends of `i32` (`Point::distance_to` says why), and framing one must
+            // give a silly zoom rather than overflow.
+            let (left, right) = (f64::from(low.x), f64::from(high.x));
+            let (top, bottom) = (f64::from(low.y), f64::from(high.y));
+            let (span_x, span_y) = ((right - left).max(100.0), (bottom - top).max(100.0));
+            Some(Framing {
+                scale: (room.0 / span_x)
+                    .min(room.1 / span_y)
+                    .clamp(MIN_SCALE, MAX_SCALE),
+                middle: ((left + right) / 2.0, (top + bottom) / 2.0),
+            })
         });
+        Some(framing?.view(middle))
+    };
+    let fit = move || {
+        if let Some(to) = home_view() {
+            view.set(to);
+            fitted.set(Some(to));
+        }
+    };
+    // Each floor has a home view of its own, and changing floor leaves the view where it was,
+    // so an upstairs can be lined up with what is under it. Whether that view *is* the new
+    // floor's home is therefore a fresh question each time.
+    Effect::new(move |_| {
+        floor.track();
+        chosen_fit.track();
+        fitted.set(home_view());
+    });
+
+    // Makes the view as it stands this floor's Fit, or — with `None` — hands Fit back to
+    // framing the whole plan.
+    let set_fit = move |keep: bool| {
+        let Some(floor) = floor.get_untracked() else {
+            return;
+        };
+        let framing = keep
+            .then(|| clear().map(|(middle, _)| Framing::of(view.get_untracked(), middle)))
+            .flatten();
+        crate::devices::remember(
+            &fit_key(&floor),
+            &framing.map(Framing::written).unwrap_or_default(),
+        );
+        chosen_fit.set(framing);
+        if keep {
+            fitted.set(Some(view.get_untracked()));
+        } else {
+            fit();
+        }
+    };
+    // Whether the view has been moved off what Fit gives: the only time there is anything to
+    // set.
+    let off_fit = move || {
+        let now = view.get();
+        // To within what can be seen: a view worked out twice differs in its last decimal.
+        !fitted.get().is_some_and(|home| {
+            (home.scale / now.scale - 1.0).abs() < 1e-6
+                && (home.pan.0 - now.pan.0).abs() < 0.5
+                && (home.pan.1 - now.pan.1).abs() < 0.5
+        })
     };
 
     // A home that was already drawn should open framed rather than at whatever the default zoom
@@ -501,6 +671,7 @@ pub fn Floorplan() -> impl IntoView {
         // What was picked up may not exist any more, and a half-drawn wall belongs to the state
         // that was undone.
         picked.set(None);
+        group.set(Group::default());
         running.set(None);
         wall_behind.set(None);
         pointer.set(None);
@@ -514,6 +685,7 @@ pub fn Floorplan() -> impl IntoView {
             draft.set(next);
         });
         picked.set(None);
+        group.set(Group::default());
         running.set(None);
         wall_behind.set(None);
         pointer.set(None);
@@ -531,14 +703,31 @@ pub fn Floorplan() -> impl IntoView {
         running.set(None);
         wall_behind.set(None);
         pointer.set(None);
+        aimed.set(None);
         tracing.set(Vec::new());
     };
+
+    // Takes a whole plan from somewhere other than the pointer — the plan's own text, or the
+    // assistant — as one step to undo. Whatever was picked up or half-drawn belonged to the
+    // plan it replaced.
+    let take = Callback::new(move |plan: Floorplan| {
+        if draft.with_untracked(|draft| *draft == plan) {
+            return;
+        }
+        remember();
+        draft.set(plan);
+        picked.set(None);
+        group.set(Group::default());
+        stop_drawing();
+        trouble.set(None);
+    });
 
     let start_editing = move || {
         draft.set(live.home.get_untracked().floorplan.clone());
         past.set(Vec::new());
         future.set(Vec::new());
         picked.set(None);
+        group.set(Group::default());
         arming.set(None);
         arming_area.set(None);
         tool.set(Tool::Select);
@@ -548,11 +737,95 @@ pub fn Floorplan() -> impl IntoView {
         editing.set(true);
     };
 
+    // The assistant's way to this page's plan, for as long as the page is open. What it reads
+    // is the plan being drawn, or the home's own while nobody is drawing; what it draws lands
+    // in the working copy as one step to undo — opening Edit to make one if there wasn't,
+    // which is what pressing Edit and asking again would have come to. Either way nothing is
+    // written until Save.
+    let assistant = expect_context::<crate::Assistant>();
+    // A file let go of anywhere on a page is, to a browser, a file to open in place of the
+    // page — and this page invites files, onto its chat, while holding a plan that isn't
+    // saved. So a file that misses the chat is dropped on nothing.
+    let carries_files = |event: &ev::DragEvent| {
+        event.data_transfer().is_some_and(|carried| {
+            carried
+                .types()
+                .iter()
+                .any(|kind| kind.as_string().as_deref() == Some("Files"))
+        })
+    };
+    let over_page = window_event_listener(ev::dragover, move |event: ev::DragEvent| {
+        if carries_files(&event) {
+            event.prevent_default();
+        }
+    });
+    let on_page = window_event_listener(ev::drop, move |event: ev::DragEvent| {
+        if carries_files(&event) {
+            event.prevent_default();
+        }
+    });
+    on_cleanup(move || {
+        over_page.remove();
+        on_page.remove();
+    });
+    let chats = expect_context::<crate::assistant::Chats>();
+    // The last plan the assistant handed over. An answer still being written is read again
+    // from its first word by a page that comes back to it, and the plan in it must not be
+    // taken twice: the second time it would undo the person's undo.
+    let drawn = StoredValue::new(None::<Floorplan>);
+    chats.lay(Some(crate::assistant::Desk {
+        read: Callback::new(move |()| {
+            // A new question is a new drawing, even one that comes out the same.
+            drawn.set_value(None);
+            floor.get_untracked()?;
+            Some(if editing.get_untracked() {
+                draft.get_untracked()
+            } else {
+                live.home.get_untracked().floorplan.clone()
+            })
+        }),
+        take: Callback::new(move |(scope, plan): (String, Floorplan)| {
+            // Only for the floor on show. A drawing asked for on another floor, arriving
+            // after the person has moved on, would change a floor they aren't looking at.
+            let here = floor
+                .get_untracked()
+                .is_some_and(|floor| scope == format!("floorplan:{floor}"));
+            if !here || saving.get_untracked() || drawn.get_value().as_ref() == Some(&plan) {
+                return;
+            }
+            drawn.set_value(Some(plan.clone()));
+            if !editing.get_untracked() {
+                start_editing();
+                note.set(Some(
+                    "The assistant drew on the plan. Save keeps it; Cancel or Undo takes it away."
+                        .into(),
+                ));
+            }
+            take.run(plan);
+        }),
+    }));
+    // The chat is about the floor it was opened on, so changing floor closes it: left open it
+    // would go on answering about — and drawing on — the floor that is no longer on show.
+    let asking = expect_context::<crate::assistant::Asking>();
+    Effect::new(move |_| {
+        floor.track();
+        asking.0.update(|at| {
+            if at
+                .as_ref()
+                .is_some_and(|at| at.scope.starts_with("floorplan:"))
+            {
+                *at = None;
+            }
+        });
+    });
+    on_cleanup(move || chats.lay(None));
+
     let cancel = move || {
         editing.set(false);
         past.set(Vec::new());
         future.set(Vec::new());
         picked.set(None);
+        group.set(Group::default());
         arming.set(None);
         arming_area.set(None);
         stop_drawing();
@@ -583,6 +856,7 @@ pub fn Floorplan() -> impl IntoView {
                     past.set(Vec::new());
                     future.set(Vec::new());
                     picked.set(None);
+                    group.set(Group::default());
                     arming.set(None);
                     arming_area.set(None);
                     running.set(None);
@@ -600,6 +874,14 @@ pub fn Floorplan() -> impl IntoView {
     };
 
     let remove_picked = move || {
+        // Everything picked up together goes together, as one step to undo.
+        let many = group.get_untracked();
+        if !many.is_empty() {
+            remember();
+            on_level(draft, floor, |level| many.remove(level));
+            group.set(Group::default());
+            return;
+        }
         let Some(pick) = picked.get_untracked() else {
             return;
         };
@@ -629,13 +911,16 @@ pub fn Floorplan() -> impl IntoView {
             }
         });
         picked.set(None);
+        group.set(Group::default());
     };
 
     // Escape backs out of whatever is in hand; Delete takes away what's picked up. Only while
     // editing, and never while a text field has the keyboard — there are none on this page
     // today, and the guard is what keeps that from becoming a bug when there are.
     let keys = window_event_listener(ev::keydown, move |event: ev::KeyboardEvent| {
-        if !editing.get_untracked() || typing() {
+        // Not under the window the plan's text is in, either: Delete there is a key in a text
+        // box, even when the box hasn't got the keyboard yet.
+        if !editing.get_untracked() || typing() || sourcing.get_untracked() {
             return;
         }
         match event.key().as_str() {
@@ -648,9 +933,13 @@ pub fn Floorplan() -> impl IntoView {
                     arming_area.set(None);
                 } else {
                     picked.set(None);
+                    group.set(Group::default());
                 }
             }
-            "Delete" | "Backspace" if picked.get_untracked().is_some() => {
+            "Delete" | "Backspace"
+                if picked.get_untracked().is_some()
+                    || group.with_untracked(|group| !group.is_empty()) =>
+            {
                 event.prevent_default();
                 remove_picked();
             }
@@ -676,6 +965,41 @@ pub fn Floorplan() -> impl IntoView {
         let Some(screen) = at(&event) else { return };
         dragged.set(false);
         let here = view.get_untracked();
+        let tool_now = tool.get_untracked();
+        if editing.get_untracked() && matches!(tool_now, Tool::Select | Tool::Many) {
+            let world = here.world(screen.0, screen.1);
+            let reach = REACH * here.cm_per_pixel();
+            // What is picked up together is moved by the box it fills. Checked first: the box
+            // is drawn over whatever is in it, so a press inside it means the box.
+            let here_level = level.get_untracked();
+            let held = group.with_untracked(|group| {
+                // A wall that only crosses the box isn't part of what's picked up, and a press
+                // on it means that wall. A room under the box is different: the box may be
+                // sitting inside one, and then every press in it would be the room's.
+                let another = match pick_at(&here_level, world, reach) {
+                    Some(Pick::Wall(w) | Pick::Opening(w, _)) => !group.walls.contains(&w),
+                    _ => false,
+                };
+                !group.is_empty() && !another && group.holds(&here_level, world, reach)
+            });
+            if held && !event.shift_key() {
+                drag.set(Some(Drag::Group {
+                    grab: world,
+                    still: true,
+                }));
+                return;
+            }
+            // A box is dragged out with its own tool, or with Shift held on the ordinary one,
+            // where a plain drag already means moving the view.
+            if tool_now == Tool::Many || event.shift_key() {
+                picked.update(|picked| *picked = None);
+                group.set(Group::default());
+                marquee.set(Some((world, world)));
+                drag.set(Some(Drag::Marquee { from: world }));
+                return;
+            }
+            group.set(Group::default());
+        }
         if !editing.get_untracked() || tool.get_untracked() != Tool::Select {
             // Every other tool acts on the click, not the press; the view still pans.
             drag.set(Some(Drag::Pan {
@@ -747,6 +1071,7 @@ pub fn Floorplan() -> impl IntoView {
             }
             Some(Pick::Device(_)) | None => {
                 picked.set(None);
+                group.set(Group::default());
                 drag.set(Some(Drag::Pan {
                     from: screen,
                     pan: here.pan,
@@ -762,15 +1087,28 @@ pub fn Floorplan() -> impl IntoView {
 
         if editing.get_untracked() {
             let tool = tool.get_untracked();
-            if running.get_untracked().is_some() {
-                let to = place(
-                    &level.get_untracked(),
-                    world,
-                    here,
-                    snap.get_untracked(),
-                    None,
-                );
-                pointer.set(Some(to));
+            if tool == Tool::Wall {
+                // Before the run starts as well as during it: where a wall would start is
+                // worth seeing before the click that starts it.
+                let from = running.get_untracked();
+                // Alt holds off everything but the grid, for the point that something already
+                // drawn keeps taking.
+                let placed = if event.alt_key() {
+                    on_grid(world, snap.get_untracked())
+                } else {
+                    place(
+                        &level.get_untracked(),
+                        world,
+                        here,
+                        snap.get_untracked(),
+                        None,
+                        from,
+                    )
+                };
+                if from.is_some() {
+                    pointer.set(Some(placed.point));
+                }
+                aimed.set(Some(placed));
             } else if tool == Tool::Area && !tracing.get_untracked().is_empty() {
                 let to = trace_at(&level.get_untracked(), world, here, snap.get_untracked());
                 pointer.set(Some(to));
@@ -797,7 +1135,19 @@ pub fn Floorplan() -> impl IntoView {
                 let Some(was) = here_level.walls.get(wall).map(|wall| ends(wall, to_end)) else {
                     return;
                 };
-                let to = place(&here_level, world, here, snap.get_untracked(), Some(was));
+                let to = if event.alt_key() {
+                    on_grid(world, snap.get_untracked()).point
+                } else {
+                    place(
+                        &here_level,
+                        world,
+                        here,
+                        snap.get_untracked(),
+                        Some(was),
+                        None,
+                    )
+                    .point
+                };
                 on_level(draft, floor, |level| shift(level, &[(was, to)]));
             }
             Drag::Wall { wall, grab } => {
@@ -880,6 +1230,28 @@ pub fn Floorplan() -> impl IntoView {
                         *point = to;
                     }
                 });
+            }
+            Drag::Marquee { from } => {
+                dragged.set(true);
+                marquee.set(Some((from, world)));
+            }
+            Drag::Group { grab, still } => {
+                dragged.set(true);
+                let step = snap.get_untracked().step();
+                let by = (round(world.0 - grab.0, step), round(world.1 - grab.1, step));
+                if by == (0, 0) {
+                    return;
+                }
+                if still {
+                    remember();
+                }
+                let many = group.get_untracked();
+                on_level(draft, floor, |level| many.shift(level, by));
+                // The grab moves with the group, so the rounding can't accumulate into a drift.
+                drag.set(Some(Drag::Group {
+                    grab: (grab.0 + f64::from(by.0), grab.1 + f64::from(by.1)),
+                    still: false,
+                }));
             }
             Drag::Device { device } => {
                 dragged.set(true);
@@ -997,7 +1369,66 @@ pub fn Floorplan() -> impl IntoView {
                 std::time::Duration::from_millis(600),
             );
         }
+        // Letting go of a box picks up what is wholly inside it.
+        if let Some(Drag::Marquee { .. }) = drag.get_untracked() {
+            if let Some(around) = marquee.get_untracked() {
+                group.set(Group::inside(&level.get_untracked(), around));
+            }
+            marquee.set(None);
+        }
         drag.set(None);
+    };
+    // Off the canvas there is nowhere a wall would go.
+    let on_leave = move |event: ev::MouseEvent| {
+        aimed.set(None);
+        on_up(event);
+    };
+
+    // The corners the line being drawn turns on, each as the far end of the line already
+    // there, the corner, and the pointer: the run's own last wall once it has one, and until
+    // then the walls it started off.
+    let turning = move || -> Vec<(Point, Point, Point)> {
+        if tool.get() != Tool::Wall {
+            return Vec::new();
+        }
+        let (Some(node), Some(to)) = (running.get(), pointer.get()) else {
+            return Vec::new();
+        };
+        // The pointer back on the corner is no angle at all, just a line still at its start.
+        if node.distance_to(to) < 0.5 {
+            return Vec::new();
+        }
+        match wall_behind.get() {
+            Some(behind) => vec![(behind, node, to)],
+            None => started_on
+                .with(|hosts| hosts.readings(node, to))
+                .into_iter()
+                .map(|behind| (behind, node, to))
+                .collect(),
+        }
+    };
+    // The room whose corners are being read: the one being traced, out to the pointer, or the
+    // one picked up.
+    let cornered = move || -> Vec<Point> {
+        let mut traced = tracing.get();
+        if !traced.is_empty() {
+            if let Some(to) = pointer.get()
+                && traced.last() != Some(&to)
+                && traced.first() != Some(&to)
+            {
+                traced.push(to);
+            }
+            return traced;
+        }
+        match picked.get() {
+            Some(Pick::Area(a)) => level
+                .get()
+                .areas
+                .get(a)
+                .map(|placed| placed.points.clone())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
     };
 
     // A click that was really the end of a drag isn't a click: panning the view an inch and
@@ -1010,16 +1441,19 @@ pub fn Floorplan() -> impl IntoView {
         let here = view.get_untracked();
         let world = here.world(screen.0, screen.1);
         match tool.get_untracked() {
-            Tool::Select => {}
+            Tool::Select | Tool::Many => {}
             Tool::Wall => {
-                let to = place(
-                    &level.get_untracked(),
-                    world,
-                    here,
-                    snap.get_untracked(),
-                    None,
-                );
-                match running.get_untracked() {
+                let here_level = level.get_untracked();
+                let from = running.get_untracked();
+                let to = if event.alt_key() {
+                    on_grid(world, snap.get_untracked()).point
+                } else {
+                    place(&here_level, world, here, snap.get_untracked(), None, from).point
+                };
+                if from.is_none() {
+                    started_on.set(hosts(&here_level, to));
+                }
+                match from {
                     Some(from) if from != to => {
                         remember();
                         let built = Wall {
@@ -1082,17 +1516,21 @@ pub fn Floorplan() -> impl IntoView {
                     on_level(draft, floor, |level| {
                         // Redrawing a room replaces its old shape: one shape per room per floor
                         // is what the plan allows, and moving a wall is why somebody would. The
-                        // label is attached to the room, not the shape, so its offset survives.
-                        let label = level
+                        // label and the colour are attached to the room, not the shape, so
+                        // they survive.
+                        let (label, tint) = level
                             .areas
                             .iter()
                             .find(|placed| placed.area == area)
-                            .map_or(Point::new(0, 0), |placed| placed.label);
+                            .map_or((Point::new(0, 0), None), |placed| {
+                                (placed.label, placed.tint)
+                            });
                         level.areas.retain(|placed| placed.area != area);
                         level.areas.push(PlacedArea {
                             area: area.clone(),
                             points,
                             label,
+                            tint,
                         });
                         picked.set(Some(Pick::Area(level.areas.len() - 1)));
                     });
@@ -1168,18 +1606,21 @@ pub fn Floorplan() -> impl IntoView {
             {
                 remember();
                 on_level(draft, floor, |level| {
-                    // Same rule as the click-to-close path: keep the room's label offset across
-                    // the shape it just replaced.
-                    let label = level
+                    // Same rule as the click-to-close path: keep the room's label offset and
+                    // its colour across the shape it just replaced.
+                    let (label, tint) = level
                         .areas
                         .iter()
                         .find(|placed| placed.area == area)
-                        .map_or(Point::new(0, 0), |placed| placed.label);
+                        .map_or((Point::new(0, 0), None), |placed| {
+                            (placed.label, placed.tint)
+                        });
                     level.areas.retain(|placed| placed.area != area);
                     level.areas.push(PlacedArea {
                         area: area.clone(),
                         points: corners,
                         label,
+                        tint,
                     });
                     picked.set(Some(Pick::Area(level.areas.len() - 1)));
                 });
@@ -1193,6 +1634,7 @@ pub fn Floorplan() -> impl IntoView {
             arming_area.set(None);
         } else {
             picked.set(None);
+            group.set(Group::default());
         }
     };
 
@@ -1204,20 +1646,10 @@ pub fn Floorplan() -> impl IntoView {
             f64::from(event.client_x()) - left,
             f64::from(event.client_y()) - top,
         );
-        view.update(|here| {
-            let step = if event.delta_y() < 0.0 {
-                1.12
-            } else {
-                1.0 / 1.12
-            };
-            let scale = (here.scale * step).clamp(MIN_SCALE, MAX_SCALE);
-            let factor = scale / here.scale;
-            here.pan = (
-                screen.0 - (screen.0 - here.pan.0) * factor,
-                screen.1 - (screen.1 - here.pan.1) * factor,
-            );
-            here.scale = scale;
-        });
+        // By as much as the wheel turned: a mouse's notch is a jump, and a trackpad's stream
+        // of slivers — or a pinch, which arrives as a scroll with Control held — is a glide.
+        let factor = zoom::scrolled(event.delta_y(), event.delta_mode(), event.ctrl_key());
+        view.update(|here| *here = here.zoomed(here.scale * factor, screen));
     };
 
     let zoom_by = move |step: f64| {
@@ -1226,15 +1658,7 @@ pub fn Floorplan() -> impl IntoView {
         };
         let rect = node.get_bounding_client_rect();
         let middle = (rect.width() / 2.0, rect.height() / 2.0);
-        view.update(|here| {
-            let scale = (here.scale * step).clamp(MIN_SCALE, MAX_SCALE);
-            let factor = scale / here.scale;
-            here.pan = (
-                middle.0 - (middle.0 - here.pan.0) * factor,
-                middle.1 - (middle.1 - here.pan.1) * factor,
-            );
-            here.scale = scale;
-        });
+        view.update(|here| *here = here.zoomed(here.scale * step, middle));
     };
 
     view! {
@@ -1246,7 +1670,7 @@ pub fn Floorplan() -> impl IntoView {
                 on:mousedown=on_down
                 on:mousemove=on_move
                 on:mouseup=on_up
-                on:mouseleave=on_up
+                on:mouseleave=on_leave
                 on:click=on_click
                 on:contextmenu=on_right_click
                 on:wheel=on_wheel
@@ -1263,12 +1687,17 @@ pub fn Floorplan() -> impl IntoView {
                         let here = view.get();
                         let level = level.get();
                         let chosen = editing.get().then(|| picked.get()).flatten();
+                        let many = group.get();
                         level
                             .areas
                             .iter()
                             .enumerate()
                             .map(|(a, placed)| {
-                                drawn_area(placed, here, chosen == Some(Pick::Area(a)))
+                                drawn_area(
+                                    placed,
+                                    here,
+                                    chosen == Some(Pick::Area(a)) || many.areas.contains(&a),
+                                )
                             })
                             .collect_view()
                     }}
@@ -1302,6 +1731,7 @@ pub fn Floorplan() -> impl IntoView {
                         let here = view.get();
                         let level = level.get();
                         let chosen = editing.get().then(|| picked.get()).flatten();
+                        let many = group.get();
                         // Doors and windows follow their sensors while the plan is being read.
                         let home = (!editing.get()).then(|| live.home.get());
                         let states = home.as_ref().map(|home| home.states.as_slice());
@@ -1310,12 +1740,50 @@ pub fn Floorplan() -> impl IntoView {
                             .iter()
                             .enumerate()
                             .map(|(w, wall)| {
+                                // A wall picked up with others is drawn as one picked up
+                                // alone is.
+                                let chosen = if many.walls.contains(&w) {
+                                    Some(Pick::Wall(w))
+                                } else {
+                                    chosen
+                                };
                                 drawn_wall(wall, w, finishes(&level, w), here, chosen, states)
                             })
                             .collect_view()
                     }}
                     // The inside of each corner a single curve couldn't carry, rounded off.
                     {move || drawn_fillets(&fillets(&level.get()), view.get())}
+                    // The box being dragged out, and the box round what is picked up together,
+                    // which is what it is taken hold of by.
+                    {move || {
+                        let around = marquee.get().or_else(|| {
+                            let many = editing.get().then(|| group.get())?;
+                            many.bounds(&level.get())
+                        })?;
+                        let dragging = marquee.get().is_some();
+                        let here = view.get();
+                        // Round what is picked up, with room for the walls' own thickness.
+                        let room = if dragging { 0.0 } else { 14.0 / here.scale };
+                        let (x, y) = (
+                            around.0.0.min(around.1.0) - room,
+                            around.0.1.min(around.1.1) - room,
+                        );
+                        let (width, height) = (
+                            (around.0.0 - around.1.0).abs() + room * 2.0,
+                            (around.0.1 - around.1.1).abs() + room * 2.0,
+                        );
+                        Some(view! {
+                            <g transform=transform(here)>
+                                <rect
+                                    class="marquee"
+                                    class:held=!dragging
+                                    x=x y=y width=width height=height
+                                    rx=4.0 / here.scale
+                                    vector-effect="non-scaling-stroke"
+                                />
+                            </g>
+                        })
+                    }}
                     {move || {
                         let (Some(from), Some(to)) = (running.get(), pointer.get()) else {
                             return None;
@@ -1326,38 +1794,93 @@ pub fn Floorplan() -> impl IntoView {
                         let corners = tracing.get();
                         (!corners.is_empty()).then(|| tracing_shape(&corners, pointer.get(), view.get()))
                     }}
+                    // What the point has caught on: the line to the corner it is level with,
+                    // the middle of the wall beside it, and where a wall would start.
                     {move || {
-                        let (behind, node) = drawing_junction(
-                            tool.get(),
-                            running.get(),
-                            wall_behind.get(),
-                            &tracing.get(),
-                        )?;
-                        let to = pointer.get()?;
-                        // The pointer back on the corner is no angle at all, just a line still
-                        // at its start.
-                        if node.distance_to(to) < 0.5 {
-                            return None;
-                        }
-                        // The corner's own arc, between the wall already there and the line
-                        // reaching for the pointer, tracing the angle the label says in words.
-                        let points = arc_points(behind, node, to, ANGLE_ARC);
-                        if points.is_empty() {
-                            return None;
-                        }
-                        let joined = points
-                            .iter()
-                            .map(|[x, y]| format!("{x},{y}"))
-                            .collect::<Vec<_>>()
-                            .join(" ");
+                        let placed = editing.get().then(|| aimed.get()).flatten()?;
+                        let here = view.get();
+                        let size = 5.0 / here.scale;
+                        let caught = placed.on_the_middle();
+                        let waiting = running.get().is_none();
                         Some(view! {
-                            <g class="angle-arc" transform=transform(view.get())>
-                                <polyline
-                                    points=joined
-                                    vector-effect="non-scaling-stroke"
-                                />
+                            <g class="aids" transform=transform(here)>
+                                {placed.guides.iter().map(|guide| view! {
+                                    <line
+                                        class="guide"
+                                        x1=guide.from.x y1=guide.from.y
+                                        x2=guide.to.x y2=guide.to.y
+                                        vector-effect="non-scaling-stroke"
+                                    />
+                                    <circle
+                                        class="guide-end"
+                                        cx=guide.from.x cy=guide.from.y r=size * 0.8
+                                        vector-effect="non-scaling-stroke"
+                                    />
+                                }).collect_view()}
+                                {placed.middle.map(|middle| view! {
+                                    <rect
+                                        class="middle"
+                                        class:caught=caught
+                                        x=f64::from(middle.x) - size
+                                        y=f64::from(middle.y) - size
+                                        width=size * 2.0
+                                        height=size * 2.0
+                                        vector-effect="non-scaling-stroke"
+                                    />
+                                })}
+                                {waiting.then(|| view! {
+                                    <circle
+                                        class="start"
+                                        cx=placed.point.x cy=placed.point.y r=size * 0.7
+                                        vector-effect="non-scaling-stroke"
+                                    />
+                                })}
                             </g>
                         })
+                    }}
+                    // Each corner's own arc, between the wall already there and the line
+                    // reaching for the pointer, tracing the angle the label says in words.
+                    {move || {
+                        let mut corners = turning();
+                        // A room being traced turns on its last corner, unless that corner is
+                        // a notch: then the short way round is the outside of the room, and
+                        // an arc there would be tracing the wrong angle.
+                        if let Some((behind, node)) = drawing_junction(
+                            tool.get(),
+                            None,
+                            None,
+                            &tracing.get(),
+                        ) && let Some(to) = pointer.get()
+                            && node.distance_to(to) >= 0.5
+                            && room_angles(&cornered())
+                                .iter()
+                                .all(|turned| turned.at != node || turned.degrees <= 180.5)
+                        {
+                            corners.push((behind, node, to));
+                        }
+                        let here = view.get();
+                        corners
+                            .into_iter()
+                            .filter_map(|(behind, node, to)| {
+                                let points = arc_points(behind, node, to, ANGLE_ARC);
+                                if points.is_empty() {
+                                    return None;
+                                }
+                                let joined = points
+                                    .iter()
+                                    .map(|[x, y]| format!("{x},{y}"))
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                Some(view! {
+                                    <g class="angle-arc" transform=transform(here)>
+                                        <polyline
+                                            points=joined
+                                            vector-effect="non-scaling-stroke"
+                                        />
+                                    </g>
+                                })
+                            })
+                            .collect_view()
                     }}
                     {move || {
                         let chosen = editing.get().then(|| picked.get()).flatten();
@@ -1413,6 +1936,9 @@ pub fn Floorplan() -> impl IntoView {
                                             }
                                             event.stop_propagation();
                                             dragged.set(false);
+                                            // One thing taken hold of puts down whatever was
+                                            // picked up together.
+                                            group.set(Group::default());
                                             picked.set(Some(Pick::Area(index)));
                                             remember();
                                             let grab = at(&event)
@@ -1482,6 +2008,7 @@ pub fn Floorplan() -> impl IntoView {
                         let here = view.get();
                         let is_editing = editing.get();
                         let chosen = is_editing.then(|| picked.get()).flatten();
+                        let many = group.get();
                         level.get()
                             .devices
                             .iter()
@@ -1498,9 +2025,11 @@ pub fn Floorplan() -> impl IntoView {
                                     &home,
                                     here,
                                     is_editing,
-                                    chosen == Some(Pick::Device(index)),
+                                    chosen == Some(Pick::Device(index))
+                                        || many.devices.contains(&index),
                                     controls,
                                     picked,
+                                    group,
                                     drag,
                                     dragged,
                                     dropped,
@@ -1517,64 +2046,147 @@ pub fn Floorplan() -> impl IntoView {
                     let from = running.get().or_else(|| tracing.get().last().copied())?;
                     let here = view.get();
                     let (x, y) = here.screen(to);
+                    // A wall alongside another and the same length says so: that is the
+                    // moment to click when a room's two sides are meant to match.
+                    let same = running.get().is_some() && twin(&level.get(), from, to);
                     Some(view! {
-                        <span class="measure" style=format!("left:{x}px;top:{y}px")>
+                        <span
+                            class="measure"
+                            class:twin=same
+                            style=format!("left:{x}px;top:{y}px")
+                        >
                             {metres(from.distance_to(to))}
+                            {same.then_some(" =")}
                         </span>
                     })
                 }}
 
-                // The angle of the corner the next line turns on, updating as it is dragged: at
-                // the node the new segment shares with the one before it, between that wall — or
-                // that side of a room — and the line reaching for the pointer. Straight through
-                // reads as 180°, a square corner as 90°, and a line that ran back over the wall
-                // as 0°.
+                // The angle of each corner the next wall turns on, updating as it is dragged: at
+                // the node the new wall shares with the one before it — or, for the first wall
+                // of a run started off another, with that one. Straight through reads as 180°, a
+                // square corner as 90°, and a line that ran back over the wall as 0°.
                 {move || {
                     if !editing.get() {
                         return None;
                     }
-                    let to = pointer.get()?;
-                    let (behind, node) = drawing_junction(
-                        tool.get(),
-                        running.get(),
-                        wall_behind.get(),
-                        &tracing.get(),
-                    )?;
-                    // The pointer back on the corner is no angle at all, just a line still at
-                    // its start.
-                    if node.distance_to(to) < 0.5 {
+                    let here = view.get();
+                    Some(
+                        turning()
+                            .into_iter()
+                            .map(|(behind, node, to)| {
+                                // Where the label goes: along the bisector of the corner, which
+                                // for a square corner is the 45° line into the room. A corner
+                                // that is a straight line has no bisector to speak of, so it
+                                // gets a label to one side instead.
+                                let (bx0, by0) = direction(node, behind);
+                                let (bx1, by1) = direction(node, to);
+                                let (mut bx, mut by) = (bx0 + bx1, by0 + by1);
+                                let reach = bx.hypot(by);
+                                if reach < 1e-6 {
+                                    (bx, by) = (-by0, bx0);
+                                } else {
+                                    (bx, by) = (bx / reach, by / reach);
+                                }
+                                let (x, y) = here.screen(node);
+                                let (lx, ly) = (x + bx * ANGLE_OFFSET, y + by * ANGLE_OFFSET);
+                                view! {
+                                    <span class="angle" style=format!("left:{lx}px;top:{ly}px")>
+                                        {format!("{:.0}°", angle_at(behind, node, to))}
+                                    </span>
+                                }
+                            })
+                            .collect_view(),
+                    )
+                }}
+
+                // Every corner of a room, read on the inside of it: the one being traced, as
+                // far as the pointer, and the one picked up, as its corners are dragged.
+                {move || {
+                    if !editing.get() {
                         return None;
                     }
-                    // Where the label goes: along the bisector of the corner, which for a square
-                    // corner is the 45° line into the room, and for a straight-through wall
-                    // reads as ahead of it. A corner that is a straight line has no bisector to
-                    // speak of, so it gets a label to one side instead.
-                    let (bx0, by0) = direction(node, behind);
-                    let (bx1, by1) = direction(node, to);
-                    let (mut bx, mut by) = (bx0 + bx1, by0 + by1);
-                    let reach = bx.hypot(by);
-                    if reach < 1e-6 {
-                        (bx, by) = (-by0, bx0);
-                    } else {
-                        (bx, by) = (bx / reach, by / reach);
-                    }
                     let here = view.get();
-                    let (x, y) = here.screen(node);
-                    let (lx, ly) = (x + bx * ANGLE_OFFSET, y + by * ANGLE_OFFSET);
-                    Some(view! {
-                        <span class="angle" style=format!("left:{lx}px;top:{ly}px")>
-                            {format!("{:.0}°", angle_at(behind, node, to))}
-                        </span>
-                    })
+                    Some(
+                        room_angles(&cornered())
+                            .into_iter()
+                            .map(|turned| {
+                                let (x, y) = here.screen(turned.at);
+                                let (lx, ly) = (
+                                    x + turned.inward.0 * ANGLE_OFFSET,
+                                    y + turned.inward.1 * ANGLE_OFFSET,
+                                );
+                                view! {
+                                    <span class="angle" style=format!("left:{lx}px;top:{ly}px")>
+                                        {format!("{:.0}°", turned.degrees)}
+                                    </span>
+                                }
+                            })
+                            .collect_view(),
+                    )
                 }}
             </div>
 
             <div class="plan-head">
                 <h1>"Floorplan"</h1>
                 <div class="plan-actions">
+                    // About the floor on show, by the name the home knows it by. Its own
+                    // conversation per floor, so upstairs isn't answered with downstairs.
+                    {move || {
+                        // With no model ready, Ask leads to Settings to set one up — and
+                        // leaving this page drops the plan being drawn. So while editing it is
+                        // only offered when it will answer.
+                        let ready = assistant.0.get().is_some_and(|status| status.ready);
+                        if editing.get() && !ready {
+                            return None;
+                        }
+                        let id = floor.get()?;
+                        let name = floors
+                            .get()
+                            .into_iter()
+                            .find(|known| known.id == id)
+                            .map(|known| known.name.to_string())?;
+                        Some(view! {
+                            <crate::assistant::Ask scope=format!("floorplan:{id}") title=name />
+                        })
+                    }}
+                    // The plan as text, to read and copy at any time and to change while
+                    // editing.
+                    {move || floor.get().is_some().then(|| view! {
+                        <button
+                            type="button"
+                            class="step"
+                            title="The plan as JSON"
+                            aria-label="The plan as JSON"
+                            on:click=move |_| sourcing.set(true)
+                        >
+                            <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=BRACES></svg>
+                        </button>
+                    })}
                     {move || if editing.get() {
                         view! {
                             <>
+                                // Beside Save and Cancel rather than among the tools: going
+                                // back is something done to the edit, not something drawn with.
+                                <button
+                                    type="button"
+                                    class="step"
+                                    title="Undo (⌘Z)"
+                                    aria-label="Undo"
+                                    disabled=move || past.get().is_empty()
+                                    on:click=move |_| step_back()
+                                >
+                                    <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=UNDO></svg>
+                                </button>
+                                <button
+                                    type="button"
+                                    class="step"
+                                    title="Redo (⇧⌘Z)"
+                                    aria-label="Redo"
+                                    disabled=move || future.get().is_empty()
+                                    on:click=move |_| step_forward()
+                                >
+                                    <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=REDO></svg>
+                                </button>
                                 <button
                                     type="button"
                                     // Not while a save is in flight. Cancelling would let a new
@@ -1644,28 +2256,9 @@ pub fn Floorplan() -> impl IntoView {
                     <span class="tool-gap"></span>
                     <button
                         type="button"
-                        title="Undo (⌘Z)"
-                        aria-label="Undo"
-                        disabled=move || past.get().is_empty()
-                        on:click=move |_| step_back()
-                    >
-                        <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=UNDO></svg>
-                    </button>
-                    <button
-                        type="button"
-                        title="Redo (⇧⌘Z)"
-                        aria-label="Redo"
-                        disabled=move || future.get().is_empty()
-                        on:click=move |_| step_forward()
-                    >
-                        <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=REDO></svg>
-                    </button>
-                    <span class="tool-gap"></span>
-                    <button
-                        type="button"
                         title="Remove what's picked up"
                         aria-label="Remove what's picked up"
-                        disabled=move || picked.get().is_none()
+                        disabled=move || picked.get().is_none() && group.with(Group::is_empty)
                         on:click=move |_| remove_picked()
                     >
                         <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=BIN></svg>
@@ -1690,13 +2283,77 @@ pub fn Floorplan() -> impl IntoView {
                     <Inspector draft=draft floor=floor level=level picked=picked
                         thickness=thickness live=live remember=remember_cb />
                 })}
+                // Several things picked up together: how many, and what can be done to them.
+                {move || {
+                    let many = editing.get().then(|| group.get()).filter(|many| !many.is_empty())?;
+                    Some(view! {
+                        <div class="inspector">
+                            <h2>"Picked up"</h2>
+                            <p class="name">{many.said()}</p>
+                            <p class="muted small">
+                                "Drag inside the box to move them together, or press Delete to \
+                                 take them all away."
+                            </p>
+                        </div>
+                    })
+                }}
             </div>
 
             <div class="plan-foot">
                 <div class="zoom">
-                    <button type="button" aria-label="Zoom out" on:click=move |_| zoom_by(1.0 / 1.25)>"−"</button>
-                    <button type="button" aria-label="Zoom in" on:click=move |_| zoom_by(1.25)>"+"</button>
-                    <button type="button" on:click=move |_| fit()>"Fit"</button>
+                    // Over the buttons, and quieter than them: the buttons get about, and
+                    // this is for the last little bit.
+                    <zoom::ZoomWheel
+                        scale=Signal::derive(move || view.get().scale)
+                        by=Callback::new(zoom_by)
+                    />
+                    <div class="zoom-buttons">
+                        <button type="button" aria-label="Zoom out" on:click=move |_| zoom_by(1.0 / 1.25)>"−"</button>
+                        <button type="button" aria-label="Zoom in" on:click=move |_| zoom_by(1.25)>"+"</button>
+                        <button
+                            type="button"
+                            class="home"
+                            aria-label="Home view"
+                            title="Home view: the whole plan, or the view you set"
+                            on:click=move |_| fit()
+                        >
+                            <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=HOME></svg>
+                        </button>
+                        // Only once the view has been moved: then what is on screen can be
+                        // made what Fit comes back to. And only on a Fit somebody set is there
+                        // anything to hand back.
+                        {move || if off_fit() {
+                            view! {
+                                <button
+                                    type="button"
+                                    class="set-fit"
+                                    aria-label="Set home view"
+                                    title="Make this view the home view, on this floor"
+                                    on:click=move |_| set_fit(true)
+                                >
+                                    "Set "
+                                    <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=HOME></svg>
+                                    " view"
+                                </button>
+                            }.into_any()
+                        } else if chosen_fit.get().is_some() {
+                            view! {
+                                <button
+                                    type="button"
+                                    class="set-fit"
+                                    aria-label="Reset home view"
+                                    title="Go back to the whole plan as the home view"
+                                    on:click=move |_| set_fit(false)
+                                >
+                                    "Reset "
+                                    <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=HOME></svg>
+                                    " view"
+                                </button>
+                            }.into_any()
+                        } else {
+                            ().into_any()
+                        }}
+                    </div>
                 </div>
                 {move || editing.get().then(|| view! { <SnapControl snap=snap /> })}
                 <p class="hint">
@@ -1712,6 +2369,17 @@ pub fn Floorplan() -> impl IntoView {
                     }}
                 </p>
             </div>
+
+            {move || sourcing.get().then(|| view! {
+                <source::Source
+                    plan=shown.get_untracked()
+                    apply=editing.get_untracked().then_some(Callback::new(move |plan| {
+                        sourcing.set(false);
+                        take.run(plan);
+                    }))
+                    on_close=move |()| sourcing.set(false)
+                />
+            })}
 
             {move || trouble.get().map(|why| view! { <p class="plan-banner">{why}</p> })}
             {move || note.get().map(|said| view! {
@@ -2012,7 +2680,22 @@ fn SnapControl(snap: RwSignal<Snap>) -> impl IntoView {
                             }
                         }
                     />
-                    <output>{move || format!("{} cm", snap.get().step())}</output>
+                    <span class="typed">
+                        <input
+                            type="number"
+                            min=*SNAP_RANGE.start()
+                            max=*SNAP_RANGE.end()
+                            step="1"
+                            aria-label="Snap step in centimetres"
+                            prop:value=move || snap.get().step()
+                            on:change=move |event| {
+                                if let Ok(step) = event_target_value(&event).parse::<i32>() {
+                                    snap.set(Snap::Custom(step));
+                                }
+                            }
+                        />
+                        "cm"
+                    </span>
                 </label>
             })}
         </div>
@@ -2082,7 +2765,21 @@ fn Inspector(
                                     });
                                 }
                             />
-                            <output class="figure">{format!("{thick} cm")}</output>
+                            {typed(
+                                "Thickness in centimetres",
+                                thick,
+                                *Wall::THICKNESS_RANGE.start(),
+                                *Wall::THICKNESS_RANGE.end(),
+                                remember,
+                                move |next| {
+                                    thickness.set(next);
+                                    on_level(draft, floor, |level| {
+                                        if let Some(wall) = level.walls.get_mut(w) {
+                                            wall.thickness = next;
+                                        }
+                                    });
+                                },
+                            )}
                         </label>
                     </div>
                 }.into_any())
@@ -2152,7 +2849,23 @@ fn Inspector(
                                     });
                                 }
                             />
-                            <output class="figure">{format!("{width} cm")}</output>
+                            {typed(
+                                "Width in centimetres",
+                                width,
+                                1,
+                                widest,
+                                remember,
+                                move |next| on_level(draft, floor, |level| {
+                                    let Some(wall) = level.walls.get_mut(w) else { return };
+                                    let length = wall.length();
+                                    let Some(opening) = wall.openings.get_mut(o) else {
+                                        return;
+                                    };
+                                    opening.width = next;
+                                    opening.at =
+                                        fit_opening(f64::from(opening.at), next, length);
+                                }),
+                            )}
                         </label>
                         <div class="choice">
                             <span>"Opens to"</span>
@@ -2213,6 +2926,20 @@ fn Inspector(
                     // its id is more honest than showing nothing.
                     .unwrap_or_else(|| placed.area.to_string());
                 let corners = placed.points.len();
+                let (tint, own) = (placed.tint, Tint::of(&placed.area));
+                // Paints the room, as one step to undo. `None` hands the choice back to the
+                // room's own colour.
+                let paint = move |to: Option<Tint>| {
+                    if to == tint {
+                        return;
+                    }
+                    remember.run(());
+                    on_level(draft, floor, |level| {
+                        if let Some(placed) = level.areas.get_mut(a) {
+                            placed.tint = to;
+                        }
+                    });
+                };
                 Some(
                     view! {
                         <div class="inspector">
@@ -2222,6 +2949,40 @@ fn Inspector(
                                 <span>"Corners"</span>
                                 <span class="figure">{corners.to_string()}</span>
                             </p>
+                            <div class="choice">
+                                <span id="tint-label">"Colour"</span>
+                                <div class="swatches" role="radiogroup" aria-labelledby="tint-label">
+                                    // First, and wearing the colour the room would have
+                                    // anyway: what picking it gives is on show.
+                                    <button
+                                        type="button"
+                                        role="radio"
+                                        class=format!("swatch own tint-{}", own.name())
+                                        class:chosen=tint.is_none()
+                                        aria-checked=tint.is_none().to_string()
+                                        aria-label="Automatic"
+                                        title="Automatic"
+                                        on:click=move |_| paint(None)
+                                    >
+                                        "A"
+                                    </button>
+                                    {Tint::ALL
+                                        .into_iter()
+                                        .map(|each| view! {
+                                            <button
+                                                type="button"
+                                                role="radio"
+                                                class=format!("swatch tint-{}", each.name())
+                                                class:chosen=tint == Some(each)
+                                                aria-checked=(tint == Some(each)).to_string()
+                                                aria-label=each.name()
+                                                title=each.name()
+                                                on:click=move |_| paint(Some(each))
+                                            ></button>
+                                        })
+                                        .collect_view()}
+                                </div>
+                            </div>
                             <p class="muted small">"Drag it, drag a corner, or drag its name."</p>
                         </div>
                     }
@@ -2254,6 +3015,46 @@ fn Inspector(
                 )
             }
         }
+    }
+}
+
+/// A size typed rather than dragged, beside the slider that sets the same thing: a slider gets
+/// a door to about 80 cm, and a tape measure says 82.
+///
+/// Taken when it is finished — Enter, or leaving the box — and not a key at a time, so the 1 of
+/// 137 isn't a one-centimetre door on the way there. Held to the same limits as the slider, and
+/// one step to undo.
+fn typed(
+    label: &'static str,
+    value: u32,
+    least: u32,
+    most: u32,
+    remember: Callback<()>,
+    set: impl Fn(u32) + 'static,
+) -> impl IntoView {
+    view! {
+        <span class="typed figure">
+            <input
+                type="number"
+                min=least
+                max=most
+                step="1"
+                aria-label=label
+                prop:value=value
+                on:change=move |event| {
+                    let typed = event_target_value(&event).trim().parse::<u32>().ok();
+                    let next = typed.map_or(value, |next| next.clamp(least, most.max(least)));
+                    // What the box says is what was taken: a number out of range, or not a
+                    // number at all, is put right where it was typed and not left standing.
+                    event_target::<web_sys::HtmlInputElement>(&event).set_value(&next.to_string());
+                    if next != value {
+                        remember.run(());
+                        set(next);
+                    }
+                }
+            />
+            "cm"
+        </span>
     }
 }
 
@@ -2687,6 +3488,7 @@ fn marker(
     chosen: bool,
     controls: Controls,
     picked: RwSignal<Option<Pick>>,
+    group: RwSignal<Group>,
     drag: RwSignal<Option<Drag>>,
     dragged: RwSignal<bool>,
     dropped: RwSignal<Option<usize>>,
@@ -2771,6 +3573,8 @@ fn marker(
                 }
                 event.stop_propagation();
                 dragged.set(false);
+                // One thing taken hold of puts down whatever was picked up together.
+                group.set(Group::default());
                 picked.set(Some(Pick::Device(index)));
                 remember.run(());
                 drag.set(Some(Drag::Device { device: index }));
@@ -3247,9 +4051,9 @@ fn handles(corners: &[Point], view: Viewport) -> impl IntoView + use<> {
 
 /// A room, as a shape under the walls with its floor tinted.
 ///
-/// The tint is picked from the room's id, so the same room is the same colour every time the
-/// page is opened and two rooms side by side are almost never the same. Low enough that it reads
-/// as a wash over the paper rather than as a block of colour — a plan is drawn in lines.
+/// In the colour picked for it, or — until somebody picks one — in a colour of its own, the
+/// same every time the page is opened. Low enough that it reads as a wash over the paper
+/// rather than as a block of colour: a plan is drawn in lines.
 fn drawn_area(placed: &PlacedArea, view: Viewport, chosen: bool) -> impl IntoView + use<> {
     let points = placed
         .points
@@ -3257,7 +4061,7 @@ fn drawn_area(placed: &PlacedArea, view: Viewport, chosen: bool) -> impl IntoVie
         .map(|point| format!("{},{}", point.x, point.y))
         .collect::<Vec<_>>()
         .join(" ");
-    let tint = tint_of(placed.area.as_str());
+    let tint = placed.shade().name();
     view! {
         <g class="areas" transform=transform(view)>
             <polygon
@@ -3268,15 +4072,6 @@ fn drawn_area(placed: &PlacedArea, view: Viewport, chosen: bool) -> impl IntoVie
             />
         </g>
     }
-}
-
-/// Which of the tints a room gets. A sum of its id's bytes: stable across restarts and across
-/// browsers, which a hash with a random seed would not be.
-fn tint_of(id: &str) -> u32 {
-    const TINTS: u32 = 6;
-    id.bytes().fold(0u32, |sum, byte| {
-        sum.wrapping_mul(31).wrapping_add(u32::from(byte))
-    }) % TINTS
 }
 
 /// The floor below, as an outline. Something to line an upstairs up with, and nothing more: no
@@ -3348,38 +4143,6 @@ fn round(value: f64, step: i32) -> i32 {
     let most = (f64::from(i32::MAX) / span).trunc();
     let steps = (value / span).round().clamp(-most, most) as i32;
     steps * step
-}
-
-/// Where a new point goes: onto a corner that's already there if one is within reach, and onto
-/// the grid otherwise.
-///
-/// `except` leaves one corner out — the one being dragged. Without it a corner could never be
-/// moved off the grid square it started on, because it would keep snapping to itself.
-fn place(
-    level: &Level,
-    world: (f64, f64),
-    view: Viewport,
-    snap: Snap,
-    except: Option<Point>,
-) -> Point {
-    let reach = CORNER * view.cm_per_pixel();
-    let mut nearest: Option<(f64, Point)> = None;
-    for corner in level.walls.iter().flat_map(|wall| [wall.from, wall.to]) {
-        if Some(corner) == except {
-            continue;
-        }
-        let away = (world.0 - f64::from(corner.x)).hypot(world.1 - f64::from(corner.y));
-        if away <= reach && nearest.is_none_or(|(best, _)| away < best) {
-            nearest = Some((away, corner));
-        }
-    }
-    match nearest {
-        Some((_, corner)) => corner,
-        None => {
-            let step = snap.step();
-            Point::new(round(world.0, step), round(world.1, step))
-        }
-    }
 }
 
 /// Which end of a wall a drag has hold of.
@@ -4111,11 +4874,16 @@ fn typing() -> bool {
 
 /// The tools, in the order they're used: pick things up, draw walls, put things in them.
 /// Icons are 24×24 strokes written here, so `inner_html` only ever holds these literals.
-const TOOLS: [(Tool, &str, &str); 6] = [
+const TOOLS: [(Tool, &str, &str); 7] = [
     (
         Tool::Select,
         "Select",
         r#"<path d="M5 3l6 16 2.2-6.2L19.5 10z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>"#,
+    ),
+    (
+        Tool::Many,
+        "Select several",
+        r#"<rect x="3.5" y="3.5" width="17" height="17" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="3 2.6"/><path d="M10 9l3.2 8 1.2-3.2L17.6 12.6z" fill="currentColor" stroke="none"/>"#,
     ),
     (
         Tool::Wall,
@@ -4148,6 +4916,12 @@ const TOOLS: [(Tool, &str, &str); 6] = [
 const UNDO: &str = r#"<path d="M4 9h10a5 5 0 0 1 0 10H8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 5 4 9l4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
 const REDO: &str = r#"<path d="M20 9H10a5 5 0 0 0 0 10h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="m16 5 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
 
+/// Home: the view the plan comes back to.
+const HOME: &str = r#"<path d="M4 11.2 12 4l8 7.2M6.2 9.6V20h4.3v-5.4h3V20h4.3V9.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
+
+/// The plan as text: a pair of braces.
+const BRACES: &str = r#"<path d="M9 4c-2 0-3 1-3 3v2.5c0 1.4-.8 2.5-2 2.5 1.2 0 2 1.1 2 2.5V17c0 2 1 3 3 3M15 4c2 0 3 1 3 3v2.5c0 1.4.8 2.5 2 2.5-1.2 0-2 1.1-2 2.5V17c0 2-1 3-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
+
 /// Take away what's picked up.
 const BIN: &str = r#"<path d="M4 7h16M10 7V5h4v2M6 7l1 13h10l1-13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
 
@@ -4168,6 +4942,7 @@ mod tests {
             area: id.parse().expect("a valid area id"),
             points: points(corners),
             label: Point::new(0, 0),
+            tint: None,
         }
     }
 
@@ -4312,12 +5087,12 @@ mod tests {
             ..Level::default()
         };
         assert_eq!(
-            place(&plan, (399.0, 4.0), view, Snap::Grid, None),
+            place(&plan, (399.0, 4.0), view, Snap::Grid, None, None).point,
             Point::new(403, 0),
             "close to the far corner"
         );
         assert_eq!(
-            place(&plan, (252.0, 97.0), view, Snap::Grid, None),
+            place(&plan, (252.0, 97.0), view, Snap::Grid, None, None).point,
             Point::new(250, 100),
             "nowhere near one: the grid"
         );
@@ -4327,8 +5102,10 @@ mod tests {
                 (399.0, 4.0),
                 view,
                 Snap::Grid,
-                Some(Point::new(403, 0))
-            ),
+                Some(Point::new(403, 0)),
+                None,
+            )
+            .point,
             Point::new(400, 0),
             "the corner being dragged doesn't catch itself"
         );
@@ -4465,7 +5242,7 @@ mod tests {
             pan: (0.0, 0.0),
         };
         let empty = Level::default();
-        let at = |snap| place(&empty, (137.4, 62.6), view, snap, None);
+        let at = |snap| place(&empty, (137.4, 62.6), view, snap, None, None).point;
 
         assert_eq!(at(Snap::Grid), Point::new(140, 60));
         assert_eq!(
@@ -4845,12 +5622,25 @@ mod tests {
         assert_eq!(pick_at(&level, (600.0, 150.0), 20.0), None);
     }
 
-    /// The same room is the same colour every time, whoever opens the page.
+    /// A Fit somebody set is kept as a place on the plan, so it comes back the same in a
+    /// window of another size, and what is kept reads back as what was set.
     #[test]
-    fn a_rooms_tint_is_its_own_and_stays_put() {
-        assert_eq!(tint_of("kitchen"), tint_of("kitchen"));
-        assert!(tint_of("kitchen") < 6);
-        assert!(tint_of("") < 6, "even an id that is somehow empty");
+    fn a_fit_somebody_set_is_a_place_on_the_plan() {
+        let view = Viewport {
+            scale: 0.8,
+            pan: (120.0, -40.0),
+        };
+        let framing = Framing::of(view, (500.0, 300.0));
+        let back = framing.view((500.0, 300.0));
+        assert!((back.scale - view.scale).abs() < 1e-9);
+        assert!((back.pan.0 - view.pan.0).abs() < 1e-9 && (back.pan.1 - view.pan.1).abs() < 1e-9);
+        // In a wider window the same place on the plan is still in the middle.
+        let wider = framing.view((800.0, 300.0));
+        assert_eq!(wider.world(800.0, 300.0), view.world(500.0, 300.0));
+        assert_eq!(Framing::read(&framing.written()), Some(framing));
+        for nothing in ["", "1,2", "1,2,3,4", "a,b,c", "0,1,1", "inf,1,1"] {
+            assert_eq!(Framing::read(nothing), None, "{nothing}");
+        }
     }
 
     #[test]

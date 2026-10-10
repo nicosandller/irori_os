@@ -222,9 +222,16 @@ pub fn router(state: AppState) -> Router {
     #[cfg(feature = "assist")]
     let router = router
         .route("/api/assistant", get(assistant::get).put(assistant::put))
-        .route("/api/assistant/turns", post(assistant::turns))
+        // A question can carry a picture of a floorplan, which is far more than the two
+        // megabytes any other request is allowed.
+        .route(
+            "/api/assistant/turns",
+            post(assistant::turns)
+                .layer(axum::extract::DefaultBodyLimit::max(assistant::MOST_ASKED)),
+        )
         .route("/api/assistant/turns/{scope}", get(assistant::follow))
         .route("/api/assistant/turns/{scope}/stop", post(assistant::stop))
+        .route("/api/assistant/check", post(assistant::check))
         .route("/api/assistant/pull", post(assistant::pull))
         .route("/api/assistant/forget", post(assistant::forget))
         .route("/api/assistant/install", post(assistant::install))
@@ -4215,13 +4222,121 @@ mod tests {
                         )
                             .into_response();
                     }
+                    // Makes a room and asks for another to go, then says what came of it.
+                    // `floods` asks for thirty rooms, and keeps asking.
+                    if body["model"] == "arranges" || body["model"] == "floods" {
+                        let report = body["messages"].as_array().and_then(|messages| {
+                            messages
+                                .iter()
+                                .find(|m| m["role"] == "tool")
+                                .and_then(|m| m["content"].as_str().map(str::to_owned))
+                        });
+                        let flooding = body["model"] == "floods";
+                        let ops = if flooding {
+                            serde_json::Value::from(vec![
+                                serde_json::json!({"op": "add_area", "name": "Spare"});
+                                15
+                            ])
+                        } else {
+                            serde_json::json!([
+                                {"op": "add_area", "name": "Pantry"},
+                                {"op": "remove_area", "area": "kitchen"},
+                                {"op": "remove_floor", "floor": "attic"},
+                            ])
+                        };
+                        // Flooding, it asks twice before it says anything.
+                        let asked = body["messages"].as_array().map_or(0, |messages| {
+                            messages.iter().filter(|m| m["role"] == "tool").count()
+                        });
+                        let report = report.filter(|_| !flooding || asked >= 2);
+                        let line = match report {
+                            Some(_) if flooding => serde_json::json!({"choices": [{"delta": {
+                                "content": body["messages"].to_string(),
+                            }}]}),
+                            Some(report) => serde_json::json!({"choices": [{"delta": {
+                                "content": report,
+                            }}]}),
+                            None => serde_json::json!({"choices": [{"delta": {
+                                "tool_calls": [{"index": 0, "id": "a", "function": {
+                                    "name": "edit_home",
+                                    "arguments": serde_json::json!({"ops": ops}).to_string(),
+                                }}],
+                            }}]}),
+                        };
+                        return (
+                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                            format!("data: {line}\n\ndata: [DONE]\n\n"),
+                        )
+                            .into_response();
+                    }
+                    // Says whether it was shown a picture, and how much of one.
+                    if body["model"] == "looks" {
+                        let shown = body["messages"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|m| m["content"][1]["image_url"]["url"].as_str())
+                            .map(str::len)
+                            .next();
+                        let said = match shown {
+                            Some(size) => format!("A picture of {size} characters."),
+                            None => "No picture.".to_owned(),
+                        };
+                        let line = serde_json::json!({"choices": [{"delta": {"content": said}}]});
+                        return (
+                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                            format!("data: {line}\n\ndata: [DONE]\n\n"),
+                        )
+                            .into_response();
+                    }
+                    // Draws a room when it is offered the tool to, and says it can't when it
+                    // isn't. `draws-badly` asks for a room the home doesn't have.
+                    if body["model"] == "draws" || body["model"] == "draws-badly" {
+                        let offered = body["tools"].to_string().contains("edit_floorplan");
+                        let report = body["messages"].as_array().and_then(|messages| {
+                            messages
+                                .iter()
+                                .find(|m| m["role"] == "tool")
+                                .map(|m| m["content"].to_string())
+                        });
+                        let room = if body["model"] == "draws" { "study" } else { "attic" };
+                        let ops = serde_json::json!([
+                            {"op": "add_wall", "from": [500, 0], "to": [800, 0]},
+                            {"op": "add_wall", "from": [800, 0], "to": [800, 300]},
+                            {"op": "add_opening", "wall": 2, "kind": "door", "at": 150},
+                            {"op": "trace_area", "area": room,
+                             "points": [[500, 0], [800, 0], [800, 300], [500, 300]]},
+                        ])
+                        .to_string();
+                        let said = |text: &str| {
+                            serde_json::json!({"choices": [{"delta": {"content": text}}]})
+                        };
+                        let line = match report {
+                            Some(report) if report.contains("Done") => said("Drawn."),
+                            Some(report) => said(&format!("Refused: {report}")),
+                            None if offered => serde_json::json!({"choices": [{"delta": {
+                                "tool_calls": [{"index": 0, "id": "a", "function": {
+                                    "name": "edit_floorplan",
+                                    "arguments": serde_json::json!({"ops": ops}).to_string(),
+                                }}],
+                            }}]}),
+                            None => said("I can't draw here."),
+                        };
+                        return (
+                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                            format!("data: {line}\n\ndata: [DONE]\n\n"),
+                        )
+                            .into_response();
+                    }
                     (
                         [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
                         "data: {\"choices\":[{\"delta\":{\"content\":\"Hello from the model\"}}]}\n\ndata: [DONE]\n\n",
                     )
                         .into_response()
                 }),
-            );
+            )
+            // A provider takes a picture; the stand-in has to as well.
+            .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024));
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
                 .expect("a local port");
@@ -4358,6 +4473,320 @@ mod tests {
             Ok(())
         }
 
+        /// One question from the Floorplan page, with the plan being edited there or without.
+        async fn asked_on_the_plan(
+            server: &Server,
+            plan: Option<&serde_json::Value>,
+        ) -> anyhow::Result<Vec<serde_json::Value>> {
+            let mut body = serde_json::json!({
+                "scope": "floorplan:ground",
+                "message": "Draw the study to the right of the kitchen.",
+            });
+            if let Some(plan) = plan {
+                body["plan"] = plan.clone();
+            }
+            let (status, bytes) = server
+                .send(
+                    Request::post("/api/assistant/turns")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&body)?))?,
+                )
+                .await?;
+            assert_eq!(status, StatusCode::OK);
+            Ok(String::from_utf8(bytes)?
+                .lines()
+                .filter_map(|line| serde_json::from_str(line.strip_prefix("data:")?.trim()).ok())
+                .collect())
+        }
+
+        /// On the Floorplan page the assistant may draw — on the copy the person is editing,
+        /// which comes back to them to keep or undo, and never on the home's own plan.
+        #[tokio::test]
+        async fn the_assistant_draws_on_the_plan_being_edited_and_saves_nothing()
+        -> anyhow::Result<()> {
+            let base = cloud().await;
+            let server = Server::new(core())?;
+            for (path, body) in [
+                (
+                    "/api/floors",
+                    serde_json::json!({"name": "Ground", "level": 0}),
+                ),
+                ("/api/areas", serde_json::json!({"name": "Kitchen"})),
+                ("/api/areas", serde_json::json!({"name": "Study"})),
+            ] {
+                let (status, body) = server.json("POST", path, body).await?;
+                assert!(status.is_success(), "{path}: {body}");
+            }
+            let draft = serde_json::json!({"floors": {"ground": {
+                "walls": [{"from": [0, 0], "to": [400, 0]}],
+                "areas": [{"area": "kitchen", "points": [[0, 0], [400, 0], [400, 300], [0, 300]]}],
+            }}});
+            let (status, body) = server
+                .json("PUT", "/api/assistant", configure(&base, "draws"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+
+            let events = asked_on_the_plan(&server, Some(&draft)).await?;
+            let drawn = events
+                .iter()
+                .find_map(|event| event.get("plan"))
+                .unwrap_or_else(|| panic!("no plan came back: {events:?}"));
+            let ground = &drawn["floors"]["ground"];
+            assert_eq!(ground["walls"].as_array().map(Vec::len), Some(3), "{drawn}");
+            assert_eq!(ground["walls"][1]["openings"][0]["kind"], "door");
+            assert_eq!(ground["areas"][1]["area"], "study");
+            assert!(events.iter().any(|event| event["step"] == "edit_floorplan"));
+            assert!(
+                events.iter().any(|event| event["delta"] == "Drawn."),
+                "{events:?}"
+            );
+            // The home's own plan was never drawn at all, and still isn't.
+            assert_eq!(server.read("/api/floorplan").await?, serde_json::json!({}));
+            let file = std::fs::read_to_string(server.config_dir().join("floorplan.toml"))
+                .unwrap_or_default();
+            assert!(!file.contains("[[floors"), "{file}");
+
+            // Without the plan being edited there is nothing to draw on, and no tool to try.
+            let events = asked_on_the_plan(&server, None).await?;
+            assert!(
+                events.iter().all(|event| event.get("plan").is_none()),
+                "{events:?}"
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|event| event["delta"] == "I can't draw here.")
+            );
+
+            // A room the home doesn't have is refused, in words the model can act on, and the
+            // page is sent nothing to take.
+            let (status, body) = server
+                .json("PUT", "/api/assistant", configure(&base, "draws-badly"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let events = asked_on_the_plan(&server, Some(&draft)).await?;
+            assert!(
+                events.iter().all(|event| event.get("plan").is_none()),
+                "{events:?}"
+            );
+            let said = serde_json::Value::from(events).to_string();
+            assert!(
+                said.contains("no room `attic`") && said.contains("study"),
+                "{said}"
+            );
+
+            // A plan that couldn't be saved as it stands is not drawn on, and the model is told
+            // why rather than left to say the plan isn't being edited.
+            let (status, body) = server
+                .json("PUT", "/api/assistant", configure(&base, "draws"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let broken = serde_json::json!({"floors": {"ground": {
+                "walls": [{"from": [0, 0], "to": [0, 0]}],
+            }}});
+            let events = asked_on_the_plan(&server, Some(&broken)).await?;
+            assert!(
+                events.iter().all(|event| event.get("plan").is_none()),
+                "{events:?}"
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|event| event["delta"] == "I can't draw here.")
+            );
+
+            // The same tool, asked for from a conversation that isn't offered it.
+            let reply = events_of(&server, "general", &draft).await?;
+            assert!(!reply.contains("\"plan\""), "{reply}");
+            Ok(())
+        }
+
+        /// Saving a cloud model doesn't say whether it works. Asking it does.
+        #[tokio::test]
+        async fn a_cloud_model_can_be_asked_whether_it_answers() -> anyhow::Result<()> {
+            let base = cloud().await;
+            let server = Server::new(core())?;
+            let (status, body) = server
+                .json("POST", "/api/assistant/check", serde_json::json!({}))
+                .await?;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "nothing is set up: {body}");
+
+            server
+                .json("PUT", "/api/assistant", configure(&base, "test-model"))
+                .await?;
+            let (status, body) = server
+                .json("POST", "/api/assistant/check", serde_json::json!({}))
+                .await?;
+            assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+            // Nothing of the asking is kept as a conversation.
+            let kept = server.read("/api/assistant/transcript/general").await?;
+            assert_eq!(kept["turns"], serde_json::json!([]));
+
+            server
+                .json("PUT", "/api/assistant", configure(&base, "broken"))
+                .await?;
+            let (status, body) = server
+                .json("POST", "/api/assistant/check", serde_json::json!({}))
+                .await?;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            let why = body["error"].as_str().unwrap_or_default();
+            assert!(why.contains("the provider said no"), "{body}");
+            assert!(
+                !body.to_string().contains("sk-test-key-should-not-leak"),
+                "{body}"
+            );
+            Ok(())
+        }
+
+        /// A picture of a floorplan goes to the model with the question it was asked with —
+        /// one far bigger than any other request may be — and is not what is remembered.
+        #[tokio::test]
+        async fn a_picture_given_on_the_floorplan_reaches_the_model() -> anyhow::Result<()> {
+            let base = cloud().await;
+            let server = Server::new(core())?;
+            let (status, body) = server
+                .json(
+                    "POST",
+                    "/api/floors",
+                    serde_json::json!({"name": "Ground", "level": 0}),
+                )
+                .await?;
+            assert!(status.is_success(), "{body}");
+            let (status, body) = server
+                .json("PUT", "/api/assistant", configure(&base, "looks"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let ask = |scope: &str, media_type: &str, data: String| {
+                let body = serde_json::json!({
+                    "scope": scope,
+                    "message": "Draw this.",
+                    "attachment": {"name": "plan.png", "media_type": media_type, "data": data},
+                });
+                let server = &server;
+                async move {
+                    let (status, bytes) = server
+                        .send(
+                            Request::post("/api/assistant/turns")
+                                .header("content-type", "application/json")
+                                .body(Body::from(serde_json::to_vec(&body)?))?,
+                        )
+                        .await?;
+                    anyhow::Ok((status, String::from_utf8(bytes)?))
+                }
+            };
+            // Three megabytes: more than a request is otherwise allowed to be.
+            let picture = "QUJD".repeat(750_000);
+            let (status, reply) = ask("floorplan:ground", "image/png", picture.clone()).await?;
+            assert_eq!(status, StatusCode::OK, "{reply}");
+            let expected = picture.len() + "data:image/png;base64,".len();
+            assert!(
+                reply.contains(&format!("A picture of {expected} characters.")),
+                "{reply}"
+            );
+            let kept = server
+                .read("/api/assistant/transcript/floorplan:ground")
+                .await?;
+            assert_eq!(
+                kept["turns"][0]["body"],
+                "Draw this.\n\n(attached: plan.png)"
+            );
+            assert!(kept.to_string().len() < 2_000, "the picture was kept");
+
+            // Not something that isn't a picture, and not in a conversation that can't draw.
+            let (_, reply) = ask("floorplan:ground", "text/html", "QUJD".into()).await?;
+            assert!(reply.contains("isn't a picture or a PDF"), "{reply}");
+            let (_, reply) = ask("general", "image/png", "QUJD".into()).await?;
+            assert!(reply.contains("on the Floorplan page"), "{reply}");
+            Ok(())
+        }
+
+        /// From the Floorplan's chat the assistant may make a room, which is saved as a room
+        /// made in Settings is. It may not remove one: the person is asked, and until they
+        /// answer the room is still there.
+        #[tokio::test]
+        async fn the_assistant_adds_a_room_and_only_asks_to_remove_one() -> anyhow::Result<()> {
+            let base = cloud().await;
+            let server = Server::new(core())?;
+            for (path, body) in [
+                (
+                    "/api/floors",
+                    serde_json::json!({"name": "Ground", "level": 0}),
+                ),
+                ("/api/areas", serde_json::json!({"name": "Kitchen"})),
+            ] {
+                let (status, body) = server.json("POST", path, body).await?;
+                assert!(status.is_success(), "{path}: {body}");
+            }
+            let (status, body) = server
+                .json("PUT", "/api/assistant", configure(&base, "arranges"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let draft = serde_json::json!({});
+            let events = asked_on_the_plan(&server, Some(&draft)).await?;
+            let said = serde_json::Value::from(events.clone()).to_string();
+
+            let rooms = server.read("/api/areas").await?;
+            let pantry = rooms
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|room| room["id"] == "pantry")
+                .unwrap_or_else(|| panic!("no pantry was made: {rooms} / {said}"));
+            assert_eq!(pantry["floor_id"], "ground", "on the floor being looked at");
+            assert!(
+                rooms.to_string().contains("\"kitchen\""),
+                "the kitchen was removed without anybody saying yes: {rooms}"
+            );
+            let asked = events
+                .iter()
+                .find_map(|event| event.get("confirm"))
+                .unwrap_or_else(|| panic!("nobody was asked: {said}"));
+            assert_eq!(
+                asked,
+                &serde_json::json!([{"kind": "area", "id": "kitchen", "name": "Kitchen"}])
+            );
+            assert!(said.contains("There's no floor `attic`"), "{said}");
+            assert!(said.contains("saved already"), "{said}");
+
+            // One question gets only so many rooms added, however many it asks for.
+            let (status, body) = server
+                .json("PUT", "/api/assistant", configure(&base, "floods"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let events = asked_on_the_plan(&server, Some(&draft)).await?;
+            let said = serde_json::Value::from(events).to_string();
+            assert!(said.contains("No more floors or rooms"), "{said}");
+            let rooms = server.read("/api/areas").await?;
+            let spares = rooms
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|room| room["name"] == "Spare")
+                .count();
+            assert_eq!(spares, 12, "{rooms}");
+            Ok(())
+        }
+
+        /// A question with a plan attached, from a conversation that has no use for one.
+        async fn events_of(
+            server: &Server,
+            scope: &str,
+            plan: &serde_json::Value,
+        ) -> anyhow::Result<String> {
+            let (_, bytes) = server
+                .send(
+                    Request::post("/api/assistant/turns")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&serde_json::json!({
+                            "scope": scope,
+                            "message": "Draw the study.",
+                            "plan": plan,
+                        }))?))?,
+                )
+                .await?;
+            Ok(String::from_utf8(bytes)?)
+        }
+
         /// Irori finishes an answer once it has been asked for, with nobody there to read it.
         #[tokio::test]
         async fn a_page_that_leaves_still_gets_its_answer_kept() -> anyhow::Result<()> {
@@ -4382,9 +4811,12 @@ mod tests {
                             history: &server.history,
                             db: &db.path,
                             log: &server.log,
+                            owner: false,
                         },
                         "general".into(),
                         "hello".into(),
+                        None,
+                        None,
                         tx,
                     )
                 })

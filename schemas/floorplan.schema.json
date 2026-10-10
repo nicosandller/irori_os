@@ -213,6 +213,17 @@
             "$ref": "#/$defs/Point"
           },
           "minItems": 3
+        },
+        "tint": {
+          "description": "The colour its floor is washed with. Absent, the room gets one picked from its id, as\nevery room did before this could be said — so a plan nobody has coloured writes nothing.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Tint"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false,
@@ -274,6 +285,22 @@
       "enum": [
         "left",
         "right"
+      ]
+    },
+    "Tint": {
+      "description": "A colour a room's floor can be washed with.\n\nA name rather than a colour value, because the plan is drawn on paper by day and on slate by\nnight and no single value reads on both: the page decides what each name looks like on the\nsurface it is drawing on. A short list rather than a free choice for the same reason — and\nbecause rooms side by side only need telling apart, not matching the curtains.",
+      "type": "string",
+      "enum": [
+        "ember",
+        "moss",
+        "slate",
+        "sand",
+        "plum",
+        "teal",
+        "rose",
+        "sky",
+        "olive",
+        "stone"
       ]
     },
     "Wall": {
