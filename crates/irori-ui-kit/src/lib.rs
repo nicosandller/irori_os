@@ -10,8 +10,14 @@
 //!
 //! - [`combo`]: a field that searches a list as you type, for choosing an entity.
 //! - [`entity_icon`]: the icon an entity has until someone gives it another.
+//! - [`json`]: JSON written for a person, and coloured as it's typed.
+//! - [`color`]: a light's colour as the page and the light each say it.
+//! - [`clipboard`]: copying, where the browser makes it awkward.
 
+pub mod clipboard;
+pub mod color;
 pub mod combo;
 pub mod entity_icon;
+pub mod json;
 pub mod message;
 pub mod page;

@@ -337,25 +337,29 @@ pub fn in_sun_window(
     place: &Place,
     after: Option<SunEvent>,
     before: Option<SunEvent>,
-    offset_ms: i64,
+    after_offset_ms: i64,
+    before_offset_ms: i64,
     now: Timestamp,
 ) -> Result<bool, String> {
-    let today = |event: SunEvent| -> Result<Timestamp, String> {
+    let today = |event: SunEvent, offset_ms: i64| -> Result<Timestamp, String> {
         sun_today(place, event, now)?
             .map(|at| shifted(at, offset_ms))
             .ok_or_else(|| format!("there's no {} at home today", sun_word(event)))
     };
     Ok(match (after, before) {
         (Some(after), Some(before)) => {
-            let (after, before) = (today(after)?, today(before)?);
+            let (after, before) = (
+                today(after, after_offset_ms)?,
+                today(before, before_offset_ms)?,
+            );
             if after <= before {
                 after <= now && now < before
             } else {
                 now >= after || now < before
             }
         }
-        (Some(after), None) => now >= today(after)?,
-        (None, Some(before)) => now < today(before)?,
+        (Some(after), None) => now >= today(after, after_offset_ms)?,
+        (None, Some(before)) => now < today(before, before_offset_ms)?,
         (None, None) => true,
     })
 }
@@ -605,14 +609,15 @@ mod tests {
         let next = next_sun(&place, SunEvent::Sunset, 0, now).unwrap();
         assert!(minutes_apart(next, now) > 20.0 * 24.0 * 60.0);
         // And a window on it doesn't hold, and says why.
-        let why = in_sun_window(&place, Some(SunEvent::Sunset), None, 0, now).unwrap_err();
+        let why = in_sun_window(&place, Some(SunEvent::Sunset), None, 0, 0, now).unwrap_err();
         assert!(why.contains("no sunset"), "{why}");
     }
 
     #[test]
     fn after_sunset_holds_until_the_day_ends() {
         let place = brussels();
-        let after = |text: &str| in_sun_window(&place, Some(SunEvent::Sunset), None, 0, at(text));
+        let after =
+            |text: &str| in_sun_window(&place, Some(SunEvent::Sunset), None, 0, 0, at(text));
         // 21 June: sunset at 22:00 at home (20:00Z).
         assert_eq!(after("2026-06-21T19:00:00Z"), Ok(false));
         assert_eq!(after("2026-06-21T20:30:00Z"), Ok(true));
@@ -623,12 +628,46 @@ mod tests {
                 Some(SunEvent::Sunset),
                 Some(SunEvent::Sunrise),
                 0,
+                0,
                 at(text),
             )
         };
         assert_eq!(night("2026-06-21T01:00:00Z"), Ok(true)); // 03:00, before sunrise
         assert_eq!(night("2026-06-21T12:00:00Z"), Ok(false));
         assert_eq!(night("2026-06-21T20:30:00Z"), Ok(true));
+    }
+
+    #[test]
+    fn each_end_of_a_sun_window_moves_on_its_own() {
+        let place = brussels();
+        const HOUR: i64 = 3_600_000;
+        // 21 June: sunset at 22:00 at home (20:00Z). An hour before it opens the window early
+        // and leaves where it closes alone.
+        let early = |text: &str| {
+            in_sun_window(
+                &place,
+                Some(SunEvent::Sunset),
+                Some(SunEvent::Sunrise),
+                -HOUR,
+                0,
+                at(text),
+            )
+        };
+        assert_eq!(early("2026-06-21T18:30:00Z"), Ok(false));
+        assert_eq!(early("2026-06-21T19:30:00Z"), Ok(true));
+        // Sunrise is about 05:30 at home (03:30Z): two hours on, 07:00 is still inside.
+        let late = |text: &str| {
+            in_sun_window(
+                &place,
+                Some(SunEvent::Sunset),
+                Some(SunEvent::Sunrise),
+                0,
+                2 * HOUR,
+                at(text),
+            )
+        };
+        assert_eq!(late("2026-06-21T05:00:00Z"), Ok(true));
+        assert_eq!(early("2026-06-21T05:00:00Z"), Ok(false));
     }
 
     #[test]

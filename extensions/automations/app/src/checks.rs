@@ -1,8 +1,9 @@
-//! A condition to fill in rather than write: things checked against values, joined by "and" or
-//! "or". It's written as the condition it stands for — `state` for on/off and text, an
-//! expression for numbers, `all`/`any` around several — so a run's trace shows every value it
-//! read, and an unavailable device counts the way a condition on it always has. A condition
-//! that isn't one of these is edited as an expression, or as JSON.
+//! A condition to fill in rather than write: things checked against values, and windows of the
+//! day ("after 14:00", "from sunset until sunrise"), joined by "and" or "or". It's written as
+//! the condition it stands for — `state` for on/off and text, an expression for numbers,
+//! `time` and `sun` for windows, `all`/`any` around several — so a run's trace shows every
+//! value it read, and an unavailable device counts the way a condition on it always has. A
+//! condition that isn't one of these is edited as an expression, or as JSON.
 
 use irori_types::{EntityId, ValueShape};
 use leptos::prelude::*;
@@ -10,7 +11,8 @@ use serde_json::{Value, json};
 
 use crate::inspector::{EntityPicker, lasting};
 use crate::widgets::{Choice, Combo};
-use crate::{Home, model};
+use crate::windows::Windows;
+use crate::{Home, clock_forms, model};
 
 /// How one thing is checked.
 #[derive(Debug, Clone, PartialEq)]
@@ -23,10 +25,28 @@ pub enum Test {
     Text { equal: bool, value: String },
 }
 
+/// One thing in the home, and how it's checked.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Clause {
+pub struct Thing {
     pub entity: String,
     pub test: Test,
+}
+
+/// One check: a thing in the home, or a window of the day.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Clause {
+    Thing(Thing),
+    /// A `time` or `sun` condition, kept as it's written: its form edits it in place.
+    Window(Value),
+}
+
+/// A window to start from: through the night by the clock, or by the sun.
+pub fn fresh_window(sun: bool) -> Value {
+    if sun {
+        json!({ "type": "sun", "after": "sunset", "before": "sunrise" })
+    } else {
+        json!({ "type": "time", "after": "22:00", "before": "06:00" })
+    }
 }
 
 /// Every check, and whether any one holding is enough.
@@ -64,7 +84,7 @@ fn quoted(text: &str) -> Option<String> {
     (!inner.contains(['\'', '"', '\\'])).then(|| inner.to_owned())
 }
 
-impl Clause {
+impl Thing {
     /// One check written as an expression: `num('…') < 30`, `on('…')`, `!on('…')`,
     /// `text('…') == 'x'`.
     fn parse_expr(text: &str) -> Option<Self> {
@@ -222,11 +242,6 @@ impl Clause {
         })
     }
 
-    /// The check as a line on its node: "Occupancy detected".
-    pub fn line(&self, home: &Home) -> String {
-        self.words(home)
-    }
-
     fn words(&self, home: &Home) -> String {
         let id = self.entity.parse::<EntityId>().ok();
         let name = id
@@ -255,7 +270,59 @@ impl Clause {
     }
 }
 
+impl Clause {
+    /// One check from a condition: a window of the day, or a thing checked.
+    fn from_condition(condition: &Value) -> Option<Self> {
+        match condition["type"].as_str()? {
+            "time" | "sun" => Some(Self::Window(condition.clone())),
+            _ => Thing::from_condition(condition).map(Self::Thing),
+        }
+    }
+
+    /// The condition this check is.
+    fn render(&self) -> Value {
+        match self {
+            Self::Thing(thing) => thing.render(),
+            Self::Window(window) => window.clone(),
+        }
+    }
+
+    /// A first check for `entity`, fitting what kind of thing it is.
+    pub fn fresh(entity: &str, home: &Home) -> Self {
+        Self::Thing(Thing::fresh(entity, home))
+    }
+
+    /// Whether this check holds right now, or `None` if that can't be told: the thing can't be
+    /// read, or the home has no time zone to tell the time by. Reads the home's states and
+    /// the engine's word on windows, so a view using it follows both.
+    pub fn holds_now(&self, home: &Home, windows: &Windows) -> Option<bool> {
+        match self {
+            Self::Thing(thing) => thing.holds_now(home),
+            Self::Window(window) => windows.told(window)?.holds,
+        }
+    }
+
+    /// The check as a line on its node: "Occupancy detected", "after 14:00".
+    pub fn line(&self, home: &Home) -> String {
+        self.words(home)
+    }
+
+    fn words(&self, home: &Home) -> String {
+        match self {
+            Self::Thing(thing) => thing.words(home),
+            Self::Window(window) => clock_forms::window_words(window),
+        }
+    }
+}
+
 impl Checks {
+    /// Sets how the thing at `i` is checked.
+    fn set_test(&mut self, i: usize, test: Test) {
+        if let Some(Clause::Thing(thing)) = self.clauses.get_mut(i) {
+            thing.test = test;
+        }
+    }
+
     /// The checks a condition is, or `None` if it's more than checks can say.
     pub fn from_condition(condition: &Value) -> Option<Self> {
         match condition["type"].as_str()? {
@@ -289,7 +356,7 @@ impl Checks {
         };
         let clauses = parts
             .into_iter()
-            .map(Clause::parse_expr)
+            .map(|part| Thing::parse_expr(part).map(Clause::Thing))
             .collect::<Option<Vec<_>>>()?;
         Some(Self { clauses, any })
     }
@@ -393,7 +460,8 @@ pub fn TextValue(
 }
 
 /// The checks to fill in: for each thing, a test that fits it — below or above a number, on or
-/// off, a text or not — joined by "and" or "or".
+/// off, a text or not — and for a window of the day, its dial or its arc; joined by "and" or
+/// "or".
 #[component]
 pub fn ChecksForm(
     checks: Checks,
@@ -411,11 +479,6 @@ pub fn ChecksForm(
         .cloned()
         .enumerate()
         .map(|(i, clause)| {
-            let now = clause.entity.parse::<EntityId>().ok().and_then(|id| {
-                home.states.with_untracked(|states| {
-                    states.get(&id).map(|s| model::state_words(s, &home))
-                })
-            });
             let with = {
                 let (checks, put) = (checks.clone(), put.clone());
                 move |f: &dyn Fn(&mut Checks)| {
@@ -424,7 +487,6 @@ pub fn ChecksForm(
                     put(next);
                 }
             };
-            let test_input = test_input(&clause, i, with.clone(), home);
             let joiner = (i > 0).then(|| {
                 let any = checks.any;
                 let with = with.clone();
@@ -439,58 +501,121 @@ pub fn ChecksForm(
                     </div>
                 }
             });
-            let (with_entity, with_remove) = (with.clone(), with);
-            let previous = clause.test.clone();
+            let remove = (count > 1).then(|| {
+                let with = with.clone();
+                view! {
+                    <button class="btn small" title="Remove this check"
+                        on:click=move |_| with(&|c: &mut Checks| { c.clauses.remove(i); })>
+                        "×"
+                    </button>
+                }
+            });
+            let body = match clause {
+                Clause::Thing(thing) => {
+                    let now = thing.entity.parse::<EntityId>().ok().and_then(|id| {
+                        home.states.with_untracked(|states| {
+                            states.get(&id).map(|s| model::state_words(s, &home))
+                        })
+                    });
+                    let test_input = test_input(&thing, i, with.clone(), home);
+                    let previous = thing.test.clone();
+                    view! {
+                        <div class="clause">
+                            <div class="row">
+                                <div class="grow">
+                                    <EntityPicker value=thing.entity.clone() kinds=lasting()
+                                        pick=move |id: String| {
+                                            let mut fresh = Thing::fresh(&id, &home);
+                                            // The same kind of test as before, where it still fits.
+                                            if std::mem::discriminant(&fresh.test)
+                                                == std::mem::discriminant(&previous)
+                                                && !matches!(previous, Test::Text { .. })
+                                            {
+                                                fresh.test = previous.clone();
+                                            }
+                                            with(&|c: &mut Checks| {
+                                                c.clauses[i] = Clause::Thing(fresh.clone());
+                                            });
+                                        } />
+                                </div>
+                                {remove}
+                            </div>
+                            <div class="row test">{test_input}</div>
+                            {now.map(|n| view! { <div class="muted now-line">{format!("now {n}")}</div> })}
+                        </div>
+                    }
+                    .into_any()
+                }
+                Clause::Window(window) => {
+                    let sun = window["type"] == "sun";
+                    // The window's own form, editing this check where it stands in the list.
+                    let edit_window = {
+                        let (checks, put) = (checks.clone(), put.clone());
+                        move |f: Box<dyn FnOnce(&mut Value)>| {
+                            let mut next = checks.clone();
+                            if let Some(Clause::Window(window)) = next.clauses.get_mut(i) {
+                                f(window);
+                            }
+                            put(next);
+                        }
+                    };
+                    let form = if sun {
+                        clock_forms::sun_window_form(&window, edit_window)
+                    } else {
+                        clock_forms::time_window_form(&window, edit_window)
+                    };
+                    view! {
+                        <div class="clause window">
+                            <div class="row">
+                                <strong class="grow clause-title">
+                                    {if sun { "The sun" } else { "The time of day" }}
+                                </strong>
+                                {remove}
+                            </div>
+                            {form}
+                        </div>
+                    }
+                    .into_any()
+                }
+            };
             view! {
                 {joiner}
-                <div class="clause">
-                    <div class="row">
-                        <div class="grow">
-                            <EntityPicker value=clause.entity.clone() kinds=lasting()
-                                pick=move |id: String| {
-                                    let mut fresh = Clause::fresh(&id, &home);
-                                    // The same kind of test as before, where it still fits.
-                                    if std::mem::discriminant(&fresh.test)
-                                        == std::mem::discriminant(&previous)
-                                        && !matches!(previous, Test::Text { .. })
-                                    {
-                                        fresh.test = previous.clone();
-                                    }
-                                    with_entity(&|c: &mut Checks| c.clauses[i] = fresh.clone());
-                                } />
-                        </div>
-                        {(count > 1).then(|| view! {
-                            <button class="btn small" title="Remove this check"
-                                on:click=move |_| with_remove(&|c: &mut Checks| { c.clauses.remove(i); })>
-                                "×"
-                            </button>
-                        })}
-                    </div>
-                    <div class="row test">{test_input}</div>
-                    {now.map(|n| view! { <div class="muted now-line">{format!("now {n}")}</div> })}
-                </div>
+                {body}
             }
         })
         .collect_view();
     let add = {
         let checks = checks.clone();
-        move |_| {
+        move |clause: Option<Clause>| {
             let mut next = checks.clone();
-            if let Some(clause) = Checks::starter(&home).clauses.into_iter().next() {
-                next.clauses.push(clause);
-            }
+            next.clauses.extend(clause);
             put(next);
         }
     };
+    let (add_thing, add_time, add_sun) = (add.clone(), add.clone(), add);
     view! {
         {rows}
-        <button class="btn small" on:click=add>"Add another check"</button>
+        <div class="add-checks">
+            <span class="muted">{if count == 0 { "Check" } else { "And also check" }}</span>
+            <button type="button" class="btn small"
+                on:click=move |_| add_thing(Checks::starter(&home).clauses.into_iter().next())>
+                "a device"
+            </button>
+            <button type="button" class="btn small"
+                on:click=move |_| add_time(Some(Clause::Window(fresh_window(false))))>
+                "the time"
+            </button>
+            <button type="button" class="btn small"
+                on:click=move |_| add_sun(Some(Clause::Window(fresh_window(true))))>
+                "the sun"
+            </button>
+        </div>
     }
 }
 
 /// The inputs for one check's test.
 fn test_input(
-    clause: &Clause,
+    clause: &Thing,
     i: usize,
     with: impl Fn(&dyn Fn(&mut Checks)) + Clone + Send + Sync + 'static,
     home: Home,
@@ -502,7 +627,7 @@ fn test_input(
                 <select on:change=move |e| {
                     let picked = event_target_value(&e);
                     if let Some((op, _)) = NUM_OPS.iter().find(|(o, _)| *o == picked) {
-                        with_op(&|c: &mut Checks| c.clauses[i].test = Test::Num { op, value });
+                        with_op(&|c: &mut Checks| c.set_test(i, Test::Num { op, value }));
                     }
                 }>
                     {NUM_OPS.iter().map(|(o, words)| view! {
@@ -512,7 +637,7 @@ fn test_input(
                 <input type="number" step="any" prop:value=value.to_string()
                     on:change=move |e| {
                         let Ok(value) = event_target_value(&e).trim().parse::<f64>() else { return };
-                        with_value(&|c: &mut Checks| c.clauses[i].test = Test::Num { op, value });
+                        with_value(&|c: &mut Checks| c.set_test(i, Test::Num { op, value }));
                     } />
             }
             .into_any()
@@ -525,7 +650,7 @@ fn test_input(
             view! {
                 <select on:change=move |e| {
                     let on = event_target_value(&e) == "on";
-                    with(&|c: &mut Checks| c.clauses[i].test = Test::Flag(on));
+                    with(&|c: &mut Checks| c.set_test(i, Test::Flag(on)));
                 }>
                     <option value="on" selected=on>{format!("is {yes}")}</option>
                     <option value="off" selected=!on>{format!("is {no}")}</option>
@@ -541,7 +666,7 @@ fn test_input(
                     let equal = event_target_value(&e) == "is";
                     let value = kept.clone();
                     with_equal(&|c: &mut Checks| {
-                        c.clauses[i].test = Test::Text { equal, value: value.clone() };
+                        c.set_test(i, Test::Text { equal, value: value.clone() });
                     });
                 }>
                     <option value="is" selected=equal>"is"</option>
@@ -550,7 +675,7 @@ fn test_input(
                 <div class="grow">
                     <TextValue entity=clause.entity.clone() value=value
                         pick=move |text: String| with_value(&|c: &mut Checks| {
-                            c.clauses[i].test = Test::Text { equal, value: text.clone() };
+                            c.set_test(i, Test::Text { equal, value: text.clone() });
                         }) />
                 </div>
             }
@@ -591,12 +716,41 @@ mod tests {
     }
 
     #[test]
+    fn a_window_of_the_day_is_a_check_like_any_other() {
+        // Alone, and among things checked; written back exactly as it was, offsets and all.
+        round_trip(json!({ "type": "time", "after": "19:45" }));
+        round_trip(
+            json!({ "type": "sun", "after": "sunset", "before": "sunrise",
+            "after_offset": "-30m", "before_offset": "15m" }),
+        );
+        round_trip(json!({ "type": "all", "conditions": [
+            { "type": "state", "entity": "binary_sensor.sofa", "is": true },
+            { "type": "time", "after": "14:00", "before": "15:00", "weekday": ["sat", "sun"] },
+            { "type": "sun", "before": "dusk" },
+        ] }));
+        let checks = Checks::from_condition(&json!({ "type": "any", "conditions": [
+            { "type": "sun", "after": "sunset" },
+            { "type": "state", "entity": "switch.night", "is": true },
+        ] }))
+        .expect("a window and a thing");
+        assert!(checks.any);
+        assert!(matches!(checks.clauses[0], Clause::Window(_)));
+        assert!(matches!(checks.clauses[1], Clause::Thing(_)));
+    }
+
+    #[test]
     fn an_expression_of_checks_is_read_as_checks() {
         let checks = Checks::from_condition(&json!({ "type": "expr",
             "expr": "!on('binary_sensor.door') || text('sensor.washer') == 'rinse'" }))
         .expect("an expression of checks");
         assert!(checks.any);
-        assert_eq!(checks.clauses[0].test, Test::Flag(false));
+        assert_eq!(
+            checks.clauses[0],
+            Clause::Thing(Thing {
+                entity: "binary_sensor.door".into(),
+                test: Test::Flag(false),
+            })
+        );
         assert_eq!(
             checks.render(),
             json!({ "type": "any", "conditions": [
@@ -617,7 +771,6 @@ mod tests {
             json!({ "type": "all", "conditions": [
                 { "type": "any", "conditions": [{ "type": "state", "entity": "switch.a", "is": true }] }
             ] }),
-            json!({ "type": "time", "after": "19:45" }),
         ] {
             assert_eq!(Checks::from_condition(&condition), None, "{condition}");
         }

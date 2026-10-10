@@ -434,7 +434,19 @@ until `home.toml` has a timezone.
 |---|---|---|---|
 | `after` | sun event name (§5.3) | at least one of `after`, `before` | |
 | `before` | sun event name | | |
-| `offset` | signed duration | no | Applied to whichever event fields are present |
+| `after_offset` | signed duration | no | Moves where the window opens: `-30m` is half an hour before `after`. Needs `after` |
+| `before_offset` | signed duration | no | Moves where the window closes. Needs `before` |
+| `offset` | signed duration | no | Moves both ends by the same amount. Not together with either end's own offset |
+
+Each end has its own offset, as Home Assistant's sun condition does: "from half an hour before
+sunset until a quarter of an hour after sunrise" is
+
+```json
+{ "type": "sun", "after": "sunset", "before": "sunrise", "after_offset": "-30m", "before_offset": "15m" }
+```
+
+`offset` is the older, shorter way to move both ends at once and still reads the same. A window
+with `offset` *and* an end's own offset is refused: it would say two things about one end.
 
 Unarmed until timezone **and** lat/lon exist, same message as §5.3.
 

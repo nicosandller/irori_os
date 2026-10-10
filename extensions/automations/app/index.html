@@ -20,17 +20,18 @@
       --dur-fast: 120ms; --dur-base: 180ms; --dur-expressive: 340ms;
       --ease-out: cubic-bezier(.2, .7, .3, 1); --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
       /* This page's own: what a path did, as colour. */
-      --ok: #3f7d4e; --no: #a8560a; --live: #2f6db3;
+      --ok: #3f7d4e; --no: #a8560a; --live: #2f6db3; --fail: #c8372d;
       --k-trigger: var(--ember); --k-logic: #8a6a1f; --k-act: #2f6db3; --k-time: #6d5aa6;
       --k-flow: #6b625b;
     }
     @media (prefers-color-scheme: dark) {
       :root { --fg: var(--paper); --bg: var(--ink); --muted: #a89e96; --line: #3a322d;
               --card: #241e1a; --sunk: #17120f; --warn: #e8a05c; --error: #e07a4d;
-              --ok: #7cc28d; --no: #e8a05c; --live: #7fb0ee;
+              --ok: #7cc28d; --no: #e8a05c; --live: #7fb0ee; --fail: #f0665c;
               --k-logic: #d6b25e; --k-act: #7fb0ee; --k-time: #b3a3e6; --k-flow: #a89e96; }
     }
-    html[data-theme="dark"] { --ok: #7cc28d; --no: #e8a05c; --live: #7fb0ee;
+    html[data-theme="light"] { --fail: #c8372d; }
+    html[data-theme="dark"] { --ok: #7cc28d; --no: #e8a05c; --live: #7fb0ee; --fail: #f0665c;
               --k-logic: #d6b25e; --k-act: #7fb0ee; --k-time: #b3a3e6; --k-flow: #a89e96; }
     html[data-motion="off"] { --dur-fast: 0ms; --dur-base: 0ms; --dur-expressive: 0ms; }
     html[data-motion="off"] *, html[data-motion="off"] *::before, html[data-motion="off"] *::after {
@@ -282,7 +283,8 @@
     .check-dot { width: 7px; height: 7px; border-radius: 50%; flex: none;
       transition: background-color var(--dur-base), box-shadow var(--dur-base); }
     .check-dot.holds { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
-    .check-dot.fails { background: color-mix(in srgb, var(--muted) 55%, transparent); }
+    /* Red, not grey: a check that doesn't hold is the one being looked for. */
+    .check-dot.fails { background: var(--fail); box-shadow: 0 0 0 3px color-mix(in srgb, var(--fail) 20%, transparent); }
     .check-dot.unknown { border: 1px dashed var(--muted); }
     .node .now { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .node .text { height: 44px; padding: .3rem .6rem; font-size: .84rem; line-height: 1.25;
@@ -371,6 +373,16 @@
     .check .muted { margin-left: auto; font-size: .8rem; font-weight: 400; }
     .clause { border: 1px solid var(--line); border-radius: .6rem; padding: .6rem; margin: .5rem 0;
               background: color-mix(in srgb, var(--sunk) 55%, transparent); animation: rise-in var(--dur-base) var(--ease-out) backwards; }
+    /* A window's dial is turned by hand, and every turn builds the form again: it mustn't
+       rise in each time. */
+    .clause.window { animation: none; }
+    .clause-title { font-size: .8rem; color: var(--muted); font-weight: 500; }
+    .add-checks { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; margin-top: .6rem;
+                  font-size: .8rem; }
+    /* What a light is told to look like, on its node: the colour itself. */
+    .look-swatch { display: inline-block; width: .7rem; height: .7rem; margin-right: .35rem;
+                   border-radius: 50%; vertical-align: -.05rem;
+                   box-shadow: 0 0 0 1px color-mix(in srgb, var(--fg) 25%, transparent); }
     /* A list that opens sits over whatever comes after it. */
     .clause:focus-within, .combo.open { position: relative; z-index: 5; }
     .clause .row.test { margin-top: .45rem; gap: .4rem; }
@@ -525,7 +537,7 @@
     .dial-ring { fill: none; stroke: var(--sunk); stroke-width: 22; }
     .dial-night { fill: color-mix(in srgb, var(--k-time) 30%, transparent);
                   animation: clock-fade var(--dur-expressive) var(--ease-out) backwards; }
-    .dial-span { fill: color-mix(in srgb, var(--ember) 45%, transparent); }
+    .dial-span { fill: color-mix(in srgb, var(--ember) 70%, transparent); }
     .dial-tick { stroke: var(--muted); stroke-width: 1; opacity: .45; }
     .dial-tick.major { stroke-width: 1.6; opacity: .8; }
     .dial-hour { fill: var(--muted); font: 500 10px var(--mono); text-anchor: middle;
@@ -618,6 +630,129 @@
     .sun-offset:hover::-webkit-slider-thumb { scale: 1.15; }
     .sun-offset:active::-webkit-slider-thumb { scale: 1.3; }
     .sun-offset-ends { display: flex; justify-content: space-between; font-size: .7rem; }
+
+    /* Between, after or before: one switch, its chosen one sliding under its name. The page
+       moves it (the form is built again by the choice), so nothing here transitions. */
+    .spans { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); padding: 3px;
+             margin-top: .5rem; background: var(--sunk); border: 1px solid var(--line);
+             border-radius: 999px; }
+    .spans-thumb { position: absolute; top: 3px; bottom: 3px; left: 3px;
+                   width: calc((100% - 6px) / 3); border-radius: 999px; background: var(--card);
+                   translate: calc(var(--at) * 100%) 0; box-shadow: 0 1px 3px rgb(0 0 0 / .14); }
+    .spans button { position: relative; z-index: 1; border: 0; background: none; padding: .35rem .3rem;
+                    border-radius: 999px; font-size: .82rem; font-weight: 500; color: var(--muted);
+                    transition: color var(--dur-base); }
+    .spans button.on { color: var(--fg); }
+    .spans button:not(.on):hover { color: var(--fg); }
+    .clock-next .check-dot { align-self: center; margin-right: .15rem; }
+
+    /* A sun window: the stretch it holds for, lit along the sun's own path, and its two ends. */
+    .sun-span { fill: none; stroke: var(--ember); stroke-width: 5; stroke-linecap: round;
+                opacity: .55; animation: clock-fade var(--dur-expressive) var(--ease-out) backwards; }
+    .sun-setting { margin: .3rem 0 0; }
+    .sun-ends { display: grid; gap: .5rem; margin-top: .6rem; }
+    .sun-end { border: 1px solid var(--line); border-radius: .55rem; padding: .5rem .6rem;
+               background: var(--card);
+               transition: border-color var(--dur-base), box-shadow var(--dur-base) var(--ease-out); }
+    .sun-end.setting { border-color: var(--ember);
+                       box-shadow: 0 0 0 3px color-mix(in srgb, var(--ember) 16%, transparent); }
+    .sun-end label { margin-top: .5rem; }
+    .sun-end-head { display: flex; align-items: baseline; gap: .5rem; width: 100%; padding: 0;
+                    border: 0; background: none; text-align: left; }
+    .sun-end-label { font-size: .72rem; text-transform: uppercase; letter-spacing: .05em;
+                     color: var(--muted); flex: none; }
+    .sun-end-said { flex: 1; min-width: 0; font-size: .9rem; font-weight: 500; }
+    .sun-end-time { font-family: var(--mono); font-size: .78rem; color: var(--muted); }
+
+    /* What a light looks like: warm to cool, or a colour. */
+    .looks { display: flex; flex-wrap: wrap; gap: .3rem; }
+    .looks button { padding: .3rem .7rem; font-size: .82rem; color: var(--muted); background: var(--card);
+                    border: 1px solid var(--line); border-radius: .45rem;
+                    transition: color var(--dur-fast), border-color var(--dur-fast),
+                                background-color var(--dur-base) var(--ease-out),
+                                scale var(--dur-fast) var(--ease-out); }
+    .looks button:hover { color: var(--fg); border-color: var(--ember); }
+    .looks button:active { scale: .96; }
+    .looks button[aria-pressed="true"] { color: var(--fg); background: var(--sunk);
+                                         border-color: var(--ember); }
+    .look-row { display: flex; align-items: center; gap: .7rem; margin-top: .7rem; }
+    .look-dot { flex: none; width: 1.5rem; height: 1.5rem; border-radius: 50%;
+                box-shadow: 0 0 0 1px var(--line);
+                transition: background-color var(--dur-fast); }
+    .look-ends { display: flex; justify-content: space-between; align-items: baseline;
+                 margin-top: .2rem; font-size: .72rem; }
+    .look-ends strong { font-size: .8rem; color: var(--fg); font-weight: 500; }
+    input[type=range].kelvin { appearance: none; flex: 1; height: 1.4rem; background: transparent;
+                               cursor: pointer; }
+    input[type=range].kelvin::-webkit-slider-runnable-track { height: .5rem; border-radius: 1rem;
+        background: linear-gradient(to right, #f5a54a, #fbe3c4, #e9f1ff);
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 12%, transparent); }
+    input[type=range].kelvin::-moz-range-track { height: .5rem; border-radius: 1rem;
+        background: linear-gradient(to right, #f5a54a, #fbe3c4, #e9f1ff); }
+    input[type=range].kelvin::-webkit-slider-thumb { appearance: none; width: 1.15rem; height: 1.15rem;
+        margin-top: -.33rem; border-radius: 50%; background: var(--card);
+        border: 2px solid var(--ember); box-shadow: 0 1px 3px rgb(0 0 0 / .25);
+        transition: scale var(--dur-base) var(--ease-spring); }
+    input[type=range].kelvin::-moz-range-thumb { width: .95rem; height: .95rem; border-radius: 50%;
+        background: var(--card); border: 2px solid var(--ember); }
+    input[type=range].kelvin:hover::-webkit-slider-thumb { scale: 1.15; }
+    input[type=range].kelvin:active::-webkit-slider-thumb { scale: 1.3; }
+    .look-well { flex: none; width: 2.6rem; height: 2.6rem; padding: 0; border: 1px solid var(--line);
+                 border-radius: .55rem; background: var(--card); cursor: pointer; }
+    .look-well::-webkit-color-swatch-wrapper { padding: 3px; }
+    .look-well::-webkit-color-swatch { border: 0; border-radius: .35rem; }
+    .look-well::-moz-color-swatch { border: 0; border-radius: .35rem; }
+    .look-swatches { display: flex; flex-wrap: wrap; gap: .4rem; }
+    .look-pick { width: 1.5rem; height: 1.5rem; padding: 0; border-radius: 50%; background: var(--c);
+                 border: 2px solid var(--card); box-shadow: 0 0 0 1px var(--line);
+                 transition: scale var(--dur-base) var(--ease-spring), box-shadow var(--dur-fast); }
+    .look-pick:hover { scale: 1.18; }
+    .look-pick:active { scale: .92; }
+    .look-pick[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--ember); }
+
+    /* A flow as JSON. The text is drawn twice: coloured underneath, and see-through in the box
+       that is typed into on top. Everything that decides where a letter falls is said once,
+       for both. */
+    .json-fold > summary { cursor: pointer; font-size: .85rem; color: var(--muted);
+                           transition: color var(--dur-fast); }
+    .json-fold > summary:hover, .json-fold[open] > summary { color: var(--fg); }
+    .json-box { position: relative; height: min(52vh, 26rem); margin-top: .4rem;
+                resize: vertical; overflow: hidden; min-height: 6rem;
+                background: var(--sunk); border: 1px solid var(--line); border-radius: .55rem; }
+    /* A node is a few lines; a whole flow is a page of them. */
+    .node-panel .json-box { height: 13rem; }
+    .json-box pre, .json-box textarea { position: absolute; inset: 0; margin: 0; padding: .7rem .8rem;
+        border: 0; box-sizing: border-box; font: .78rem/1.5 var(--mono); letter-spacing: 0;
+        tab-size: 2; white-space: pre; min-height: 0; }
+    .json-box pre { overflow: hidden; color: var(--muted); pointer-events: none; }
+    .json-box textarea { width: 100%; height: 100%; resize: none; overflow: auto; color: transparent;
+        caret-color: var(--fg); background: transparent; border-radius: .55rem; box-shadow: none; }
+    .json-box textarea::selection { color: transparent;
+        background: color-mix(in srgb, var(--ember) 30%, transparent); }
+    .json-box textarea:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
+    /* Names are what the eye looks for, so they are the page's own ink; what is said about
+       them takes a colour by its kind. */
+    .json-box .json-name { color: var(--fg); }
+    .json-box .json-text { color: var(--ok); }
+    .json-box .json-number { color: var(--k-logic); }
+    .json-box .json-word { color: var(--k-time); }
+    .json-why { margin: .4rem 0 0; color: var(--error); font: .8rem var(--mono); overflow-wrap: anywhere; }
+    .json-actions { display: flex; align-items: center; gap: .4rem; margin-top: .45rem; }
+    .json-actions .btn.small { padding: .3rem .7rem; }
+    /* Copy: the clipboard gives way to a check that draws itself in when the copy worked, and
+       the button shakes its head when the browser said no. */
+    .json-copy { display: inline-flex; align-items: center; gap: .35rem; }
+    .json-copy .copy-icon { width: 1rem; height: 1rem; overflow: visible; }
+    .json-copy .copy-clip { transform-origin: center; transform-box: fill-box;
+        transition: opacity var(--dur-fast), scale var(--dur-base) var(--ease-out); }
+    .json-copy .copy-check { stroke-dasharray: 1; stroke-dashoffset: 1; opacity: 0;
+        transition: stroke-dashoffset var(--dur-expressive) var(--ease-spring), opacity var(--dur-fast); }
+    .json-copy.done { color: var(--ok); border-color: var(--ok); }
+    .json-copy.done .copy-clip { opacity: 0; scale: .6; }
+    .json-copy.done .copy-check { stroke-dashoffset: 0; opacity: 1; }
+    .json-copy.failed { color: var(--error); border-color: var(--error);
+                        animation: copy-shake var(--dur-expressive) var(--ease-out); }
+    @keyframes copy-shake { 20%, 60% { translate: -3px 0; } 40%, 80% { translate: 3px 0; } }
   </style>
 </head>
 <body></body>

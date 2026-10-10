@@ -28,6 +28,16 @@ fn change(ed: &Editing, id: &NodeId, f: impl FnOnce(&mut Value)) -> Result<(), S
     let mut value = serde_json::to_value(&node).map_err(|e| e.to_string())?;
     f(&mut value);
     let node: Node = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    // A node read on its own is only the right shape. Whether it says something a flow can
+    // hold (a light told a colour and a warmth at once) is the flow's to check.
+    let held = ed.draft.with_untracked(|draft| {
+        draft.as_ref().map_or(Ok(()), |flow| {
+            let mut flow = flow.clone();
+            flow.nodes.insert(id.clone(), node.clone());
+            flow.validate().map_err(|e| e.to_string())
+        })
+    });
+    held?;
     ed.edit(|flow| {
         flow.nodes.insert(id.clone(), node);
     });
@@ -138,11 +148,14 @@ pub fn FlowForm() -> impl IntoView {
                 }).collect_view().into_any()
             }
         }}
-        <DeleteFlow />
-        <details style="margin-top:1rem">
-            <summary class="muted">"The whole flow as JSON"</summary>
+        <details class="json-fold" style="margin-top:1.2rem">
+            <summary>"Edit this flow as JSON"</summary>
+            <p class="muted" style="font-size:.8rem;margin:.4rem 0">
+                "The same flow, as the file it's kept in. Copy it to share it or keep it; paste one in and press Apply to bring it onto the canvas. Nothing is saved until you press Save."
+            </p>
             <JsonEditor
-                text=move || flow().and_then(|f| serde_json::to_string_pretty(&f).ok()).unwrap_or_default()
+                label="The whole flow as JSON"
+                text=move || flow().map(|f| written(&f)).unwrap_or_default()
                 apply=move |text: String| {
                     let flow: Flow = serde_json::from_str(&text).map_err(|e| e.to_string())?;
                     ed.edit(|draft| *draft = flow);
@@ -150,6 +163,7 @@ pub fn FlowForm() -> impl IntoView {
                 }
             />
         </details>
+        <DeleteFlow />
     }
 }
 
@@ -183,29 +197,122 @@ fn DeleteFlow() -> impl IntoView {
     }
 }
 
+/// How long the copy button says it copied.
+const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1600);
+
+/// A flow, or one node of it, as JSON to read, copy and change.
+///
+/// A text box can't colour what is in it, so the colour is a second copy of the text drawn
+/// underneath, in the same letters at the same place, and the box itself is typed into with
+/// its own letters see-through; the two scroll as one. Nothing typed reaches the flow until
+/// Apply, which holds it to the same rules as everything else here.
 #[component]
 fn JsonEditor(
     text: impl Fn() -> String + Send + Sync + 'static,
     apply: impl Fn(String) -> Result<(), String> + Send + Sync + 'static,
+    /// What a screen reader calls the box.
+    label: &'static str,
 ) -> impl IntoView {
     let error = RwSignal::new(None::<String>);
+    // What's been typed and not applied yet. Without any, the box shows the flow as it is.
     let draft = RwSignal::new(None::<String>);
+    let copied = RwSignal::new(None::<bool>);
+    let painted = NodeRef::<leptos::html::Pre>::new();
+    let shown = Signal::derive(move || draft.get().unwrap_or_else(&text));
+    let copy = move |_| {
+        let text = shown.get_untracked();
+        leptos::task::spawn_local(async move {
+            copied.set(Some(irori_ui_kit::clipboard::copy(&text).await));
+            set_timeout(
+                move || {
+                    let _ = copied.try_set(None);
+                },
+                COPIED_FOR,
+            );
+        });
+    };
+    let format = move |_| match serde_json::from_str::<Value>(&shown.get_untracked()) {
+        Ok(value) => {
+            error.set(None);
+            draft.set(Some(irori_ui_kit::json::written(&value)));
+        }
+        Err(why) => error.set(Some(format!("That isn't JSON yet: {why}"))),
+    };
     view! {
-        <textarea rows="12"
-            prop:value=move || draft.get().unwrap_or_else(&text)
-            on:input=move |e| draft.set(Some(event_target_value(&e)))></textarea>
-        <div class="row" style="margin-top:.3rem">
-            <button class="btn small" on:click=move |_| {
-                if let Some(text) = draft.get_untracked() {
-                    match apply(text) {
-                        Ok(()) => { error.set(None); draft.set(None); }
-                        Err(why) => error.set(Some(why)),
-                    }
+        <div class="json-box">
+            <pre aria-hidden="true" node_ref=painted>
+                {move || {
+                    shown.with(|text| irori_ui_kit::json::pieces(text))
+                        .into_iter()
+                        .map(|(kind, piece)| view! { <span class=kind.class()>{piece}</span> })
+                        .collect_view()
+                }}
+                // A last line with nothing on it still has to take up a line.
+                "\n"
+            </pre>
+            <textarea spellcheck="false" autocomplete="off" aria-label=label
+                prop:value=move || shown.get()
+                on:input=move |e| {
+                    draft.set(Some(event_target_value(&e)));
+                    error.set(None);
                 }
-            }>"Apply"</button>
-            {move || error.get().map(|e| view! { <span style="color:var(--error);font-size:.8rem">{e}</span> })}
+                on:scroll=move |e| {
+                    use wasm_bindgen::JsCast as _;
+                    let Some(pre) = painted.get_untracked() else { return };
+                    if let Some(typed) = e.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()) {
+                        pre.set_scroll_top(typed.scroll_top());
+                        pre.set_scroll_left(typed.scroll_left());
+                    }
+                }></textarea>
+        </div>
+        {move || error.get().map(|e| view! { <p class="json-why" role="alert">{e}</p> })}
+        <div class="json-actions">
+            <button type="button" class="btn small json-copy"
+                class:done=move || copied.get() == Some(true)
+                class:failed=move || copied.get() == Some(false)
+                on:click=copy>
+                <svg class="copy-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none"
+                    stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <g class="copy-clip">
+                        <rect x="8" y="8" width="12" height="12" rx="2" />
+                        <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+                    </g>
+                    <path class="copy-check" d="M5 12.5l4.5 4.5L19 7.5" pathLength="1" />
+                </svg>
+                {move || match copied.get() {
+                    Some(true) => "Copied",
+                    Some(false) => "Couldn't copy",
+                    None => "Copy",
+                }}
+            </button>
+            <button type="button" class="btn small" on:click=format
+                title="Set it out again, one thing to a line">"Format"</button>
+            <span class="grow"></span>
+            {move || draft.get().is_some().then(|| view! {
+                <button type="button" class="btn small" on:click=move |_| {
+                    draft.set(None);
+                    error.set(None);
+                }>"Undo typing"</button>
+            })}
+            <button type="button" class="btn small primary"
+                disabled=move || draft.get().is_none()
+                on:click=move |_| {
+                    if let Some(text) = draft.get_untracked() {
+                        match apply(text) {
+                            Ok(()) => { error.set(None); draft.set(None); }
+                            Err(why) => error.set(Some(why)),
+                        }
+                    }
+                }>"Apply"</button>
         </div>
     }
+}
+
+/// A flow as text to read: indented, with each wire and each place on the canvas on one line.
+fn written<T: serde::Serialize>(what: &T) -> String {
+    serde_json::to_value(what)
+        .map(|value| irori_ui_kit::json::written(&value))
+        .unwrap_or_default()
 }
 
 /// Entities to choose from, those of `kinds` (all when empty), searched as you type. The current
@@ -630,6 +737,178 @@ fn SettingFields(
         .into_any()
 }
 
+/// Colours to pick with one press: the ones a room is most often lit in.
+const SWATCHES: [(&str, [u8; 3]); 8] = [
+    ("Ember", [255, 122, 61]),
+    ("Amber", [255, 184, 77]),
+    ("Rose", [255, 99, 132]),
+    ("Violet", [168, 110, 255]),
+    ("Blue", [72, 140, 255]),
+    ("Aqua", [64, 212, 220]),
+    ("Green", [96, 214, 120]),
+    ("White", [255, 255, 255]),
+];
+
+/// What a light looks like when it's turned on: how warm its white is, or its colour. Only
+/// what the light can do is offered, and a light is one or the other, never both.
+#[component]
+fn LightLook(
+    light: irori_types::LightCapabilities,
+    /// The call's `data` as it's written, `null` when it has none.
+    data: Value,
+    edit: impl Fn(Change) + Clone + Send + Sync + 'static,
+) -> impl IntoView {
+    use irori_ui_kit::color::{hex_from_rgb, kelvin_rgb, kelvin_word, rgb_from_hex};
+
+    let range = light.color_temp_kelvin;
+    if range.is_none() && !light.rgb {
+        return ().into_any();
+    }
+    let warmth = data.get("color_temp_kelvin").cloned();
+    let colour: Option<[u8; 3]> = data
+        .get("rgb")
+        .and_then(|rgb| serde_json::from_value(rgb.clone()).ok());
+    let worked = warmth
+        .as_ref()
+        .and_then(|w| w.get("expr"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    // Writes the look as a whole: setting one takes the other away, in the same change, since
+    // a light told both is told nothing it can do.
+    let put = move |edit: &dyn Fn(Change), kelvin: Value, rgb: Value| {
+        edit(Box::new(move |v: &mut Value| {
+            set(v, &["data", "color_temp_kelvin"], kelvin);
+            set(v, &["data", "rgb"], rgb);
+            if v["data"].as_object().is_some_and(serde_json::Map::is_empty) {
+                v.as_object_mut().map(|o| o.remove("data"));
+            }
+        }));
+    };
+    let chosen = match (&warmth, &colour) {
+        (Some(_), _) => "warmth",
+        (None, Some(_)) => "colour",
+        (None, None) => "none",
+    };
+    // Where a warmth starts: a living room's, kept inside what this light can do.
+    let start = range.map_or(2700, |range| 2700.clamp(range.min, range.max));
+    let (edit_none, edit_warm, edit_colour) = (edit.clone(), edit.clone(), edit.clone());
+    let kept_colour = colour.unwrap_or([255, 184, 77]);
+    let kept_warmth = warmth.clone().unwrap_or_else(|| json!(start));
+    let body = match chosen {
+        "warmth" => {
+            let range = range.unwrap_or(irori_types::ColorTempRange {
+                min: 1000,
+                max: 20000,
+            });
+            match worked {
+                Some(expr) => {
+                    let edit = edit.clone();
+                    view! {
+                        <ExprInput value=expr
+                            commit=move |text| put(&edit, json!({ "expr": text }), Value::Null) />
+                        <p class="muted" style="font-size:.8rem">
+                            "Worked out in kelvin when the light is turned on."
+                        </p>
+                    }
+                    .into_any()
+                }
+                None => {
+                    let now = warmth
+                        .as_ref()
+                        .and_then(Value::as_u64)
+                        .and_then(|k| u16::try_from(k).ok())
+                        .unwrap_or(start)
+                        .clamp(range.min, range.max);
+                    let live = RwSignal::new(now);
+                    let edit = edit.clone();
+                    view! {
+                        <div class="look-row">
+                            <span class="look-dot" style=move || {
+                                format!("background:{}", hex_from_rgb(kelvin_rgb(live.get())))
+                            }></span>
+                            <input type="range" class="kelvin" step="50"
+                                min=range.min.to_string() max=range.max.to_string()
+                                prop:value=now.to_string()
+                                aria-label="How warm or cool the light is"
+                                // The label and the dot follow the thumb; letting go writes it.
+                                on:input=move |e| {
+                                    if let Ok(kelvin) = event_target_value(&e).parse::<u16>() {
+                                        live.set(kelvin);
+                                    }
+                                }
+                                on:change=move |e| {
+                                    if let Ok(kelvin) = event_target_value(&e).parse::<u16>() {
+                                        put(&edit, json!(kelvin), Value::Null);
+                                    }
+                                } />
+                        </div>
+                        <div class="look-ends muted">
+                            <span>"warm"</span>
+                            <strong>{move || format!("{} K · {}", live.get(), kelvin_word(live.get()))}</strong>
+                            <span>"cool"</span>
+                        </div>
+                    }
+                    .into_any()
+                }
+            }
+        }
+        "colour" => {
+            let now = colour.unwrap_or(kept_colour);
+            let edit_well = edit.clone();
+            view! {
+                <div class="look-row">
+                    <input type="color" class="look-well" prop:value=hex_from_rgb(now)
+                        aria-label="The light's colour"
+                        on:change=move |e| {
+                            if let Some(rgb) = rgb_from_hex(&event_target_value(&e)) {
+                                put(&edit_well, Value::Null, json!(rgb));
+                            }
+                        } />
+                    <div class="look-swatches" role="group" aria-label="Colours to pick from">
+                        {SWATCHES.iter().map(|(name, rgb)| {
+                            let (rgb, edit) = (*rgb, edit.clone());
+                            view! {
+                                <button type="button" class="look-pick" title=*name aria-label=*name
+                                    aria-pressed=(rgb == now).to_string()
+                                    style=format!("--c:{}", hex_from_rgb(rgb))
+                                    on:click=move |_| put(&edit, Value::Null, json!(rgb))></button>
+                            }
+                        }).collect_view()}
+                    </div>
+                </div>
+                <p class="muted" style="font-size:.8rem">
+                    {format!("{} · how bright it is stays with the brightness above.", hex_from_rgb(now))}
+                </p>
+            }
+            .into_any()
+        }
+        _ => ().into_any(),
+    };
+    view! {
+        <label>"Colour"</label>
+        <div class="looks" role="group" aria-label="What the light looks like">
+            <button type="button" aria-pressed=(chosen == "none").to_string()
+                on:click=move |_| put(&edit_none, Value::Null, Value::Null)>
+                "As it was"
+            </button>
+            {range.is_some().then(|| view! {
+                <button type="button" aria-pressed=(chosen == "warmth").to_string()
+                    on:click=move |_| put(&edit_warm, kept_warmth.clone(), Value::Null)>
+                    "Warm to cool white"
+                </button>
+            })}
+            {light.rgb.then(|| view! {
+                <button type="button" aria-pressed=(chosen == "colour").to_string()
+                    on:click=move |_| put(&edit_colour, Value::Null, json!(kept_colour))>
+                    "A colour"
+                </button>
+            })}
+        </div>
+        {body}
+    }
+    .into_any()
+}
+
 /// A node's form, in the node itself when it's open on the canvas.
 #[component]
 pub fn NodeForm(id: NodeId) -> impl IntoView {
@@ -759,6 +1038,12 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
                 let edit_action = edit.clone();
                 let edit_pct = edit.clone();
                 let edit_fields = edit.clone();
+                let edit_look = edit.clone();
+                let light = found.as_ref().and_then(|e| match &e.capabilities {
+                    irori_types::Capabilities::Light(light) => Some(light.clone()),
+                    _ => None,
+                });
+                let look_data = data.as_ref().and_then(|d| serde_json::to_value(d).ok()).unwrap_or(Value::Null);
                 let action_now = action.to_owned();
                 let (for_action, for_fields) = (found.clone(), found.clone());
                 let settings = data.as_ref().and_then(|d| serde_json::to_value(d).ok()).unwrap_or(Value::Null);
@@ -909,6 +1194,9 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
                             })}
                         }
                     })}
+                    {light.filter(|_| is_light_on).map(|light| view! {
+                        <LightLook light=light data=look_data edit=edit_look />
+                    })}
                     <p class="muted" style="font-size:.8rem">"If the call fails, the run goes out of “failed” — or ends with an error if nothing is wired there."</p>
                 }.into_any()
             }
@@ -1048,10 +1336,11 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
             });
             ed.selected.set(Selected::Node(new));
         } />
-        <details style="margin-top:.8rem">
-            <summary class="muted">"Edit as JSON"</summary>
+        <details class="json-fold" style="margin-top:.8rem">
+            <summary>"Edit as JSON"</summary>
             <JsonEditor
-                text=move || node.get().and_then(|n| serde_json::to_string_pretty(&n).ok()).unwrap_or_default()
+                label="This node as JSON"
+                text=move || node.get().map(|n| written(&n)).unwrap_or_default()
                 apply=move |text: String| {
                     let parsed: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
                     serde_json::from_value::<Node>(parsed.clone()).map_err(|e| e.to_string())?;
@@ -1124,8 +1413,6 @@ fn condition_form(
         .flatten();
     let expr = value["expr"].as_str().map(str::to_owned);
     let shown = match (&checks, value["type"].as_str()) {
-        (_, Some("time")) => "time",
-        (_, Some("sun")) => "sun",
         (Some(_), _) => "checks",
         (None, Some("expr")) => "expr",
         _ => "other",
@@ -1144,8 +1431,6 @@ fn condition_form(
             }
             .into_any()
         }
-        "time" => crate::clock_forms::time_window_form(&value, edit.clone()),
-        "sun" => crate::clock_forms::sun_window_form(&value, edit.clone()),
         _ => view! { <p class="muted">"This condition is edited as JSON below."</p> }.into_any(),
     };
     let key_for_kind = key.clone();
@@ -1165,18 +1450,12 @@ fn condition_form(
                         Some(expr) => json!({ "type": "expr", "expr": expr }),
                         None => json!({ "type": "expr", "expr": "true" }),
                     },
-                    "time" if v["type"] == "time" => v.clone(),
-                    "time" => json!({ "type": "time", "after": "22:00", "before": "06:00" }),
-                    "sun" if v["type"] == "sun" => v.clone(),
-                    "sun" => json!({ "type": "sun", "after": "sunset", "before": "sunrise" }),
                     _ if Checks::from_condition(v).is_some() => v.clone(),
                     _ => fresh,
                 };
             }));
         }>
             <option value="checks" selected=shown == "checks">"these checks hold"</option>
-            <option value="time" selected=shown == "time">"it's between two times"</option>
-            <option value="sun" selected=shown == "sun">"the sun is between two moments"</option>
             <option value="expr" selected=shown == "expr">"an expression holds"</option>
             {(shown == "other").then(|| view! {
                 <option value="other" selected=true>"something else (JSON)"</option>

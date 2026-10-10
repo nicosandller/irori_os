@@ -1,0 +1,10 @@
+{
+  "id": "sun_offset_twice",
+  "name": "A sun window moved two ways at once",
+  "nodes": {
+    "dusk": { "type": "trigger", "trigger": { "type": "sun", "event": "sunset" } },
+    "night": { "type": "gate", "condition": { "type": "sun", "after": "sunset", "offset": "-30m", "after_offset": "-1h" } },
+    "on": { "type": "call", "service": "light.turn_on", "entity": "light.demo_hall_light" }
+  },
+  "wires": [["dusk", "night"], ["night:yes", "on"]]
+}
