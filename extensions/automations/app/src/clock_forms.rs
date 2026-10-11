@@ -13,8 +13,10 @@
 //! When a time next comes round, and when the sun rises today, is asked of the engine
 //! (`clock.next`). The page does no time zone arithmetic of its own.
 
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+
+use wasm_bindgen::JsCast as _;
 
 use irori_flow_types::cron::CronSpec;
 use leptos::ev;
@@ -53,15 +55,34 @@ pub const SUN: [(&str, &str, f64); 6] = [
     ("midnight", "Midnight", 0.0),
 ];
 
-thread_local! {
+/// What a form remembers of how it last looked, to glide from when it is built again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Kept {
     /// Where the dial's hand last pointed, in minutes of the day.
-    static LAST_HAND: Cell<Option<f64>> = const { Cell::new(None) };
+    Hand,
     /// Where the sun last stood on its arc, as a part of the day.
-    static LAST_SUN: Cell<Option<f64>> = const { Cell::new(None) };
+    Sun,
     /// Which way a time window was last said: between, after, or before.
-    static LAST_SPAN: Cell<Option<f64>> = const { Cell::new(None) };
+    Span,
     /// Which end of a sun window a press on the arc sets: its start, or its end.
-    static SUN_END: Cell<usize> = const { Cell::new(0) };
+    End,
+}
+
+thread_local! {
+    /// By what is remembered and by `slot`: which check of a condition the form is for. Two
+    /// windows in one condition each keep their own, or each dial would set off from where
+    /// the other's hand was left.
+    static LAST: RefCell<BTreeMap<(Kept, usize), f64>> = const { RefCell::new(BTreeMap::new()) };
+}
+
+fn last(kept: Kept, slot: usize) -> Option<f64> {
+    LAST.with(|last| last.borrow().get(&(kept, slot)).copied())
+}
+
+fn keep(kept: Kept, slot: usize, value: f64) {
+    LAST.with(|last| {
+        last.borrow_mut().insert((kept, slot), value);
+    });
 }
 
 // ---- plain arithmetic, tested on the host ---------------------------------------------------
@@ -547,16 +568,24 @@ fn days_of(value: &Value) -> Vec<String> {
 }
 
 /// Writes which days, in the week's own order; every day, or none, is no `weekday` at all.
+/// Unless the days are all it says (a window with no times): then every day is written out,
+/// since a window that says nothing isn't one.
 fn write_days(value: &mut Value, days: &[String]) {
     let Some(object) = value.as_object_mut() else {
         return;
     };
+    let only_days = !["at", "cron", "after", "before"]
+        .iter()
+        .any(|key| object.contains_key(*key));
     let ordered: Vec<&str> = DAYS
         .iter()
         .map(|(day, _, _)| *day)
         .filter(|day| days.iter().any(|d| d == day))
         .collect();
-    if ordered.is_empty() || ordered.len() == 7 {
+    if only_days && (ordered.is_empty() || ordered.len() == 7) {
+        let all: Vec<&str> = DAYS.iter().map(|(day, _, _)| *day).collect();
+        object.insert("weekday".into(), json!(all));
+    } else if ordered.is_empty() || ordered.len() == 7 {
         object.remove("weekday");
     } else {
         object.insert("weekday".into(), json!(ordered));
@@ -646,6 +675,7 @@ enum Lit {
 fn dial(
     hands: Vec<(&'static str, i32)>,
     lit: Lit,
+    slot: usize,
     clock: RwSignal<Option<Clock>>,
     commit: impl Fn(usize, i32) + Clone + 'static,
 ) -> impl IntoView {
@@ -658,7 +688,7 @@ fn dial(
             let to = f64::from(*minutes);
             // Only the first hand remembers where it was: it is the one a typed time moves.
             let from = if i == 0 {
-                LAST_HAND.with(Cell::get).unwrap_or(to)
+                last(Kept::Hand, slot).unwrap_or(to)
             } else {
                 to
             };
@@ -668,7 +698,7 @@ fn dial(
         })
         .collect();
     if let Some((_, minutes)) = hands.first() {
-        LAST_HAND.with(|last| last.set(Some(f64::from(*minutes))));
+        keep(Kept::Hand, slot, f64::from(*minutes));
     }
     let held = RwSignal::new(None::<usize>);
     let shown = StoredValue::new_local(shown);
@@ -683,6 +713,15 @@ fn dial(
         // A drag across the dial is a hand being turned, not text being selected: without
         // this the hours, and whatever is around the dial, light up blue as it goes.
         event.prevent_default();
+        // Which also keeps a field being typed in from losing the caret, and a time typed
+        // there and not yet entered would be thrown away by the turn. Leaving the field
+        // enters it first.
+        if let Some(typing) = document()
+            .active_element()
+            .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+        {
+            let _ = typing.blur();
+        }
         let Some(minutes) = minutes_under(&event) else {
             return;
         };
@@ -720,7 +759,7 @@ fn dial(
         if let Some(minutes) = minutes_under(&event) {
             // Already there: the form that is built next has nothing to glide from.
             if i == 0 {
-                LAST_HAND.with(|last| last.set(Some(f64::from(minutes))));
+                keep(Kept::Hand, slot, f64::from(minutes));
             }
             commit(i, minutes);
         }
@@ -842,7 +881,7 @@ pub fn time_form(trigger: &Value, edit: impl Fn(Edit) + Clone + Send + Sync + 's
     let trouble = RwSignal::new(false);
     view! {
         <div class="clock-form">
-            {dial(vec![("The time", minutes)], Lit::Nothing, clock, move |_, minutes| {
+            {dial(vec![("The time", minutes)], Lit::Nothing, 0, clock, move |_, minutes| {
                 let text = hhmm(minutes);
                 turned(Box::new(move |t: &mut Value| t["at"] = json!(text)));
             })}
@@ -879,10 +918,16 @@ pub fn time_form(trigger: &Value, edit: impl Fn(Edit) + Clone + Send + Sync + 's
 
 /// The three ways a time window is said, as one switch. The chosen one slides under its
 /// name from wherever it last was: the form is built again by the edit that chose it.
-fn span_switch(chosen: Option<usize>, pick: impl Fn(usize) + Clone + 'static) -> impl IntoView {
+fn span_switch(
+    chosen: Option<usize>,
+    slot: usize,
+    pick: impl Fn(usize) + Clone + 'static,
+) -> impl IntoView {
     let to = chosen.map(|index| index as f64);
-    let from = LAST_SPAN.with(Cell::get).or(to).unwrap_or(0.0);
-    LAST_SPAN.with(|last| last.set(to));
+    let from = last(Kept::Span, slot).or(to).unwrap_or(0.0);
+    if let Some(to) = to {
+        keep(Kept::Span, slot, to);
+    }
     let at = RwSignal::new(from);
     if let Some(to) = to {
         glide(at, to - from);
@@ -914,6 +959,7 @@ fn span_switch(chosen: Option<usize>, pick: impl Fn(usize) + Clone + 'static) ->
 /// dial as a trigger's, with the stretch of the day it holds for lit.
 pub fn time_window_form(
     condition: &Value,
+    slot: usize,
     edit: impl Fn(Edit) + Clone + Send + Sync + 'static,
 ) -> AnyView {
     // The dial's night comes from the sun at home; any trigger asks for it.
@@ -1007,11 +1053,12 @@ pub fn time_window_form(
         (None, None) => "Any time of day, on the days below.",
     };
     view! {
-        {span_switch(chosen, switch)}
+        {span_switch(chosen, slot, switch)}
         <div class="clock-form">
             {dial(
                 hands.iter().map(|(label, _, minutes)| (*label, *minutes)).collect(),
                 lit,
+                slot,
                 clock,
                 move |hand, minutes| {
                     let (Some(key), text) = (keys.get(hand).copied(), hhmm(minutes)) else {
@@ -1111,9 +1158,9 @@ fn arc(
 }
 
 /// The sun, coming from wherever it last stood to `part`.
-fn travelling(part: f64) -> RwSignal<f64> {
-    let from = LAST_SUN.with(Cell::get).unwrap_or(part);
-    LAST_SUN.with(|last| last.set(Some(part)));
+fn travelling(part: f64, slot: usize) -> RwSignal<f64> {
+    let from = last(Kept::Sun, slot).unwrap_or(part);
+    keep(Kept::Sun, slot, part);
     let at = RwSignal::new(from);
     // The short way along the day: sunset to dusk goes on, not back through the morning.
     glide(at, (part - from + 0.5).rem_euclid(1.0) - 0.5);
@@ -1221,7 +1268,7 @@ pub fn sun_form(trigger: &Value, edit: impl Fn(Edit) + Clone + Send + Sync + 'st
     let offset_as_written = trigger["offset"].as_str().map(str::to_owned);
     let offset = offset_as_written.as_deref().map(offset_minutes);
     let minutes = offset.flatten().unwrap_or(0).clamp(-120, 120);
-    let at = travelling(part_of(&event, minutes));
+    let at = travelling(part_of(&event, minutes), 0);
     let pick = {
         let edit = edit.clone();
         move |name: &'static str| edit(Box::new(move |t: &mut Value| t["event"] = json!(name)))
@@ -1255,7 +1302,7 @@ pub fn sun_form(trigger: &Value, edit: impl Fn(Edit) + Clone + Send + Sync + 'st
                     move |minutes| at.set(part_of(&event, minutes))
                 },
                 move |minutes| {
-                    LAST_SUN.with(|last| last.set(Some(part_of(&moved, minutes))));
+                    keep(Kept::Sun, 0, part_of(&moved, minutes));
                     edit(Box::new(move |t: &mut Value| {
                         write_or_remove(t, "offset", offset_text(minutes));
                     }));
@@ -1294,6 +1341,7 @@ fn own_offsets(window: &mut Value) {
 /// along the sun's path, and a press on the arc sets whichever end is being set.
 pub fn sun_window_form(
     condition: &Value,
+    slot: usize,
     edit: impl Fn(Edit) + Clone + Send + Sync + 'static,
 ) -> AnyView {
     let clock = ask(json!({ "type": "sun", "event": "sunset" }));
@@ -1313,7 +1361,7 @@ pub fn sun_window_form(
         .collect();
     // An end with no moment can't be the one being set by the arc's stops alone, but it can
     // be given one: so whichever was last being set still is.
-    let setting = RwSignal::new(SUN_END.with(Cell::get).min(1));
+    let setting = RwSignal::new(usize::from(last(Kept::End, slot) == Some(1.0)));
     let part = |i: usize| {
         let (event, _, minutes) = &ends[i];
         event
@@ -1324,7 +1372,7 @@ pub fn sun_window_form(
     let parts = [RwSignal::new(part(0)), RwSignal::new(part(1))];
     // The disc stands at the end being set: the one that last moved.
     let here = setting.get_untracked();
-    let at = travelling(part(here).or(part(1 - here)).unwrap_or(0.75));
+    let at = travelling(part(here).or(part(1 - here)).unwrap_or(0.75), slot);
     let lit = Signal::derive(move || match (parts[0].get(), parts[1].get()) {
         (Some(from), Some(to)) => Some((from, to)),
         // Open at one end: to where the day ends, or from where it starts.
@@ -1402,8 +1450,8 @@ pub fn sun_window_form(
                             at.set(part);
                         },
                         move |minutes| {
-                            SUN_END.with(|last| last.set(i));
-                            LAST_SUN.with(|last| last.set(Some(part_of(&kept, minutes))));
+                            keep(Kept::End, slot, i as f64);
+                            keep(Kept::Sun, slot, part_of(&kept, minutes));
                             edit(Box::new(move |c: &mut Value| {
                                 own_offsets(c);
                                 write_or_remove(c, own, offset_text(minutes));
@@ -1433,12 +1481,12 @@ pub fn sun_window_form(
                         aria-pressed=move || (setting.get() == i).to_string()
                         title="Set this end from the arc and the moments below"
                         on:click=move |_| {
-                            SUN_END.with(|last| last.set(i));
+                            keep(Kept::End, slot, i as f64);
                             setting.set(i);
                             if let Some(part) = parts[i].get_untracked() {
                                 let from = at.get_untracked();
                                 glide(at, (part - from + 0.5).rem_euclid(1.0) - 0.5);
-                                LAST_SUN.with(|last| last.set(Some(part)));
+                                keep(Kept::Sun, slot, part);
                             }
                         }>
                         <span class="sun-end-label">{label}</span>
@@ -1624,6 +1672,25 @@ mod tests {
             &days(&["mon", "tue", "wed", "thu", "fri", "sat", "sun"]),
         );
         assert!(trigger.get("weekday").is_none());
+        // A window that is only its days keeps them, all seven: with none it says nothing.
+        let mut window = json!({ "type": "time", "weekday": ["sat"] });
+        write_days(
+            &mut window,
+            &days(&["mon", "tue", "wed", "thu", "fri", "sat", "sun"]),
+        );
+        assert_eq!(
+            window["weekday"],
+            json!(["mon", "tue", "wed", "thu", "fri", "sat", "sun"])
+        );
+    }
+
+    #[test]
+    fn each_check_remembers_its_own_hand() {
+        keep(Kept::Hand, 1, 840.0);
+        keep(Kept::Hand, 2, 120.0);
+        assert_eq!(last(Kept::Hand, 1), Some(840.0));
+        assert_eq!(last(Kept::Hand, 2), Some(120.0));
+        assert_eq!(last(Kept::Sun, 1), None);
     }
 
     #[test]

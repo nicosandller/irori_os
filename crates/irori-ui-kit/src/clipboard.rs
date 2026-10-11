@@ -41,6 +41,9 @@ fn ask_navigator(text: &str) -> Option<Promise> {
 fn by_selection(text: &str) -> Option<bool> {
     let document = web_sys::window()?.document()?;
     let body = document.body()?;
+    // Selecting takes the caret from wherever it was: it is handed back afterwards, so a
+    // window that listens for Escape still hears it.
+    let focused = document.active_element();
     let held = document.create_element("textarea").ok()?;
     held.set_text_content(Some(text));
     held.set_attribute("readonly", "").ok()?;
@@ -62,5 +65,8 @@ fn by_selection(text: &str) -> Option<bool> {
     call(&held, "select", &[]);
     let copied = call(&document, "execCommand", &["copy"]).and_then(|done| done.as_bool());
     held.remove();
+    if let Some(focused) = focused {
+        call(&focused, "focus", &[]);
+    }
     copied
 }

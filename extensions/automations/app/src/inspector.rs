@@ -240,8 +240,11 @@ pub fn JsonButton(
         {move || open.get().then(|| {
             view! {
                 <leptos::portal::Portal>
+                    // Closed by a press on the page around the window, not by a click: a drag
+                    // that selects text in the box and is let go outside it ends as a click
+                    // out here, and would take what was typed with it.
                     <div class="json-backdrop"
-                        on:click=move |_| open.set(false)
+                        on:pointerdown=move |_| open.set(false)
                         // Escape closes this window and goes no further: the node's panel
                         // behind it listens for the same key.
                         on:keydown=move |e| {

@@ -560,9 +560,9 @@ pub fn ChecksForm(
                         }
                     };
                     let form = if sun {
-                        clock_forms::sun_window_form(&window, edit_window)
+                        clock_forms::sun_window_form(&window, i, edit_window)
                     } else {
-                        clock_forms::time_window_form(&window, edit_window)
+                        clock_forms::time_window_form(&window, i, edit_window)
                     };
                     view! {
                         <div class="clause window">
