@@ -2055,8 +2055,56 @@ pub fn describe(condition: &Condition) -> String {
             (None, None) => entity.to_string(),
         },
         Condition::Expr { expr } => expr.as_str().to_owned(),
-        Condition::Time { .. } => "time window".into(),
-        Condition::Sun { .. } => "sun window".into(),
+        Condition::Time {
+            after,
+            before,
+            weekday,
+        } => {
+            let hours = match (after, before) {
+                (Some(after), Some(before)) => {
+                    format!("between {} and {}", after.as_str(), before.as_str())
+                }
+                (Some(after), None) => format!("after {}", after.as_str()),
+                (None, Some(before)) => format!("before {}", before.as_str()),
+                (None, None) => "any time".to_owned(),
+            };
+            match weekday {
+                Some(days) => {
+                    let days: Vec<String> = days
+                        .iter()
+                        .map(|day| format!("{day:?}").to_lowercase())
+                        .collect();
+                    format!("{hours} on {}", days.join(", "))
+                }
+                None => hours,
+            }
+        }
+        Condition::Sun {
+            after,
+            before,
+            offset,
+            after_offset,
+            before_offset,
+        } => {
+            // "sunset -30m": the event, and how far its end of the window is moved.
+            let end = |event: &irori_rules::SunEvent,
+                       own: &Option<irori_rules::CompactDuration>| {
+                match own.as_ref().or(offset.as_ref()) {
+                    Some(moved) => format!("{} {}", clock::sun_word(*event), moved.as_str()),
+                    None => clock::sun_word(*event).to_owned(),
+                }
+            };
+            match (after, before) {
+                (Some(after), Some(before)) => format!(
+                    "between {} and {}",
+                    end(after, after_offset),
+                    end(before, before_offset)
+                ),
+                (Some(after), None) => format!("after {}", end(after, after_offset)),
+                (None, Some(before)) => format!("before {}", end(before, before_offset)),
+                (None, None) => "any time".to_owned(),
+            }
+        }
         Condition::All { conditions } => conditions
             .iter()
             .map(describe)

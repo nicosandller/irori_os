@@ -1,0 +1,23 @@
+{
+  "id": "evening_light_until_sunrise",
+  "name": "Hall light on movement, from dusk until the morning",
+  "nodes": {
+    "motion": { "type": "trigger", "trigger": { "type": "state", "entity": "binary_sensor.demo_movement_motion", "to": true } },
+    "dark_out": {
+      "type": "gate",
+      "condition": {
+        "type": "all",
+        "conditions": [
+          { "type": "sun", "after": "sunset", "before": "sunrise", "after_offset": "-30m", "before_offset": "15m" },
+          { "type": "time", "after": "14:00" },
+          { "type": "state", "entity": "light.demo_hall_light", "is": false }
+        ]
+      }
+    },
+    "on": { "type": "call", "service": "light.turn_on", "entity": "light.demo_hall_light", "data": { "brightness_pct": 40, "color_temp_kelvin": 2700 } }
+  },
+  "wires": [
+    ["motion", "dark_out"],
+    ["dark_out:yes", "on"]
+  ]
+}

@@ -1,7 +1,7 @@
 [extension]
 id = "demo"
 name = "Demo"
-version = "0.5.0"
+version = "0.5.1"
 irori = ">=0.7.0"
 description = "Virtual devices for trying Irori without hardware, living a whole day every minute: lights, a plug that measures power, presence, light and air sensors, door and window contacts, a TV and its sofa, and around the house a lock, a doorbell, a blind, a ceiling fan, a water shut-off with a leak alarm, a thermostat, a hot water tank and a dehumidifier."
 icon = "icon.svg"

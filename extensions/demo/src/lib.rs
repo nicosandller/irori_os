@@ -319,9 +319,16 @@ fn apply_light(light: &mut LightState, on: Option<&LightTurnOn>) {
         Some(data) => {
             light.on = true;
             light.brightness = data.brightness.or(light.brightness);
+            // A light is one or the other: taking a colour puts its white away, and back.
             if let Some(kelvin) = data.color_temp_kelvin {
                 light.color_temp_kelvin = Some(kelvin);
+                light.rgb = None;
                 light.color_mode = Some(ColorMode::ColorTemp);
+            }
+            if let Some(rgb) = data.rgb {
+                light.rgb = Some(rgb);
+                light.color_temp_kelvin = None;
+                light.color_mode = Some(ColorMode::Rgb);
             }
         }
         None => light.on = false,
@@ -540,7 +547,7 @@ async fn describe(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
                 min: 2200,
                 max: 6500,
             }),
-            rgb: false,
+            rgb: true,
         }),
         entity_category: None,
     })

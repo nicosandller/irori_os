@@ -14,7 +14,6 @@ use std::time::Duration;
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use wasm_bindgen_futures::JsFuture;
 
 /// How often an open log window asks for more. The same rhythm as the Devices page's own polling
 /// — a crash loop writes a fresh round of output every few seconds, and a log that stopped
@@ -450,20 +449,10 @@ fn looks_like_timestamp(word: &str) -> bool {
             && zone.len() == 6)
 }
 
-/// Whether the browser's clipboard took `text`.
-///
-/// The async clipboard API: the synchronous way to copy (a hidden textarea and `execCommand`) is
-/// deprecated, and only works while the page has focus. The returned promise is what says whether
-/// the write was actually allowed — it rejects without a user gesture, without permission, or
-/// outside a secure context — so it is awaited rather than fired and forgotten. Reporting
-/// "Copied" for a copy that didn't happen is the one thing a copy button must not do.
+/// Whether the browser's clipboard took `text`: the same copy an extension's page makes
+/// (`irori_ui_kit::clipboard`), which says "no" rather than pretend when the browser refuses.
 pub(crate) async fn write_to_clipboard(text: &str) -> bool {
-    let Some(window) = web_sys::window() else {
-        return false;
-    };
-    JsFuture::from(window.navigator().clipboard().write_text(text))
-        .await
-        .is_ok()
+    irori_ui_kit::clipboard::copy(text).await
 }
 
 /// The copy button's picture: a clipboard, and the check it turns into once the copy worked.

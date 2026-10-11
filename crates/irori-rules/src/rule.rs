@@ -308,8 +308,15 @@ pub enum Condition {
         after: Option<SunEvent>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         before: Option<SunEvent>,
+        /// Moves both ends. Not together with an end's own offset.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         offset: Option<CompactDuration>,
+        /// Moves where the window opens: `-30m` is half an hour before `after`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_offset: Option<CompactDuration>,
+        /// Moves where the window closes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before_offset: Option<CompactDuration>,
     },
     All {
         conditions: Vec<Condition>,
@@ -358,12 +365,37 @@ impl Condition {
                 after,
                 before,
                 offset,
+                after_offset,
+                before_offset,
             } => {
                 if after.is_none() && before.is_none() {
                     return Err(inv("a sun window needs `after` or `before`"));
                 }
-                if let Some(offset) = offset {
-                    offset.require_nonzero("offset")?;
+                if offset.is_some() && (after_offset.is_some() || before_offset.is_some()) {
+                    return Err(inv(
+                        "`offset` moves both ends of a sun window; use it, or `after_offset` \
+                         and `before_offset`, not both",
+                    ));
+                }
+                for (field, end, moved) in [
+                    ("after_offset", after.is_some(), after_offset),
+                    ("before_offset", before.is_some(), before_offset),
+                ] {
+                    if moved.is_some() && !end {
+                        return Err(inv(format!(
+                            "`{field}` has nothing to move: the window has no `{}`",
+                            field.trim_end_matches("_offset")
+                        )));
+                    }
+                }
+                for (field, offset) in [
+                    ("offset", offset),
+                    ("after_offset", after_offset),
+                    ("before_offset", before_offset),
+                ] {
+                    if let Some(offset) = offset {
+                        offset.require_nonzero(field)?;
+                    }
                 }
                 Ok(())
             }

@@ -762,6 +762,7 @@ fn NodeCard(
 ) -> impl IntoView {
     let ed = expect_context::<Editing>();
     let home = expect_context::<Home>();
+    let windows = expect_context::<crate::windows::Windows>();
     let show = expect_context::<live::Show>();
     let node = {
         let id = id.clone();
@@ -854,8 +855,13 @@ fn NodeCard(
     };
 
     let live_value = move || {
-        // A condition with several checks shows each one's state on its own line instead.
-        if node.with(|n| n.as_ref().and_then(model::checks_of).is_some()) {
+        // A condition with several checks shows each one's state on its own line instead,
+        // and a window of the day has no reading to show.
+        if node.with(|n| {
+            n.as_ref()
+                .and_then(model::checks_of)
+                .is_some_and(|checks| checks.clauses.len() > 1)
+        }) {
             return None;
         }
         let entity = node.with(|n| n.as_ref().and_then(model::primary_entity))?;
@@ -919,6 +925,9 @@ fn NodeCard(
     let card = {
         let id = id.clone();
         move || {
+            // Names come with the home, which may arrive after the flow: drawn again when it
+            // does, so a node doesn't keep saying `binary_sensor.…` where a name belongs.
+            home.entities.track();
             node.get().map(|node| {
                 let text = model::sentence(&node, &home);
                 let colour = model::family(&node);
@@ -931,7 +940,7 @@ fn NodeCard(
                         <span class="nid" title=id.to_string()>{id.to_string()}</span>
                     </div>
                     {match model::checks_of(&node) {
-                        // Several checks: a line each, with whether it holds right now.
+                        // Checks: a line each, with whether it holds right now.
                         Some(checks) => {
                             let joiner = if checks.any { "or" } else { "and" };
                             let height = model::text_height(&node);
@@ -939,7 +948,7 @@ fn NodeCard(
                                 <div class="text checks" title=text.clone() style=format!("height:{height}px")>
                                     {checks.clauses.into_iter().enumerate().map(|(i, clause)| {
                                         let line = clause.line(&home);
-                                        let dot = move || match clause.holds_now(&home) {
+                                        let dot = move || match clause.holds_now(&home, &windows) {
                                             Some(true) => "check-dot holds",
                                             Some(false) => "check-dot fails",
                                             None => "check-dot unknown",
@@ -955,7 +964,15 @@ fn NodeCard(
                                 </div>
                             }.into_any()
                         }
-                        None => view! { <div class="text" title=text.clone()>{text.clone()}</div> }.into_any(),
+                        None => view! {
+                            <div class="text" title=text.clone()>
+                                // What a light is told to look like, as the colour itself.
+                                {model::call_swatch(&node).map(|colour| view! {
+                                    <span class="look-swatch" style=format!("background:{colour}")></span>
+                                })}
+                                {text.clone()}
+                            </div>
+                        }.into_any(),
                     }}
                     {node.ports().into_iter().map(|port| {
                         let name = model::port_label(&node, port);

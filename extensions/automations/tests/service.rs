@@ -398,4 +398,39 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
         .await
         .expect("asked");
     assert!(gone.is_null(), "{gone}");
+
+    // Windows are told by the engine's clock, and say why when they can't be.
+    let windows = serde_json::json!({ "conditions": [
+        { "type": "time", "after": "00:00" },
+        { "type": "sun", "after": "sunset", "before": "sunrise", "after_offset": "-30m" },
+        { "type": "sun", "after": "sunset", "offset": "1h", "after_offset": "-30m" },
+    ] });
+    let unset = rpc::handle(&mut service, "clock.holds", windows.clone())
+        .await
+        .expect("asked");
+    assert!(unset.get("time_zone").is_none(), "{unset}");
+    assert!(
+        unset["holds"][0]["why"]
+            .as_str()
+            .is_some_and(|why| why.contains("time zone")),
+        "{unset}"
+    );
+    let brussels =
+        irori_rules::clock::Place::new("Europe/Brussels", Some((50.8467, 4.3525))).expect("a zone");
+    service.engine.set_place(Some(brussels), stamp());
+    let told = rpc::handle(&mut service, "clock.holds", windows)
+        .await
+        .expect("asked");
+    assert_eq!(told["time_zone"], "Europe/Brussels");
+    assert_eq!(told["location"], true);
+    // After midnight is every moment of the day.
+    assert_eq!(told["holds"][0]["holds"], true, "{told}");
+    assert!(told["holds"][1]["holds"].is_boolean(), "{told}");
+    assert!(
+        told["holds"][2]["why"]
+            .as_str()
+            .is_some_and(|why| why.contains("not both")),
+        "{told}"
+    );
+    assert!(told["sun"]["sunset"].is_string(), "{told}");
 }

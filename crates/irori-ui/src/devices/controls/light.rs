@@ -1,6 +1,7 @@
 //! A light: on and off, and its brightness and colour when it has them.
 
 use irori_types::{Entity, LightCapabilities, LightState, LightTurnOn, State};
+use irori_ui_kit::color::{hex_from_rgb, rgb_from_hex};
 use leptos::prelude::*;
 
 use super::{fill, knob};
@@ -51,21 +52,6 @@ pub(crate) fn brightness_pct(level: u8) -> u16 {
 /// as 71%, so the slider doesn't creep one notch per change.
 pub(crate) fn pct_to_brightness(pct: u16) -> u8 {
     ((u32::from(pct.clamp(1, 100)) * 255 / 100) as u8).clamp(1, 255)
-}
-
-/// The color an `<input type="color">` gives, "#rrggbb", as the `[r, g, b]` the data takes.
-pub(crate) fn rgb_from_hex(hex: &str) -> Option<[u8; 3]> {
-    let hex = hex.strip_prefix('#').unwrap_or(hex);
-    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    let read = |from: usize| u8::from_str_radix(&hex[from..from + 2], 16).ok();
-    Some([read(0)?, read(2)?, read(4)?])
-}
-
-/// `[r, g, b]` back into the "#rrggbb" a color input wants.
-pub(crate) fn hex_from_rgb(rgb: [u8; 3]) -> String {
-    format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
 }
 
 /// The sliders that set a lit light's level and color: brightness when it can dim, color

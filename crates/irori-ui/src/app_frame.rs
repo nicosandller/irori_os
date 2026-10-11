@@ -340,6 +340,9 @@ fn Frame(id: String) -> impl IntoView {
             title=label
             src=src
             sandbox="allow-scripts"
+            // A page's copy button: the frame is another origin to the browser, which lets it
+            // write to the clipboard only if the frame around it says it may.
+            allow="clipboard-write"
         ></iframe>
     }
 }

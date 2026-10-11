@@ -431,6 +431,17 @@
                 }
               ]
             },
+            "after_offset": {
+              "description": "Moves where the window opens: `-30m` is half an hour before `after`.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CompactDuration"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "before": {
               "anyOf": [
                 {
@@ -441,7 +452,19 @@
                 }
               ]
             },
+            "before_offset": {
+              "description": "Moves where the window closes.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CompactDuration"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "offset": {
+              "description": "Moves both ends. Not together with an end's own offset.",
               "anyOf": [
                 {
                   "$ref": "#/$defs/CompactDuration"
