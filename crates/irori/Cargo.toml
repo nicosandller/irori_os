@@ -42,6 +42,8 @@ clap_complete = "4.6.7"
 rpassword = "7.4.0"
 # `irori watch`. rustls so wss uses the same roots as the HTTP client.
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+# The same roots, for the socket's own TLS config when `--ca` adds one to them.
+webpki-roots = "1"
 # Passwords (`server/auth.rs`): argon2id hashes, and the SHA-256 a session's token is kept as.
 argon2 = "0.5.3"
 sha2.workspace = true

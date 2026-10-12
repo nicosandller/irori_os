@@ -79,7 +79,7 @@ pub async fn run(remote: &Remote, cmd: AutomationsCmd) -> Result<(), String> {
             output::show(link.json, &value, || println!("cancelled {run_id}"))
         }
         AutomationsCmd::Test { id, trigger, dry } => {
-            let value = rpc(
+            let value = rpc_slow(
                 &link.client,
                 "test",
                 &json!({ "id": id, "trigger": trigger, "dry": dry }),
@@ -88,7 +88,7 @@ pub async fn run(remote: &Remote, cmd: AutomationsCmd) -> Result<(), String> {
             output::show(link.json, &value, || println!("{}", pretty(&value)))
         }
         AutomationsCmd::Backtest { id } => {
-            let value = rpc(&link.client, "backtest", &json!({ "id": id })).await?;
+            let value = rpc_slow(&link.client, "backtest", &json!({ "id": id })).await?;
             output::show(link.json, &value, || println!("{}", pretty(&value)))
         }
         AutomationsCmd::Versions { id } => {
@@ -165,12 +165,24 @@ fn read_flow(path: &Path) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|error| format!("that file isn't JSON: {error}"))
 }
 
+const RPC: &str = "/api/apps/automations/rpc";
+
 async fn rpc(client: &irori_client::Client, method: &str, params: &Value) -> Result<Value, String> {
     let body = client
-        .post::<Value>(
-            "/api/apps/automations/rpc",
-            &json!({ "method": method, "params": params }),
-        )
+        .post::<Value>(RPC, &json!({ "method": method, "params": params }))
+        .await
+        .map_err(err)?;
+    Ok(body.get("value").cloned().unwrap_or(body))
+}
+
+/// A test and a backtest run the flow, which can take longer than a call is given.
+async fn rpc_slow(
+    client: &irori_client::Client,
+    method: &str,
+    params: &Value,
+) -> Result<Value, String> {
+    let body = client
+        .post_slow::<Value>(RPC, &json!({ "method": method, "params": params }))
         .await
         .map_err(err)?;
     Ok(body.get("value").cloned().unwrap_or(body))

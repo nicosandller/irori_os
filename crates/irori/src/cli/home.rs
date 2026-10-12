@@ -11,7 +11,7 @@ use super::output::{self, explain};
 use super::prompt;
 use super::{
     args::{AreasCmd, DevicesCmd, EntitiesCmd, FloorplanCmd, FloorsCmd, Remote},
-    connect,
+    connect::{self, encode, seg},
 };
 
 fn err(error: irori_client::Error) -> String {
@@ -46,7 +46,7 @@ pub async fn devices(remote: &Remote, cmd: DevicesCmd) -> Result<(), String> {
             let body = json!({ "added": true });
             let value = link
                 .client
-                .patch::<Value>(&format!("/api/devices/{id}"), &body)
+                .patch::<Value>(&format!("/api/devices/{}", seg(&id)?), &body)
                 .await
                 .map_err(err)?;
             output::show(link.json, &value, || println!("added {id}"))
@@ -55,7 +55,7 @@ pub async fn devices(remote: &Remote, cmd: DevicesCmd) -> Result<(), String> {
             let body = json!({ "name": name });
             let value = link
                 .client
-                .patch::<Value>(&format!("/api/devices/{id}"), &body)
+                .patch::<Value>(&format!("/api/devices/{}", seg(&id)?), &body)
                 .await
                 .map_err(err)?;
             output::show(link.json, &value, || println!("renamed {id}"))
@@ -71,7 +71,7 @@ pub async fn devices(remote: &Remote, cmd: DevicesCmd) -> Result<(), String> {
             };
             let value = link
                 .client
-                .patch::<Value>(&format!("/api/devices/{id}"), &body)
+                .patch::<Value>(&format!("/api/devices/{}", seg(&id)?), &body)
                 .await
                 .map_err(err)?;
             output::show(link.json, &value, || println!("moved {id}"))
@@ -87,7 +87,7 @@ pub async fn devices(remote: &Remote, cmd: DevicesCmd) -> Result<(), String> {
             };
             let value = link
                 .client
-                .patch::<Value>(&format!("/api/devices/{id}"), &body)
+                .patch::<Value>(&format!("/api/devices/{}", seg(&id)?), &body)
                 .await
                 .map_err(err)?;
             output::show(link.json, &value, || println!("described {id}"))
@@ -111,15 +111,15 @@ pub async fn devices(remote: &Remote, cmd: DevicesCmd) -> Result<(), String> {
             };
             if !prompt::confirm(
                 &format!("Remove {name} from the home?{extra}"),
-                link.yes || force,
+                link.yes,
                 link.json,
             )? {
                 return output::done(link.json, "left it in the home");
             }
             let path = if force {
-                format!("/api/devices/{id}?force=true")
+                format!("/api/devices/{}?force=true", seg(&id)?)
             } else {
-                format!("/api/devices/{id}")
+                format!("/api/devices/{}", seg(&id)?)
             };
             link.client
                 .empty(reqwest::Method::DELETE, &path, None::<&()>)
@@ -235,7 +235,10 @@ pub async fn entities(remote: &Remote, cmd: EntitiesCmd) -> Result<(), String> {
         EntitiesCmd::Rename { id, name } => {
             let value = link
                 .client
-                .patch::<Value>(&format!("/api/entities/{id}"), &json!({ "name": name }))
+                .patch::<Value>(
+                    &format!("/api/entities/{}", seg(&id)?),
+                    &json!({ "name": name }),
+                )
                 .await
                 .map_err(err)?;
             output::show(link.json, &value, || println!("renamed {id}"))
@@ -243,7 +246,7 @@ pub async fn entities(remote: &Remote, cmd: EntitiesCmd) -> Result<(), String> {
         EntitiesCmd::History { id, since } => {
             let history = link
                 .client
-                .get::<irori_client::History>(&format!("/api/history/{id}"))
+                .get::<irori_client::History>(&format!("/api/history/{}", seg(&id)?))
                 .await
                 .map_err(err)?;
             let since = since
@@ -268,8 +271,9 @@ pub async fn entities(remote: &Remote, cmd: EntitiesCmd) -> Result<(), String> {
             let summary = link
                 .client
                 .get::<irori_client::Summary>(&format!(
-                    "/api/history/{id}/summary?since={}",
-                    urlencoding(&since)
+                    "/api/history/{}/summary?since={}",
+                    seg(&id)?,
+                    encode(&since)
                 ))
                 .await
                 .map_err(err)?;
@@ -345,18 +349,6 @@ fn brief(state: Option<&EntityState>) -> String {
     }
 }
 
-fn urlencoding(text: &str) -> String {
-    let mut out = String::new();
-    for byte in text.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~' | b':') {
-            out.push(byte as char);
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
-}
-
 pub async fn areas(remote: &Remote, cmd: AreasCmd) -> Result<(), String> {
     let link = connect::connect(remote)?;
     match cmd {
@@ -392,7 +384,10 @@ pub async fn areas(remote: &Remote, cmd: AreasCmd) -> Result<(), String> {
         AreasCmd::Rename { id, name } => {
             let value = link
                 .client
-                .patch::<Value>(&format!("/api/areas/{id}"), &json!({ "name": name }))
+                .patch::<Value>(
+                    &format!("/api/areas/{}", seg(&id)?),
+                    &json!({ "name": name }),
+                )
                 .await
                 .map_err(err)?;
             output::show(link.json, &value, || println!("renamed {id}"))
@@ -408,7 +403,7 @@ pub async fn areas(remote: &Remote, cmd: AreasCmd) -> Result<(), String> {
             };
             let value = link
                 .client
-                .patch::<Value>(&format!("/api/areas/{id}"), &body)
+                .patch::<Value>(&format!("/api/areas/{}", seg(&id)?), &body)
                 .await
                 .map_err(err)?;
             output::show(link.json, &value, || println!("moved {id}"))
@@ -420,7 +415,7 @@ pub async fn areas(remote: &Remote, cmd: AreasCmd) -> Result<(), String> {
             link.client
                 .empty(
                     reqwest::Method::DELETE,
-                    &format!("/api/areas/{id}"),
+                    &format!("/api/areas/{}", seg(&id)?),
                     None::<&()>,
                 )
                 .await
@@ -466,7 +461,7 @@ pub async fn floors(remote: &Remote, cmd: FloorsCmd) -> Result<(), String> {
             }
             let value = link
                 .client
-                .patch::<Value>(&format!("/api/floors/{id}"), &body)
+                .patch::<Value>(&format!("/api/floors/{}", seg(&id)?), &body)
                 .await
                 .map_err(err)?;
             output::show(link.json, &value, || println!("edited {id}"))
@@ -478,7 +473,7 @@ pub async fn floors(remote: &Remote, cmd: FloorsCmd) -> Result<(), String> {
             link.client
                 .empty(
                     reqwest::Method::DELETE,
-                    &format!("/api/floors/{id}"),
+                    &format!("/api/floors/{}", seg(&id)?),
                     None::<&()>,
                 )
                 .await

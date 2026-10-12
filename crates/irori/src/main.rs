@@ -184,8 +184,13 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // differ from `bind`, e.g. a loopback bind falling back to a LAN address).
             let address = listener.local_addr()?;
             // The CLI on this machine reads this. A wildcard bind is written as loopback:
-            // 0.0.0.0 is not an address a client can connect to.
+            // 0.0.0.0 is not an address a client can connect to. Dropped on every exit
+            // from here except a restart that replaces this process: a failed start must
+            // not leave a file pointing at a server that is not listening.
             write_cli_url(&data, address, tls);
+            let cli_url = CliUrlGuard {
+                path: data.join("cli.url"),
+            };
             // Read, or made, before anything is served: a certificate that can't be used is a
             // reason not to start, not a reason to quietly serve in the clear.
             let tls_config = if tls {
@@ -291,16 +296,32 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             host.shutdown().await;
             if restarting.load(Ordering::SeqCst) {
                 // Never returns: the current image is replaced by a fresh `irori serve`. Only a
-                // failed exec comes back here. Leave cli.url for the new process to replace.
+                // failed exec comes back here. `exec` does not drop `cli_url`, so the file stays
+                // for the new process. A failed exec drops the guard and the file goes.
                 let failed = restart_process(address, carry_bind);
-                remove_cli_url(&data);
+                drop(cli_url);
                 return failed;
             }
-            // A stop, not a restart: the next `irori` must not keep talking to a server
-            // that is gone. The new process writes the file again when it binds.
-            remove_cli_url(&data);
+            drop(cli_url);
             served
         })
+}
+
+/// Deletes `cli.url` unless a restart has replaced this process.
+struct CliUrlGuard {
+    path: std::path::PathBuf,
+}
+
+impl Drop for CliUrlGuard {
+    fn drop(&mut self) {
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(path = %self.path.display(), %error, "couldn't remove cli.url")
+            }
+        }
+    }
 }
 
 /// `http://127.0.0.1:8480`, with a wildcard address rewritten to this machine.
@@ -320,15 +341,6 @@ fn write_cli_url(data: &std::path::Path, address: SocketAddr, tls: bool) {
     let body = format!("{}\n", cli_origin(address, tls));
     if let Err(error) = std::fs::write(&path, body) {
         tracing::warn!(path = %path.display(), %error, "couldn't write cli.url");
-    }
-}
-
-fn remove_cli_url(data: &std::path::Path) {
-    let path = data.join("cli.url");
-    match std::fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => tracing::warn!(path = %path.display(), %error, "couldn't remove cli.url"),
     }
 }
 

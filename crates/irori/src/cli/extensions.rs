@@ -4,7 +4,7 @@ use irori_client::{CatalogEntry, Client, Home};
 use serde_json::{Value, json};
 
 use super::args::{ExtensionsCmd, HelpersCmd, Remote, ToggleCmd};
-use super::connect;
+use super::connect::{self, seg};
 use super::output::{self, explain};
 use super::prompt;
 
@@ -67,9 +67,9 @@ pub async fn extensions(remote: &Remote, cmd: ExtensionsCmd) -> Result<(), Strin
                 "update": update,
             });
             link.client
-                .empty(
+                .empty_slow(
                     reqwest::Method::POST,
-                    &format!("/api/extensions/{id}/install"),
+                    &format!("/api/extensions/{}/install", seg(&id)?),
                     Some(&body),
                 )
                 .await
@@ -93,7 +93,7 @@ pub async fn extensions(remote: &Remote, cmd: ExtensionsCmd) -> Result<(), Strin
             link.client
                 .empty(
                     reqwest::Method::POST,
-                    &format!("/api/extensions/{id}/settings"),
+                    &format!("/api/extensions/{}/settings", seg(&id)?),
                     Some(&body),
                 )
                 .await
@@ -107,7 +107,7 @@ pub async fn extensions(remote: &Remote, cmd: ExtensionsCmd) -> Result<(), Strin
             link.client
                 .empty(
                     reqwest::Method::PUT,
-                    &format!("/api/extensions/{id}/secrets"),
+                    &format!("/api/extensions/{}/secrets", seg(&id)?),
                     Some(&body),
                 )
                 .await
@@ -123,7 +123,7 @@ pub async fn extensions(remote: &Remote, cmd: ExtensionsCmd) -> Result<(), Strin
             link.client
                 .empty(
                     method,
-                    &format!("/api/extensions/{id}/actions/{action}"),
+                    &format!("/api/extensions/{}/actions/{}", seg(&id)?, seg(&action)?),
                     None::<&()>,
                 )
                 .await
@@ -202,9 +202,14 @@ async fn approve(
 }
 
 async fn install_url(client: &Client, url: &str, flag: bool, json: bool) -> Result<(), String> {
+    // What the package asks for isn't known until Irori has downloaded it, so an approval
+    // given ahead of time is told what it approves, as the catalog install is.
+    if flag {
+        eprintln!("If this package asks for it, it {FULL_ACCESS}");
+    }
     let body = json!({ "url": url, "approve_full_access": flag });
     match client
-        .empty(
+        .empty_slow(
             reqwest::Method::POST,
             "/api/extensions/install",
             Some(&body),
@@ -221,7 +226,7 @@ async fn install_url(client: &Client, url: &str, flag: bool, json: bool) -> Resu
             }
             let body = json!({ "url": url, "approve_full_access": true });
             client
-                .empty(
+                .empty_slow(
                     reqwest::Method::POST,
                     "/api/extensions/install",
                     Some(&body),
@@ -264,8 +269,7 @@ async fn uninstall(
         }
         None => {
             if installed.is_empty() {
-                println!("no extensions are installed");
-                return Ok(());
+                return output::done(json, "no extensions are installed");
             }
             if json {
                 return Err("pass the extension id. --json doesn't open the menu.".to_owned());
@@ -311,7 +315,7 @@ async fn uninstall(
     client
         .empty(
             reqwest::Method::DELETE,
-            &format!("/api/extensions/{id}"),
+            &format!("/api/extensions/{}", seg(&id)?),
             None::<&()>,
         )
         .await
@@ -323,7 +327,7 @@ async fn follow_log(client: &Client, id: &str, follow: bool, json: bool) -> Resu
     let mut last: Option<String> = None;
     loop {
         let body = client
-            .get::<irori_client::Lines>(&format!("/api/extensions/{id}/log"))
+            .get::<irori_client::Lines>(&format!("/api/extensions/{}/log", seg(id)?))
             .await
             .map_err(err)?;
         let fresh = fresh_lines(&body.lines, last.as_deref());
@@ -331,7 +335,13 @@ async fn follow_log(client: &Client, id: &str, follow: bool, json: bool) -> Resu
             return output::json_out(&body.lines);
         }
         for line in fresh {
-            println!("{line}");
+            // Following has no last line to close one document on, so each line is its
+            // own, as `watch` does with frames.
+            if json {
+                output::json_out(line)?;
+            } else {
+                println!("{line}");
+            }
         }
         last = body.lines.last().cloned().or(last);
         if !follow {
@@ -376,7 +386,7 @@ pub async fn helpers(remote: &Remote, cmd: HelpersCmd) -> Result<(), String> {
             link.client
                 .empty(
                     reqwest::Method::DELETE,
-                    &format!("/api/helpers/toggles/{id}"),
+                    &format!("/api/helpers/toggles/{}", seg(&id)?),
                     None::<&()>,
                 )
                 .await

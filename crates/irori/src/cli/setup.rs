@@ -5,7 +5,7 @@ use irori_types::{ApiScope, Role};
 use serde_json::json;
 
 use super::args::{LoginArgs, PlaceCmd, RecorderCmd, Remote, TokenCmd, UsersCmd};
-use super::connect;
+use super::connect::{self, seg};
 use super::output::{self, explain};
 use super::prompt;
 
@@ -15,6 +15,9 @@ fn err(error: irori_client::Error) -> String {
 
 pub async fn login(args: LoginArgs) -> Result<(), String> {
     let (client, json, _) = connect::open(&args.remote, false)?;
+    // Said before the password is asked for: the address can come from a `cli.url` in
+    // whatever directory this was run in.
+    eprintln!("signing in to {}", client.origin());
     let password = prompt::password("Password: ", args.password_stdin)?;
     let (session, cookie) = client.sign_in(&args.user, &password).await.map_err(err)?;
     connect::save_session(client.origin(), &cookie)?;
@@ -34,14 +37,25 @@ pub async fn login(args: LoginArgs) -> Result<(), String> {
 pub async fn logout(remote: &Remote) -> Result<(), String> {
     let json = remote.json;
     let saved = connect::forget_session()?;
-    if let Some(saved) = saved.filter(|saved| !saved.cookie.is_empty())
-        && let Ok(mut builder) = irori_client::Builder::new(&saved.origin)
-    {
-        builder = builder.session(saved.cookie);
-        if let Ok(client) = builder.build() {
-            let _ = client
+    if let Some(saved) = saved.filter(|saved| !saved.cookie.is_empty()) {
+        // The session is forgotten here either way. Irori still has it until it is told,
+        // so a server that couldn't be told is said, not passed over. A session it no
+        // longer knows (401) is already signed out.
+        let told = match connect::with_session(remote, &saved.origin, saved.cookie) {
+            Ok(client) => client
                 .empty(reqwest::Method::DELETE, "/api/session", None::<&()>)
-                .await;
+                .await
+                .or_else(|error| match error.status {
+                    Some(401) => Ok(()),
+                    _ => Err(explain(&error)),
+                }),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = told {
+            eprintln!(
+                "forgot the session on this machine, but couldn't sign it out of {}: {error}",
+                saved.origin
+            );
         }
     }
     output::done(json, "signed out")
@@ -146,7 +160,7 @@ pub async fn token(remote: &Remote, cmd: TokenCmd) -> Result<(), String> {
             link.client
                 .empty(
                     reqwest::Method::DELETE,
-                    &format!("/api/tokens/{id}"),
+                    &format!("/api/tokens/{}", seg(&id)?),
                     None::<&()>,
                 )
                 .await
@@ -239,7 +253,7 @@ pub async fn users(remote: &Remote, cmd: UsersCmd) -> Result<(), String> {
             }
             let users = link
                 .client
-                .patch::<Vec<irori_client::UserRow>>(&format!("/api/users/{id}"), &body)
+                .patch::<Vec<irori_client::UserRow>>(&format!("/api/users/{}", seg(&id)?), &body)
                 .await
                 .map_err(err)?;
             output::show(link.json, &users, || println!("edited {id}"))
@@ -255,7 +269,7 @@ pub async fn users(remote: &Remote, cmd: UsersCmd) -> Result<(), String> {
             link.client
                 .empty(
                     reqwest::Method::DELETE,
-                    &format!("/api/users/{id}"),
+                    &format!("/api/users/{}", seg(&id)?),
                     None::<&()>,
                 )
                 .await

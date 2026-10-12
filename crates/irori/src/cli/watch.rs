@@ -3,8 +3,11 @@
 use futures_util::StreamExt;
 use irori_client::Client;
 use irori_types::LiveMessage;
-use tokio_tungstenite::connect_async;
+use std::sync::Arc;
+
+use tokio_rustls::rustls;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::{Connector, connect_async, connect_async_tls_with_config};
 
 use super::output;
 
@@ -28,9 +31,16 @@ pub async fn run(client: &Client, json: bool) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         request.headers_mut().insert(name, value);
     }
-    let (mut socket, _) = connect_async(request)
-        .await
-        .map_err(|error| format!("couldn't reach {}: {error}", client.origin()))?;
+    // The socket has its own TLS setup, so `--ca` is handed to it here. Without this the
+    // certificate Irori made for itself could never be trusted for `watch`.
+    let opened = match client.ca_pem() {
+        Some(pem) if client.origin().starts_with("https://") => {
+            connect_async_tls_with_config(request, None, false, Some(trusting(pem)?)).await
+        }
+        _ => connect_async(request).await,
+    };
+    let (mut socket, _) =
+        opened.map_err(|error| format!("couldn't reach {}: {error}", client.origin()))?;
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => return Ok(()),
@@ -75,12 +85,56 @@ pub async fn run(client: &Client, json: bool) -> Result<(), String> {
                         } else {
                             println!("changed");
                         }
-                        if let Err(error) = client.get::<serde_json::Value>("/api/home").await {
-                            eprintln!("error: {}", error.message);
-                        }
                     }
                 }
             }
         }
+    }
+}
+
+/// The usual roots plus the certificates in the `--ca` file, as the HTTP client trusts them.
+fn trusting(pem: &[u8]) -> Result<Connector, String> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let mut added = 0;
+    for cert in rustls_pemfile::certs(&mut &*pem) {
+        let cert = cert.map_err(|error| format!("couldn't read the CA certificate: {error}"))?;
+        roots
+            .add(cert)
+            .map_err(|error| format!("couldn't use the CA certificate: {error}"))?;
+        added += 1;
+    }
+    if added == 0 {
+        return Err("the --ca file has no certificate in it".to_owned());
+    }
+    // `ring`, named, as the server's own TLS does (`tls.rs`): nothing here depends on
+    // which providers the rest of the build happens to link.
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|error| format!("couldn't prepare TLS: {error}"))?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(Connector::Rustls(Arc::new(config)))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_ca_file_is_trusted_by_the_socket() {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = rcgen::CertificateParams::new(vec!["localhost".to_owned()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        assert!(matches!(
+            trusting(cert.pem().as_bytes()),
+            Ok(Connector::Rustls(_))
+        ));
+        let error = trusting(b"not a certificate").err().unwrap();
+        assert!(error.contains("no certificate"), "{error}");
     }
 }

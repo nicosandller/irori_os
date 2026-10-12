@@ -21,8 +21,8 @@ A remote command finds Irori in this order:
 
 `serve` writes `<data>/cli.url` after it binds. A bind of `0.0.0.0` or `::` is written as
 `127.0.0.1` or `::1`, so a CLI on the same machine can connect. `--url` wins over the file.
-The file is removed when the server stops. A restart leaves it, and the new process
-replaces it.
+The file is removed when the server stops, and when a start fails after the bind. A
+restart leaves it, and the new process replaces it.
 
 `--data` on a remote command is that directory. Put it before the subcommand.
 `entities call` uses `--data` for the action's JSON.
@@ -44,7 +44,12 @@ A session is the owner (or whoever signed in) for the API's rules. The CLI sends
 same way the page does. A bearer token never sends that header. Tokens do not gain the
 ability to install extensions, mint tokens, or restart.
 
-`irori logout` deletes the session file and asks the server to forget the session.
+`irori logout` deletes the session file and asks the server it came from to forget the
+session, with this command's `--insecure` and `--ca`. If that server can't be told, it
+says so: the session is gone from this machine and still open on Irori.
+
+`irori login` says which server it is signing in to before it asks for the password.
+With `IRORI_TOKEN` set, the token is used ahead of a saved session.
 
 On an open home, with no owner yet, commands that only need to reach the server work
 without a login. `restart` still sends `x-irori-ui`, which that route always requires.
@@ -97,12 +102,16 @@ refuses unless `--yes` is set. `--yes` does not skip the full-access sentence.
 day. Older readings are `entities summary <id> --since <timestamp>`.
 
 `devices remove` unpairs a Zigbee device first. If the network doesn't answer, the error
-names `unpair_failed` and the device stays. `--force` removes it anyway.
+names `unpair_failed` and the device stays. `--force` removes it anyway. It still asks:
+only `--yes` skips the question.
+
+An id is one segment of the API's path, whatever is in it. `..` is not an id.
 
 `extensions install` prints the full-access sentence when the package has it, in the same
 words as the page: full access to this machine, and that it can download and run other
 programs, the same as a terminal. The install is sent only after a yes, or when
-`--approve-full-access` was passed. `--yes` alone does not approve it.
+`--approve-full-access` was passed. `--yes` alone does not approve it. `install-url`
+with `--approve-full-access` prints the sentence too, before the package is fetched.
 `extensions uninstall` with no id is a numbered menu on a terminal. There is no `--all`.
 `--json` with no id refuses, and asks for an id.
 
@@ -111,7 +120,9 @@ no file. Errors exit 1. Saving a flow and the canvas stay on the page.
 `automations test --dry` does not touch the home.
 
 `watch` opens `/api/ws`. `--insecure` with an `https` URL is refused: use `http` on this
-machine, or trust the certificate with `--ca`.
+machine, or trust the certificate with `--ca`, which the socket honours as every other
+command does. With `--json`, each frame is its own document, and so is each line of
+`extensions log --follow`.
 
 `place set` takes `--latitude`, `--longitude`, `--timezone`, and an optional `--label`.
 The label is the place's name, not a name for the home.
@@ -122,9 +133,16 @@ This does not call the API. On a terminal it is a menu. Without one, pass `--bin
 `--unit`, or `--purge <dir>`.
 
 - `--binary` removes the binary only when it is the one `install.sh` put in
-  `~/.irori/bin/irori` or `/usr/local/bin/irori`, and removes the `# irori` PATH line that
-  follows it in the shell config. A development binary is left where it is.
-- `--unit` disables and deletes `/etc/systemd/system/irori.service` when it is there.
-- `--purge <dir>` deletes that directory. `/` and your home directory are refused.
+  `~/.irori/bin/irori` or `/usr/local/bin/irori`, or under an `IRORI_HOME` of your own
+  whose `# irori` PATH line is still in the shell config. The PATH line is taken out
+  first, then the binary. A development binary is left where it is.
+- `--unit` disables and deletes `/etc/systemd/system/irori.service`. When there is no
+  unit it says so and carries on.
+- `--purge <dir>` deletes that directory. It is refused for `/`, for your home directory
+  and anything it sits inside, for `/usr/local` and `/opt`, and for a directory with
+  nothing of Irori's in it: it has to hold `irori.toml`, `irori.db`, `cli.url` or
+  `packages`, or be an install with only `bin/irori` in it.
+
+Everything that can be refused is refused before anything is removed.
 
 `--yes` skips the question. It does not choose what to remove.

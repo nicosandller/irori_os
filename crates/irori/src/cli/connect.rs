@@ -43,6 +43,28 @@ pub fn resolve_origin(url: Option<&str>, data: Option<&Path>) -> Result<String, 
     Ok("http://127.0.0.1:8480".to_owned())
 }
 
+/// Percent-encodes everything a URL would read as structure.
+pub fn encode(text: &str) -> String {
+    let mut out = String::new();
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~' | b':') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// An id somebody typed, as one segment of an API path. A `/`, `?` or `#` in it stays
+/// part of the id, and `..` is refused: a URL would climb with it, encoded or not.
+pub fn seg(id: &str) -> Result<String, String> {
+    if id.is_empty() || id == "." || id == ".." {
+        return Err(format!("`{id}` isn't an id"));
+    }
+    Ok(encode(id))
+}
+
 pub fn connect(remote: &Remote) -> Result<Link, String> {
     open(remote, true).map(|(client, json, yes)| Link { client, json, yes })
 }
@@ -50,13 +72,7 @@ pub fn connect(remote: &Remote) -> Result<Link, String> {
 /// `use_token` is false for `login`, which must not send a bearer token at the sign-in.
 pub fn open(remote: &Remote, use_token: bool) -> Result<(Client, bool, bool), String> {
     let origin = resolve_origin(remote.url.as_deref(), remote.data.as_deref())?;
-    let mut builder = Builder::new(&origin).map_err(|error| error.message)?;
-    builder = builder.insecure(remote.insecure);
-    if let Some(ca) = &remote.ca {
-        let pem =
-            fs::read(ca).map_err(|error| format!("couldn't read {}: {error}", ca.display()))?;
-        builder = builder.ca_pem(pem);
-    }
+    let mut builder = trusting(remote, &origin)?;
     if use_token {
         if let Some(token) = remote.token.as_ref().filter(|token| !token.is_empty()) {
             builder = builder.bearer(token);
@@ -66,6 +82,27 @@ pub fn open(remote: &Remote, use_token: bool) -> Result<(Client, bool, bool), St
     }
     let client = builder.build().map_err(|error| error.message)?;
     Ok((client, remote.json, remote.yes))
+}
+
+/// A client for `origin` with this command's `--insecure` and `--ca`, and no credential.
+fn trusting(remote: &Remote, origin: &str) -> Result<Builder, String> {
+    let mut builder = Builder::new(origin).map_err(|error| error.message)?;
+    builder = builder.insecure(remote.insecure);
+    if let Some(ca) = &remote.ca {
+        let pem =
+            fs::read(ca).map_err(|error| format!("couldn't read {}: {error}", ca.display()))?;
+        builder = builder.ca_pem(pem);
+    }
+    Ok(builder)
+}
+
+/// The saved session's own server, whatever `--url` says: `logout` signs out of the Irori
+/// the cookie came from.
+pub fn with_session(remote: &Remote, origin: &str, cookie: String) -> Result<Client, String> {
+    trusting(remote, origin)?
+        .session(cookie)
+        .build()
+        .map_err(|error| error.message)
 }
 
 pub fn session_path() -> Result<PathBuf, String> {
@@ -93,7 +130,14 @@ pub fn session_for(origin: &str) -> Result<Option<String>, String> {
         .map_err(|error| format!("couldn't read {}: {error}", path.display()))?;
     let saved: SavedSession = serde_json::from_str(&text)
         .map_err(|error| format!("{} isn't a session file: {error}", path.display()))?;
-    Ok((saved.origin == origin).then_some(saved.cookie))
+    Ok(saved.cookie_for(origin))
+}
+
+impl SavedSession {
+    /// The cookie, for the server it came from and no other.
+    fn cookie_for(self, origin: &str) -> Option<String> {
+        (self.origin == origin).then_some(self.cookie)
+    }
 }
 
 pub fn save_session(origin: &str, cookie: &str) -> Result<(), String> {
@@ -119,6 +163,14 @@ pub fn save_session(origin: &str, cookie: &str) -> Result<(), String> {
     let mut file = options
         .open(&path)
         .map_err(|error| format!("couldn't write {}: {error}", path.display()))?;
+    // `mode` above is only for a file this call created. One that was already there, from
+    // a copy or an older umask, is narrowed before the cookie goes in.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("couldn't protect {}: {error}", path.display()))?;
+    }
     file.write_all(body.as_bytes())
         .map_err(|error| format!("couldn't write {}: {error}", path.display()))?;
     Ok(())
@@ -144,6 +196,32 @@ pub fn forget_session() -> Result<Option<SavedSession>, String> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_is_only_for_the_server_it_came_from() {
+        let saved = || SavedSession {
+            origin: "http://127.0.0.1:8480".to_owned(),
+            cookie: "sess".to_owned(),
+        };
+        assert_eq!(
+            saved().cookie_for("http://127.0.0.1:8480").as_deref(),
+            Some("sess")
+        );
+        assert_eq!(saved().cookie_for("http://127.0.0.1:8481"), None);
+        assert_eq!(saved().cookie_for("https://127.0.0.1:8480"), None);
+        assert_eq!(saved().cookie_for("http://localhost:8480"), None);
+    }
+
+    #[test]
+    fn an_id_is_one_segment_of_the_path() {
+        assert_eq!(seg("light.kitchen").unwrap(), "light.kitchen");
+        assert_eq!(seg("zigbee:0x00124b").unwrap(), "zigbee:0x00124b");
+        assert_eq!(seg("x?force=true").unwrap(), "x%3Fforce%3Dtrue");
+        assert_eq!(seg("../users/3").unwrap(), "..%2Fusers%2F3");
+        assert!(seg("..").is_err());
+        assert!(seg(".").is_err());
+        assert!(seg("").is_err());
+    }
 
     #[test]
     fn a_named_data_dir_without_cli_url_is_an_error() {

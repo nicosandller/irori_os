@@ -36,8 +36,15 @@ pub fn explain(error: &Error) -> String {
         .message
         .contains("a token can't change how the home is set up")
     {
+        // A token wins over a saved session, so somebody who is signed in and has the
+        // variable exported would be told to do what they already did.
+        let unset = if std::env::var_os("IRORI_TOKEN").is_some_and(|token| !token.is_empty()) {
+            ", and unset IRORI_TOKEN: a token is used ahead of the session"
+        } else {
+            ""
+        };
         format!(
-            "{}. Sign in with `irori login`",
+            "{}. Sign in with `irori login`{unset}",
             error.message.trim_end_matches('.')
         )
     } else if error.code.as_deref() == Some("unpair_failed") {

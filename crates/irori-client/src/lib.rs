@@ -36,6 +36,8 @@ pub struct Client {
     /// Send `x-irori-ui` on a change that has no session. Restart on an open home is the
     /// one caller: a bearer token never sends the header, so it stays refused.
     ui_header: bool,
+    /// Extra PEM roots from `--ca`. `watch` builds its own TLS config and cannot see reqwest's.
+    ca_pem: Option<Vec<u8>>,
 }
 
 impl std::fmt::Debug for Client {
@@ -151,6 +153,7 @@ impl Builder {
             auth: self.auth,
             insecure: self.insecure,
             ui_header: self.ui_header,
+            ca_pem: self.ca_pem,
         })
     }
 }
@@ -187,6 +190,11 @@ impl Client {
 
     pub fn insecure(&self) -> bool {
         self.insecure
+    }
+
+    /// PEM from `--ca`, when one was given.
+    pub fn ca_pem(&self) -> Option<&[u8]> {
+        self.ca_pem.as_deref()
     }
 
     /// The same connection, sending `x-irori-ui` on changes. A bearer token still does not.
@@ -232,6 +240,16 @@ impl Client {
             .await
     }
 
+    /// Like `post`, with no deadline. See `empty_slow`.
+    pub async fn post_slow<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &impl Serialize,
+    ) -> Result<T, Error> {
+        self.round_trip(reqwest::Method::POST, path, Some(body), false)
+            .await
+    }
+
     pub async fn put<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -257,7 +275,28 @@ impl Client {
         path: &str,
         body: Option<&impl Serialize>,
     ) -> Result<(), Error> {
-        let response = self.send(method, path, body, true).await?;
+        self.empty_in(method, path, body, true).await
+    }
+
+    /// Like `empty`, with no deadline. A package download and a backtest outlast 30 seconds,
+    /// and a timed-out client would leave the server still doing the work.
+    pub async fn empty_slow(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&impl Serialize>,
+    ) -> Result<(), Error> {
+        self.empty_in(method, path, body, false).await
+    }
+
+    async fn empty_in(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&impl Serialize>,
+        timeout: bool,
+    ) -> Result<(), Error> {
+        let response = self.send(method, path, body, timeout).await?;
         read_error(response).await?;
         Ok(())
     }
@@ -304,20 +343,13 @@ impl Client {
         if !status.is_success() {
             return Err(error_from(status.as_u16(), response).await);
         }
-        let mut pending = String::new();
+        let mut lines = SseLines::default();
         loop {
             let chunk = response.chunk().await.map_err(|error| {
                 Error::message(format!("the stream from {} stopped: {error}", self.origin))
             })?;
             let Some(chunk) = chunk else { break };
-            pending.push_str(&String::from_utf8_lossy(&chunk));
-            while let Some(split) = pending.find('\n') {
-                let line = pending[..split].trim_end_matches('\r').to_owned();
-                pending.drain(..=split);
-                if let Some(data) = line.strip_prefix("data:") {
-                    on_data(data.trim());
-                }
-            }
+            lines.push(&chunk, &mut on_data);
         }
         Ok(())
     }
@@ -411,6 +443,26 @@ impl Client {
     }
 }
 
+/// The `data:` payloads of a server-sent event stream. Kept as bytes until a line is whole:
+/// a chunk can end in the middle of a character.
+#[derive(Default)]
+struct SseLines {
+    pending: Vec<u8>,
+}
+
+impl SseLines {
+    fn push(&mut self, chunk: &[u8], on_data: &mut impl FnMut(&str)) {
+        self.pending.extend_from_slice(chunk);
+        while let Some(split) = self.pending.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = self.pending.drain(..=split).collect();
+            let line = String::from_utf8_lossy(&line[..split]);
+            if let Some(data) = line.trim_end_matches('\r').strip_prefix("data:") {
+                on_data(data.trim());
+            }
+        }
+    }
+}
+
 fn session_cookie(headers: &reqwest::header::HeaderMap) -> Option<&str> {
     headers.get_all("set-cookie").iter().find_map(|value| {
         let text = value.to_str().ok()?;
@@ -476,6 +528,19 @@ mod tests {
         assert!(normalize_origin("127.0.0.1:8480").is_err());
         assert!(normalize_origin("http://127.0.0.1:8480/api").is_err());
         assert!(normalize_origin("ftp://127.0.0.1").is_err());
+    }
+
+    #[test]
+    fn a_character_split_across_chunks_arrives_whole() {
+        let stream = "data: {\"delta\":\"año ☀\"}\r\ndata: two\n".as_bytes();
+        // Cut inside `ñ`, which is two bytes.
+        let cut = stream.iter().position(|byte| *byte == 0xC3).unwrap() + 1;
+        let mut seen = Vec::new();
+        let mut lines = SseLines::default();
+        let mut keep = |data: &str| seen.push(data.to_owned());
+        lines.push(&stream[..cut], &mut keep);
+        lines.push(&stream[cut..], &mut keep);
+        assert_eq!(seen, ["{\"delta\":\"año ☀\"}", "two"]);
     }
 
     /// A one-route server. `seen` is the headers of the last call.

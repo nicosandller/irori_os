@@ -88,6 +88,9 @@ pub async fn run(remote: &Remote, cmd: AssistantCmd) -> Result<(), String> {
         }
         AssistantCmd::Ask { scope, message } => {
             let mut failed = None;
+            // `--json` is one document: the answer is kept and printed whole.
+            let mut answer = String::new();
+            let json = link.json;
             link.client
                 .sse(
                     "/api/assistant/turns",
@@ -95,8 +98,12 @@ pub async fn run(remote: &Remote, cmd: AssistantCmd) -> Result<(), String> {
                     |data| {
                         if let Ok(value) = serde_json::from_str::<Value>(data) {
                             if let Some(text) = value.get("delta").and_then(Value::as_str) {
-                                print!("{text}");
-                                let _ = std::io::Write::flush(&mut std::io::stdout());
+                                if json {
+                                    answer.push_str(text);
+                                } else {
+                                    print!("{text}");
+                                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                                }
                             } else if let Some(text) = value.get("error").and_then(Value::as_str) {
                                 failed = Some(text.to_owned());
                             } else if let Some(step) = value.get("step").and_then(Value::as_str) {
@@ -107,9 +114,14 @@ pub async fn run(remote: &Remote, cmd: AssistantCmd) -> Result<(), String> {
                 )
                 .await
                 .map_err(err)?;
-            println!();
+            if !json {
+                println!();
+            }
             if let Some(failed) = failed {
                 return Err(failed);
+            }
+            if json {
+                return output::json_out(&json!({ "answer": answer }));
             }
             Ok(())
         }
