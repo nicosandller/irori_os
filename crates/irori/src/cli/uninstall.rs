@@ -37,30 +37,47 @@ pub fn install_kind(exe: &Path) -> InstallKind {
     }
 }
 
+/// Whether a PATH line names `dir`, the whole of it: as install.sh writes it (quoted and
+/// absolute), or under `$HOME`. `/x/bin` is not named by a line for `/opt/x/bin`.
+fn line_names(line: &str, dir: &str, home: Option<&str>) -> bool {
+    if !(line.starts_with("export PATH=") || line.starts_with("set -gx PATH")) {
+        return false;
+    }
+    let under_home = home
+        .and_then(|home| dir.strip_prefix(home.trim_end_matches('/')))
+        .filter(|rest| rest.starts_with('/'))
+        .map(|rest| format!("$HOME{rest}"));
+    [Some(dir.to_owned()), under_home]
+        .into_iter()
+        .flatten()
+        .any(|wanted| {
+            line.match_indices(&wanted).any(|(at, _)| {
+                let before = line[..at].chars().next_back();
+                let after = line[at + wanted.len()..].chars().next();
+                before.is_some_and(|ch| matches!(ch, '\'' | '"' | '=' | ' ' | ':'))
+                    && after.is_none_or(|ch| matches!(ch, '\'' | '"' | ' ' | ':'))
+            })
+        })
+}
+
+/// `<somewhere>/bin`, for a binary called `irori`.
+fn install_dir(exe: &Path) -> Option<&str> {
+    if exe.file_name().and_then(|name| name.to_str()) != Some("irori") {
+        return None;
+    }
+    exe.parent()
+        .and_then(Path::to_str)
+        .filter(|dir| dir.ends_with("/bin"))
+}
+
 /// An install under an `IRORI_HOME` of the person's own: `<somewhere>/bin/irori`, with the
 /// `# irori` PATH line install.sh wrote for that directory still in `config`.
-pub fn path_line_names(config: &str, exe: &Path) -> bool {
-    if exe.file_name().and_then(|name| name.to_str()) != Some("irori") {
-        return false;
-    }
-    let Some(dir) = exe.parent().and_then(Path::to_str) else {
-        return false;
-    };
-    if !dir.ends_with("/bin") {
-        return false;
-    }
-    let mut lines = config.lines();
-    while let Some(line) = lines.next() {
-        if line == MARKER
-            && lines.next().is_some_and(|next| {
-                (next.starts_with("export PATH=") || next.starts_with("set -gx PATH"))
-                    && next.contains(dir)
-            })
-        {
-            return true;
-        }
-    }
-    false
+pub fn path_line_names(config: &str, exe: &Path, home: Option<&str>) -> bool {
+    install_dir(exe).is_some_and(|dir| strip_irori_path(config, dir, home) != config)
+}
+
+fn home() -> Option<String> {
+    std::env::var("HOME").ok()
 }
 
 /// [`install_kind`], or a user install when a shell config's `# irori` line names this
@@ -69,7 +86,8 @@ fn installed_kind(exe: &Path) -> InstallKind {
     match install_kind(exe) {
         InstallKind::Other
             if path_files_with_marker().iter().any(|file| {
-                fs::read_to_string(file).is_ok_and(|text| path_line_names(&text, exe))
+                fs::read_to_string(file)
+                    .is_ok_and(|text| path_line_names(&text, exe, home().as_deref()))
             }) =>
         {
             InstallKind::User
@@ -149,20 +167,20 @@ fn holds_only_the_binary(dir: &Path) -> bool {
     only(dir, "bin") && only(&dir.join("bin"), "irori")
 }
 
-/// Drops the `# irori` line and the PATH line `install.sh` wrote under it.
-pub fn strip_irori_path(text: &str) -> String {
+/// Drops the `# irori` line and the PATH line `install.sh` wrote under it, when that line
+/// is for `dir`. Another install's block, and a `# irori` with something else under it,
+/// stay as they are.
+pub fn strip_irori_path(text: &str, dir: &str, home: Option<&str>) -> String {
     let mut out = String::new();
-    let mut skip_next = false;
-    for line in text.split_inclusive('\n') {
-        let bare = line.trim_end_matches(['\n', '\r']);
-        if skip_next {
-            skip_next = false;
-            if bare.starts_with("export PATH=") || bare.starts_with("set -gx PATH") {
-                continue;
-            }
-        }
-        if bare == MARKER {
-            skip_next = true;
+    let mut lines = text.split_inclusive('\n').peekable();
+    while let Some(line) = lines.next() {
+        let bare = |line: &str| line.trim_end_matches(['\n', '\r']).to_owned();
+        if bare(line) == MARKER
+            && lines
+                .peek()
+                .is_some_and(|next| line_names(&bare(next), dir, home))
+        {
+            lines.next();
             continue;
         }
         out.push_str(line);
@@ -192,7 +210,7 @@ pub fn run(args: UninstallArgs) -> Result<(), String> {
     }
     let purge = purge.map(|dir| refuse_purge(&dir)).transpose()?;
     if binary {
-        remove_binary(&exe, args.yes)?;
+        remove_binary(&exe, kind, args.yes)?;
     }
     if unit {
         remove_unit(args.yes)?;
@@ -288,14 +306,31 @@ fn menu(exe: &Path, kind: InstallKind) -> Result<(bool, bool, Option<PathBuf>), 
     Ok((binary, unit, purge))
 }
 
-fn remove_binary(exe: &Path, yes: bool) -> Result<(), String> {
-    let files = path_files_with_marker();
+fn remove_binary(exe: &Path, kind: InstallKind, yes: bool) -> Result<(), String> {
+    // Only this install's PATH line. A system install never had one, and the `# irori`
+    // line a user install of the same person wrote is that install's.
+    let home = home();
+    let stripped = |file: &Path| -> Result<Option<String>, String> {
+        let Some(dir) = install_dir(exe).filter(|_| kind == InstallKind::User) else {
+            return Ok(None);
+        };
+        let text = fs::read_to_string(file)
+            .map_err(|error| format!("couldn't read {}: {error}", file.display()))?;
+        let next = strip_irori_path(&text, dir, home.as_deref());
+        Ok((next != text).then_some(next))
+    };
+    let mut files = Vec::new();
+    for file in path_files_with_marker() {
+        if let Some(next) = stripped(&file)? {
+            files.push((file, next));
+        }
+    }
     let listed = if files.is_empty() {
         "no shell config has the # irori PATH line".to_owned()
     } else {
         files
             .iter()
-            .map(|path| path.display().to_string())
+            .map(|(path, _)| path.display().to_string())
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -309,15 +344,10 @@ fn remove_binary(exe: &Path, yes: bool) -> Result<(), String> {
     }
     // The shell configs first. If one can't be rewritten the binary is still here to run
     // this again, and a PATH line with no binary behind it is the worse thing to leave.
-    for file in files {
-        let text = fs::read_to_string(&file)
-            .map_err(|error| format!("couldn't read {}: {error}", file.display()))?;
-        let next = strip_irori_path(&text);
-        if next != text {
-            replace_file(&file, &next)
-                .map_err(|error| format!("couldn't write {}: {error}", file.display()))?;
-            println!("took the PATH line out of {}", file.display());
-        }
+    for (file, next) in files {
+        replace_file(&file, &next)
+            .map_err(|error| format!("couldn't write {}: {error}", file.display()))?;
+        println!("took the PATH line out of {}", file.display());
     }
     match fs::remove_file(exe) {
         Ok(()) => println!("removed {}", exe.display()),
@@ -483,12 +513,27 @@ mod tests {
     #[test]
     fn a_path_line_for_this_directory_makes_it_an_install() {
         let config = "# irori\nexport PATH='/opt/home/bin':\"$PATH\"\n";
-        assert!(path_line_names(config, Path::new("/opt/home/bin/irori")));
-        assert!(!path_line_names(config, Path::new("/opt/other/bin/irori")));
-        assert!(!path_line_names(config, Path::new("/opt/home/bin/other")));
+        assert!(path_line_names(
+            config,
+            Path::new("/opt/home/bin/irori"),
+            None
+        ));
+        assert!(!path_line_names(
+            config,
+            Path::new("/opt/other/bin/irori"),
+            None
+        ));
+        assert!(!path_line_names(
+            config,
+            Path::new("/opt/home/bin/other"),
+            None
+        ));
+        // Not a part of some longer path.
+        assert!(!path_line_names(config, Path::new("/home/bin/irori"), None));
         assert!(!path_line_names(
             "export PATH='/opt/home/bin'\n",
-            Path::new("/opt/home/bin/irori")
+            Path::new("/opt/home/bin/irori"),
+            None
         ));
     }
 
@@ -523,7 +568,16 @@ mod tests {
     fn the_path_block_goes_and_the_neighbours_stay() {
         let text =
             "export PATH=foo\n# irori\nexport PATH=\"$HOME/.irori/bin\":\"$PATH\"\nexport A=1\n";
-        let out = strip_irori_path(text);
+        let out = strip_irori_path(text, "/Users/a/.irori/bin", Some("/Users/a"));
+        // An install somewhere else, and a system one, have no line here.
+        assert_eq!(
+            strip_irori_path(text, "/opt/b/.irori/bin", Some("/Users/a")),
+            text
+        );
+        assert_eq!(
+            strip_irori_path(text, "/usr/local/bin", Some("/Users/a")),
+            text
+        );
         assert!(!out.contains(".irori"), "{out}");
         assert!(out.contains("export PATH=foo"), "{out}");
         assert!(out.contains("export A=1"), "{out}");
@@ -532,7 +586,10 @@ mod tests {
     #[test]
     fn a_fish_path_line_goes_too() {
         let text = "# irori\nset -gx PATH \"$HOME/.irori/bin\" \"$PATH\"\n";
-        assert_eq!(strip_irori_path(text), "");
+        assert_eq!(
+            strip_irori_path(text, "/Users/a/.irori/bin", Some("/Users/a")),
+            ""
+        );
     }
 
     #[test]

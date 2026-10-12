@@ -15,6 +15,8 @@ mod watch;
 mod assistant;
 
 pub use args::{Cli, Command};
+#[cfg(test)]
+pub use output::explain;
 
 use args::Command as Cmd;
 

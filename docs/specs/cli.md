@@ -28,7 +28,7 @@ restart leaves it, and the new process replaces it.
 `entities call` uses `--data` for the action's JSON.
 
 ```sh
-irori --url http://127.0.0.1:8480 status
+irori status --url http://127.0.0.1:8480
 irori devices --data /var/lib/irori list
 ```
 
@@ -57,7 +57,7 @@ without a login. `restart` still sends `x-irori-ui`, which that route always req
 ## Flags on every remote command
 
 `--url`, `--token`, `--insecure`, `--ca`, `--json`, `--yes` can sit on the command or on
-a subcommand. `--data` sits on the command, before the subcommand.
+a subcommand, after the command's name: `irori status --url …`, not `irori --url … status`. `--data` sits on the command, before the subcommand.
 
 `--insecure` skips certificate checks, for the certificate Irori made itself.
 `--ca <pem>` trusts that file as well as the system roots.
@@ -122,7 +122,7 @@ no file. Errors exit 1. Saving a flow and the canvas stay on the page.
 `watch` opens `/api/ws`. `--insecure` with an `https` URL is refused: use `http` on this
 machine, or trust the certificate with `--ca`, which the socket honours as every other
 command does. With `--json`, each frame is its own document, and so is each line of
-`extensions log --follow`.
+`extensions log --follow` and each event of `assistant install` and `assistant pull`.
 
 `place set` takes `--latitude`, `--longitude`, `--timezone`, and an optional `--label`.
 The label is the place's name, not a name for the home.
@@ -134,8 +134,8 @@ This does not call the API. On a terminal it is a menu. Without one, pass `--bin
 
 - `--binary` removes the binary only when it is the one `install.sh` put in
   `~/.irori/bin/irori` or `/usr/local/bin/irori`, or under an `IRORI_HOME` of your own
-  whose `# irori` PATH line is still in the shell config. The PATH line is taken out
-  first, then the binary. A development binary is left where it is.
+  whose `# irori` PATH line is still in the shell config. This install's PATH line is
+  taken out first, then the binary. Another install's line stays. A development binary is left where it is.
 - `--unit` disables and deletes `/etc/systemd/system/irori.service`. When there is no
   unit it says so and carries on.
 - `--purge <dir>` deletes that directory. It is refused for `/`, for your home directory
