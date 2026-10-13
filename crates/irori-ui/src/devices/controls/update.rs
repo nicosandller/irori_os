@@ -70,6 +70,11 @@ pub(crate) fn update_words(update: &UpdateState, ahead: Option<usize>) -> String
     }
 }
 
+/// Whether a link from a device is one a page may offer: `http` or `https`, nothing else.
+pub(crate) fn is_web_address(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://")
+}
+
 /// How many installs go before `entity`'s, when it's waiting its turn.
 pub(crate) fn ahead_of(entity: &Entity) -> Signal<Option<usize>> {
     let live = expect_context::<crate::Live>();
@@ -146,7 +151,9 @@ pub(crate) fn update_control(
                 >
                     <p class="update-versions">{versions}</p>
                     {update.release_summary.clone().map(|summary| view! { <p>{summary}</p> })}
-                    {update.release_url.clone().map(|url| view! {
+                    // The core only keeps a web address; checked here too, since this is
+                    // where a device's text becomes something to click.
+                    {update.release_url.clone().filter(|url| is_web_address(url)).map(|url| view! {
                         <p>
                             <a href=url target="_blank" rel="noopener noreferrer">
                                 "Release notes"
@@ -279,5 +286,8 @@ mod tests {
         };
         assert_eq!(update_words(&skipped, None), "Skipped 1.5.0");
         assert_eq!(standing(None, None), Standing::Unknown);
+        assert!(is_web_address("https://example.com/notes"));
+        assert!(!is_web_address("javascript:alert(1)"));
+        assert!(!is_web_address(" https://example.com"));
     }
 }

@@ -934,6 +934,11 @@ impl Home {
         report: StateReport,
         stamp: &Stamp,
     ) -> Result<Vec<Event>, Rejected> {
+        let mut report = report;
+        // Before it's checked: what the core would ignore mustn't be what gets a report refused.
+        if let Some(State::Update(update)) = &mut report.state {
+            updates::clean(update);
+        }
         report.validate().map_err(|e| Rejected(e.to_string()))?;
         let unique_id = &report.unique_id;
         if let Some(device) = self
@@ -942,7 +947,6 @@ impl Home {
         {
             if let Some(found) = self.found.get_mut(device) {
                 // Kept without its cause: by the time it's put back, no call is waiting on it.
-                let mut report = report;
                 report.caused_by = None;
                 found.reports.insert(report.unique_id.clone(), report);
             }
@@ -956,7 +960,6 @@ impl Home {
         if let Some(state) = &report.state {
             fits(&self.entities[&id], state)?;
         }
-        let mut report = report;
         if matches!(report.state, Some(State::Update(_)))
             && let Some(State::Update(update)) = report.state.take()
         {

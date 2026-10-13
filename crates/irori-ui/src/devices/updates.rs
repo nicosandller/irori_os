@@ -2,32 +2,53 @@
 //! tables saying how many there are, the list behind it, and one button to install them all.
 //! "All" is still one at a time on each protocol; the core keeps the line (`installs.rs`).
 
-use irori_types::{Availability, Capabilities, Entity, EntityId, State};
+use std::collections::{HashMap, HashSet};
+
+use irori_types::{Availability, Capabilities, Entity, EntityId, EntityState, State, UpdateState};
 use leptos::prelude::*;
 
 use crate::api::Home;
 use crate::devices::Controls;
 
+/// Every update entity with how it stands: its state, when it has said, and whether it waits
+/// its turn. One pass over the home, however large it is.
+fn updates(home: &Home) -> Vec<(&Entity, Option<&EntityState>, bool)> {
+    let states: HashMap<&EntityId, &EntityState> = home
+        .states
+        .iter()
+        .map(|state| (&state.entity_id, state))
+        .collect();
+    let waiting: HashSet<&EntityId> = home.installs.iter().map(|q| &q.entity_id).collect();
+    home.entities
+        .iter()
+        .filter(|entity| matches!(entity.capabilities, Capabilities::Update(_)))
+        .map(|entity| {
+            (
+                entity,
+                states.get(&entity.id).copied(),
+                waiting.contains(&entity.id),
+            )
+        })
+        .collect()
+}
+
+fn update_of(state: Option<&EntityState>) -> Option<&UpdateState> {
+    match &state?.state {
+        Some(State::Update(update)) => Some(update),
+        _ => None,
+    }
+}
+
 /// The updates worth a person's attention: available, installing, or waiting their turn.
 /// Skipped ones and up-to-date ones stay in the tables. Sorted by name, so the list holds still.
 pub(crate) fn noteworthy(home: &Home) -> Vec<Entity> {
-    let mut entities: Vec<Entity> = home
-        .entities
-        .iter()
-        .filter(|entity| matches!(entity.capabilities, Capabilities::Update(_)))
-        .filter(|entity| {
-            let waiting = home.installs.iter().any(|q| q.entity_id == entity.id);
-            let update = home
-                .states
-                .iter()
-                .find(|state| state.entity_id == entity.id)
-                .and_then(|state| match &state.state {
-                    Some(State::Update(update)) => Some(update),
-                    _ => None,
-                });
-            waiting || update.is_some_and(|update| update.available || update.in_progress)
+    let mut entities: Vec<Entity> = updates(home)
+        .into_iter()
+        .filter(|(_, state, waiting)| {
+            *waiting
+                || update_of(*state).is_some_and(|update| update.available || update.in_progress)
         })
-        .cloned()
+        .map(|(entity, _, _)| entity.clone())
         .collect();
     entities.sort_by(|a, b| title(home, a).cmp(&title(home, b)).then(a.id.cmp(&b.id)));
     entities
@@ -36,26 +57,18 @@ pub(crate) fn noteworthy(home: &Home) -> Vec<Entity> {
 /// The ones "Update all" would install: available, able to install, reachable, and neither
 /// installing nor already waiting.
 pub(crate) fn installable(home: &Home) -> Vec<EntityId> {
-    noteworthy(home)
+    let mut ready: Vec<EntityId> = updates(home)
         .into_iter()
-        .filter(|entity| {
+        .filter(|(entity, state, waiting)| {
             matches!(&entity.capabilities, Capabilities::Update(caps) if caps.install)
-                && !home.installs.iter().any(|q| q.entity_id == entity.id)
-                && home
-                    .states
-                    .iter()
-                    .find(|state| state.entity_id == entity.id)
-                    .is_some_and(|state| {
-                        state.availability != Availability::Unavailable
-                            && matches!(
-                                &state.state,
-                                Some(State::Update(update))
-                                    if update.available && !update.in_progress
-                            )
-                    })
+                && !waiting
+                && state.is_some_and(|state| state.availability != Availability::Unavailable)
+                && update_of(*state).is_some_and(|update| update.available && !update.in_progress)
         })
-        .map(|entity| entity.id)
-        .collect()
+        .map(|(entity, _, _)| entity.id.clone())
+        .collect();
+    ready.sort();
+    ready
 }
 
 /// What an update is for: its device. Irori's own are all on one device, so those go by their
@@ -193,7 +206,7 @@ pub(crate) fn Updates() -> impl IntoView {
 
 #[cfg(test)]
 mod tests {
-    use irori_types::{EntityState, UpdateCapabilities, UpdateState};
+    use irori_types::UpdateCapabilities;
 
     use super::*;
     use crate::api::QueuedInstall;

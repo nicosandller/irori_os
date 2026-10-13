@@ -50,7 +50,7 @@ fn report(ctx: &ProtocolContext, plug: &UniqueId, installed: &str, flashing: boo
 }
 
 /// Three plugs on version 1 with version 2 on offer. `a` and `b` take five minutes to flash;
-/// `deaf` says yes to an install and then does nothing.
+/// `deaf` says yes to an install and then does nothing; `mute` never answers the call at all.
 struct Plugs;
 impl Protocol for Plugs {
     type Config = NoSettings;
@@ -67,7 +67,7 @@ impl Protocol for Plugs {
     "#;
 
     async fn run(_: NoSettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
-        for plug in ["a", "b", "deaf"] {
+        for plug in ["a", "b", "deaf", "mute"] {
             ctx.describe_device(DeviceDescription {
                 unique_id: uid(plug),
                 name: Name::try_from(plug)?,
@@ -95,6 +95,8 @@ impl Protocol for Plugs {
             report(&ctx, &uid(plug), "1", false);
         }
         let mut flashing: Vec<(UniqueId, tokio::time::Instant)> = Vec::new();
+        // Calls `mute` was sent and is still holding, unanswered.
+        let mut unanswered = Vec::new();
         loop {
             let done_at = flashing.iter().map(|(_, at)| *at).min();
             tokio::select! {
@@ -102,6 +104,10 @@ impl Protocol for Plugs {
                     let Some(incoming) = incoming else { break };
                     let plug = incoming.call.unique_id.clone();
                     let install = matches!(incoming.call.service, Service::UpdateInstall);
+                    if plug == uid("mute") {
+                        unanswered.push(incoming);
+                        continue;
+                    }
                     incoming.reply(Ok(()));
                     if install && plug != uid("deaf") {
                         flashing.push((plug.clone(), tokio::time::Instant::now() + FLASHING));
@@ -278,5 +284,37 @@ async fn a_skipped_version_stays_skipped_across_a_restart() {
     let back = state(&again, &a).expect("it reported");
     assert!(back.available);
     assert_eq!(back.skipped_version, None);
+    host.shutdown().await;
+}
+
+/// Whoever asks for an install can stop waiting for the answer: a page closed, a connection
+/// dropped. The install still has the protocol's turn, and the line behind it must not wait on
+/// someone who has left.
+#[tokio::test(start_paused = true)]
+async fn the_line_moves_when_whoever_asked_walks_away() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = start(&core);
+    let (_, _, deaf) = plugs(&core).await;
+    eventually("the mute plug reports", || {
+        entity(&core, "mute").is_some_and(|id| state(&core, &id).is_some())
+    })
+    .await;
+    let mute = entity(&core, "mute").expect("described");
+
+    tokio::select! {
+        answered = install(&core, &mute) => panic!("the mute plug never answers: {answered:?}"),
+        () = tokio::time::sleep(Duration::from_secs(1)) => {}
+    }
+    install(&core, &deaf).await.expect("waits behind it");
+    assert_eq!(core.queued_installs().len(), 1);
+
+    eventually(
+        "the mute plug is given up on and the next takes its turn",
+        || {
+            core.queued_installs().is_empty()
+                && state(&core, &mute).is_some_and(|plug| plug.last_error.is_some())
+        },
+    )
+    .await;
     host.shutdown().await;
 }

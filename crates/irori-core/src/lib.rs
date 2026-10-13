@@ -724,12 +724,9 @@ impl Core {
         };
         let protocol = resolved.protocol.clone();
         let outcome = self.dispatch(entity_id, resolved, context, deadline).await;
-        if installing && !its_turn {
-            match outcome {
-                Ok(()) => self.watch_install(protocol, entity_id.clone()),
-                // The caller is told why; the next in line shouldn't wait for it.
-                Err(_) => self.install_over(&protocol, entity_id),
-            }
+        if installing && !its_turn && outcome.is_err() {
+            // The caller is told why; the next in line shouldn't wait for it.
+            self.install_over(&protocol, entity_id);
         }
         outcome
     }
@@ -866,8 +863,11 @@ impl Core {
             installed.as_deref(),
             tokio::time::Instant::now(),
         );
-        if asked == installs::Asked::Waits {
-            self.publish(vec![Event::InstallsChanged]);
+        match asked {
+            installs::Asked::Waits => self.publish(vec![Event::InstallsChanged]),
+            // Watched from the moment it has the turn, not from when it's sent: whoever asked
+            // can walk away mid-call, and the line must still move.
+            installs::Asked::Go => self.watch_install(protocol.clone(), entity_id.clone()),
         }
         Ok(asked == installs::Asked::Go)
     }
@@ -913,8 +913,9 @@ impl Core {
                 tokio::time::Instant::now(),
             )
         };
-        if next.is_some() {
+        if let Some((next, _)) = &next {
             self.publish(vec![Event::InstallsChanged]);
+            self.watch_install(protocol.clone(), next.clone());
         }
         next
     }
@@ -928,10 +929,7 @@ impl Core {
                 .call(&entity_id, Command::new("install"), context, true)
                 .await
             {
-                Ok(()) => {
-                    self.watch_install(protocol, entity_id);
-                    return;
-                }
+                Ok(()) => return,
                 Err(error) => {
                     self.fail_update(
                         &entity_id,
@@ -943,8 +941,9 @@ impl Core {
         }
     }
 
-    /// Keeps an eye on an install that was sent: one that never starts, or goes quiet for too
-    /// long, failed, and the next in line goes.
+    /// Keeps an eye on an install from the moment it has its turn: one that never starts, or
+    /// goes quiet for too long, failed, and the next in line goes. It stops by itself once
+    /// `entity_id` isn't the one installing.
     fn watch_install(&self, protocol: ProtocolId, entity_id: EntityId) {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;

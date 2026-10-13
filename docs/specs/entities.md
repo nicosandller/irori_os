@@ -316,8 +316,8 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | | `installed_version`, `latest_version` | string | no | As the device writes them. They aren't compared as numbers: a device that says an update is available is believed, and otherwise two versions that differ are an update |
 | | `in_progress` | bool | `false` | An install is running |
 | | `progress` | number 0–100 | no | How far the install has got, from a device that says. Only while `in_progress` |
-| | `title`, `release_summary`, `release_url` | string | no | What the software is called, a few words on the latest version, and where its notes are |
-| | `skipped_version` | string | no | The version someone passed over. **Set by the core**; a protocol's is ignored |
+| | `title`, `release_summary`, `release_url` | string | no | What the software is called, a few words on the latest version, and where its notes are. The core cuts a device's text (these, the versions, `last_error`) to 255 characters, and keeps `release_url` only when it is an `http` or `https` address of at most 2048 characters: a page makes it a link |
+| | `skipped_version` | string | no | The version someone passed over. **Set by the core**; a protocol's is dropped before the report is checked |
 | | `last_error` | string | no | Why the last install didn't finish: the protocol's reason when it has one, otherwise the core's. Cleared when the next install is sent |
 
 **An `event`'s every report is something happening.** Two `double` presses of a remote in a row

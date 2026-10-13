@@ -29,6 +29,9 @@ const REPO: &str = "nicosandller/irori_os";
 /// How long GitHub gets to answer a question, and to keep a download moving.
 const PATIENCE: Duration = Duration::from_secs(30);
 
+/// How long the release itself gets to arrive: tens of megabytes, on a slow line.
+const DOWNLOADED_WITHIN: Duration = Duration::from_secs(10 * 60);
+
 /// How long the new binary gets to say which version it is.
 const TRIED_FOR: Duration = Duration::from_secs(20);
 
@@ -208,12 +211,12 @@ pub async fn install(version: &Version) -> Result<(), String> {
     let expected = checksum_for(&sums, &asset)
         .ok_or_else(|| format!("Irori {version} has no checksum for this machine's download."))?;
     // A release is tens of megabytes; it is checked whole before any of it is written.
-    let archive = fetch(asset.clone())
-        .await
-        .map_err(unreachable)?
-        .bytes()
-        .await
-        .map_err(unreachable)?;
+    let archive = tokio::time::timeout(DOWNLOADED_WITHIN, async {
+        fetch(asset.clone()).await?.bytes().await
+    })
+    .await
+    .map_err(|_| format!("The download of Irori {version} stalled. Nothing was changed."))?
+    .map_err(unreachable)?;
     if sha256(&archive) != expected {
         return Err(format!(
             "The download of Irori {version} doesn't match its published checksum. Nothing was \

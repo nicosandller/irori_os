@@ -23,6 +23,37 @@ pub(crate) struct Skip {
     pub version: String,
 }
 
+/// The longest text kept from a device about an update: a version, a title, a summary, a reason.
+const TEXT_MAX: usize = 255;
+
+/// The longest link kept.
+const LINK_MAX: usize = 2048;
+
+/// What a device says about an update, made safe to keep and to show before anything checks it.
+/// A device's text is its own: it is cut to a length worth keeping, and its link is dropped
+/// unless it is a web address, since a page turns it into something to click. The skipped
+/// version is the core's alone, so whatever a protocol put there goes.
+pub(super) fn clean(update: &mut UpdateState) {
+    update.skipped_version = None;
+    for text in [
+        &mut update.installed_version,
+        &mut update.latest_version,
+        &mut update.title,
+        &mut update.release_summary,
+        &mut update.last_error,
+    ] {
+        *text = text
+            .take()
+            .map(|text| text.trim().chars().take(TEXT_MAX).collect::<String>())
+            .filter(|text| !text.is_empty());
+    }
+    update.release_url = update.release_url.take().filter(|url| {
+        url.len() <= LINK_MAX
+            && (url.starts_with("https://") || url.starts_with("http://"))
+            && !url.chars().any(char::is_whitespace)
+    });
+}
+
 /// What the device said, with what the core knows folded in. `skipped` is the version passed
 /// over, forgotten here once the device has a newer one. Why an install failed is the
 /// protocol's to say when it knows (Zigbee2MQTT does); otherwise the core works it out.
@@ -275,6 +306,42 @@ mod tests {
         let done = fold(Some(&running), at("1.5.0", "1.5.0"), &mut None);
         assert_eq!(done.last_error, None);
         assert!(!done.available);
+    }
+
+    #[test]
+    fn a_devices_link_is_kept_only_when_it_is_a_web_address() {
+        let said = |url: &str| {
+            let mut update = UpdateState {
+                release_url: Some(url.to_owned()),
+                title: Some("x".repeat(400)),
+                skipped_version: Some("2".into()),
+                ..at("1", "2")
+            };
+            clean(&mut update);
+            update
+        };
+        let kept = said("https://example.com/notes");
+        assert_eq!(
+            kept.release_url.as_deref(),
+            Some("https://example.com/notes")
+        );
+        assert_eq!(kept.title.map(|title| title.len()), Some(TEXT_MAX));
+        assert_eq!(kept.skipped_version, None);
+        assert!(kept.available, "and so it's a report the core accepts");
+        for not_a_web_address in [
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            " javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "file:///etc/passwd",
+            "https://example.com/ onclick=x",
+        ] {
+            assert_eq!(
+                said(not_a_web_address).release_url,
+                None,
+                "{not_a_web_address}"
+            );
+        }
     }
 
     #[test]

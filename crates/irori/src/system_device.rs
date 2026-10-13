@@ -431,6 +431,14 @@ impl Extensions {
     /// reports each one whose update changed.
     async fn sync(&mut self, ctx: &ProtocolContext) -> Result<(), ProtocolError> {
         let offered = crate::extension_updates::offered_now();
+        // One that was put in place and never came back with a version (it won't start, or its
+        // manifest can't be read) isn't being updated any more.
+        self.updating.retain(|extension, updating| {
+            offered.iter().any(|offered| offered.id == *extension)
+                || !updating
+                    .placed
+                    .is_some_and(|placed| placed.elapsed() >= NEW_VERSION_WITHIN)
+        });
         let gone: Vec<ExtensionId> = self
             .known
             .keys()
