@@ -21,6 +21,7 @@ use crate::kinds::sensor::SensorState;
 use crate::kinds::siren::SirenState;
 use crate::kinds::switch::SwitchState;
 use crate::kinds::text::TextState;
+use crate::kinds::update::UpdateState;
 use crate::kinds::valve::ValveState;
 use crate::kinds::water_heater::WaterHeaterState;
 use crate::{AttributeKey, Context, EntityId, EntityKind, InvariantError, Timestamp};
@@ -154,6 +155,7 @@ pub enum State {
     WaterHeater(WaterHeaterState),
     Humidifier(HumidifierState),
     MediaPlayer(MediaPlayerState),
+    Update(UpdateState),
 }
 
 impl State {
@@ -171,6 +173,7 @@ impl State {
             Self::WaterHeater(heater) => heater.validate(),
             Self::Humidifier(humidifier) => humidifier.validate(),
             Self::MediaPlayer(player) => player.validate(),
+            Self::Update(update) => update.validate(),
             Self::Switch(_)
             | Self::BinarySensor(_)
             | Self::Select(_)
@@ -200,6 +203,7 @@ impl State {
             Self::WaterHeater(_) => EntityKind::WaterHeater,
             Self::Humidifier(_) => EntityKind::Humidifier,
             Self::MediaPlayer(_) => EntityKind::MediaPlayer,
+            Self::Update(_) => EntityKind::Update,
         }
     }
 }

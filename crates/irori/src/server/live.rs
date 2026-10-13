@@ -195,6 +195,7 @@ fn frame(event: Event) -> LiveMessage {
         | Event::PlaceChanged { .. }
         | Event::SettingsChanged
         | Event::FoundChanged
+        | Event::InstallsChanged
         | Event::ServiceCalled { .. } => LiveMessage::Changed,
     }
 }

@@ -96,6 +96,8 @@ const TANK: &str = concat!(
     r#"<rect x="6" y="3" width="12" height="16" rx="3"/><path d="M9 21.500V19M15 21.500V19"/>"#,
     r#"<path d="M12 8c1.200 1.500 2 2.500 2 3.700a2 2 0 0 1-4 0c0-1.200.8-2.200 2-3.700Z"/>"#,
 );
+/// New software coming down onto the device.
+const INSTALL: &str = r#"<path d="M12 4v10.5M7.5 10 12 14.5 16.5 10M5 19.5h14"/>"#;
 const SCREEN: &str =
     r#"<rect x="3" y="5" width="18" height="12" rx="1.5"/><path d="M8 20.500h8"/>"#;
 const SPEAKER: &str = concat!(
@@ -143,6 +145,7 @@ pub fn drawing(capabilities: &Capabilities) -> &'static str {
             Some(MediaPlayerClass::Speaker | MediaPlayerClass::Receiver) => SPEAKER,
             None => PLAYER,
         },
+        Capabilities::Update(_) => INSTALL,
     }
 }
 

@@ -22,6 +22,7 @@ pub mod sensor;
 pub mod siren;
 pub mod switch;
 pub mod text;
+pub mod update;
 pub mod valve;
 pub mod water_heater;
 
@@ -117,7 +118,6 @@ pub fn unmodeled(device: &UniqueId, message: &EspHomeMessage) -> Option<Unmodele
         M::ListEntitiesMediaPlayerResponse(e) => ("media_player", &e.name),
         M::ListEntitiesRadioFrequencyResponse(e) => ("radio_frequency", &e.name),
         M::ListEntitiesTimeResponse(e) => ("time", &e.name),
-        M::ListEntitiesUpdateResponse(e) => ("update", &e.name),
         M::ListEntitiesWaterHeaterResponse(e) => ("water_heater", &e.name),
         _ => return None,
     };

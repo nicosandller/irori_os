@@ -740,6 +740,22 @@
     .padlock[data-lock="stuck"] { color: var(--error); animation: shake 360ms var(--ease-out); }
     @keyframes bolt { 50% { translate: 0 -2.5px; } }
     .reading.moving { color: var(--ember); }
+    /* An update: the bar fills as the install goes. A device that doesn't say how far it has
+       got gets a bar that only says it's busy. */
+    .update-reading { display: inline-flex; align-items: center; gap: .5rem; }
+    .update-bar { display: block; width: 4.5rem; height: .3rem; border-radius: .15rem;
+                  background: var(--line); overflow: hidden; }
+    .update-bar-fill { display: block; height: 100%; background: var(--ember);
+                       transition: width var(--dur-layout) var(--ease-out); }
+    .update-bar.unsaid .update-bar-fill { width: 35% !important;
+                                          animation: update-busy 1.4s ease-in-out infinite; }
+    @keyframes update-busy { from { translate: -100% 0; } to { translate: 290% 0; } }
+    @media (prefers-reduced-motion: reduce) {
+        .update-bar.unsaid .update-bar-fill { width: 100% !important; opacity: .4; translate: none; }
+    }
+    .update-error { color: var(--error); flex-basis: 100%; }
+    .update-versions { font-variant-numeric: tabular-nums; }
+    .updates-list { margin-bottom: 1.25rem; }
     .lock-code { display: flex; flex-direction: column; gap: .3rem; margin: .8rem 0; }
     .fan-swing { display: inline-flex; align-items: center; gap: .35rem; }
     /* A thermostat's target, typed in, and what the room is now. */

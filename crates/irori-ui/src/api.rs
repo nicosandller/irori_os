@@ -40,6 +40,17 @@ pub struct Home {
     /// The home as it's drawn. Absent until somebody draws it, which is the same as blank.
     #[serde(default)]
     pub floorplan: Floorplan,
+    /// Updates waiting their turn to install, behind another on the same protocol.
+    #[serde(default)]
+    pub installs: Vec<QueuedInstall>,
+}
+
+/// An update that was asked to install and is waiting for another to finish.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct QueuedInstall {
+    pub entity_id: irori_types::EntityId,
+    /// How many go first, the one installing now included.
+    pub ahead: usize,
 }
 
 /// A device an extension has found that isn't in the home: enough to recognise it and decide

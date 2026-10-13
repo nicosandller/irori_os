@@ -20,7 +20,10 @@ use esphome_client::types::{
     ListEntitiesValveResponse, LockStateResponse, NumberStateResponse, SelectStateResponse,
     SensorStateResponse, SirenStateResponse, TextStateResponse, ValveStateResponse,
 };
-use esphome_client::types::{ListEntitiesWaterHeaterResponse, WaterHeaterStateResponse};
+use esphome_client::types::{
+    ListEntitiesUpdateResponse, ListEntitiesWaterHeaterResponse, UpdateStateResponse,
+    WaterHeaterStateResponse,
+};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -42,6 +45,7 @@ const VALVE_KEY: u32 = 12;
 const SIREN_KEY: u32 = 13;
 const THERMOSTAT_KEY: u32 = 15;
 const WATER_HEATER_KEY: u32 = 16;
+const FIRMWARE_KEY: u32 = 17;
 /// 32 bytes. Printed at startup as base64 so the waiting-for-a-key panel has something to paste.
 const LAB_KEY: [u8; 32] = *b"irori-lab-esphome-key-32bytes!!!";
 
@@ -282,6 +286,22 @@ fn answers(message: EspHomeMessage, board: &Board) -> Vec<EspHomeMessage> {
                 ..Default::default()
             })]
         }
+        // Firmware installs at once: halfway, then done, on the version that was on offer.
+        // `UpdateCommand` 1 is update; 2, check, finds the same version again.
+        EspHomeMessage::UpdateCommandRequest(request) if request.command == 1 => {
+            vec![
+                EspHomeMessage::UpdateStateResponse(UpdateStateResponse {
+                    in_progress: true,
+                    has_progress: true,
+                    progress: 50.0,
+                    ..firmware("2026.8.0")
+                }),
+                EspHomeMessage::UpdateStateResponse(firmware("2026.9.1")),
+            ]
+        }
+        EspHomeMessage::UpdateCommandRequest(_) => {
+            vec![EspHomeMessage::UpdateStateResponse(firmware("2026.8.0"))]
+        }
         // A real board would restart; this one just says so. A button reports nothing.
         EspHomeMessage::ButtonCommandRequest(request) => {
             println!("{}: button {} pressed", board.name, request.key);
@@ -409,6 +429,13 @@ fn entities(_board: &Board) -> Vec<EspHomeMessage> {
             supports_open: true,
             ..Default::default()
         }),
+        EspHomeMessage::ListEntitiesUpdateResponse(ListEntitiesUpdateResponse {
+            key: FIRMWARE_KEY,
+            name: "Firmware".to_owned(),
+            device_class: "firmware".to_owned(),
+            entity_category: 1, // config
+            ..Default::default()
+        }),
         EspHomeMessage::ListEntitiesFanResponse(ListEntitiesFanResponse {
             key: FAN_KEY,
             name: "Cooling fan".to_owned(),
@@ -484,6 +511,19 @@ fn thermostat(mode: i32, target: f32) -> ClimateStateResponse {
     }
 }
 
+/// The board's firmware on `installed`, with 2026.9.1 on offer.
+fn firmware(installed: &str) -> UpdateStateResponse {
+    UpdateStateResponse {
+        key: FIRMWARE_KEY,
+        current_version: installed.to_owned(),
+        latest_version: "2026.9.1".to_owned(),
+        title: "Lab board firmware".to_owned(),
+        release_summary: "Reconnects faster after the Wi-Fi drops.".to_owned(),
+        release_url: "https://esphome.io/changelog/".to_owned(),
+        ..Default::default()
+    }
+}
+
 /// The water heater in `mode` aiming for `target` °C, its water at 52 °C.
 fn water_heater(mode: i32, target: f32, on: bool) -> WaterHeaterStateResponse {
     WaterHeaterStateResponse {
@@ -537,6 +577,7 @@ fn states(board: &Board) -> Vec<EspHomeMessage> {
             state: 1,
             ..Default::default()
         }),
+        EspHomeMessage::UpdateStateResponse(firmware("2026.8.0")),
         EspHomeMessage::CoverStateResponse(CoverStateResponse {
             key: BLIND_KEY,
             position: 0.6,

@@ -29,7 +29,7 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | C18 | Recorder | Entity history in `irori.db` that survives a restart. The page shows the last day; the file keeps detailed history for `[recorder] retain_days` (default 10) and hourly summaries afterwards. Both are set from the History row in Settings | ✅ | C5 |
 | C21 | UI: Entity history | Last-24h list, chart and state timeline per entity, read from the recorder | ✅ | C18 |
 | C22 | CLI command tree | Full UI parity (`devices`, `rules`, `extensions`, `token`…) with `--json`, plus `irori uninstall` for what `install.sh` put down (`docs/specs/cli.md`). Drawing, the map search, and the flow canvas stay on the page | ✅ | C17 |
-| C23 | Firmware updates | `update` entity kind, update from UI | - | C5, C32 |
+| C23 | Updates | The `update` kind: firmware for Zigbee, ESPHome and MQTT devices, and Irori's own extensions, in one list on the Devices page. Install asks first, a version can be skipped, installs on one protocol go one at a time, and a failed one says why. Irori says when a newer release of itself is out (`[updates] check`), and one installed with `install.sh` replaces itself: checksum checked, the new binary tried first, the old one kept beside it | ✅ | C5, C32 |
 | C24 | Performance budgets in CI | Binary size, RSS, latency, throughput checks (only UI bundle size is enforced today: under 5 MB brotli) | 🟠 | C1 |
 | C25 | JSON Schemas & golden examples | Schemas generated from `irori-types`, checked fresh in CI, valid/invalid example tests (`fixtures/`) | ✅ | C2, C3, C4, C9 |
 | C26 | Extension signing & permissions | Signature verification, approve permissions on install/update. Only the "full access" approval exists; no signing | 🟠 | C7 |
@@ -37,7 +37,7 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | C29 | Backup & restore | Single-file snapshots, scheduled backups | - | C18 |
 | C30 | Engine API for extensions | Engines subscribe to state and registry, read history, call services as `Origin::Automation`; API scopes enforced (`docs/specs/automations.md` §B2) | ✅ | C6 |
 | C31 | App pages in the sidebar | Extensions add a sidebar page: static bundle, sandboxed frame, bridge, engine RPC (`docs/specs/automations.md` §B3–B4) | ✅ | C6, C12 |
-| C32 | Entity kinds | Every Home Assistant device kind: 18 in (covers, locks, fans, climate, media players…), `entity_format` so older engines keep working, unsupported parts of a device listed instead of dropped. Next: `update`, alarm, date/time, vacuum, lawn mower, remote, scene, device tracker | 🟠 | C2 |
+| C32 | Entity kinds | Every Home Assistant device kind: 19 in (covers, locks, fans, climate, media players, updates…), `entity_format` so older engines keep working, unsupported parts of a device listed instead of dropped. Next: alarm, date/time, vacuum, lawn mower, remote, scene, device tracker | 🟠 | C2 |
 | C33 | Helpers | Values Irori keeps itself, built into the core (`extensions/helpers.toml`). Toggles only; numbers, text and timers to come | 🟠 | C5 |
 | C34 | Irori as a device | The machine Irori runs on is a device in its own home, with CPU, memory and disk meters | ✅ | C5 |
 | C35 | Dev container & device lab | `dev/pi`: a Raspberry Pi-like container to try a PR; `dev/lab`: emulated ESPHome and Zigbee devices. Matter nodes need binaries that aren't there | 🟠 | C8 |

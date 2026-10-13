@@ -44,6 +44,8 @@ pub enum EntityKind {
     Humidifier,
     /// A TV, a speaker, or another player.
     MediaPlayer,
+    /// Newer software for something: a device's firmware, an extension.
+    Update,
 }
 
 impl EntityKind {
@@ -66,6 +68,7 @@ impl EntityKind {
         Self::WaterHeater,
         Self::Humidifier,
         Self::MediaPlayer,
+        Self::Update,
     ];
 
     /// The domain string used in entity ids and service names.
@@ -89,6 +92,7 @@ impl EntityKind {
             Self::WaterHeater => "water_heater",
             Self::Humidifier => "humidifier",
             Self::MediaPlayer => "media_player",
+            Self::Update => "update",
         }
     }
 

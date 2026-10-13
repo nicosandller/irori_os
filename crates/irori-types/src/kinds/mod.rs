@@ -25,6 +25,7 @@ pub(crate) mod sensor;
 pub(crate) mod siren;
 pub(crate) mod switch;
 pub(crate) mod text;
+pub(crate) mod update;
 pub(crate) mod valve;
 pub(crate) mod water_heater;
 
@@ -168,7 +169,8 @@ impl EntityKind {
             | Self::Text
             | Self::Button
             | Self::Event
-            | Self::MediaPlayer => return None,
+            | Self::MediaPlayer
+            | Self::Update => return None,
         })
     }
 }
@@ -182,7 +184,8 @@ impl Capabilities {
             | Self::BinarySensor(_)
             | Self::Fan(_)
             | Self::Siren(_)
-            | Self::Humidifier(_) => ValueShape::Bool,
+            | Self::Humidifier(_)
+            | Self::Update(_) => ValueShape::Bool,
             Self::Number(_) => ValueShape::Number,
             Self::Select(_)
             | Self::Text(_)
@@ -268,6 +271,7 @@ impl Capabilities {
             Self::WaterHeater(caps) => water_heater::supports_service(caps, service),
             Self::Humidifier(caps) => humidifier::supports_service(caps, service),
             Self::MediaPlayer(caps) => media_player::supports_service(caps, service),
+            Self::Update(caps) => update::supports_service(caps, service),
             Self::Switch(_) | Self::Button(_) => Ok(()),
             Self::Sensor(_) | Self::BinarySensor(_) | Self::Event(_) => Ok(()),
         }
@@ -285,6 +289,7 @@ impl State {
             Self::Siren(state) => siren::primary(state),
             Self::Humidifier(state) => humidifier::primary(state),
             Self::MediaPlayer(state) => media_player::primary(state),
+            Self::Update(state) => update::primary(state),
             Self::Number(state) => number::primary(state),
             Self::Select(state) => select::primary(state),
             Self::Text(state) => text::primary(state),
@@ -337,6 +342,7 @@ impl State {
             EntityKind::MediaPlayer => {
                 State::MediaPlayer(media_player::with_primary(previous!(MediaPlayer), value)?)
             }
+            EntityKind::Update => State::Update(update::with_primary(previous!(Update), value)?),
             EntityKind::Button => return None,
         })
     }
@@ -368,6 +374,7 @@ impl Service {
             EntityKind::WaterHeater => water_heater::service(name, data),
             EntityKind::Humidifier => humidifier::service(name, data),
             EntityKind::MediaPlayer => media_player::service(name, data),
+            EntityKind::Update => update::service(name, data),
             EntityKind::Sensor | EntityKind::BinarySensor | EntityKind::Event => {
                 Err(not_mine(name))
             }
@@ -419,6 +426,7 @@ impl Service {
             EntityKind::WaterHeater => water_heater::asks_for(self),
             EntityKind::Humidifier => humidifier::asks_for(self),
             EntityKind::MediaPlayer => media_player::asks_for(self),
+            EntityKind::Update => update::asks_for(self),
             // A press leaves nothing for a toggle to go by.
             EntityKind::Button => None,
             EntityKind::Sensor | EntityKind::BinarySensor | EntityKind::Event => None,
@@ -455,6 +463,7 @@ impl ServiceName {
             EntityKind::WaterHeater => water_heater::data_of(self),
             EntityKind::Humidifier => humidifier::data_of(self),
             EntityKind::MediaPlayer => media_player::data_of(self),
+            EntityKind::Update => update::data_of(self),
             EntityKind::Sensor | EntityKind::BinarySensor | EntityKind::Event => Data::None,
         }
     }

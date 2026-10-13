@@ -1,0 +1,13 @@
+{
+  "id": "update.hall_plug_firmware",
+  "protocol": "zigbee",
+  "unique_id": "hall-plug-update",
+  "name": "Firmware",
+  "capabilities": {
+    "kind": "update",
+    "device_class": "firmware",
+    "install": true,
+    "check": true
+  },
+  "entity_category": "config"
+}

@@ -377,6 +377,7 @@ fn kind_label(kind: EntityKind) -> &'static str {
         EntityKind::WaterHeater => "Water heaters",
         EntityKind::Humidifier => "Humidifiers",
         EntityKind::MediaPlayer => "Media players",
+        EntityKind::Update => "Updates",
     }
 }
 

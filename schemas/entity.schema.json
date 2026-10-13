@@ -469,6 +469,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^update\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "update"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -1250,6 +1273,39 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "check": {
+              "description": "Can be told to look for a newer version now.",
+              "type": "boolean",
+              "default": false
+            },
+            "device_class": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/UpdateClass"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "install": {
+              "description": "Can be told to install. Without it, it only says an update exists.",
+              "type": "boolean",
+              "default": false
+            },
+            "kind": {
+              "type": "string",
+              "const": "update"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
@@ -1389,6 +1445,10 @@
         {
           "maxLength": 77,
           "pattern": "^media_player\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^update\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -1616,6 +1676,16 @@
       "maxLength": 255,
       "minLength": 1,
       "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+    },
+    "UpdateClass": {
+      "description": "What the update is for.",
+      "oneOf": [
+        {
+          "description": "A device's firmware.",
+          "type": "string",
+          "const": "firmware"
+        }
+      ]
     },
     "ValveClass": {
       "type": "string",

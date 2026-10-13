@@ -20,6 +20,7 @@ use crate::kinds::sensor::SensorCapabilities;
 use crate::kinds::siren::SirenCapabilities;
 use crate::kinds::switch::SwitchCapabilities;
 use crate::kinds::text::TextCapabilities;
+use crate::kinds::update::UpdateCapabilities;
 use crate::kinds::valve::ValveCapabilities;
 use crate::kinds::water_heater::WaterHeaterCapabilities;
 use crate::{
@@ -207,6 +208,7 @@ pub enum Capabilities {
     WaterHeater(WaterHeaterCapabilities),
     Humidifier(HumidifierCapabilities),
     MediaPlayer(MediaPlayerCapabilities),
+    Update(UpdateCapabilities),
 }
 
 impl Capabilities {
@@ -230,6 +232,7 @@ impl Capabilities {
             Self::WaterHeater(_) => EntityKind::WaterHeater,
             Self::Humidifier(_) => EntityKind::Humidifier,
             Self::MediaPlayer(_) => EntityKind::MediaPlayer,
+            Self::Update(_) => EntityKind::Update,
         }
     }
 

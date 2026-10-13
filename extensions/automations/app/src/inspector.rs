@@ -649,6 +649,12 @@ fn opens_something(service: RuleService, entity: Option<&irori_types::Entity>) -
         )
 }
 
+/// Whether a call installs new software on a device, for the form to say what that does to the
+/// device before it's wired to something that fires on its own.
+fn installs_something(service: RuleService) -> bool {
+    matches!(service, RuleService::Named(ServiceName::UpdateInstall))
+}
+
 /// A change to a node, as its form hands it to the editor.
 type Change = Box<dyn FnOnce(&mut Value)>;
 
@@ -1098,6 +1104,7 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
                 // What can be asked of it: its own kind's services, whatever kind that is.
                 let offered = RuleService::all_of(entity.kind());
                 let warn = opens_something(service, found.as_ref());
+                let warn_install = installs_something(service);
                 let is_light_on = matches!(service, RuleService::Named(ServiceName::LightTurnOn));
                 let entity_s = entity.to_string();
                 let dimmable = home.entities.with_untracked(|es| es.iter().any(|e| e.id == entity
@@ -1185,6 +1192,13 @@ pub fn NodeForm(id: NodeId) -> impl IntoView {
                         <p class="call-warning" role="note">
                             "This lets something or someone in. Whatever starts this flow does it too: "
                             "a button anyone can press, or a sensor anyone can set off."
+                        </p>
+                    })}
+                    {warn_install.then(|| view! {
+                        <p class="call-warning" role="note">
+                            "This installs new software on the device. It can't be used while it "
+                            "installs, restarts when it's done, and can't be undone from here. "
+                            "On the same network, updates install one at a time."
                         </p>
                     })}
                     {(!is_light_on).then(|| view! {

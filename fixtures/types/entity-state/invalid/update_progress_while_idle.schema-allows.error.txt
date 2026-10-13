@@ -1,0 +1,1 @@
+progress is only there while an install is in progress

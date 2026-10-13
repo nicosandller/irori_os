@@ -791,6 +791,86 @@
             "kind",
             "state"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "available": {
+              "description": "A newer version than the installed one is there to install, and it isn't the skipped one.",
+              "type": "boolean"
+            },
+            "in_progress": {
+              "description": "An install is running.",
+              "type": "boolean",
+              "default": false
+            },
+            "installed_version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "update"
+            },
+            "last_error": {
+              "description": "Why the last install didn't finish: the protocol's reason when it has one, otherwise the\ncore's. The next install clears it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "latest_version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "progress": {
+              "description": "How far the install has got, in %, from a device that says.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "maximum": 100.0,
+              "minimum": 0.0
+            },
+            "release_summary": {
+              "description": "A few words on what the latest version changes.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "release_url": {
+              "description": "Where the full release notes are.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "skipped_version": {
+              "description": "The version someone chose to pass over. The core sets it; a protocol's is ignored.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "description": "What the software is called, when that isn't the device's name.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "available"
+          ]
         }
       ]
     },

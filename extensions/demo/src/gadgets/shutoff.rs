@@ -7,6 +7,7 @@ use irori_protocol::types::{
     ValveClass, ValveState,
 };
 
+use super::firmware::Firmware;
 use super::{Device, Entity, Gadget, Room, cannot};
 
 const SHUTOFF: &str = "water-shutoff";
@@ -17,6 +18,7 @@ pub(super) struct WaterShutoff {
     valve: OpenState,
     alarm: bool,
     alarm_until: Option<Instant>,
+    firmware: Firmware,
 }
 
 impl WaterShutoff {
@@ -25,6 +27,7 @@ impl WaterShutoff {
             valve: OpenState::Open,
             alarm: false,
             alarm_until: None,
+            firmware: Firmware::new("water-shutoff-firmware", "Water shut-off firmware", 2),
         }
     }
 }
@@ -63,6 +66,7 @@ impl Gadget for WaterShutoff {
                 suggested_object_id: None,
                 category: None,
             },
+            self.firmware.entity(),
         ]
     }
 
@@ -76,6 +80,7 @@ impl Gadget for WaterShutoff {
                 }),
             ),
             (SHUTOFF_ALARM, State::Siren(SirenState { on: self.alarm })),
+            self.firmware.state(),
         ]
     }
 
@@ -85,6 +90,9 @@ impl Gadget for WaterShutoff {
         service: &Service,
         now: Instant,
     ) -> Result<&'static str, String> {
+        if self.firmware.is(unique_id) {
+            return self.firmware.call(service, now);
+        }
         match (unique_id, service) {
             (SHUTOFF_VALVE, Service::ValveOpen) => {
                 self.valve = OpenState::Open;
@@ -112,13 +120,16 @@ impl Gadget for WaterShutoff {
 
     /// The alarm stops when its time is up.
     fn tick(&mut self, now: Instant, _: Room, _: u64) -> Vec<&'static str> {
+        let mut changed = Vec::new();
         if self.alarm_until.is_some_and(|until| now >= until) {
             self.alarm = false;
             self.alarm_until = None;
-            vec![SHUTOFF_ALARM]
-        } else {
-            Vec::new()
+            changed.push(SHUTOFF_ALARM);
         }
+        if self.firmware.tick(now) {
+            changed.push(self.firmware.state().0);
+        }
+        changed
     }
 }
 

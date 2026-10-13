@@ -7,12 +7,14 @@ mod build_info;
 mod cli;
 mod config;
 mod db;
+mod extension_updates;
 mod extensions;
 mod history;
 mod host_info;
 #[cfg(feature = "assist")]
 mod ollama;
 mod packages;
+mod self_update;
 mod serial;
 mod server;
 mod syslog;
@@ -153,6 +155,12 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
 
     let db = db::open(&data)?;
     let recorder_settings = store.irori().recorder.clone();
+    let _ = self_update::LOOKS.set(store.irori().updates.check);
+    // Before anything can replace it: an update moves this file, and the restart after it
+    // must run what took its place.
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = self_update::EXE.set(exe);
+    }
     let retention = irori_recorder::Retention::new(
         recorder_settings.retain_days,
         recorder_settings.summary_days,
@@ -175,6 +183,8 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // is how the Settings page's Restart button works (crates/irori/src/server.rs).
             let restart = Arc::new(Notify::new());
             let restarting = Arc::new(AtomicBool::new(false));
+            // An update of Irori itself ends in the same restart the Settings page asks for.
+            let _ = self_update::RESTART.set((restart.clone(), restarting.clone()));
 
             let listener = bind_with_fallback(bind, bind_fallback)
                 .await
@@ -265,6 +275,9 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
                 packages_dir,
             )
             .map_err(anyhow::Error::msg)?;
+            // Irori's own device shows its extensions as updates, and installs them through
+            // the host.
+            let _ = extension_updates::RUNNING.set((core.clone(), host.clone()));
 
             // With where each request came from: wrong passwords are counted per machine,
             // and one guessing can't make another wait.
@@ -477,7 +490,7 @@ async fn shutdown_signal(restart: Arc<Notify>) {
 #[cfg(unix)]
 fn restart_process(bind: SocketAddr, carry_bind: bool) -> anyhow::Result<()> {
     use std::os::unix::process::CommandExt;
-    let current = std::env::current_exe().context("can't find what to restart")?;
+    let current = self_update::exe().context("can't find what to restart")?;
     let mut command = std::process::Command::new(current);
     command.args(restart_args());
     if carry_bind {

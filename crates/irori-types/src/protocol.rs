@@ -443,6 +443,10 @@ pub enum Service {
     MediaPlayerNextTrack,
     MediaPlayerPreviousTrack,
     MediaPlayerPlayMedia(Box<PlayMedia>),
+    UpdateInstall,
+    UpdateCheck,
+    UpdateSkip,
+    UpdateClearSkipped,
 }
 
 impl Service {
@@ -504,6 +508,10 @@ impl Service {
             Self::MediaPlayerNextTrack => ServiceName::MediaPlayerNextTrack,
             Self::MediaPlayerPreviousTrack => ServiceName::MediaPlayerPreviousTrack,
             Self::MediaPlayerPlayMedia(_) => ServiceName::MediaPlayerPlayMedia,
+            Self::UpdateInstall => ServiceName::UpdateInstall,
+            Self::UpdateCheck => ServiceName::UpdateCheck,
+            Self::UpdateSkip => ServiceName::UpdateSkip,
+            Self::UpdateClearSkipped => ServiceName::UpdateClearSkipped,
         }
     }
 }
@@ -623,6 +631,14 @@ pub enum ServiceName {
     MediaPlayerPreviousTrack,
     #[serde(rename = "media_player.play_media")]
     MediaPlayerPlayMedia,
+    #[serde(rename = "update.install")]
+    UpdateInstall,
+    #[serde(rename = "update.check")]
+    UpdateCheck,
+    #[serde(rename = "update.skip")]
+    UpdateSkip,
+    #[serde(rename = "update.clear_skipped")]
+    UpdateClearSkipped,
 }
 
 impl ServiceName {
@@ -683,6 +699,10 @@ impl ServiceName {
         Self::MediaPlayerNextTrack,
         Self::MediaPlayerPreviousTrack,
         Self::MediaPlayerPlayMedia,
+        Self::UpdateInstall,
+        Self::UpdateCheck,
+        Self::UpdateSkip,
+        Self::UpdateClearSkipped,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -743,6 +763,10 @@ impl ServiceName {
             Self::MediaPlayerNextTrack => "media_player.media_next_track",
             Self::MediaPlayerPreviousTrack => "media_player.media_previous_track",
             Self::MediaPlayerPlayMedia => "media_player.play_media",
+            Self::UpdateInstall => "update.install",
+            Self::UpdateCheck => "update.check",
+            Self::UpdateSkip => "update.skip",
+            Self::UpdateClearSkipped => "update.clear_skipped",
         }
     }
 
@@ -799,6 +823,10 @@ impl ServiceName {
             | Self::MediaPlayerNextTrack
             | Self::MediaPlayerPreviousTrack
             | Self::MediaPlayerPlayMedia => EntityKind::MediaPlayer,
+            Self::UpdateInstall
+            | Self::UpdateCheck
+            | Self::UpdateSkip
+            | Self::UpdateClearSkipped => EntityKind::Update,
         }
     }
 }
