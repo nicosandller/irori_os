@@ -5,8 +5,10 @@
 //! another on the same protocol says how many go first.
 
 use irori_types::{Entity, State, UpdateCapabilities, UpdateState};
+use leptos::portal::Portal;
 use leptos::prelude::*;
 
+use super::media_player::shell;
 use super::{UNKNOWN, tuck};
 use crate::devices::Controls;
 
@@ -127,50 +129,51 @@ pub(crate) fn update_control(
         }
         .into_any()
     };
-    let confirm = {
+    // The window is drawn over the page, not inside the row: a row sits in a group that folds,
+    // which clips whatever is in it.
+    let window = {
         let send = send.clone();
         move || {
-            asking.get().then(|| {
-                let update = update.get_untracked().unwrap_or_default();
-                let (install, skip) = (send.clone(), send.clone());
-                let versions = update_words(&update, None);
-                // The software's own name where it has one: an entity is often just "Firmware".
-                let what = update.title.clone().unwrap_or_else(|| name.clone());
-                view! {
-                    <crate::modal::Modal
-                        title=format!("Update {what}?")
-                        on_close=Callback::new(move |()| asking.set(false))
-                    >
-                        <p class="update-versions">{versions}</p>
-                        {update.release_summary.clone().map(|summary| view! { <p>{summary}</p> })}
-                        {update.release_url.clone().map(|url| view! {
-                            <p>
-                                <a href=url target="_blank" rel="noopener noreferrer">
-                                    "Release notes"
-                                </a>
-                            </p>
-                        })}
-                        <p class="muted small">
-                            "It can't be used while it installs, and restarts when it's done. "
-                            "If another update is installing on the same network, this one waits "
-                            "its turn."
+            let update = update.get_untracked().unwrap_or_default();
+            let (install, skip) = (send.clone(), send.clone());
+            let versions = update_words(&update, None);
+            // The software's own name where it has one: an entity is often just "Firmware".
+            let what = update.title.clone().unwrap_or_else(|| name.clone());
+            view! {
+                <crate::modal::Modal
+                    title=format!("Update {what}?")
+                    on_close=Callback::new(move |()| asking.set(false))
+                >
+                    <p class="update-versions">{versions}</p>
+                    {update.release_summary.clone().map(|summary| view! { <p>{summary}</p> })}
+                    {update.release_url.clone().map(|url| view! {
+                        <p>
+                            <a href=url target="_blank" rel="noopener noreferrer">
+                                "Release notes"
+                            </a>
                         </p>
-                        <div class="ext-actions">
-                            <button type="button" class="danger" on:click=move |_| asking.set(false)>
-                                "Cancel"
-                            </button>
-                            <button type="button" class="danger" on:click=move |_| skip("skip")>
-                                "Skip this version"
-                            </button>
-                            <button type="button" class="add solid" on:click=move |_| install("install")>
-                                "Update"
-                            </button>
-                        </div>
-                    </crate::modal::Modal>
-                }
-            })
+                    })}
+                    <p class="muted small">
+                        "It can't be used while it installs, and restarts when it's done. "
+                        "If another update is installing on the same network, this one waits "
+                        "its turn."
+                    </p>
+                    <div class="ext-actions">
+                        <button type="button" class="danger" on:click=move |_| asking.set(false)>
+                            "Cancel"
+                        </button>
+                        <button type="button" class="danger" on:click=move |_| skip("skip")>
+                            "Skip this version"
+                        </button>
+                        <button type="button" class="add solid" on:click=move |_| install("install")>
+                            "Update"
+                        </button>
+                    </div>
+                </crate::modal::Modal>
+            }
         }
     };
+    let window = StoredValue::new(window);
     let (undo, check) = (send.clone(), send);
     view! {
         <>
@@ -230,7 +233,9 @@ pub(crate) fn update_control(
                     Signal::derive(move || stands.get() == Standing::UpToDate),
                 ))}
             </span>
-            {confirm}
+            <Show when=move || asking.get()>
+                <Portal mount=shell()>{window.with_value(|window| window())}</Portal>
+            </Show>
         </>
     }
     .into_any()

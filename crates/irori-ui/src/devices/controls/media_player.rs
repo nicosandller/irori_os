@@ -70,7 +70,7 @@ pub(crate) fn offered(
 const POPOVER_ROOM: f64 = 120.0;
 
 /// Where the cast popover is drawn: the shell, so that Settings turning motion off reaches it.
-fn shell() -> web_sys::Element {
+pub(super) fn shell() -> web_sys::Element {
     let document = document();
     document
         .query_selector(".shell")
