@@ -223,6 +223,10 @@ async fn installs_on_one_protocol_take_turns() {
     })
     .await;
     assert_eq!(AT_ONCE.load(Ordering::SeqCst), 1, "never two at once");
+    assert!(
+        matches!(install(&core, &a).await, Err(CallError::NotSupported(why)) if why.contains("no update")),
+        "an up-to-date plug isn't sent an install to sit on"
+    );
 
     // The deaf plug took its turn last, said nothing, and was given up on.
     eventually("the deaf plug is given up on", || {

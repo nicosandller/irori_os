@@ -39,6 +39,10 @@ const WHILE_UPDATING: Duration = Duration::from_secs(2);
 const LOOKS_EVERY: Duration = Duration::from_secs(12 * 60 * 60);
 const FIRST_LOOK_AFTER: Duration = Duration::from_secs(60);
 
+/// The least time between two looks, however often one is asked for: GitHub answers a machine
+/// that hasn't signed in sixty times an hour, and a flow can ask in a loop.
+const LOOKS_APART: Duration = Duration::from_secs(60);
+
 /// How long after an update was placed its new version is waited for before the entity stops
 /// saying it's installing. The host reads the new manifest as it starts the extension again.
 const NEW_VERSION_WITHIN: Duration = Duration::from_secs(60);
@@ -184,7 +188,12 @@ async fn run(mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
     let mut looks =
         tokio::time::interval_at(tokio::time::Instant::now() + FIRST_LOOK_AFTER, LOOKS_EVERY);
     let looks_unasked = crate::self_update::LOOKS.get().copied().unwrap_or(true);
-    let look = |heard: tokio::sync::mpsc::Sender<Heard>| {
+    let mut looked: Option<Instant> = None;
+    let mut look = move |heard: tokio::sync::mpsc::Sender<Heard>| {
+        if looked.is_some_and(|at| at.elapsed() < LOOKS_APART) {
+            return;
+        }
+        looked = Some(Instant::now());
         tokio::spawn(async move {
             let _ = heard
                 .send(Heard::Latest(crate::self_update::latest().await))

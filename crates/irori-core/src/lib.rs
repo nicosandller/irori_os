@@ -854,6 +854,15 @@ impl Core {
                     "`{entity_id}` is already installing"
                 )));
             }
+            // A device with nothing to install takes the message and does nothing, which would
+            // hold the line until it was given up on. One that hasn't said is given the chance.
+            if let Some(update) = update.filter(|update| !update.available) {
+                return Err(CallError::NotSupported(if update.is_skipped() {
+                    format!("`{entity_id}` has a skipped version; undo the skip to install it")
+                } else {
+                    format!("`{entity_id}` has no update to install")
+                }));
+            }
             update.and_then(|update| update.installed_version.clone())
         };
         let asked = self.installs().ask(
@@ -925,6 +934,14 @@ impl Core {
     async fn run_line(self, protocol: ProtocolId, first: (EntityId, Context)) {
         let mut next = Some(first);
         while let Some((entity_id, context)) = next.take() {
+            // It may have been installed some other way, or skipped, while it waited.
+            let nothing_to_install = read(&self.0.home)
+                .update(&entity_id)
+                .is_some_and(|update| !update.available);
+            if nothing_to_install {
+                next = self.next_install(&protocol, &entity_id);
+                continue;
+            }
             match self
                 .call(&entity_id, Command::new("install"), context, true)
                 .await

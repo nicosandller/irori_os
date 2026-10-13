@@ -105,7 +105,7 @@ impl Installs {
     }
 
     /// An update entity's state changed. Returns its protocol when that ends the install
-    /// running there: it finished, or it stopped.
+    /// running there: it finished, it stopped, or its protocol says it failed.
     pub fn heard(
         &mut self,
         entity_id: &EntityId,
@@ -126,7 +126,10 @@ impl Installs {
         }
         let moved_on = state.installed_version.is_some()
             && state.installed_version != running.installed_before;
-        (running.started || moved_on).then(|| protocol.clone())
+        // Said by the protocol (Zigbee2MQTT answers a device that won't take it): no need to
+        // wait out the time a silent one is given.
+        let failed = state.last_error.is_some();
+        (running.started || moved_on || failed).then(|| protocol.clone())
     }
 
     /// `entity_id`'s install on `protocol` is over. Returns the next to send, which is now the
@@ -334,6 +337,17 @@ mod tests {
             ..UpdateState::default()
         };
         assert_eq!(installs.heard(&plug, Some(&same), now), None);
+        let refused = UpdateState {
+            last_error: Some("Device didn't respond to OTA request".into()),
+            ..same.clone()
+        };
+        let mut other = Installs::default();
+        other.ask(&mqtt, &plug, &context(), Some("1"), now);
+        assert_eq!(
+            other.heard(&plug, Some(&refused), now),
+            Some(mqtt.clone()),
+            "a protocol that says it failed ends it at once"
+        );
         let newer = UpdateState {
             available: false,
             installed_version: Some("2".into()),

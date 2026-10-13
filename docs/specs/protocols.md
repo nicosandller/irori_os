@@ -327,7 +327,7 @@ manifest's `entity_kinds`.
 | `media_player.media_seek` | `position`, seconds, finite, 0 or more | Needs `seek` |
 | `media_player.media_next_track`, `media_player.media_previous_track` | none | Need `queue` |
 | `media_player.play_media` | `content_type` and `content_id`, each non-blank (up to 255 and 2048 characters); optional `title`, `artist`, `album`, `image_url` | Needs `play_media` |
-| `update.install` | none | Needs `install`. Installs the latest version. Refused while one is already installing |
+| `update.install` | none | Needs `install`. Installs the latest version. Refused while one is already installing, and when the entity says nothing is available (a skipped version included) |
 | `update.check` | none | Needs `check`. Looks for a newer version now |
 | `update.skip`, `update.clear_skipped` | none | **Never sent to a protocol**: the core answers them (below) |
 | `fan.turn_on` | `percentage` 1–100, `preset_mode`; both optional | `fan.toggle` resolves to `turn_on` or `turn_off` |
@@ -357,8 +357,8 @@ manifest's `entity_kinds`.
   network every other device shares, so the core sends a protocol one `update.install` at a
   time. An install asked for while another runs on the same protocol succeeds at once and waits
   its turn; `GET /api/home` lists what is waiting (`installs`). The next goes when the running
-  one ends: it leaves `in_progress`, its installed version changes, it never starts within two
-  minutes, or it says nothing for ninety. A protocol reports what the device says
+  one ends: it leaves `in_progress`, its installed version changes, its protocol reports a
+  `last_error`, it never starts within two minutes, or it says nothing for ninety. A protocol reports what the device says
   (`in_progress`, `progress`, the versions) and nothing else is asked of it. An install that
   couldn't be sent when its turn came says why in the entity's `last_error`, since nobody is
   waiting for the answer by then.

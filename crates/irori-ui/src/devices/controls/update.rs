@@ -227,6 +227,17 @@ pub(crate) fn update_control(
                 <span class="update-error small" role="status">{why}</span>
             })}
             <span class="cover-buttons">
+                // Something that updates another way (an extension with full access, an Irori
+                // that was built here) says so, rather than showing versions and no way on.
+                {(!can_install).then(|| tuck(
+                    view! {
+                        <span class="muted small" title="It is updated where it was installed">
+                            "Can't be updated from here"
+                        </span>
+                    }
+                    .into_any(),
+                    Signal::derive(move || stands.get() == Standing::Available),
+                ))}
                 {can_install.then(|| tuck(
                     press("Update", Callback::new(move |()| asking.set(true))),
                     Signal::derive(move || stands.get() == Standing::Available),
