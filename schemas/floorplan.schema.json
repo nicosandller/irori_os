@@ -105,6 +105,10 @@
         {
           "maxLength": 77,
           "pattern": "^media_player\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^update\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

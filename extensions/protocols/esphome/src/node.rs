@@ -562,6 +562,12 @@ async fn list_entities(
                 e.name.clone(),
                 map::lock::describe(device, e),
             ),
+            EspHomeMessage::ListEntitiesUpdateResponse(e) => (
+                e.key,
+                "update",
+                e.name.clone(),
+                map::update::describe(device, e),
+            ),
             EspHomeMessage::ListEntitiesFanResponse(e) => {
                 (e.key, "fan", e.name.clone(), map::fan::describe(device, e))
             }
@@ -709,6 +715,7 @@ fn report(
             (s.key, Some(map::light::state(s, known)))
         }
         EspHomeMessage::LockStateResponse(s) => (s.key, map::lock::state(s)),
+        EspHomeMessage::UpdateStateResponse(s) => (s.key, map::update::state(s)),
         EspHomeMessage::SirenStateResponse(s) => (s.key, Some(map::siren::state(s))),
         EspHomeMessage::ValveStateResponse(s) => {
             let Some(Capabilities::Valve(known)) = capabilities.get(&s.key) else {
@@ -808,6 +815,7 @@ async fn command(
         EntityKind::Valve => write(client, map::valve::command(key, service)).await,
         EntityKind::Siren => write(client, map::siren::command(key, service)).await,
         EntityKind::Lock => write(client, map::lock::command(key, service)).await,
+        EntityKind::Update => write(client, map::update::command(key, service)).await,
         EntityKind::Fan => {
             let known = match capabilities.get(&key) {
                 Some(Capabilities::Fan(fan)) => Some(fan),

@@ -127,8 +127,8 @@ motion sensor are three entities.
 
 **Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`,
 `event`, `cover`, `lock`, `fan`, `valve`, `siren`, `climate`, `water_heater`, `humidifier`,
-`media_player`.
-**Next, in likely order:** `update`, `alarm_control_panel`, `date`, `time`, `datetime`,
+`media_player`, `update`.
+**Next, in likely order:** `alarm_control_panel`, `date`, `time`, `datetime`,
 `vacuum`, `lawn_mower`, `remote`, `scene`, `device_tracker`. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
@@ -191,6 +191,9 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | | `preset_modes` | up to 256 distinct strings | `[]` | Modes beyond its speed, e.g. `auto`, `sleep` |
 | `media_player` | `device_class` | `tv` \| `speaker` \| `receiver` | absent | |
 | | `volume`, `mute`, `seek`, `play_media`, `queue`, `turn_on`, `turn_off` | bool | `false` | Volume is 0–100. `seek` is a position in the current media. `play_media` plays a URL or another id. `queue` skips tracks. There is no toggle |
+| `update` | `device_class` | `firmware` | absent | |
+| | `install` | bool | `false` | Can be told to install. Without it, it only says an update exists |
+| | `check` | bool | `false` | Can be told to look for a newer version now |
 
 **Temperatures are °C** in climate entities and water heaters, in their capabilities, state and services alike.
 A protocol converts from what a device speaks (°F, K) on the way in and back on the way out
@@ -200,6 +203,10 @@ compares °F with °C. Pages show °C for now.
 **Unlocking and opening let someone in.** Pages ask before sending them, in a window that also
 takes the code a lock needs. A code travels with its call (`lock.unlock {code}`), is never shown
 in logs (its `Debug` hides it), and is never kept.
+
+**Installing an update takes the device away for a while** and can't be undone. Pages ask before
+sending `update.install`, in a window that says what version it is and is also where a version
+is skipped. Rules may install; the editor says what that does when the call is written.
 
 Device classes are closed lists, matching Home Assistant's: a protocol maps what it knows (with
 `SensorClass::from_ha` and friends) and leaves the rest absent. New classes are additive.
@@ -305,12 +312,28 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | | `muted` | bool | no | Only when it can be muted |
 | | `title`, `artist`, `album`, `app`, `content_type` | string, 1–255 characters, not blank | no | What's playing, and which app |
 | | `duration`, `position` | seconds, finite, 0 or more | no | `position` only when it can seek. A position more than a second past `duration` is refused |
+| `update` | `available` | bool | yes | Its typed value, for rules (`on()`): a newer version is there to install, and nobody skipped it |
+| | `installed_version`, `latest_version` | string | no | As the device writes them. They aren't compared as numbers: a device that says an update is available is believed, and otherwise two versions that differ are an update |
+| | `in_progress` | bool | `false` | An install is running |
+| | `progress` | number 0–100 | no | How far the install has got, from a device that says. Only while `in_progress` |
+| | `title`, `release_summary`, `release_url` | string | no | What the software is called, a few words on the latest version, and where its notes are |
+| | `skipped_version` | string | no | The version someone passed over. **Set by the core**; a protocol's is ignored |
+| | `last_error` | string | no | Why the last install didn't finish: the protocol's reason when it has one, otherwise the core's. Cleared when the next install is sent |
 
 **An `event`'s every report is something happening.** Two `double` presses of a remote in a row
 are two changes: each moves `last_changed` and is a change for anything watching, even though the
 value is the same. A report the protocol marks `replayed` ([protocols.md](protocols.md) §6.3), only
 repeating what it last heard, sets the value and is not a change. Protocols keep every press
 waiting for the core in order, rather than only the latest as for values.
+
+**An `update` is partly the core's.** No device remembers that someone skipped a version, so
+the core does: `update.skip` and `update.clear_skipped` are answered by the core and never reach
+a protocol, the skipped version is kept across restarts, and it is forgotten when the device
+offers a newer one. While the latest version is the skipped one, `available` is `false`, in
+pages and in rules alike. The core also says when an install failed. One that leaves
+`in_progress` on the version it started with failed, as did one that never started within two
+minutes of being asked, or said nothing for ninety. And it sends a protocol **one install at a
+time** ([protocols.md](protocols.md) §7.1): the rest wait their turn.
 
 A `button` has **no state**: there is no `button` tag, and its `EntityState.state` is always
 `null`. For a button that means "has no value", not "unknown" (§5.2): pressing it is something it

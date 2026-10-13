@@ -9,7 +9,7 @@ use crate::discovery::EntityTopics;
 use crate::kinds::setting::Reading;
 use crate::kinds::{
     binary_sensor, button, climate, cover, event, fan, humidifier, light, lock, number, select,
-    sensor, siren, switch, text, valve, water_heater,
+    sensor, siren, switch, text, update, valve, water_heater,
 };
 use crate::template::ValueTemplate;
 
@@ -111,6 +111,7 @@ pub fn decode(
         EntityTopics::Lock(topics) => lock::decode(topics, message),
         EntityTopics::Fan(topics) => fan::decode(topics, message, previous),
         EntityTopics::Siren(topics) => siren::decode(topics, message),
+        EntityTopics::Update(topics) => update::decode(topics, message, previous),
         EntityTopics::Climate(topics) => climate::decode(topics, message, previous),
         EntityTopics::WaterHeater(topics) => water_heater::decode(topics, message, previous),
         EntityTopics::Humidifier(topics) => humidifier::decode(topics, message, previous),
@@ -159,6 +160,7 @@ pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, 
         EntityTopics::Lock(topics) => lock::encode(topics, service),
         EntityTopics::Fan(topics) => fan::encode(topics, service),
         EntityTopics::Siren(topics) => siren::encode(topics, service),
+        EntityTopics::Update(topics) => update::encode(topics, service),
         EntityTopics::Climate(topics) => climate::encode(topics, service, None),
         EntityTopics::WaterHeater(topics) => water_heater::encode(topics, service, None),
         EntityTopics::Humidifier(topics) => humidifier::encode(topics, service),
@@ -186,6 +188,7 @@ pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, Un
         EntityTopics::Siren(topics) => topics.state_topic.as_deref().into_iter().collect(),
         EntityTopics::Cover(topics) => topics.listens(),
         EntityTopics::Valve(topics) => topics.listens(),
+        EntityTopics::Update(topics) => topics.listens(),
         EntityTopics::Fan(topics) => readings(topics.readings()),
         EntityTopics::Climate(topics) => readings(topics.readings()),
         EntityTopics::WaterHeater(topics) => readings(topics.readings()),

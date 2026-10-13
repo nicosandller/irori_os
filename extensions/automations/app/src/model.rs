@@ -217,8 +217,11 @@ impl Home {
         })
     }
 
-    /// What on and off mean for `entity`.
+    /// What on and off mean for `entity`. An update's are whether one is there to install.
     pub fn flag_words(&self, entity: &EntityId) -> (&'static str, &'static str) {
+        if entity.kind() == EntityKind::Update {
+            return flag_words(Some(BinarySensorClass::Update));
+        }
         flag_words(self.flag_class(entity))
     }
 }
@@ -662,6 +665,21 @@ pub fn state_words(state: &EntityState, home: &Home) -> String {
         Some(State::Lock(l)) => l.state.as_str().to_owned(),
         Some(State::Valve(v)) => v.state.as_str().to_owned(),
         Some(State::Siren(s)) => if s.on { "sounding" } else { "quiet" }.into(),
+        Some(State::Update(update)) => {
+            let version = |version: &Option<String>| version.clone().unwrap_or_default();
+            if update.in_progress {
+                match update.progress {
+                    Some(progress) => format!("installing {}%", progress.round()),
+                    None => "installing".into(),
+                }
+            } else if update.available {
+                format!("an update · {}", version(&update.latest_version))
+            } else {
+                format!("up to date · {}", version(&update.installed_version))
+                    .trim_end_matches([' ', '·'])
+                    .to_owned()
+            }
+        }
         // The canvas line. A trigger compares `state` on its own (`playing`), not the title.
         Some(State::MediaPlayer(player)) => match player.title.as_deref() {
             Some(title) if !title.is_empty() => format!("{} · {title}", player.state.as_str()),

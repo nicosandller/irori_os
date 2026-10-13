@@ -7,6 +7,7 @@ mod engine;
 mod events;
 mod home;
 mod host;
+mod installs;
 mod services;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -20,8 +21,8 @@ use irori_protocol::{IncomingAction, IncomingCall, Rejected, ServiceErrorCode};
 use irori_types::{
     ApiScope, Area, Context, ContextId, Description, Device, DeviceId, Entity, EntityId,
     EntityKind, EntityState, ExtensionId, ExtensionSettings, IotClass, Name, Origin, PackagePath,
-    ProtocolId, ServiceCall, Settings, SettingsKey, StateReport, Timestamp, UniqueId, Version,
-    Waiting,
+    ProtocolId, Service, ServiceCall, Settings, SettingsKey, StateReport, Timestamp, UniqueId,
+    Version, Waiting,
 };
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -34,11 +35,25 @@ pub use services::{CallError, Command};
 pub use home::{SYSTEM_PROTOCOL, device_id_for, new_area_id, new_floor_id};
 
 pub use home::HeldDevice;
+pub use installs::QueuedInstall;
 
 use home::{Home, Stamp};
 
 /// How long a service call may take before the caller gets [`CallError::Timeout`].
 pub const SERVICE_CALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How often an install that was sent is looked in on ([`installs`]).
+const INSTALL_CHECKED_EVERY: Duration = Duration::from_secs(15);
+
+/// Where the skipped versions of updates are kept, among the system extension's stored values.
+const SKIPPED_UPDATES: &str = "skipped_updates";
+
+/// Irori's own extension, which owns what the core stores for itself.
+fn system_extension() -> Result<ExtensionId, Rejected> {
+    SYSTEM_PROTOCOL
+        .parse()
+        .map_err(|_| Rejected("the system extension has no id".into()))
+}
 
 /// How long an unpair may take. Longer than a service call: the protocol waits for the device
 /// itself to answer, and a network gives a device several seconds to do it.
@@ -338,6 +353,8 @@ struct Shared {
     place: RwLock<irori_types::HomeSettings>,
     /// One lock per entity, so calls on the same entity happen one after another.
     busy: Mutex<HashMap<EntityId, Arc<tokio::sync::Mutex<()>>>>,
+    /// Which update is installing on each protocol, and which wait their turn.
+    installs: Mutex<installs::Installs>,
     extensions: RwLock<BTreeMap<ExtensionId, ExtensionOverview>>,
     /// Each extension's settings. A watch channel, because the host has to notice a change and
     /// restart the extension with it.
@@ -416,6 +433,7 @@ impl Core {
             config_dir: RwLock::default(),
             place: RwLock::default(),
             busy: Mutex::default(),
+            installs: Mutex::default(),
             extensions: RwLock::default(),
             extension_settings: watch::Sender::new(ExtensionSettings::default()),
             disabled: watch::Sender::new(BTreeSet::new()),
@@ -591,6 +609,7 @@ impl Core {
     /// the process; set it before starting extensions.
     pub fn use_storage(&self, storage: Arc<dyn irori_protocol::Storage>) {
         *write(&self.0.storage) = storage;
+        self.restore_skips();
     }
 
     fn load(
@@ -643,11 +662,27 @@ impl Core {
 
     /// Asks an entity to do something, and waits for its protocol's answer (at most
     /// [`SERVICE_CALL_TIMEOUT`]). `context` says who's asking.
+    ///
+    /// Three things an update is asked are answered here rather than by its protocol: skipping a
+    /// version and taking that back, which only Irori remembers, and an install while another
+    /// is running on the same protocol, which waits its turn ([`installs`]) and is `Ok` at once.
     pub async fn call_service(
         &self,
         entity_id: &EntityId,
         command: Command,
         context: Context,
+    ) -> Result<(), CallError> {
+        self.call(entity_id, command, context, false).await
+    }
+
+    /// `its_turn` is for an install coming off the line: it's sent without asking for a turn,
+    /// and whoever took it off the line sees to what happens next.
+    async fn call(
+        &self,
+        entity_id: &EntityId,
+        command: Command,
+        context: Context,
+        its_turn: bool,
     ) -> Result<(), CallError> {
         // The whole call, queueing included, fits in SERVICE_CALL_TIMEOUT.
         let deadline = tokio::time::Instant::now() + SERVICE_CALL_TIMEOUT;
@@ -672,6 +707,41 @@ impl Core {
             .map_err(|_| CallError::Timeout)?;
 
         let resolved = read(&self.0.home).resolve(entity_id, command)?;
+        let installing = match resolved.service {
+            Service::UpdateSkip | Service::UpdateClearSkipped => {
+                return self.answer_skip(entity_id, &resolved.service, context);
+            }
+            Service::UpdateInstall => {
+                if !its_turn && !self.take_turn(entity_id, &resolved.protocol, &context)? {
+                    return Ok(());
+                }
+                let stamp = self.stamp();
+                let events = write(&self.0.home).begin_update(entity_id, &stamp);
+                self.publish(events);
+                true
+            }
+            _ => false,
+        };
+        let protocol = resolved.protocol.clone();
+        let outcome = self.dispatch(entity_id, resolved, context, deadline).await;
+        if installing && !its_turn {
+            match outcome {
+                Ok(()) => self.watch_install(protocol, entity_id.clone()),
+                // The caller is told why; the next in line shouldn't wait for it.
+                Err(_) => self.install_over(&protocol, entity_id),
+            }
+        }
+        outcome
+    }
+
+    /// Sends a resolved call to its protocol and waits for the answer, until `deadline`.
+    async fn dispatch(
+        &self,
+        entity_id: &EntityId,
+        resolved: home::Resolved,
+        context: Context,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), CallError> {
         let sender = read(&self.0.links)
             .get(&resolved.protocol)
             .cloned()
@@ -739,6 +809,196 @@ impl Core {
             write(&self.0.home).forget_command(entity_id);
         }
         outcome
+    }
+
+    /// Skipping a version and taking that back: the core's own, and never sent to a protocol.
+    fn answer_skip(
+        &self,
+        entity_id: &EntityId,
+        service: &Service,
+        context: Context,
+    ) -> Result<(), CallError> {
+        let stamp = self.stamp();
+        let events = {
+            let mut home = write(&self.0.home);
+            match service {
+                Service::UpdateSkip => home.skip_update(entity_id, &context, &stamp)?,
+                _ => home.clear_skipped_update(entity_id, &context, &stamp)?,
+            }
+        };
+        let left = matches!(service, Service::UpdateSkip) && self.installs().leave(entity_id);
+        let mut events = events;
+        events.push(Event::ServiceCalled {
+            entity_id: entity_id.clone(),
+            service: service.name(),
+            context,
+        });
+        if left {
+            events.push(Event::InstallsChanged);
+        }
+        self.publish(events);
+        self.store_skips();
+        Ok(())
+    }
+
+    /// Whether an install asked for now can be sent now. `false` when it waits its turn behind
+    /// another on the same protocol, or was already asked for.
+    fn take_turn(
+        &self,
+        entity_id: &EntityId,
+        protocol: &ProtocolId,
+        context: &Context,
+    ) -> Result<bool, CallError> {
+        let installed = {
+            let home = read(&self.0.home);
+            let update = home.update(entity_id);
+            if update.is_some_and(|update| update.in_progress) {
+                return Err(CallError::NotSupported(format!(
+                    "`{entity_id}` is already installing"
+                )));
+            }
+            update.and_then(|update| update.installed_version.clone())
+        };
+        let asked = self.installs().ask(
+            protocol,
+            entity_id,
+            context,
+            installed.as_deref(),
+            tokio::time::Instant::now(),
+        );
+        if asked == installs::Asked::Waits {
+            self.publish(vec![Event::InstallsChanged]);
+        }
+        Ok(asked == installs::Asked::Go)
+    }
+
+    /// The updates waiting their turn to install.
+    pub fn queued_installs(&self) -> Vec<QueuedInstall> {
+        self.installs().waiting()
+    }
+
+    fn installs(&self) -> std::sync::MutexGuard<'_, installs::Installs> {
+        self.0
+            .installs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The install of `entity_id` on `protocol` is over, however it went: sends the next in
+    /// line. Says nothing when `entity_id` isn't the one installing there.
+    fn install_over(&self, protocol: &ProtocolId, entity_id: &EntityId) {
+        let Some(next) = self.next_install(protocol, entity_id) else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let (core, protocol) = (self.clone(), protocol.clone());
+        runtime.spawn(async move { core.run_line(protocol, next).await });
+    }
+
+    /// Ends `entity_id`'s install on `protocol` and names the next in line, now the one
+    /// installing. `None` when nothing waits, or `entity_id` wasn't the one installing.
+    fn next_install(
+        &self,
+        protocol: &ProtocolId,
+        entity_id: &EntityId,
+    ) -> Option<(EntityId, Context)> {
+        let next = {
+            let home = read(&self.0.home);
+            self.installs().next(
+                protocol,
+                entity_id,
+                |next| home.update(next)?.installed_version.clone(),
+                tokio::time::Instant::now(),
+            )
+        };
+        if next.is_some() {
+            self.publish(vec![Event::InstallsChanged]);
+        }
+        next
+    }
+
+    /// Sends installs off the line until one is taken, each as whoever asked for it. One that
+    /// can't be sent says why on its entity, since nobody is waiting for the answer any more.
+    async fn run_line(self, protocol: ProtocolId, first: (EntityId, Context)) {
+        let mut next = Some(first);
+        while let Some((entity_id, context)) = next.take() {
+            match self
+                .call(&entity_id, Command::new("install"), context, true)
+                .await
+            {
+                Ok(()) => {
+                    self.watch_install(protocol, entity_id);
+                    return;
+                }
+                Err(error) => {
+                    self.fail_update(
+                        &entity_id,
+                        &format!("It couldn't be asked to install: {error}."),
+                    );
+                    next = self.next_install(&protocol, &entity_id);
+                }
+            }
+        }
+    }
+
+    /// Keeps an eye on an install that was sent: one that never starts, or goes quiet for too
+    /// long, failed, and the next in line goes.
+    fn watch_install(&self, protocol: ProtocolId, entity_id: EntityId) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let core = self.clone();
+        runtime.spawn(async move {
+            loop {
+                tokio::time::sleep(INSTALL_CHECKED_EVERY).await;
+                let watch =
+                    core.installs()
+                        .watch(&protocol, &entity_id, tokio::time::Instant::now());
+                match watch {
+                    installs::Watch::Fine => {}
+                    installs::Watch::Over => return,
+                    installs::Watch::Overdue(why) => {
+                        core.fail_update(&entity_id, why);
+                        core.install_over(&protocol, &entity_id);
+                        return;
+                    }
+                }
+            }
+        });
+    }
+
+    fn fail_update(&self, entity_id: &EntityId, why: &str) {
+        let stamp = self.stamp();
+        let events = write(&self.0.home).fail_update(entity_id, why, &stamp);
+        self.publish(events);
+    }
+
+    /// Keeps the skipped versions, when they've changed.
+    fn store_skips(&self) {
+        let Some(skips) = write(&self.0.home).skips_to_store() else {
+            return;
+        };
+        let stored = system_extension().and_then(|system| {
+            let value = serde_json::to_value(&skips).map_err(|e| Rejected(e.to_string()))?;
+            self.store(&system, SKIPPED_UPDATES, Some(&value))
+        });
+        if let Err(error) = stored {
+            tracing::warn!(%error, "couldn't keep which updates were skipped");
+        }
+    }
+
+    fn restore_skips(&self) {
+        let stored = system_extension().and_then(|system| self.load(&system, SKIPPED_UPDATES));
+        match stored.map(|value| value.map(serde_json::from_value)) {
+            Ok(Some(Ok(skips))) => write(&self.0.home).restore_skips(skips),
+            Ok(None) => {}
+            Ok(Some(Err(error))) => {
+                tracing::warn!(%error, "couldn't read which updates were skipped");
+            }
+            Err(error) => tracing::warn!(%error, "couldn't read which updates were skipped"),
+        }
     }
 
     /// Asks an extension's engine something on behalf of its page, and waits for the answer (at
@@ -896,6 +1156,24 @@ impl Core {
 
     fn publish(&self, events: Vec<Event>) {
         for event in events {
+            if let Event::StateChanged {
+                entity_id,
+                new_state,
+                ..
+            } = &event
+                && entity_id.kind() == EntityKind::Update
+            {
+                let update = match &new_state.state {
+                    Some(irori_types::State::Update(update)) => Some(update),
+                    _ => None,
+                };
+                let ended = self
+                    .installs()
+                    .heard(entity_id, update, tokio::time::Instant::now());
+                if let Some(protocol) = ended {
+                    self.install_over(&protocol, entity_id);
+                }
+            }
             // No listeners is fine.
             let _ = self.0.events.send(event);
         }
@@ -1005,6 +1283,7 @@ impl Core {
                 rejected_count += 1;
             }
         }
+        self.store_skips();
         if (dropped > 0 || rejected_count > 0)
             && let Some(overview) = write(&self.0.extensions).get_mut(extension)
         {
@@ -1021,7 +1300,10 @@ impl Core {
 
     /// Removes every device this protocol brought in, including ignored ones.
     pub fn remove_protocol(&self, protocol: &ProtocolId) {
-        let events = write(&self.0.home).remove_protocol(protocol);
+        let mut events = write(&self.0.home).remove_protocol(protocol);
+        if self.installs().forget(protocol) {
+            events.push(Event::InstallsChanged);
+        }
         self.publish(events);
     }
 

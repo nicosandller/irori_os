@@ -36,6 +36,10 @@ handle the rest.
 - **Buttons and remotes.** Their presses arrive as events (`single`, `double`, `hold`), which
   automations can start from. This needs Zigbee2MQTT's `experimental_event_entities`, which this
   extension turns on. Tested with the Tuya IH-K663 smart button.
+- **Firmware updates.** A device Zigbee2MQTT has an update for says so on the Devices page, with
+  the version it has and the one on offer, and is updated from there. Zigbee2MQTT says how far
+  it has got, and why when it fails. Irori sends it one update at a time: a Zigbee update takes
+  from ten minutes to an hour and slows the whole network while it runs.
 - **Restarts Zigbee2MQTT** by restarting itself if the Z2M process ever exits — the same
   crash-and-backoff the core already gives every extension (`docs/specs/protocols.md` §3), so
   there's no second retry loop to get wrong inside this one.

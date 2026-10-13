@@ -50,6 +50,8 @@ pub enum Event {
     /// to be added. No payload: listeners read the home again. The same description
     /// again says nothing.
     FoundChanged,
+    /// Which updates wait their turn to install changed. No payload: listeners ask for the line.
+    InstallsChanged,
     /// A service call was sent to a protocol.
     ServiceCalled {
         entity_id: EntityId,

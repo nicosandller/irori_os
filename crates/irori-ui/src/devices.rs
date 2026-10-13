@@ -18,10 +18,11 @@ use crate::api::Home;
 mod controls;
 mod grouping;
 mod tables;
+mod updates;
 
 pub(crate) use self::controls::{
     climate_words, fan_words, fill, humidifier_words, lock_words, media_player_words, number,
-    opening_words, unit_of, water_heater_words, wording,
+    opening_words, unit_of, update_words, water_heater_words, wording,
 };
 pub(crate) use self::controls::{control, kept};
 
@@ -189,6 +190,8 @@ pub fn Devices() -> impl IntoView {
                 <AddDevice />
             </crate::modal::Modal>
         })}
+
+        {move || (showing.get() != Showing::Helpers).then(|| view! { <updates::Updates /> })}
 
         {move || (showing.get() != Showing::Helpers).then(|| view! {
             <input
@@ -1535,7 +1538,8 @@ pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll
         | Capabilities::Climate(_)
         | Capabilities::WaterHeater(_)
         | Capabilities::Humidifier(_)
-        | Capabilities::MediaPlayer(_) => view! {
+        | Capabilities::MediaPlayer(_)
+        | Capabilities::Update(_) => view! {
             {control}
             <button
                 type="button"

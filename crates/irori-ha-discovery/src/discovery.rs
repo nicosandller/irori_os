@@ -12,7 +12,7 @@ use irori_types::{Capabilities, EntityCategory, EntityKind, Name, UniqueId};
 
 use crate::kinds::{
     binary_sensor, button, climate, cover, event, fan, humidifier, light, lock, number, select,
-    sensor, siren, switch, text, valve, water_heater,
+    sensor, siren, switch, text, update, valve, water_heater,
 };
 use crate::template::CommandTemplate;
 use crate::topic::Component;
@@ -34,6 +34,7 @@ pub use crate::kinds::setting::{Power, Reading, Setting};
 pub use crate::kinds::siren::SirenTopics;
 pub use crate::kinds::switch::SwitchTopics;
 pub use crate::kinds::text::TextTopics;
+pub use crate::kinds::update::UpdateTopics;
 pub use crate::kinds::water_heater::WaterHeaterTopics;
 
 /// A device as HA discovery describes it. `unique_id` is the first of `device.identifiers`,
@@ -106,6 +107,7 @@ pub enum EntityTopics {
     Fan(Box<FanTopics>),
     Valve(Box<OpeningTopics>),
     Siren(SirenTopics),
+    Update(Box<UpdateTopics>),
     Climate(Box<ClimateTopics>),
     WaterHeater(Box<WaterHeaterTopics>),
     Humidifier(Box<HumidifierTopics>),
@@ -129,6 +131,7 @@ impl EntityTopics {
             Self::Fan(_) => EntityKind::Fan,
             Self::Valve(_) => EntityKind::Valve,
             Self::Siren(_) => EntityKind::Siren,
+            Self::Update(_) => EntityKind::Update,
             Self::Climate(_) => EntityKind::Climate,
             Self::WaterHeater(_) => EntityKind::WaterHeater,
             Self::Humidifier(_) => EntityKind::Humidifier,
@@ -189,6 +192,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::Fan => fan::parse(&root)?,
         Component::Valve => valve::parse(&root)?,
         Component::Siren => siren::parse(&root)?,
+        Component::Update => update::parse(&root)?,
         Component::Climate => climate::parse(&root)?,
         Component::WaterHeater => water_heater::parse(&root)?,
         Component::Humidifier => humidifier::parse(&root)?,

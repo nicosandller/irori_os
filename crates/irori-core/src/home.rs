@@ -15,6 +15,8 @@ use irori_types::{
 use crate::Event;
 use crate::services::{CallError, Command};
 
+pub(crate) mod updates;
+
 /// When an operation happens, and the id for the context it creates if it changes something.
 #[derive(Debug, Clone)]
 pub(crate) struct Stamp {
@@ -63,6 +65,11 @@ pub(crate) struct Home {
     /// What the core last told an entity to be, until the device reports back. `toggle` uses it,
     /// so two toggles in a row don't both see the old value while the first is still in flight.
     commanded: HashMap<EntityId, Typed>,
+    /// The version of each update someone chose to pass over (`update.skip`), by what its
+    /// protocol calls the entity. No device keeps this.
+    skipped: HashMap<Key, String>,
+    /// Whether `skipped` has changed since it was last stored.
+    skips_changed: bool,
     recent_calls: HashMap<ProtocolId, VecDeque<(ContextId, Timestamp)>>,
 }
 
@@ -949,6 +956,14 @@ impl Home {
         if let Some(state) = &report.state {
             fits(&self.entities[&id], state)?;
         }
+        let mut report = report;
+        if matches!(report.state, Some(State::Update(_)))
+            && let Some(State::Update(update)) = report.state.take()
+        {
+            let key = (protocol.clone(), report.unique_id.clone());
+            report.state = Some(self.fold_update(&id, &key, update));
+        }
+        let unique_id = &report.unique_id;
         let parent = match &report.caused_by {
             Some(caused_by)
                 if self.recent_calls.get(protocol).is_some_and(|calls| {

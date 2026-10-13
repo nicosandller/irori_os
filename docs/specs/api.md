@@ -95,7 +95,8 @@ A service call made with a token is recorded as `origin.type = "api"` and that t
 `/api/health`, `/api/session`, and `/api/setup` were already there.
 
 `GET /api/home` is the picture the page shows: devices, entities, states, extensions,
-areas, floors, held devices, and the floorplan when one has been drawn.
+areas, floors, held devices, the floorplan when one has been drawn, and `installs`: the updates
+waiting their turn to install, each with its `entity_id` and how many are `ahead` of it.
 
 `POST /api/command` is `{ "entity_id", "command", "data"? }`. `command` is one of the
 entity's actions (`turn_on`) or `toggle`. The response is the entity's state once the

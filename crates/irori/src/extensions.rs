@@ -68,6 +68,9 @@ fn log(event: &Event) {
         Event::FoundChanged => {
             tracing::debug!("a device waiting to be added changed");
         }
+        Event::InstallsChanged => {
+            tracing::debug!("the updates waiting to install changed");
+        }
         Event::DeviceUpdated { .. }
         | Event::DeviceRemoved { .. }
         | Event::EntityUpdated { .. }

@@ -255,6 +255,11 @@
           "description": "A TV, a speaker, or another player.",
           "type": "string",
           "const": "media_player"
+        },
+        {
+          "description": "Newer software for something: a device's firmware, an extension.",
+          "type": "string",
+          "const": "update"
         }
       ]
     },

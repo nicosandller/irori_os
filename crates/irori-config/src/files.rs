@@ -325,6 +325,8 @@ pub struct IroriSettings {
     pub devices: DevicesSection,
     #[serde(default)]
     pub recorder: RecorderSection,
+    #[serde(default)]
+    pub updates: UpdatesSection,
 }
 
 /// `[devices]`. Nothing in it is used any more: a device joins the home only when a person adds
@@ -364,6 +366,28 @@ pub enum LogLevel {
     Info,
     Debug,
     Trace,
+}
+
+/// `[updates]`. Whether Irori looks for a newer release of itself. Read at startup.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdatesSection {
+    /// Look on its own: once after starting and twice a day, one request to GitHub. A missing
+    /// value is `true`. Off, Irori still looks when asked to (`update.check`).
+    #[serde(default = "default_check")]
+    pub check: bool,
+}
+
+fn default_check() -> bool {
+    true
+}
+
+impl Default for UpdatesSection {
+    fn default() -> Self {
+        Self {
+            check: default_check(),
+        }
+    }
 }
 
 /// `[recorder]`. How long entity history is kept. Applied while Irori runs: the Settings page

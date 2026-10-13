@@ -17,6 +17,7 @@ mod sensor;
 mod siren;
 mod switch;
 mod text;
+mod update;
 mod water_heater;
 
 pub(crate) use self::climate::climate_words;
@@ -27,6 +28,7 @@ pub(crate) use self::media_player::media_player_words;
 pub(crate) use self::number::unit_of;
 pub(crate) use self::opening::opening_words;
 pub(crate) use self::sensor::wording;
+pub(crate) use self::update::update_words;
 pub(crate) use self::water_heater::water_heater_words;
 
 use irori_types::{Capabilities, CoverState, Entity, EntityState, State};
@@ -89,7 +91,7 @@ pub(crate) fn control(
         Capabilities::Humidifier(capabilities) => {
             humidifier::humidifier_control(entity, capabilities, value, offline, controls)
         }
-        Capabilities::MediaPlayer(_) => kept(
+        Capabilities::MediaPlayer(_) | Capabilities::Update(_) => kept(
             entity,
             Signal::stored(state.cloned()),
             Signal::stored(offline),
@@ -148,6 +150,13 @@ pub(crate) fn kept(
             controls,
         )),
         Capabilities::MediaPlayer(capabilities) => Some(media_player::media_player_control(
+            entity,
+            capabilities,
+            value,
+            offline,
+            controls,
+        )),
+        Capabilities::Update(capabilities) => Some(update::update_control(
             entity,
             capabilities,
             value,

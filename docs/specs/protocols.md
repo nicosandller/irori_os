@@ -327,6 +327,9 @@ manifest's `entity_kinds`.
 | `media_player.media_seek` | `position`, seconds, finite, 0 or more | Needs `seek` |
 | `media_player.media_next_track`, `media_player.media_previous_track` | none | Need `queue` |
 | `media_player.play_media` | `content_type` and `content_id`, each non-blank (up to 255 and 2048 characters); optional `title`, `artist`, `album`, `image_url` | Needs `play_media` |
+| `update.install` | none | Needs `install`. Installs the latest version. Refused while one is already installing |
+| `update.check` | none | Needs `check`. Looks for a newer version now |
+| `update.skip`, `update.clear_skipped` | none | **Never sent to a protocol**: the core answers them (below) |
 | `fan.turn_on` | `percentage` 1–100, `preset_mode`; both optional | `fan.toggle` resolves to `turn_on` or `turn_off` |
 | `fan.turn_off` | none | |
 | `fan.set_percentage` | `percentage` 0–100 | 0 turns it off. Needs a `speed_count` |
@@ -350,6 +353,17 @@ manifest's `entity_kinds`.
   caller who gives up mid-call releases its turn while the protocol may still be working, so
   two commands can briefly overlap at the device. Correctness rests on the remembered command
   above, not on the ordering.
+- **Updates, one at a time.** A Zigbee update takes from ten minutes to an hour and fills the
+  network every other device shares, so the core sends a protocol one `update.install` at a
+  time. An install asked for while another runs on the same protocol succeeds at once and waits
+  its turn; `GET /api/home` lists what is waiting (`installs`). The next goes when the running
+  one ends: it leaves `in_progress`, its installed version changes, it never starts within two
+  minutes, or it says nothing for ninety. A protocol reports what the device says
+  (`in_progress`, `progress`, the versions) and nothing else is asked of it. An install that
+  couldn't be sent when its turn came says why in the entity's `last_error`, since nobody is
+  waiting for the answer by then.
+- **Skipping.** `update.skip` and `update.clear_skipped` change what the core remembers about
+  the entity ([entities.md](entities.md) §5.3) and are never sent on.
 - **Friendlier parameters.** `brightness_pct` from people becomes `brightness`.
 - **Capabilities.** A call asking for something the entity can't do (brightness on a
   non-dimmable light, a color temperature outside its range) is rejected before it reaches the

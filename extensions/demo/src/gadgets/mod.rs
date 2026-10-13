@@ -2,12 +2,14 @@
 //! again, a doorbell with a chime and a screen, a living room blind that takes a moment to move,
 //! a ceiling fan, a TV on a one-minute script, a water shut-off with a leak alarm, a thermostat,
 //! a hot water tank and a dehumidifier. Between them, one of every kind beyond lights, switches
-//! and sensors. Each is a [`Gadget`] in its own module.
+//! and sensors. Each is a [`Gadget`] in its own module. The fan and the water shut-off also have
+//! [`firmware`] to update.
 
 mod blind;
 mod dehumidifier;
 mod doorbell;
 mod fan;
+mod firmware;
 mod lock;
 mod shutoff;
 mod tank;

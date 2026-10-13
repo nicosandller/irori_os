@@ -274,6 +274,9 @@ struct HomeView {
     /// homes: the Floorplan page then knows to offer a blank canvas rather than an empty plan.
     #[serde(skip_serializing_if = "Floorplan::is_empty")]
     floorplan: Floorplan,
+    /// Updates waiting their turn to install, behind another on the same protocol.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    installs: Vec<irori_core::QueuedInstall>,
 }
 
 fn snapshot(state: &AppState) -> HomeView {
@@ -287,6 +290,7 @@ fn snapshot(state: &AppState) -> HomeView {
         floors: core.floors(),
         held: core.held_devices(),
         floorplan: core.floorplan(),
+        installs: core.queued_installs(),
     }
 }
 
@@ -1727,7 +1731,7 @@ async fn install_official(
 }
 
 /// A unique directory name under the packages dir for a download in flight.
-fn staging_dir() -> String {
+pub(crate) fn staging_dir() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("the clock is after 1970")
@@ -1752,7 +1756,7 @@ fn full_access_refusal(id: &ExtensionId) -> String {
 ///
 /// A package that can't be read is refused too: installing it would start whatever the manifest
 /// says, and a manifest we couldn't check might be the one that needed the approval.
-fn unapproved_full_access(
+pub(crate) fn unapproved_full_access(
     dir: &std::path::Path,
     expected: Option<&ExtensionId>,
     approved: bool,

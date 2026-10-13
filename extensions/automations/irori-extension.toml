@@ -1,16 +1,17 @@
 [extension]
 id = "automations"
 name = "Automations"
-version = "0.4.2"
-irori = ">=0.7.0"
-# 0.7.0 reads entity categories, text sensor options, the unmodeled list and entity formats.
+version = "0.5.0"
+irori = ">=1.4.0"
+# 1.4.0 has the `update` kind, and entity format 17 with it.
 description = "Build automations as flows on a canvas, watch them run, and see why one didn't."
 icon = "icon.svg"
-# Format 16 is the one that adds media players. A player's value is its playback
-# (`off`, `idle`, `playing`, `paused`, `buffering`, `standby`), so a state trigger's
-# `to` and a condition's `is` name that word. This format also includes every kind
-# added before media players; the engine reads those by the same primary value.
-entity_format = 16
+# Format 17 is the one that adds updates. An update's value is whether one is available, so a
+# state trigger's `to: true` fires when a new version comes out. Format 16 added media players,
+# whose value is their playback (`off`, `idle`, `playing`, `paused`, `buffering`, `standby`).
+# This format also includes every kind added before; the engine reads those by the same primary
+# value.
+entity_format = 17
 
 [[contributes.automation]]
 run = { command = "bin/irori-ext-automations" }

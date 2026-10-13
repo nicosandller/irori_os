@@ -7,6 +7,7 @@ use irori_protocol::types::{
     speed_to_percentage,
 };
 
+use super::firmware::Firmware;
 use super::{Device, Entity, Gadget, Room, cannot};
 
 const FAN: &str = "ceiling-fan";
@@ -15,6 +16,7 @@ const FAN_SPEEDS: u16 = 3;
 
 pub(super) struct CeilingFan {
     fan: FanState,
+    firmware: Firmware,
 }
 
 impl CeilingFan {
@@ -27,6 +29,7 @@ impl CeilingFan {
                 direction: Some(FanDirection::Forward),
                 preset_mode: None,
             },
+            firmware: Firmware::new("ceiling-fan-firmware", "Ceiling fan firmware", 4),
         }
     }
 
@@ -50,30 +53,39 @@ impl Gadget for CeilingFan {
     }
 
     fn entities(&self) -> Vec<Entity> {
-        vec![Entity {
-            unique_id: FAN_FAN,
-            name: None,
-            capabilities: Capabilities::Fan(FanCapabilities {
-                speed_count: FAN_SPEEDS,
-                oscillate: false,
-                direction: true,
-                preset_modes: vec!["breeze".into()],
-            }),
-            suggested_object_id: None,
-            category: None,
-        }]
+        vec![
+            Entity {
+                unique_id: FAN_FAN,
+                name: None,
+                capabilities: Capabilities::Fan(FanCapabilities {
+                    speed_count: FAN_SPEEDS,
+                    oscillate: false,
+                    direction: true,
+                    preset_modes: vec!["breeze".into()],
+                }),
+                suggested_object_id: None,
+                category: None,
+            },
+            self.firmware.entity(),
+        ]
     }
 
     fn states(&self) -> Vec<(&'static str, State)> {
-        vec![(FAN_FAN, State::Fan(self.fan.clone()))]
+        vec![
+            (FAN_FAN, State::Fan(self.fan.clone())),
+            self.firmware.state(),
+        ]
     }
 
     fn call(
         &mut self,
         unique_id: &str,
         service: &Service,
-        _: Instant,
+        now: Instant,
     ) -> Result<&'static str, String> {
+        if self.firmware.is(unique_id) {
+            return self.firmware.call(service, now);
+        }
         match (unique_id, service) {
             (FAN_FAN, Service::FanTurnOn(data)) => {
                 self.fan.on = true;
@@ -103,8 +115,12 @@ impl Gadget for CeilingFan {
         Ok(FAN_FAN)
     }
 
-    fn tick(&mut self, _: Instant, _: Room, _: u64) -> Vec<&'static str> {
-        Vec::new()
+    fn tick(&mut self, now: Instant, _: Room, _: u64) -> Vec<&'static str> {
+        if self.firmware.tick(now) {
+            vec![self.firmware.state().0]
+        } else {
+            Vec::new()
+        }
     }
 }
 

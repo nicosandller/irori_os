@@ -496,12 +496,6 @@ fn page(
                 ().into_any()
             }}
             {suggestion.map(|note| view! { <p class="muted small">{note}</p> })}
-            {device.sw_version.as_ref().map(|_| view! {
-                <p class="muted small">
-                    "Irori can read the firmware version but can't install updates yet; see the "
-                    "roadmap (M1.8)."
-                </p>
-            })}
         </section>
 
         <section class="card">
@@ -1099,6 +1093,8 @@ fn flag_word(capabilities: &Capabilities, on: bool) -> &'static str {
         Capabilities::BinarySensor(sensor) => devices::wording(sensor.device_class, on),
         Capabilities::Siren(_) if on => "Sounding",
         Capabilities::Siren(_) => "Quiet",
+        Capabilities::Update(_) if on => "Update available",
+        Capabilities::Update(_) => "Up to date",
         _ if on => "On",
         _ => "Off",
     }
@@ -1314,6 +1310,9 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
         }
         (Capabilities::MediaPlayer(_), Some(State::MediaPlayer(player))) => {
             devices::media_player_words(player)
+        }
+        (Capabilities::Update(_), Some(State::Update(update))) => {
+            devices::update_words(update, None)
         }
         (Capabilities::WaterHeater(_), Some(State::WaterHeater(heater))) => {
             devices::water_heater_words(heater)

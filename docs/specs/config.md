@@ -228,12 +228,21 @@ disabled = ["demo"]
 retain_days = 10          # detailed history, in days; at least 1
 # summary_days = 365      # hourly summaries; leave out to keep them
 
+[updates]
+check = true              # look for a newer Irori without being asked
+
 ```
 
 A command-line flag, or its environment variable, wins over the file, and the file wins over the
 default. `[server]` is read at startup; changing it while Irori runs logs that a restart is
 needed. `[extensions] disabled` applies while Irori runs: naming an extension stops it, removing
 it starts it again.
+
+`[updates] check` is whether Irori looks for a newer release of itself on its own: once after
+it starts and twice a day, one request to GitHub that says nothing about the home. It is the
+only thing Irori asks the internet without being told to. Left out, it is `true`. With `false`,
+the update on Irori's own device still looks when it is asked to (`update.check`). Read at
+startup.
 
 `[recorder]` is how long entity history is kept. It applies while Irori runs: the History row
 in Settings writes it, and an edit of the file is picked up within a couple of seconds.

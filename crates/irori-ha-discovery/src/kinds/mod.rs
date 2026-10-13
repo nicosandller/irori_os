@@ -23,6 +23,7 @@ pub mod setting;
 pub mod siren;
 pub mod switch;
 pub mod text;
+pub mod update;
 pub mod valve;
 pub mod water_heater;
 
