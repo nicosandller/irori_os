@@ -6600,6 +6600,39 @@ mod tests {
         Ok(())
     }
 
+    /// `irori-client` against the real guard, not a stand-in for it: `irori login` signs in
+    /// with no header, a change on that session passes because the client sends the page's
+    /// header, and the token it mints is refused a setup change and pointed at `irori login`.
+    #[tokio::test]
+    async fn the_cli_signs_in_and_a_token_is_still_only_a_token() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, _) = locked_home(&server).await?;
+        let origin = format!("http://{}", listen(app).await?);
+        let client = |origin: &str| irori_client::Builder::new(origin).map_err(anyhow::Error::new);
+
+        let (session, cookie) = client(&origin)?
+            .build()?
+            .sign_in("Nico", "correct horse")
+            .await?;
+        assert!(session.owner);
+
+        let signed_in = client(&origin)?.session(cookie).build()?;
+        let body =
+            serde_json::json!({ "name": "tablet", "scopes": ["registry:read", "states:read"] });
+        let created: irori_client::CreatedToken = signed_in.post("/api/tokens", &body).await?;
+
+        let token = client(&origin)?.bearer(created.secret).build()?;
+        let _: serde_json::Value = token.get("/api/home").await?;
+        let refused = token
+            .post::<serde_json::Value>("/api/tokens", &body)
+            .await
+            .expect_err("a token can't mint a token");
+        assert_eq!(refused.status, Some(403), "{refused}");
+        let said = crate::cli::explain(&refused);
+        assert!(said.contains("irori login"), "{said}");
+        Ok(())
+    }
+
     /// Holds an exclusive lock on the database so the next write fails at once.
     fn hold_database(dir: &std::path::Path) -> anyhow::Result<rusqlite::Connection> {
         let conn = rusqlite::Connection::open(dir.join("irori.db"))?;

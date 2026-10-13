@@ -395,6 +395,7 @@ printf "  ${MUTED}to start:${NC}\n"
 printf '\n'
 printf "    %s run        ${MUTED}# start the server${NC}\n" "$APP"
 printf "    %s version    ${MUTED}# print the version${NC}\n" "$APP"
+printf "    %s uninstall  ${MUTED}# remove this install${NC}\n" "$APP"
 printf '\n'
 printf "  ${MUTED}then open ${NC}http://127.0.0.1:8480${MUTED}  (Ctrl-C to stop)${NC}\n"
 printf '\n'

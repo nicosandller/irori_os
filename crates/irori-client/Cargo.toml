@@ -9,6 +9,14 @@ license.workspace = true
 
 [dependencies]
 irori-types.workspace = true
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
+tower.workspace = true
 
 [lints]
 workspace = true

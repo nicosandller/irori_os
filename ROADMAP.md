@@ -28,7 +28,7 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | C17 | Public API | HTTP at `/api/…`, scoped tokens, `/api/ws` push, inbound extensions on `/api/extension` | ✅ | C16 |
 | C18 | Recorder | Entity history in `irori.db` that survives a restart. The page shows the last day; the file keeps detailed history for `[recorder] retain_days` (default 10) and hourly summaries afterwards. Both are set from the History row in Settings | ✅ | C5 |
 | C21 | UI: Entity history | Last-24h list, chart and state timeline per entity, read from the recorder | ✅ | C18 |
-| C22 | CLI command tree | Full UI parity (`devices`, `rules`, `extensions`, `token`…) with `--json`. Only `serve` and `version` today | - | C17 |
+| C22 | CLI command tree | Full UI parity (`devices`, `rules`, `extensions`, `token`…) with `--json`, plus `irori uninstall` for what `install.sh` put down (`docs/specs/cli.md`). Drawing, the map search, and the flow canvas stay on the page | ✅ | C17 |
 | C23 | Firmware updates | `update` entity kind, update from UI | - | C5, C32 |
 | C24 | Performance budgets in CI | Binary size, RSS, latency, throughput checks (only UI bundle size is enforced today: under 5 MB brotli) | 🟠 | C1 |
 | C25 | JSON Schemas & golden examples | Schemas generated from `irori-types`, checked fresh in CI, valid/invalid example tests (`fixtures/`) | ✅ | C2, C3, C4, C9 |

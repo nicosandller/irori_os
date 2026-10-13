@@ -10,7 +10,7 @@
   <a href="dev/README.md"><b>Try it on a Mac</b></a>
 </p>
 
-> Status: the core's registry, live state, and extension host run; a Devices page shows everything and switches it (M0.8, M1.6 first slice); **ESPHome devices on your network are found and connected automatically**, sensors and all (D26); and a **Floorplan** page draws the home — walls, doors and windows — with the devices live on it. Automations are an extension you install: flows drawn on a canvas, with every run traced, near-misses kept, dry runs and a 24-hour backtest (`docs/specs/flows.md`). A first run asks who you are, with a password that locks the home to you, and what time zone it is in (`docs/specs/config.md` §3.10); `--tls` serves it over https. A program that isn't the page uses a scoped token, and the page hears changes over `/api/ws` (`docs/specs/api.md`).
+> Status: the core's registry, live state, and extension host run; a Devices page shows everything and switches it (M0.8, M1.6 first slice); **ESPHome devices on your network are found and connected automatically**, sensors and all (D26); and a **Floorplan** page draws the home — walls, doors and windows — with the devices live on it. Automations are an extension you install: flows drawn on a canvas, with every run traced, near-misses kept, dry runs and a 24-hour backtest (`docs/specs/flows.md`). A first run asks who you are, with a password that locks the home to you, and what time zone it is in (`docs/specs/config.md` §3.10); `--tls` serves it over https. A program that isn't the page uses a scoped token, and the page hears changes over `/api/ws` (`docs/specs/api.md`). The same binary talks to a running Irori: devices, extensions, tokens, and the rest (`docs/specs/cli.md`).
 
 ## Install
 
@@ -75,6 +75,12 @@ irori run --bind 0.0.0.0:8480 --allow-unauthenticated-lan   # reachable from you
 irori version --json
 irori help run
 ```
+
+The same binary talks to an Irori that is already running. `irori status` is the short
+check, `irori login` keeps a session the way the page does, and `irori --help` lists the
+rest: devices, entities, extensions, tokens, automations. `--json` is one JSON document.
+`docs/specs/cli.md` is the whole command. `irori uninstall` removes what the installer
+put down, and leaves a development binary where it is.
 
 `run` and `serve` are the same command. Every option is also an environment variable
 (`IRORI_DATA`, `IRORI_CONFIG`, `IRORI_BIND`, `IRORI_BIND_FALLBACK`, `IRORI_LOG_LEVEL`,
