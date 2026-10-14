@@ -316,7 +316,7 @@ pub(crate) const HELPER_KINDS: [HelperKind; 19] = [
                 ]),
             ),
             field("members", "Members", Widget::Members),
-            field("all", "On only while all of them are", Widget::OnOff).only(When::OnOffGroup),
+            field("all", "Only when all are on", Widget::OnOff).only(When::OnOffGroup),
             field(
                 "of",
                 "Their",
@@ -766,9 +766,8 @@ fn setting(draft: Draft, field: Field) -> AnyView {
                 <button
                     type="button"
                     class="toggle"
-                    role="switch"
                     aria-label=field.label
-                    aria-checked=move || on().to_string()
+                    aria-pressed=move || on().to_string()
                     on:click=move |_| draft.put(key, Some(json!(!on())))
                 >
                     <span class="knob"></span>
@@ -828,24 +827,22 @@ fn setting(draft: Draft, field: Field) -> AnyView {
                     .filter_map(|option| option.as_str().map(str::to_owned))
                     .collect::<Vec<_>>()
             };
+            let choices = Signal::derive(move || {
+                let mut choices = vec![Choice::new("", "The first")];
+                choices.extend(
+                    options()
+                        .into_iter()
+                        .map(|option| Choice::new(option.clone(), option)),
+                );
+                choices
+            });
             view! {
-                <select on:change:target=move |ev| {
-                    let picked = ev.target().value();
-                    draft.put(key, text(&picked));
-                }>
-                    <option value="" selected=move || draft.get(key).is_none()>"The first"</option>
-                    {move || options().into_iter().map(|option| {
-                        let (chosen, value) = (option.clone(), option.clone());
-                        view! {
-                            <option
-                                value=value
-                                selected=move || draft.text(key) == chosen
-                            >
-                                {option}
-                            </option>
-                        }
-                    }).collect_view()}
-                </select>
+                <Combo
+                    choices=choices
+                    value=Signal::derive(move || draft.text(key))
+                    pick=Callback::new(move |picked: String| draft.put(key, text(&picked)))
+                    placeholder="The first"
+                />
             }
             .into_any()
         }
@@ -922,40 +919,43 @@ fn utc_moment(local: &str) -> Option<Value> {
 /// rather than its setting.
 fn source_field(draft: Draft) -> AnyView {
     let live = expect_context::<crate::Live>();
-    let fields = Memo::new(move |_| {
+    let choices = Signal::derive(move || {
         let source = draft.text("source");
-        live.home.with(|home| {
-            home.entities
-                .iter()
-                .find(|entity| entity.id.as_str() == source)
-                .map(|entity| {
-                    entity
-                        .capabilities
-                        .fields()
-                        .into_iter()
-                        .filter(|field| field.shape == ValueShape::Number)
-                        .map(|field| field.name)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        })
+        let mut choices = vec![Choice::new("", "Its reading")];
+        choices.extend(live.home.with(|home| {
+            number_fields(home, &source)
+                .into_iter()
+                .map(|name| Choice::new(name, name.replace('_', " ")))
+                .collect::<Vec<_>>()
+        }));
+        choices
     });
     view! {
-        <select
-            disabled=move || fields.with(Vec::is_empty)
-            on:change:target=move |ev| draft.put("field", text(&ev.target().value()))
-        >
-            <option value="" selected=move || draft.get("field").is_none()>
-                "Its reading"
-            </option>
-            {move || fields.get().into_iter().map(|name| view! {
-                <option value=name selected=move || draft.text("field") == name>
-                    {name.replace('_', " ")}
-                </option>
-            }).collect_view()}
-        </select>
+        <Combo
+            choices=choices
+            value=Signal::derive(move || draft.text("field"))
+            pick=Callback::new(move |picked: String| draft.put("field", text(&picked)))
+            placeholder="Its reading"
+        />
     }
     .into_any()
+}
+
+/// The other numbers an entity has beside its reading: a thermostat's current temperature.
+fn number_fields(home: &crate::api::Home, source: &str) -> Vec<&'static str> {
+    home.entities
+        .iter()
+        .find(|entity| entity.id.as_str() == source)
+        .map(|entity| {
+            entity
+                .capabilities
+                .fields()
+                .into_iter()
+                .filter(|field| field.shape == ValueShape::Number)
+                .map(|field| field.name)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// A list of texts kept under `key`, as chips.
@@ -1185,20 +1185,21 @@ fn seconds(draft: Draft, key: &'static str) -> AnyView {
                     words.set(typed);
                 }
             />
-            <select on:change:target=move |ev| {
-                let picked = ev.target().value().parse::<f64>().unwrap_or(1.0);
-                unit.set(picked);
-                draft.put(key, made(&words.get_untracked(), picked));
-            }>
-                {[(1.0, "seconds"), (60.0, "minutes"), (3600.0, "hours")]
-                    .into_iter()
-                    .map(|(value, words)| view! {
-                        <option value=value.to_string() selected=move || unit.get() == value>
-                            {words}
-                        </option>
-                    })
-                    .collect_view()}
-            </select>
+            {crate::choices::choices(
+                "Unit",
+                vec![
+                    ("1".to_owned(), "sec".to_owned()),
+                    ("60".to_owned(), "min".to_owned()),
+                    ("3600".to_owned(), "hours".to_owned()),
+                ],
+                move || Some(format!("{}", unit.get())),
+                || false,
+                move |picked| {
+                    let picked = picked.parse::<f64>().unwrap_or(1.0);
+                    unit.set(picked);
+                    draft.put(key, made(&words.get_untracked(), picked));
+                },
+            )}
         </span>
     }
     .into_any()
@@ -1552,7 +1553,9 @@ pub(crate) fn HelperBuilder(#[prop(into)] on_added: Callback<()>) -> impl IntoVi
                             on:click=move |_| create()
                         >
                             <span class="add-one-label">"Create"</span>
-                            <svg class="add-one-check" viewBox="0 0 24 24" aria-hidden="true">
+                            <svg class="add-one-check" viewBox="0 0 24 24" aria-hidden="true"
+                                fill="none" stroke="currentColor" stroke-width="2.2"
+                                stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M5 12.5l4.5 4.5L19 7.5" pathLength="1" />
                             </svg>
                         </button>
@@ -1655,7 +1658,14 @@ fn form(draft: Draft) -> impl IntoView {
                     .iter()
                     .copied()
                     .map(|field| {
-                        let shown = Memo::new(move |_| draft.value.with(|value| field.shown(value)));
+                        let live = expect_context::<crate::Live>();
+                        let shown = Memo::new(move |_| {
+                            draft.value.with(|value| field.shown(value))
+                                && (field.widget != Widget::SourceField
+                                    || live.home.with(|home| {
+                                        !number_fields(home, &draft.text("source")).is_empty()
+                                    }))
+                        });
                         view! { <Show when=move || shown.get()>{setting(draft, field)}</Show> }
                     })
                     .collect_view()
@@ -1843,7 +1853,10 @@ mod tests {
         draft.put("name", Some(json!("Downstairs")));
         draft.put("members", Some(json!(["light.a", "light.b"])));
         let written = draft.code();
-        assert!(written.starts_with("{\n  \"helper\": \"groups\",\n  \"name\""), "{written}");
+        assert!(
+            written.starts_with("{\n  \"helper\": \"groups\",\n  \"name\""),
+            "{written}"
+        );
         let before = draft.value.get_untracked();
         draft.take_code(&written).expect("reads back");
         assert_eq!(draft.value.get_untracked(), before);
