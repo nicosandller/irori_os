@@ -260,15 +260,19 @@ struct HelperKind {
     /// What it's for, in the form that makes one.
     about: &'static str,
     example: &'static str,
+    /// For a kind whose settings are written out: an example of them, a `key = value` line
+    /// each, as in `extensions/helpers.toml`.
+    settings: &'static str,
 }
 
-const HELPER_KINDS: [HelperKind; 10] = [
+const HELPER_KINDS: [HelperKind; 19] = [
     HelperKind {
         table: "toggles",
         word: "Toggle",
         prefix: "toggle",
         about: "On or off. A switch for \"guests are over\" or \"holiday mode\".",
         example: "Guests are over",
+        settings: "",
     },
     HelperKind {
         table: "numbers",
@@ -277,6 +281,7 @@ const HELPER_KINDS: [HelperKind; 10] = [
         about: "A value within a range, set with a slider or typed. A flow reads it instead \
                 of having the number written into it.",
         example: "Evening brightness",
+        settings: "",
     },
     HelperKind {
         table: "counters",
@@ -284,6 +289,7 @@ const HELPER_KINDS: [HelperKind; 10] = [
         prefix: "counter",
         about: "A number that flows count up and down, and set back to where it starts.",
         example: "Doorbell rings today",
+        settings: "",
     },
     HelperKind {
         table: "selects",
@@ -291,6 +297,7 @@ const HELPER_KINDS: [HelperKind; 10] = [
         prefix: "select",
         about: "One of a list you write: home, away, asleep.",
         example: "House mode",
+        settings: "",
     },
     HelperKind {
         table: "texts",
@@ -298,6 +305,7 @@ const HELPER_KINDS: [HelperKind; 10] = [
         prefix: "text",
         about: "A few words: a message for a display, a note a flow reads.",
         example: "Hall display message",
+        settings: "",
     },
     HelperKind {
         table: "buttons",
@@ -305,6 +313,7 @@ const HELPER_KINDS: [HelperKind; 10] = [
         prefix: "button",
         about: "Something to press, here or from a flow, that other flows start from.",
         example: "Movie time",
+        settings: "",
     },
     HelperKind {
         table: "dates",
@@ -312,6 +321,7 @@ const HELPER_KINDS: [HelperKind; 10] = [
         prefix: "date",
         about: "A calendar day you pick: when the bins go out, when the guests arrive.",
         example: "Bins go out",
+        settings: "",
     },
     HelperKind {
         table: "times",
@@ -319,6 +329,7 @@ const HELPER_KINDS: [HelperKind; 10] = [
         prefix: "time",
         about: "A time of day you pick: when the alarm clock goes off, when the heating may start.",
         example: "Wake up",
+        settings: "",
     },
     HelperKind {
         table: "datetimes",
@@ -326,6 +337,7 @@ const HELPER_KINDS: [HelperKind; 10] = [
         prefix: "datetime",
         about: "A day and a time together: when the holiday ends.",
         example: "Holiday ends",
+        settings: "",
     },
     HelperKind {
         table: "timers",
@@ -333,6 +345,79 @@ const HELPER_KINDS: [HelperKind; 10] = [
         prefix: "timer",
         about: "Counts down and says when it's done: flows start it, and start from it finishing.",
         example: "Lights stay on",
+        settings: "",
+    },
+    HelperKind {
+        table: "schedules",
+        word: "Schedule",
+        prefix: "schedule",
+        about: "On during the times you set out for each day of the week, on the home's clock.",
+        example: "Heating hours",
+        settings: "mon = [[\"06:30\", \"08:30\"], [\"17:00\", \"22:00\"]]\ntue = [[\"06:30\", \"08:30\"]]\nsat = [[\"08:00\", \"23:00\"]]",
+    },
+    HelperKind {
+        table: "groups",
+        word: "Group",
+        prefix: "group",
+        about: "Several lights, switches, fans, covers or sensors as one: on while any is, and told as one.",
+        example: "Lounge lights",
+        settings: "kind = \"light\"\nmembers = [\"light.lounge_lamp\", \"light.lounge_ceiling\"]",
+    },
+    HelperKind {
+        table: "thresholds",
+        word: "Threshold",
+        prefix: "threshold",
+        about: "On while a reading is above, below, or between lines.",
+        example: "Too warm",
+        settings: "source = \"sensor.lounge_temperature\"\nabove = 26\nhysteresis = 0.5",
+    },
+    HelperKind {
+        table: "trends",
+        word: "Trend",
+        prefix: "trend",
+        about: "On while a reading is rising (or falling) by at least so much over a while.",
+        example: "Humidity rising",
+        settings: "source = \"sensor.bathroom_humidity\"\ndirection = \"rising\"\nby = 10\nover = 600",
+    },
+    HelperKind {
+        table: "meters",
+        word: "Meter",
+        prefix: "meter",
+        about: "How much a counting reading, like an energy total, went up this hour, day, week, month or year.",
+        example: "Energy today",
+        settings: "source = \"sensor.house_energy\"\nevery = \"day\"",
+    },
+    HelperKind {
+        table: "integrals",
+        word: "Integral",
+        prefix: "integral",
+        about: "The area under a reading over time: a power reading into energy used.",
+        example: "Heater energy",
+        settings: "source = \"sensor.heater_power\"\nper = \"hour\"",
+    },
+    HelperKind {
+        table: "derivatives",
+        word: "Derivative",
+        prefix: "derivative",
+        about: "How fast a reading changes, per hour, over the last while.",
+        example: "Tank filling rate",
+        settings: "source = \"sensor.tank_level\"\nper = \"hour\"\nover = 900",
+    },
+    HelperKind {
+        table: "statistics",
+        word: "Statistic",
+        prefix: "statistics",
+        about: "A reading's average, least or most over the last while.",
+        example: "Average outside temperature",
+        settings: "source = \"sensor.outside_temperature\"\nof = \"mean\"\nover = 3600",
+    },
+    HelperKind {
+        table: "history",
+        word: "History",
+        prefix: "history",
+        about: "How long, how often or how much of the time something was a value, today or over a while.",
+        example: "Heating hours today",
+        settings: "source = \"climate.hall\"\nis = \"heat\"\nmeasure = \"time\"",
     },
 ];
 
@@ -349,6 +434,8 @@ struct Kept {
     state: Option<EntityState>,
     /// The entity a flow starts from when this is a button.
     fires: Option<EntityId>,
+    /// Why it has no value, for one worked out from other entities that can't be.
+    problem: Option<String>,
 }
 
 /// The helpers in the home, by name. Compared whole, so the list is redrawn only when one of
@@ -362,7 +449,8 @@ fn kept_helpers(home: &Home) -> Vec<Kept> {
         .filter_map(|entity| {
             let (prefix, id) = entity.unique_id.as_str().split_once('-')?;
             let kind = *HELPER_KINDS.iter().find(|kind| kind.prefix == prefix)?;
-            let pressed = format!("{PRESSED}-{id}");
+            // A button's and a timer's event, which flows start from.
+            let fired = [format!("{PRESSED}-{id}"), format!("timerevent-{id}")];
             Some(Kept {
                 kind,
                 id: id.to_owned(),
@@ -376,8 +464,23 @@ fn kept_helpers(home: &Home) -> Vec<Kept> {
                     .entities
                     .iter()
                     .filter(ours)
-                    .find(|other| other.unique_id.as_str() == pressed)
+                    .find(|other| {
+                        fired
+                            .iter()
+                            .any(|unique| other.unique_id.as_str() == unique)
+                    })
                     .map(|other| other.id.clone()),
+                problem: home
+                    .states
+                    .iter()
+                    .find(|state| state.entity_id == entity.id && state.state.is_none())
+                    .and_then(|state| {
+                        state
+                            .attributes
+                            .iter()
+                            .find(|(key, _)| key.as_str() == "problem")
+                            .and_then(|(_, why)| why.as_str().map(str::to_owned))
+                    }),
             })
         })
         .collect();
@@ -426,6 +529,9 @@ fn helpers(kept: &[Kept], controls: Controls) -> AnyView {
                                 <span class="name">{name.clone()}</span>
                                 <span class="helper-kind">{helper.kind.word}</span>
                                 <code class="muted small">{ids}</code>
+                                {helper.problem.clone().map(|why| view! {
+                                    <span class="helper-problem">{why}</span>
+                                })}
                                 <span class="room-actions">
                                     {knob}
                                     <HelperActions
@@ -521,6 +627,8 @@ struct HelperForm {
     step: RwSignal<String>,
     unit: RwSignal<String>,
     options: RwSignal<String>,
+    /// Written-out settings, for the kinds that have them.
+    written: RwSignal<String>,
 }
 
 impl HelperForm {
@@ -532,6 +640,7 @@ impl HelperForm {
             step: RwSignal::new("1".to_owned()),
             unit: RwSignal::new(String::new()),
             options: RwSignal::new(String::new()),
+            written: RwSignal::new(String::new()),
         }
     }
 
@@ -588,10 +697,35 @@ impl HelperForm {
                 }
                 fields.insert("options".into(), serde_json::json!(options));
             }
+            _ if !kind.settings.is_empty() => {
+                for (key, value) in written_settings(&self.written.get_untracked())? {
+                    fields.insert(key, value);
+                }
+            }
             _ => {}
         }
         Ok(fields)
     }
+}
+
+/// Settings written a `key = value` line each, as in `extensions/helpers.toml`: a value is
+/// read as JSON where it is (a number, `true`, a list, a quoted text) and as text otherwise.
+fn written_settings(typed: &str) -> Result<Vec<(String, serde_json::Value)>, String> {
+    typed
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            let (key, value) = line
+                .split_once('=')
+                .ok_or_else(|| format!("“{line}” isn't a setting: write it as key = value"))?;
+            let value = value.trim();
+            Ok((
+                key.trim().to_owned(),
+                serde_json::from_str(value).unwrap_or_else(|_| serde_json::json!(value)),
+            ))
+        })
+        .collect()
 }
 
 /// What a choice can be, from what was typed: one to a line, or with commas between them.
@@ -663,6 +797,8 @@ fn AddHelper(#[prop(into)] on_added: Callback<()>) -> impl IntoView {
                     let picked = ev.target().value();
                     if let Some(picked) = HELPER_KINDS.into_iter().find(|kind| kind.table == picked) {
                         trouble.set(None);
+                        // Its example to start from, to change rather than remember.
+                        form.written.set(picked.settings.to_owned());
                         kind.set(picked);
                     }
                 }
@@ -703,6 +839,18 @@ fn AddHelper(#[prop(into)] on_added: Callback<()>) -> impl IntoView {
                 .into_any(),
                 "counters" => view! { {field("Counts by", form.step, true)} }.into_any(),
                 "timers" => view! { {field("Runs for, in seconds", form.step, true)} }.into_any(),
+                _ if !kind.get().settings.is_empty() => view! {
+                    <label class="helper-field wide">
+                        <span>"Settings, a line each, as in helpers.toml"</span>
+                        <textarea
+                            rows="5"
+                            class="mono"
+                            prop:value=form.written
+                            on:input:target=move |ev| form.written.set(ev.target().value())
+                        ></textarea>
+                    </label>
+                }
+                .into_any(),
                 "selects" => view! {
                     <label class="helper-field wide">
                         <span>"What it can be, one to a line"</span>
@@ -1896,6 +2044,21 @@ fn pull(event: &ev::PointerEvent, open: Signal<bool>, toggle: Callback<()>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn written_settings_are_read_a_line_each() {
+        assert_eq!(
+            written_settings("source = \"sensor.room\"\n# a note\nabove = 26\nkind = light\n\nmembers = [\"light.a\"]")
+                .expect("reads"),
+            [
+                ("source".to_owned(), serde_json::json!("sensor.room")),
+                ("above".to_owned(), serde_json::json!(26)),
+                ("kind".to_owned(), serde_json::json!("light")),
+                ("members".to_owned(), serde_json::json!(["light.a"])),
+            ]
+        );
+        assert!(written_settings("above 26").is_err());
+    }
 
     #[test]
     fn a_choices_options_are_read_a_line_or_a_comma_apart() {

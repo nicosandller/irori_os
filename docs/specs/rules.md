@@ -1301,6 +1301,10 @@ name = "Guests are over"
 initial = false
 ```
 
+Others are worked out from other entities: a group, a threshold, a meter, the hours something
+was on today ([config.md](config.md) §3.6), each an ordinary `binary_sensor`, `sensor` or the
+group's kind.
+
 That is `switch.guests_over` (the object id is the table key). Rules refer to whatever entity
 id exists, and read, set and trigger on a helper exactly as they would a device's entity of
 that kind: `num('number.evening_brightness')`, a call to `number.increment`, a trigger on

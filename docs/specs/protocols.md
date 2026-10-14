@@ -65,6 +65,12 @@ the user-facing ids, timestamps, contexts, history, and checking that what it's 
    reloads settings itself; restarting is the one way they arrive, so there is exactly one code
    path to get right.
 
+**The rest of the home.** A built-in whose manifest asks for API scopes (Helpers does) is
+handed the rest of the home in-process (`irori_protocol::home::Home`): entities, states and
+their changes, history, the home's place, and service calls made as the extension, with the
+call that caused them as their parent. Each needs its scope, as an engine's requests do
+([automations.md](automations.md) §B2).
+
 **Isolation.** Built-in protocols run in their own task, and **must never block**: no
 long computation, blocking I/O, or `std::thread::sleep`, in `run` or before it returns its
 future. Blocking one task blocks a shared worker, which no supervision can undo, so slow or

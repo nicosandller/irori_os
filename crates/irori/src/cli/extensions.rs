@@ -404,6 +404,16 @@ fn helper_fields(kind: HelperKind, settings: HelperSettings) -> Result<Map<Strin
         (_, Some(text)) => Some(json!(text)),
     };
     put("initial", initial);
+    for setting in settings.set {
+        let (key, value) = setting
+            .split_once('=')
+            .ok_or_else(|| format!("`--set {setting}` isn't a setting: write it as key=value"))?;
+        let value = value.trim();
+        fields.insert(
+            key.trim().to_owned(),
+            serde_json::from_str(value).unwrap_or_else(|_| json!(value)),
+        );
+    }
     Ok(fields)
 }
 

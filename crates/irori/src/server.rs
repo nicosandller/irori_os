@@ -1245,6 +1245,7 @@ async fn add_helper(
             let (id, entities) =
                 found.ok_or_else(|| Refused(format!("no id is free for `{name}`")))?;
             helpers.insert(id.clone(), settings.clone());
+            irori_helpers::check_settings(file).map_err(Refused)?;
             Ok((id, entities))
         })
         .await;
@@ -1294,8 +1295,8 @@ async fn edit_helper(
             let object_id =
                 irori_types::ObjectId::try_from(id.as_str()).map_err(|e| Refused(e.to_string()))?;
             kind.check(&object_id, &serde_json::Value::Object(entry.clone()))
-                .map(|_| ())
-                .map_err(Refused)
+                .map_err(Refused)?;
+            irori_helpers::check_settings(file).map_err(Refused)
         })
         .await;
     match edited {
@@ -4965,6 +4966,141 @@ mod tests {
                 .is_some_and(|e| e.contains("ends before it starts")),
             "{body}"
         );
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Helpers worked out from other entities follow them: a group of toggles is on while one
+    /// is and turns them all on, a threshold follows a number, a meter counts what a counter
+    /// went up by. One whose source isn't there says why.
+    #[tokio::test]
+    async fn helpers_worked_out_from_others_follow_them() -> anyhow::Result<()> {
+        let storage: Arc<dyn irori_protocol::Storage> =
+            Arc::new(irori_protocol::MemoryStorage::default());
+        let core = core();
+        core.use_storage(Arc::clone(&storage));
+        let server = Server::new(core.clone())?;
+        let host = helpers(&core).await?;
+
+        let primary = |core: &Core, id: &str| {
+            core.state(&EntityId::try_from(id).expect("an entity id"))
+                .and_then(|s| s.state)
+                .map(|state| state.primary().to_json())
+        };
+        let call = |entity: &str, command: &str, data: serde_json::Value| {
+            let mut body = serde_json::json!({"entity_id": entity, "command": command});
+            if !data.is_null() {
+                body["data"] = data;
+            }
+            server.json("POST", "/api/command", body)
+        };
+        for (table, body) in [
+            ("toggles", serde_json::json!({"name": "Lamp one"})),
+            ("toggles", serde_json::json!({"name": "Lamp two"})),
+            (
+                "numbers",
+                serde_json::json!({"name": "Level", "min": 0, "max": 100, "initial": 10}),
+            ),
+            ("counters", serde_json::json!({"name": "Rings"})),
+            (
+                "groups",
+                serde_json::json!({"name": "Lamps", "kind": "switch",
+                "members": ["switch.lamp_one", "switch.lamp_two"]}),
+            ),
+            (
+                "thresholds",
+                serde_json::json!({"name": "High", "source": "number.level", "above": 50}),
+            ),
+            (
+                "meters",
+                serde_json::json!({"name": "Rings today", "source": "number.rings", "every": "day"}),
+            ),
+            (
+                "thresholds",
+                serde_json::json!({"name": "Nowhere", "source": "sensor.missing", "above": 1}),
+            ),
+        ] {
+            let path = format!("/api/helpers/{table}");
+            let (status, made) = server.json("POST", &path, body).await?;
+            assert_eq!(status, StatusCode::CREATED, "{made}");
+        }
+        until("the group is off", || {
+            primary(&core, "switch.lamps") == Some(serde_json::json!(false))
+        })
+        .await?;
+        until("the threshold is off", || {
+            primary(&core, "binary_sensor.high") == Some(serde_json::json!(false))
+        })
+        .await?;
+
+        // The group is on while any member is, and turning it on turns them all on.
+        let (status, body) = call("switch.lamp_one", "turn_on", serde_json::Value::Null).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("the group is on", || {
+            primary(&core, "switch.lamps") == Some(serde_json::json!(true))
+        })
+        .await?;
+        call("switch.lamp_one", "turn_off", serde_json::Value::Null).await?;
+        until("off again", || {
+            primary(&core, "switch.lamps") == Some(serde_json::json!(false))
+        })
+        .await?;
+        let (status, body) = call("switch.lamps", "turn_on", serde_json::Value::Null).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("both members on", || {
+            primary(&core, "switch.lamp_one") == Some(serde_json::json!(true))
+                && primary(&core, "switch.lamp_two") == Some(serde_json::json!(true))
+        })
+        .await?;
+
+        // The threshold follows its number.
+        call(
+            "number.level",
+            "set_value",
+            serde_json::json!({"value": 80}),
+        )
+        .await?;
+        until("high", || {
+            primary(&core, "binary_sensor.high") == Some(serde_json::json!(true))
+        })
+        .await?;
+
+        // The meter counts what the counter went up by.
+        for _ in 0..3 {
+            call("number.rings", "increment", serde_json::Value::Null).await?;
+        }
+        until("three rings", || {
+            primary(&core, "sensor.rings_today") == Some(serde_json::json!(2.0))
+                || primary(&core, "sensor.rings_today") == Some(serde_json::json!(3.0))
+        })
+        .await?;
+
+        // A source that isn't there is said, not guessed around.
+        let nowhere = core
+            .state(&EntityId::try_from("binary_sensor.nowhere")?)
+            .expect("described");
+        assert_eq!(nowhere.state, None);
+        assert!(
+            nowhere
+                .attributes
+                .iter()
+                .any(|(key, why)| key.as_str() == "problem"
+                    && why
+                        .as_str()
+                        .is_some_and(|why| why.contains("sensor.missing"))),
+            "{:?}",
+            nowhere.attributes
+        );
+
+        // Helpers that read each other in a ring are refused.
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/helpers/thresholds",
+                serde_json::json!({"name": "Loop", "source": "binary_sensor.loop", "above": 1}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         host.shutdown().await;
         Ok(())
     }

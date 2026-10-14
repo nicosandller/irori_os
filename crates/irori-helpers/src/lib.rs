@@ -44,7 +44,9 @@
 //! arrives.
 
 mod button;
+mod computed;
 mod counter;
+mod maths;
 mod moment;
 mod number;
 mod schedule;
@@ -56,14 +58,18 @@ mod toggle;
 use std::collections::{BTreeMap, BTreeSet};
 
 use irori_protocol::types::{
-    Capabilities, ContextId, EntityDescription, EventState, Name, ObjectId, ScheduleState, Service,
-    State, StateReport, TimerState, Timestamp, Typed, UniqueId,
+    Capabilities, ContextId, EntityDescription, EntityId, EntityState, EventState, Name, ObjectId,
+    ScheduleState, Service, State, StateReport, TimerState, Timestamp, Typed, UniqueId,
 };
 use irori_protocol::{Protocol, ProtocolContext, ProtocolError, ServiceError};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 pub use button::Button;
+pub use computed::{
+    DerivativeSettings, Group, HistorySettings, IntegralSettings, MeterSettings,
+    StatisticsSettings, Threshold, Trend,
+};
 pub use counter::Counter;
 pub use moment::{Date, Datetime, Time};
 pub use number::Number;
@@ -114,6 +120,31 @@ pub struct Settings {
     /// On during the times a week sets out: `schedule.<id>`.
     #[serde(default)]
     pub schedules: BTreeMap<ObjectId, Schedule>,
+    /// Several entities of one kind as one: `<kind>.<id>`.
+    #[serde(default)]
+    pub groups: BTreeMap<ObjectId, Group>,
+    /// On while a number is past a line: `binary_sensor.<id>`.
+    #[serde(default)]
+    pub thresholds: BTreeMap<ObjectId, Threshold>,
+    /// On while a number is rising or falling: `binary_sensor.<id>`.
+    #[serde(default)]
+    pub trends: BTreeMap<ObjectId, Trend>,
+    /// What a counting reading has gone up by this hour, day, week, month or year:
+    /// `sensor.<id>`.
+    #[serde(default)]
+    pub meters: BTreeMap<ObjectId, MeterSettings>,
+    /// The area under a reading over time, power into energy: `sensor.<id>`.
+    #[serde(default)]
+    pub integrals: BTreeMap<ObjectId, IntegralSettings>,
+    /// How fast a reading changes: `sensor.<id>`.
+    #[serde(default)]
+    pub derivatives: BTreeMap<ObjectId, DerivativeSettings>,
+    /// A reading's average, least or most over a while: `sensor.<id>`.
+    #[serde(default)]
+    pub statistics: BTreeMap<ObjectId, StatisticsSettings>,
+    /// How long, how often or how much of the time something was a value: `sensor.<id>`.
+    #[serde(default)]
+    pub history: BTreeMap<ObjectId, HistorySettings>,
 }
 
 impl Protocol for Helpers {
@@ -195,6 +226,46 @@ pub const KINDS: &[HelperKind] = &[
         word: "schedule",
         prefixes: &["schedule"],
     },
+    HelperKind {
+        table: "groups",
+        word: "group",
+        prefixes: &["group"],
+    },
+    HelperKind {
+        table: "thresholds",
+        word: "threshold",
+        prefixes: &["threshold"],
+    },
+    HelperKind {
+        table: "trends",
+        word: "trend",
+        prefixes: &["trend"],
+    },
+    HelperKind {
+        table: "meters",
+        word: "meter",
+        prefixes: &["meter"],
+    },
+    HelperKind {
+        table: "integrals",
+        word: "integral",
+        prefixes: &["integral"],
+    },
+    HelperKind {
+        table: "derivatives",
+        word: "derivative",
+        prefixes: &["derivative"],
+    },
+    HelperKind {
+        table: "statistics",
+        word: "statistic",
+        prefixes: &["statistics"],
+    },
+    HelperKind {
+        table: "history",
+        word: "history",
+        prefixes: &["history"],
+    },
 ];
 
 impl HelperKind {
@@ -237,6 +308,14 @@ impl HelperKind {
             "datetimes" => moment::datetime(id, &read(settings)?),
             "timers" => timer::made(id, &read(settings)?),
             "schedules" => schedule::made(id, &read(settings)?),
+            "groups" => computed_made(id, computed::Spec::Group(read(settings)?)),
+            "thresholds" => computed_made(id, computed::Spec::Threshold(read(settings)?)),
+            "trends" => computed_made(id, computed::Spec::Trend(read(settings)?)),
+            "meters" => computed_made(id, computed::Spec::Meter(read(settings)?)),
+            "integrals" => computed_made(id, computed::Spec::Integral(read(settings)?)),
+            "derivatives" => computed_made(id, computed::Spec::Derivative(read(settings)?)),
+            "statistics" => computed_made(id, computed::Spec::Statistics(read(settings)?)),
+            "history" => computed_made(id, computed::Spec::History(read(settings)?)),
             other => return Err(format!("there are no helpers called `{other}`")),
         }
         .map_err(|e| e.to_string())?;
@@ -280,6 +359,8 @@ pub(crate) enum Role {
     },
     /// On during its week's times; nothing can be asked of it.
     Schedule(schedule::Week),
+    /// Worked out from other entities. A group passes what it's asked on to its members.
+    Computed(Box<computed::Spec>),
 }
 
 impl Made {
@@ -353,6 +434,16 @@ impl Made {
         Self::new("schedule", id, name, capabilities, Role::Schedule(week))
     }
 
+    pub(crate) fn computed(
+        what: &str,
+        id: &ObjectId,
+        name: &Name,
+        capabilities: Capabilities,
+        spec: computed::Spec,
+    ) -> Result<Self, ProtocolError> {
+        Self::new(what, id, name, capabilities, Role::Computed(Box::new(spec)))
+    }
+
     pub(crate) fn happens(
         what: &str,
         id: &ObjectId,
@@ -392,6 +483,30 @@ fn value_key(unique: &str) -> String {
     unique.replacen('-', ".", 1)
 }
 
+/// Checks the whole of `extensions/helpers.toml` as it would be written, for what one helper
+/// alone can't show: two that would be one entity, or helpers that read each other in a ring.
+pub fn check_settings(file: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+    let settings: Settings = serde_json::from_value(serde_json::Value::Object(file.clone()))
+        .map_err(|e| e.to_string())?;
+    all(&settings).map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// A computed helper, named for its prefix.
+fn computed_made(id: &ObjectId, spec: computed::Spec) -> Result<Vec<Made>, ProtocolError> {
+    let (what, name) = match &spec {
+        computed::Spec::Group(s) => ("group", &s.name),
+        computed::Spec::Threshold(s) => ("threshold", &s.name),
+        computed::Spec::Trend(s) => ("trend", &s.name),
+        computed::Spec::Meter(s) => ("meter", &s.name),
+        computed::Spec::Integral(s) => ("integral", &s.name),
+        computed::Spec::Derivative(s) => ("derivative", &s.name),
+        computed::Spec::Statistics(s) => ("statistics", &s.name),
+        computed::Spec::History(s) => ("history", &s.name),
+    };
+    let name = name.clone();
+    computed::made(what, id, &name, spec)
+}
+
 /// Every entity the settings ask for. Two helpers that would be the same entity (a number and a
 /// counter with one id are both `number.<id>`) are refused, naming both.
 fn all(settings: &Settings) -> Result<Vec<Made>, ProtocolError> {
@@ -429,6 +544,55 @@ fn all(settings: &Settings) -> Result<Vec<Made>, ProtocolError> {
     for (id, week) in &settings.schedules {
         made.extend(schedule::made(id, week)?);
     }
+    let computed = settings
+        .groups
+        .iter()
+        .map(|(id, s)| (id, computed::Spec::Group(s.clone())))
+        .chain(
+            settings
+                .thresholds
+                .iter()
+                .map(|(id, s)| (id, computed::Spec::Threshold(s.clone()))),
+        )
+        .chain(
+            settings
+                .trends
+                .iter()
+                .map(|(id, s)| (id, computed::Spec::Trend(s.clone()))),
+        )
+        .chain(
+            settings
+                .meters
+                .iter()
+                .map(|(id, s)| (id, computed::Spec::Meter(s.clone()))),
+        )
+        .chain(
+            settings
+                .integrals
+                .iter()
+                .map(|(id, s)| (id, computed::Spec::Integral(s.clone()))),
+        )
+        .chain(
+            settings
+                .derivatives
+                .iter()
+                .map(|(id, s)| (id, computed::Spec::Derivative(s.clone()))),
+        )
+        .chain(
+            settings
+                .statistics
+                .iter()
+                .map(|(id, s)| (id, computed::Spec::Statistics(s.clone()))),
+        )
+        .chain(
+            settings
+                .history
+                .iter()
+                .map(|(id, s)| (id, computed::Spec::History(s.clone()))),
+        );
+    for (id, spec) in computed {
+        made.extend(computed_made(id, spec)?);
+    }
     let mut taken: BTreeMap<String, &UniqueId> = BTreeMap::new();
     for one in &made {
         let entity = one.entity_id();
@@ -439,7 +603,51 @@ fn all(settings: &Settings) -> Result<Vec<Made>, ProtocolError> {
             )));
         }
     }
+    no_loops(&made)?;
     Ok(made)
+}
+
+/// Helpers that read each other in a ring would each wait on the other for ever: refused,
+/// naming the ring.
+fn no_loops(made: &[Made]) -> Result<(), ProtocolError> {
+    let reads: BTreeMap<String, Vec<String>> = made
+        .iter()
+        .filter_map(|one| match &one.role {
+            Role::Computed(spec) => Some((
+                one.entity_id(),
+                spec.sources().iter().map(|id| id.to_string()).collect(),
+            )),
+            _ => None,
+        })
+        .collect();
+    fn visit(
+        at: &str,
+        reads: &BTreeMap<String, Vec<String>>,
+        path: &mut Vec<String>,
+    ) -> Option<Vec<String>> {
+        if let Some(from) = path.iter().position(|seen| seen == at) {
+            let mut ring = path[from..].to_vec();
+            ring.push(at.to_owned());
+            return Some(ring);
+        }
+        path.push(at.to_owned());
+        for next in reads.get(at).into_iter().flatten() {
+            if let Some(ring) = visit(next, reads, path) {
+                return Some(ring);
+            }
+        }
+        path.pop();
+        None
+    }
+    for start in reads.keys() {
+        if let Some(ring) = visit(start, &reads, &mut Vec::new()) {
+            return Err(ProtocolError::new(format!(
+                "these helpers read each other in a ring: {}",
+                ring.join(" → ")
+            )));
+        }
+    }
+    Ok(())
 }
 
 async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
@@ -474,7 +682,54 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
             .map(|zone| zone.as_str()),
     );
     let mut schedules: BTreeMap<UniqueId, ScheduleState> = BTreeMap::new();
+    // The helpers worked out from other entities: what each keeps, the home's states as they
+    // last were, and which ones have been described with their source's unit.
+    let home = ctx.home();
+    // Watching first, so nothing that changes from here on is missed, the helpers' own
+    // entities included: a group of toggles reads them like any other.
+    let mut changes = home.as_ref().map(|home| home.watch());
+    let entities = home
+        .as_ref()
+        .map(|home| home.entities())
+        .unwrap_or_default();
+    let mut latest: BTreeMap<EntityId, EntityState> = home
+        .as_ref()
+        .map(|home| home.states())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|state| (state.entity_id.clone(), state))
+        .collect();
+    let mut running: BTreeMap<UniqueId, computed::Running> = BTreeMap::new();
+    let mut said: BTreeMap<UniqueId, computed::Outcome> = BTreeMap::new();
+    let mut with_unit: BTreeSet<UniqueId> = BTreeSet::new();
     for (unique, helper) in &helpers {
+        if let Role::Computed(spec) = &helper.role {
+            let unit = computed::source_unit(spec, &entities);
+            if unit.is_some() {
+                with_unit.insert(unique.clone());
+            }
+            let mut description = helper.description.clone();
+            description.capabilities = computed::capabilities(spec, unit.as_deref());
+            ctx.describe_entity(description).await?;
+            let mut run = computed::Running {
+                kept: ctx
+                    .load(&value_key(unique.as_str()))
+                    .await?
+                    .and_then(|value| serde_json::from_value(value).ok()),
+                ..computed::Running::default()
+            };
+            // The kinds that look back start from the history they look back over.
+            if let (Some(home), Some(since)) = (&home, spec_since(spec, now(), &zone)) {
+                let at = now();
+                for source in spec.sources() {
+                    for state in home.history(source, since) {
+                        run.feed(spec, &state, at, &zone);
+                    }
+                }
+            }
+            running.insert(unique.clone(), run);
+            continue;
+        }
         ctx.describe_entity(helper.description.clone()).await?;
         if let Role::Timer {
             fires,
@@ -525,6 +780,18 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
     }
     let described: Vec<&str> = helpers.keys().map(UniqueId::as_str).collect();
     ctx.store(DESCRIBED, serde_json::json!(described)).await?;
+    if home.is_none() && !running.is_empty() {
+        tracing::warn!("helpers worked out from other entities can't read the home");
+    }
+    for (unique, helper) in &helpers {
+        if let (Role::Computed(spec), Some(run)) = (&helper.role, running.get_mut(unique)) {
+            let outcome = run.outcome(spec, &|id: &EntityId| latest.get(id).cloned(), now(), &zone);
+            tell(&ctx, unique, &outcome, &mut said);
+        }
+    }
+    // The kinds that look back over time change as time passes, readings or not.
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         // The next timer to run out, if one is running.
@@ -538,6 +805,47 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                 Some(incoming) => incoming,
                 None => break,
             },
+            Some(changed) = next_change(&mut changes) => {
+                let entity = changed.entity_id.clone();
+                latest.insert(entity.clone(), changed.clone());
+                let at = now();
+                for (unique, helper) in &helpers {
+                    let Role::Computed(spec) = &helper.role else { continue };
+                    if !spec.sources().contains(&&entity) {
+                        continue;
+                    }
+                    // Its source has come since it was described: now its unit is known.
+                    if !with_unit.contains(unique)
+                        && let Some(home) = &home
+                        && let Some(unit) = computed::source_unit(spec, &home.entities())
+                    {
+                        let mut description = helper.description.clone();
+                        description.capabilities = computed::capabilities(spec, Some(&unit));
+                        let _ = ctx.describe_entity(description).await;
+                        with_unit.insert(unique.clone());
+                    }
+                    let Some(run) = running.get_mut(unique) else { continue };
+                    let kept = run.kept;
+                    run.feed(spec, &changed, at, &zone);
+                    let outcome = run.outcome(spec, &|id: &EntityId| latest.get(id).cloned(), at, &zone);
+                    if run.kept != kept && let Some(now_kept) = run.kept {
+                        let value = serde_json::to_value(now_kept).unwrap_or(serde_json::Value::Null);
+                        ctx.store(&value_key(unique.as_str()), value).await?;
+                    }
+                    tell(&ctx, unique, &outcome, &mut said);
+                }
+                continue;
+            }
+            _ = tick.tick() => {
+                let at = now();
+                for (unique, helper) in &helpers {
+                    if let (Role::Computed(spec), Some(run)) = (&helper.role, running.get_mut(unique)) {
+                        let outcome = run.outcome(spec, &|id: &EntityId| latest.get(id).cloned(), at, &zone);
+                        tell(&ctx, unique, &outcome, &mut said);
+                    }
+                }
+                continue;
+            }
             () = sleep_until(next) => {
                 let at = now();
                 for (unique, state) in &mut schedules {
@@ -657,9 +965,100 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                     "nothing can be asked of it: it follows its week",
                 )));
             }
+            Role::Computed(spec) => {
+                let (computed::Spec::Group(group), Some(home)) = (spec.as_ref(), &home) else {
+                    incoming.reply(Err(ServiceError::failed(
+                        "nothing can be asked of it: it's worked out from other entities",
+                    )));
+                    continue;
+                };
+                // What a group is asked, each of its members is asked, on behalf of the call.
+                // From a task of its own: a member may be one of these helpers, whose call this
+                // loop has to be free to answer.
+                let action = service.name().action().to_owned();
+                let data = service.data().unwrap_or_default();
+                let (home, members) = (std::sync::Arc::clone(home), group.members.clone());
+                tokio::spawn(async move {
+                    let mut refused = Vec::new();
+                    for member in members {
+                        if let Err(why) = home
+                            .call(
+                                member.clone(),
+                                action.clone(),
+                                data.clone(),
+                                caused_by.clone(),
+                            )
+                            .await
+                        {
+                            refused.push(format!("{member}: {why}"));
+                        }
+                    }
+                    incoming.reply(if refused.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(ServiceError::failed(refused.join("; ")))
+                    });
+                });
+            }
         }
     }
     Ok(())
+}
+
+/// How far back a computed helper reads history as it starts.
+fn spec_since(
+    spec: &computed::Spec,
+    now: Timestamp,
+    zone: &jiff::tz::TimeZone,
+) -> Option<Timestamp> {
+    match spec {
+        computed::Spec::Trend(s) => Some(maths::plus(now, -s.over)),
+        computed::Spec::Derivative(s) => Some(maths::plus(now, -s.over)),
+        computed::Spec::Statistics(s) => Some(maths::plus(now, -s.over)),
+        computed::Spec::History(s) => Some(match s.over {
+            Some(over) => maths::plus(now, -over),
+            None => maths::period_start(maths::Period::Day, now, zone),
+        }),
+        _ => None,
+    }
+}
+
+/// Says what a computed helper comes to, when that's changed: its state, or, while it can't
+/// be worked out, unknown with the reason as its `problem` attribute.
+fn tell(
+    ctx: &ProtocolContext,
+    unique: &UniqueId,
+    outcome: &computed::Outcome,
+    said: &mut BTreeMap<UniqueId, computed::Outcome>,
+) {
+    if said.get(unique) == Some(outcome) {
+        return;
+    }
+    said.insert(unique.clone(), outcome.clone());
+    ctx.report_state(match outcome {
+        Ok(state) => report(unique.clone(), state.clone(), None),
+        Err(why) => StateReport {
+            unique_id: unique.clone(),
+            state: None,
+            attributes: irori_protocol::types::AttributeKey::try_from("problem")
+                .ok()
+                .map(|key| (key, serde_json::json!(why)))
+                .into_iter()
+                .collect(),
+            caused_by: None,
+            replayed: false,
+        },
+    });
+}
+
+/// The next state change, or never when the home can't be watched.
+async fn next_change(
+    changes: &mut Option<tokio::sync::mpsc::UnboundedReceiver<EntityState>>,
+) -> Option<EntityState> {
+    match changes {
+        Some(changes) => changes.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// The time now, by this machine's clock: the helpers are the device that keeps time here.

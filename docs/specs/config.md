@@ -330,6 +330,26 @@ is an ordinary entity of a kind Irori already has, with no device:
 | `[timers.<id>]` | `timer.<id>` and `event.<id>` | `duration` (seconds; 0, the default, means it's told each time), `restore` (on) | idle. Its event says `started`, `paused`, `cancelled` and `finished`. One that ran out while Irori was down finishes as Irori starts, and says so, unless `restore = false` |
 | `[schedules.<id>]` | `schedule.<id>` | `mon` … `sun`, each a list of `["07:00", "09:00"]` times; `24:00` ends one at midnight | its week, read on the home's clock (`home.toml`), or this machine's until the home says where it is |
 
+**Helpers worked out from other entities.** Each reads its sources (by entity id, and `field`
+for one of a source's other values where it says) and comes to an ordinary entity. While it
+can't be worked out (a source that isn't there yet, or isn't a number where one is needed), it
+is unknown with the reason as its `problem` attribute, which the Helpers tab shows. There is
+no template helper.
+
+| Table | Entity | Settings beside `name` | What it is |
+|---|---|---|---|
+| `[groups.<id>]` | `<kind>.<id>` | `kind` (`light`, `switch`, `fan`, `cover`, `binary_sensor`, `sensor`), `members`, `all`, `of` (sensors: `mean`, `min`, `max`, `sum`) | On while any member is (every one, with `all`); a call to it goes to each member |
+| `[thresholds.<id>]` | `binary_sensor.<id>` | `source`, `field`, `above`, `below`, `hysteresis` | On while the reading is past the line, or between the two |
+| `[trends.<id>]` | `binary_sensor.<id>` | `source`, `field`, `direction` (`rising`, `falling`), `by`, `over` (seconds) | On while it changed by at least `by` over the last `over` |
+| `[meters.<id>]` | `sensor.<id>` | `source`, `every` (`hour`, `day`, `week`, `month`, `year`) | What a counting reading went up by since the period began on the home's clock; a device's count starting again is followed. Kept through restarts |
+| `[integrals.<id>]` | `sensor.<id>` | `source`, `field`, `per` (`second`, `minute`, `hour`) | The area under the reading, trapezoid by trapezoid: W into Wh. Kept through restarts |
+| `[derivatives.<id>]` | `sensor.<id>` | `source`, `field`, `per`, `over` | How fast it changes, per `per`, over the last `over` seconds |
+| `[statistics.<id>]` | `sensor.<id>` | `source`, `field`, `of` (`mean`, `min`, `max`), `over` | Over the last `over` seconds; the mean counts each reading for as long as it held |
+| `[history.<id>]` | `sensor.<id>` | `source`, `is` (`true`, `false` or a text), `measure` (`time` in hours, `count`, `ratio` in %), `over` | Since midnight at home, or over the last `over` seconds |
+
+Windows are a week at most. Helpers that read each other in a ring are refused, naming the
+ring. Their unit follows the source's where it has one (`Wh` from `W`, `°C/h`).
+
 ```toml
 [numbers.evening_brightness]
 name = "Evening brightness"
@@ -731,8 +751,8 @@ Named here so the layout has room for them, specified when they are built:
 - **An entity in a different area than its device** (`Entity.area_id` already allows it).
 - **More on the plan** — furniture, stairs between floors, and an area that spans one without
   being traced on each.
-- **More helpers** — values worked out from other entities (groups,
-  thresholds, meters).
+- **More helpers** — a group's brightness and position, and other kinds as they're asked
+  for.
 
 ## 8. Changes from the roadmap draft
 

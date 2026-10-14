@@ -475,6 +475,25 @@ pub enum HelperKind {
     /// Counts down: `timer.<id>`, and `event.<id>` for when it starts and ends. `--initial`
     /// isn't for a timer; its length is `--step`, in seconds.
     Timer,
+    /// On during a week's times, given with `--set mon='[["07:00","09:00"]]'`: `schedule.<id>`.
+    Schedule,
+    /// Several entities as one: `--set kind=light --set members='["light.a","light.b"]'`.
+    Group,
+    /// On while a reading is past a line: `--set source=sensor.x --set above=26`.
+    Threshold,
+    /// On while a reading rises or falls: `--set source=… --set direction=rising --set by=… --set over=…`.
+    Trend,
+    /// What a counting reading went up by: `--set source=… --set every=day`.
+    Meter,
+    /// The area under a reading, power into energy: `--set source=…`.
+    Integral,
+    /// How fast a reading changes: `--set source=… --set over=…`.
+    Derivative,
+    /// A reading's mean, min or max: `--set source=… --set of=mean --set over=…`.
+    Statistics,
+    /// How long, how often or how much of the time something was a value:
+    /// `--set source=… --set is=true --set measure=time`.
+    History,
 }
 
 impl HelperKind {
@@ -491,6 +510,15 @@ impl HelperKind {
             Self::Time => "times",
             Self::Datetime => "datetimes",
             Self::Timer => "timers",
+            Self::Schedule => "schedules",
+            Self::Group => "groups",
+            Self::Threshold => "thresholds",
+            Self::Trend => "trends",
+            Self::Meter => "meters",
+            Self::Integral => "integrals",
+            Self::Derivative => "derivatives",
+            Self::Statistics => "statistics",
+            Self::History => "history",
         }
     }
 }
@@ -527,6 +555,11 @@ pub struct HelperSettings {
     /// text, a date (`2026-10-14`), a time (`06:45`) or a moment (`2026-10-14T06:45:00Z`).
     #[arg(long, allow_hyphen_values = true)]
     pub initial: Option<String>,
+    /// Any setting, as `key=value`, the way it's written in `extensions/helpers.toml`: a value
+    /// that reads as JSON (a number, `true`, a list) is that, and anything else is text. Give
+    /// it once for each.
+    #[arg(long = "set", value_name = "KEY=VALUE", allow_hyphen_values = true)]
+    pub set: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
