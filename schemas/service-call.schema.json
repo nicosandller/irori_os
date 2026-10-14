@@ -1498,6 +1498,148 @@
           "data"
         ]
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "vacuum.start"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "vacuum.pause"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "vacuum.stop"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "vacuum.return_to_base"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "vacuum.locate"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "vacuum.clean_spot"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "vacuum.set_fan_speed"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/VacuumFanSpeed"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
     }
   ],
   "required": [
@@ -2156,7 +2298,14 @@
         "alarm_control_panel.alarm_trigger",
         "date.set_value",
         "time.set_value",
-        "datetime.set_value"
+        "datetime.set_value",
+        "vacuum.start",
+        "vacuum.pause",
+        "vacuum.stop",
+        "vacuum.return_to_base",
+        "vacuum.locate",
+        "vacuum.clean_spot",
+        "vacuum.set_fan_speed"
       ]
     },
     "SetHumidity": {
@@ -2296,6 +2445,20 @@
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "VacuumFanSpeed": {
+      "description": "Data for `vacuum.set_fan_speed`.",
+      "type": "object",
+      "properties": {
+        "fan_speed": {
+          "description": "One of the vacuum's `fan_speeds`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "fan_speed"
+      ]
     },
     "VolumeMute": {
       "description": "Data for `media_player.volume_mute`.",

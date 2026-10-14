@@ -309,6 +309,8 @@ manifest's `entity_kinds`.
 | `alarm_control_panel.alarm_arm_home`, `…alarm_arm_away`, `…alarm_arm_night`, `…alarm_arm_vacation`, `…alarm_arm_custom_bypass` | `code`, optional | Needs that mode among its `arm_modes`. The code is required when the panel has a `code_format` and `code_arm_required`; digits only when the format is `number` |
 | `alarm_control_panel.alarm_disarm` | `code`, optional | The code is required when the panel has a `code_format` and `code_disarm_required` |
 | `alarm_control_panel.alarm_trigger` | `code`, optional | Needs `trigger` |
+| `vacuum.start`, `vacuum.pause`, `vacuum.stop`, `vacuum.return_to_base`, `vacuum.locate`, `vacuum.clean_spot` | none | Each needs the capability of its name (`return_to_base` needs `return_home`) |
+| `vacuum.set_fan_speed` | `fan_speed`, one of its `fan_speeds` | |
 | `date.set_value` | `date`, a calendar day (`2026-10-14`) | Home Assistant's field names, here and below |
 | `time.set_value` | `time`, a time of day (`06:45:00`, or `06:45`) | |
 | `datetime.set_value` | `datetime`, a `Timestamp` | An ESPHome device counts seconds from 1970 to 2106, and refuses a moment outside that |

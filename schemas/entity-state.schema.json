@@ -577,6 +577,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^vacuum\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "vacuum"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -784,6 +807,10 @@
         {
           "maxLength": 73,
           "pattern": "^datetime\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^vacuum\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -1769,6 +1796,30 @@
             "kind",
             "value"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "activity": {
+              "$ref": "#/$defs/VacuumActivity"
+            },
+            "fan_speed": {
+              "description": "One of its `fan_speeds` (checked by the core).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "vacuum"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "activity"
+          ]
         }
       ]
     },
@@ -1791,6 +1842,34 @@
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "VacuumActivity": {
+      "description": "What a vacuum is doing. Home Assistant's `VacuumActivity`.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "cleaning",
+            "docked",
+            "paused"
+          ]
+        },
+        {
+          "description": "Off its dock and doing nothing.",
+          "type": "string",
+          "const": "idle"
+        },
+        {
+          "description": "On its way back to the dock.",
+          "type": "string",
+          "const": "returning"
+        },
+        {
+          "description": "Stuck, or something is wrong with it.",
+          "type": "string",
+          "const": "error"
+        }
+      ]
     },
     "WaterHeaterMode": {
       "description": "Home Assistant's operation modes.",

@@ -12,7 +12,7 @@ use irori_types::{Capabilities, EntityCategory, EntityKind, Name, UniqueId};
 
 use crate::kinds::{
     alarm_control_panel, binary_sensor, button, climate, cover, event, fan, humidifier, light,
-    lock, moment, number, select, sensor, siren, switch, text, update, valve, water_heater,
+    lock, moment, number, select, sensor, siren, switch, text, update, vacuum, valve, water_heater,
 };
 use crate::template::CommandTemplate;
 use crate::topic::Component;
@@ -37,6 +37,7 @@ pub use crate::kinds::siren::SirenTopics;
 pub use crate::kinds::switch::SwitchTopics;
 pub use crate::kinds::text::TextTopics;
 pub use crate::kinds::update::UpdateTopics;
+pub use crate::kinds::vacuum::VacuumTopics;
 pub use crate::kinds::water_heater::WaterHeaterTopics;
 
 /// A device as HA discovery describes it. `unique_id` is the first of `device.identifiers`,
@@ -109,6 +110,7 @@ pub enum EntityTopics {
     AlarmControlPanel(Box<AlarmTopics>),
     /// A date, a time or a datetime: its topics say which.
     Moment(MomentTopics),
+    Vacuum(Box<VacuumTopics>),
     Fan(Box<FanTopics>),
     Valve(Box<OpeningTopics>),
     Siren(SirenTopics),
@@ -135,6 +137,7 @@ impl EntityTopics {
             Self::Lock(_) => EntityKind::Lock,
             Self::AlarmControlPanel(_) => EntityKind::AlarmControlPanel,
             Self::Moment(topics) => topics.kind,
+            Self::Vacuum(_) => EntityKind::Vacuum,
             Self::Fan(_) => EntityKind::Fan,
             Self::Valve(_) => EntityKind::Valve,
             Self::Siren(_) => EntityKind::Siren,
@@ -200,6 +203,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::Date => moment::parse(EntityKind::Date, &root)?,
         Component::Time => moment::parse(EntityKind::Time, &root)?,
         Component::Datetime => moment::parse(EntityKind::Datetime, &root)?,
+        Component::Vacuum => vacuum::parse(&root)?,
         Component::Fan => fan::parse(&root)?,
         Component::Valve => valve::parse(&root)?,
         Component::Siren => siren::parse(&root)?,

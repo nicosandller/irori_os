@@ -23,6 +23,7 @@ use crate::kinds::siren::SirenCapabilities;
 use crate::kinds::switch::SwitchCapabilities;
 use crate::kinds::text::TextCapabilities;
 use crate::kinds::update::UpdateCapabilities;
+use crate::kinds::vacuum::VacuumCapabilities;
 use crate::kinds::valve::ValveCapabilities;
 use crate::kinds::water_heater::WaterHeaterCapabilities;
 use crate::{
@@ -215,6 +216,7 @@ pub enum Capabilities {
     Date(MomentCapabilities),
     Time(MomentCapabilities),
     Datetime(MomentCapabilities),
+    Vacuum(VacuumCapabilities),
 }
 
 impl Capabilities {
@@ -243,6 +245,7 @@ impl Capabilities {
             Self::Date(_) => EntityKind::Date,
             Self::Time(_) => EntityKind::Time,
             Self::Datetime(_) => EntityKind::Datetime,
+            Self::Vacuum(_) => EntityKind::Vacuum,
         }
     }
 

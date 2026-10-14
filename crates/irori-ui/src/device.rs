@@ -1304,6 +1304,9 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
         (Capabilities::AlarmControlPanel(_), Some(State::AlarmControlPanel(panel))) => {
             devices::alarm_words(panel.state).to_owned()
         }
+        (Capabilities::Vacuum(_), Some(State::Vacuum(vacuum))) => {
+            devices::vacuum_words(vacuum.activity).to_owned()
+        }
         (Capabilities::Date(_), Some(State::Date(date))) => date.value.to_string(),
         (Capabilities::Time(_), Some(State::Time(time))) => time.value.to_string(),
         (Capabilities::Fan(_), Some(State::Fan(fan))) => devices::fan_words(fan),

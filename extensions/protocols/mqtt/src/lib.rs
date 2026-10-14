@@ -599,9 +599,9 @@ mod tests {
         let (ctx, mut host) = host::connect();
         let publisher = FakePublisher::default();
         let mut registry = Registry::default();
-        let topic = "homeassistant/vacuum/0x1234/robot/config";
-        let robot = br#"{"unique_id": "0x1234_robot", "name": "Robot",
-            "device": {"identifiers": ["0x1234"], "name": "Robot vacuum"}}"#;
+        let topic = "homeassistant/camera/0x1234/porch/config";
+        let robot = br#"{"unique_id": "0x1234_porch", "name": "Porch",
+            "device": {"identifiers": ["0x1234"], "name": "Porch camera"}}"#;
         apply(
             message(topic, robot),
             &settings(),
@@ -611,10 +611,10 @@ mod tests {
         )
         .await;
         let Some(host::Op::SetUnmodeled(listed)) = host.ops.recv().await else {
-            panic!("the vacuum should be listed");
+            panic!("the camera should be listed");
         };
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].platform.as_str(), "vacuum");
+        assert_eq!(listed[0].platform.as_str(), "camera");
         assert!(
             registry.entities.is_empty(),
             "and not described as an entity"

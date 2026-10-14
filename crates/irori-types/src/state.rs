@@ -24,6 +24,7 @@ use crate::kinds::siren::SirenState;
 use crate::kinds::switch::SwitchState;
 use crate::kinds::text::TextState;
 use crate::kinds::update::UpdateState;
+use crate::kinds::vacuum::VacuumState;
 use crate::kinds::valve::ValveState;
 use crate::kinds::water_heater::WaterHeaterState;
 use crate::{AttributeKey, Context, EntityId, EntityKind, InvariantError, Timestamp};
@@ -162,6 +163,7 @@ pub enum State {
     Date(DateState),
     Time(TimeState),
     Datetime(DatetimeState),
+    Vacuum(VacuumState),
 }
 
 impl State {
@@ -190,7 +192,8 @@ impl State {
             | Self::AlarmControlPanel(_)
             | Self::Date(_)
             | Self::Time(_)
-            | Self::Datetime(_) => Ok(()),
+            | Self::Datetime(_)
+            | Self::Vacuum(_) => Ok(()),
         }
     }
 
@@ -218,6 +221,7 @@ impl State {
             Self::Date(_) => EntityKind::Date,
             Self::Time(_) => EntityKind::Time,
             Self::Datetime(_) => EntityKind::Datetime,
+            Self::Vacuum(_) => EntityKind::Vacuum,
         }
     }
 }

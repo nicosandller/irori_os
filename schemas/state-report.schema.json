@@ -985,6 +985,30 @@
             "kind",
             "value"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "activity": {
+              "$ref": "#/$defs/VacuumActivity"
+            },
+            "fan_speed": {
+              "description": "One of its `fan_speeds` (checked by the core).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "vacuum"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "activity"
+          ]
         }
       ]
     },
@@ -1000,6 +1024,34 @@
       "maxLength": 255,
       "minLength": 1,
       "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+    },
+    "VacuumActivity": {
+      "description": "What a vacuum is doing. Home Assistant's `VacuumActivity`.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "cleaning",
+            "docked",
+            "paused"
+          ]
+        },
+        {
+          "description": "Off its dock and doing nothing.",
+          "type": "string",
+          "const": "idle"
+        },
+        {
+          "description": "On its way back to the dock.",
+          "type": "string",
+          "const": "returning"
+        },
+        {
+          "description": "Stuck, or something is wrong with it.",
+          "type": "string",
+          "const": "error"
+        }
+      ]
     },
     "WaterHeaterMode": {
       "description": "Home Assistant's operation modes.",

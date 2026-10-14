@@ -584,6 +584,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^vacuum\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "vacuum"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -1517,6 +1540,57 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "clean_spot": {
+              "description": "Can clean the spot it's on.",
+              "type": "boolean",
+              "default": false
+            },
+            "fan_speeds": {
+              "description": "The fan speeds it has, by its own names (`quiet`, `turbo`). None for one with no choice.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            "kind": {
+              "type": "string",
+              "const": "vacuum"
+            },
+            "locate": {
+              "description": "Can make a noise so someone can find it.",
+              "type": "boolean",
+              "default": false
+            },
+            "pause": {
+              "description": "Can be paused where it is.",
+              "type": "boolean",
+              "default": false
+            },
+            "return_home": {
+              "description": "Can be sent back to its dock.",
+              "type": "boolean",
+              "default": false
+            },
+            "start": {
+              "description": "Can be told to start cleaning.",
+              "type": "boolean",
+              "default": false
+            },
+            "stop": {
+              "description": "Can be stopped.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
@@ -1683,6 +1757,10 @@
         {
           "maxLength": 73,
           "pattern": "^datetime\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^vacuum\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

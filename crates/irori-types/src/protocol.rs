@@ -26,6 +26,7 @@ use crate::kinds::opening::SetPosition;
 use crate::kinds::select::SelectOption;
 use crate::kinds::siren::SirenTurnOn;
 use crate::kinds::text::TextSetValue;
+use crate::kinds::vacuum::VacuumFanSpeed;
 use crate::kinds::water_heater::{WaterHeaterOperationMode, WaterHeaterSetTemperature};
 use crate::{
     Attributes, Capabilities, Context, ContextId, EntityCategory, EntityKind, InvariantError, Name,
@@ -461,6 +462,13 @@ pub enum Service {
     DateSetValue(DateSetValue),
     TimeSetValue(TimeSetValue),
     DatetimeSetValue(DatetimeSetValue),
+    VacuumStart,
+    VacuumPause,
+    VacuumStop,
+    VacuumReturnToBase,
+    VacuumLocate,
+    VacuumCleanSpot,
+    VacuumSetFanSpeed(VacuumFanSpeed),
 }
 
 impl Service {
@@ -538,6 +546,13 @@ impl Service {
             Self::DateSetValue(_) => ServiceName::DateSetValue,
             Self::TimeSetValue(_) => ServiceName::TimeSetValue,
             Self::DatetimeSetValue(_) => ServiceName::DatetimeSetValue,
+            Self::VacuumStart => ServiceName::VacuumStart,
+            Self::VacuumPause => ServiceName::VacuumPause,
+            Self::VacuumStop => ServiceName::VacuumStop,
+            Self::VacuumReturnToBase => ServiceName::VacuumReturnToBase,
+            Self::VacuumLocate => ServiceName::VacuumLocate,
+            Self::VacuumCleanSpot => ServiceName::VacuumCleanSpot,
+            Self::VacuumSetFanSpeed(_) => ServiceName::VacuumSetFanSpeed,
         }
     }
 }
@@ -689,6 +704,20 @@ pub enum ServiceName {
     TimeSetValue,
     #[serde(rename = "datetime.set_value")]
     DatetimeSetValue,
+    #[serde(rename = "vacuum.start")]
+    VacuumStart,
+    #[serde(rename = "vacuum.pause")]
+    VacuumPause,
+    #[serde(rename = "vacuum.stop")]
+    VacuumStop,
+    #[serde(rename = "vacuum.return_to_base")]
+    VacuumReturnToBase,
+    #[serde(rename = "vacuum.locate")]
+    VacuumLocate,
+    #[serde(rename = "vacuum.clean_spot")]
+    VacuumCleanSpot,
+    #[serde(rename = "vacuum.set_fan_speed")]
+    VacuumSetFanSpeed,
 }
 
 impl ServiceName {
@@ -765,6 +794,13 @@ impl ServiceName {
         Self::DateSetValue,
         Self::TimeSetValue,
         Self::DatetimeSetValue,
+        Self::VacuumStart,
+        Self::VacuumPause,
+        Self::VacuumStop,
+        Self::VacuumReturnToBase,
+        Self::VacuumLocate,
+        Self::VacuumCleanSpot,
+        Self::VacuumSetFanSpeed,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -841,6 +877,13 @@ impl ServiceName {
             Self::DateSetValue => "date.set_value",
             Self::TimeSetValue => "time.set_value",
             Self::DatetimeSetValue => "datetime.set_value",
+            Self::VacuumStart => "vacuum.start",
+            Self::VacuumPause => "vacuum.pause",
+            Self::VacuumStop => "vacuum.stop",
+            Self::VacuumReturnToBase => "vacuum.return_to_base",
+            Self::VacuumLocate => "vacuum.locate",
+            Self::VacuumCleanSpot => "vacuum.clean_spot",
+            Self::VacuumSetFanSpeed => "vacuum.set_fan_speed",
         }
     }
 
@@ -913,6 +956,13 @@ impl ServiceName {
             Self::DateSetValue => EntityKind::Date,
             Self::TimeSetValue => EntityKind::Time,
             Self::DatetimeSetValue => EntityKind::Datetime,
+            Self::VacuumStart
+            | Self::VacuumPause
+            | Self::VacuumStop
+            | Self::VacuumReturnToBase
+            | Self::VacuumLocate
+            | Self::VacuumCleanSpot
+            | Self::VacuumSetFanSpeed => EntityKind::Vacuum,
         }
     }
 }
@@ -1012,6 +1062,7 @@ impl JsonSchema for ServiceCall {
         let set_position = generator.subschema_for::<SetPosition>();
         let set_tilt = generator.subschema_for::<SetTilt>();
         let lock_code = generator.subschema_for::<LockCode>();
+        let vacuum_fan_speed = generator.subschema_for::<VacuumFanSpeed>();
         let date_set = generator.subschema_for::<DateSetValue>();
         let time_set = generator.subschema_for::<TimeSetValue>();
         let datetime_set = generator.subschema_for::<DatetimeSetValue>();
@@ -1063,6 +1114,7 @@ impl JsonSchema for ServiceCall {
                     ServiceName::DateSetValue => date_set.clone(),
                     ServiceName::TimeSetValue => time_set.clone(),
                     ServiceName::DatetimeSetValue => datetime_set.clone(),
+                    ServiceName::VacuumSetFanSpeed => vacuum_fan_speed.clone(),
                     ServiceName::FanTurnOn => fan_turn_on.clone(),
                     ServiceName::FanSetPercentage => fan_percentage.clone(),
                     ServiceName::FanOscillate => fan_oscillate.clone(),

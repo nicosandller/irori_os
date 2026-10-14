@@ -81,6 +81,8 @@ const PADLOCK: &str = concat!(
 );
 /// A calendar page: a day or a moment someone sets.
 const CALENDAR: &str = r#"<rect x="4" y="5.5" width="16" height="14.5" rx="1.5"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/>"#;
+/// A robot vacuum from above: its body, its bumper and its lid.
+const ROBOT: &str = r#"<circle cx="12" cy="12" r="8.5"/><path d="M5.5 8.500a8.500 8.500 0 0 1 13 0"/><circle cx="12" cy="12.5" r="2.5"/>"#;
 /// A shield: an alarm panel.
 const SHIELD: &str = r#"<path d="M12 3.5l7 2.5v5.5c0 4.300-2.900 7.500-7 9-4.100-1.500-7-4.700-7-9V6Z"/><path d="M9.5 12l1.800 1.800 3.200-3.600"/>"#;
 const FAN: &str = concat!(
@@ -141,6 +143,7 @@ pub fn drawing(capabilities: &Capabilities) -> &'static str {
         Capabilities::AlarmControlPanel(_) => SHIELD,
         Capabilities::Date(_) | Capabilities::Datetime(_) => CALENDAR,
         Capabilities::Time(_) => CLOCK,
+        Capabilities::Vacuum(_) => ROBOT,
         Capabilities::Fan(_) => FAN,
         Capabilities::Valve(_) => VALVE,
         Capabilities::Siren(_) => SIREN,

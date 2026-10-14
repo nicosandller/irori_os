@@ -26,6 +26,7 @@ pub mod siren;
 pub mod switch;
 pub mod text;
 pub mod update;
+pub mod vacuum;
 pub mod valve;
 pub mod water_heater;
 

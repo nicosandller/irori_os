@@ -54,6 +54,8 @@ pub enum EntityKind {
     Time,
     /// A moment someone sets: a day and a time, e.g. when a holiday ends.
     Datetime,
+    /// A robot vacuum cleaner.
+    Vacuum,
 }
 
 impl EntityKind {
@@ -81,6 +83,7 @@ impl EntityKind {
         Self::Date,
         Self::Time,
         Self::Datetime,
+        Self::Vacuum,
     ];
 
     /// The domain string used in entity ids and service names.
@@ -109,6 +112,7 @@ impl EntityKind {
             Self::Date => "date",
             Self::Time => "time",
             Self::Datetime => "datetime",
+            Self::Vacuum => "vacuum",
         }
     }
 

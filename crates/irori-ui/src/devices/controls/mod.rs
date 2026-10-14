@@ -20,6 +20,7 @@ mod siren;
 mod switch;
 mod text;
 mod update;
+mod vacuum;
 mod water_heater;
 
 pub(crate) use self::alarm_control_panel::alarm_words;
@@ -32,6 +33,7 @@ pub(crate) use self::number::unit_of;
 pub(crate) use self::opening::opening_words;
 pub(crate) use self::sensor::wording;
 pub(crate) use self::update::update_words;
+pub(crate) use self::vacuum::vacuum_words;
 pub(crate) use self::water_heater::water_heater_words;
 
 use irori_types::{Capabilities, CoverState, Entity, EntityState, State};
@@ -78,7 +80,8 @@ pub(crate) fn control(
         Capabilities::Cover(_)
         | Capabilities::Valve(_)
         | Capabilities::Lock(_)
-        | Capabilities::AlarmControlPanel(_) => kept(
+        | Capabilities::AlarmControlPanel(_)
+        | Capabilities::Vacuum(_) => kept(
             entity,
             Signal::stored(state.cloned()),
             Signal::stored(offline),
@@ -159,6 +162,13 @@ pub(crate) fn kept(
             controls,
         )),
         Capabilities::AlarmControlPanel(capabilities) => Some(alarm_control_panel::alarm_control(
+            entity,
+            capabilities,
+            value,
+            offline,
+            controls,
+        )),
+        Capabilities::Vacuum(capabilities) => Some(vacuum::vacuum_control(
             entity,
             capabilities,
             value,

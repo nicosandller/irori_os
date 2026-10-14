@@ -1,1 +1,1 @@
-unknown variant `vacuum`
+unknown variant `camera`

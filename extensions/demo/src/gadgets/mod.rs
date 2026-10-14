@@ -12,6 +12,7 @@ mod doorbell;
 mod fan;
 mod firmware;
 mod lock;
+mod robot;
 mod shutoff;
 mod tank;
 mod thermostat;
@@ -92,6 +93,7 @@ impl Gadgets {
             all: vec![
                 Box::new(lock::FrontDoorLock::new()),
                 Box::new(alarm::HouseAlarm::new()),
+                Box::new(robot::RobotVacuum::new()),
                 Box::new(doorbell::Doorbell::new()),
                 Box::new(blind::Blind::new()),
                 Box::new(fan::CeilingFan::new()),

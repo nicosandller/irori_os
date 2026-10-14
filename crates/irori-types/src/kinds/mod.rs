@@ -28,6 +28,7 @@ pub(crate) mod siren;
 pub(crate) mod switch;
 pub(crate) mod text;
 pub(crate) mod update;
+pub(crate) mod vacuum;
 pub(crate) mod valve;
 pub(crate) mod water_heater;
 
@@ -217,7 +218,8 @@ impl EntityKind {
             | Self::AlarmControlPanel
             | Self::Date
             | Self::Time
-            | Self::Datetime => return None,
+            | Self::Datetime
+            | Self::Vacuum => return None,
         })
     }
 }
@@ -246,7 +248,8 @@ impl Capabilities {
             | Self::AlarmControlPanel(_)
             | Self::Date(_)
             | Self::Time(_)
-            | Self::Datetime(_) => ValueShape::Text,
+            | Self::Datetime(_)
+            | Self::Vacuum(_) => ValueShape::Text,
             Self::Sensor(sensor) => match sensor.value_type {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
@@ -268,6 +271,7 @@ impl Capabilities {
             Self::WaterHeater(_) => Some(&OPERATION_MODES),
             Self::MediaPlayer(_) => Some(&PLAYBACK_STATES),
             Self::AlarmControlPanel(_) => Some(&ALARM_STATES),
+            Self::Vacuum(_) => Some(&vacuum::ACTIVITIES),
             _ => None,
         }
     }
@@ -285,6 +289,7 @@ impl Capabilities {
             Self::WaterHeater(caps) => water_heater::fields(caps),
             Self::MediaPlayer(caps) => media_player::fields(caps),
             Self::Update(caps) => update::fields(caps),
+            Self::Vacuum(caps) => vacuum::fields(caps),
             Self::Switch(_)
             | Self::Sensor(_)
             | Self::BinarySensor(_)
@@ -332,6 +337,7 @@ impl Capabilities {
             (Self::Humidifier(caps), State::Humidifier(state)) => humidifier::fits(caps, state),
             (Self::WaterHeater(caps), State::WaterHeater(state)) => water_heater::fits(caps, state),
             (Self::MediaPlayer(caps), State::MediaPlayer(state)) => media_player::fits(caps, state),
+            (Self::Vacuum(caps), State::Vacuum(state)) => vacuum::fits(caps, state),
             _ => Ok(()),
         }
     }
@@ -362,6 +368,7 @@ impl Capabilities {
             Self::Humidifier(caps) => humidifier::supports_service(caps, service),
             Self::MediaPlayer(caps) => media_player::supports_service(caps, service),
             Self::Update(caps) => update::supports_service(caps, service),
+            Self::Vacuum(caps) => vacuum::supports_service(caps, service),
             Self::AlarmControlPanel(caps) => alarm_control_panel::supports_service(caps, service),
             Self::Switch(_) | Self::Button(_) => Ok(()),
             // Any day, time or moment that exists is one it can be set to.
@@ -390,6 +397,7 @@ impl State {
             Self::Cover(state) => cover::primary(state),
             Self::Valve(state) => valve::primary(state),
             Self::Lock(state) => lock::primary(state),
+            Self::Vacuum(state) => vacuum::primary(state),
             Self::AlarmControlPanel(state) => alarm_control_panel::primary(state),
             Self::Date(state) => moment::date_primary(state),
             Self::Time(state) => moment::time_primary(state),
@@ -413,6 +421,7 @@ impl State {
             Self::WaterHeater(state) => water_heater::field(state, name),
             Self::MediaPlayer(state) => media_player::field(state, name),
             Self::Update(state) => update::field(state, name),
+            Self::Vacuum(state) => vacuum::field(state, name),
             Self::Switch(_)
             | Self::Sensor(_)
             | Self::BinarySensor(_)
@@ -475,6 +484,7 @@ impl State {
                 State::MediaPlayer(media_player::with_primary(previous!(MediaPlayer), value)?)
             }
             EntityKind::Update => State::Update(update::with_primary(previous!(Update), value)?),
+            EntityKind::Vacuum => State::Vacuum(vacuum::with_primary(previous!(Vacuum), value)?),
             EntityKind::Button => return None,
         })
     }
@@ -500,6 +510,7 @@ impl Service {
             EntityKind::Cover => cover::service(name, data),
             EntityKind::Valve => valve::service(name, data),
             EntityKind::Lock => lock::service(name, data),
+            EntityKind::Vacuum => vacuum::service(name, data),
             EntityKind::AlarmControlPanel => alarm_control_panel::service(name, data),
             EntityKind::Date | EntityKind::Time | EntityKind::Datetime => {
                 moment::service(name, data)
@@ -557,6 +568,7 @@ impl Service {
             EntityKind::Cover => cover::asks_for(self),
             EntityKind::Valve => valve::asks_for(self),
             EntityKind::Lock => lock::asks_for(self),
+            EntityKind::Vacuum => vacuum::asks_for(self),
             EntityKind::AlarmControlPanel => alarm_control_panel::asks_for(self),
             EntityKind::Date | EntityKind::Time | EntityKind::Datetime => moment::asks_for(self),
             EntityKind::Fan => fan::asks_for(self),
@@ -596,6 +608,7 @@ impl ServiceName {
             EntityKind::Cover => cover::data_of(self),
             EntityKind::Valve => valve::data_of(self),
             EntityKind::Lock => lock::data_of(self),
+            EntityKind::Vacuum => vacuum::data_of(self),
             EntityKind::AlarmControlPanel => alarm_control_panel::data_of(self),
             EntityKind::Date | EntityKind::Time | EntityKind::Datetime => moment::data_of(self),
             EntityKind::Fan => fan::data_of(self),

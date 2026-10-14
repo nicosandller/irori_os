@@ -88,6 +88,7 @@ pub use kinds::siren::{SirenCapabilities, SirenState, SirenTurnOn};
 pub use kinds::switch::{SwitchCapabilities, SwitchClass, SwitchState};
 pub use kinds::text::{TextCapabilities, TextMode, TextSetValue, TextState};
 pub use kinds::update::{UpdateCapabilities, UpdateClass, UpdateState};
+pub use kinds::vacuum::{VacuumActivity, VacuumCapabilities, VacuumFanSpeed, VacuumState};
 pub use kinds::valve::{ValveCapabilities, ValveClass, ValveState};
 pub use kinds::water_heater::{
     WaterHeaterCapabilities, WaterHeaterMode, WaterHeaterOperationMode, WaterHeaterSetTemperature,

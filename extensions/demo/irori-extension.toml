@@ -8,5 +8,5 @@ icon = "icon.svg"
 
 [[contributes.protocol]]
 iot_class = "local_push"
-entity_kinds = ["light", "switch", "sensor", "binary_sensor", "number", "select", "text", "button", "event", "cover", "lock", "fan", "valve", "siren", "climate", "water_heater", "humidifier", "media_player", "update", "alarm_control_panel"]
+entity_kinds = ["light", "switch", "sensor", "binary_sensor", "number", "select", "text", "button", "event", "cover", "lock", "fan", "valve", "siren", "climate", "water_heater", "humidifier", "media_player", "update", "alarm_control_panel", "vacuum"]
 run = { command = "bin/irori-ext-demo" }
