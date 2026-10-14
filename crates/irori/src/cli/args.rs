@@ -466,6 +466,12 @@ pub enum HelperKind {
     Text,
     /// Something to press: `button.<id>`, and `event.<id>` for when it was.
     Button,
+    /// A calendar day: `date.<id>`.
+    Date,
+    /// A time of day: `time.<id>`.
+    Time,
+    /// A day and a time: `datetime.<id>`.
+    Datetime,
 }
 
 impl HelperKind {
@@ -478,6 +484,9 @@ impl HelperKind {
             Self::Choice => "selects",
             Self::Text => "texts",
             Self::Button => "buttons",
+            Self::Date => "dates",
+            Self::Time => "times",
+            Self::Datetime => "datetimes",
         }
     }
 }
@@ -510,8 +519,8 @@ pub struct HelperSettings {
     /// The most characters a text takes.
     #[arg(long)]
     pub max_length: Option<u32>,
-    /// What it is until someone sets it: `true` or `false` for a toggle, a number, an option,
-    /// or a text.
+    /// What it is until someone sets it: `on` or `off` for a toggle, a number, an option, a
+    /// text, a date (`2026-10-14`), a time (`06:45`) or a moment (`2026-10-14T06:45:00Z`).
     #[arg(long, allow_hyphen_values = true)]
     pub initial: Option<String>,
 }

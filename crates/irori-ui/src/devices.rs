@@ -261,7 +261,7 @@ struct HelperKind {
     example: &'static str,
 }
 
-const HELPER_KINDS: [HelperKind; 6] = [
+const HELPER_KINDS: [HelperKind; 9] = [
     HelperKind {
         table: "toggles",
         word: "Toggle",
@@ -304,6 +304,27 @@ const HELPER_KINDS: [HelperKind; 6] = [
         prefix: "button",
         about: "Something to press, here or from a flow, that other flows start from.",
         example: "Movie time",
+    },
+    HelperKind {
+        table: "dates",
+        word: "Date",
+        prefix: "date",
+        about: "A calendar day you pick: when the bins go out, when the guests arrive.",
+        example: "Bins go out",
+    },
+    HelperKind {
+        table: "times",
+        word: "Time",
+        prefix: "time",
+        about: "A time of day you pick: when the alarm clock goes off, when the heating may start.",
+        example: "Wake up",
+    },
+    HelperKind {
+        table: "datetimes",
+        word: "Date and time",
+        prefix: "datetime",
+        about: "A day and a time together: when the holiday ends.",
+        example: "Holiday ends",
     },
 ];
 
@@ -620,15 +641,26 @@ fn AddHelper(#[prop(into)] on_added: Callback<()>) -> impl IntoView {
             "A helper is a value Irori keeps itself rather than a device reporting it. It stays "
             "as it was left through restarts, and flows read it, set it and start from it."
         </p>
-        {crate::segmented::segmented(
-            "Which kind of helper",
-            HELPER_KINDS.into_iter().map(|kind| (kind, kind.word)).collect(),
-            kind.into(),
-            move |picked| {
-                trouble.set(None);
-                kind.set(picked);
-            },
-        )}
+        <label class="helper-field wide">
+            <span>"Kind"</span>
+            <select
+                aria-label="Which kind of helper"
+                on:change:target=move |ev| {
+                    let picked = ev.target().value();
+                    if let Some(picked) = HELPER_KINDS.into_iter().find(|kind| kind.table == picked) {
+                        trouble.set(None);
+                        kind.set(picked);
+                    }
+                }
+            >
+                {HELPER_KINDS
+                    .into_iter()
+                    .map(|one| view! {
+                        <option value=one.table selected=move || kind.get() == one>{one.word}</option>
+                    })
+                    .collect_view()}
+            </select>
+        </label>
         <p class="muted helper-about">{move || kind.get().about}</p>
         {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
         <form

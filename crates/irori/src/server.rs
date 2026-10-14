@@ -4738,6 +4738,96 @@ mod tests {
         Ok(())
     }
 
+    /// A time helper starts at its `initial` and is set like any time; a date nobody has picked
+    /// is unknown until someone does.
+    #[tokio::test]
+    async fn a_time_and_a_date_helper_are_set_like_a_devices() -> anyhow::Result<()> {
+        let storage: Arc<dyn irori_protocol::Storage> =
+            Arc::new(irori_protocol::MemoryStorage::default());
+        let core = core();
+        core.use_storage(Arc::clone(&storage));
+        let server = Server::new(core.clone())?;
+        let host = helpers(&core).await?;
+        let text_of = |core: &Core, id: &EntityId| {
+            core.state(id)
+                .and_then(|s| s.state)
+                .map(|state| state.primary().to_json())
+        };
+
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/helpers/times",
+                serde_json::json!({"name": "Wake up", "initial": "06:45"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        let wake = EntityId::try_from("time.wake_up")?;
+        until("the time exists", || {
+            text_of(&core, &wake) == Some(serde_json::json!("06:45:00"))
+        })
+        .await?;
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/command",
+                serde_json::json!({"entity_id": wake, "command": "set_value",
+                    "data": {"time": "07:30"}}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("set", || {
+            text_of(&core, &wake) == Some(serde_json::json!("07:30:00"))
+        })
+        .await?;
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/helpers/dates",
+                serde_json::json!({"name": "Bins go out", "initial": "2026-02-30"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("a day that exists")),
+            "{body}"
+        );
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/helpers/dates",
+                serde_json::json!({"name": "Bins go out"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        let bins = EntityId::try_from("date.bins_go_out")?;
+        until("the date exists", || core.state(&bins).is_some()).await?;
+        assert_eq!(text_of(&core, &bins), None, "nobody has picked a day");
+        // The time kept what it was set to through the restart a new helper is.
+        until("kept", || {
+            text_of(&core, &wake) == Some(serde_json::json!("07:30:00"))
+        })
+        .await?;
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/command",
+                serde_json::json!({"entity_id": bins, "command": "set_value",
+                    "data": {"date": "2026-10-20"}}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("picked", || {
+            text_of(&core, &bins) == Some(serde_json::json!("2026-10-20"))
+        })
+        .await?;
+        host.shutdown().await;
+        Ok(())
+    }
+
     /// An icon arrives as an image with a policy that stops it doing anything but being one.
     #[tokio::test]
     async fn an_extensions_icon_is_served_as_a_locked_down_image() -> anyhow::Result<()> {

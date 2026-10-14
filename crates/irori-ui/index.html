@@ -865,11 +865,11 @@
     .helper-field { display: grid; gap: .25rem; min-width: 0; }
     .helper-field.wide { grid-column: 1 / -1; }
     .helper-field > span { color: var(--muted); font-size: .8rem; }
-    .helper-field input, .helper-field textarea {
+    .helper-field input, .helper-field textarea, .helper-field select {
         padding: .4rem .6rem; font: inherit; font-size: .95rem; min-width: 0;
         color: var(--fg); background: var(--bg); border: 1px solid var(--line);
         border-radius: .4rem; resize: vertical; }
-    .helper-field input:focus, .helper-field textarea:focus {
+    .helper-field input:focus, .helper-field textarea:focus, .helper-field select:focus {
         outline: 2px solid var(--ember); outline-offset: -1px; }
     .helper-form .add { grid-column: 1 / -1; justify-self: start; padding: .4rem .9rem;
                         font: inherit; cursor: pointer; color: var(--fg);

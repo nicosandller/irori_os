@@ -324,6 +324,9 @@ is an ordinary entity of a kind Irori already has, with no device:
 | `[selects.<id>]` | `select.<id>` | `options` (required, 1–256), `initial` | its first option |
 | `[texts.<id>]` | `text.<id>` | `min_length` (0), `max_length` (255), `initial` | empty |
 | `[buttons.<id>]` | `button.<id>` and `event.<id>` | none | has no value |
+| `[dates.<id>]` | `date.<id>` | `initial` (`2026-10-14`) | unknown |
+| `[times.<id>]` | `time.<id>` | `initial` (`06:45`) | unknown |
+| `[datetimes.<id>]` | `datetime.<id>` | `initial` (`2026-10-14T06:45:00Z`) | unknown |
 
 ```toml
 [numbers.evening_brightness]
@@ -726,8 +729,8 @@ Named here so the layout has room for them, specified when they are built:
 - **An entity in a different area than its device** (`Entity.area_id` already allows it).
 - **More on the plan** — furniture, stairs between floors, and an area that spans one without
   being traced on each.
-- **More helpers** — dates and times, timers, schedules, and values worked out from other
-  entities (groups, thresholds, meters).
+- **More helpers** — timers, schedules, and values worked out from other entities (groups,
+  thresholds, meters).
 
 ## 8. Changes from the roadmap draft
 

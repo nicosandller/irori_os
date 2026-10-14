@@ -26,11 +26,16 @@
 //!
 //! [buttons.movie_time]
 //! name = "Movie time"
+//!
+//! [times.wake_up]
+//! name = "Wake up"
+//! initial = "06:45"
 //! ```
 //!
 //! Every helper is an ordinary entity of a kind Irori already has, with no device: a toggle is
 //! `switch.<id>`, a number and a counter `number.<id>`, a choice `select.<id>`, a text
-//! `text.<id>`, a button `button.<id>` with `event.<id>` for flows to start from. So nothing
+//! `text.<id>`, a button `button.<id>` with `event.<id>` for flows to start from, and a date, a
+//! time and a moment `date.<id>`, `time.<id>` and `datetime.<id>`. So nothing
 //! that reads or sets an entity needs to know a helper from a device. Each kind has its own
 //! module, which says what it's made of; this one keeps the values and answers the calls.
 //!
@@ -40,6 +45,7 @@
 
 mod button;
 mod counter;
+mod moment;
 mod number;
 mod select;
 mod text;
@@ -57,6 +63,7 @@ use serde::Deserialize;
 
 pub use button::Button;
 pub use counter::Counter;
+pub use moment::{Date, Datetime, Time};
 pub use number::Number;
 pub use select::Select;
 pub use text::Text;
@@ -88,6 +95,15 @@ pub struct Settings {
     /// Something to press: `button.<id>`, and `event.<id>` for when it was.
     #[serde(default)]
     pub buttons: BTreeMap<ObjectId, Button>,
+    /// A calendar day: `date.<id>`.
+    #[serde(default)]
+    pub dates: BTreeMap<ObjectId, Date>,
+    /// A time of day: `time.<id>`.
+    #[serde(default)]
+    pub times: BTreeMap<ObjectId, Time>,
+    /// A day and a time: `datetime.<id>`.
+    #[serde(default)]
+    pub datetimes: BTreeMap<ObjectId, Datetime>,
 }
 
 impl Protocol for Helpers {
@@ -144,6 +160,21 @@ pub const KINDS: &[HelperKind] = &[
         word: "button",
         prefixes: &["button", "pressed"],
     },
+    HelperKind {
+        table: "dates",
+        word: "date",
+        prefixes: &["date"],
+    },
+    HelperKind {
+        table: "times",
+        word: "time",
+        prefixes: &["time"],
+    },
+    HelperKind {
+        table: "datetimes",
+        word: "date and time",
+        prefixes: &["datetime"],
+    },
 ];
 
 impl HelperKind {
@@ -181,11 +212,16 @@ impl HelperKind {
             "selects" => select::made(id, &read(settings)?),
             "texts" => text::made(id, &read(settings)?),
             "buttons" => button::made(id, &read(settings)?),
+            "dates" => moment::date(id, &read(settings)?),
+            "times" => moment::time(id, &read(settings)?),
+            "datetimes" => moment::datetime(id, &read(settings)?),
             other => return Err(format!("there are no helpers called `{other}`")),
         }
         .map_err(|e| e.to_string())?;
         for one in &made {
-            if let Role::Value { initial } = &one.role
+            if let Role::Value {
+                initial: Some(initial),
+            } = &one.role
                 && one.holding(initial).is_none()
             {
                 return Err(format!(
@@ -207,8 +243,9 @@ pub(crate) struct Made {
 }
 
 pub(crate) enum Role {
-    /// Holds a value someone sets, kept through restarts. `initial` until they have.
-    Value { initial: Typed },
+    /// Holds a value someone sets, kept through restarts. `initial` until they have, and
+    /// unknown until then for one that has none (a date nobody has picked).
+    Value { initial: Option<Typed> },
     /// Is pressed, and each press is reported on the entity `fires`.
     Press { fires: UniqueId },
     /// Reports things happening; nothing can be asked of it.
@@ -245,9 +282,17 @@ impl Made {
         id: &ObjectId,
         name: &Name,
         capabilities: Capabilities,
-        initial: Typed,
+        initial: impl Into<Option<Typed>>,
     ) -> Result<Self, ProtocolError> {
-        Self::new(what, id, name, capabilities, Role::Value { initial })
+        Self::new(
+            what,
+            id,
+            name,
+            capabilities,
+            Role::Value {
+                initial: initial.into(),
+            },
+        )
     }
 
     pub(crate) fn press(
@@ -321,6 +366,15 @@ fn all(settings: &Settings) -> Result<Vec<Made>, ProtocolError> {
     for (id, button) in &settings.buttons {
         made.extend(button::made(id, button)?);
     }
+    for (id, date) in &settings.dates {
+        made.extend(moment::date(id, date)?);
+    }
+    for (id, time) in &settings.times {
+        made.extend(moment::time(id, time)?);
+    }
+    for (id, moment) in &settings.datetimes {
+        made.extend(moment::datetime(id, moment)?);
+    }
     let mut taken: BTreeMap<String, &UniqueId> = BTreeMap::new();
     for one in &made {
         let entity = one.entity_id();
@@ -367,13 +421,16 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
             .await?
             .and_then(|value| typed(&value))
             .filter(|value| helper.holding(value).is_some());
-        let value = kept.unwrap_or_else(|| initial.clone());
-        match helper.holding(&value) {
-            Some(state) => ctx.report_state(report(unique.clone(), state, None)),
-            None => tracing::warn!(
-                helper = %unique,
-                "its `initial` isn't a value it can have, so it has none until it's set"
-            ),
+        match kept.or_else(|| initial.clone()) {
+            // Nobody has set it and it starts as nothing: it's described, and unknown.
+            None => {}
+            Some(value) => match helper.holding(&value) {
+                Some(state) => ctx.report_state(report(unique.clone(), state, None)),
+                None => tracing::warn!(
+                    helper = %unique,
+                    "its `initial` isn't a value it can have, so it has none until it's set"
+                ),
+            },
         }
     }
     let described: Vec<&str> = helpers.keys().map(UniqueId::as_str).collect();
@@ -496,6 +553,11 @@ mod tests {
             name = "Note"
             [buttons.movie]
             name = "Movie time"
+            [times.wake]
+            name = "Wake up"
+            initial = "06:45"
+            [dates.bins]
+            name = "Bins go out"
             "#,
         ))
         .expect("made");
@@ -520,13 +582,16 @@ mod tests {
                 "text-note=text.note",
                 "button-movie=button.movie",
                 "pressed-movie=event.movie",
+                "date-bins=date.bins",
+                "time-wake=time.wake",
             ]
         );
-        // Until someone sets them: off, the least, nought, the first option, nothing.
+        // Until someone sets them: off, the least, nought, the first option, nothing; and for
+        // a day nobody has picked, unknown.
         let initial: Vec<Option<Typed>> = made
             .iter()
             .map(|one| match &one.role {
-                Role::Value { initial } => Some(initial.clone()),
+                Role::Value { initial } => initial.clone(),
                 _ => None,
             })
             .collect();
@@ -540,6 +605,8 @@ mod tests {
                 Some(Typed::Text(String::new())),
                 None,
                 None,
+                None,
+                Some(Typed::Text("06:45:00".into())),
             ]
         );
     }
