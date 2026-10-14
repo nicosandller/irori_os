@@ -816,6 +816,33 @@ pub async fn add_helper(
     checked(response).await
 }
 
+/// What a helper would be if it were made now: the entities it gives, and those of them that
+/// something else already is (it then gets the next free id).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HelperCheck {
+    pub entities: Vec<String>,
+    #[serde(default)]
+    pub taken: Vec<String>,
+}
+
+/// Checks a helper without making it: what it would be, or why it couldn't be.
+pub async fn check_helper(
+    table: &str,
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> Result<HelperCheck, String> {
+    let response = post(&format!("/api/helpers/{table}/check"))
+        .json(fields)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        checked(response).await?;
+        return Err("Irori refused that".to_owned());
+    }
+    response.json().await.map_err(|e| e.to_string())
+}
+
 /// Removes a helper by its kind's table and the id it was made with.
 pub async fn remove_helper(table: &str, id: &str) -> Result<(), String> {
     let response = delete(&format!("/api/helpers/{table}/{id}"))
@@ -1279,6 +1306,9 @@ pub enum Streamed {
     /// The model asked for floors or rooms to be removed. It can't remove them: the person is
     /// asked here, and the page removes what they say yes to.
     Confirm(Vec<Removal>),
+    /// The model filled in the helper builder: `{kind, name, settings, entities}`, checked
+    /// and not made. The builder takes it for the person to change and Create.
+    Helper(serde_json::Value),
     Failed(String),
     Done,
 }
@@ -1568,6 +1598,8 @@ impl Events {
                 if let Ok(plan) = serde_json::from_value::<Floorplan>(plan.clone()) {
                     events.push(Streamed::Plan(Box::new(plan)));
                 }
+            } else if let Some(helper) = value.get("helper") {
+                events.push(Streamed::Helper(helper.clone()));
             } else if value["done"] == true {
                 events.push(Streamed::Done);
             }
@@ -1665,6 +1697,19 @@ mod tests {
         };
         let ground = plan.floors.values().next().expect("one floor");
         assert_eq!(ground.walls.len(), 1);
+    }
+
+    /// A helper the model filled in comes through whole, for the builder to take.
+    #[test]
+    fn a_helper_the_model_filled_in_is_read_off_the_stream() {
+        let mut events = Events::default();
+        let got = events.push(
+            b"data: {\"helper\":{\"kind\":\"toggles\",\"name\":\"Guests\",\"settings\":{}}}\n\n",
+        );
+        let [Streamed::Helper(helper)] = got.as_slice() else {
+            panic!("{got:?}");
+        };
+        assert_eq!(helper["kind"], "toggles");
     }
 
     #[test]

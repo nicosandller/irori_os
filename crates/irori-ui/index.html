@@ -866,25 +866,189 @@
                    padding: .05rem .5rem; }
     .helper-list .room-actions { align-items: center; }
     .helper-problem { flex-basis: 100%; font-size: .8rem; color: var(--muted); }
-    .helper-field textarea.mono { font-family: var(--mono); font-size: .85rem; }
-    .helper-about { min-height: 2.6em; margin: .6rem 0; }
-    .helper-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
-                   gap: .6rem; align-items: end; }
-    .helper-field { display: grid; gap: .25rem; min-width: 0; }
-    .helper-field.wide { grid-column: 1 / -1; }
-    .helper-field > span { color: var(--muted); font-size: .8rem; }
-    .helper-field input, .helper-field textarea, .helper-field select {
-        padding: .4rem .6rem; font: inherit; font-size: .95rem; min-width: 0;
+    .helper-list .name { display: inline-flex; align-items: center; gap: .45rem; }
+    .helper-list .name .icon { width: 1.05rem; height: 1.05rem; flex: none; color: var(--muted); }
+
+    /* Making a helper: the form (or its JSON) on the left, the assistant on the right; one
+       above the other on a phone. */
+    .builder { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(16rem, 1fr);
+               gap: 1.25rem; align-items: start; }
+    .builder-main { display: grid; gap: .9rem; min-width: 0; }
+    .builder-assistant { position: sticky; top: 0; height: min(34rem, calc(100vh - 10rem));
+                         display: flex; min-height: 0; }
+    .builder-assistant .chat { flex: 1; }
+    @media (max-width: 52rem) {
+      .builder { grid-template-columns: 1fr; }
+      .builder-assistant { position: static; height: 26rem; }
+    }
+    .builder-ask { display: grid; gap: .6rem; align-content: center; justify-items: center;
+                   width: 100%; padding: 1.5rem; text-align: center; color: var(--muted);
+                   font-size: .9rem; border: 1px dashed var(--line); border-radius: .6rem; }
+    .builder-ask .spark { width: 1.4rem; height: 1.4rem; color: var(--ember);
+                          animation: pop var(--dur-expressive) var(--ease-spring) backwards; }
+    .builder-ask p { margin: 0; }
+    .builder-ask a { color: var(--ember); }
+
+    /* The kinds, on two shelves. The cards come in one after another as the window opens, and
+       lift under the pointer. */
+    .kind-picker { display: grid; gap: 1.1rem; }
+    .kind-shelf h3 { margin: 0; font-size: .95rem; }
+    .kind-shelf > p { margin: .15rem 0 .55rem; font-size: .82rem; }
+    .kind-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+                  gap: .5rem; }
+    .kind-card { display: grid; grid-template-columns: auto 1fr; gap: .1rem .55rem;
+                 align-content: start; padding: .6rem .65rem; text-align: left; font: inherit;
+                 color: var(--fg); background: var(--card); border: 1px solid var(--line);
+                 border-radius: .55rem; cursor: pointer;
+                 animation: rise var(--dur-base) var(--ease-out) backwards;
+                 animation-delay: calc(var(--at) * 22ms);
+                 transition: border-color var(--dur-fast), translate var(--dur-base) var(--ease-out),
+                             box-shadow var(--dur-base) var(--ease-out); }
+    .kind-card:hover { border-color: var(--ember); translate: 0 -2px;
+                       box-shadow: 0 .35rem .9rem -.5rem color-mix(in srgb, var(--ember) 45%, transparent); }
+    .kind-card:hover .kind-icon { color: var(--ember); rotate: -6deg; scale: 1.08; }
+    .kind-icon { display: grid; place-items: center; width: 1.9rem; height: 1.9rem;
+                 grid-row: span 2; border-radius: .45rem; color: var(--muted); background: var(--sunk);
+                 transition: color var(--dur-fast), rotate var(--dur-base) var(--ease-spring),
+                             scale var(--dur-base) var(--ease-spring); }
+    .kind-icon .icon { width: 1.15rem; height: 1.15rem; }
+    .kind-word { font-weight: 500; font-size: .9rem; }
+    .kind-about { font-size: .75rem; line-height: 1.35; color: var(--muted);
+                  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+                  overflow: hidden; }
+
+    /* The kind picked: its card, grown into the heading. */
+    .builder-kind { display: flex; align-items: center; gap: .7rem; }
+    .builder-kind .kind-icon.picked { width: 2.4rem; height: 2.4rem; grid-row: auto;
+        color: #fff; background: var(--ember);
+        animation: pop var(--dur-expressive) var(--ease-spring) backwards; }
+    .builder-kind .kind-icon.picked .icon { width: 1.35rem; height: 1.35rem; }
+    .builder-kind-words { flex: 1; min-width: 0; }
+    .builder-kind-words p { margin: .1rem 0 0; font-size: .82rem; }
+    .builder-modes .switcher { width: fit-content; font-size: .85rem; }
+
+    .builder-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+                    gap: .75rem; align-items: end; }
+    .builder-field { display: grid; gap: .3rem; min-width: 0; }
+    .builder-field.wide { grid-column: 1 / -1; }
+    .builder-field.inline { grid-template-columns: 1fr auto; align-items: center; }
+    .builder-label { color: var(--muted); font-size: .8rem; }
+    .builder-field > input, .builder-field > select, .builder-duration input,
+    .builder-duration select, .chip-input, .week-time input {
+        padding: .4rem .6rem; font: inherit; font-size: .92rem; min-width: 0;
         color: var(--fg); background: var(--bg); border: 1px solid var(--line);
-        border-radius: .4rem; resize: vertical; }
-    .helper-field input:focus, .helper-field textarea:focus, .helper-field select:focus {
-        outline: 2px solid var(--ember); outline-offset: -1px; }
-    .helper-form .add { grid-column: 1 / -1; justify-self: start; padding: .4rem .9rem;
-                        font: inherit; cursor: pointer; color: var(--fg);
-                        background: var(--card); border: 1px solid var(--line);
-                        border-radius: .4rem; }
-    .helper-form .add:hover:not(:disabled) { border-color: var(--ember); color: var(--ember); }
-    .helper-form .add:disabled { opacity: .5; cursor: default; }
+        border-radius: .4rem; transition: border-color var(--dur-fast); }
+    .builder-field > input:hover, .builder-field > select:hover:not(:disabled) {
+        border-color: color-mix(in srgb, var(--muted) 60%, var(--line)); }
+    .builder-field > select:disabled { opacity: .6; }
+    .builder-duration { display: flex; gap: .35rem; }
+    .builder-duration input { flex: 1; width: 0; }
+
+    /* Filled in by the assistant: every field glows ember once and settles. Two names for one
+       glow, so a second filling-in starts it again. */
+    .builder-body[data-filled="a"] .builder-field { animation: filled-a 1.1s var(--ease-out); }
+    .builder-body[data-filled="b"] .builder-field { animation: filled-b 1.1s var(--ease-out); }
+    .builder-body[data-filled] .builder-field:nth-child(2) { animation-delay: 40ms; }
+    .builder-body[data-filled] .builder-field:nth-child(3) { animation-delay: 80ms; }
+    .builder-body[data-filled] .builder-field:nth-child(4) { animation-delay: 120ms; }
+    .builder-body[data-filled] .builder-field:nth-child(n+5) { animation-delay: 160ms; }
+    @keyframes filled-a { 25% { filter: drop-shadow(0 0 .35rem color-mix(in srgb, var(--ember) 70%, transparent)); } }
+    @keyframes filled-b { 25% { filter: drop-shadow(0 0 .35rem color-mix(in srgb, var(--ember) 70%, transparent)); } }
+
+    /* A group's members and a choice's options: chips that come in as they're added. */
+    .builder .chips { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem;
+                      min-height: 0; }
+    .builder .chip { display: inline-flex; align-items: center; gap: .3rem;
+            padding: .15rem .2rem .15rem .55rem; font: .85rem var(--sans); letter-spacing: 0;
+            text-transform: none; color: var(--fg); background: var(--sunk); border: 1px solid var(--line);
+            border-radius: 999px; animation: pop var(--dur-base) var(--ease-spring) backwards; }
+    .builder .chip .icon { width: .95rem; height: .95rem; color: var(--muted); }
+    .chip-remove { width: 1.3rem; height: 1.3rem; padding: 0; display: grid; place-items: center;
+                   font: inherit; font-size: .95rem; line-height: 1; color: var(--muted);
+                   background: none; border: none; border-radius: 50%; cursor: pointer;
+                   transition: color var(--dur-fast), background-color var(--dur-fast); }
+    .chip-remove:hover { color: var(--ember); background: var(--card); }
+    .chip-input { flex: 1; min-width: 7rem; }
+
+    /* A schedule's week: a line a day from midnight to midnight, the hours on it in ember. The
+       bars slide and stretch as their hours change. */
+    .week { display: grid; gap: .45rem; }
+    .week-scale, .week-day { display: grid; grid-template-columns: 2.6rem minmax(0, 1fr);
+                             gap: .1rem .6rem; align-items: center; }
+    .week-ticks { display: flex; justify-content: space-between; font: .68rem var(--mono);
+                  color: var(--muted); }
+    .week-name { font-size: .82rem; color: var(--muted); }
+    .week-track { position: relative; height: .7rem; border-radius: 999px; background: var(--sunk);
+                  background-image: linear-gradient(to right, var(--line) 1px, transparent 1px);
+                  background-size: 25% 100%; overflow: hidden; }
+    .week-block { position: absolute; top: 0; bottom: 0; border-radius: 999px; background: var(--ember);
+                  transition: left var(--dur-layout) var(--ease-emphasized),
+                              width var(--dur-layout) var(--ease-emphasized); }
+    .week-times { grid-column: 2; display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; }
+    .week-time { display: inline-flex; align-items: center; gap: .25rem; }
+    .week-time input { padding: .2rem .35rem; font-size: .82rem; }
+    .week-add { width: 1.6rem; height: 1.6rem; padding: 0; font: inherit; line-height: 1;
+                color: var(--muted); background: var(--card); border: 1px dashed var(--line);
+                border-radius: 50%; cursor: pointer;
+                transition: color var(--dur-fast), border-color var(--dur-fast),
+                            rotate var(--dur-base) var(--ease-spring); }
+    .week-add:hover { color: var(--ember); border-color: var(--ember); rotate: 90deg; }
+    .week-copy { justify-self: start; }
+
+    /* The helper written out as JSON, coloured as it's typed (as the Automations app does). */
+    .json-box { --j-text: #3f7d4e; --j-number: #8a6a1f; --j-word: #6d5aa6;
+                position: relative; height: min(36vh, 16rem); min-height: 6rem; resize: vertical;
+                overflow: hidden; background: var(--sunk); border: 1px solid var(--line);
+                border-radius: .55rem; }
+    @media (prefers-color-scheme: dark) {
+      .json-box { --j-text: #7cc28d; --j-number: #d6b25e; --j-word: #b3a3e6; }
+    }
+    .json-box pre, .json-box textarea { position: absolute; inset: 0; margin: 0; padding: .7rem .8rem;
+        border: 0; font: .8rem/1.5 var(--mono); letter-spacing: 0; tab-size: 2; white-space: pre; }
+    .json-box pre { overflow: hidden; color: var(--muted); pointer-events: none; }
+    .json-box textarea { width: 100%; height: 100%; resize: none; overflow: auto; color: transparent;
+        caret-color: var(--fg); background: transparent; border-radius: .55rem; }
+    .json-box textarea::selection { color: transparent;
+        background: color-mix(in srgb, var(--ember) 30%, transparent); }
+    .json-box textarea:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
+    .json-box .json-name { color: var(--fg); }
+    .json-box .json-text { color: var(--j-text); }
+    .json-box .json-number { color: var(--j-number); }
+    .json-box .json-word { color: var(--j-word); }
+    .builder-code-about { margin: 0 0 .5rem; font-size: .82rem; }
+    .json-why { margin: .4rem 0 0; color: var(--error); font: .8rem var(--mono); overflow-wrap: anywhere; }
+    .json-actions { display: flex; align-items: center; gap: .4rem; margin-top: .45rem; }
+    .json-copy .copy-icon { width: 1rem; height: 1rem; overflow: visible; }
+    .json-copy .copy-clip { transform-origin: center; transform-box: fill-box;
+        transition: opacity var(--dur-fast), scale var(--dur-base) var(--ease-out); }
+    .json-copy .copy-check { stroke-dasharray: 1; stroke-dashoffset: 1; opacity: 0;
+        transition: stroke-dashoffset var(--dur-expressive) var(--ease-spring), opacity var(--dur-fast); }
+    .json-copy.done { color: var(--ember); border-color: var(--ember); }
+    .json-copy.done .copy-clip { opacity: 0; scale: .6; }
+    .json-copy.done .copy-check { stroke-dashoffset: 0; opacity: 1; }
+
+    /* What it will make, or why it can't: one line that changes colour in place, its mark
+       turning while it checks. */
+    .builder-foot { display: flex; align-items: center; gap: .9rem; padding-top: .8rem;
+                    border-top: 1px solid var(--line); }
+    .builder-check { flex: 1; min-width: 0; margin: 0; display: flex; align-items: baseline;
+                     gap: .5rem; font-size: .85rem; overflow-wrap: anywhere;
+                     transition: color var(--dur-base) var(--ease-out); }
+    .builder-check code { font-size: .8rem; color: var(--ember); }
+    .builder-check-mark { flex: none; width: .55rem; height: .55rem; border-radius: 50%;
+                          translate: 0 -.05rem; background: var(--line);
+                          transition: background-color var(--dur-base), box-shadow var(--dur-base),
+                                      scale var(--dur-base) var(--ease-spring); }
+    .builder-check[data-state="checking"] .builder-check-mark {
+        background: none; border: 2px solid var(--muted); border-right-color: transparent;
+        animation: turn .7s linear infinite; }
+    .builder-check[data-state="will"] .builder-check-mark { background: var(--ember); scale: 1.15;
+        box-shadow: 0 0 .4rem var(--ember); }
+    .builder-check[data-state="wont"] { color: var(--error); }
+    .builder-check[data-state="wont"] .builder-check-mark { background: var(--error); }
+    .builder-create { min-width: 5.5rem; }
+    .builder-create:disabled:not(.done) { opacity: .45; cursor: default; }
+    .builder-create:disabled:not(.done):hover { color: var(--ember); background: var(--card); }
 
     /* Picking several found devices at once: a checkbox lining up with a row, and the
        select-all box that feeds the "Add/Ignore selected" buttons. */

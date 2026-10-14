@@ -385,6 +385,13 @@ name = "Movie time"
   `number.<id>`; the file is refused, naming both.
 - A helper that's wrong (a `min` above its `max`, an `initial` it can't be) stops the helpers
   from starting, with the reason in their log; the API and the page check before writing.
+  `POST /api/helpers/<table>/check` checks one without writing anything and says what it
+  would make (`{id, entities, taken}`) or why it couldn't be; the page's builder asks it as
+  the helper is filled in, as a form or as the JSON of one table entry plus its `kind`.
+- **The assistant can fill one in, not make one.** In the builder its scope is `helpers`: it
+  can list the home's entities and helpers and read every kind's settings, and
+  `propose_helper` checks a helper the same way and hands it to the builder. The person changes
+  what they like and presses Create; nothing is written before that.
 
 ### 3.7 `floorplan.toml`
 

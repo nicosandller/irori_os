@@ -15,11 +15,13 @@ use leptos_router::components::A;
 
 use crate::api::Home;
 
+mod builder;
 mod controls;
 mod grouping;
 mod tables;
 mod updates;
 
+use self::builder::{HELPER_KINDS, HelperBuilder, HelperKind};
 pub(crate) use self::controls::{
     alarm_words, climate_words, fan_words, fill, humidifier_words, lock_words, media_player_words,
     mower_words, number, opening_words, schedule_words, timer_words, unit_of, update_words,
@@ -218,8 +220,9 @@ pub fn Devices() -> impl IntoView {
             <crate::modal::Modal
                 title="Add a helper".to_owned()
                 on_close=move || adding_helper.set(false)
+                wide=true
             >
-                <AddHelper on_added=move || adding_helper.set(false) />
+                <HelperBuilder on_added=move || adding_helper.set(false) />
             </crate::modal::Modal>
         })}
     }
@@ -248,178 +251,6 @@ pub fn icon(protocol: &str, has_icon: bool) -> AnyView {
         view! { <span class="protocol-icon letter" aria-hidden="true">{initial}</span> }.into_any()
     }
 }
-
-/// A kind of helper, as the page knows it. The same list as `irori_helpers::KINDS`, which a
-/// page can't link against: where each kind is kept, what one is called, and what its
-/// entities' unique ids begin with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct HelperKind {
-    table: &'static str,
-    word: &'static str,
-    prefix: &'static str,
-    /// What it's for, in the form that makes one.
-    about: &'static str,
-    example: &'static str,
-    /// For a kind whose settings are written out: an example of them, a `key = value` line
-    /// each, as in `extensions/helpers.toml`.
-    settings: &'static str,
-}
-
-const HELPER_KINDS: [HelperKind; 19] = [
-    HelperKind {
-        table: "toggles",
-        word: "Toggle",
-        prefix: "toggle",
-        about: "On or off. A switch for \"guests are over\" or \"holiday mode\".",
-        example: "Guests are over",
-        settings: "",
-    },
-    HelperKind {
-        table: "numbers",
-        word: "Number",
-        prefix: "number",
-        about: "A value within a range, set with a slider or typed. A flow reads it instead \
-                of having the number written into it.",
-        example: "Evening brightness",
-        settings: "",
-    },
-    HelperKind {
-        table: "counters",
-        word: "Counter",
-        prefix: "counter",
-        about: "A number that flows count up and down, and set back to where it starts.",
-        example: "Doorbell rings today",
-        settings: "",
-    },
-    HelperKind {
-        table: "selects",
-        word: "Choice",
-        prefix: "select",
-        about: "One of a list you write: home, away, asleep.",
-        example: "House mode",
-        settings: "",
-    },
-    HelperKind {
-        table: "texts",
-        word: "Text",
-        prefix: "text",
-        about: "A few words: a message for a display, a note a flow reads.",
-        example: "Hall display message",
-        settings: "",
-    },
-    HelperKind {
-        table: "buttons",
-        word: "Button",
-        prefix: "button",
-        about: "Something to press, here or from a flow, that other flows start from.",
-        example: "Movie time",
-        settings: "",
-    },
-    HelperKind {
-        table: "dates",
-        word: "Date",
-        prefix: "date",
-        about: "A calendar day you pick: when the bins go out, when the guests arrive.",
-        example: "Bins go out",
-        settings: "",
-    },
-    HelperKind {
-        table: "times",
-        word: "Time",
-        prefix: "time",
-        about: "A time of day you pick: when the alarm clock goes off, when the heating may start.",
-        example: "Wake up",
-        settings: "",
-    },
-    HelperKind {
-        table: "datetimes",
-        word: "Date and time",
-        prefix: "datetime",
-        about: "A day and a time together: when the holiday ends.",
-        example: "Holiday ends",
-        settings: "",
-    },
-    HelperKind {
-        table: "timers",
-        word: "Timer",
-        prefix: "timer",
-        about: "Counts down and says when it's done: flows start it, and start from it finishing.",
-        example: "Lights stay on",
-        settings: "",
-    },
-    HelperKind {
-        table: "schedules",
-        word: "Schedule",
-        prefix: "schedule",
-        about: "On during the times you set out for each day of the week, on the home's clock.",
-        example: "Heating hours",
-        settings: "mon = [[\"06:30\", \"08:30\"], [\"17:00\", \"22:00\"]]\ntue = [[\"06:30\", \"08:30\"]]\nsat = [[\"08:00\", \"23:00\"]]",
-    },
-    HelperKind {
-        table: "groups",
-        word: "Group",
-        prefix: "group",
-        about: "Several lights, switches, fans, covers or sensors as one: on while any is, and told as one.",
-        example: "Lounge lights",
-        settings: "kind = \"light\"\nmembers = [\"light.lounge_lamp\", \"light.lounge_ceiling\"]",
-    },
-    HelperKind {
-        table: "thresholds",
-        word: "Threshold",
-        prefix: "threshold",
-        about: "On while a reading is above, below, or between lines.",
-        example: "Too warm",
-        settings: "source = \"sensor.lounge_temperature\"\nabove = 26\nhysteresis = 0.5",
-    },
-    HelperKind {
-        table: "trends",
-        word: "Trend",
-        prefix: "trend",
-        about: "On while a reading is rising (or falling) by at least so much over a while.",
-        example: "Humidity rising",
-        settings: "source = \"sensor.bathroom_humidity\"\ndirection = \"rising\"\nby = 10\nover = 600",
-    },
-    HelperKind {
-        table: "meters",
-        word: "Meter",
-        prefix: "meter",
-        about: "How much a counting reading, like an energy total, went up this hour, day, week, month or year.",
-        example: "Energy today",
-        settings: "source = \"sensor.house_energy\"\nevery = \"day\"",
-    },
-    HelperKind {
-        table: "integrals",
-        word: "Integral",
-        prefix: "integral",
-        about: "The area under a reading over time: a power reading into energy used.",
-        example: "Heater energy",
-        settings: "source = \"sensor.heater_power\"\nper = \"hour\"",
-    },
-    HelperKind {
-        table: "derivatives",
-        word: "Derivative",
-        prefix: "derivative",
-        about: "How fast a reading changes, per hour, over the last while.",
-        example: "Tank filling rate",
-        settings: "source = \"sensor.tank_level\"\nper = \"hour\"\nover = 900",
-    },
-    HelperKind {
-        table: "statistics",
-        word: "Statistic",
-        prefix: "statistics",
-        about: "A reading's average, least or most over the last while.",
-        example: "Average outside temperature",
-        settings: "source = \"sensor.outside_temperature\"\nof = \"mean\"\nover = 3600",
-    },
-    HelperKind {
-        table: "history",
-        word: "History",
-        prefix: "history",
-        about: "How long, how often or how much of the time something was a value, today or over a while.",
-        example: "Heating hours today",
-        settings: "source = \"climate.hall\"\nis = \"heat\"\nmeasure = \"time\"",
-    },
-];
 
 /// A button's second entity: the `event` that says each time it was pressed.
 const PRESSED: &str = "pressed";
@@ -526,7 +357,10 @@ fn helpers(kept: &[Kept], controls: Controls) -> AnyView {
                         };
                         view! {
                             <li>
-                                <span class="name">{name.clone()}</span>
+                                <span class="name">
+                                    {builder::kind_icon(helper.kind.table)}
+                                    {name.clone()}
+                                </span>
                                 <span class="helper-kind">{helper.kind.word}</span>
                                 <code class="muted small">{ids}</code>
 
@@ -617,265 +451,6 @@ fn HelperActions(kind: HelperKind, id: String, entity_id: EntityId, name: String
 /// Why the last change to a helper was refused, shared by the form and the rows.
 #[derive(Debug, Clone, Copy)]
 struct HelperTrouble(RwSignal<Option<String>>);
-
-/// What's typed into the form that makes a helper. Every kind has a name; the rest belong to
-/// one kind or another, and only that kind's are sent.
-#[derive(Debug, Clone, Copy)]
-struct HelperForm {
-    name: RwSignal<String>,
-    min: RwSignal<String>,
-    max: RwSignal<String>,
-    step: RwSignal<String>,
-    unit: RwSignal<String>,
-    options: RwSignal<String>,
-    /// Written-out settings, for the kinds that have them.
-    written: RwSignal<String>,
-}
-
-impl HelperForm {
-    fn new() -> Self {
-        Self {
-            name: RwSignal::new(String::new()),
-            min: RwSignal::new("0".to_owned()),
-            max: RwSignal::new("100".to_owned()),
-            step: RwSignal::new("1".to_owned()),
-            unit: RwSignal::new(String::new()),
-            options: RwSignal::new(String::new()),
-            written: RwSignal::new(String::new()),
-        }
-    }
-
-    /// The fields the API takes for a helper of `kind`, or what's wrong with what was typed.
-    fn fields(
-        self,
-        kind: HelperKind,
-        name: &irori_types::Name,
-    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-        let number = |signal: RwSignal<String>, what: &str| {
-            signal
-                .get_untracked()
-                .trim()
-                .parse::<f64>()
-                .map_err(|_| format!("{what} has to be a number"))
-        };
-        let mut fields = serde_json::Map::new();
-        fields.insert("name".into(), serde_json::json!(name.as_str()));
-        match kind.table {
-            "numbers" => {
-                fields.insert(
-                    "min".into(),
-                    serde_json::json!(number(self.min, "The least")?),
-                );
-                fields.insert(
-                    "max".into(),
-                    serde_json::json!(number(self.max, "The most")?),
-                );
-                fields.insert(
-                    "step".into(),
-                    serde_json::json!(number(self.step, "The step")?),
-                );
-                let unit = self.unit.get_untracked();
-                if !unit.trim().is_empty() {
-                    fields.insert("unit".into(), serde_json::json!(unit.trim()));
-                }
-            }
-            "timers" => {
-                fields.insert(
-                    "duration".into(),
-                    serde_json::json!(number(self.step, "How long it runs")?),
-                );
-            }
-            "counters" => {
-                fields.insert(
-                    "step".into(),
-                    serde_json::json!(number(self.step, "The step")?),
-                );
-            }
-            "selects" => {
-                let options = split_options(&self.options.get_untracked());
-                if options.is_empty() {
-                    return Err("A choice needs at least one thing to choose".to_owned());
-                }
-                fields.insert("options".into(), serde_json::json!(options));
-            }
-            _ if !kind.settings.is_empty() => {
-                for (key, value) in written_settings(&self.written.get_untracked())? {
-                    fields.insert(key, value);
-                }
-            }
-            _ => {}
-        }
-        Ok(fields)
-    }
-}
-
-/// Settings written a `key = value` line each, as in `extensions/helpers.toml`: a value is
-/// read as JSON where it is (a number, `true`, a list, a quoted text) and as text otherwise.
-fn written_settings(typed: &str) -> Result<Vec<(String, serde_json::Value)>, String> {
-    typed
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(|line| {
-            let (key, value) = line
-                .split_once('=')
-                .ok_or_else(|| format!("“{line}” isn't a setting: write it as key = value"))?;
-            let value = value.trim();
-            Ok((
-                key.trim().to_owned(),
-                serde_json::from_str(value).unwrap_or_else(|_| serde_json::json!(value)),
-            ))
-        })
-        .collect()
-}
-
-/// What a choice can be, from what was typed: one to a line, or with commas between them.
-fn split_options(typed: &str) -> Vec<String> {
-    let mut options: Vec<String> = Vec::new();
-    for option in typed.split(['\n', ',']).map(str::trim) {
-        if !option.is_empty() && !options.iter().any(|seen| seen == option) {
-            options.push(option.to_owned());
-        }
-    }
-    options
-}
-
-/// Making a helper: which kind, its name, and what that kind needs. Outside the list, so what's
-/// being typed survives the list redrawing (ROADMAP D33).
-#[component]
-fn AddHelper(#[prop(into)] on_added: Callback<()>) -> impl IntoView {
-    let live = expect_context::<crate::Live>();
-    let trouble = expect_context::<HelperTrouble>().0;
-    let kind = RwSignal::new(HELPER_KINDS[0]);
-    let form = HelperForm::new();
-    let add = move || {
-        let Some(named) = crate::settings::named(form.name.get_untracked(), trouble) else {
-            return;
-        };
-        let kind = kind.get_untracked();
-        let fields = match form.fields(kind, &named) {
-            Ok(fields) => fields,
-            Err(why) => {
-                trouble.set(Some(why));
-                return;
-            }
-        };
-        spawn_local(async move {
-            match crate::api::add_helper(kind.table, &fields).await {
-                Ok(()) => {
-                    trouble.set(None);
-                    form.name.set(String::new());
-                    crate::refresh(live);
-                    on_added.run(());
-                }
-                Err(why) => trouble.set(Some(why)),
-            }
-        });
-    };
-    let field = |label: &'static str, signal: RwSignal<String>, numeric: bool| {
-        view! {
-            <label class="helper-field">
-                <span>{label}</span>
-                <input
-                    type="text"
-                    inputmode=if numeric { "decimal" } else { "text" }
-                    prop:value=signal
-                    on:input:target=move |ev| signal.set(ev.target().value())
-                />
-            </label>
-        }
-    };
-    view! {
-        <p class="muted">
-            "A helper is a value Irori keeps itself rather than a device reporting it. It stays "
-            "as it was left through restarts, and flows read it, set it and start from it."
-        </p>
-        <label class="helper-field wide">
-            <span>"Kind"</span>
-            <select
-                aria-label="Which kind of helper"
-                on:change:target=move |ev| {
-                    let picked = ev.target().value();
-                    if let Some(picked) = HELPER_KINDS.into_iter().find(|kind| kind.table == picked) {
-                        trouble.set(None);
-                        // Its example to start from, to change rather than remember.
-                        form.written.set(picked.settings.to_owned());
-                        kind.set(picked);
-                    }
-                }
-            >
-                {HELPER_KINDS
-                    .into_iter()
-                    .map(|one| view! {
-                        <option value=one.table selected=move || kind.get() == one>{one.word}</option>
-                    })
-                    .collect_view()}
-            </select>
-        </label>
-        <p class="muted helper-about">{move || kind.get().about}</p>
-        {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
-        <form
-            class="helper-form"
-            on:submit=move |ev| {
-                ev.prevent_default();
-                add();
-            }
-        >
-            <label class="helper-field wide">
-                <span>"Name"</span>
-                <input
-                    type="text"
-                    placeholder=move || kind.get().example
-                    prop:value=form.name
-                    on:input:target=move |ev| form.name.set(ev.target().value())
-                />
-            </label>
-            {move || match kind.get().table {
-                "numbers" => view! {
-                    {field("Least", form.min, true)}
-                    {field("Most", form.max, true)}
-                    {field("Step", form.step, true)}
-                    {field("Unit (optional)", form.unit, false)}
-                }
-                .into_any(),
-                "counters" => view! { {field("Counts by", form.step, true)} }.into_any(),
-                "timers" => view! { {field("Runs for, in seconds", form.step, true)} }.into_any(),
-                _ if !kind.get().settings.is_empty() => view! {
-                    <label class="helper-field wide">
-                        <span>"Settings, a line each, as in helpers.toml"</span>
-                        <textarea
-                            rows="5"
-                            class="mono"
-                            prop:value=form.written
-                            on:input:target=move |ev| form.written.set(ev.target().value())
-                        ></textarea>
-                    </label>
-                }
-                .into_any(),
-                "selects" => view! {
-                    <label class="helper-field wide">
-                        <span>"What it can be, one to a line"</span>
-                        <textarea
-                            rows="4"
-                            placeholder="home\naway\nasleep"
-                            prop:value=form.options
-                            on:input:target=move |ev| form.options.set(ev.target().value())
-                        ></textarea>
-                    </label>
-                }
-                .into_any(),
-                _ => ().into_any(),
-            }}
-            <button
-                type="submit"
-                class="add"
-                disabled=move || form.name.get().trim().is_empty()
-            >
-                {move || format!("Add {}", kind.get().word.to_lowercase())}
-            </button>
-        </form>
-    }
-}
 
 /// A device's battery, if one of its entities reports one: a percentage from a battery sensor,
 /// or low/ok from a battery binary sensor. `None` when it doesn't have one, which is most
@@ -2039,34 +1614,5 @@ fn pull(event: &ev::PointerEvent, open: Signal<bool>, toggle: Callback<()>) {
         && down != open.get_untracked()
     {
         toggle.run(());
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn written_settings_are_read_a_line_each() {
-        assert_eq!(
-            written_settings("source = \"sensor.room\"\n# a note\nabove = 26\nkind = light\n\nmembers = [\"light.a\"]")
-                .expect("reads"),
-            [
-                ("source".to_owned(), serde_json::json!("sensor.room")),
-                ("above".to_owned(), serde_json::json!(26)),
-                ("kind".to_owned(), serde_json::json!("light")),
-                ("members".to_owned(), serde_json::json!(["light.a"])),
-            ]
-        );
-        assert!(written_settings("above 26").is_err());
-    }
-
-    #[test]
-    fn a_choices_options_are_read_a_line_or_a_comma_apart() {
-        assert_eq!(
-            split_options("home\naway, asleep\n\n away "),
-            ["home", "away", "asleep"]
-        );
-        assert!(split_options(" \n , ").is_empty());
     }
 }

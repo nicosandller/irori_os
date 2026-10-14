@@ -121,6 +121,45 @@ const PLAYER: &str = concat!(
     r#"<path d="M10.500 8.700v4.600l4-2.300Z"/>"#,
 );
 
+// The helpers that have no entity kind of their own to look like: a counter is a number, a
+// threshold a binary sensor, and the icon says what the helper does rather than what it is.
+const COUNTER: &str = r#"<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 12h3M14.5 12h3M16 10.500v3"/>"#;
+const HOURGLASS: &str = r#"<path d="M7 3.500h10M7 20.500h10M8 3.500c0 4.500 8 4.500 8 8.500s-8 4-8 8.500M16 3.500c0 4.500-8 4.500-8 8.500s8 4 8 8.500"/>"#;
+const WEEK: &str = r#"<rect x="3.500" y="5" width="17" height="14.500" rx="1.500"/><path d="M3.500 9.500h17M7 13h4M13 13h4M7 16.500h7"/>"#;
+const GROUP: &str = r#"<circle cx="8" cy="9" r="3.500"/><circle cx="16" cy="9" r="3.500"/><circle cx="12" cy="16" r="3.500"/>"#;
+const THRESHOLD: &str = r#"<path d="M3 10h2.500M8.500 10h2.500M14 10h2.500M19.500 10H21"/><path d="M3 18c3 0 4-10 7-10s3 7 5 7 3-9 6-9"/>"#;
+const TREND: &str = r#"<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>"#;
+const METER: &str = r#"<rect x="3.500" y="7" width="17" height="10" rx="1.500"/><path d="M8 7v10M12 7v10M16 7v10"/>"#;
+const AREA: &str = r#"<path d="M3 19.500h18"/><path d="M3 19.500V15c3-6 6-6 9-2s6 2 9-3v9.500Z" fill="currentColor" fill-opacity=".18"/>"#;
+const SLOPE: &str = r#"<path d="M3 18c5 0 9-9 18-12"/><path d="M7 20 18 5"/>"#;
+const BARS: &str = r#"<path d="M6 19.500v-6M10 19.500V9M14 19.500v-8M18 19.500v-4"/><path d="M3 12h2M8 12h4M15 12h2M20 12h1"/>"#;
+const LOOKBACK: &str = r#"<path d="M4 12a8 8 0 1 0 2.400-5.700"/><path d="M4 3.500V7h3.500"/><path d="M12 8v4l3 2"/>"#;
+
+/// What to draw for a helper of the kind kept in `table` (`extensions/helpers.toml`).
+pub fn helper(table: &str) -> &'static str {
+    match table {
+        "toggles" => TOGGLE,
+        "numbers" => SLIDERS,
+        "counters" => COUNTER,
+        "selects" => LIST,
+        "texts" => LETTERS,
+        "buttons" => PRESS,
+        "dates" | "datetimes" => CALENDAR,
+        "times" => CLOCK,
+        "timers" => HOURGLASS,
+        "schedules" => WEEK,
+        "groups" => GROUP,
+        "thresholds" => THRESHOLD,
+        "trends" => TREND,
+        "meters" => METER,
+        "integrals" => AREA,
+        "derivatives" => SLOPE,
+        "statistics" => BARS,
+        "history" => LOOKBACK,
+        _ => DOT,
+    }
+}
+
 /// What to draw inside the icon's 24 × 24 box for an entity that has these capabilities.
 pub fn drawing(capabilities: &Capabilities) -> &'static str {
     match capabilities {
