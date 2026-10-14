@@ -483,7 +483,7 @@ fn entities(_board: &Board) -> Vec<EspHomeMessage> {
             supported_features: 1 | 2 | 4 | 16,
             ..Default::default()
         }),
-        // ESPHome doesn't map media_player, so this stays under "Also has…".
+        // A speaker. It never says what it's doing, so it's there and unknown.
         EspHomeMessage::ListEntitiesMediaPlayerResponse(ListEntitiesMediaPlayerResponse {
             key: SPEAKER_KEY,
             name: "Speaker".to_owned(),

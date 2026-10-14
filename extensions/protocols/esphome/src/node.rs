@@ -576,6 +576,12 @@ async fn list_entities(
                 e.name.clone(),
                 map::lock::describe(device, e),
             ),
+            EspHomeMessage::ListEntitiesMediaPlayerResponse(e) => (
+                e.key,
+                "media_player",
+                e.name.clone(),
+                map::media_player::describe(device, e),
+            ),
             EspHomeMessage::ListEntitiesDateResponse(e) => (
                 e.key,
                 "date",
@@ -755,6 +761,12 @@ fn report(
             (s.key, Some(map::light::state(s, known)))
         }
         EspHomeMessage::LockStateResponse(s) => (s.key, map::lock::state(s)),
+        EspHomeMessage::MediaPlayerStateResponse(s) => {
+            let Some(Capabilities::MediaPlayer(known)) = capabilities.get(&s.key) else {
+                return None;
+            };
+            (s.key, map::media_player::state(s, known))
+        }
         EspHomeMessage::DateStateResponse(s) => (s.key, map::moment::date_state(s)),
         EspHomeMessage::TimeStateResponse(s) => (s.key, map::moment::time_state(s)),
         EspHomeMessage::DateTimeStateResponse(s) => (s.key, map::moment::datetime_state(s)),
@@ -871,6 +883,10 @@ async fn command(
         EntityKind::Valve => write(client, map::valve::command(key, service)).await,
         EntityKind::Siren => write(client, map::siren::command(key, service)).await,
         EntityKind::Lock => write(client, map::lock::command(key, service)).await,
+        EntityKind::MediaPlayer => match map::media_player::command(key, service) {
+            Ok(request) => write(client, request).await,
+            Err(why) => Err(why),
+        },
         EntityKind::Date => match map::moment::date_command(key, service) {
             Some(request) => write(client, request).await,
             None => Err("that isn't a day it can be set to".to_owned()),
@@ -921,7 +937,6 @@ async fn command(
         }
         // The core only sends these to an entity of the kind, and ESPHome has none.
         EntityKind::Humidifier
-        | EntityKind::MediaPlayer
         | EntityKind::Vacuum
         | EntityKind::LawnMower
         | EntityKind::Scene
@@ -1064,7 +1079,7 @@ mod tests {
         let connection = Connection { id: 1, address };
         let task = tokio::spawn(run(connection, None, events_tx, calls_rx));
 
-        // What it has. The fake device also offers a speaker, which Irori doesn't model yet.
+        // What it has. The fake device also offers a camera, which Irori has no kind for.
         let Some(Event::Arrived {
             device,
             entities,
@@ -1080,14 +1095,14 @@ mod tests {
         assert_eq!(
             entities.len(),
             5,
-            "the speaker should be left out: {entities:?}"
+            "the camera should be left out: {entities:?}"
         );
         // ...and listed on the device instead, so it isn't simply gone.
         assert_eq!(unmodeled.len(), 1, "{unmodeled:?}");
-        assert_eq!(unmodeled[0].platform.as_str(), "media_player");
+        assert_eq!(unmodeled[0].platform.as_str(), "camera");
         assert_eq!(
             unmodeled[0].name.as_ref().map(|n| n.as_str()),
-            Some("Speaker")
+            Some("Porch camera")
         );
         assert_eq!(
             unmodeled[0].device_unique_id.as_ref().map(|d| d.as_str()),

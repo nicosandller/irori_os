@@ -16,6 +16,7 @@ pub mod event;
 pub mod fan;
 pub mod light;
 pub mod lock;
+pub mod media_player;
 pub mod moment;
 pub mod number;
 pub mod opening;
@@ -114,7 +115,6 @@ pub fn unmodeled(device: &UniqueId, message: &EspHomeMessage) -> Option<Unmodele
         M::ListEntitiesCameraResponse(e) => ("camera", &e.name),
         M::ListEntitiesClimateResponse(e) => ("climate", &e.name),
         M::ListEntitiesInfraredResponse(e) => ("infrared", &e.name),
-        M::ListEntitiesMediaPlayerResponse(e) => ("media_player", &e.name),
         M::ListEntitiesRadioFrequencyResponse(e) => ("radio_frequency", &e.name),
         M::ListEntitiesWaterHeaterResponse(e) => ("water_heater", &e.name),
         _ => return None,
