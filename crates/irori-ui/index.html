@@ -655,6 +655,12 @@
        button as the rest of the page: the chosen choice is sunk, with an ember edge. */
     .choices { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .35rem;
                max-width: 100%; }
+    /* A device's own list of choices (a vacuum's fan speeds), drawn like its buttons. */
+    select.select-control {
+        padding: .25rem .5rem; font: inherit; font-size: .8rem; color: var(--muted);
+        background: var(--card); border: 1px solid var(--line); border-radius: .4rem;
+        cursor: pointer; }
+    select.select-control:disabled { opacity: .5; cursor: default; }
     .choices button, button.press {
         padding: .25rem .65rem; font: inherit; font-size: .8rem; color: var(--muted);
         background: var(--card); border: 1px solid var(--line); border-radius: .4rem;
