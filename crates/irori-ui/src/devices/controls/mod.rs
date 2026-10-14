@@ -8,6 +8,7 @@ mod climate;
 mod event;
 mod fan;
 mod humidifier;
+mod lawn_mower;
 mod light;
 mod lock;
 mod media_player;
@@ -27,6 +28,7 @@ pub(crate) use self::alarm_control_panel::alarm_words;
 pub(crate) use self::climate::climate_words;
 pub(crate) use self::fan::fan_words;
 pub(crate) use self::humidifier::humidifier_words;
+pub(crate) use self::lawn_mower::mower_words;
 pub(crate) use self::lock::lock_words;
 pub(crate) use self::media_player::media_player_words;
 pub(crate) use self::number::unit_of;
@@ -81,7 +83,8 @@ pub(crate) fn control(
         | Capabilities::Valve(_)
         | Capabilities::Lock(_)
         | Capabilities::AlarmControlPanel(_)
-        | Capabilities::Vacuum(_) => kept(
+        | Capabilities::Vacuum(_)
+        | Capabilities::LawnMower(_) => kept(
             entity,
             Signal::stored(state.cloned()),
             Signal::stored(offline),
@@ -164,6 +167,13 @@ pub(crate) fn kept(
         Capabilities::AlarmControlPanel(capabilities) => Some(alarm_control_panel::alarm_control(
             entity,
             capabilities,
+            value,
+            offline,
+            controls,
+        )),
+        Capabilities::LawnMower(capabilities) => Some(lawn_mower::mower_control(
+            entity,
+            *capabilities,
             value,
             offline,
             controls,

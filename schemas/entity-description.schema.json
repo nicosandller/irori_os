@@ -1052,6 +1052,34 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dock": {
+              "description": "Can be sent back to its dock.",
+              "type": "boolean",
+              "default": false
+            },
+            "kind": {
+              "type": "string",
+              "const": "lawn_mower"
+            },
+            "pause": {
+              "description": "Can be paused where it is.",
+              "type": "boolean",
+              "default": false
+            },
+            "start_mowing": {
+              "description": "Can be told to start mowing.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },

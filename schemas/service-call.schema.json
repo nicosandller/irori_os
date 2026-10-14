@@ -1640,6 +1640,66 @@
           "data"
         ]
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "lawn_mower.start_mowing"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "lawn_mower.pause"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "lawn_mower.dock"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -2305,7 +2365,10 @@
         "vacuum.return_to_base",
         "vacuum.locate",
         "vacuum.clean_spot",
-        "vacuum.set_fan_speed"
+        "vacuum.set_fan_speed",
+        "lawn_mower.start_mowing",
+        "lawn_mower.pause",
+        "lawn_mower.dock"
       ]
     },
     "SetHumidity": {

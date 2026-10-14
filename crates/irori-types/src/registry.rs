@@ -12,6 +12,7 @@ use crate::kinds::cover::CoverCapabilities;
 use crate::kinds::event::EventCapabilities;
 use crate::kinds::fan::FanCapabilities;
 use crate::kinds::humidifier::HumidifierCapabilities;
+use crate::kinds::lawn_mower::LawnMowerCapabilities;
 use crate::kinds::light::LightCapabilities;
 use crate::kinds::lock::LockCapabilities;
 use crate::kinds::media_player::MediaPlayerCapabilities;
@@ -217,6 +218,7 @@ pub enum Capabilities {
     Time(MomentCapabilities),
     Datetime(MomentCapabilities),
     Vacuum(VacuumCapabilities),
+    LawnMower(LawnMowerCapabilities),
 }
 
 impl Capabilities {
@@ -246,6 +248,7 @@ impl Capabilities {
             Self::Time(_) => EntityKind::Time,
             Self::Datetime(_) => EntityKind::Datetime,
             Self::Vacuum(_) => EntityKind::Vacuum,
+            Self::LawnMower(_) => EntityKind::LawnMower,
         }
     }
 

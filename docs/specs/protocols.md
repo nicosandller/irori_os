@@ -311,6 +311,7 @@ manifest's `entity_kinds`.
 | `alarm_control_panel.alarm_trigger` | `code`, optional | Needs `trigger` |
 | `vacuum.start`, `vacuum.pause`, `vacuum.stop`, `vacuum.return_to_base`, `vacuum.locate`, `vacuum.clean_spot` | none | Each needs the capability of its name (`return_to_base` needs `return_home`) |
 | `vacuum.set_fan_speed` | `fan_speed`, one of its `fan_speeds` | |
+| `lawn_mower.start_mowing`, `lawn_mower.pause`, `lawn_mower.dock` | none | Each needs the capability of its name |
 | `date.set_value` | `date`, a calendar day (`2026-10-14`) | Home Assistant's field names, here and below |
 | `time.set_value` | `time`, a time of day (`06:45:00`, or `06:45`) | |
 | `datetime.set_value` | `datetime`, a `Timestamp` | An ESPHome device counts seconds from 1970 to 2106, and refuses a moment outside that |

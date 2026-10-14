@@ -469,6 +469,9 @@ pub enum Service {
     VacuumLocate,
     VacuumCleanSpot,
     VacuumSetFanSpeed(VacuumFanSpeed),
+    LawnMowerStartMowing,
+    LawnMowerPause,
+    LawnMowerDock,
 }
 
 impl Service {
@@ -553,6 +556,9 @@ impl Service {
             Self::VacuumLocate => ServiceName::VacuumLocate,
             Self::VacuumCleanSpot => ServiceName::VacuumCleanSpot,
             Self::VacuumSetFanSpeed(_) => ServiceName::VacuumSetFanSpeed,
+            Self::LawnMowerStartMowing => ServiceName::LawnMowerStartMowing,
+            Self::LawnMowerPause => ServiceName::LawnMowerPause,
+            Self::LawnMowerDock => ServiceName::LawnMowerDock,
         }
     }
 }
@@ -718,6 +724,12 @@ pub enum ServiceName {
     VacuumCleanSpot,
     #[serde(rename = "vacuum.set_fan_speed")]
     VacuumSetFanSpeed,
+    #[serde(rename = "lawn_mower.start_mowing")]
+    LawnMowerStartMowing,
+    #[serde(rename = "lawn_mower.pause")]
+    LawnMowerPause,
+    #[serde(rename = "lawn_mower.dock")]
+    LawnMowerDock,
 }
 
 impl ServiceName {
@@ -801,6 +813,9 @@ impl ServiceName {
         Self::VacuumLocate,
         Self::VacuumCleanSpot,
         Self::VacuumSetFanSpeed,
+        Self::LawnMowerStartMowing,
+        Self::LawnMowerPause,
+        Self::LawnMowerDock,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -884,6 +899,9 @@ impl ServiceName {
             Self::VacuumLocate => "vacuum.locate",
             Self::VacuumCleanSpot => "vacuum.clean_spot",
             Self::VacuumSetFanSpeed => "vacuum.set_fan_speed",
+            Self::LawnMowerStartMowing => "lawn_mower.start_mowing",
+            Self::LawnMowerPause => "lawn_mower.pause",
+            Self::LawnMowerDock => "lawn_mower.dock",
         }
     }
 
@@ -963,6 +981,9 @@ impl ServiceName {
             | Self::VacuumLocate
             | Self::VacuumCleanSpot
             | Self::VacuumSetFanSpeed => EntityKind::Vacuum,
+            Self::LawnMowerStartMowing | Self::LawnMowerPause | Self::LawnMowerDock => {
+                EntityKind::LawnMower
+            }
         }
     }
 }

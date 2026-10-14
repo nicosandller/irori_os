@@ -923,6 +923,7 @@ async fn command(
         EntityKind::Humidifier
         | EntityKind::MediaPlayer
         | EntityKind::Vacuum
+        | EntityKind::LawnMower
         | EntityKind::Sensor
         | EntityKind::BinarySensor
         | EntityKind::Event => Err(format!("ESPHome has no {kind} services")),

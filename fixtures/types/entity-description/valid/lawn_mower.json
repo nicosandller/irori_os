@@ -1,0 +1,9 @@
+{
+  "unique_id": "mower",
+  "name": "Mower",
+  "capabilities": {
+    "kind": "lawn_mower",
+    "start_mowing": true,
+    "dock": true
+  }
+}

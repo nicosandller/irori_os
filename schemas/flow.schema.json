@@ -452,6 +452,10 @@
         {
           "maxLength": 71,
           "pattern": "^vacuum\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 75,
+          "pattern": "^lawn_mower\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -835,6 +839,9 @@
         "humidifier.toggle",
         "humidifier.turn_off",
         "humidifier.turn_on",
+        "lawn_mower.dock",
+        "lawn_mower.pause",
+        "lawn_mower.start_mowing",
         "light.toggle",
         "light.turn_off",
         "light.turn_on",

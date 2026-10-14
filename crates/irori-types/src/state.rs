@@ -13,6 +13,7 @@ use crate::kinds::cover::CoverState;
 use crate::kinds::event::EventState;
 use crate::kinds::fan::FanState;
 use crate::kinds::humidifier::HumidifierState;
+use crate::kinds::lawn_mower::LawnMowerState;
 use crate::kinds::light::LightState;
 use crate::kinds::lock::LockState;
 use crate::kinds::media_player::MediaPlayerState;
@@ -164,6 +165,7 @@ pub enum State {
     Time(TimeState),
     Datetime(DatetimeState),
     Vacuum(VacuumState),
+    LawnMower(LawnMowerState),
 }
 
 impl State {
@@ -193,7 +195,8 @@ impl State {
             | Self::Date(_)
             | Self::Time(_)
             | Self::Datetime(_)
-            | Self::Vacuum(_) => Ok(()),
+            | Self::Vacuum(_)
+            | Self::LawnMower(_) => Ok(()),
         }
     }
 
@@ -222,6 +225,7 @@ impl State {
             Self::Time(_) => EntityKind::Time,
             Self::Datetime(_) => EntityKind::Datetime,
             Self::Vacuum(_) => EntityKind::Vacuum,
+            Self::LawnMower(_) => EntityKind::LawnMower,
         }
     }
 }

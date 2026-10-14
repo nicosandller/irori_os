@@ -14,6 +14,7 @@ pub mod cover;
 pub mod event;
 pub mod fan;
 pub mod humidifier;
+pub mod lawn_mower;
 pub mod light;
 pub mod lock;
 pub mod moment;

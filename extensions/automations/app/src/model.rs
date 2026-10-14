@@ -694,6 +694,7 @@ pub fn state_words(state: &EntityState, home: &Home) -> String {
         Some(State::Lock(l)) => l.state.as_str().to_owned(),
         Some(State::AlarmControlPanel(panel)) => panel.state.as_str().replace('_', " "),
         Some(State::Vacuum(vacuum)) => vacuum.activity.as_str().to_owned(),
+        Some(State::LawnMower(mower)) => mower.activity.as_str().to_owned(),
         Some(State::Date(date)) => date.value.to_string(),
         Some(State::Time(time)) => time.value.to_string(),
         Some(State::Datetime(moment)) => serde_json::to_value(moment.value)

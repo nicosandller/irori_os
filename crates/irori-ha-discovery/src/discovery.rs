@@ -11,8 +11,9 @@
 use irori_types::{Capabilities, EntityCategory, EntityKind, Name, UniqueId};
 
 use crate::kinds::{
-    alarm_control_panel, binary_sensor, button, climate, cover, event, fan, humidifier, light,
-    lock, moment, number, select, sensor, siren, switch, text, update, vacuum, valve, water_heater,
+    alarm_control_panel, binary_sensor, button, climate, cover, event, fan, humidifier, lawn_mower,
+    light, lock, moment, number, select, sensor, siren, switch, text, update, vacuum, valve,
+    water_heater,
 };
 use crate::template::CommandTemplate;
 use crate::topic::Component;
@@ -25,6 +26,7 @@ pub use crate::kinds::cover::CoverTopics;
 pub use crate::kinds::event::{EventSource, EventTopics};
 pub use crate::kinds::fan::FanTopics;
 pub use crate::kinds::humidifier::HumidifierTopics;
+pub use crate::kinds::lawn_mower::LawnMowerTopics;
 pub use crate::kinds::light::LightTopics;
 pub use crate::kinds::lock::LockTopics;
 pub use crate::kinds::moment::MomentTopics;
@@ -111,6 +113,7 @@ pub enum EntityTopics {
     /// A date, a time or a datetime: its topics say which.
     Moment(MomentTopics),
     Vacuum(Box<VacuumTopics>),
+    LawnMower(Box<LawnMowerTopics>),
     Fan(Box<FanTopics>),
     Valve(Box<OpeningTopics>),
     Siren(SirenTopics),
@@ -138,6 +141,7 @@ impl EntityTopics {
             Self::AlarmControlPanel(_) => EntityKind::AlarmControlPanel,
             Self::Moment(topics) => topics.kind,
             Self::Vacuum(_) => EntityKind::Vacuum,
+            Self::LawnMower(_) => EntityKind::LawnMower,
             Self::Fan(_) => EntityKind::Fan,
             Self::Valve(_) => EntityKind::Valve,
             Self::Siren(_) => EntityKind::Siren,
@@ -204,6 +208,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::Time => moment::parse(EntityKind::Time, &root)?,
         Component::Datetime => moment::parse(EntityKind::Datetime, &root)?,
         Component::Vacuum => vacuum::parse(&root)?,
+        Component::LawnMower => lawn_mower::parse(&root)?,
         Component::Fan => fan::parse(&root)?,
         Component::Valve => valve::parse(&root)?,
         Component::Siren => siren::parse(&root)?,

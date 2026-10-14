@@ -16,6 +16,7 @@ pub(crate) mod cover;
 pub(crate) mod event;
 pub(crate) mod fan;
 pub(crate) mod humidifier;
+pub(crate) mod lawn_mower;
 pub(crate) mod light;
 pub(crate) mod lock;
 pub(crate) mod media_player;
@@ -219,7 +220,8 @@ impl EntityKind {
             | Self::Date
             | Self::Time
             | Self::Datetime
-            | Self::Vacuum => return None,
+            | Self::Vacuum
+            | Self::LawnMower => return None,
         })
     }
 }
@@ -249,7 +251,8 @@ impl Capabilities {
             | Self::Date(_)
             | Self::Time(_)
             | Self::Datetime(_)
-            | Self::Vacuum(_) => ValueShape::Text,
+            | Self::Vacuum(_)
+            | Self::LawnMower(_) => ValueShape::Text,
             Self::Sensor(sensor) => match sensor.value_type {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
@@ -271,6 +274,7 @@ impl Capabilities {
             Self::WaterHeater(_) => Some(&OPERATION_MODES),
             Self::MediaPlayer(_) => Some(&PLAYBACK_STATES),
             Self::AlarmControlPanel(_) => Some(&ALARM_STATES),
+            Self::LawnMower(_) => Some(&lawn_mower::ACTIVITIES),
             Self::Vacuum(_) => Some(&vacuum::ACTIVITIES),
             _ => None,
         }
@@ -303,7 +307,8 @@ impl Capabilities {
             | Self::AlarmControlPanel(_)
             | Self::Date(_)
             | Self::Time(_)
-            | Self::Datetime(_) => Vec::new(),
+            | Self::Datetime(_)
+            | Self::LawnMower(_) => Vec::new(),
         }
     }
 
@@ -368,6 +373,7 @@ impl Capabilities {
             Self::Humidifier(caps) => humidifier::supports_service(caps, service),
             Self::MediaPlayer(caps) => media_player::supports_service(caps, service),
             Self::Update(caps) => update::supports_service(caps, service),
+            Self::LawnMower(caps) => lawn_mower::supports_service(caps, service),
             Self::Vacuum(caps) => vacuum::supports_service(caps, service),
             Self::AlarmControlPanel(caps) => alarm_control_panel::supports_service(caps, service),
             Self::Switch(_) | Self::Button(_) => Ok(()),
@@ -397,6 +403,7 @@ impl State {
             Self::Cover(state) => cover::primary(state),
             Self::Valve(state) => valve::primary(state),
             Self::Lock(state) => lock::primary(state),
+            Self::LawnMower(state) => lawn_mower::primary(state),
             Self::Vacuum(state) => vacuum::primary(state),
             Self::AlarmControlPanel(state) => alarm_control_panel::primary(state),
             Self::Date(state) => moment::date_primary(state),
@@ -434,7 +441,8 @@ impl State {
             | Self::AlarmControlPanel(_)
             | Self::Date(_)
             | Self::Time(_)
-            | Self::Datetime(_) => None,
+            | Self::Datetime(_)
+            | Self::LawnMower(_) => None,
         }
     }
 
@@ -461,6 +469,7 @@ impl State {
             EntityKind::Text => State::Text(text::with_primary(value)?),
             EntityKind::Event => State::Event(event::with_primary(value)?),
             EntityKind::Lock => State::Lock(lock::with_primary(value)?),
+            EntityKind::LawnMower => State::LawnMower(lawn_mower::with_primary(value)?),
             EntityKind::AlarmControlPanel => {
                 State::AlarmControlPanel(alarm_control_panel::with_primary(value)?)
             }
@@ -510,6 +519,7 @@ impl Service {
             EntityKind::Cover => cover::service(name, data),
             EntityKind::Valve => valve::service(name, data),
             EntityKind::Lock => lock::service(name, data),
+            EntityKind::LawnMower => lawn_mower::service(name, data),
             EntityKind::Vacuum => vacuum::service(name, data),
             EntityKind::AlarmControlPanel => alarm_control_panel::service(name, data),
             EntityKind::Date | EntityKind::Time | EntityKind::Datetime => {
@@ -568,6 +578,7 @@ impl Service {
             EntityKind::Cover => cover::asks_for(self),
             EntityKind::Valve => valve::asks_for(self),
             EntityKind::Lock => lock::asks_for(self),
+            EntityKind::LawnMower => lawn_mower::asks_for(self),
             EntityKind::Vacuum => vacuum::asks_for(self),
             EntityKind::AlarmControlPanel => alarm_control_panel::asks_for(self),
             EntityKind::Date | EntityKind::Time | EntityKind::Datetime => moment::asks_for(self),
@@ -608,6 +619,7 @@ impl ServiceName {
             EntityKind::Cover => cover::data_of(self),
             EntityKind::Valve => valve::data_of(self),
             EntityKind::Lock => lock::data_of(self),
+            EntityKind::LawnMower => lawn_mower::data_of(self),
             EntityKind::Vacuum => vacuum::data_of(self),
             EntityKind::AlarmControlPanel => alarm_control_panel::data_of(self),
             EntityKind::Date | EntityKind::Time | EntityKind::Datetime => moment::data_of(self),

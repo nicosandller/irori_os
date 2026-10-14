@@ -375,6 +375,7 @@ fn kind_label(kind: EntityKind) -> &'static str {
         EntityKind::Time => "Times",
         EntityKind::Datetime => "Dates and times",
         EntityKind::Vacuum => "Vacuums",
+        EntityKind::LawnMower => "Lawn mowers",
         EntityKind::Fan => "Fans",
         EntityKind::Valve => "Valves",
         EntityKind::Siren => "Sirens",

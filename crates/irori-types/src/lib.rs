@@ -66,6 +66,7 @@ pub use kinds::fan::{
 pub use kinds::humidifier::{
     HumidifierAction, HumidifierCapabilities, HumidifierClass, HumidifierMode, HumidifierState,
 };
+pub use kinds::lawn_mower::{LawnMowerCapabilities, LawnMowerState, MowerActivity};
 pub use kinds::light::{ColorMode, ColorTempRange, LightCapabilities, LightState, LightTurnOn};
 pub use kinds::lock::{LockCapabilities, LockCode, LockState, LockStatus};
 pub use kinds::media_player::{

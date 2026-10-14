@@ -127,8 +127,8 @@ motion sensor are three entities.
 
 **Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`,
 `event`, `cover`, `lock`, `fan`, `valve`, `siren`, `climate`, `water_heater`, `humidifier`,
-`media_player`, `update`, `alarm_control_panel`, `date`, `time`, `datetime`, `vacuum`.
-**Next, in likely order:** `lawn_mower`, `scene`, `device_tracker`. Home Assistant's `remote` isn't planned: neither ESPHome nor MQTT discovery
+`media_player`, `update`, `alarm_control_panel`, `date`, `time`, `datetime`, `vacuum`, `lawn_mower`.
+**Next, in likely order:** `scene`, `device_tracker`. Home Assistant's `remote` isn't planned: neither ESPHome nor MQTT discovery
 has one, so nothing could report it. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
@@ -174,6 +174,7 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | | `code_arm_required`, `code_disarm_required` | bool | `false` | Arming, or disarming, needs the code. Only with a `code_format` |
 | `vacuum` | `start`, `pause`, `stop`, `return_home`, `locate`, `clean_spot` | bool | `false` | What it can be told to do |
 | | `fan_speeds` | list of strings, up to 32 | `[]` | Its fan speeds by its own names (`quiet`, `turbo`). Empty for one with no choice |
+| `lawn_mower` | `start_mowing`, `pause`, `dock` | bool | `false` | What it can be told to do |
 | `date`, `time`, `datetime` | none | | | A day, a time of day, or a moment that someone sets. Nothing to say about one beyond its kind |
 | `valve` | `device_class` | `water` \| `gas` | absent | |
 | | `position`, `stop` | bool | `false` | Opens part of the way; can be stopped |
@@ -311,6 +312,7 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | `lock` | `state` | `locked` \| `unlocked` \| `locking` \| `unlocking` \| `jammed` \| `open` \| `opening` | yes | Its typed value, for rules |
 | `vacuum` | `activity` | `cleaning` \| `docked` \| `idle` \| `paused` \| `returning` \| `error` | yes | Its typed value, for rules (`text()`). Home Assistant's `VacuumActivity` |
 | | `fan_speed` | string | no | One of its `fan_speeds` (checked by the core) |
+| `lawn_mower` | `activity` | `mowing` \| `docked` \| `paused` \| `returning` \| `error` | yes | Its typed value, for rules (`text()`). Home Assistant's `LawnMowerActivity` |
 | `date` | `value` | a calendar day, `2026-10-14` | yes | Its typed value, as that text. A day that exists; no time zone, it's the day wherever the home is |
 | `time` | `value` | a time of day to the second, `06:45:00` (`06:45` is read as the same) | yes | Its typed value, as that text. No date and no zone |
 | `datetime` | `value` | `Timestamp` | yes | Its typed value, as its UTC text (`2026-10-14T06:45:00Z`). An instant: pages show and pick it on their own clock |

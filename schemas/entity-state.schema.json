@@ -600,6 +600,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^lawn_mower\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "lawn_mower"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -811,6 +834,10 @@
         {
           "maxLength": 71,
           "pattern": "^vacuum\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 75,
+          "pattern": "^lawn_mower\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -894,6 +921,29 @@
           "description": "Stuck: it tried and couldn't finish.",
           "type": "string",
           "const": "jammed"
+        }
+      ]
+    },
+    "MowerActivity": {
+      "description": "What a mower is doing. Home Assistant's `LawnMowerActivity`.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "mowing",
+            "docked",
+            "paused"
+          ]
+        },
+        {
+          "description": "On its way back to the dock.",
+          "type": "string",
+          "const": "returning"
+        },
+        {
+          "description": "Stuck, or something is wrong with it.",
+          "type": "string",
+          "const": "error"
         }
       ]
     },
@@ -1813,6 +1863,23 @@
             "kind": {
               "type": "string",
               "const": "vacuum"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "activity"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "activity": {
+              "$ref": "#/$defs/MowerActivity"
+            },
+            "kind": {
+              "type": "string",
+              "const": "lawn_mower"
             }
           },
           "additionalProperties": false,

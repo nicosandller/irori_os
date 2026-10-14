@@ -188,6 +188,29 @@
         }
       ]
     },
+    "MowerActivity": {
+      "description": "What a mower is doing. Home Assistant's `LawnMowerActivity`.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "mowing",
+            "docked",
+            "paused"
+          ]
+        },
+        {
+          "description": "On its way back to the dock.",
+          "type": "string",
+          "const": "returning"
+        },
+        {
+          "description": "Stuck, or something is wrong with it.",
+          "type": "string",
+          "const": "error"
+        }
+      ]
+    },
     "OpenState": {
       "description": "Where something that opens and closes is: a cover's or a valve's.",
       "type": "string",
@@ -1002,6 +1025,23 @@
             "kind": {
               "type": "string",
               "const": "vacuum"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "activity"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "activity": {
+              "$ref": "#/$defs/MowerActivity"
+            },
+            "kind": {
+              "type": "string",
+              "const": "lawn_mower"
             }
           },
           "additionalProperties": false,

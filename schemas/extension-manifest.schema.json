@@ -285,6 +285,11 @@
           "description": "A robot vacuum cleaner.",
           "type": "string",
           "const": "vacuum"
+        },
+        {
+          "description": "A robot lawn mower.",
+          "type": "string",
+          "const": "lawn_mower"
         }
       ]
     },
