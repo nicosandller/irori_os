@@ -1,6 +1,6 @@
-//! The tools a model may call. A few rounds, then a plain answer. All but one only read, and
-//! writing the home is not among them: the one that changes anything draws on the copy of the
-//! floorplan a person has open for editing, which is theirs to undo and theirs to save.
+//! The tools a model may call. A few rounds, then a plain answer. Most only read, and writing
+//! the home is not among them: what changes anything changes a copy the person has open, theirs
+//! to undo and theirs to save: the floorplan being drawn, or the helper being made.
 
 use serde_json::{Value, json};
 
@@ -34,12 +34,17 @@ fn plan(scope: &str) -> bool {
     scope.starts_with("floorplan:")
 }
 
+/// The chat in the helper builder, which may fill its form in.
+fn helpers(scope: &str) -> bool {
+    scope == "helpers"
+}
+
 /// The chat about the whole home, which may ask about everything Irori holds.
 fn general(scope: &str) -> bool {
     scope == "general"
 }
 
-const TOOLS: [Tool; 10] = [
+const TOOLS: [Tool; 14] = [
     Tool {
         name: "list_devices",
         description: "List the devices in the home, with the room and the word each entity is reporting.",
@@ -143,6 +148,42 @@ const TOOLS: [Tool; 10] = [
             true,
         )],
         offered: |scope, drawing| plan(scope) && drawing,
+    },
+    Tool {
+        name: "list_entities",
+        description: "Every entity in the home, devices' and helpers' alike: its id, its name, what it is, the shape of its value (on/off, number with its unit, text with its options), the other values it has by name, and what it reports now.",
+        params: &[],
+        offered: |scope, _| helpers(scope) || general(scope),
+    },
+    Tool {
+        name: "list_helpers",
+        description: "The helpers there are now: each one's kind, id, entity and settings.",
+        params: &[],
+        offered: |scope, _| helpers(scope) || general(scope),
+    },
+    Tool {
+        name: "helper_kinds",
+        description: "Every kind of helper that can be made, what each works out or holds, its settings, and an example.",
+        params: &[],
+        offered: |scope, _| helpers(scope) || general(scope),
+    },
+    Tool {
+        name: "propose_helper",
+        description: "Fill in the helper builder the person has open, for them to look over, change and make. Nothing is made until they press Create. What comes back says what it would be, or what is wrong with it, to put right and propose again.",
+        params: &[
+            (
+                "kind",
+                "The kind, as helper_kinds names it: toggles, numbers, groups, thresholds, …",
+                true,
+            ),
+            ("name", "What to call it.", true),
+            (
+                "settings",
+                "Its settings beside the name, as a JSON object, like {\"source\": \"sensor.lounge_temperature\", \"above\": 26}. `{}` for a kind with none.",
+                true,
+            ),
+        ],
+        offered: |scope, _| helpers(scope),
     },
 ];
 
@@ -342,7 +383,25 @@ mod tests {
             "list_automations",
             "get_automation",
             "read_floorplan",
+            "list_entities",
+            "list_helpers",
+            "helper_kinds",
         ];
+        // The helper builder's chat reads the home and the helpers, and fills its form in.
+        let builder = [
+            "list_devices",
+            "get_device",
+            "recent_states",
+            "list_entities",
+            "list_helpers",
+            "helper_kinds",
+            "propose_helper",
+        ];
+        assert_eq!(
+            names(&openai_tools("helpers", false), "/function/name"),
+            builder
+        );
+        assert!(!tool_offered("general", false, "propose_helper"));
         for scope in ["device:lamp", "automation:kettle"] {
             assert_eq!(names(&openai_tools(scope, false), "/function/name"), home);
             assert_eq!(names(&anthropic_tools(scope, false), "/name"), home);

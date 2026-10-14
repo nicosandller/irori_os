@@ -209,6 +209,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/extensions/{id}", axum::routing::delete(uninstall))
         .route("/api/helpers", get(list_helpers))
         .route("/api/helpers/{table}", post(add_helper))
+        .route("/api/helpers/{table}/check", post(check_helper))
         .route(
             "/api/helpers/{table}/{id}",
             axum::routing::patch(edit_helper).delete(remove_helper),
@@ -1262,6 +1263,70 @@ async fn add_helper(
             .into_response(),
         Err(e) => edit_failed(e),
     }
+}
+
+/// What a helper would be, without making it: the entities it would become, or what's wrong
+/// with it, in the words making it would refuse with. `POST /api/helpers/thresholds/check`
+/// with the same body as making one. For a form to say as it's filled in.
+async fn check_helper(
+    State(state): State<AppState>,
+    Path(table): Path<String>,
+    Json(settings): Json<serde_json::Map<String, serde_json::Value>>,
+) -> Response {
+    let kind = match helper_kind(&table) {
+        Ok(kind) => kind,
+        Err(refusal) => return *refusal,
+    };
+    let name = match settings.get("name").map(Name::deserialize) {
+        Some(Ok(name)) => name,
+        Some(Err(e)) => return refused(StatusCode::BAD_REQUEST, format!("`name`: {e}")),
+        None => {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                format!("a {} needs a name", kind.word),
+            );
+        }
+    };
+    let id = irori_core::new_area_id(&name, &[]).to_string();
+    let Ok(object_id) = irori_types::ObjectId::try_from(id.as_str()) else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            format!("`{name}` can't be made into an id"),
+        );
+    };
+    let entities = match kind.check(&object_id, &serde_json::Value::Object(settings.clone())) {
+        Ok(entities) => entities,
+        Err(why) => return refused(StatusCode::BAD_REQUEST, why),
+    };
+    // With the rest of the file, for what one helper alone can't show (a ring).
+    let mut file = state.0.config.extension_settings(&HELPERS).await;
+    if let Some(table) = file
+        .entry(kind.table)
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+    {
+        table.insert(id.clone(), serde_json::Value::Object(settings));
+    }
+    if let Err(why) = irori_helpers::check_settings(&file) {
+        return refused(StatusCode::BAD_REQUEST, why);
+    }
+    // An entity something else already is: making it gives it the next free id.
+    let taken: Vec<String> = state
+        .0
+        .core
+        .entities()
+        .iter()
+        .map(|entity| entity.id.to_string())
+        .filter(|entity| entities.contains(entity))
+        .collect();
+    Json(serde_json::json!({
+        "kind": kind.table,
+        "id": id,
+        "entity_id": entities.first(),
+        "entities": entities,
+        "taken": taken,
+    }))
+    .into_response()
 }
 
 /// Changes a helper's settings: the fields sent replace what it had, and `null` takes one
@@ -4567,6 +4632,24 @@ mod tests {
                 .is_some_and(|e| e.contains("min 10 is above its max 1")),
             "{body}"
         );
+        // Checked without being made: what it would be, or why not.
+        let (status, checked) = server
+            .json(
+                "POST",
+                "/api/helpers/thresholds/check",
+                serde_json::json!({"name": "Bright", "source": "number.evening_brightness", "above": 50}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{checked}");
+        assert_eq!(checked["entity_id"], "binary_sensor.bright");
+        let (status, checked) = server
+            .json(
+                "POST",
+                "/api/helpers/thresholds/check",
+                serde_json::json!({"name": "Bright", "source": "number.evening_brightness"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{checked}");
         let (status, body) = server
             .json(
                 "POST",
@@ -5304,6 +5387,39 @@ mod tests {
                         )
                             .into_response();
                     }
+                    // Fills in the helper builder: a toggle, or with `proposes-badly` a threshold
+                    // on a sensor the home doesn't have. Says what came back.
+                    if body["model"] == "proposes" || body["model"] == "proposes-badly" {
+                        let report = body["messages"].as_array().and_then(|messages| {
+                            messages
+                                .iter()
+                                .find(|m| m["role"] == "tool")
+                                .and_then(|m| m["content"].as_str().map(str::to_owned))
+                        });
+                        let arguments = if body["model"] == "proposes" {
+                            serde_json::json!({"kind": "toggles", "name": "Guest mode",
+                                "settings": {"initial": true}})
+                        } else {
+                            serde_json::json!({"kind": "thresholds", "name": "Too warm",
+                                "settings": "{\"source\": \"sensor.nowhere\", \"above\": 26}"})
+                        };
+                        let line = match report {
+                            Some(report) => serde_json::json!({"choices": [{"delta": {
+                                "content": format!("Told: {report}"),
+                            }}]}),
+                            None => serde_json::json!({"choices": [{"delta": {
+                                "tool_calls": [{"index": 0, "id": "a", "function": {
+                                    "name": "propose_helper",
+                                    "arguments": arguments.to_string(),
+                                }}],
+                            }}]}),
+                        };
+                        return (
+                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                            format!("data: {line}\n\ndata: [DONE]\n\n"),
+                        )
+                            .into_response();
+                    }
                     // Draws a room when it is offered the tool to, and says it can't when it
                     // isn't. `draws-badly` asks for a room the home doesn't have.
                     if body["model"] == "draws" || body["model"] == "draws-badly" {
@@ -5512,6 +5628,67 @@ mod tests {
                 .lines()
                 .filter_map(|line| serde_json::from_str(line.strip_prefix("data:")?.trim()).ok())
                 .collect())
+        }
+
+        /// In the helper builder the assistant fills the form in. Nothing is made until the
+        /// person presses Create.
+        #[tokio::test]
+        async fn the_assistant_fills_in_the_helper_builder_and_makes_nothing() -> anyhow::Result<()>
+        {
+            let base = cloud().await;
+            let server = Server::new(core())?;
+            let (status, body) = server
+                .json("PUT", "/api/assistant", configure(&base, "proposes"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let lines = |text: String| -> Vec<serde_json::Value> {
+                text.lines()
+                    .filter_map(|line| {
+                        serde_json::from_str(line.strip_prefix("data:")?.trim()).ok()
+                    })
+                    .collect()
+            };
+            let said = lines(events(&server, "helpers", "A guest mode switch, on").await?);
+            let helper = said
+                .iter()
+                .find_map(|event| event.get("helper"))
+                .unwrap_or_else(|| panic!("nothing filled in: {said:?}"));
+            assert_eq!(helper["kind"], "toggles");
+            assert_eq!(helper["name"], "Guest mode");
+            assert_eq!(helper["settings"]["initial"], true);
+            assert_eq!(helper["entities"][0], "switch.guest_mode");
+            assert!(
+                said.iter().any(|event| event["delta"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("Create"))),
+                "{said:?}"
+            );
+            let file = std::fs::read_to_string(
+                server.config_dir().join("extensions").join("helpers.toml"),
+            )
+            .unwrap_or_default();
+            assert!(!file.contains("guest_mode"), "{file}");
+
+            // A source the home doesn't have is said to the model, and nothing is filled in.
+            let (status, body) = server
+                .json("PUT", "/api/assistant", configure(&base, "proposes-badly"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let said = lines(events(&server, "helpers", "Tell me when it's too warm").await?);
+            assert!(
+                said.iter().all(|event| event.get("helper").is_none()),
+                "{said:?}"
+            );
+            let text = serde_json::Value::from(said).to_string();
+            assert!(text.contains("sensor.nowhere"), "{text}");
+
+            // Elsewhere there is no builder to fill in.
+            let said = lines(events(&server, "general", "A guest mode switch").await?);
+            assert!(
+                said.iter().all(|event| event.get("helper").is_none()),
+                "{said:?}"
+            );
+            Ok(())
         }
 
         /// On the Floorplan page the assistant may draw — on the copy the person is editing,

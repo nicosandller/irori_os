@@ -46,6 +46,7 @@
 mod button;
 mod computed;
 mod counter;
+mod guide;
 mod maths;
 mod moment;
 mod number;
@@ -71,6 +72,7 @@ pub use computed::{
     StatisticsSettings, Threshold, Trend,
 };
 pub use counter::Counter;
+pub use guide::{GUIDE, Guide, guide};
 pub use moment::{Date, Datetime, Time};
 pub use number::Number;
 pub use schedule::Schedule;
