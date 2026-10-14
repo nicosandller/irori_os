@@ -1,7 +1,7 @@
 [extension]
 id = "helpers"
 name = "Helpers"
-version = "0.3.1"
+version = "0.4.0"
 irori = ">=0.0.0"
 description = "Values Irori keeps itself rather than a device reporting them, for flows to use and people to set: toggles, numbers, counters, choices, texts, buttons, dates and times, timers, schedules, and values worked out from other entities."
 icon = "icon.svg"

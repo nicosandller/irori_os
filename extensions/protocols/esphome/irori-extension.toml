@@ -1,7 +1,7 @@
 [extension]
 id = "esphome"
 name = "ESPHome"
-version = "0.5.0"
+version = "0.6.0"
 irori = ">=1.4.0"
 # 1.4.0 has the `update` kind: firmware a device can be told to install.
 description = "Devices running ESPHome firmware, over ESPHome's native API."
