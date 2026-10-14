@@ -1132,6 +1132,20 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "description": "What a schedule can do. Nothing to say yet: a schedule is read, not told.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "schedule"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },

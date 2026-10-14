@@ -154,6 +154,7 @@ pub fn drawing(capabilities: &Capabilities) -> &'static str {
         Capabilities::Scene(_) => PALETTE,
         Capabilities::DeviceTracker(_) => PIN,
         Capabilities::Timer(_) => CLOCK,
+        Capabilities::Schedule(_) => CALENDAR,
         Capabilities::Fan(_) => FAN,
         Capabilities::Valve(_) => VALVE,
         Capabilities::Siren(_) => SIREN,

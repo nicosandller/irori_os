@@ -1,0 +1,7 @@
+{
+  "unique_id": "schedule-heating_hours",
+  "name": "Heating hours",
+  "capabilities": {
+    "kind": "schedule"
+  }
+}

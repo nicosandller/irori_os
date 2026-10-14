@@ -783,7 +783,16 @@ async fn supervise(
             }
         }
         core.set_status(&extension, ExtensionStatus::Starting);
-        let (ctx, host_end) = connect();
+        let (mut ctx, host_end) = connect();
+        // A built-in that works out values from the rest of the home reads it in-process,
+        // within the scopes its manifest asks for.
+        if !manifest.permissions.api.is_empty() {
+            ctx.give_home(std::sync::Arc::new(crate::home_access::CoreHome {
+                core: core.clone(),
+                extension: extension.clone(),
+                scopes: manifest.permissions.api.clone(),
+            }));
+        }
         // Only time spent actually running counts towards `healthy_after`; startup doesn't, and
         // a start that panics never ran at all.
         let mut running_since: Option<Instant> = None;

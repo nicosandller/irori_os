@@ -35,7 +35,7 @@ pub(crate) use self::media_player::media_player_words;
 pub(crate) use self::number::unit_of;
 pub(crate) use self::opening::opening_words;
 pub(crate) use self::sensor::wording;
-pub(crate) use self::timer::timer_words;
+pub(crate) use self::timer::{schedule_words, timer_words};
 pub(crate) use self::update::update_words;
 pub(crate) use self::vacuum::vacuum_words;
 pub(crate) use self::water_heater::water_heater_words;
@@ -81,6 +81,7 @@ pub(crate) fn control(
         Capabilities::Scene(_) => button::scene_control(entity, offline, controls),
         Capabilities::Event(_) => event::happened(state),
         Capabilities::DeviceTracker(_) => sensor::tracker(value),
+        Capabilities::Schedule(_) => timer::schedule_reading(value),
         // These three are drawn once and follow a state that changes (`kept`); here the
         // state is whatever it was when this was called.
         Capabilities::Cover(_)
@@ -215,6 +216,7 @@ pub(crate) fn kept(
         | Capabilities::Button(_)
         | Capabilities::Scene(_)
         | Capabilities::DeviceTracker(_)
+        | Capabilities::Schedule(_)
         | Capabilities::Event(_)
         | Capabilities::Fan(_)
         | Capabilities::Siren(_)

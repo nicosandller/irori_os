@@ -6,6 +6,7 @@ mod context_id;
 mod engine;
 mod events;
 mod home;
+mod home_access;
 mod host;
 mod installs;
 mod services;

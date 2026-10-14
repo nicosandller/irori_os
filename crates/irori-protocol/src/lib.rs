@@ -25,6 +25,7 @@ use tokio::sync::{Notify, mpsc, oneshot, watch};
 pub use irori_types as types;
 
 pub mod engine;
+pub mod home;
 mod process;
 pub use process::{ExtProcess, FromExt, ToExt, WireCommand, serve, spawn};
 
@@ -318,11 +319,24 @@ pub struct ProtocolContext {
     calls: mpsc::Receiver<IncomingCall>,
     actions: mpsc::Receiver<IncomingAction>,
     stop: watch::Receiver<bool>,
+    /// The rest of the home, for a built-in whose manifest asks for API scopes.
+    home: Option<Arc<dyn home::Home>>,
 }
 
 const CORE_GONE: &str = "the core is shutting down";
 
 impl ProtocolContext {
+    /// The rest of the home: other entities, their states and history, and calls to them.
+    /// Only for a built-in whose manifest asks for API scopes; `None` for every other.
+    pub fn home(&self) -> Option<Arc<dyn home::Home>> {
+        self.home.clone()
+    }
+
+    /// Gives the protocol the rest of the home. The host does this for a built-in that asks.
+    pub fn give_home(&mut self, home: Arc<dyn home::Home>) {
+        self.home = Some(home);
+    }
+
     async fn request(&self, op: impl FnOnce(host::Reply) -> host::Op) -> Result<(), Rejected> {
         let (reply, result) = oneshot::channel();
         self.ops
@@ -855,6 +869,7 @@ pub mod host {
             calls: calls_rx,
             actions: actions_rx,
             stop: stop_rx,
+            home: None,
         };
         let host = HostEnd {
             ops: ops_rx,

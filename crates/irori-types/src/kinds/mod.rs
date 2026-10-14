@@ -25,6 +25,7 @@ pub(crate) mod moment;
 pub(crate) mod number;
 pub(crate) mod opening;
 pub(crate) mod scene;
+pub(crate) mod schedule;
 pub(crate) mod select;
 pub(crate) mod sensor;
 pub(crate) mod siren;
@@ -227,7 +228,8 @@ impl EntityKind {
             | Self::LawnMower
             | Self::Scene
             | Self::DeviceTracker
-            | Self::Timer => return None,
+            | Self::Timer
+            | Self::Schedule => return None,
         })
     }
 }
@@ -243,7 +245,8 @@ impl Capabilities {
             | Self::Siren(_)
             | Self::Humidifier(_)
             | Self::Update(_)
-            | Self::DeviceTracker(_) => ValueShape::Bool,
+            | Self::DeviceTracker(_)
+            | Self::Schedule(_) => ValueShape::Bool,
             Self::Number(_) => ValueShape::Number,
             Self::Select(_)
             | Self::Text(_)
@@ -304,6 +307,7 @@ impl Capabilities {
             Self::Update(caps) => update::fields(caps),
             Self::Timer(caps) => timer::fields(caps),
             Self::DeviceTracker(caps) => device_tracker::fields(caps),
+            Self::Schedule(caps) => schedule::fields(caps),
             Self::Vacuum(caps) => vacuum::fields(caps),
             Self::Switch(_)
             | Self::Sensor(_)
@@ -392,9 +396,11 @@ impl Capabilities {
             Self::Switch(_) | Self::Button(_) | Self::Scene(_) => Ok(()),
             // Any day, time or moment that exists is one it can be set to.
             Self::Date(_) | Self::Time(_) | Self::Datetime(_) => Ok(()),
-            Self::Sensor(_) | Self::BinarySensor(_) | Self::Event(_) | Self::DeviceTracker(_) => {
-                Ok(())
-            }
+            Self::Sensor(_)
+            | Self::BinarySensor(_)
+            | Self::Event(_)
+            | Self::DeviceTracker(_)
+            | Self::Schedule(_) => Ok(()),
         }
     }
 }
@@ -420,6 +426,7 @@ impl State {
             Self::Lock(state) => lock::primary(state),
             Self::Timer(state) => timer::primary(state),
             Self::DeviceTracker(state) => device_tracker::primary(state),
+            Self::Schedule(state) => schedule::primary(state),
             Self::LawnMower(state) => lawn_mower::primary(state),
             Self::Vacuum(state) => vacuum::primary(state),
             Self::AlarmControlPanel(state) => alarm_control_panel::primary(state),
@@ -447,6 +454,7 @@ impl State {
             Self::Update(state) => update::field(state, name),
             Self::Timer(state) => timer::field(state, name),
             Self::DeviceTracker(state) => device_tracker::field(state, name),
+            Self::Schedule(state) => schedule::field(state, name),
             Self::Vacuum(state) => vacuum::field(state, name),
             Self::Switch(_)
             | Self::Sensor(_)
@@ -513,6 +521,9 @@ impl State {
             }
             EntityKind::Update => State::Update(update::with_primary(previous!(Update), value)?),
             EntityKind::Timer => State::Timer(timer::with_primary(previous!(Timer), value)?),
+            EntityKind::Schedule => {
+                State::Schedule(schedule::with_primary(previous!(Schedule), value)?)
+            }
             EntityKind::DeviceTracker => State::DeviceTracker(device_tracker::with_primary(
                 previous!(DeviceTracker),
                 value,
@@ -561,7 +572,8 @@ impl Service {
             EntityKind::Sensor
             | EntityKind::BinarySensor
             | EntityKind::Event
-            | EntityKind::DeviceTracker => Err(not_mine(name)),
+            | EntityKind::DeviceTracker
+            | EntityKind::Schedule => Err(not_mine(name)),
         }?;
         service.validate()?;
         Ok(service)
@@ -625,7 +637,8 @@ impl Service {
             EntityKind::Sensor
             | EntityKind::BinarySensor
             | EntityKind::Event
-            | EntityKind::DeviceTracker => None,
+            | EntityKind::DeviceTracker
+            | EntityKind::Schedule => None,
         }
     }
 }
@@ -669,7 +682,8 @@ impl ServiceName {
             EntityKind::Sensor
             | EntityKind::BinarySensor
             | EntityKind::Event
-            | EntityKind::DeviceTracker => Data::None,
+            | EntityKind::DeviceTracker
+            | EntityKind::Schedule => Data::None,
         }
     }
 

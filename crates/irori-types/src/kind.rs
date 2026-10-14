@@ -64,6 +64,8 @@ pub enum EntityKind {
     DeviceTracker,
     /// Something that counts down and says when it's done.
     Timer,
+    /// On during the times a week sets out, off between them.
+    Schedule,
 }
 
 impl EntityKind {
@@ -96,6 +98,7 @@ impl EntityKind {
         Self::Scene,
         Self::DeviceTracker,
         Self::Timer,
+        Self::Schedule,
     ];
 
     /// The domain string used in entity ids and service names.
@@ -129,6 +132,7 @@ impl EntityKind {
             Self::Scene => "scene",
             Self::DeviceTracker => "device_tracker",
             Self::Timer => "timer",
+            Self::Schedule => "schedule",
         }
     }
 

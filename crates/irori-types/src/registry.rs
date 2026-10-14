@@ -20,6 +20,7 @@ use crate::kinds::media_player::MediaPlayerCapabilities;
 use crate::kinds::moment::MomentCapabilities;
 use crate::kinds::number::NumberCapabilities;
 use crate::kinds::scene::SceneCapabilities;
+use crate::kinds::schedule::ScheduleCapabilities;
 use crate::kinds::select::SelectCapabilities;
 use crate::kinds::sensor::SensorCapabilities;
 use crate::kinds::siren::SirenCapabilities;
@@ -225,6 +226,7 @@ pub enum Capabilities {
     Scene(SceneCapabilities),
     DeviceTracker(TrackerCapabilities),
     Timer(TimerCapabilities),
+    Schedule(ScheduleCapabilities),
 }
 
 impl Capabilities {
@@ -258,6 +260,7 @@ impl Capabilities {
             Self::Scene(_) => EntityKind::Scene,
             Self::DeviceTracker(_) => EntityKind::DeviceTracker,
             Self::Timer(_) => EntityKind::Timer,
+            Self::Schedule(_) => EntityKind::Schedule,
         }
     }
 

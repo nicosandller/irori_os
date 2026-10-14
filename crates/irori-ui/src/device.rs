@@ -1317,6 +1317,9 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
             if tracker.home { "Home" } else { "Away" }.to_owned()
         }
         (Capabilities::Timer(_), Some(State::Timer(timer))) => devices::timer_words(timer),
+        (Capabilities::Schedule(_), Some(State::Schedule(schedule))) => {
+            devices::schedule_words(schedule)
+        }
         (Capabilities::Date(_), Some(State::Date(date))) => date.value.to_string(),
         (Capabilities::Time(_), Some(State::Time(time))) => time.value.to_string(),
         (Capabilities::Fan(_), Some(State::Fan(fan))) => devices::fan_words(fan),

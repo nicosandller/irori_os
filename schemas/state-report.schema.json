@@ -1140,6 +1140,35 @@
             "state",
             "duration"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "schedule"
+            },
+            "next_change": {
+              "description": "When it next turns on or off. Absent for a schedule that never changes (an empty week).",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "on": {
+              "description": "Within one of its times now.",
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
+          ]
         }
       ]
     },

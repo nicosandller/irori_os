@@ -22,8 +22,8 @@ mod updates;
 
 pub(crate) use self::controls::{
     alarm_words, climate_words, fan_words, fill, humidifier_words, lock_words, media_player_words,
-    mower_words, number, opening_words, timer_words, unit_of, update_words, vacuum_words,
-    water_heater_words, wording,
+    mower_words, number, opening_words, schedule_words, timer_words, unit_of, update_words,
+    vacuum_words, water_heater_words, wording,
 };
 pub(crate) use self::controls::{control, kept};
 
@@ -1811,7 +1811,8 @@ pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll
         Capabilities::Sensor(_)
         | Capabilities::BinarySensor(_)
         | Capabilities::Event(_)
-        | Capabilities::DeviceTracker(_) => view! {
+        | Capabilities::DeviceTracker(_)
+        | Capabilities::Schedule(_) => view! {
             <button
                 type="button"
                 class="unroll reading-unroll"

@@ -4922,6 +4922,53 @@ mod tests {
         Ok(())
     }
 
+    /// A schedule helper says whether it's on now and when that changes, on the home's clock.
+    #[tokio::test]
+    async fn a_schedule_helper_says_whether_it_is_on_and_until_when() -> anyhow::Result<()> {
+        let storage: Arc<dyn irori_protocol::Storage> =
+            Arc::new(irori_protocol::MemoryStorage::default());
+        let core = core();
+        core.use_storage(Arc::clone(&storage));
+        let server = Server::new(core.clone())?;
+        let host = helpers(&core).await?;
+        let every_day = serde_json::json!([["00:00", "24:00"]]);
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/helpers/schedules",
+                serde_json::json!({"name": "Always", "mon": every_day, "tue": every_day,
+                    "wed": every_day, "thu": every_day, "fri": every_day, "sat": every_day,
+                    "sun": every_day}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        let always = EntityId::try_from("schedule.always")?;
+        until("on", || {
+            core.state(&always).and_then(|s| s.state)
+                == Some(irori_types::State::Schedule(irori_types::ScheduleState {
+                    on: true,
+                    next_change: None,
+                }))
+        })
+        .await?;
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/helpers/schedules",
+                serde_json::json!({"name": "Backwards", "mon": [["22:00", "02:00"]]}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("ends before it starts")),
+            "{body}"
+        );
+        host.shutdown().await;
+        Ok(())
+    }
+
     /// An icon arrives as an image with a policy that stops it doing anything but being one.
     #[tokio::test]
     async fn an_extensions_icon_is_served_as_a_locked_down_image() -> anyhow::Result<()> {

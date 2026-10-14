@@ -83,6 +83,7 @@ pub use kinds::number::{
 };
 pub use kinds::opening::{OpenState, OpeningAbilities, OpeningCommand, OpeningState, SetPosition};
 pub use kinds::scene::SceneCapabilities;
+pub use kinds::schedule::{ScheduleCapabilities, ScheduleState};
 pub use kinds::select::{SelectCapabilities, SelectOption, SelectState};
 pub use kinds::sensor::{
     SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType, StateClass,

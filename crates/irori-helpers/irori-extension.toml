@@ -10,4 +10,9 @@ icon = "icon.svg"
 # installable extension — there is no `run`, and it isn't listed in extensions/official.toml.
 [[contributes.protocol]]
 iot_class = "local_push"
-entity_kinds = ["switch", "number", "select", "text", "button", "event", "date", "time", "datetime", "timer"]
+entity_kinds = ["switch", "number", "select", "text", "button", "event", "date", "time", "datetime", "timer", "schedule"]
+
+# Schedules keep to the home's clock, and helpers that work out a value from other entities
+# read them, their history, and call them (a group). All of it stays on this machine.
+[permissions]
+api = ["registry:read", "states:read", "history:read", "services:call"]

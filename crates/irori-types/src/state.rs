@@ -20,6 +20,7 @@ use crate::kinds::lock::LockState;
 use crate::kinds::media_player::MediaPlayerState;
 use crate::kinds::moment::{DateState, DatetimeState, TimeState};
 use crate::kinds::number::NumberState;
+use crate::kinds::schedule::ScheduleState;
 use crate::kinds::select::SelectState;
 use crate::kinds::sensor::SensorState;
 use crate::kinds::siren::SirenState;
@@ -170,6 +171,7 @@ pub enum State {
     LawnMower(LawnMowerState),
     DeviceTracker(TrackerState),
     Timer(TimerState),
+    Schedule(ScheduleState),
 }
 
 impl State {
@@ -202,7 +204,8 @@ impl State {
             | Self::Time(_)
             | Self::Datetime(_)
             | Self::Vacuum(_)
-            | Self::LawnMower(_) => Ok(()),
+            | Self::LawnMower(_)
+            | Self::Schedule(_) => Ok(()),
         }
     }
 
@@ -234,6 +237,7 @@ impl State {
             Self::LawnMower(_) => EntityKind::LawnMower,
             Self::DeviceTracker(_) => EntityKind::DeviceTracker,
             Self::Timer(_) => EntityKind::Timer,
+            Self::Schedule(_) => EntityKind::Schedule,
         }
     }
 }

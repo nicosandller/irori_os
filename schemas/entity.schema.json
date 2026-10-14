@@ -699,6 +699,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^schedule\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "schedule"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -1763,6 +1786,20 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "description": "What a schedule can do. Nothing to say yet: a schedule is read, not told.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "schedule"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
@@ -1949,6 +1986,10 @@
         {
           "maxLength": 70,
           "pattern": "^timer\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 73,
+          "pattern": "^schedule\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

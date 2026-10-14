@@ -305,6 +305,11 @@
           "description": "Something that counts down and says when it's done.",
           "type": "string",
           "const": "timer"
+        },
+        {
+          "description": "On during the times a week sets out, off between them.",
+          "type": "string",
+          "const": "schedule"
         }
       ]
     },

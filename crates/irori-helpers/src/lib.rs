@@ -47,6 +47,7 @@ mod button;
 mod counter;
 mod moment;
 mod number;
+mod schedule;
 mod select;
 mod text;
 mod timer;
@@ -55,8 +56,8 @@ mod toggle;
 use std::collections::{BTreeMap, BTreeSet};
 
 use irori_protocol::types::{
-    Capabilities, ContextId, EntityDescription, EventState, Name, ObjectId, Service, State,
-    StateReport, TimerState, Timestamp, Typed, UniqueId,
+    Capabilities, ContextId, EntityDescription, EventState, Name, ObjectId, ScheduleState, Service,
+    State, StateReport, TimerState, Timestamp, Typed, UniqueId,
 };
 use irori_protocol::{Protocol, ProtocolContext, ProtocolError, ServiceError};
 use schemars::JsonSchema;
@@ -66,6 +67,7 @@ pub use button::Button;
 pub use counter::Counter;
 pub use moment::{Date, Datetime, Time};
 pub use number::Number;
+pub use schedule::Schedule;
 pub use select::Select;
 pub use text::Text;
 pub use timer::Timer;
@@ -109,6 +111,9 @@ pub struct Settings {
     /// Something that counts down: `timer.<id>`, and `event.<id>` for when it starts and ends.
     #[serde(default)]
     pub timers: BTreeMap<ObjectId, Timer>,
+    /// On during the times a week sets out: `schedule.<id>`.
+    #[serde(default)]
+    pub schedules: BTreeMap<ObjectId, Schedule>,
 }
 
 impl Protocol for Helpers {
@@ -185,6 +190,11 @@ pub const KINDS: &[HelperKind] = &[
         word: "timer",
         prefixes: &["timer", "timerevent"],
     },
+    HelperKind {
+        table: "schedules",
+        word: "schedule",
+        prefixes: &["schedule"],
+    },
 ];
 
 impl HelperKind {
@@ -226,6 +236,7 @@ impl HelperKind {
             "times" => moment::time(id, &read(settings)?),
             "datetimes" => moment::datetime(id, &read(settings)?),
             "timers" => timer::made(id, &read(settings)?),
+            "schedules" => schedule::made(id, &read(settings)?),
             other => return Err(format!("there are no helpers called `{other}`")),
         }
         .map_err(|e| e.to_string())?;
@@ -267,6 +278,8 @@ pub(crate) enum Role {
         duration: f64,
         restore: bool,
     },
+    /// On during its week's times; nothing can be asked of it.
+    Schedule(schedule::Week),
 }
 
 impl Made {
@@ -329,6 +342,15 @@ impl Made {
         role: Role,
     ) -> Result<Self, ProtocolError> {
         Self::new("timer", id, name, capabilities, role)
+    }
+
+    pub(crate) fn new_schedule(
+        id: &ObjectId,
+        name: &Name,
+        capabilities: Capabilities,
+        week: schedule::Week,
+    ) -> Result<Self, ProtocolError> {
+        Self::new("schedule", id, name, capabilities, Role::Schedule(week))
     }
 
     pub(crate) fn happens(
@@ -404,6 +426,9 @@ fn all(settings: &Settings) -> Result<Vec<Made>, ProtocolError> {
     for (id, counting) in &settings.timers {
         made.extend(timer::made(id, counting)?);
     }
+    for (id, week) in &settings.schedules {
+        made.extend(schedule::made(id, week)?);
+    }
     let mut taken: BTreeMap<String, &UniqueId> = BTreeMap::new();
     for one in &made {
         let entity = one.entity_id();
@@ -440,6 +465,15 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
 
     // Each timer as it is now, by its entity.
     let mut timers: BTreeMap<UniqueId, TimerState> = BTreeMap::new();
+    // Each schedule as it is now, and the home's clock they keep to. A new time zone reaches
+    // them when the helpers next start.
+    let zone = schedule::zone(
+        ctx.home()
+            .and_then(|home| home.place().time_zone)
+            .as_ref()
+            .map(|zone| zone.as_str()),
+    );
+    let mut schedules: BTreeMap<UniqueId, ScheduleState> = BTreeMap::new();
     for (unique, helper) in &helpers {
         ctx.describe_entity(helper.description.clone()).await?;
         if let Role::Timer {
@@ -459,6 +493,12 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                 ctx.report_state(happened(fires, said, None));
             }
             timers.insert(unique.clone(), state);
+            continue;
+        }
+        if let Role::Schedule(week) = &helper.role {
+            let state = schedule::state(week, &zone, now());
+            ctx.report_state(report(unique.clone(), State::Schedule(state), None));
+            schedules.insert(unique.clone(), state);
             continue;
         }
         let Role::Value { initial } = &helper.role else {
@@ -488,7 +528,11 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
 
     loop {
         // The next timer to run out, if one is running.
-        let next = timers.values().filter_map(|state| state.finishes_at).min();
+        let next = timers
+            .values()
+            .filter_map(|state| state.finishes_at)
+            .chain(schedules.values().filter_map(|state| state.next_change))
+            .min();
         let incoming = tokio::select! {
             incoming = ctx.next_call() => match incoming {
                 Some(incoming) => incoming,
@@ -496,6 +540,15 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
             },
             () = sleep_until(next) => {
                 let at = now();
+                for (unique, state) in &mut schedules {
+                    if !state.next_change.is_some_and(|change| change <= at) {
+                        continue;
+                    }
+                    if let Some(Role::Schedule(week)) = helpers.get(unique).map(|h| &h.role) {
+                        *state = schedule::state(week, &zone, at);
+                        ctx.report_state(report(unique.clone(), State::Schedule(*state), None));
+                    }
+                }
                 for (unique, state) in &mut timers {
                     if !timer::due(state, at) {
                         continue;
@@ -597,6 +650,11 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
             Role::Happens => {
                 incoming.reply(Err(ServiceError::failed(
                     "nothing can be asked of it: it says when something happened",
+                )));
+            }
+            Role::Schedule(_) => {
+                incoming.reply(Err(ServiceError::failed(
+                    "nothing can be asked of it: it follows its week",
                 )));
             }
         }

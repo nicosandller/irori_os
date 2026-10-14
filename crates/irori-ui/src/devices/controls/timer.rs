@@ -33,6 +33,30 @@ pub(crate) fn timer_words(state: &irori_types::TimerState) -> String {
     }
 }
 
+/// A schedule's state in a few words: on or off, and until when.
+pub(crate) fn schedule_words(state: &irori_types::ScheduleState) -> String {
+    let now = if state.on { "On" } else { "Off" };
+    match state.next_change {
+        Some(at) => format!(
+            "{now} until {}",
+            super::moment::local_from_instant(at)
+                .get(11..16)
+                .unwrap_or_default()
+        ),
+        None => now.to_owned(),
+    }
+}
+
+/// A schedule's reading. Nothing can be asked of it.
+pub(crate) fn schedule_reading(value: Option<&State>) -> AnyView {
+    let state = match value {
+        Some(State::Schedule(state)) => Some(*state),
+        _ => None,
+    };
+    let reading = state.map_or_else(|| UNKNOWN.to_owned(), |state| schedule_words(&state));
+    view! { <span class="reading" class:on=state.is_some_and(|s| s.on)>{reading}</span> }.into_any()
+}
+
 /// A timer's row. Drawn once and kept, so start, pause and cancel give way to each other as it
 /// runs.
 pub(crate) fn timer_control(

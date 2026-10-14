@@ -328,6 +328,7 @@ is an ordinary entity of a kind Irori already has, with no device:
 | `[times.<id>]` | `time.<id>` | `initial` (`06:45`) | unknown |
 | `[datetimes.<id>]` | `datetime.<id>` | `initial` (`2026-10-14T06:45:00Z`) | unknown |
 | `[timers.<id>]` | `timer.<id>` and `event.<id>` | `duration` (seconds; 0, the default, means it's told each time), `restore` (on) | idle. Its event says `started`, `paused`, `cancelled` and `finished`. One that ran out while Irori was down finishes as Irori starts, and says so, unless `restore = false` |
+| `[schedules.<id>]` | `schedule.<id>` | `mon` … `sun`, each a list of `["07:00", "09:00"]` times; `24:00` ends one at midnight | its week, read on the home's clock (`home.toml`), or this machine's until the home says where it is |
 
 ```toml
 [numbers.evening_brightness]
@@ -730,7 +731,7 @@ Named here so the layout has room for them, specified when they are built:
 - **An entity in a different area than its device** (`Entity.area_id` already allows it).
 - **More on the plan** — furniture, stairs between floors, and an area that spans one without
   being traced on each.
-- **More helpers** — schedules, and values worked out from other entities (groups,
+- **More helpers** — values worked out from other entities (groups,
   thresholds, meters).
 
 ## 8. Changes from the roadmap draft
