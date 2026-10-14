@@ -550,11 +550,45 @@ impl Draft {
     /// The whole of it as JSON to read and change. Which kind it is goes under `helper`: a
     /// group has a `kind` of its own (lights, switches…).
     fn code(self) -> String {
-        let mut value = self.value.get();
-        if let Some(kind) = self.kind.get() {
-            value.insert(KIND_KEY.to_owned(), json!(kind.table));
+        let mut rest = self.value.get();
+        let kind = self.kind.get();
+        let mut parts = Vec::new();
+        if let Some(kind) = kind {
+            parts.push(format!("  \"{KIND_KEY}\": {}", json!(kind.table)));
         }
-        irori_ui_kit::json::written(&Value::Object(value))
+        // The name, then the settings in the form's order (a schedule's days in the week's),
+        // then anything else it has.
+        let mut order: Vec<&str> = vec!["name"];
+        for field in kind.map_or(&[][..], |kind| kind.fields) {
+            if field.widget == Widget::Week {
+                order.extend(DAYS.map(|(day, _)| day));
+            } else {
+                order.push(field.key);
+            }
+        }
+        let mut keys: Vec<String> = order.iter().map(|key| (*key).to_owned()).collect();
+        keys.extend(
+            rest.keys()
+                .filter(|key| !order.contains(&key.as_str()))
+                .cloned(),
+        );
+        for key in keys {
+            let Some(value) = rest.remove(&key) else {
+                continue;
+            };
+            let one = irori_ui_kit::json::written(&json!({ key: value }));
+            if let Some(body) = one
+                .strip_prefix("{\n")
+                .and_then(|body| body.strip_suffix("\n}"))
+            {
+                parts.push(body.to_owned());
+            }
+        }
+        if parts.is_empty() {
+            "{}".to_owned()
+        } else {
+            format!("{{\n{}\n}}", parts.join(",\n"))
+        }
     }
 
     /// Takes what was written as JSON, or says why it can't yet.
