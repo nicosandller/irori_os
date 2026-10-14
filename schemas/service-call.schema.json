@@ -125,6 +125,44 @@
       "if": {
         "properties": {
           "service": {
+            "const": "number.increment"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/NumberStep"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "number.decrement"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/NumberStep"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
             "const": "select.select_option"
           }
         },
@@ -1619,6 +1657,22 @@
         "value"
       ]
     },
+    "NumberStep": {
+      "description": "Data for `number.increment` and `number.decrement`.",
+      "type": "object",
+      "properties": {
+        "by": {
+          "description": "How much to add or take away. Left out, the number's own `step`.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
     "Origin": {
       "description": "Where a context started.",
       "oneOf": [
@@ -1797,6 +1851,8 @@
         "switch.turn_on",
         "switch.turn_off",
         "number.set_value",
+        "number.increment",
+        "number.decrement",
         "select.select_option",
         "text.set_value",
         "button.press",

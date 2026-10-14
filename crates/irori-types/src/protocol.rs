@@ -20,7 +20,7 @@ use crate::kinds::humidifier::HumidifierMode;
 use crate::kinds::light::LightTurnOn;
 use crate::kinds::lock::LockCode;
 use crate::kinds::media_player::{MediaSeek, PlayMedia, VolumeMute, VolumeSet};
-use crate::kinds::number::NumberSetValue;
+use crate::kinds::number::{NumberSetValue, NumberStep};
 use crate::kinds::opening::SetPosition;
 use crate::kinds::select::SelectOption;
 use crate::kinds::siren::SirenTurnOn;
@@ -392,6 +392,9 @@ pub enum Service {
     SwitchTurnOn,
     SwitchTurnOff,
     NumberSetValue(NumberSetValue),
+    /// Answered by the core, which sends the protocol a `set_value` (§7.1).
+    NumberIncrement(NumberStep),
+    NumberDecrement(NumberStep),
     SelectSelectOption(SelectOption),
     TextSetValue(TextSetValue),
     ButtonPress,
@@ -457,6 +460,8 @@ impl Service {
             Self::SwitchTurnOn => ServiceName::SwitchTurnOn,
             Self::SwitchTurnOff => ServiceName::SwitchTurnOff,
             Self::NumberSetValue(_) => ServiceName::NumberSetValue,
+            Self::NumberIncrement(_) => ServiceName::NumberIncrement,
+            Self::NumberDecrement(_) => ServiceName::NumberDecrement,
             Self::SelectSelectOption(_) => ServiceName::SelectSelectOption,
             Self::TextSetValue(_) => ServiceName::TextSetValue,
             Self::ButtonPress => ServiceName::ButtonPress,
@@ -529,6 +534,10 @@ pub enum ServiceName {
     SwitchTurnOff,
     #[serde(rename = "number.set_value")]
     NumberSetValue,
+    #[serde(rename = "number.increment")]
+    NumberIncrement,
+    #[serde(rename = "number.decrement")]
+    NumberDecrement,
     #[serde(rename = "select.select_option")]
     SelectSelectOption,
     #[serde(rename = "text.set_value")]
@@ -648,6 +657,8 @@ impl ServiceName {
         Self::SwitchTurnOn,
         Self::SwitchTurnOff,
         Self::NumberSetValue,
+        Self::NumberIncrement,
+        Self::NumberDecrement,
         Self::SelectSelectOption,
         Self::TextSetValue,
         Self::ButtonPress,
@@ -712,6 +723,8 @@ impl ServiceName {
             Self::SwitchTurnOn => "switch.turn_on",
             Self::SwitchTurnOff => "switch.turn_off",
             Self::NumberSetValue => "number.set_value",
+            Self::NumberIncrement => "number.increment",
+            Self::NumberDecrement => "number.decrement",
             Self::SelectSelectOption => "select.select_option",
             Self::TextSetValue => "text.set_value",
             Self::ButtonPress => "button.press",
@@ -775,7 +788,9 @@ impl ServiceName {
         match self {
             Self::LightTurnOn | Self::LightTurnOff => EntityKind::Light,
             Self::SwitchTurnOn | Self::SwitchTurnOff => EntityKind::Switch,
-            Self::NumberSetValue => EntityKind::Number,
+            Self::NumberSetValue | Self::NumberIncrement | Self::NumberDecrement => {
+                EntityKind::Number
+            }
             Self::SelectSelectOption => EntityKind::Select,
             Self::TextSetValue => EntityKind::Text,
             Self::ButtonPress => EntityKind::Button,
@@ -920,6 +935,7 @@ impl JsonSchema for ServiceCall {
         let no_data = json_schema!({ "type": "object", "maxProperties": 0 });
         let light_turn_on = generator.subschema_for::<LightTurnOn>();
         let number_set_value = generator.subschema_for::<NumberSetValue>();
+        let number_step = generator.subschema_for::<NumberStep>();
         let select_option = generator.subschema_for::<SelectOption>();
         let text_set_value = generator.subschema_for::<TextSetValue>();
         let set_position = generator.subschema_for::<SetPosition>();
@@ -951,6 +967,9 @@ impl JsonSchema for ServiceCall {
                 let data = match name {
                     ServiceName::LightTurnOn => light_turn_on.clone(),
                     ServiceName::NumberSetValue => number_set_value.clone(),
+                    ServiceName::NumberIncrement | ServiceName::NumberDecrement => {
+                        number_step.clone()
+                    }
                     ServiceName::SelectSelectOption => select_option.clone(),
                     ServiceName::TextSetValue => text_set_value.clone(),
                     ServiceName::CoverSetPosition | ServiceName::ValveSetPosition => {

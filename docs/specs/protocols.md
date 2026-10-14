@@ -296,6 +296,7 @@ manifest's `entity_kinds`.
 | `switch.turn_on` | none | |
 | `switch.turn_off` | none | |
 | `number.set_value` | `value`, a finite number within the number's `min`–`max` | |
+| `number.increment`, `number.decrement` | `by` (optional), a number above zero. Left out, the number's own `step` | **Never sent to a protocol**: the core works out the value it comes to, from the value the number has or was last told to have, stopping at `min` or `max`, and sends that as `number.set_value`. So every number counts, a device's setting or a counter Irori keeps. Refused while the number hasn't said its value |
 | `select.select_option` | `option`, one of the select's `options` | |
 | `text.set_value` | `value`, a string within the text's lengths | |
 | `button.press` | none | |

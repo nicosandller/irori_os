@@ -69,7 +69,9 @@ pub use kinds::media_player::{
     MediaPlayerCapabilities, MediaPlayerClass, MediaPlayerState, MediaSeek, PlayMedia, Playback,
     VolumeMute, VolumeSet,
 };
-pub use kinds::number::{NumberCapabilities, NumberMode, NumberSetValue, NumberState};
+pub use kinds::number::{
+    NumberCapabilities, NumberMode, NumberSetValue, NumberState, NumberStep, stepped,
+};
 pub use kinds::opening::{OpenState, OpeningAbilities, OpeningCommand, OpeningState, SetPosition};
 pub use kinds::select::{SelectCapabilities, SelectOption, SelectState};
 pub use kinds::sensor::{

@@ -825,6 +825,8 @@
         "media_player.turn_on",
         "media_player.volume_mute",
         "media_player.volume_set",
+        "number.decrement",
+        "number.increment",
         "number.set_value",
         "select.select_option",
         "siren.toggle",

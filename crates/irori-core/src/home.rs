@@ -1180,6 +1180,31 @@ impl Home {
         };
         let service = Service::from_data(name, command.data)
             .map_err(|e| CallError::NotSupported(e.to_string()))?;
+        // Counting a number up or down is the core's to work out, from the value it has or was
+        // last told to have: the protocol is sent the value it comes to.
+        let service = match &entity.capabilities {
+            irori_types::Capabilities::Number(caps) => {
+                let current = self
+                    .commanded
+                    .get(entity_id)
+                    .cloned()
+                    .or_else(|| {
+                        self.states
+                            .get(entity_id)
+                            .and_then(|s| s.state.as_ref())
+                            .map(State::primary)
+                    })
+                    .and_then(|value| match value {
+                        Typed::Number(n) => Some(n),
+                        _ => None,
+                    });
+                match irori_types::stepped(caps, current, &service) {
+                    Some(value) => Service::NumberSetValue(value.map_err(not_supported)?),
+                    None => service,
+                }
+            }
+            _ => service,
+        };
         entity
             .capabilities
             .supports(&service)
@@ -2267,6 +2292,46 @@ mod tests {
                 .expect_err("not a toggle")
                 .to_string(),
             "`number.demo_lamp_timeout` is a number; it can't be toggled"
+        );
+        // Counting needs a value to count from.
+        assert_eq!(
+            home.resolve(&id, Command::new("increment"))
+                .expect_err("no value yet")
+                .to_string(),
+            "`number.demo_lamp_timeout` hasn't said its value yet, so there's nothing to count from"
+        );
+        let report = StateReport {
+            unique_id: uid("lamp-timeout"),
+            state: Some(State::Number(irori_types::NumberState { value: 590.0 })),
+            attributes: Default::default(),
+            caused_by: None,
+            replayed: false,
+        };
+        home.report_state(&protocol(), report, &stamp(1))
+            .expect("in range");
+        // The protocol is sent the value it comes to, never the counting itself.
+        let up = home
+            .resolve(&id, Command::new("increment"))
+            .expect("counts up");
+        assert_eq!(
+            up.service,
+            Service::NumberSetValue(irori_types::NumberSetValue { value: 595.0 })
+        );
+        // A second one before the device reports counts from what it was just told to be, and
+        // stops at the end of the range.
+        home.record_command(&id, &up.service);
+        let by = irori_types::NumberStep { by: Some(50.0) };
+        assert_eq!(
+            home.resolve(&id, Command::with("increment", &by))
+                .expect("counts up")
+                .service,
+            Service::NumberSetValue(irori_types::NumberSetValue { value: 600.0 })
+        );
+        assert_eq!(
+            home.resolve(&id, Command::with("decrement", &by))
+                .expect("counts down")
+                .service,
+            Service::NumberSetValue(irori_types::NumberSetValue { value: 545.0 })
         );
         // A report outside the range is refused too.
         let report = StateReport {

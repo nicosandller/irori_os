@@ -496,6 +496,7 @@ impl Service {
         match self {
             Self::LightTurnOn(data) => data.validate(),
             Self::NumberSetValue(data) => data.validate(),
+            Self::NumberIncrement(data) | Self::NumberDecrement(data) => data.validate(),
             Self::SirenTurnOn(data) => data.validate(),
             Self::ClimateSetTemperature(data) => data.validate(),
             Self::ClimateSetHumidity(data) | Self::HumidifierSetHumidity(data) => data.validate(),
