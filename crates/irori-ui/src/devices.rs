@@ -4,9 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use irori_types::{
-    Availability, BinarySensorCapabilities, BinarySensorClass, Capabilities, Device, DeviceId,
-    Entity, EntityId, EntityState, ExtensionId, LightTurnOn, SensorCapabilities, SensorClass,
-    SensorValue, State,
+    BinarySensorCapabilities, BinarySensorClass, Capabilities, Device, DeviceId, Entity, EntityId,
+    EntityState, ExtensionId, LightTurnOn, SensorCapabilities, SensorClass, SensorValue, State,
 };
 use leptos::ev;
 use leptos::prelude::*;
@@ -106,7 +105,6 @@ impl Showing {
 #[component]
 pub fn Devices() -> impl IntoView {
     let live = expect_context::<crate::Live>();
-    let controls = expect_context::<Controls>();
     let filter = RwSignal::new(String::new());
     let adding = RwSignal::new(false);
     let adding_helper = RwSignal::new(false);
@@ -124,7 +122,6 @@ pub fn Devices() -> impl IntoView {
     });
 
     Effect::new(move |_| remember(VIEW_KEY, showing.get().key()));
-    let kept = Memo::new(move |_| live.home.with(kept_helpers));
 
     view! {
         <div class="page-head">
@@ -197,16 +194,20 @@ pub fn Devices() -> impl IntoView {
 
         {move || (showing.get() != Showing::Helpers).then(|| view! { <updates::Updates /> })}
 
-        {move || (showing.get() != Showing::Helpers).then(|| view! {
+        {move || view! {
             <input
                 class="filter"
                 type="search"
-                placeholder="Filter by name, id, area or make"
+                placeholder=if showing.get() == Showing::Helpers {
+                    "Filter by name, id or kind"
+                } else {
+                    "Filter by name, id, area or make"
+                }
                 aria-label="Filter"
                 prop:value=filter
                 on:input:target=move |ev| filter.set(ev.target().value())
             />
-        })}
+        }}
 
         // The two lists watch the home themselves, and only what they're made of (`tables.rs`).
         // Helpers are redrawn when a helper changes and not with every reading in the home, so
@@ -214,7 +215,13 @@ pub fn Devices() -> impl IntoView {
         {move || match showing.get() {
             Showing::Devices => view! { <tables::DeviceTable filter=filter /> }.into_any(),
             Showing::Entities => view! { <tables::EntityTable filter=filter /> }.into_any(),
-            Showing::Helpers => helpers(&kept.get(), controls),
+            Showing::Helpers => view! {
+                {move || expect_context::<HelperTrouble>().0.get().map(|why| view! {
+                    <p class="banner">{why}</p>
+                })}
+                <tables::HelperTable filter=filter />
+            }
+            .into_any(),
         }}
         {move || adding_helper.get().then(|| view! {
             <crate::modal::Modal
@@ -252,159 +259,56 @@ pub fn icon(protocol: &str, has_icon: bool) -> AnyView {
     }
 }
 
-/// A button's second entity: the `event` that says each time it was pressed.
-const PRESSED: &str = "pressed";
-
-/// One helper as the list shows it.
-#[derive(Debug, Clone, PartialEq)]
-struct Kept {
-    kind: HelperKind,
-    /// Its id in its kind's table.
-    id: String,
-    entity: Entity,
-    state: Option<EntityState>,
-    /// The entity a flow starts from when this is a button.
-    fires: Option<EntityId>,
-    /// Why it has no value, for one worked out from other entities that can't be.
-    problem: Option<String>,
-}
-
-/// The helpers in the home, by name. Compared whole, so the list is redrawn only when one of
-/// them changes.
-fn kept_helpers(home: &Home) -> Vec<Kept> {
-    let ours = |entity: &&Entity| entity.protocol.as_str() == HELPERS;
-    let mut kept: Vec<Kept> = home
-        .entities
-        .iter()
-        .filter(ours)
-        .filter_map(|entity| {
-            let (prefix, id) = entity.unique_id.as_str().split_once('-')?;
-            let kind = *HELPER_KINDS.iter().find(|kind| kind.prefix == prefix)?;
-            // A button's and a timer's event, which flows start from.
-            let fired = [format!("{PRESSED}-{id}"), format!("timerevent-{id}")];
-            Some(Kept {
-                kind,
-                id: id.to_owned(),
-                entity: entity.clone(),
-                state: home
-                    .states
-                    .iter()
-                    .find(|state| state.entity_id == entity.id)
-                    .cloned(),
-                fires: home
-                    .entities
-                    .iter()
-                    .filter(ours)
-                    .find(|other| {
-                        fired
-                            .iter()
-                            .any(|unique| other.unique_id.as_str() == unique)
-                    })
-                    .map(|other| other.id.clone()),
-                problem: home
-                    .states
-                    .iter()
-                    .find(|state| state.entity_id == entity.id && state.state.is_none())
-                    .and_then(|state| {
-                        state
-                            .attributes
-                            .iter()
-                            .find(|(key, _)| key.as_str() == "problem")
-                            .and_then(|(_, why)| why.as_str().map(str::to_owned))
-                    }),
-            })
-        })
-        .collect();
-    kept.sort_by(|a, b| a.entity.name.as_str().cmp(b.entity.name.as_str()));
-    kept
-}
-
-/// The helpers in the home: the values Irori keeps itself, each with its control and a way to
-/// rename and remove it.
-fn helpers(kept: &[Kept], controls: Controls) -> AnyView {
-    if kept.is_empty() {
-        return view! {
-            <section class="card">
-                <h2>"No helpers yet"</h2>
-                <p class="muted">
-                    "A helper is a value Irori keeps itself rather than a device reporting it: a "
-                    "switch for \"guests are over\", a number for how bright the evening should "
-                    "be, a button for \"movie time\". It stays as it was left through restarts, "
-                    "and flows read it, set it and start from it like anything else in the "
-                    "home. Make one with \"+ Add helper\" above."
-                </p>
-            </section>
-        }
-        .into_any();
-    }
-    view! {
-        <section class="card">
-            <ul class="room-devices helper-list">
-                {kept
-                    .iter()
-                    .cloned()
-                    .map(|helper| {
-                        let name = helper.entity.name.to_string();
-                        let offline = helper
-                            .state
-                            .as_ref()
-                            .is_some_and(|s| s.availability == Availability::Unavailable);
-                        let knob = control(&helper.entity, helper.state.as_ref(), offline, controls);
-                        // What a flow names: the entity, and for a button the one it starts from.
-                        let ids = match &helper.fires {
-                            Some(fires) => format!("{} · starts flows as {fires}", helper.entity.id),
-                            None => helper.entity.id.to_string(),
-                        };
-                        view! {
-                            <li>
-                                <span class="name">
-                                    {builder::kind_icon(helper.kind.table)}
-                                    {name.clone()}
-                                </span>
-                                <span class="helper-kind">{helper.kind.word}</span>
-                                <code class="muted small">{ids}</code>
-
-                                <span class="room-actions">
-                                    {knob}
-                                    <HelperActions
-                                        kind=helper.kind
-                                        id=helper.id
-                                        entity_id=helper.entity.id.clone()
-                                        name=name
-                                    />
-                                </span>
-                                {helper.problem.clone().map(|why| view! {
-                                    <span class="helper-problem">{why}</span>
-                                })}
-                            </li>
-                        }
-                    })
-                    .collect_view()}
-            </ul>
-        </section>
-    }
-    .into_any()
-}
-
 /// The protocol that keeps helpers.
 const HELPERS: &str = "helpers";
 
-/// Renaming and removing a helper. It has one name, kept with its definition in
-/// `extensions/helpers.toml`; renaming it here changes that one (ROADMAP D36).
-#[component]
-fn HelperActions(kind: HelperKind, id: String, entity_id: EntityId, name: String) -> impl IntoView {
+/// Which kind of helper an entity is the helper itself of — its place in the kinds, table, word
+/// and icon — and nothing for the entities a helper has beside itself (a button's event).
+pub(crate) fn helper_kind_of(
+    entity: &Entity,
+) -> Option<(usize, &'static str, &'static str, &'static str)> {
+    let (prefix, _) = entity.unique_id.as_str().split_once('-')?;
+    HELPER_KINDS
+        .iter()
+        .enumerate()
+        .find(|(_, kind)| kind.prefix == prefix)
+        .map(|(at, kind)| {
+            (
+                at,
+                kind.table,
+                kind.word,
+                irori_ui_kit::entity_icon::helper(kind.table),
+            )
+        })
+}
+
+/// What a helper's row has beside an entity's: its name, changed where it stands; what it is
+/// and what flows start from; why it has no value, when it can't be worked out; and a way to
+/// remove it.
+pub(crate) struct HelperBits {
+    pub name: AnyView,
+    pub under: AnyView,
+    pub tools: AnyView,
+}
+
+pub(crate) fn helper_bits(entity: &Entity) -> Option<HelperBits> {
+    let (prefix, id) = entity.unique_id.as_str().split_once('-')?;
+    let kind: HelperKind = *HELPER_KINDS.iter().find(|kind| kind.prefix == prefix)?;
+    let id = id.to_owned();
     let live = expect_context::<crate::Live>();
     let trouble = expect_context::<HelperTrouble>().0;
-    let word = kind.word.to_lowercase();
-    let rename = {
-        let name = name.clone();
-        move |_| {
-            let Ok(Some(typed)) =
-                window().prompt_with_message_and_default(&format!("Rename this {word}"), &name)
-            else {
-                return;
-            };
-            if typed.trim() == name {
+    let entity_id = entity.id.clone();
+    let name = entity.name.to_string();
+
+    // Renamed where it stands: it has one name, kept with its definition (ROADMAP D36).
+    let renaming = RwSignal::new(false);
+    let draft = RwSignal::new(String::new());
+    let save = {
+        let (entity_id, before) = (entity_id.clone(), name.clone());
+        move || {
+            let typed = draft.get_untracked();
+            renaming.set(false);
+            if typed.trim() == before {
                 return;
             }
             let Some(named) = crate::settings::named(typed, trouble) else {
@@ -422,15 +326,66 @@ fn HelperActions(kind: HelperKind, id: String, entity_id: EntityId, name: String
             });
         }
     };
+    let names = {
+        let (shown, from) = (name.clone(), name.clone());
+        crate::inline::editable(
+            format!("Rename {name}"),
+            "What to call it",
+            renaming.into(),
+            draft,
+            move || view! { <span class="name">{shown.clone()}</span> }.into_any(),
+            move || {
+                draft.set(from.clone());
+                renaming.set(true);
+            },
+            save,
+            move || renaming.set(false),
+        )
+    };
+
+    // What a flow starts from, for a button or a timer: its event.
+    let fires = live.home.with_untracked(|home| {
+        let fired = [format!("pressed-{id}"), format!("timerevent-{id}")];
+        home.entities
+            .iter()
+            .filter(|other| other.protocol.as_str() == HELPERS)
+            .find(|other| {
+                fired
+                    .iter()
+                    .any(|unique| other.unique_id.as_str() == unique)
+            })
+            .map(|other| other.id.to_string())
+    });
+    let problem = {
+        let entity_id = entity_id.clone();
+        Memo::new(move |_| {
+            live.home.with(|home| {
+                home.states
+                    .iter()
+                    .find(|state| state.entity_id == entity_id && state.state.is_none())
+                    .and_then(|state| {
+                        state
+                            .attributes
+                            .iter()
+                            .find(|(key, _)| key.as_str() == "problem")
+                            .and_then(|(_, why)| why.as_str().map(str::to_owned))
+                    })
+            })
+        })
+    };
+    let under = view! {
+        <span class="helper-under">
+            {fires.map(|fires| view! {
+                <span class="muted small">"starts flows as " <code>{fires}</code></span>
+            })}
+        </span>
+        {move || problem.get().map(|why| view! { <span class="helper-problem">{why}</span> })}
+    }
+    .into_any();
+
+    // Removed after a second press, in the row: what goes is said where it is.
+    let asking = RwSignal::new(false);
     let remove = move |_| {
-        if !window()
-            .confirm_with_message(&format!(
-                "Remove {name}? Anything that reads it will find it gone."
-            ))
-            .unwrap_or(false)
-        {
-            return;
-        }
         let id = id.clone();
         spawn_local(async move {
             match crate::api::remove_helper(kind.table, &id).await {
@@ -442,10 +397,55 @@ fn HelperActions(kind: HelperKind, id: String, entity_id: EntityId, name: String
             }
         });
     };
-    view! {
-        <button type="button" on:click=rename>"Rename"</button>
-        <button type="button" class="danger" on:click=remove>"Remove"</button>
+    let tools = view! {
+        <span class="helper-tools" class:asking=move || asking.get()>
+            <button
+                type="button"
+                class="icon-button trash"
+                aria-label=format!("Remove {name}")
+                title="Remove"
+                aria-expanded=move || asking.get().to_string()
+                on:click=move |_| asking.update(|asking| *asking = !*asking)
+            >
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <g class="trash-lid"><path d="M3.5 6h17" /><path d="M9 6V4.5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 4.5V6" /></g>
+                    <path d="M18.5 6.5 17.6 19.6a2 2 0 0 1-2 1.9H8.4a2 2 0 0 1-2-1.9L5.5 6.5" />
+                    <path class="trash-lines" d="M10 10.5v6.5M14 10.5v6.5" />
+                </svg>
+            </button>
+            <span class="remove-ask" inert=move || (!asking.get()).then_some("")>
+                <span class="muted small">"Flows that read it will find it gone."</span>
+                <button type="button" class="danger small-button" on:click=remove>"Remove"</button>
+                <button type="button" class="quiet-button" on:click=move |_| asking.set(false)>
+                    "Keep"
+                </button>
+            </span>
+        </span>
     }
+    .into_any();
+    Some(HelperBits {
+        name: names,
+        under,
+        tools,
+    })
+}
+
+/// The Helpers tab with nothing on it: what a helper is, and how to make one.
+pub(crate) fn no_helpers() -> AnyView {
+    view! {
+        <section class="card">
+            <h2>"No helpers yet"</h2>
+            <p class="muted">
+                "A helper is a value Irori keeps itself rather than a device reporting it: a "
+                "switch for \"guests are over\", a number for how bright the evening should "
+                "be, a button for \"movie time\". It stays as it was left through restarts, "
+                "and flows read it, set it and start from it like anything else in the "
+                "home. Make one with \"+ Add helper\" above."
+            </p>
+        </section>
+    }
+    .into_any()
 }
 
 /// Why the last change to a helper was refused, shared by the form and the rows.

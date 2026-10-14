@@ -25,6 +25,7 @@ const DEVICES_BY_KEY: &str = "irori.devices.group";
 const DEVICES_FOLDED_KEY: &str = "irori.devices.folded";
 const ENTITIES_BY_KEY: &str = "irori.entities.group";
 const ENTITIES_FOLDED_KEY: &str = "irori.entities.folded";
+const HELPERS_FOLDED_KEY: &str = "irori.helpers.folded";
 
 /// Regrouping moves each row to its new place rather than swapping one list for another. The
 /// browser pictures every row that moves, so past this many the list just changes.
@@ -138,6 +139,7 @@ fn device_group(
         section.label,
         section.note,
         section.icon,
+        section.glyph,
         format!("{count} device{}", if count == 1 { "" } else { "s" }),
         folded,
         filtering,
@@ -248,7 +250,9 @@ pub fn EntityTable(filter: RwSignal<String>) -> impl IntoView {
                         {sections
                             .into_iter()
                             .map(|section| {
-                                entity_group(section, by, folded, filtering, travels, histories)
+                                entity_group(
+                                    section, by, folded, filtering, travels, histories, false,
+                                )
                             })
                             .collect_view()}
                     </div>
@@ -259,6 +263,7 @@ pub fn EntityTable(filter: RwSignal<String>) -> impl IntoView {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn entity_group(
     section: Section<EntityLine>,
     by: EntitiesBy,
@@ -266,13 +271,18 @@ fn entity_group(
     filtering: bool,
     travels: bool,
     histories: Histories,
+    // For the Helpers tab: each row's rename, remove and what else it says.
+    helpers: bool,
 ) -> AnyView {
     let count = section.rows.len();
     let label = section.label.clone();
     let rows = section
         .rows
         .into_iter()
-        .map(|line| entity_row(line, by, travels, histories))
+        .map(|line| {
+            let bits = helpers.then(|| super::helper_bits(&line.entity)).flatten();
+            entity_row(line, by, travels, histories, bits)
+        })
         .collect_view();
     let body = view! {
         <div class="lines" role="table" aria-label=label>
@@ -287,19 +297,31 @@ fn entity_group(
         </div>
     }
     .into_any();
+    let counted = if helpers {
+        format!("{count}")
+    } else {
+        format!("{count} entit{}", if count == 1 { "y" } else { "ies" })
+    };
     group(
         section.key,
         section.label,
         section.note,
         section.icon,
-        format!("{count} entit{}", if count == 1 { "y" } else { "ies" }),
+        section.glyph,
+        counted,
         folded,
         filtering,
         body,
     )
 }
 
-fn entity_row(line: EntityLine, by: EntitiesBy, travels: bool, histories: Histories) -> AnyView {
+fn entity_row(
+    line: EntityLine,
+    by: EntitiesBy,
+    travels: bool,
+    histories: Histories,
+    helper: Option<super::HelperBits>,
+) -> AnyView {
     let live = expect_context::<crate::Live>();
     let controls = expect_context::<Controls>();
     let EntityLine { entity, device } = line;
@@ -364,14 +386,29 @@ fn entity_row(line: EntityLine, by: EntitiesBy, travels: bool, histories: Histor
             </div>
         }
     });
+    let (name, under, tools) = match helper {
+        Some(bits) => (bits.name, Some(bits.under), Some(bits.tools)),
+        None => (
+            view! { <span class="name">{entity.name.to_string()}</span> }.into_any(),
+            None,
+            None,
+        ),
+    };
+    let helper_row = tools.is_some();
     view! {
         <div class="entity-block" role="rowgroup" style=travelling_row(&shown, travels)>
-            <div class="line entity-line" role="row" class:offline=move || offline.get()>
+            <div
+                class="line entity-line"
+                class:helper-line=helper_row
+                role="row"
+                class:offline=move || offline.get()
+            >
                 <span class="cell names iconed" role="rowheader">
                     {crate::icons::entity(&entity.capabilities)}
                     <span class="names-text">
-                        <span class="name">{entity.name.to_string()}</span>
+                        {name}
                         <span class="id" title=shown.clone()>{shown.clone()}</span>
+                        {under}
                     </span>
                 </span>
                 {(by != EntitiesBy::Device).then(|| view! {
@@ -386,6 +423,7 @@ fn entity_row(line: EntityLine, by: EntitiesBy, travels: bool, histories: Histor
                     {control}
                     {move || failure().map(|why| view! { <p class="why">{why}</p> })}
                 </span>
+                {tools.map(|tools| view! { <span class="cell row-tools" role="cell">{tools}</span> })}
             </div>
             {drawer}
         </div>
@@ -400,6 +438,7 @@ fn group(
     label: String,
     note: Option<String>,
     icon: Option<grouping::ProtocolIcon>,
+    glyph: Option<&'static str>,
     count: String,
     folded: RwSignal<BTreeSet<String>>,
     // While filtering, every group with a match is open: a folded group hiding the one result
@@ -425,7 +464,9 @@ fn group(
     fold(
         None,
         Head {
-            icon: icon.map(|icon| super::icon(&icon.protocol, icon.has_icon)),
+            icon: icon
+                .map(|icon| super::icon(&icon.protocol, icon.has_icon))
+                .or_else(|| glyph.map(glyph_icon)),
             title: label.into_any(),
             state: Some(state.into_any()),
             actions: None,
@@ -434,6 +475,68 @@ fn group(
         toggle,
         body,
     )
+}
+
+/// One of the page's own drawings, as a group's icon.
+fn glyph_icon(drawing: &'static str) -> AnyView {
+    view! {
+        <span class="protocol-icon glyph" aria-hidden="true">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
+                inner_html=drawing></svg>
+        </span>
+    }
+    .into_any()
+}
+
+/// The helpers in the home, a group for each kind, each row an entity's row — its reading or
+/// control, and its last day a click away — with its rename and remove beside it.
+#[component]
+pub fn HelperTable(filter: RwSignal<String>) -> impl IntoView {
+    let live = expect_context::<crate::Live>();
+    let folded = remembered_folds(HELPERS_FOLDED_KEY);
+    let histories = Histories::new();
+    let drawn = Memo::new(move |_| {
+        let needle = filter.get();
+        let sections = live
+            .home
+            .with(|home| grouping::helpers(home, &needle, super::helper_kind_of));
+        (!needle.trim().is_empty(), sections)
+    });
+    view! {
+        {move || {
+            let (filtering, sections) = drawn.get();
+            if sections.is_empty() {
+                return if filtering {
+                    view! { <p class="empty">"Nothing matches that."</p> }.into_any()
+                } else {
+                    super::no_helpers()
+                };
+            }
+            let travels = grouping::count(&sections) <= ROWS_THAT_TRAVEL;
+            view! {
+                <div class="table-scroll grouped entity-list helper-list by-device">
+                    <div class="grouped-inner">
+                        {sections
+                            .into_iter()
+                            .map(|section| {
+                                entity_group(
+                                    section,
+                                    EntitiesBy::Device,
+                                    folded,
+                                    filtering,
+                                    travels,
+                                    histories,
+                                    true,
+                                )
+                            })
+                            .collect_view()}
+                    </div>
+                </div>
+            }
+            .into_any()
+        }}
+    }
 }
 
 /// The folded groups of a list, kept in the browser as they change.

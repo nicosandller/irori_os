@@ -1924,7 +1924,7 @@ fn try_here(entity: irori_types::Entity, start: Option<EntityState>) -> AnyView 
                 {move || {
                     let times = pressed.get();
                     (times > 0).then(|| view! {
-                        <span class="builder-pressed" data-beat=if times % 2 == 0 { "b" } else { "a" }>
+                        <span class="builder-pressed" data-beat=if times.is_multiple_of(2) { "b" } else { "a" }>
                             {format!("Pressed {times}×")}
                         </span>
                     })

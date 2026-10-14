@@ -142,6 +142,8 @@
              transition: grid-template-columns var(--dur-base) var(--ease-out); }
     .shell.folded { grid-template-columns: 3.5rem 1fr; }
     main { width: 100%; max-width: 56rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; min-width: 0; }
+    /* A page of lists is read across: it takes the room a wide screen has. */
+    main:has(.table-scroll.grouped) { max-width: 78rem; }
 
     .sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column;
                gap: .25rem; padding: 1rem .6rem; border-right: 1px solid var(--line);
@@ -344,9 +346,11 @@
                 4.5rem 4.5rem; }
     /* No icon column here, so the row itself starts where a device's name would: further in
        than any group's name, icon or no icon. */
-    .entity-list .line { padding-left: 5rem; }
-    .entity-list { --cols: minmax(9rem, 1.3fr) minmax(5rem, .8fr) minmax(0, 1.5fr); }
-    .entity-list.by-device { --cols: minmax(9rem, 1fr) minmax(0, 1.3fr); }
+    .entity-list .line { padding-left: 3.1rem; }
+    .entity-list { --cols: minmax(12rem, 1.2fr) minmax(6rem, .7fr) minmax(0, 1.6fr); }
+    .entity-list.by-device { --cols: minmax(12rem, 1fr) minmax(0, 1.4fr); }
+    /* A helper's row has its rename and remove at its end. */
+    .helper-list .line.helper-line { --cols: minmax(12rem, 1fr) minmax(0, 1.4fr) auto; }
     /* A player's buttons are the widest thing a row holds: its controls take the width they
        need to stay on one line, and the name keeps what's left. */
     .entity-list .line:has(.media-reading) { --cols: minmax(9rem, 1fr) minmax(0, .5fr) auto; }
@@ -385,7 +389,7 @@
     .entity-line.offline .reading.on { color: var(--muted); }
     .entity-block > .drawer { background: var(--bg); }
     @media (max-width: 720px) {
-      .entity-list .line { grid-template-columns: 1fr; row-gap: .3rem; padding-left: 4.4rem; }
+      .entity-list .line { grid-template-columns: 1fr; row-gap: .3rem; padding-left: 2.6rem; }
       .entity-line .of-device { display: none; }
       .entity-line .control { justify-content: flex-start; }
     }
@@ -866,8 +870,34 @@
                    padding: .05rem .5rem; }
     .helper-list .room-actions { align-items: center; }
     .helper-problem { flex-basis: 100%; font-size: .8rem; color: var(--muted); }
-    .helper-list .name { display: inline-flex; align-items: center; gap: .45rem; }
-    .helper-list .name .icon { width: 1.05rem; height: 1.05rem; flex: none; color: var(--muted); }
+    .helper-under { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .5rem;
+                    margin-top: .2rem; }
+    .helper-under code { font-size: .75rem; }
+    .protocol-icon.glyph { display: inline-grid; place-items: center; color: var(--ember); }
+    .protocol-icon.glyph .icon { width: 1.05rem; height: 1.05rem; }
+
+    /* A helper's remove: a bin whose lid lifts as it's pointed at; pressed, it asks in the row,
+       the question folding out beside it, and folding back on Keep. */
+    .helper-tools { display: inline-flex; align-items: center; gap: .4rem; overflow: visible; }
+    .icon-button.trash .trash-lid { transform-box: fill-box; transform-origin: 85% 100%;
+        transition: rotate var(--dur-base) var(--ease-spring), translate var(--dur-base) var(--ease-spring); }
+    .icon-button.trash .trash-lines { transition: opacity var(--dur-fast); }
+    .icon-button.trash:hover, .helper-tools.asking .icon-button.trash { color: var(--error); }
+    .icon-button.trash:hover .trash-lid,
+    .helper-tools.asking .trash-lid { rotate: 18deg; translate: 0 -1.5px; }
+    .icon-button.trash:hover .trash-lines { opacity: .45; }
+    .remove-ask { display: inline-flex; align-items: center; gap: .4rem; max-width: 0;
+                  opacity: 0; overflow: hidden; white-space: nowrap;
+                  transition: max-width var(--dur-layout) var(--ease-emphasized),
+                              opacity var(--dur-base) var(--ease-out); }
+    .helper-tools.asking .remove-ask { max-width: 26rem; opacity: 1; }
+    .small-button { padding: .25rem .6rem; font: inherit; font-size: .8rem; border-radius: .4rem;
+                    cursor: pointer; }
+    .remove-ask .danger { color: var(--error); border: 1px solid var(--error); background: var(--card); }
+    .remove-ask .danger:hover { color: #fff; background: var(--error); }
+    /* The pencil leans as it's pointed at, as if about to write. */
+    .icon-button.pencil .icon { transition: rotate var(--dur-base) var(--ease-spring); }
+    .icon-button.pencil:hover .icon { rotate: -14deg; }
 
     /* Making a helper: the form (or its JSON) on the left, the assistant on the right; one
        above the other on a phone. */
