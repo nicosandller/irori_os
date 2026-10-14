@@ -1,0 +1,1 @@
+a tracker's latitude is -90 to 90, not 91

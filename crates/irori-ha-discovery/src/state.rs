@@ -10,9 +10,9 @@ use irori_types::{AttributeKey, HvacMode, Service, State, UniqueId, WaterHeaterM
 use crate::discovery::EntityTopics;
 use crate::kinds::setting::Reading;
 use crate::kinds::{
-    alarm_control_panel, binary_sensor, button, climate, cover, event, fan, humidifier, lawn_mower,
-    light, lock, moment, number, scene, select, sensor, siren, switch, text, update, vacuum, valve,
-    water_heater,
+    alarm_control_panel, binary_sensor, button, climate, cover, device_tracker, event, fan,
+    humidifier, lawn_mower, light, lock, moment, number, scene, select, sensor, siren, switch,
+    text, update, vacuum, valve, water_heater,
 };
 use crate::template::ValueTemplate;
 
@@ -113,6 +113,7 @@ pub fn decode(
         EntityTopics::Light(topics) => light::decode(topics, message, previous),
         EntityTopics::Switch(topics) => switch::decode(topics, message),
         EntityTopics::Sensor(topics) => sensor::decode(topics, message),
+        EntityTopics::DeviceTracker(topics) => device_tracker::decode(topics, message, previous),
         EntityTopics::BinarySensor(topics) => binary_sensor::decode(topics, message),
         EntityTopics::Number(topics) => number::decode(topics, message),
         EntityTopics::Select(topics) => select::decode(topics, message),
@@ -186,7 +187,10 @@ pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, 
         EntityTopics::Climate(topics) => climate::encode(topics, service, None),
         EntityTopics::WaterHeater(topics) => water_heater::encode(topics, service, None),
         EntityTopics::Humidifier(topics) => humidifier::encode(topics, service),
-        EntityTopics::Sensor(_) | EntityTopics::BinarySensor(_) | EntityTopics::Event(_) => {
+        EntityTopics::Sensor(_)
+        | EntityTopics::BinarySensor(_)
+        | EntityTopics::Event(_)
+        | EntityTopics::DeviceTracker(_) => {
             Err(format!("this entity has no `{}` service", service.name()))
         }
     }
@@ -199,6 +203,12 @@ pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, Un
         EntityTopics::Light(topics) => topics.listens(),
         EntityTopics::Switch(topics) => topics.state_topic.as_deref().into_iter().collect(),
         EntityTopics::Sensor(topics) => vec![topics.state_topic.as_str()],
+        EntityTopics::DeviceTracker(topics) => topics
+            .state_topic
+            .as_deref()
+            .into_iter()
+            .chain(topics.json_attributes_topic.as_deref())
+            .collect(),
         EntityTopics::BinarySensor(topics) => vec![topics.state_topic.as_str()],
         EntityTopics::Number(topics) => topics.state_topic.as_deref().into_iter().collect(),
         EntityTopics::Select(topics) => topics.state_topic.as_deref().into_iter().collect(),

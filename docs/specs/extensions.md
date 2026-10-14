@@ -143,6 +143,7 @@ which format it reads, and Irori converts down (`irori_types::format`):
 | 20 | `vacuum` |
 | 21 | `lawn_mower` |
 | 22 | `scene` |
+| 23 | `device_tracker` |
 
 A reader of an older format isn't sent entities of newer kinds at all (nor their states, history
 or changes), and is sent the others without the newer fields or values. Every change to what an

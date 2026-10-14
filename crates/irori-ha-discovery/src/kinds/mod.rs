@@ -11,6 +11,7 @@ pub mod binary_sensor;
 pub mod button;
 pub mod climate;
 pub mod cover;
+pub mod device_tracker;
 pub mod event;
 pub mod fan;
 pub mod humidifier;

@@ -78,6 +78,7 @@ pub(crate) fn control(
         }
         Capabilities::Scene(_) => button::scene_control(entity, offline, controls),
         Capabilities::Event(_) => event::happened(state),
+        Capabilities::DeviceTracker(_) => sensor::tracker(value),
         // These three are drawn once and follow a state that changes (`kept`); here the
         // state is whatever it was when this was called.
         Capabilities::Cover(_)
@@ -209,6 +210,7 @@ pub(crate) fn kept(
         | Capabilities::Text(_)
         | Capabilities::Button(_)
         | Capabilities::Scene(_)
+        | Capabilities::DeviceTracker(_)
         | Capabilities::Event(_)
         | Capabilities::Fan(_)
         | Capabilities::Siren(_)

@@ -646,6 +646,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^device_tracker\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "device_tracker"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -865,6 +888,10 @@
         {
           "maxLength": 70,
           "pattern": "^scene\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 79,
+          "pattern": "^device_tracker\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -1913,6 +1940,53 @@
           "required": [
             "kind",
             "activity"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "accuracy": {
+              "description": "How far off the position may be, in metres.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "minimum": 0.0
+            },
+            "home": {
+              "description": "At home.",
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "const": "device_tracker"
+            },
+            "latitude": {
+              "description": "Degrees north, -90 to 90.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "maximum": 90.0,
+              "minimum": -90.0
+            },
+            "longitude": {
+              "description": "Degrees east, -180 to 180.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "maximum": 180.0,
+              "minimum": -180.0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "home"
           ]
         }
       ]

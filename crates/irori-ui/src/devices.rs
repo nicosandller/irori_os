@@ -1794,7 +1794,10 @@ pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll
         return control;
     }
     match entity.capabilities {
-        Capabilities::Sensor(_) | Capabilities::BinarySensor(_) | Capabilities::Event(_) => view! {
+        Capabilities::Sensor(_)
+        | Capabilities::BinarySensor(_)
+        | Capabilities::Event(_)
+        | Capabilities::DeviceTracker(_) => view! {
             <button
                 type="button"
                 class="unroll reading-unroll"

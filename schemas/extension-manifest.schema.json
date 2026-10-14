@@ -295,6 +295,11 @@
           "description": "A scene a device keeps and can be told to set. It has no value.",
           "type": "string",
           "const": "scene"
+        },
+        {
+          "description": "Where something is, as far as the home cares: at home or not.",
+          "type": "string",
+          "const": "device_tracker"
         }
       ]
     },

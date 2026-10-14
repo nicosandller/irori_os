@@ -38,7 +38,8 @@ use crate::{Entity, EntityKind, EntityState};
 /// 20. Adds `vacuum`.
 /// 21. Adds `lawn_mower`.
 /// 22. Adds `scene`.
-pub const ENTITY_FORMAT: u32 = 22;
+/// 23. Adds `device_tracker`.
+pub const ENTITY_FORMAT: u32 = 23;
 
 pub(crate) fn first() -> u32 {
     1
@@ -74,6 +75,7 @@ impl EntityKind {
             Self::Vacuum => 20,
             Self::LawnMower => 21,
             Self::Scene => 22,
+            Self::DeviceTracker => 23,
         }
     }
 }

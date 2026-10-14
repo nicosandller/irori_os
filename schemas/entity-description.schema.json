@@ -1094,6 +1094,30 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "device_tracker"
+            },
+            "source_type": {
+              "description": "How it knows, when it says. Home Assistant's source types.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TrackerSource"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
@@ -1374,6 +1398,27 @@
       "enum": [
         "text",
         "password"
+      ]
+    },
+    "TrackerSource": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "bluetooth",
+            "bluetooth_le"
+          ]
+        },
+        {
+          "description": "A position from satellites, or from a phone that says where it is.",
+          "type": "string",
+          "const": "gps"
+        },
+        {
+          "description": "Seen on the home's network.",
+          "type": "string",
+          "const": "router"
+        }
       ]
     },
     "UniqueId": {

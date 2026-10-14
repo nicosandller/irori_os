@@ -1,0 +1,8 @@
+{
+  "unique_id": "phone",
+  "name": "Phone",
+  "capabilities": {
+    "kind": "device_tracker",
+    "source_type": "gps"
+  }
+}

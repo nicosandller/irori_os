@@ -127,8 +127,8 @@ motion sensor are three entities.
 
 **Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`,
 `event`, `cover`, `lock`, `fan`, `valve`, `siren`, `climate`, `water_heater`, `humidifier`,
-`media_player`, `update`, `alarm_control_panel`, `date`, `time`, `datetime`, `vacuum`, `lawn_mower`, `scene`.
-**Next:** `device_tracker`. Home Assistant's `remote` isn't planned: neither ESPHome nor MQTT discovery
+`media_player`, `update`, `alarm_control_panel`, `date`, `time`, `datetime`, `vacuum`, `lawn_mower`, `scene`, `device_tracker`.
+That is every Home Assistant kind a device on Irori's protocols reports. Home Assistant's `remote` isn't planned: neither ESPHome nor MQTT discovery
 has one, so nothing could report it. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
@@ -175,6 +175,7 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | `vacuum` | `start`, `pause`, `stop`, `return_home`, `locate`, `clean_spot` | bool | `false` | What it can be told to do |
 | | `fan_speeds` | list of strings, up to 32 | `[]` | Its fan speeds by its own names (`quiet`, `turbo`). Empty for one with no choice |
 | `lawn_mower` | `start_mowing`, `pause`, `dock` | bool | `false` | What it can be told to do |
+| `device_tracker` | `source_type` | `gps` \| `router` \| `bluetooth` \| `bluetooth_le` | absent | How it knows where it is. One seen on the network or heard over Bluetooth is there or not, with no position |
 | `scene` | none | | | A scene a device keeps (a Hue scene, a Zigbee group's) and can be told to set. Scenes Irori makes itself are flows |
 | `date`, `time`, `datetime` | none | | | A day, a time of day, or a moment that someone sets. Nothing to say about one beyond its kind |
 | `valve` | `device_class` | `water` \| `gas` | absent | |
@@ -314,6 +315,9 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | `vacuum` | `activity` | `cleaning` \| `docked` \| `idle` \| `paused` \| `returning` \| `error` | yes | Its typed value, for rules (`text()`). Home Assistant's `VacuumActivity` |
 | | `fan_speed` | string | no | One of its `fan_speeds` (checked by the core) |
 | `lawn_mower` | `activity` | `mowing` \| `docked` \| `paused` \| `returning` \| `error` | yes | Its typed value, for rules (`text()`). Home Assistant's `LawnMowerActivity` |
+| `device_tracker` | `home` | bool | yes | Its typed value, for rules (`on()`): at home. Named places other than home wait for Irori to have zones; a tracker in one is not home |
+| | `latitude`, `longitude` | degrees, -90 to 90 and -180 to 180 | no | Where it is, from one that knows |
+| | `accuracy` | metres, 0 or more | no | How far off that may be |
 | `date` | `value` | a calendar day, `2026-10-14` | yes | Its typed value, as that text. A day that exists; no time zone, it's the day wherever the home is |
 | `time` | `value` | a time of day to the second, `06:45:00` (`06:45` is read as the same) | yes | Its typed value, as that text. No date and no zone |
 | `datetime` | `value` | `Timestamp` | yes | Its typed value, as its UTC text (`2026-10-14T06:45:00Z`). An instant: pages show and pick it on their own clock |
@@ -370,6 +374,7 @@ A field is one of the names in the table above, with its value as on/off, a numb
 | `media_player` | `volume`, `muted`, `title`, `artist`, `album`, `app`, `content_type`, `duration`, `position` |
 | `update` | `installed_version`, `latest_version`, `in_progress`, `progress` |
 | `vacuum` | `fan_speed` |
+| `device_tracker` | `latitude`, `longitude`, `accuracy` |
 
 An entity has the fields its capabilities allow (a light that can't dim has no `brightness`);
 readings nothing announces ahead of time, like a thermostat's `current_temperature`, are listed

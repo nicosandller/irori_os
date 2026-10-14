@@ -11,9 +11,9 @@
 use irori_types::{Capabilities, EntityCategory, EntityKind, Name, UniqueId};
 
 use crate::kinds::{
-    alarm_control_panel, binary_sensor, button, climate, cover, event, fan, humidifier, lawn_mower,
-    light, lock, moment, number, scene, select, sensor, siren, switch, text, update, vacuum, valve,
-    water_heater,
+    alarm_control_panel, binary_sensor, button, climate, cover, device_tracker, event, fan,
+    humidifier, lawn_mower, light, lock, moment, number, scene, select, sensor, siren, switch,
+    text, update, vacuum, valve, water_heater,
 };
 use crate::template::CommandTemplate;
 use crate::topic::Component;
@@ -23,6 +23,7 @@ pub use crate::kinds::binary_sensor::BinarySensorTopics;
 pub use crate::kinds::button::ButtonTopics;
 pub use crate::kinds::climate::ClimateTopics;
 pub use crate::kinds::cover::CoverTopics;
+pub use crate::kinds::device_tracker::TrackerTopics;
 pub use crate::kinds::event::{EventSource, EventTopics};
 pub use crate::kinds::fan::FanTopics;
 pub use crate::kinds::humidifier::HumidifierTopics;
@@ -116,6 +117,7 @@ pub enum EntityTopics {
     Vacuum(Box<VacuumTopics>),
     LawnMower(Box<LawnMowerTopics>),
     Scene(SceneTopics),
+    DeviceTracker(Box<TrackerTopics>),
     Fan(Box<FanTopics>),
     Valve(Box<OpeningTopics>),
     Siren(SirenTopics),
@@ -145,6 +147,7 @@ impl EntityTopics {
             Self::Vacuum(_) => EntityKind::Vacuum,
             Self::LawnMower(_) => EntityKind::LawnMower,
             Self::Scene(_) => EntityKind::Scene,
+            Self::DeviceTracker(_) => EntityKind::DeviceTracker,
             Self::Fan(_) => EntityKind::Fan,
             Self::Valve(_) => EntityKind::Valve,
             Self::Siren(_) => EntityKind::Siren,
@@ -213,6 +216,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::Vacuum => vacuum::parse(&root)?,
         Component::LawnMower => lawn_mower::parse(&root)?,
         Component::Scene => scene::parse(&root)?,
+        Component::DeviceTracker => device_tracker::parse(&root)?,
         Component::Fan => fan::parse(&root)?,
         Component::Valve => valve::parse(&root)?,
         Component::Siren => siren::parse(&root)?,

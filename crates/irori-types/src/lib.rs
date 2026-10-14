@@ -58,6 +58,7 @@ pub use kinds::climate::{
     ClimateState, ClimateSwingMode, HumidityRange, HvacAction, HvacMode, SetHumidity,
 };
 pub use kinds::cover::{CoverCapabilities, CoverClass, CoverState, SetTilt};
+pub use kinds::device_tracker::{TrackerCapabilities, TrackerSource, TrackerState};
 pub use kinds::event::{EventCapabilities, EventClass, EventState};
 pub use kinds::fan::{
     FanCapabilities, FanDirection, FanOscillate, FanPercentage, FanPresetMode, FanSetDirection,

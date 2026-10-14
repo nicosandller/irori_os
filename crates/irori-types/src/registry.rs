@@ -9,6 +9,7 @@ use crate::kinds::binary_sensor::BinarySensorCapabilities;
 use crate::kinds::button::ButtonCapabilities;
 use crate::kinds::climate::ClimateCapabilities;
 use crate::kinds::cover::CoverCapabilities;
+use crate::kinds::device_tracker::TrackerCapabilities;
 use crate::kinds::event::EventCapabilities;
 use crate::kinds::fan::FanCapabilities;
 use crate::kinds::humidifier::HumidifierCapabilities;
@@ -221,6 +222,7 @@ pub enum Capabilities {
     Vacuum(VacuumCapabilities),
     LawnMower(LawnMowerCapabilities),
     Scene(SceneCapabilities),
+    DeviceTracker(TrackerCapabilities),
 }
 
 impl Capabilities {
@@ -252,6 +254,7 @@ impl Capabilities {
             Self::Vacuum(_) => EntityKind::Vacuum,
             Self::LawnMower(_) => EntityKind::LawnMower,
             Self::Scene(_) => EntityKind::Scene,
+            Self::DeviceTracker(_) => EntityKind::DeviceTracker,
         }
     }
 

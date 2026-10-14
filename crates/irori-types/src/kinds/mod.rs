@@ -13,6 +13,7 @@ pub(crate) mod binary_sensor;
 pub(crate) mod button;
 pub(crate) mod climate;
 pub(crate) mod cover;
+pub(crate) mod device_tracker;
 pub(crate) mod event;
 pub(crate) mod fan;
 pub(crate) mod humidifier;
@@ -223,7 +224,8 @@ impl EntityKind {
             | Self::Datetime
             | Self::Vacuum
             | Self::LawnMower
-            | Self::Scene => return None,
+            | Self::Scene
+            | Self::DeviceTracker => return None,
         })
     }
 }
@@ -238,7 +240,8 @@ impl Capabilities {
             | Self::Fan(_)
             | Self::Siren(_)
             | Self::Humidifier(_)
-            | Self::Update(_) => ValueShape::Bool,
+            | Self::Update(_)
+            | Self::DeviceTracker(_) => ValueShape::Bool,
             Self::Number(_) => ValueShape::Number,
             Self::Select(_)
             | Self::Text(_)
@@ -295,6 +298,7 @@ impl Capabilities {
             Self::WaterHeater(caps) => water_heater::fields(caps),
             Self::MediaPlayer(caps) => media_player::fields(caps),
             Self::Update(caps) => update::fields(caps),
+            Self::DeviceTracker(caps) => device_tracker::fields(caps),
             Self::Vacuum(caps) => vacuum::fields(caps),
             Self::Switch(_)
             | Self::Sensor(_)
@@ -382,7 +386,9 @@ impl Capabilities {
             Self::Switch(_) | Self::Button(_) | Self::Scene(_) => Ok(()),
             // Any day, time or moment that exists is one it can be set to.
             Self::Date(_) | Self::Time(_) | Self::Datetime(_) => Ok(()),
-            Self::Sensor(_) | Self::BinarySensor(_) | Self::Event(_) => Ok(()),
+            Self::Sensor(_) | Self::BinarySensor(_) | Self::Event(_) | Self::DeviceTracker(_) => {
+                Ok(())
+            }
         }
     }
 }
@@ -406,6 +412,7 @@ impl State {
             Self::Cover(state) => cover::primary(state),
             Self::Valve(state) => valve::primary(state),
             Self::Lock(state) => lock::primary(state),
+            Self::DeviceTracker(state) => device_tracker::primary(state),
             Self::LawnMower(state) => lawn_mower::primary(state),
             Self::Vacuum(state) => vacuum::primary(state),
             Self::AlarmControlPanel(state) => alarm_control_panel::primary(state),
@@ -431,6 +438,7 @@ impl State {
             Self::WaterHeater(state) => water_heater::field(state, name),
             Self::MediaPlayer(state) => media_player::field(state, name),
             Self::Update(state) => update::field(state, name),
+            Self::DeviceTracker(state) => device_tracker::field(state, name),
             Self::Vacuum(state) => vacuum::field(state, name),
             Self::Switch(_)
             | Self::Sensor(_)
@@ -496,6 +504,10 @@ impl State {
                 State::MediaPlayer(media_player::with_primary(previous!(MediaPlayer), value)?)
             }
             EntityKind::Update => State::Update(update::with_primary(previous!(Update), value)?),
+            EntityKind::DeviceTracker => State::DeviceTracker(device_tracker::with_primary(
+                previous!(DeviceTracker),
+                value,
+            )?),
             EntityKind::Vacuum => State::Vacuum(vacuum::with_primary(previous!(Vacuum), value)?),
             EntityKind::Button | EntityKind::Scene => return None,
         })
@@ -536,9 +548,10 @@ impl Service {
             EntityKind::Humidifier => humidifier::service(name, data),
             EntityKind::MediaPlayer => media_player::service(name, data),
             EntityKind::Update => update::service(name, data),
-            EntityKind::Sensor | EntityKind::BinarySensor | EntityKind::Event => {
-                Err(not_mine(name))
-            }
+            EntityKind::Sensor
+            | EntityKind::BinarySensor
+            | EntityKind::Event
+            | EntityKind::DeviceTracker => Err(not_mine(name)),
         }?;
         service.validate()?;
         Ok(service)
@@ -596,7 +609,10 @@ impl Service {
             // A press leaves nothing for a toggle to go by.
             EntityKind::Button => None,
             EntityKind::Scene => scene::asks_for(self),
-            EntityKind::Sensor | EntityKind::BinarySensor | EntityKind::Event => None,
+            EntityKind::Sensor
+            | EntityKind::BinarySensor
+            | EntityKind::Event
+            | EntityKind::DeviceTracker => None,
         }
     }
 }
@@ -636,7 +652,10 @@ impl ServiceName {
             EntityKind::Humidifier => humidifier::data_of(self),
             EntityKind::MediaPlayer => media_player::data_of(self),
             EntityKind::Update => update::data_of(self),
-            EntityKind::Sensor | EntityKind::BinarySensor | EntityKind::Event => Data::None,
+            EntityKind::Sensor
+            | EntityKind::BinarySensor
+            | EntityKind::Event
+            | EntityKind::DeviceTracker => Data::None,
         }
     }
 

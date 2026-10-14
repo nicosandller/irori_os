@@ -10,6 +10,7 @@ use crate::kinds::alarm_control_panel::AlarmState;
 use crate::kinds::binary_sensor::BinarySensorState;
 use crate::kinds::climate::ClimateState;
 use crate::kinds::cover::CoverState;
+use crate::kinds::device_tracker::TrackerState;
 use crate::kinds::event::EventState;
 use crate::kinds::fan::FanState;
 use crate::kinds::humidifier::HumidifierState;
@@ -166,6 +167,7 @@ pub enum State {
     Datetime(DatetimeState),
     Vacuum(VacuumState),
     LawnMower(LawnMowerState),
+    DeviceTracker(TrackerState),
 }
 
 impl State {
@@ -184,6 +186,7 @@ impl State {
             Self::Humidifier(humidifier) => humidifier.validate(),
             Self::MediaPlayer(player) => player.validate(),
             Self::Update(update) => update.validate(),
+            Self::DeviceTracker(tracker) => tracker.validate(),
             Self::Switch(_)
             | Self::BinarySensor(_)
             | Self::Select(_)
@@ -226,6 +229,7 @@ impl State {
             Self::Datetime(_) => EntityKind::Datetime,
             Self::Vacuum(_) => EntityKind::Vacuum,
             Self::LawnMower(_) => EntityKind::LawnMower,
+            Self::DeviceTracker(_) => EntityKind::DeviceTracker,
         }
     }
 }

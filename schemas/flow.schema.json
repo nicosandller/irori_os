@@ -460,6 +460,10 @@
         {
           "maxLength": 70,
           "pattern": "^scene\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 79,
+          "pattern": "^device_tracker\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

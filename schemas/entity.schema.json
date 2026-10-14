@@ -653,6 +653,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^device_tracker\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "device_tracker"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -1679,6 +1702,30 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "device_tracker"
+            },
+            "source_type": {
+              "description": "How it knows, when it says. Home Assistant's source types.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TrackerSource"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
@@ -1857,6 +1904,10 @@
         {
           "maxLength": 70,
           "pattern": "^scene\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 79,
+          "pattern": "^device_tracker\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -2076,6 +2127,27 @@
       "enum": [
         "text",
         "password"
+      ]
+    },
+    "TrackerSource": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "bluetooth",
+            "bluetooth_le"
+          ]
+        },
+        {
+          "description": "A position from satellites, or from a phone that says where it is.",
+          "type": "string",
+          "const": "gps"
+        },
+        {
+          "description": "Seen on the home's network.",
+          "type": "string",
+          "const": "router"
+        }
       ]
     },
     "UniqueId": {

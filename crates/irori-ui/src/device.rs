@@ -1313,6 +1313,9 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
         (Capabilities::LawnMower(_), Some(State::LawnMower(mower))) => {
             devices::mower_words(mower.activity).to_owned()
         }
+        (Capabilities::DeviceTracker(_), Some(State::DeviceTracker(tracker))) => {
+            if tracker.home { "Home" } else { "Away" }.to_owned()
+        }
         (Capabilities::Date(_), Some(State::Date(date))) => date.value.to_string(),
         (Capabilities::Time(_), Some(State::Time(time))) => time.value.to_string(),
         (Capabilities::Fan(_), Some(State::Fan(fan))) => devices::fan_words(fan),
