@@ -12,7 +12,7 @@ mod lawn_mower;
 mod light;
 mod lock;
 mod media_player;
-mod moment;
+pub(crate) mod moment;
 mod number;
 mod opening;
 mod select;

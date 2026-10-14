@@ -9,7 +9,7 @@
 
 use std::collections::BTreeSet;
 
-use irori_types::{Availability, Capabilities, EntityId};
+use irori_types::{Availability, EntityId};
 use leptos::prelude::*;
 use leptos_router::components::A;
 
@@ -353,12 +353,8 @@ fn entity_row(
                 .with(|failures| failures.get(&id).cloned())
         }
     };
-    // A button has nothing to remember from one day to the next.
-    let has_history = !matches!(
-        entity.capabilities,
-        Capabilities::Button(_) | Capabilities::Scene(_)
-    );
-    let unroll = has_history.then(|| histories.unroll(&id));
+    // Every entity has a day to show: a button's is when it was pressed.
+    let unroll = Some(histories.unroll(&id));
     // A player, a lock or a cover is drawn once and follows its state; everything else is
     // drawn again from each reading.
     let control = match super::kept(&entity, state.into(), offline.into(), controls) {

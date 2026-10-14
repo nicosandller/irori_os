@@ -194,6 +194,29 @@ fn day_ago() -> Timestamp {
     )
 }
 
+/// The attribute a button's history row has: it was pressed. Nothing else a button's history
+/// holds has it, and a button has no state of its own to be mistaken for.
+pub const PRESSED: &str = "pressed";
+
+/// A press, as a row of the button's history.
+fn pressed(entity_id: EntityId, context: irori_types::Context) -> EntityState {
+    let now = Timestamp::from_jiff(jiff::Timestamp::now());
+    let mut attributes = irori_types::Attributes::new();
+    if let Ok(key) = irori_types::AttributeKey::try_from(PRESSED) {
+        attributes.insert(key, serde_json::Value::Bool(true));
+    }
+    EntityState {
+        entity_id,
+        availability: irori_types::Availability::Available,
+        state: None,
+        attributes,
+        last_changed: now,
+        last_updated: now,
+        last_reported: now,
+        context,
+    }
+}
+
 /// Feeds [`History`] from the core's events, for the life of the server. The channel closing is
 /// the runtime shutting down. A listener that falls behind skips ahead to now: a missed change
 /// is a gap, which is better than grinding through the backlog. A missed removal is not a gap
@@ -228,6 +251,14 @@ pub async fn record(core: Core, history: History, mut events: broadcast::Receive
                 }
             }
             Ok(Event::EntityRemoved { entity_id }) => history.forget(&entity_id),
+            // A button has no state to keep, so each press is kept as a row of its own: when,
+            // and who asked (its context). Pages draw its day from these.
+            Ok(Event::ServiceCalled {
+                entity_id,
+                service:
+                    irori_types::ServiceName::ButtonPress | irori_types::ServiceName::SceneTurnOn,
+                context,
+            }) => history.record(entity_id.clone(), pressed(entity_id, context)),
             Ok(_) => {}
             Err(broadcast::error::RecvError::Lagged(missed)) => {
                 tracing::warn!(

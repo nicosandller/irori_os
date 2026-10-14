@@ -27,6 +27,7 @@ pub(crate) use self::controls::{
     vacuum_words, water_heater_words, wording,
 };
 pub(crate) use self::controls::{control, kept};
+pub(crate) use self::controls::moment::when as controls_when;
 
 /// What a row needs to show a command on its way and what came back from it.
 #[derive(Debug, Clone, Copy)]
@@ -1524,13 +1525,6 @@ pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll
     let expanded = move || open.get().to_string();
     let chevron = view! { <span class="unroll-mark" aria-hidden="true"></span> };
     let hint = view! { <span class="visually-hidden">" — last 24 hours"</span> };
-    // A button has nothing to remember from one day to the next.
-    if matches!(
-        entity.capabilities,
-        Capabilities::Button(_) | Capabilities::Scene(_)
-    ) {
-        return control;
-    }
     match entity.capabilities {
         Capabilities::Sensor(_)
         | Capabilities::BinarySensor(_)

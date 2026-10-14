@@ -1057,6 +1057,27 @@
     .json-copy.done .copy-clip { opacity: 0; scale: .6; }
     .json-copy.done .copy-check { stroke-dashoffset: 0; opacity: 1; }
 
+    /* A button's day: each press a mark on a line from a day ago to now, coming in one after
+       another as the drawer opens, the latest few said with who pressed. */
+    .presses { display: grid; gap: .45rem; padding: .7rem .8rem .9rem 3.1rem; }
+    .builder-preview .presses { padding: 0; }
+    .presses-count { font-size: .85rem; font-weight: 500; }
+    .press-track { position: relative; height: 1.5rem; border-radius: .4rem; background: var(--sunk);
+                   background-image: linear-gradient(to right, var(--line) 1px, transparent 1px);
+                   background-size: 25% 100%; }
+    .press-mark { position: absolute; top: 20%; bottom: 20%; width: 3px; margin-left: -1.5px;
+                  border-radius: 2px; background: var(--ember);
+                  box-shadow: 0 0 .35rem color-mix(in srgb, var(--ember) 60%, transparent);
+                  animation: press-in var(--dur-expressive) var(--ease-spring) backwards;
+                  animation-delay: calc(min(var(--at), 30) * 25ms); }
+    @keyframes press-in { from { scale: 1 0; opacity: 0; } }
+    .press-scale { display: flex; justify-content: space-between; font: .68rem var(--mono);
+                   color: var(--muted); }
+    .press-list { list-style: none; margin: 0; padding: 0; display: grid; gap: .2rem;
+                  font-size: .82rem; }
+    .press-list li { display: flex; gap: .6rem; }
+    .press-when { font-variant-numeric: tabular-nums; min-width: 5.5rem; }
+
     /* What it would be like: a day of what it would have said, drawn as a history drawer draws
        one, or its control to try on this page. It changes in place as settings change. */
     .builder-preview { display: grid; gap: .5rem; padding: .75rem .8rem; background: var(--sunk);
