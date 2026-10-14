@@ -389,6 +389,11 @@ name = "Movie time"
   would make (`{id, entities, taken}`) or why it couldn't be; the page's builder asks it as
   the helper is filled in, as a form or as the JSON of one table entry with its kind under `helper` (a group
   has a `kind` of its own).
+- **A helper can be seen before it's made.** `POST /api/helpers/<table>/preview`, with the same
+  body (a name isn't needed), answers `{entity, states, computed}`: one worked out from other
+  entities is played over its sources' last day as though it had been running, asked again at
+  each change and every ten minutes, so a page can draw what it would have said; one a person
+  sets is the state it would start in. Nothing is written.
 - **The assistant can fill one in, not make one.** In the builder its scope is `helpers`: it
   can list the home's entities and helpers and read every kind's settings, and
   `propose_helper` checks a helper the same way and hands it to the builder. The person changes

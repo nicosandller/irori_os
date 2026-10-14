@@ -134,6 +134,7 @@ impl Field {
         matches!(
             self.widget,
             Widget::Source { .. }
+                | Widget::Seconds
                 | Widget::Members
                 | Widget::Options
                 | Widget::Week
@@ -1812,7 +1813,8 @@ fn tried(draft: Draft, shown: HelperPreview) -> AnyView {
         })
         .unwrap_or_default();
     let now = states.last().cloned();
-    let reading = crate::devices::control(&entity, now.as_ref(), false, quiet_controls());
+    // A reading, not a control: drawn as one that can't be asked anything.
+    let reading = crate::devices::control(&entity, now.as_ref(), true, quiet_controls());
     view! {
         <section class="builder-preview">
             <header class="builder-preview-head">

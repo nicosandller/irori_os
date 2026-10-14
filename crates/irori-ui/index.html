@@ -971,8 +971,9 @@
     .builder-field > input:hover, .builder-field > select:hover:not(:disabled) {
         border-color: color-mix(in srgb, var(--muted) 60%, var(--line)); }
     .builder-field > select:disabled { opacity: .6; }
-    .builder-duration { display: flex; gap: .35rem; }
-    .builder-duration input { flex: 1; width: 0; }
+    .builder-duration { display: flex; align-items: center; gap: .5rem; }
+    .builder-duration input { flex: none; width: 5.5rem; }
+    .builder-duration .choices { flex-wrap: nowrap; }
 
     /* Filled in by the assistant: every field glows ember once and settles. Two names for one
        glow, so a second filling-in starts it again. */

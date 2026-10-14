@@ -416,6 +416,12 @@ does, not something it is. Rules can't read or compare it (`on()`, a state trigg
 
 A `scene` is the same: no `scene` tag, no value, and one thing to ask of it, `scene.turn_on`.
 
+What a button or scene has instead is **presses**. Each `button.press` or `scene.turn_on` that
+reaches its protocol is kept in its history as a row with `state: null` and the attribute
+`pressed: true`, its context saying who asked. `GET /api/history/<entity_id>` returns them with
+the rest of its day, and pages draw that day from them. Nothing else in a button's history has
+`pressed`.
+
 **Brightness is 1–255**, not a percentage: that's what Zigbee and Home Assistant use, so no
 precision is lost converting. Services will accept `brightness_pct` for people (M0.3).
 
