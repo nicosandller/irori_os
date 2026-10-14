@@ -5,11 +5,13 @@
 //! the core, asks the recorder for the last day when the page does, and for everything since a
 //! timestamp when an engine does. An entity that leaves the home takes its history with it.
 
+use std::collections::HashSet;
 use std::path::Path;
 #[cfg(test)]
 use std::sync::Arc;
 
 use irori_core::{Core, Event};
+use irori_types::units::Conversion;
 use irori_types::{Capabilities, Entity, EntityId, EntityState, StateClass, Timestamp};
 use jiff::ToSpan as _;
 use tokio::runtime::RuntimeFlavor;
@@ -64,6 +66,17 @@ impl History {
     pub fn record_with(&self, entity_id: EntityId, state: EntityState, class: Option<StateClass>) {
         debug_assert_eq!(entity_id, state.entity_id);
         self.recorder.append_with(state, class);
+    }
+
+    /// Converts what's stored for an entity whose device speaks another unit than the model
+    /// keeps, the first time it's asked and never again ([`irori_recorder::Recorder::convert_once`]).
+    pub fn convert_once(&self, entity_id: &EntityId, conversion: Conversion, before: Timestamp) {
+        self.recorder.convert_once(
+            entity_id,
+            conversion.native_unit(),
+            conversion.linear(),
+            before,
+        );
     }
 
     /// Marks a sensor for summaries before its next change, so history already on disk can be
@@ -153,6 +166,22 @@ fn class_of(entity: &Entity) -> Option<StateClass> {
     }
 }
 
+/// How a state's value was converted from what its device says, when its protocol says it was:
+/// a temperature kept in °C from a sensor or a setting that speaks °F.
+fn conversion_of(core: &Core, state: &EntityState) -> Option<Conversion> {
+    let unit = state
+        .attributes
+        .iter()
+        .find(|(key, _)| key.as_str() == Conversion::NATIVE_UNIT)
+        .and_then(|(_, unit)| unit.as_str())?;
+    let class = match core.entity(&state.entity_id)?.capabilities {
+        Capabilities::Sensor(sensor) => sensor.device_class,
+        Capabilities::Number(number) => number.device_class,
+        _ => None,
+    };
+    Conversion::of(class, Some(unit))
+}
+
 fn class_in(core: &Core, entity_id: &EntityId) -> Option<StateClass> {
     core.entity(entity_id).as_ref().and_then(class_of)
 }
@@ -170,16 +199,29 @@ fn day_ago() -> Timestamp {
 /// is a gap, which is better than grinding through the backlog. A missed removal is not a gap
 /// the file can keep, so a lag deletes history for every entity the core no longer has.
 pub async fn record(core: Core, history: History, mut events: broadcast::Receiver<Event>) {
+    // Entities whose stored readings have been asked to be converted since Irori started. The
+    // recorder remembers for good; this only saves asking it with every reading.
+    let mut converted: HashSet<EntityId> = HashSet::new();
     loop {
         match events.recv().await {
             Ok(Event::StateChanged {
                 entity_id,
                 new_state,
                 ..
-            }) => match class_in(&core, &entity_id) {
-                Some(class) => history.record_with(entity_id, *new_state, Some(class)),
-                None => history.record(entity_id, *new_state),
-            },
+            }) => {
+                // Readings kept before Irori converted this sensor are in its device's unit.
+                // They're converted before the first reading in the model's unit joins them.
+                if !converted.contains(&entity_id)
+                    && let Some(conversion) = conversion_of(&core, &new_state)
+                {
+                    history.convert_once(&entity_id, conversion, new_state.last_updated);
+                    converted.insert(entity_id.clone());
+                }
+                match class_in(&core, &entity_id) {
+                    Some(class) => history.record_with(entity_id, *new_state, Some(class)),
+                    None => history.record(entity_id, *new_state),
+                }
+            }
             Ok(Event::EntityAdded { entity } | Event::EntityUpdated { entity }) => {
                 if let Some(class) = class_of(&entity) {
                     history.notice(&entity.id, class);

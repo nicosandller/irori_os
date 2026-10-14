@@ -2,8 +2,10 @@
 //! (`docs/specs/entities.md` §5.3, `docs/specs/protocols.md` §7). Each component's own module
 //! under [`crate::kinds`] does the reading and writing; this hands each entity to it.
 
-use irori_types::units::{TemperatureUnit, round_to};
-use irori_types::{HvacMode, Service, State, UniqueId, WaterHeaterMode};
+use std::collections::BTreeMap;
+
+use irori_types::units::{Conversion, TemperatureUnit, round_to};
+use irori_types::{AttributeKey, HvacMode, Service, State, UniqueId, WaterHeaterMode};
 
 use crate::discovery::EntityTopics;
 use crate::kinds::setting::Reading;
@@ -89,6 +91,16 @@ pub(crate) fn update<T>(field: &mut Option<T>, said: Option<Option<T>>) {
 /// `previous` is the entity's last-known state, if any. A component whose state is spread over
 /// several topics (the default light schema's on/off and brightness, a thermostat's settings)
 /// gets only part of it in one message, and keeps the rest from `previous`.
+/// What every report from this entity says beside its state: the unit its device speaks, for
+/// a temperature Irori keeps in °C (`docs/specs/entities.md` §5.4).
+pub fn attributes(topics: &EntityTopics) -> BTreeMap<AttributeKey, serde_json::Value> {
+    Conversion::attributes(match topics {
+        EntityTopics::Sensor(topics) => topics.conversion,
+        EntityTopics::Number(topics) => topics.conversion,
+        _ => None,
+    })
+}
+
 pub fn decode(
     topics: &EntityTopics,
     topic: &str,
@@ -323,6 +335,7 @@ mod tests {
         let topics = EntityTopics::Sensor(SensorTopics {
             state_topic: "t".to_owned(),
             value_template: crate::template::ValueTemplate::None,
+            conversion: None,
         });
         let error = encode(&topics, &Service::SwitchTurnOn).expect_err("sensors have no services");
         assert!(error.contains("switch.turn_on"));

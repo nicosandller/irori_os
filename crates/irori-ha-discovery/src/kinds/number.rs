@@ -2,6 +2,7 @@
 //! `command_topic` (what Zigbee2MQTT's `<device>/set/<property>` takes), and read back through
 //! `value_template`.
 
+use irori_types::units::Conversion;
 use irori_types::{
     Capabilities, NumberCapabilities, NumberMode, NumberState, SensorClass, Service, State,
 };
@@ -16,6 +17,8 @@ pub struct NumberTopics {
     pub command_topic: String,
     pub command_template: CommandTemplate,
     pub value_template: ValueTemplate,
+    /// How its value and range become °C, for a temperature in another unit.
+    pub conversion: Option<Conversion>,
 }
 
 pub(crate) fn parse(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
@@ -25,13 +28,23 @@ pub(crate) fn parse(root: &serde_json::Value) -> Result<(Capabilities, EntityTop
             .and_then(serde_json::Value::as_f64)
             .unwrap_or(default)
     };
+    let unit = str_field(root, "unit_of_measurement");
+    let device_class = str_field(root, "device_class").and_then(SensorClass::from_ha);
+    // Temperatures are °C in the model, whatever the device speaks.
+    let conversion = Conversion::of(device_class, unit);
+    let convert = |value: f64| conversion.map_or(value, |c| c.to_model(value));
     // Home Assistant's own defaults.
     let capabilities = NumberCapabilities {
-        min: number("min", 1.0),
-        max: number("max", 100.0),
-        step: number("step", 1.0),
-        unit: str_field(root, "unit_of_measurement").map(str::to_owned),
-        device_class: str_field(root, "device_class").and_then(SensorClass::from_ha),
+        min: convert(number("min", 1.0)),
+        max: convert(number("max", 100.0)),
+        step: conversion.map_or(number("step", 1.0), |c| {
+            c.step_to_model(number("step", 1.0))
+        }),
+        unit: match conversion {
+            Some(_) => Some(Conversion::UNIT.to_owned()),
+            None => unit.map(str::to_owned),
+        },
+        device_class,
         mode: match str_field(root, "mode") {
             Some("box") => NumberMode::Box,
             Some("slider") => NumberMode::Slider,
@@ -46,6 +59,7 @@ pub(crate) fn parse(root: &serde_json::Value) -> Result<(Capabilities, EntityTop
             command_topic,
             command_template,
             value_template: ValueTemplate::parse(str_field(root, "value_template")),
+            conversion,
         }),
     ))
 }
@@ -53,26 +67,31 @@ pub(crate) fn parse(root: &serde_json::Value) -> Result<(Capabilities, EntityTop
 pub(crate) fn decode(topics: &NumberTopics, message: Message) -> Option<Result<State, String>> {
     message
         .on(topics.state_topic.as_deref())
-        .then(|| read(message.payload, &topics.value_template))
+        .then(|| read(message.payload, topics))
 }
 
 pub(crate) fn encode(topics: &NumberTopics, service: &Service) -> Result<Vec<Publish>, String> {
     match service {
         Service::NumberSetValue(data) => Ok(vec![text_publish(
             &topics.command_topic,
-            &topics.command_template.render(&number_text(data.value)),
+            &topics.command_template.render(&number_text(
+                topics
+                    .conversion
+                    .map_or(data.value, |c| c.from_model(data.value)),
+            )),
         )]),
         service => Err(super::no_service("a number", service)),
     }
 }
 
-fn read(payload: &[u8], value_template: &ValueTemplate) -> Result<State, String> {
-    let value = match value_template.extract(payload)? {
+fn read(payload: &[u8], topics: &NumberTopics) -> Result<State, String> {
+    let value = match topics.value_template.extract(payload)? {
         serde_json::Value::Number(n) => n.as_f64(),
         serde_json::Value::String(s) => s.trim().parse::<f64>().ok(),
         _ => None,
     }
     .ok_or("number value isn't a number")?;
+    let value = topics.conversion.map_or(value, |c| c.to_model(value));
     let state = State::Number(NumberState { value });
     state.validate().map_err(|e| e.to_string())?;
     Ok(state)
@@ -97,6 +116,41 @@ mod tests {
         "unit_of_measurement": "s", "step": 1, "min": 0, "max": 65535,
         "entity_category": "config"
     }"#;
+
+    #[test]
+    fn a_fahrenheit_setting_is_celsius_in_the_model_and_fahrenheit_on_the_wire() {
+        let parsed = parse(
+            Component::Number,
+            br#"{
+                "unique_id": "frost_guard", "name": "Frost guard",
+                "device_class": "temperature",
+                "unit_of_measurement": "\u00b0F",
+                "min": 32, "max": 50, "step": 1,
+                "state_topic": "boiler/state",
+                "value_template": "{{ value_json.frost }}",
+                "command_topic": "boiler/set/frost"
+            }"#,
+        )
+        .expect("valid");
+        let Capabilities::Number(caps) = &parsed.capabilities else {
+            panic!("a number");
+        };
+        assert_eq!((caps.min, caps.max, caps.step), (0.0, 10.0, 0.5556));
+        assert_eq!(caps.unit.as_deref(), Some("°C"));
+        let state = crate::state::decode(&parsed.topics, "boiler/state", br#"{"frost": 41}"#, None);
+        assert_eq!(
+            state,
+            Some(Ok(irori_types::State::Number(irori_types::NumberState {
+                value: 5.0
+            })))
+        );
+        let sent = crate::state::encode(
+            &parsed.topics,
+            &irori_types::Service::NumberSetValue(irori_types::NumberSetValue { value: 5.0 }),
+        )
+        .expect("a number can be set");
+        assert_eq!(sent[0].payload, b"41");
+    }
 
     #[test]
     fn parses_a_z2m_number_and_sends_it_the_plain_value() {

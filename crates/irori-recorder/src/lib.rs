@@ -75,6 +75,10 @@ CREATE TABLE IF NOT EXISTS state_history (
 CREATE INDEX IF NOT EXISTS state_history_entity_time
     ON state_history (entity_id, updated_ns, id);
 
+CREATE TABLE IF NOT EXISTS converted_units (
+    entity_id TEXT PRIMARY KEY,
+    unit TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS statistic_entities (
     entity_id TEXT PRIMARY KEY,
     class TEXT NOT NULL,
@@ -202,6 +206,15 @@ enum Job {
         reply: std::sync::mpsc::Sender<()>,
     },
     Check(std::sync::mpsc::Sender<bool>),
+    /// Rewrite what is stored for this entity from the unit its device speaks to the one the
+    /// model keeps, once: `value * scale + offset`, for rows before `before`.
+    Convert {
+        entity_id: EntityId,
+        from_unit: String,
+        scale: f64,
+        offset: f64,
+        before: Timestamp,
+    },
 }
 
 struct Queue {
@@ -287,7 +300,11 @@ fn abandon(job: Job) {
         Job::Configure { reply, .. } => {
             let _ = reply.send(());
         }
-        Job::Append(_) | Job::Forget(_) | Job::ForgetMissing(_) | Job::Notice { .. } => {}
+        Job::Append(_)
+        | Job::Forget(_)
+        | Job::ForgetMissing(_)
+        | Job::Notice { .. }
+        | Job::Convert { .. } => {}
     }
 }
 
@@ -447,6 +464,30 @@ impl Recorder {
         self.enqueue(
             Job::Forget(entity_id.clone()),
             "a removed entity's history was not deleted",
+        );
+    }
+
+    /// Converts what is stored for `entity_id` to the unit the model keeps, the first time it
+    /// is asked and never again: every reading before `before` becomes `value * scale +
+    /// offset`, to a hundredth, in its changes and in its summaries. For a sensor whose
+    /// readings were stored as its device says them (°F) and are now kept in °C, so its chart
+    /// doesn't jump at the moment that changed. Queued like [`Self::forget`].
+    pub fn convert_once(
+        &self,
+        entity_id: &EntityId,
+        from_unit: &str,
+        (scale, offset): (f64, f64),
+        before: Timestamp,
+    ) {
+        self.enqueue(
+            Job::Convert {
+                entity_id: entity_id.clone(),
+                from_unit: from_unit.to_owned(),
+                scale,
+                offset,
+                before,
+            },
+            "a sensor's stored readings were not converted",
         );
     }
 
@@ -719,6 +760,20 @@ fn apply(
             write_batch(connection, batch, last_write_ok);
             note_write(last_write_ok, forget(connection, &entity_id));
         }
+        Job::Convert {
+            entity_id,
+            from_unit,
+            scale,
+            offset,
+            before,
+        } => {
+            // What was accepted before this was said in the old unit: it goes in first.
+            write_batch(connection, batch, last_write_ok);
+            note_write(
+                last_write_ok,
+                convert_once(connection, &entity_id, &from_unit, (scale, offset), before),
+            );
+        }
         Job::ForgetMissing(live) => {
             let keep: HashSet<&EntityId> = live.iter().collect();
             batch.retain(|change| keep.contains(&change.state.entity_id));
@@ -877,10 +932,87 @@ fn forget(connection: &Connection, entity_id: &EntityId) -> Result<(), String> {
         "statistics_short_term",
         "statistics",
         "statistic_entities",
+        "converted_units",
     ] {
         delete_entity(connection, table, entity_id)?;
     }
     Ok(())
+}
+
+/// See [`Recorder::convert_once`]. All of it or none: a half-converted chart would be worse
+/// than one that jumps.
+fn convert_once(
+    connection: &mut Connection,
+    entity_id: &EntityId,
+    from_unit: &str,
+    (scale, offset): (f64, f64),
+    before: Timestamp,
+) -> Result<(), String> {
+    let text = |error: rusqlite::Error| error.to_string();
+    let before = nanos(before).ok_or("a timestamp this recorder cannot store")?;
+    let transaction = connection.transaction().map_err(text)?;
+    let done = transaction
+        .prepare("SELECT 1 FROM converted_units WHERE entity_id = ?1")
+        .and_then(|mut statement| statement.exists([entity_id.as_str()]))
+        .map_err(text)?;
+    if done {
+        return Ok(());
+    }
+    let rows: Vec<(i64, String)> = transaction
+        .prepare("SELECT id, state FROM state_history WHERE entity_id = ?1 AND updated_ns < ?2")
+        .and_then(|mut statement| {
+            statement
+                .query_map(rusqlite::params![entity_id.as_str(), before], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?
+                .collect()
+        })
+        .map_err(text)?;
+    for (id, state) in rows {
+        // A row that doesn't parse, or holds no number, is left as it is.
+        let Ok(mut state) = serde_json::from_str::<serde_json::Value>(&state) else {
+            continue;
+        };
+        let Some(value) = state["state"]["value"].as_f64() else {
+            continue;
+        };
+        state["state"]["value"] =
+            serde_json::json!(((value * scale + offset) * 100.0).round() / 100.0);
+        transaction
+            .execute(
+                "UPDATE state_history SET state = ?1 WHERE id = ?2",
+                rusqlite::params![state.to_string(), id],
+            )
+            .map_err(text)?;
+    }
+    // A summary's mean, least, greatest and last are readings and move with them. Its sum is
+    // for sensors that count, which a temperature isn't.
+    for sql in [
+        "UPDATE statistics_short_term SET
+            mean = ROUND(mean * ?1 + ?2, 2), min = ROUND(min * ?1 + ?2, 2),
+            max = ROUND(max * ?1 + ?2, 2), last = ROUND(last * ?1 + ?2, 2)
+         WHERE entity_id = ?3 AND start_ns < ?4",
+        "UPDATE statistics SET
+            mean = ROUND(mean * ?1 + ?2, 2), min = ROUND(min * ?1 + ?2, 2),
+            max = ROUND(max * ?1 + ?2, 2), last = ROUND(last * ?1 + ?2, 2)
+         WHERE entity_id = ?3 AND start_ns < ?4",
+    ] {
+        // A cooling scale (none today) would swap least and greatest; these only grow with
+        // the reading, so the two stay the right way round.
+        transaction
+            .execute(
+                sql,
+                rusqlite::params![scale, offset, entity_id.as_str(), before],
+            )
+            .map_err(text)?;
+    }
+    transaction
+        .execute(
+            "INSERT INTO converted_units (entity_id, unit) VALUES (?1, ?2)",
+            rusqlite::params![entity_id.as_str(), from_unit],
+        )
+        .map_err(text)?;
+    transaction.commit().map_err(text)
 }
 
 fn delete_entity(connection: &Connection, table: &str, entity_id: &EntityId) -> Result<(), String> {
@@ -889,6 +1021,7 @@ fn delete_entity(connection: &Connection, table: &str, entity_id: &EntityId) -> 
         "statistics_short_term" => "DELETE FROM statistics_short_term WHERE entity_id = ?1",
         "statistics" => "DELETE FROM statistics WHERE entity_id = ?1",
         "statistic_entities" => "DELETE FROM statistic_entities WHERE entity_id = ?1",
+        "converted_units" => "DELETE FROM converted_units WHERE entity_id = ?1",
         _ => return Err(format!("unknown history table {table}")),
     };
     connection
@@ -1172,6 +1305,39 @@ mod tests {
         let seen = recorder.since(&plug, second);
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].last_updated, second);
+    }
+
+    fn value(state: &EntityState) -> f64 {
+        match &state.state {
+            Some(State::Sensor(irori_types::SensorState {
+                value: irori_types::SensorValue::Number(n),
+            })) => *n,
+            other => panic!("a reading, not {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stored_readings_are_converted_once_and_only_those_from_before() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let recorder = open(&dir);
+        let porch = entity("sensor.porch");
+        let hall = entity("sensor.hall");
+        let then = now();
+        let fahrenheit = (5.0 / 9.0, -160.0 / 9.0);
+        recorder.append(reading("sensor.porch", 68.0, then));
+        recorder.append(reading("sensor.porch", 212.0, later(then, 1)));
+        recorder.append(reading("sensor.hall", 68.0, then));
+        // From here on it reports °C, and says so before its first such reading is kept.
+        recorder.convert_once(&porch, "°F", fahrenheit, later(then, 2));
+        recorder.append(reading("sensor.porch", 21.0, later(then, 2)));
+        // Asked again (Irori restarted): nothing more happens.
+        recorder.convert_once(&porch, "°F", fahrenheit, later(then, 3));
+
+        let since = at("1970-01-01T00:00:00Z");
+        let kept: Vec<f64> = recorder.since(&porch, since).iter().map(value).collect();
+        assert_eq!(kept, [20.0, 100.0, 21.0]);
+        let other: Vec<f64> = recorder.since(&hall, since).iter().map(value).collect();
+        assert_eq!(other, [68.0]);
     }
 
     #[test]

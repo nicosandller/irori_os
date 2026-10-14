@@ -195,10 +195,23 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | | `install` | bool | `false` | Can be told to install. Without it, it only says an update exists |
 | | `check` | bool | `false` | Can be told to look for a newer version now |
 
-**Temperatures are °C** in climate entities and water heaters, in their capabilities, state and services alike.
-A protocol converts from what a device speaks (°F, K) on the way in and back on the way out
-(`irori_types::units`), so a rule comparing a thermostat's target with a temperature sensor never
-compares °F with °C. Pages show °C for now.
+**Temperatures are °C**: in climate entities and water heaters (capabilities, state and
+services alike), and in every `sensor` and `number` whose `device_class` is `temperature` or
+`temperature_delta`. Protocols convert what a device says in °F or K on the way in, and a
+number's value back on the way out; its range and step are converted too, and its `unit` reads
+`°C`. Otherwise `num('sensor.outside') < num('climate.hall', 'target_temperature')` silently
+compares °F with °C. A `temperature_delta` (a calibration offset) is a difference, so only its
+scale changes. Pages show °C for now.
+
+A converted entity's reports carry the attribute `native_unit` (`°F`, `K`): the unit its device
+speaks (§5.4). Two things read it:
+
+- **History.** Readings stored before Irori converted a sensor are in its device's unit. The
+  first converted reading has the recorder convert those once (changes and summaries), so a
+  chart doesn't jump at the upgrade. It remembers having done so.
+- **Flows.** A flow that compares a number with a converted entity gets a warning on that
+  node, naming the number: a `70` written when the sensor read °F now means 70 °C. Nothing
+  is rewritten.
 
 **Unlocking and opening let someone in.** Pages ask before sending them, in a window that also
 takes the code a lock needs. A code travels with its call (`lock.unlock {code}`), is never shown
@@ -370,6 +383,10 @@ A free-form map for protocol-specific extras (`linkquality`, `battery_voltage`, 
 slugs; values are any JSON. Rules may read them, but they're **not type-checked**, so
 anything the core or rules rely on must become a typed field instead. Attributes are the
 escape hatch, not the model.
+
+One attribute has a meaning Irori reads: `native_unit`, on an entity whose temperature a
+protocol converts to °C (§4.4). It's about how the device speaks, not what the entity is, which
+is why it isn't a capability.
 
 ## 6. Context
 

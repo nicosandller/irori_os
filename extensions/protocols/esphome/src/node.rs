@@ -15,7 +15,7 @@ use esphome_client::types::{
     EspHomeMessage, ListEntitiesRequest, PingResponse, SubscribeStatesRequest,
 };
 use irori_protocol::types::WaterHeaterMode;
-use irori_protocol::types::units::TemperatureUnit;
+use irori_protocol::types::units::{Conversion, TemperatureUnit};
 use irori_protocol::types::{
     Capabilities, ContextId, DeviceDescription, EntityDescription, EntityKind, HvacMode, State,
     StateReport, UniqueId, Unmodeled,
@@ -459,6 +459,10 @@ struct Units {
     climate_reads: HashMap<u32, map::climate::Reads>,
     /// Water heaters that report the water's temperature.
     reads_current: std::collections::HashSet<u32>,
+    /// Temperature sensors and settings that aren't in °C, by key. A sensor and a number
+    /// can share a key, so each kind has its own.
+    sensors: HashMap<u32, Conversion>,
+    numbers: HashMap<u32, Conversion>,
 }
 
 impl Units {
@@ -514,18 +518,28 @@ async fn list_entities(
                 e.name.clone(),
                 map::switch::describe(device, e),
             ),
-            EspHomeMessage::ListEntitiesSensorResponse(e) => (
-                e.key,
-                "sensor",
-                e.name.clone(),
-                map::sensor::describe(device, e),
-            ),
-            EspHomeMessage::ListEntitiesNumberResponse(e) => (
-                e.key,
-                "number",
-                e.name.clone(),
-                map::number::describe(device, e),
-            ),
+            EspHomeMessage::ListEntitiesSensorResponse(e) => {
+                if let Some(conversion) = map::sensor::conversion(e) {
+                    units.sensors.insert(e.key, conversion);
+                }
+                (
+                    e.key,
+                    "sensor",
+                    e.name.clone(),
+                    map::sensor::describe(device, e),
+                )
+            }
+            EspHomeMessage::ListEntitiesNumberResponse(e) => {
+                if let Some(conversion) = map::number::conversion(e) {
+                    units.numbers.insert(e.key, conversion);
+                }
+                (
+                    e.key,
+                    "number",
+                    e.name.clone(),
+                    map::number::describe(device, e),
+                )
+            }
             EspHomeMessage::ListEntitiesSelectResponse(e) => (
                 e.key,
                 "select",
@@ -668,6 +682,8 @@ fn report(
     commanded: &mut HashMap<u32, VecDeque<(ContextId, Instant)>>,
 ) -> Option<StateReport> {
     let capabilities = &known.capabilities;
+    // How this entity's value was converted on the way in, when it was.
+    let mut converted = None;
     let (key, state) = match message {
         EspHomeMessage::ClimateStateResponse(s) => {
             let Some(Capabilities::Climate(caps)) = capabilities.get(&s.key) else {
@@ -737,9 +753,15 @@ fn report(
         }
         EspHomeMessage::SwitchStateResponse(s) => (s.key, Some(map::switch::state(s))),
         EspHomeMessage::BinarySensorStateResponse(s) => (s.key, Some(map::binary_sensor::state(s))),
-        EspHomeMessage::SensorStateResponse(s) => (s.key, map::sensor::state(s)),
+        EspHomeMessage::SensorStateResponse(s) => {
+            converted = known.units.sensors.get(&s.key).copied();
+            (s.key, map::sensor::state(s, converted))
+        }
         EspHomeMessage::TextSensorStateResponse(s) => (s.key, map::sensor::text_state(s)),
-        EspHomeMessage::NumberStateResponse(s) => (s.key, map::number::state(s)),
+        EspHomeMessage::NumberStateResponse(s) => {
+            converted = known.units.numbers.get(&s.key).copied();
+            (s.key, map::number::state(s, converted))
+        }
         EspHomeMessage::SelectStateResponse(s) => (s.key, map::select::state(s)),
         EspHomeMessage::TextStateResponse(s) => (s.key, map::text::state(s)),
         EspHomeMessage::EventResponse(e) => (e.key, Some(map::event::state(e))),
@@ -749,7 +771,8 @@ fn report(
     Some(StateReport {
         unique_id,
         state,
-        attributes: std::collections::BTreeMap::new(),
+        // A temperature that isn't in °C on the device says which unit it is there.
+        attributes: Conversion::attributes(converted),
         caused_by: caused_by(key, commanded),
         replayed: false,
     })
@@ -807,7 +830,10 @@ async fn command(
     let written = match kind {
         EntityKind::Light => write(client, map::light::command(key, service)).await,
         EntityKind::Switch => write(client, map::switch::command(key, service)).await,
-        EntityKind::Number => write(client, map::number::command(key, service)).await,
+        EntityKind::Number => {
+            let conversion = known.units.numbers.get(&key).copied();
+            write(client, map::number::command(key, service, conversion)).await
+        }
         EntityKind::Select => write(client, map::select::command(key, service)).await,
         EntityKind::Text => write(client, map::text::command(key, service)).await,
         EntityKind::Button => write(client, map::button::command(key)).await,

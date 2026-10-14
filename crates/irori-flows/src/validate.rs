@@ -456,6 +456,137 @@ fn check_home(
     }
 }
 
+/// A warning for every node that compares a number with an entity Irori converts: a sensor
+/// whose device says °F is kept in °C, so a `70` written when it read °F now means 70 °C.
+/// `native` is the unit each converted entity's device speaks, by entity.
+pub fn converted(
+    flow: &Flow,
+    registry: &impl RegistryView,
+    native: &BTreeMap<irori_types::EntityId, String>,
+) -> Vec<Problem> {
+    use irori_rules::TypedValue;
+    if native.is_empty() {
+        return Vec::new();
+    }
+    let said = |entity: &irori_types::EntityId, numbers: &[f64]| {
+        let unit = native.get(entity)?;
+        let numbers = numbers
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" and ");
+        Some(format!(
+            "{entity}'s device says {unit}, and Irori keeps it in °C: {numbers} here is °C. \
+             Check the number still means what it did"
+        ))
+    };
+    let number = |value: &TypedValue| match value {
+        TypedValue::Number(n) => Some(*n),
+        _ => None,
+    };
+    fn states<'a>(condition: &'a Condition, out: &mut Vec<&'a Condition>) {
+        match condition {
+            Condition::State { .. } => out.push(condition),
+            Condition::All { conditions } | Condition::Any { conditions } => {
+                for child in conditions {
+                    states(child, out);
+                }
+            }
+            Condition::Not { condition } => states(condition, out),
+            _ => {}
+        }
+    }
+    let mut problems = Vec::new();
+    for (id, node) in &flow.nodes {
+        let mut found: Vec<String> = Vec::new();
+        match node {
+            // One of its other values (a field) isn't the converted reading.
+            Node::Trigger {
+                trigger:
+                    Trigger::State {
+                        entity,
+                        field: None,
+                        from,
+                        to,
+                        above,
+                        below,
+                        ..
+                    },
+            } => {
+                let numbers: Vec<f64> = above
+                    .iter()
+                    .chain(below)
+                    .copied()
+                    .chain(
+                        from.iter()
+                            .chain(to)
+                            .flat_map(irori_rules::Values::iter)
+                            .filter_map(number),
+                    )
+                    .collect();
+                if !numbers.is_empty() {
+                    found.extend(said(entity, &numbers));
+                }
+            }
+            Node::Wait {
+                until:
+                    WaitUntil::State {
+                        entity,
+                        field: None,
+                        is: Some(is),
+                        ..
+                    },
+                ..
+            } => found.extend(number(is).and_then(|n| said(entity, &[n]))),
+            Node::Gate { .. } | Node::Switch { .. } => {
+                let mut conditions = Vec::new();
+                match node {
+                    Node::Gate { condition } => states(condition, &mut conditions),
+                    Node::Switch { cases } => {
+                        for case in cases {
+                            states(case, &mut conditions);
+                        }
+                    }
+                    _ => {}
+                }
+                for condition in conditions {
+                    if let Condition::State {
+                        entity,
+                        field: None,
+                        is: Some(is),
+                        ..
+                    } = condition
+                    {
+                        found.extend(number(is).and_then(|n| said(entity, &[n])));
+                    }
+                }
+            }
+            _ => {}
+        }
+        for expr in node_exprs(node) {
+            let Ok(inspected) = irori_rules::inspect(expr, registry, &every_var(flow)) else {
+                continue;
+            };
+            for entity in inspected.ids {
+                if let Some(unit) = native.get(&entity) {
+                    found.push(format!(
+                        "{entity}'s device says {unit}, and Irori keeps it in °C: the numbers \
+                         it's compared with in `{}` are °C. Check they still mean what they did",
+                        expr.as_str()
+                    ));
+                }
+            }
+        }
+        found.dedup();
+        problems.extend(
+            found
+                .into_iter()
+                .map(|message| warning(Some(id), None, message)),
+        );
+    }
+    problems
+}
+
 /// Every entity the flow reads or acts on: its triggers', conditions', waits' and calls'
 /// entities, and what its expressions read. For the "why didn't it fire?" timeline and backtests.
 pub fn watched(flow: &Flow, registry: &impl RegistryView) -> BTreeSet<irori_types::EntityId> {

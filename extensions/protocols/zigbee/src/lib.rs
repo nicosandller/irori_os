@@ -487,7 +487,7 @@ async fn apply(
                     ctx.report_state(StateReport {
                         unique_id,
                         state: Some(new_state),
-                        attributes: BTreeMap::default(),
+                        attributes: state::attributes(&entity.topics),
                         caused_by: None,
                         replayed: message.retained,
                     });

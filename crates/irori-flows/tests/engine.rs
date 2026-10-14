@@ -338,6 +338,37 @@ fn a_hold_that_resets_is_a_near_miss_and_one_that_lasts_fires() {
     );
 }
 
+#[test]
+fn a_number_compared_with_a_converted_sensor_gets_a_warning_naming_it() {
+    let warm = flow(serde_json::json!({
+        "id": "warm", "name": "Warm",
+        "nodes": {
+            "hot": { "type": "trigger", "trigger": { "type": "state", "entity": LUX, "above": 70 } },
+            "still": { "type": "gate", "condition": { "type": "expr", "expr": format!("num('{LUX}') > 65") } },
+            "moving": { "type": "gate", "condition": { "type": "state", "entity": MOTION, "is": true } },
+            "on": { "type": "call", "service": "light.turn_on", "entity": LIGHT }
+        },
+        "wires": [["hot", "still"], ["still:yes", "moving"], ["moving:yes", "on"]]
+    }));
+    let registry = registry();
+    assert!(validate::converted(&warm, &registry, &BTreeMap::new()).is_empty());
+
+    let native = BTreeMap::from([(id(LUX), "°F".to_owned())]);
+    let problems = validate::converted(&warm, &registry, &native);
+    let at: Vec<&str> = problems
+        .iter()
+        .map(|p| p.node.as_ref().expect("a node").as_str())
+        .collect();
+    // The trigger and the expression compare numbers with it; the motion gate doesn't.
+    assert_eq!(at, ["hot", "still"]);
+    assert!(problems.iter().all(|p| p.severity == Severity::Warning));
+    assert!(
+        problems[0].message.contains("says °F") && problems[0].message.contains("70 here is °C"),
+        "{}",
+        problems[0].message
+    );
+}
+
 fn lit(brightness: u8, seconds: i64) -> EntityState {
     state(
         LIGHT,

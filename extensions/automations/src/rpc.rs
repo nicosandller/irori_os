@@ -70,7 +70,7 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
                 .flow(&id)
                 .cloned()
                 .ok_or_else(|| format!("there's no flow `{id}`"))?;
-            let problems = validate::check(&flow, &service.registry);
+            let problems = service.problems(&flow);
             let armed = service
                 .engine
                 .armed()
@@ -127,7 +127,7 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
                 .unwrap_or(Armed::Disabled);
             answer(FlowDetail {
                 version: flow.version(),
-                problems: validate::check(&flow, &service.registry),
+                problems: service.problems(&flow),
                 armed,
                 flow,
             })
@@ -135,7 +135,7 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
         "flows.validate" => {
             let WithFlow { flow } = params(raw)?;
             answer(match draft(flow) {
-                Ok(flow) => validate::check(&flow, &service.registry),
+                Ok(flow) => service.problems(&flow),
                 Err(problem) => vec![problem],
             })
         }
@@ -146,7 +146,7 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
             service.arm();
             answer(Saved {
                 version: flow.version(),
-                problems: validate::check(&flow, &service.registry),
+                problems: service.problems(&flow),
             })
         }
         "flows.enable" => {
@@ -197,7 +197,7 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
             service.arm();
             answer(Saved {
                 version: flow.version(),
-                problems: validate::check(&flow, &service.registry),
+                problems: service.problems(&flow),
             })
         }
         "runs.list" => {
@@ -450,7 +450,7 @@ fn list(service: &Service) -> Vec<FlowSummary> {
         .store
         .flows()
         .map(|flow| {
-            let problems = validate::check(flow, &service.registry);
+            let problems = service.problems(flow);
             let last_run = service
                 .engine
                 .active(Some(&flow.id))

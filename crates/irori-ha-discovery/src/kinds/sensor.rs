@@ -1,5 +1,6 @@
 //! Home Assistant's MQTT sensor: a reading, a number or a piece of text.
 
+use irori_types::units::Conversion;
 use irori_types::{
     Capabilities, SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType,
     State, StateClass,
@@ -13,6 +14,8 @@ use crate::template::ValueTemplate;
 pub struct SensorTopics {
     pub state_topic: String,
     pub value_template: ValueTemplate,
+    /// How its readings become °C, for a temperature in another unit.
+    pub conversion: Option<Conversion>,
 }
 
 pub(crate) fn parse(root: &serde_json::Value) -> Result<(Capabilities, EntityTopics), String> {
@@ -49,17 +52,25 @@ pub(crate) fn parse(root: &serde_json::Value) -> Result<(Capabilities, EntityTop
     } else {
         SensorValueType::Text
     };
+    let unit = str_field(root, "unit_of_measurement");
+    // Temperatures are °C in the model, whatever the device speaks.
+    let conversion =
+        Conversion::of(device_class, unit).filter(|_| value_type == SensorValueType::Number);
     Ok((
         Capabilities::Sensor(SensorCapabilities {
             value_type,
             device_class,
-            unit: str_field(root, "unit_of_measurement").map(str::to_owned),
+            unit: match conversion {
+                Some(_) => Some(Conversion::UNIT.to_owned()),
+                None => unit.map(str::to_owned),
+            },
             state_class,
             options,
         }),
         EntityTopics::Sensor(SensorTopics {
             state_topic,
             value_template: ValueTemplate::parse(str_field(root, "value_template")),
+            conversion,
         }),
     ))
 }
@@ -67,11 +78,11 @@ pub(crate) fn parse(root: &serde_json::Value) -> Result<(Capabilities, EntityTop
 pub(crate) fn decode(topics: &SensorTopics, message: Message) -> Option<Result<State, String>> {
     message
         .on(Some(&topics.state_topic))
-        .then(|| read(message.payload, &topics.value_template))
+        .then(|| read(message.payload, topics))
 }
 
-fn read(payload: &[u8], value_template: &ValueTemplate) -> Result<State, String> {
-    let extracted = value_template.extract(payload)?;
+fn read(payload: &[u8], topics: &SensorTopics) -> Result<State, String> {
+    let extracted = topics.value_template.extract(payload)?;
     let value = match &extracted {
         serde_json::Value::Number(n) => n.as_f64().map(SensorValue::Number),
         serde_json::Value::String(s) => s
@@ -82,7 +93,13 @@ fn read(payload: &[u8], value_template: &ValueTemplate) -> Result<State, String>
             .or_else(|| Some(SensorValue::Text(s.clone()))),
         other => Some(SensorValue::Text(other.to_string())),
     };
-    let value = value.ok_or("sensor value couldn't be read")?;
+    let value = match (
+        value.ok_or("sensor value couldn't be read")?,
+        topics.conversion,
+    ) {
+        (SensorValue::Number(n), Some(conversion)) => SensorValue::Number(conversion.to_model(n)),
+        (value, _) => value,
+    };
     let state = State::Sensor(SensorState { value });
     state.validate().map_err(|e| e.to_string())?;
     Ok(state)
@@ -105,6 +122,37 @@ mod tests {
         "state_topic": "zigbee2mqtt/Plug",
         "value_template": "{{ value_json.power }}"
     }"#;
+
+    #[test]
+    fn a_fahrenheit_temperature_is_celsius_in_the_model() {
+        let parsed = parse(
+            Component::Sensor,
+            br#"{
+                "unique_id": "porch_temperature", "name": "Porch",
+                "device_class": "temperature",
+                "unit_of_measurement": "\u00b0F",
+                "state_topic": "porch/state",
+                "value_template": "{{ value_json.temperature }}"
+            }"#,
+        )
+        .expect("valid");
+        let Capabilities::Sensor(caps) = &parsed.capabilities else {
+            panic!("a sensor");
+        };
+        assert_eq!(caps.unit.as_deref(), Some("°C"));
+        let state = crate::state::decode(
+            &parsed.topics,
+            "porch/state",
+            br#"{"temperature": 70}"#,
+            None,
+        );
+        assert_eq!(
+            state,
+            Some(Ok(State::Sensor(SensorState {
+                value: SensorValue::Number(21.11)
+            })))
+        );
+    }
 
     #[test]
     fn parses_a_sensor_with_a_nested_value_template_and_maps_device_class() {

@@ -54,6 +54,29 @@ pub struct Service {
     calls: mpsc::UnboundedSender<(u64, Result<(), String>)>,
 }
 
+impl Service {
+    /// Everything wrong with `flow`, errors first: what the checker finds, and a warning
+    /// wherever it compares a number with a sensor Irori converts to °C.
+    pub fn problems(&self, flow: &irori_flow_types::Flow) -> Vec<irori_flow_types::api::Problem> {
+        let native: BTreeMap<_, _> = self
+            .engine
+            .states()
+            .into_iter()
+            .filter_map(|state| {
+                let unit = state
+                    .attributes
+                    .iter()
+                    .find(|(key, _)| key.as_str() == irori_types::units::Conversion::NATIVE_UNIT)
+                    .and_then(|(_, unit)| unit.as_str().map(str::to_owned))?;
+                Some((state.entity_id, unit))
+            })
+            .collect();
+        let mut problems = validate::check(flow, &self.registry);
+        problems.extend(validate::converted(flow, &self.registry, &native));
+        problems
+    }
+}
+
 impl std::fmt::Debug for Service {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Service")
@@ -156,7 +179,7 @@ impl Service {
             .flows()
             .map(|flow| Arm {
                 flow: flow.clone(),
-                problems: validate::check(flow, &self.registry),
+                problems: self.problems(flow),
             })
             .collect();
         self.engine.set_flows(arms, now());
