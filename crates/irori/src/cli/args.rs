@@ -118,7 +118,7 @@ pub enum Command {
     Watch(OnlyRemote),
     /// Official extensions: list, install, and uninstall.
     Extensions(ExtensionsArgs),
-    /// Toggles Irori keeps itself.
+    /// Values Irori keeps itself: toggles, numbers, counters, choices, texts, buttons.
     Helpers(HelpersArgs),
     /// Programs that aren't the page. A token is shown once.
     Token(TokenArgs),
@@ -419,11 +419,101 @@ pub struct HelpersArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum HelpersCmd {
+    /// Every helper: its kind, its id, its entity, and its name.
+    List,
+    /// Make a helper. Its id comes from its name, and its entity is `<kind>.<id>`.
+    Add {
+        kind: HelperKind,
+        name: String,
+        #[command(flatten)]
+        settings: HelperSettings,
+    },
+    /// Change a helper's settings. What isn't given stays as it is.
+    Set {
+        kind: HelperKind,
+        /// The id, not the entity.
+        id: String,
+        /// A new name.
+        #[arg(long)]
+        name: Option<String>,
+        #[command(flatten)]
+        settings: HelperSettings,
+    },
+    Remove {
+        kind: HelperKind,
+        /// The id, not the entity.
+        id: String,
+    },
     /// A toggle's id comes from its name. The entity is `switch.<id>`.
     Toggle {
         #[command(subcommand)]
         cmd: ToggleCmd,
     },
+}
+
+/// A kind of helper, as a person says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum HelperKind {
+    /// On or off: `switch.<id>`.
+    Toggle,
+    /// A value within `--min` and `--max`: `number.<id>`.
+    Number,
+    /// A number counted up and down: `number.<id>`.
+    Counter,
+    /// One of the `--option`s: `select.<id>`.
+    Choice,
+    /// A few words: `text.<id>`.
+    Text,
+    /// Something to press: `button.<id>`, and `event.<id>` for when it was.
+    Button,
+}
+
+impl HelperKind {
+    /// Its table in `extensions/helpers.toml`, which is also its part of the API's path.
+    pub fn table(self) -> &'static str {
+        match self {
+            Self::Toggle => "toggles",
+            Self::Number => "numbers",
+            Self::Counter => "counters",
+            Self::Choice => "selects",
+            Self::Text => "texts",
+            Self::Button => "buttons",
+        }
+    }
+}
+
+/// What a helper is set up with. Each kind takes the ones that mean something to it, and
+/// Irori says so when it's given one that doesn't.
+#[derive(Debug, Default, Args)]
+pub struct HelperSettings {
+    /// The least a number or a counter can be.
+    #[arg(long, allow_negative_numbers = true)]
+    pub min: Option<f64>,
+    /// The most a number or a counter can be.
+    #[arg(long, allow_negative_numbers = true)]
+    pub max: Option<f64>,
+    /// How finely a number is set, or how much one count is.
+    #[arg(long)]
+    pub step: Option<f64>,
+    /// What a number counts in: `%`, `°C`, `min`.
+    #[arg(long)]
+    pub unit: Option<String>,
+    /// How a number is set on a page: `slider` or `box`.
+    #[arg(long)]
+    pub mode: Option<String>,
+    /// One thing a choice can be. Give it once for each.
+    #[arg(long = "option")]
+    pub options: Vec<String>,
+    /// The fewest characters a text takes.
+    #[arg(long)]
+    pub min_length: Option<u32>,
+    /// The most characters a text takes.
+    #[arg(long)]
+    pub max_length: Option<u32>,
+    /// What it is until someone sets it: `true` or `false` for a toggle, a number, an option,
+    /// or a text.
+    #[arg(long, allow_hyphen_values = true)]
+    pub initial: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

@@ -121,6 +121,7 @@ pub fn Devices() -> impl IntoView {
     });
 
     Effect::new(move |_| remember(VIEW_KEY, showing.get().key()));
+    let kept = Memo::new(move |_| live.home.with(kept_helpers));
 
     view! {
         <div class="page-head">
@@ -205,18 +206,19 @@ pub fn Devices() -> impl IntoView {
         })}
 
         // The two lists watch the home themselves, and only what they're made of (`tables.rs`).
-        // Helpers are few and hold nothing a person is typing, so they're drawn with each reading.
+        // Helpers are redrawn when a helper changes and not with every reading in the home, so
+        // a text being typed into one isn't taken away by a sensor across the house.
         {move || match showing.get() {
             Showing::Devices => view! { <tables::DeviceTable filter=filter /> }.into_any(),
             Showing::Entities => view! { <tables::EntityTable filter=filter /> }.into_any(),
-            Showing::Helpers => helpers(&live.home.get(), controls),
+            Showing::Helpers => helpers(&kept.get(), controls),
         }}
         {move || adding_helper.get().then(|| view! {
             <crate::modal::Modal
                 title="Add a helper".to_owned()
                 on_close=move || adding_helper.set(false)
             >
-                <AddToggle on_added=move || adding_helper.set(false) />
+                <AddHelper on_added=move || adding_helper.set(false) />
             </crate::modal::Modal>
         })}
     }
@@ -246,33 +248,127 @@ pub fn icon(protocol: &str, has_icon: bool) -> AnyView {
     }
 }
 
-/// The helpers in the home: the switches Irori keeps itself, each with its switch and a way to
-/// remove it. Redrawn with every reading, so it holds nothing a person is typing.
-fn helpers(home: &Home, controls: Controls) -> AnyView {
-    let states: BTreeMap<_, _> = home.states.iter().map(|s| (&s.entity_id, s)).collect();
-    let mut toggles: Vec<_> = home
+/// A kind of helper, as the page knows it. The same list as `irori_helpers::KINDS`, which a
+/// page can't link against: where each kind is kept, what one is called, and what its
+/// entities' unique ids begin with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HelperKind {
+    table: &'static str,
+    word: &'static str,
+    prefix: &'static str,
+    /// What it's for, in the form that makes one.
+    about: &'static str,
+    example: &'static str,
+}
+
+const HELPER_KINDS: [HelperKind; 6] = [
+    HelperKind {
+        table: "toggles",
+        word: "Toggle",
+        prefix: "toggle",
+        about: "On or off. A switch for \"guests are over\" or \"holiday mode\".",
+        example: "Guests are over",
+    },
+    HelperKind {
+        table: "numbers",
+        word: "Number",
+        prefix: "number",
+        about: "A value within a range, set with a slider or typed. A flow reads it instead \
+                of having the number written into it.",
+        example: "Evening brightness",
+    },
+    HelperKind {
+        table: "counters",
+        word: "Counter",
+        prefix: "counter",
+        about: "A number that flows count up and down, and set back to where it starts.",
+        example: "Doorbell rings today",
+    },
+    HelperKind {
+        table: "selects",
+        word: "Choice",
+        prefix: "select",
+        about: "One of a list you write: home, away, asleep.",
+        example: "House mode",
+    },
+    HelperKind {
+        table: "texts",
+        word: "Text",
+        prefix: "text",
+        about: "A few words: a message for a display, a note a flow reads.",
+        example: "Hall display message",
+    },
+    HelperKind {
+        table: "buttons",
+        word: "Button",
+        prefix: "button",
+        about: "Something to press, here or from a flow, that other flows start from.",
+        example: "Movie time",
+    },
+];
+
+/// A button's second entity: the `event` that says each time it was pressed.
+const PRESSED: &str = "pressed";
+
+/// One helper as the list shows it.
+#[derive(Debug, Clone, PartialEq)]
+struct Kept {
+    kind: HelperKind,
+    /// Its id in its kind's table.
+    id: String,
+    entity: Entity,
+    state: Option<EntityState>,
+    /// The entity a flow starts from when this is a button.
+    fires: Option<EntityId>,
+}
+
+/// The helpers in the home, by name. Compared whole, so the list is redrawn only when one of
+/// them changes.
+fn kept_helpers(home: &Home) -> Vec<Kept> {
+    let ours = |entity: &&Entity| entity.protocol.as_str() == HELPERS;
+    let mut kept: Vec<Kept> = home
         .entities
         .iter()
-        .filter(|entity| entity.protocol.as_str() == HELPERS)
+        .filter(ours)
         .filter_map(|entity| {
-            let id = entity
-                .unique_id
-                .as_str()
-                .strip_prefix("toggle-")?
-                .to_owned();
-            Some((id, entity.clone(), states.get(&entity.id).copied().cloned()))
+            let (prefix, id) = entity.unique_id.as_str().split_once('-')?;
+            let kind = *HELPER_KINDS.iter().find(|kind| kind.prefix == prefix)?;
+            let pressed = format!("{PRESSED}-{id}");
+            Some(Kept {
+                kind,
+                id: id.to_owned(),
+                entity: entity.clone(),
+                state: home
+                    .states
+                    .iter()
+                    .find(|state| state.entity_id == entity.id)
+                    .cloned(),
+                fires: home
+                    .entities
+                    .iter()
+                    .filter(ours)
+                    .find(|other| other.unique_id.as_str() == pressed)
+                    .map(|other| other.id.clone()),
+            })
         })
         .collect();
-    toggles.sort_by(|a, b| a.1.name.as_str().cmp(b.1.name.as_str()));
-    if toggles.is_empty() {
+    kept.sort_by(|a, b| a.entity.name.as_str().cmp(b.entity.name.as_str()));
+    kept
+}
+
+/// The helpers in the home: the values Irori keeps itself, each with its control and a way to
+/// rename and remove it.
+fn helpers(kept: &[Kept], controls: Controls) -> AnyView {
+    if kept.is_empty() {
         return view! {
             <section class="card">
                 <h2>"No helpers yet"</h2>
                 <p class="muted">
                     "A helper is a value Irori keeps itself rather than a device reporting it: a "
-                    "switch for \"guests are over\" or \"holiday mode\", say. It stays as it was "
-                    "left through restarts, and rules (M1.4) will be able to read and flip it. "
-                    "Make one with \"+ Add helper\" above."
+                    "switch for \"guests are over\", a number for how bright the evening should "
+                    "be, a button for \"movie time\". It stays as it was left through restarts, "
+                    "and flows read it, set it and start from it like anything else in the "
+                    "home. Make one with \"+ Add helper\" above."
                 </p>
             </section>
         }
@@ -280,23 +376,35 @@ fn helpers(home: &Home, controls: Controls) -> AnyView {
     }
     view! {
         <section class="card">
-            <ul class="room-devices">
-                {toggles
-                    .into_iter()
-                    .map(|(id, entity, state)| {
-                        let name = entity.name.to_string();
-                        let shown = entity.id.to_string();
-                        let offline = state
+            <ul class="room-devices helper-list">
+                {kept
+                    .iter()
+                    .cloned()
+                    .map(|helper| {
+                        let name = helper.entity.name.to_string();
+                        let offline = helper
+                            .state
                             .as_ref()
                             .is_some_and(|s| s.availability == Availability::Unavailable);
-                        let knob = control(&entity, state.as_ref(), offline, controls);
+                        let knob = control(&helper.entity, helper.state.as_ref(), offline, controls);
+                        // What a flow names: the entity, and for a button the one it starts from.
+                        let ids = match &helper.fires {
+                            Some(fires) => format!("{} · starts flows as {fires}", helper.entity.id),
+                            None => helper.entity.id.to_string(),
+                        };
                         view! {
                             <li>
                                 <span class="name">{name.clone()}</span>
-                                <code class="muted small">{shown}</code>
+                                <span class="helper-kind">{helper.kind.word}</span>
+                                <code class="muted small">{ids}</code>
                                 <span class="room-actions">
                                     {knob}
-                                    <ToggleActions id=id entity_id=entity.id.clone() name=name />
+                                    <HelperActions
+                                        kind=helper.kind
+                                        id=helper.id
+                                        entity_id=helper.entity.id.clone()
+                                        name=name
+                                    />
                                 </span>
                             </li>
                         }
@@ -311,17 +419,18 @@ fn helpers(home: &Home, controls: Controls) -> AnyView {
 /// The protocol that keeps helpers.
 const HELPERS: &str = "helpers";
 
-/// Renaming and removing a toggle. A toggle has one name, kept with its definition in
+/// Renaming and removing a helper. It has one name, kept with its definition in
 /// `extensions/helpers.toml`; renaming it here changes that one (ROADMAP D36).
 #[component]
-fn ToggleActions(id: String, entity_id: EntityId, name: String) -> impl IntoView {
+fn HelperActions(kind: HelperKind, id: String, entity_id: EntityId, name: String) -> impl IntoView {
     let live = expect_context::<crate::Live>();
     let trouble = expect_context::<HelperTrouble>().0;
+    let word = kind.word.to_lowercase();
     let rename = {
         let name = name.clone();
         move |_| {
             let Ok(Some(typed)) =
-                window().prompt_with_message_and_default("Rename this toggle", &name)
+                window().prompt_with_message_and_default(&format!("Rename this {word}"), &name)
             else {
                 return;
             };
@@ -354,7 +463,7 @@ fn ToggleActions(id: String, entity_id: EntityId, name: String) -> impl IntoView
         }
         let id = id.clone();
         spawn_local(async move {
-            match crate::api::remove_toggle(&id).await {
+            match crate::api::remove_helper(kind.table, &id).await {
                 Ok(()) => {
                     trouble.set(None);
                     crate::refresh(live);
@@ -373,22 +482,119 @@ fn ToggleActions(id: String, entity_id: EntityId, name: String) -> impl IntoView
 #[derive(Debug, Clone, Copy)]
 struct HelperTrouble(RwSignal<Option<String>>);
 
-/// Making a toggle. Outside the list, which redraws with every reading, so what's being typed
-/// survives it (ROADMAP D33).
+/// What's typed into the form that makes a helper. Every kind has a name; the rest belong to
+/// one kind or another, and only that kind's are sent.
+#[derive(Debug, Clone, Copy)]
+struct HelperForm {
+    name: RwSignal<String>,
+    min: RwSignal<String>,
+    max: RwSignal<String>,
+    step: RwSignal<String>,
+    unit: RwSignal<String>,
+    options: RwSignal<String>,
+}
+
+impl HelperForm {
+    fn new() -> Self {
+        Self {
+            name: RwSignal::new(String::new()),
+            min: RwSignal::new("0".to_owned()),
+            max: RwSignal::new("100".to_owned()),
+            step: RwSignal::new("1".to_owned()),
+            unit: RwSignal::new(String::new()),
+            options: RwSignal::new(String::new()),
+        }
+    }
+
+    /// The fields the API takes for a helper of `kind`, or what's wrong with what was typed.
+    fn fields(
+        self,
+        kind: HelperKind,
+        name: &irori_types::Name,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        let number = |signal: RwSignal<String>, what: &str| {
+            signal
+                .get_untracked()
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| format!("{what} has to be a number"))
+        };
+        let mut fields = serde_json::Map::new();
+        fields.insert("name".into(), serde_json::json!(name.as_str()));
+        match kind.table {
+            "numbers" => {
+                fields.insert(
+                    "min".into(),
+                    serde_json::json!(number(self.min, "The least")?),
+                );
+                fields.insert(
+                    "max".into(),
+                    serde_json::json!(number(self.max, "The most")?),
+                );
+                fields.insert(
+                    "step".into(),
+                    serde_json::json!(number(self.step, "The step")?),
+                );
+                let unit = self.unit.get_untracked();
+                if !unit.trim().is_empty() {
+                    fields.insert("unit".into(), serde_json::json!(unit.trim()));
+                }
+            }
+            "counters" => {
+                fields.insert(
+                    "step".into(),
+                    serde_json::json!(number(self.step, "The step")?),
+                );
+            }
+            "selects" => {
+                let options = split_options(&self.options.get_untracked());
+                if options.is_empty() {
+                    return Err("A choice needs at least one thing to choose".to_owned());
+                }
+                fields.insert("options".into(), serde_json::json!(options));
+            }
+            _ => {}
+        }
+        Ok(fields)
+    }
+}
+
+/// What a choice can be, from what was typed: one to a line, or with commas between them.
+fn split_options(typed: &str) -> Vec<String> {
+    let mut options: Vec<String> = Vec::new();
+    for option in typed.split(['\n', ',']).map(str::trim) {
+        if !option.is_empty() && !options.iter().any(|seen| seen == option) {
+            options.push(option.to_owned());
+        }
+    }
+    options
+}
+
+/// Making a helper: which kind, its name, and what that kind needs. Outside the list, so what's
+/// being typed survives the list redrawing (ROADMAP D33).
 #[component]
-fn AddToggle(#[prop(into)] on_added: Callback<()>) -> impl IntoView {
+fn AddHelper(#[prop(into)] on_added: Callback<()>) -> impl IntoView {
     let live = expect_context::<crate::Live>();
     let trouble = expect_context::<HelperTrouble>().0;
-    let name = RwSignal::new(String::new());
+    let kind = RwSignal::new(HELPER_KINDS[0]);
+    let form = HelperForm::new();
     let add = move || {
-        let Some(named) = crate::settings::named(name.get(), trouble) else {
+        let Some(named) = crate::settings::named(form.name.get_untracked(), trouble) else {
             return;
         };
-        name.set(String::new());
+        let kind = kind.get_untracked();
+        let fields = match form.fields(kind, &named) {
+            Ok(fields) => fields,
+            Err(why) => {
+                trouble.set(Some(why));
+                return;
+            }
+        };
         spawn_local(async move {
-            match crate::api::add_toggle(named).await {
+            match crate::api::add_helper(kind.table, &fields).await {
                 Ok(()) => {
                     trouble.set(None);
+                    form.name.set(String::new());
                     crate::refresh(live);
                     on_added.run(());
                 }
@@ -396,29 +602,80 @@ fn AddToggle(#[prop(into)] on_added: Callback<()>) -> impl IntoView {
             }
         });
     };
+    let field = |label: &'static str, signal: RwSignal<String>, numeric: bool| {
+        view! {
+            <label class="helper-field">
+                <span>{label}</span>
+                <input
+                    type="text"
+                    inputmode=if numeric { "decimal" } else { "text" }
+                    prop:value=signal
+                    on:input:target=move |ev| signal.set(ev.target().value())
+                />
+            </label>
+        }
+    };
     view! {
         <p class="muted">
-            "A helper is a value Irori keeps itself rather than a device reporting it: a switch "
-            "for \"guests are over\" or \"holiday mode\", say. It stays as it was left through "
-            "restarts, and rules (M1.4) will be able to read and flip it."
+            "A helper is a value Irori keeps itself rather than a device reporting it. It stays "
+            "as it was left through restarts, and flows read it, set it and start from it."
         </p>
+        {crate::segmented::segmented(
+            "Which kind of helper",
+            HELPER_KINDS.into_iter().map(|kind| (kind, kind.word)).collect(),
+            kind.into(),
+            move |picked| {
+                trouble.set(None);
+                kind.set(picked);
+            },
+        )}
+        <p class="muted helper-about">{move || kind.get().about}</p>
         {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
         <form
-            class="inline-form"
+            class="helper-form"
             on:submit=move |ev| {
                 ev.prevent_default();
                 add();
             }
         >
-            <input
-                type="text"
-                aria-label="Name of the new toggle"
-                placeholder="Guests are over"
-                prop:value=name
-                on:input:target=move |ev| name.set(ev.target().value())
-            />
-            <button type="submit" class="add" disabled=move || name.get().trim().is_empty()>
-                "Add helper"
+            <label class="helper-field wide">
+                <span>"Name"</span>
+                <input
+                    type="text"
+                    placeholder=move || kind.get().example
+                    prop:value=form.name
+                    on:input:target=move |ev| form.name.set(ev.target().value())
+                />
+            </label>
+            {move || match kind.get().table {
+                "numbers" => view! {
+                    {field("Least", form.min, true)}
+                    {field("Most", form.max, true)}
+                    {field("Step", form.step, true)}
+                    {field("Unit (optional)", form.unit, false)}
+                }
+                .into_any(),
+                "counters" => view! { {field("Counts by", form.step, true)} }.into_any(),
+                "selects" => view! {
+                    <label class="helper-field wide">
+                        <span>"What it can be, one to a line"</span>
+                        <textarea
+                            rows="4"
+                            placeholder="home\naway\nasleep"
+                            prop:value=form.options
+                            on:input:target=move |ev| form.options.set(ev.target().value())
+                        ></textarea>
+                    </label>
+                }
+                .into_any(),
+                _ => ().into_any(),
+            }}
+            <button
+                type="submit"
+                class="add"
+                disabled=move || form.name.get().trim().is_empty()
+            >
+                {move || format!("Add {}", kind.get().word.to_lowercase())}
             </button>
         </form>
     }
@@ -1571,5 +1828,19 @@ fn pull(event: &ev::PointerEvent, open: Signal<bool>, toggle: Callback<()>) {
         && down != open.get_untracked()
     {
         toggle.run(());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_choices_options_are_read_a_line_or_a_comma_apart() {
+        assert_eq!(
+            split_options("home\naway, asleep\n\n away "),
+            ["home", "away", "asleep"]
+        );
+        assert!(split_options(" \n , ").is_empty());
     }
 }

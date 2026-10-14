@@ -38,7 +38,7 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | C30 | Engine API for extensions | Engines subscribe to state and registry, read history, call services as `Origin::Automation`; API scopes enforced (`docs/specs/automations.md` §B2) | ✅ | C6 |
 | C31 | App pages in the sidebar | Extensions add a sidebar page: static bundle, sandboxed frame, bridge, engine RPC (`docs/specs/automations.md` §B3–B4) | ✅ | C6, C12 |
 | C32 | Entity kinds | Every Home Assistant device kind: 19 in (covers, locks, fans, climate, media players, updates…), `entity_format` so older engines keep working, unsupported parts of a device listed instead of dropped. Next: alarm, date/time, vacuum, lawn mower, remote, scene, device tracker | 🟠 | C2 |
-| C33 | Helpers | Values Irori keeps itself, built into the core (`extensions/helpers.toml`). Toggles only; numbers, text and timers to come | 🟠 | C5 |
+| C33 | Helpers | Values Irori keeps itself, built into the core (`extensions/helpers.toml`): toggles, numbers, counters, choices, texts and buttons, each an ordinary entity, made from the Helpers tab, the CLI or the file. Any number can be counted up and down. To come: dates and times, timers, schedules, and values worked out from other entities (groups, thresholds, meters) | 🟠 | C5 |
 | C34 | Irori as a device | The machine Irori runs on is a device in its own home, with CPU, memory and disk meters | ✅ | C5 |
 | C35 | Dev container & device lab | `dev/pi`: a Raspberry Pi-like container to try a PR; `dev/lab`: emulated ESPHome and Zigbee devices. Matter nodes need binaries that aren't there | 🟠 | C8 |
 

@@ -207,10 +207,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/extensions/{id}/install", post(install_official))
         .route("/api/extensions/install", post(install_url))
         .route("/api/extensions/{id}", axum::routing::delete(uninstall))
-        .route("/api/helpers/toggles", post(add_toggle))
+        .route("/api/helpers", get(list_helpers))
+        .route("/api/helpers/{table}", post(add_helper))
         .route(
-            "/api/helpers/toggles/{id}",
-            axum::routing::delete(remove_toggle),
+            "/api/helpers/{table}/{id}",
+            axum::routing::patch(edit_helper).delete(remove_helper),
         )
         .route("/api/extensions/{id}/icon.svg", get(extension_icon))
         .route("/api/extensions/{id}/log", get(extension_log))
@@ -1070,24 +1071,32 @@ async fn edit_entity(
     // A helper's name lives where the helper is defined. Writing it to entities.toml as well
     // would give it two names, one in each file (ROADMAP D36).
     if key.protocol.as_str() == HELPERS.as_str()
-        && let Some(toggle) = key.unique_id.as_str().strip_prefix("toggle-")
+        && let Some((kind, helper, main)) =
+            irori_helpers::HelperKind::of_unique(key.unique_id.as_str())
     {
+        // A button's event is named after its button: there's one name to change.
+        if !main {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                format!("it's named after its {}; rename that", kind.word),
+            );
+        }
         let Some(Some(name)) = request.name.clone() else {
             return refused(
                 StatusCode::BAD_REQUEST,
                 "a helper always has a name; send the new one".to_owned(),
             );
         };
-        let toggle = toggle.to_owned();
+        let helper = helper.to_owned();
         let renamed = state
             .0
             .config
             .edit_extension(core, &HELPERS, |file| {
                 let entry = file
-                    .get_mut("toggles")
-                    .and_then(|toggles| toggles.get_mut(&toggle))
+                    .get_mut(kind.table)
+                    .and_then(|table| table.get_mut(&helper))
                     .and_then(serde_json::Value::as_object_mut)
-                    .ok_or_else(|| Refused(format!("there's no toggle `{toggle}`")))?;
+                    .ok_or_else(|| Refused(format!("there's no {} `{helper}`", kind.word)))?;
                 entry.insert("name".into(), serde_json::json!(name.as_str()));
                 Ok(())
             })
@@ -1113,16 +1122,76 @@ async fn edit_entity(
     }
 }
 
-/// The helpers extension's id: its toggles are kept in `extensions/helpers.toml`.
+/// The helpers extension's id: its helpers are kept in `extensions/helpers.toml`.
 static HELPERS: LazyLock<ExtensionId> =
     LazyLock::new(|| ExtensionId::try_from("helpers").expect("a valid extension id"));
 
-/// Makes a toggle: `{"name": "Guests are over"}`. Its id comes from the name and never changes;
-/// its entity is `switch.<id>`.
-async fn add_toggle(State(state): State<AppState>, Json(request): Json<AreaRequest>) -> Response {
-    if request.floor.is_some() {
-        return refused(StatusCode::BAD_REQUEST, "a toggle has no floor".to_owned());
+/// The kind of helper a path names (`toggles`, `numbers`…), or the refusal for one there isn't.
+fn helper_kind(table: &str) -> Result<&'static irori_helpers::HelperKind, Box<Response>> {
+    irori_helpers::HelperKind::of_table(table).ok_or_else(|| {
+        let kinds: Vec<&str> = irori_helpers::KINDS.iter().map(|kind| kind.table).collect();
+        Box::new(refused(
+            StatusCode::NOT_FOUND,
+            format!(
+                "there are no helpers called `{table}`; there are: {}",
+                kinds.join(", ")
+            ),
+        ))
+    })
+}
+
+/// Every helper, as it's written in `extensions/helpers.toml`: its kind, its id, its entity,
+/// and its settings.
+async fn list_helpers(State(state): State<AppState>) -> Response {
+    let file = state.0.config.extension_settings(&HELPERS).await;
+    let mut helpers = Vec::new();
+    for kind in irori_helpers::KINDS {
+        let Some(table) = file.get(kind.table).and_then(serde_json::Value::as_object) else {
+            continue;
+        };
+        for (id, settings) in table {
+            let entities = irori_types::ObjectId::try_from(id.as_str())
+                .ok()
+                .and_then(|id| kind.check(&id, settings).ok())
+                .unwrap_or_default();
+            let mut helper = serde_json::json!({
+                "kind": kind.table,
+                "id": id,
+                "entity_id": entities.first(),
+                "entities": entities,
+            });
+            if let (Some(helper), Some(settings)) = (helper.as_object_mut(), settings.as_object()) {
+                for (key, value) in settings {
+                    helper.entry(key.clone()).or_insert_with(|| value.clone());
+                }
+            }
+            helpers.push(helper);
+        }
     }
+    Json(helpers).into_response()
+}
+
+/// Makes a helper: `POST /api/helpers/numbers {"name": "Evening brightness", "min": 0, "max":
+/// 100}`. Its id comes from the name and never changes; its entity is `<kind>.<id>`.
+async fn add_helper(
+    State(state): State<AppState>,
+    Path(table): Path<String>,
+    Json(settings): Json<serde_json::Map<String, serde_json::Value>>,
+) -> Response {
+    let kind = match helper_kind(&table) {
+        Ok(kind) => kind,
+        Err(refusal) => return *refusal,
+    };
+    let name = match settings.get("name").map(Name::deserialize) {
+        Some(Ok(name)) => name,
+        Some(Err(e)) => return refused(StatusCode::BAD_REQUEST, format!("`name`: {e}")),
+        None => {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                format!("a {} needs a `name`", kind.word),
+            );
+        }
+    };
     let taken: Vec<String> = state
         .0
         .core
@@ -1130,57 +1199,129 @@ async fn add_toggle(State(state): State<AppState>, Json(request): Json<AreaReque
         .iter()
         .map(|entity| entity.id.to_string())
         .collect();
+    let settings = serde_json::Value::Object(settings);
     let made = state
         .0
         .config
         .edit_extension(&state.0.core, &HELPERS, |file| {
-            let toggles = file
-                .entry("toggles")
+            let helpers = file
+                .entry(kind.table)
                 .or_insert_with(|| serde_json::json!({}))
                 .as_object_mut()
                 .ok_or_else(|| {
-                    Refused("`toggles` in extensions/helpers.toml isn't a table".into())
+                    Refused(format!(
+                        "`{}` in extensions/helpers.toml isn't a table",
+                        kind.table
+                    ))
                 })?;
-            // An id no toggle has, and no other switch either: `switch.<id>` has to be free.
-            let base = irori_core::new_area_id(&request.name, &[]).to_string();
-            let id = (1..)
-                .map(|n| {
-                    if n == 1 {
-                        base.clone()
-                    } else {
-                        format!("{base}_{n}")
+            // An id no helper of this kind has, and whose entities nothing else is.
+            let base = irori_core::new_area_id(&name, &[]).to_string();
+            let mut problem = None;
+            let found = (1..=1000).find_map(|n| {
+                let id = if n == 1 {
+                    base.clone()
+                } else {
+                    format!("{base}_{n}")
+                };
+                if helpers.contains_key(&id) {
+                    return None;
+                }
+                match kind.check(
+                    &irori_types::ObjectId::try_from(id.as_str()).ok()?,
+                    &settings,
+                ) {
+                    Ok(entities) if entities.iter().any(|entity| taken.contains(entity)) => None,
+                    Ok(entities) => Some((id, entities)),
+                    // Wrong whatever it's called: say so rather than try a thousand ids.
+                    Err(why) => {
+                        problem.get_or_insert(why);
+                        Some((String::new(), Vec::new()))
                     }
-                })
-                .find(|id| !toggles.contains_key(id) && !taken.contains(&format!("switch.{id}")))
-                .expect("an unbounded range always finds a free id");
-            toggles.insert(
-                id.clone(),
-                serde_json::json!({"name": request.name.as_str()}),
-            );
-            Ok(id)
+                }
+            });
+            if let Some(why) = problem {
+                return Err(Refused(why));
+            }
+            let (id, entities) =
+                found.ok_or_else(|| Refused(format!("no id is free for `{name}`")))?;
+            helpers.insert(id.clone(), settings.clone());
+            Ok((id, entities))
         })
         .await;
     match made {
-        Ok(id) => (
+        Ok((id, entities)) => (
             StatusCode::CREATED,
-            Json(serde_json::json!({"id": id, "entity_id": format!("switch.{id}")})),
+            Json(serde_json::json!({
+                "kind": kind.table,
+                "id": id,
+                "entity_id": entities.first(),
+                "entities": entities,
+            })),
         )
             .into_response(),
         Err(e) => edit_failed(e),
     }
 }
 
-async fn remove_toggle(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+/// Changes a helper's settings: the fields sent replace what it had, and `null` takes one
+/// away. `PATCH /api/helpers/numbers/evening_brightness {"max": 80}`. Its id and its entity
+/// stay; a value it can no longer have goes back to its `initial`.
+async fn edit_helper(
+    State(state): State<AppState>,
+    Path((table, id)): Path<(String, String)>,
+    Json(changes): Json<serde_json::Map<String, serde_json::Value>>,
+) -> Response {
+    let kind = match helper_kind(&table) {
+        Ok(kind) => kind,
+        Err(refusal) => return *refusal,
+    };
+    let edited = state
+        .0
+        .config
+        .edit_extension(&state.0.core, &HELPERS, |file| {
+            let entry = file
+                .get_mut(kind.table)
+                .and_then(|table| table.get_mut(&id))
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or_else(|| Refused(format!("there's no {} `{id}`", kind.word)))?;
+            for (key, value) in &changes {
+                if value.is_null() {
+                    entry.remove(key);
+                } else {
+                    entry.insert(key.clone(), value.clone());
+                }
+            }
+            let object_id =
+                irori_types::ObjectId::try_from(id.as_str()).map_err(|e| Refused(e.to_string()))?;
+            kind.check(&object_id, &serde_json::Value::Object(entry.clone()))
+                .map(|_| ())
+                .map_err(Refused)
+        })
+        .await;
+    match edited {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+async fn remove_helper(
+    State(state): State<AppState>,
+    Path((table, id)): Path<(String, String)>,
+) -> Response {
+    let kind = match helper_kind(&table) {
+        Ok(kind) => kind,
+        Err(refusal) => return *refusal,
+    };
     let removed = state
         .0
         .config
         .edit_extension(&state.0.core, &HELPERS, |file| {
             let gone = file
-                .get_mut("toggles")
+                .get_mut(kind.table)
                 .and_then(serde_json::Value::as_object_mut)
-                .and_then(|toggles| toggles.remove(&id));
+                .and_then(|helpers| helpers.remove(&id));
             gone.map(|_| ())
-                .ok_or_else(|| Refused(format!("there's no toggle `{id}`")))
+                .ok_or_else(|| Refused(format!("there's no {} `{id}`", kind.word)))
         })
         .await;
     match removed {
@@ -4349,6 +4490,248 @@ mod tests {
         assert_eq!(status, StatusCode::NO_CONTENT);
         until("the removed toggle's entity is gone", || {
             core.state(&holiday).is_none()
+        })
+        .await?;
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Every kind of helper is made the same way and is an entity of a kind Irori already has:
+    /// a number is set and counted within its range, a choice takes only its options, a button
+    /// says each time it was pressed. What's wrong with one is said when it's made.
+    #[tokio::test]
+    async fn helpers_of_every_kind_are_made_set_changed_and_listed() -> anyhow::Result<()> {
+        let storage: Arc<dyn irori_protocol::Storage> =
+            Arc::new(irori_protocol::MemoryStorage::default());
+        let core = core();
+        core.use_storage(Arc::clone(&storage));
+        let server = Server::new(core.clone())?;
+        let host = helpers(&core).await?;
+        let number_is = |core: &Core, id: &EntityId, value: f64| {
+            core.state(id).and_then(|s| s.state)
+                == Some(irori_types::State::Number(irori_types::NumberState {
+                    value,
+                }))
+        };
+        let command = |entity: &EntityId, command: &str, data: serde_json::Value| {
+            let mut body = serde_json::json!({"entity_id": entity, "command": command});
+            if !data.is_null() {
+                body["data"] = data;
+            }
+            server.json("POST", "/api/command", body)
+        };
+
+        // A number: within its range, at its `initial` until it's set.
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/helpers/numbers",
+                serde_json::json!({"name": "Evening brightness", "min": 0, "max": 100,
+                    "step": 5, "unit": "%", "initial": 40}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        assert_eq!(made["entity_id"], "number.evening_brightness");
+        let evening = EntityId::try_from("number.evening_brightness")?;
+        until("the number exists", || number_is(&core, &evening, 40.0)).await?;
+        let (status, body) =
+            command(&evening, "set_value", serde_json::json!({"value": 95})).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("set", || number_is(&core, &evening, 95.0)).await?;
+        let (status, body) =
+            command(&evening, "set_value", serde_json::json!({"value": 140})).await?;
+        assert_ne!(status, StatusCode::OK, "{body}");
+        // Counted by its step, and no further than its range.
+        for _ in 0..2 {
+            let (status, body) = command(&evening, "increment", serde_json::Value::Null).await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+        until("counted up to the end", || {
+            number_is(&core, &evening, 100.0)
+        })
+        .await?;
+
+        // What's wrong with one is said, and nothing is made.
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/helpers/numbers",
+                serde_json::json!({"name": "Backwards", "min": 10, "max": 1}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("min 10 is above its max 1")),
+            "{body}"
+        );
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/helpers/gadgets",
+                serde_json::json!({"name": "X"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("toggles, numbers")),
+            "{body}"
+        );
+
+        // A counter is a number too, so one with the same name gets an id of its own.
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/helpers/counters",
+                serde_json::json!({"name": "Evening brightness"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        assert_eq!(made["entity_id"], "number.evening_brightness_2");
+        let count = EntityId::try_from("number.evening_brightness_2")?;
+        until("the counter exists", || number_is(&core, &count, 0.0)).await?;
+        // The first number kept what it was left at through the restart a new helper is.
+        until("kept", || number_is(&core, &evening, 100.0)).await?;
+
+        // A choice takes only what it lists.
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/helpers/selects",
+                serde_json::json!({"name": "House mode", "options": ["home", "away"]}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        let mode = EntityId::try_from("select.house_mode")?;
+        let mode_is = |core: &Core, option: &str| {
+            core.state(&mode).and_then(|s| s.state)
+                == Some(irori_types::State::Select(irori_types::SelectState {
+                    option: option.to_owned(),
+                }))
+        };
+        until("the choice exists", || mode_is(&core, "home")).await?;
+        let (status, body) = command(
+            &mode,
+            "select_option",
+            serde_json::json!({"option": "away"}),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("chosen", || mode_is(&core, "away")).await?;
+        let (status, _) = command(
+            &mode,
+            "select_option",
+            serde_json::json!({"option": "asleep"}),
+        )
+        .await?;
+        assert_ne!(status, StatusCode::OK);
+
+        // A button is pressed, and its event says so each time.
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/helpers/buttons",
+                serde_json::json!({"name": "Movie time"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        assert_eq!(
+            made["entities"],
+            serde_json::json!(["button.movie_time", "event.movie_time"])
+        );
+        let button = EntityId::try_from("button.movie_time")?;
+        let pressed = EntityId::try_from("event.movie_time")?;
+        until("the button exists", || core.state(&pressed).is_some()).await?;
+        assert_eq!(core.state(&pressed).and_then(|s| s.state), None);
+        let (status, body) = command(&button, "press", serde_json::Value::Null).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("pressed", || {
+            core.state(&pressed).and_then(|s| s.state)
+                == Some(irori_types::State::Event(irori_types::EventState {
+                    event_type: "pressed".to_owned(),
+                }))
+        })
+        .await?;
+        let first = core.state(&pressed).map(|s| s.last_changed);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        command(&button, "press", serde_json::Value::Null).await?;
+        until("pressed again", || {
+            core.state(&pressed).map(|s| s.last_changed) != first
+        })
+        .await?;
+        // Its event is named after it: there's one name to change.
+        let (status, _) = server
+            .json(
+                "PATCH",
+                "/api/entities/event.movie_time",
+                serde_json::json!({"name": "Film"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // A changed range: a value it can no longer have goes back to its `initial`.
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/helpers/numbers/evening_brightness",
+                serde_json::json!({"max": 80}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        until("back to its initial", || number_is(&core, &evening, 40.0)).await?;
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/helpers/numbers/evening_brightness",
+                serde_json::json!({"max": 30}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("`initial`")),
+            "{body}"
+        );
+
+        // All of them, as they're written.
+        let listed = server.read("/api/helpers").await?;
+        let kinds: Vec<(&str, &str)> = listed
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(|h| {
+                (
+                    h["kind"].as_str().unwrap_or(""),
+                    h["id"].as_str().unwrap_or(""),
+                )
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("numbers", "evening_brightness"),
+                ("counters", "evening_brightness_2"),
+                ("selects", "house_mode"),
+                ("buttons", "movie_time"),
+            ]
+        );
+        assert_eq!(listed[0]["max"], 80);
+        assert_eq!(listed[0]["entity_id"], "number.evening_brightness");
+
+        let (status, _) = server
+            .json(
+                "DELETE",
+                "/api/helpers/buttons/movie_time",
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        until("the button and its event are gone", || {
+            core.state(&button).is_none() && core.state(&pressed).is_none()
         })
         .await?;
         host.shutdown().await;

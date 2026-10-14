@@ -75,7 +75,7 @@ it needs and no others.
 
 | Scope | Allows |
 |---|---|
-| `registry:read` | `GET /api/devices`, `/api/entities`, `/api/areas`, `/api/floors`, `/api/floorplan`, `/api/extensions`, `/api/apps` |
+| `registry:read` | `GET /api/devices`, `/api/entities`, `/api/areas`, `/api/floors`, `/api/floorplan`, `/api/extensions`, `/api/helpers`, `/api/apps` |
 | `states:read` | `GET /api/states` |
 | `registry:read` and `states:read` | `GET /api/home` (the whole picture) |
 | `history:read` | `GET /api/history/<entity_id>`, `GET /api/history/<entity_id>/summary?since=<RFC3339>` |

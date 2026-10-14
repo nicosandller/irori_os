@@ -1,51 +1,93 @@
-//! Helpers: values Irori keeps itself rather than a device reporting them, for rules to use —
-//! a switch for "guests are over", say.
+//! Helpers: values Irori keeps itself rather than a device reporting them, for flows to use and
+//! for people to set from a page. A switch for "guests are over", a number for how bright the
+//! evening should be, a button for "movie time".
 //!
-//! Defined in `extensions/helpers.toml` in the config directory:
+//! Defined in `extensions/helpers.toml` in the config directory, a table per kind of helper:
 //!
 //! ```toml
 //! [toggles.guests_over]
 //! name = "Guests are over"
-//! initial = false          # what it is before anyone has switched it; optional
+//!
+//! [numbers.evening_brightness]
+//! name = "Evening brightness"
+//! min = 0
+//! max = 100
+//! unit = "%"
+//!
+//! [counters.doorbell_today]
+//! name = "Doorbell rings today"
+//!
+//! [selects.house_mode]
+//! name = "House mode"
+//! options = ["home", "away", "asleep"]
+//!
+//! [texts.hall_display]
+//! name = "Hall display message"
+//!
+//! [buttons.movie_time]
+//! name = "Movie time"
 //! ```
 //!
-//! Each toggle is a `switch.<id>` entity with no device. Its value is kept in the protocol's
-//! own storage (`docs/specs/protocols.md` §5), so it survives Irori restarting — and this
-//! protocol restarting, which is how a new or removed toggle arrives.
+//! Every helper is an ordinary entity of a kind Irori already has, with no device: a toggle is
+//! `switch.<id>`, a number and a counter `number.<id>`, a choice `select.<id>`, a text
+//! `text.<id>`, a button `button.<id>` with `event.<id>` for flows to start from. So nothing
+//! that reads or sets an entity needs to know a helper from a device. Each kind has its own
+//! module, which says what it's made of; this one keeps the values and answers the calls.
 //!
-//! Only toggles so far. Numbers, text and timers need entity kinds Irori doesn't have yet, and
-//! they come with rules (ROADMAP M1.4), which are what helpers are for.
+//! A value is kept in the protocol's own storage (`docs/specs/protocols.md` §5), so it survives
+//! Irori restarting, and this protocol restarting, which is how a new or removed helper
+//! arrives.
 
-use std::collections::BTreeMap;
+mod button;
+mod counter;
+mod number;
+mod select;
+mod text;
+mod toggle;
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use irori_protocol::types::{
-    Capabilities, EntityDescription, Name, ObjectId, Service, State, StateReport,
-    SwitchCapabilities, SwitchState, UniqueId,
+    Capabilities, ContextId, EntityDescription, EventState, Name, ObjectId, Service, State,
+    StateReport, Typed, UniqueId,
 };
 use irori_protocol::{Protocol, ProtocolContext, ProtocolError, ServiceError};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+pub use button::Button;
+pub use counter::Counter;
+pub use number::Number;
+pub use select::Select;
+pub use text::Text;
+pub use toggle::Toggle;
+
 /// The helpers protocol.
 #[derive(Debug)]
 pub struct Helpers;
 
-/// `extensions/helpers.toml`.
+/// `extensions/helpers.toml`: each kind of helper in its own table, by the id its entity gets.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
-    /// On/off values, by the id their entity gets (`switch.<id>`).
+    /// On/off values: `switch.<id>`.
     #[serde(default)]
     pub toggles: BTreeMap<ObjectId, Toggle>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Toggle {
-    pub name: Name,
-    /// What it is until someone switches it.
+    /// Values within a range: `number.<id>`.
     #[serde(default)]
-    pub initial: bool,
+    pub numbers: BTreeMap<ObjectId, Number>,
+    /// Numbers that are counted up and down: `number.<id>`.
+    #[serde(default)]
+    pub counters: BTreeMap<ObjectId, Counter>,
+    /// One of a list: `select.<id>`.
+    #[serde(default)]
+    pub selects: BTreeMap<ObjectId, Select>,
+    /// A few words: `text.<id>`.
+    #[serde(default)]
+    pub texts: BTreeMap<ObjectId, Text>,
+    /// Something to press: `button.<id>`, and `event.<id>` for when it was.
+    #[serde(default)]
+    pub buttons: BTreeMap<ObjectId, Button>,
 }
 
 impl Protocol for Helpers {
@@ -58,102 +100,542 @@ impl Protocol for Helpers {
     }
 }
 
-/// Where the list of entities this protocol last described is kept, so one whose toggle has
+/// A kind of helper: where it's defined, and what it's called.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HelperKind {
+    /// Its table in `extensions/helpers.toml`, and its part of the API's path: `toggles`.
+    pub table: &'static str,
+    /// What one is called, in a sentence: `toggle`.
+    pub word: &'static str,
+    /// What its entities' unique ids begin with: `toggle` for `toggle-<id>`. The first is the
+    /// entity a person thinks of as the helper.
+    pub prefixes: &'static [&'static str],
+}
+
+/// Every kind of helper there is, in the order pages offer them.
+pub const KINDS: &[HelperKind] = &[
+    HelperKind {
+        table: "toggles",
+        word: "toggle",
+        prefixes: &["toggle"],
+    },
+    HelperKind {
+        table: "numbers",
+        word: "number",
+        prefixes: &["number"],
+    },
+    HelperKind {
+        table: "counters",
+        word: "counter",
+        prefixes: &["counter"],
+    },
+    HelperKind {
+        table: "selects",
+        word: "choice",
+        prefixes: &["select"],
+    },
+    HelperKind {
+        table: "texts",
+        word: "text",
+        prefixes: &["text"],
+    },
+    HelperKind {
+        table: "buttons",
+        word: "button",
+        prefixes: &["button", "pressed"],
+    },
+];
+
+impl HelperKind {
+    /// The kind kept in `table`.
+    pub fn of_table(table: &str) -> Option<&'static Self> {
+        KINDS.iter().find(|kind| kind.table == table)
+    }
+
+    /// The kind of helper an entity with this unique id belongs to, its id in the kind's table,
+    /// and whether this is the entity a person thinks of as the helper (a button's `button`,
+    /// not the `event` that says it was pressed).
+    pub fn of_unique(unique: &str) -> Option<(&'static Self, &str, bool)> {
+        let (prefix, id) = unique.split_once('-')?;
+        KINDS.iter().find_map(|kind| {
+            let at = kind.prefixes.iter().position(|p| *p == prefix)?;
+            Some((kind, id, at == 0))
+        })
+    }
+
+    /// Checks one helper of this kind as it would be written in the file, and says which
+    /// entities it would be: `["button.movie", "event.movie"]`. `Err` says what's wrong with
+    /// it, in a sentence.
+    pub fn check(
+        &self,
+        id: &ObjectId,
+        settings: &serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        fn read<T: serde::de::DeserializeOwned>(settings: &serde_json::Value) -> Result<T, String> {
+            serde_json::from_value(settings.clone()).map_err(|e| e.to_string())
+        }
+        let made = match self.table {
+            "toggles" => toggle::made(id, &read(settings)?),
+            "numbers" => number::made(id, &read(settings)?),
+            "counters" => counter::made(id, &read(settings)?),
+            "selects" => select::made(id, &read(settings)?),
+            "texts" => text::made(id, &read(settings)?),
+            "buttons" => button::made(id, &read(settings)?),
+            other => return Err(format!("there are no helpers called `{other}`")),
+        }
+        .map_err(|e| e.to_string())?;
+        for one in &made {
+            if let Role::Value { initial } = &one.role
+                && one.holding(initial).is_none()
+            {
+                return Err(format!(
+                    "`initial` isn't something this {} can be",
+                    self.word
+                ));
+            }
+        }
+        Ok(made.iter().map(Made::entity_id).collect())
+    }
+}
+
+/// One entity a helper is, and how it behaves.
+pub(crate) struct Made {
+    /// `<what>-<id>`: `toggle-guests_over`. Which helper it is, for the pages too.
+    pub unique: UniqueId,
+    pub description: EntityDescription,
+    pub role: Role,
+}
+
+pub(crate) enum Role {
+    /// Holds a value someone sets, kept through restarts. `initial` until they have.
+    Value { initial: Typed },
+    /// Is pressed, and each press is reported on the entity `fires`.
+    Press { fires: UniqueId },
+    /// Reports things happening; nothing can be asked of it.
+    Happens,
+}
+
+impl Made {
+    fn new(
+        what: &str,
+        id: &ObjectId,
+        name: &Name,
+        capabilities: Capabilities,
+        role: Role,
+    ) -> Result<Self, ProtocolError> {
+        let unique = UniqueId::try_from(format!("{what}-{id}"))?;
+        Ok(Self {
+            description: EntityDescription {
+                unique_id: unique.clone(),
+                name: Some(name.clone()),
+                device_unique_id: None,
+                // `switch.guests_over`: a helper's id is chosen by a person, so it reads well
+                // in flows.
+                suggested_object_id: Some(id.clone()),
+                capabilities,
+                entity_category: None,
+            },
+            unique,
+            role,
+        })
+    }
+
+    pub(crate) fn value(
+        what: &str,
+        id: &ObjectId,
+        name: &Name,
+        capabilities: Capabilities,
+        initial: Typed,
+    ) -> Result<Self, ProtocolError> {
+        Self::new(what, id, name, capabilities, Role::Value { initial })
+    }
+
+    pub(crate) fn press(
+        what: &str,
+        id: &ObjectId,
+        name: &Name,
+        capabilities: Capabilities,
+        fires: UniqueId,
+    ) -> Result<Self, ProtocolError> {
+        Self::new(what, id, name, capabilities, Role::Press { fires })
+    }
+
+    pub(crate) fn happens(
+        what: &str,
+        id: &ObjectId,
+        name: &Name,
+        capabilities: Capabilities,
+    ) -> Result<Self, ProtocolError> {
+        Self::new(what, id, name, capabilities, Role::Happens)
+    }
+
+    /// The entity id it asks for: `switch.guests_over`.
+    fn entity_id(&self) -> String {
+        format!(
+            "{}.{}",
+            self.description.capabilities.kind(),
+            self.description
+                .suggested_object_id
+                .as_ref()
+                .map_or("", ObjectId::as_str)
+        )
+    }
+
+    /// The state it's in when it holds `value`, if it can hold it: a number still in its range,
+    /// a choice still among its options.
+    fn holding(&self, value: &Typed) -> Option<State> {
+        let capabilities = &self.description.capabilities;
+        let state = State::with_primary(capabilities.kind(), None, value)?;
+        capabilities.fits(&state).is_ok().then_some(state)
+    }
+}
+
+/// Where the list of entities this protocol last described is kept, so one whose helper has
 /// been deleted from the file can be removed rather than left behind.
 const DESCRIBED: &str = "described";
 
-fn unique_id(toggle: &ObjectId) -> Result<UniqueId, ProtocolError> {
-    Ok(UniqueId::try_from(format!("toggle-{toggle}"))?)
+/// Where an entity's value is kept: `toggle.guests_over` for `toggle-guests_over`.
+fn value_key(unique: &str) -> String {
+    unique.replacen('-', ".", 1)
 }
 
-fn value_key(toggle: &ObjectId) -> String {
-    format!("toggle.{toggle}")
+/// Every entity the settings ask for. Two helpers that would be the same entity (a number and a
+/// counter with one id are both `number.<id>`) are refused, naming both.
+fn all(settings: &Settings) -> Result<Vec<Made>, ProtocolError> {
+    let mut made = Vec::new();
+    for (id, toggle) in &settings.toggles {
+        made.extend(toggle::made(id, toggle)?);
+    }
+    for (id, number) in &settings.numbers {
+        made.extend(number::made(id, number)?);
+    }
+    for (id, counter) in &settings.counters {
+        made.extend(counter::made(id, counter)?);
+    }
+    for (id, select) in &settings.selects {
+        made.extend(select::made(id, select)?);
+    }
+    for (id, text) in &settings.texts {
+        made.extend(text::made(id, text)?);
+    }
+    for (id, button) in &settings.buttons {
+        made.extend(button::made(id, button)?);
+    }
+    let mut taken: BTreeMap<String, &UniqueId> = BTreeMap::new();
+    for one in &made {
+        let entity = one.entity_id();
+        if let Some(other) = taken.insert(entity.clone(), &one.unique) {
+            return Err(ProtocolError::new(format!(
+                "two helpers would both be `{entity}`: `{other}` and `{}`. Give one another id",
+                one.unique
+            )));
+        }
+    }
+    Ok(made)
 }
 
 async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
+    let helpers: BTreeMap<UniqueId, Made> = all(&settings)?
+        .into_iter()
+        .map(|made| (made.unique.clone(), made))
+        .collect();
+
     // What was here last time and isn't now goes.
-    let before: Vec<String> = ctx
+    let before: BTreeSet<String> = ctx
         .load(DESCRIBED)
         .await?
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
-    let mut toggles: BTreeMap<UniqueId, (ObjectId, bool)> = BTreeMap::new();
-    for (id, toggle) in &settings.toggles {
-        toggles.insert(unique_id(id)?, (id.clone(), toggle.initial));
-    }
     for gone in before
         .iter()
-        .filter(|unique| !toggles.keys().any(|kept| kept.as_str() == unique.as_str()))
+        .filter(|unique| !helpers.keys().any(|kept| kept.as_str() == unique.as_str()))
     {
-        let gone = UniqueId::try_from(gone.as_str())?;
         // Removing one that's already gone (a person deleted it by hand) is nothing to fail over.
-        let _ = ctx.remove_entity(gone.clone()).await;
-        if let Some(id) = gone.as_str().strip_prefix("toggle-") {
-            ctx.forget(&format!("toggle.{id}")).await?;
-        }
+        let _ = ctx.remove_entity(UniqueId::try_from(gone.as_str())?).await;
+        ctx.forget(&value_key(gone)).await?;
     }
 
-    for (id, toggle) in &settings.toggles {
-        ctx.describe_entity(EntityDescription {
-            unique_id: unique_id(id)?,
-            name: Some(toggle.name.clone()),
-            device_unique_id: None,
-            // `switch.guests_over`: a helper's id is chosen by a person, so it reads well in rules.
-            suggested_object_id: Some(id.clone()),
-            capabilities: Capabilities::Switch(SwitchCapabilities { device_class: None }),
-            entity_category: None,
-        })
-        .await?;
-        let on = ctx
-            .load(&value_key(id))
+    for (unique, helper) in &helpers {
+        ctx.describe_entity(helper.description.clone()).await?;
+        let Role::Value { initial } = &helper.role else {
+            continue;
+        };
+        // What it was left at, unless it can't be that any more (its range was narrowed, the
+        // option taken away): then it's as if nobody had set it.
+        let kept = ctx
+            .load(&value_key(unique.as_str()))
             .await?
-            .and_then(|value| value.as_bool())
-            .unwrap_or(toggle.initial);
-        ctx.report_state(report(unique_id(id)?, on, None));
+            .and_then(|value| typed(&value))
+            .filter(|value| helper.holding(value).is_some());
+        let value = kept.unwrap_or_else(|| initial.clone());
+        match helper.holding(&value) {
+            Some(state) => ctx.report_state(report(unique.clone(), state, None)),
+            None => tracing::warn!(
+                helper = %unique,
+                "its `initial` isn't a value it can have, so it has none until it's set"
+            ),
+        }
     }
-    let described: Vec<String> = toggles.keys().map(|id| id.as_str().to_owned()).collect();
+    let described: Vec<&str> = helpers.keys().map(UniqueId::as_str).collect();
     ctx.store(DESCRIBED, serde_json::json!(described)).await?;
 
     while let Some(incoming) = ctx.next_call().await {
         let unique = incoming.call.unique_id.clone();
-        let Some((id, _)) = toggles.get(&unique) else {
+        let caused_by = Some(incoming.call.context.id.clone());
+        let Some(helper) = helpers.get(&unique) else {
             let why = format!("`{unique}` isn't a helper any more");
             incoming.reply(Err(ServiceError::failed(why)));
             continue;
         };
-        let on = match incoming.call.service {
-            Service::SwitchTurnOn => true,
-            Service::SwitchTurnOff => false,
-            _ => {
-                incoming.reply(Err(ServiceError::failed("a toggle only turns on and off")));
-                continue;
+        let service = &incoming.call.service;
+        match &helper.role {
+            Role::Value { .. } => {
+                // The core checked the call against the entity; a helper checks again, since
+                // what it keeps is what it'll come back as after a restart.
+                let asked = helper
+                    .description
+                    .capabilities
+                    .supports(service)
+                    .map_err(|why| format!("`{unique}` {why}"))
+                    .and_then(|()| {
+                        let value = service
+                            .asks_for()
+                            .ok_or_else(|| format!("`{unique}` can't do `{}`", service.name()))?;
+                        let state = helper
+                            .holding(&value)
+                            .ok_or_else(|| format!("`{unique}` can't be that"))?;
+                        Ok((value, state))
+                    });
+                let (value, state) = match asked {
+                    Ok(asked) => asked,
+                    Err(why) => {
+                        incoming.reply(Err(ServiceError::failed(why)));
+                        continue;
+                    }
+                };
+                // Kept first: a value that was reported but not kept would come back wrong
+                // after a restart, which is exactly what a helper mustn't do.
+                if let Err(e) = ctx
+                    .store(&value_key(unique.as_str()), value.to_json())
+                    .await
+                {
+                    incoming.reply(Err(ServiceError::failed(format!(
+                        "couldn't keep the value: {e}"
+                    ))));
+                    continue;
+                }
+                incoming.reply(Ok(()));
+                ctx.report_state(report(unique, state, caused_by));
             }
-        };
-        // Kept first: a value that was reported but not kept would come back wrong after a
-        // restart, which is exactly what a helper mustn't do.
-        if let Err(e) = ctx.store(&value_key(id), serde_json::json!(on)).await {
-            incoming.reply(Err(ServiceError::failed(format!(
-                "couldn't keep the value: {e}"
-            ))));
-            continue;
+            Role::Press { fires } => {
+                if !matches!(service, Service::ButtonPress) {
+                    incoming.reply(Err(ServiceError::failed("a button is only pressed")));
+                    continue;
+                }
+                incoming.reply(Ok(()));
+                let pressed = State::Event(EventState {
+                    event_type: button::PRESSED.to_owned(),
+                });
+                ctx.report_state(report(fires.clone(), pressed, caused_by));
+            }
+            Role::Happens => {
+                incoming.reply(Err(ServiceError::failed(
+                    "nothing can be asked of it: it says when its button was pressed",
+                )));
+            }
         }
-        let caused_by = Some(incoming.call.context.id.clone());
-        incoming.reply(Ok(()));
-        ctx.report_state(report(unique, on, caused_by));
     }
     Ok(())
 }
 
-fn report(
-    unique_id: UniqueId,
-    on: bool,
-    caused_by: Option<irori_protocol::types::ContextId>,
-) -> StateReport {
+/// A kept value as what it is: on or off, a number, a text.
+fn typed(value: &serde_json::Value) -> Option<Typed> {
+    match value {
+        serde_json::Value::Bool(on) => Some(Typed::Bool(*on)),
+        serde_json::Value::Number(n) => n.as_f64().map(Typed::Number),
+        serde_json::Value::String(text) => Some(Typed::Text(text.clone())),
+        _ => None,
+    }
+}
+
+fn report(unique_id: UniqueId, state: State, caused_by: Option<ContextId>) -> StateReport {
     StateReport {
         unique_id,
-        state: Some(State::Switch(SwitchState { on })),
+        state: Some(state),
         attributes: BTreeMap::new(),
         caused_by,
         replayed: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings(toml_text: &str) -> Settings {
+        toml::from_str(toml_text).expect("valid settings")
+    }
+
+    #[test]
+    fn each_kind_of_helper_is_an_entity_of_a_kind_irori_already_has() {
+        let made = all(&settings(
+            r#"
+            [toggles.guests_over]
+            name = "Guests are over"
+            [numbers.evening]
+            name = "Evening brightness"
+            min = 0
+            max = 100
+            unit = "%"
+            [counters.rings]
+            name = "Doorbell rings"
+            [selects.mode]
+            name = "House mode"
+            options = ["home", "away"]
+            [texts.note]
+            name = "Note"
+            [buttons.movie]
+            name = "Movie time"
+            "#,
+        ))
+        .expect("made");
+        let ids: Vec<String> = made
+            .iter()
+            .map(|one| {
+                format!(
+                    "{}={}.{}",
+                    one.unique,
+                    one.description.capabilities.kind(),
+                    one.description.suggested_object_id.as_ref().expect("an id")
+                )
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "toggle-guests_over=switch.guests_over",
+                "number-evening=number.evening",
+                "counter-rings=number.rings",
+                "select-mode=select.mode",
+                "text-note=text.note",
+                "button-movie=button.movie",
+                "pressed-movie=event.movie",
+            ]
+        );
+        // Until someone sets them: off, the least, nought, the first option, nothing.
+        let initial: Vec<Option<Typed>> = made
+            .iter()
+            .map(|one| match &one.role {
+                Role::Value { initial } => Some(initial.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            initial,
+            [
+                Some(Typed::Bool(false)),
+                Some(Typed::Number(0.0)),
+                Some(Typed::Number(0.0)),
+                Some(Typed::Text("home".into())),
+                Some(Typed::Text(String::new())),
+                None,
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_helper_holds_only_what_it_can_be() {
+        let made = all(&settings(
+            r#"
+            [numbers.evening]
+            name = "Evening brightness"
+            min = 0
+            max = 100
+            [selects.mode]
+            name = "House mode"
+            options = ["home", "away"]
+            "#,
+        ))
+        .expect("made");
+        assert!(made[0].holding(&Typed::Number(40.0)).is_some());
+        // Kept from before its range was narrowed, or its option taken away.
+        assert!(made[0].holding(&Typed::Number(140.0)).is_none());
+        assert!(made[0].holding(&Typed::Text("bright".into())).is_none());
+        assert!(made[1].holding(&Typed::Text("away".into())).is_some());
+        assert!(made[1].holding(&Typed::Text("asleep".into())).is_none());
+    }
+
+    #[test]
+    fn two_helpers_that_would_be_one_entity_are_refused_by_name() {
+        let error = all(&settings(
+            r#"
+            [numbers.level]
+            name = "Level"
+            min = 0
+            max = 10
+            [counters.level]
+            name = "Level count"
+            "#,
+        ))
+        .err()
+        .expect("refused")
+        .to_string();
+        assert!(error.contains("`number.level`"), "{error}");
+        assert!(
+            error.contains("number-level") && error.contains("counter-level"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_range_that_makes_no_sense_names_its_helper() {
+        let error = all(&settings(
+            r#"
+            [numbers.level]
+            name = "Level"
+            min = 10
+            max = 1
+            "#,
+        ))
+        .err()
+        .expect("refused")
+        .to_string();
+        assert!(error.starts_with("the number `level`"), "{error}");
+    }
+
+    #[test]
+    fn one_helper_is_checked_as_it_would_be_written() {
+        let id = ObjectId::try_from("movie").expect("valid");
+        let button = HelperKind::of_table("buttons").expect("a kind");
+        assert_eq!(
+            button.check(&id, &serde_json::json!({"name": "Movie time"})),
+            Ok(vec!["button.movie".to_owned(), "event.movie".to_owned()])
+        );
+        let select = HelperKind::of_table("selects").expect("a kind");
+        let wrong = serde_json::json!({"name": "Mode", "options": ["home"], "initial": "away"});
+        assert_eq!(
+            select.check(&id, &wrong),
+            Err("`initial` isn't something this choice can be".to_owned())
+        );
+        let number = HelperKind::of_table("numbers").expect("a kind");
+        let error = number
+            .check(&id, &serde_json::json!({"name": "Level", "min": 0}))
+            .expect_err("no max");
+        assert!(error.contains("missing field `max`"), "{error}");
+        assert!(HelperKind::of_table("gadgets").is_none());
+
+        // Which helper an entity is, from its unique id.
+        let (kind, of, main) = HelperKind::of_unique("pressed-movie").expect("a helper");
+        assert_eq!((kind.table, of, main), ("buttons", "movie", false));
+        let (kind, of, main) = HelperKind::of_unique("counter-rings-2").expect("a helper");
+        assert_eq!((kind.table, of, main), ("counters", "rings-2", true));
+        assert!(HelperKind::of_unique("hub-cpu").is_none());
+    }
+
+    #[test]
+    fn a_value_is_kept_under_its_helpers_own_key() {
+        assert_eq!(value_key("toggle-guests_over"), "toggle.guests_over");
+        assert_eq!(value_key("number-up-down"), "number.up-down");
     }
 }

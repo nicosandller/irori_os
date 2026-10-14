@@ -854,6 +854,29 @@
     .inline-form button:hover, .room-actions button:not(.toggle):hover {
         border-color: var(--ember); color: var(--ember); }
     .room-actions .danger:hover { border-color: #b4342c; color: #b4342c; }
+    /* The Helpers tab: which kind each one is, and the form that makes one. */
+    .helper-kind { font: .7rem var(--mono); letter-spacing: .06em; text-transform: uppercase;
+                   color: var(--muted); border: 1px solid var(--line); border-radius: 999px;
+                   padding: .05rem .5rem; }
+    .helper-list .room-actions { align-items: center; }
+    .helper-about { min-height: 2.6em; margin: .6rem 0; }
+    .helper-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+                   gap: .6rem; align-items: end; }
+    .helper-field { display: grid; gap: .25rem; min-width: 0; }
+    .helper-field.wide { grid-column: 1 / -1; }
+    .helper-field > span { color: var(--muted); font-size: .8rem; }
+    .helper-field input, .helper-field textarea {
+        padding: .4rem .6rem; font: inherit; font-size: .95rem; min-width: 0;
+        color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+        border-radius: .4rem; resize: vertical; }
+    .helper-field input:focus, .helper-field textarea:focus {
+        outline: 2px solid var(--ember); outline-offset: -1px; }
+    .helper-form .add { grid-column: 1 / -1; justify-self: start; padding: .4rem .9rem;
+                        font: inherit; cursor: pointer; color: var(--fg);
+                        background: var(--card); border: 1px solid var(--line);
+                        border-radius: .4rem; }
+    .helper-form .add:hover:not(:disabled) { border-color: var(--ember); color: var(--ember); }
+    .helper-form .add:disabled { opacity: .5; cursor: default; }
 
     /* Picking several found devices at once: a checkbox lining up with a row, and the
        select-all box that feeds the "Add/Ignore selected" buttons. */

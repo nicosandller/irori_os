@@ -801,11 +801,14 @@ pub async fn remove_area(id: &AreaId) -> Result<(), String> {
     checked(response).await
 }
 
-/// Makes a toggle helper: a switch Irori keeps itself. Its entity appears a moment later, once
-/// the helpers extension has restarted with it.
-pub async fn add_toggle(name: Name) -> Result<(), String> {
-    let response = post("/api/helpers/toggles")
-        .json(&AreaRequest { name, floor: None })
+/// Makes a helper of the kind kept in `table` (`toggles`, `numbers`…) from its fields, `name`
+/// among them. Its entity appears a moment later, once the helpers have restarted with it.
+pub async fn add_helper(
+    table: &str,
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let response = post(&format!("/api/helpers/{table}"))
+        .json(fields)
         .map_err(|e| e.to_string())?
         .send()
         .await
@@ -813,9 +816,9 @@ pub async fn add_toggle(name: Name) -> Result<(), String> {
     checked(response).await
 }
 
-/// Removes a toggle helper by the id it was made with: the object id of its `switch.` entity.
-pub async fn remove_toggle(id: &str) -> Result<(), String> {
-    let response = delete(&format!("/api/helpers/toggles/{id}"))
+/// Removes a helper by its kind's table and the id it was made with.
+pub async fn remove_helper(table: &str, id: &str) -> Result<(), String> {
+    let response = delete(&format!("/api/helpers/{table}/{id}"))
         .send()
         .await
         .map_err(unreachable)?;

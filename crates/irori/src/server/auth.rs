@@ -236,6 +236,7 @@ pub(super) fn token_access(method: &Method, path: &str) -> TokenAccess {
                 | "/api/floors"
                 | "/api/floorplan"
                 | "/api/extensions"
+                | "/api/helpers"
                 | "/api/apps"
         )
     {

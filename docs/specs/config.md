@@ -312,12 +312,55 @@ Unlike `secrets.toml`, this file is meant to be committed, and the API reads it:
 edits it does so on behalf of the extension it belongs to — the helpers endpoints write
 `extensions/helpers.toml` — never as a general "write any extension's settings" call.
 
-**Helpers** keep their definitions here. A toggle is a switch Irori keeps itself — "guests are
-over", "holiday mode" — with the entity id `switch.<id>`. `name` is its one name: renaming the
-entity from the UI rewrites it here, not in `entities.toml`, so there's no second name (D36).
-`initial` is its value before anyone has switched it; after that, the value it was left at is kept
-in the extension's private storage (`protocols.md` §5) through restarts. Removing a toggle
-removes its entity and forgets its value.
+**Helpers** keep their definitions here: values Irori keeps itself rather than a device
+reporting them. Each kind has its own table, keyed by the id its entity gets, and every helper
+is an ordinary entity of a kind Irori already has, with no device:
+
+| Table | Entity | Settings beside `name` | Until it's set |
+|---|---|---|---|
+| `[toggles.<id>]` | `switch.<id>` | `initial` | off |
+| `[numbers.<id>]` | `number.<id>` | `min`, `max` (both required), `step` (1), `unit`, `mode` (`slider` \| `box`), `initial` | its `min` |
+| `[counters.<id>]` | `number.<id>` | `initial` (0), `step` (1), `min` (0), `max` (1,000,000) | its `initial` |
+| `[selects.<id>]` | `select.<id>` | `options` (required, 1–256), `initial` | its first option |
+| `[texts.<id>]` | `text.<id>` | `min_length` (0), `max_length` (255), `initial` | empty |
+| `[buttons.<id>]` | `button.<id>` and `event.<id>` | none | has no value |
+
+```toml
+[numbers.evening_brightness]
+name = "Evening brightness"
+min = 0
+max = 100
+unit = "%"
+
+[counters.doorbell_today]
+name = "Doorbell rings today"
+
+[selects.house_mode]
+name = "House mode"
+options = ["home", "away", "asleep"]
+
+[buttons.movie_time]
+name = "Movie time"
+```
+
+- **One name.** `name` is the helper's one name: renaming the entity from the UI rewrites it
+  here, not in `entities.toml`, so there's no second name (D36).
+- **The value isn't here.** `initial` is what it is before anyone has set it; after that, the
+  value it was left at is kept in the extension's private storage (`protocols.md` §5) through
+  restarts. Removing a helper removes its entity and forgets its value. A kept value the helper
+  can no longer have (its range was narrowed, the option taken away) is dropped, and it's at
+  its `initial` again.
+- **A counter is a number.** `number.increment` and `number.decrement` count it by its `step`,
+  or by `by`, stopping at `min` and `max`; the core works those out for every number
+  (`protocols.md` §7.1). `number.set_value` puts it back.
+- **A button is two entities**, because pressing and having been pressed are different things
+  (`entities.md` §5.3): `button.<id>` is pressed, from a page or a flow, and `event.<id>`
+  reports `pressed` each time. A flow starts from the event.
+- **Two helpers can't be one entity.** A number and a counter with the same id would both be
+  `number.<id>`; the file is refused, naming both.
+- A helper that's wrong (a `min` above its `max`, an `initial` it can't be) stops the helpers
+  from starting, with the reason in their log; the API and the page check before writing.
+
 ### 3.7 `floorplan.toml`
 
 The home as a drawing, **a floor at a time**. Nothing discovers this — no protocol can tell
@@ -683,7 +726,8 @@ Named here so the layout has room for them, specified when they are built:
 - **An entity in a different area than its device** (`Entity.area_id` already allows it).
 - **More on the plan** — furniture, stairs between floors, and an area that spans one without
   being traced on each.
-- **More helpers** — numbers, text, timers — once rules can use them.
+- **More helpers** — dates and times, timers, schedules, and values worked out from other
+  entities (groups, thresholds, meters).
 
 ## 8. Changes from the roadmap draft
 

@@ -1290,8 +1290,10 @@ once it is hosted.
 
 ## 16. Helpers
 
-Helpers are not a rule feature. They are switch entities from `crates/irori-helpers` (built in,
-not an installable extension — ROADMAP D45), defined in `extensions/helpers.toml`:
+Helpers are not a rule feature. They are entities from `crates/irori-helpers` (built in, not an
+installable extension — ROADMAP D45), defined in `extensions/helpers.toml`
+([config.md](config.md) §3.6): a toggle is a `switch`, a number and a counter a `number`, a
+choice a `select`, a text a `text`, a button a `button` with an `event` for when it was pressed.
 
 ```toml
 [toggles.guests_over]
@@ -1299,11 +1301,10 @@ name = "Guests are over"
 initial = false
 ```
 
-That is `switch.guests_over` (the object id is the table key; see
-`crates/irori-helpers/src/lib.rs`). A person may equally have `switch.guests_are_over`
-if they named it that — [config.md](config.md) §3.6 uses that spelling. Rules refer to whatever
-entity id exists. Numbers, text, and timers are still later (D40); this spec does not invent
-them.
+That is `switch.guests_over` (the object id is the table key). Rules refer to whatever entity
+id exists, and read, set and trigger on a helper exactly as they would a device's entity of
+that kind: `num('number.evening_brightness')`, a call to `number.increment`, a trigger on
+`event.movie_time`.
 
 The first real condition:
 
@@ -1507,7 +1508,7 @@ is an obvious M1.4 win if 39 µs is allocation-dominated. Wasm compile of `cel` 
 | HA `trigger.id`, `trigger.to_state`, `trigger.platform` | not v1 (K3, §5.4) |
 | YAML rules | never (D18; JSON matches the schema and LLM output) |
 | Area / device / list targets | later; v1 is one entity per `call` |
-| Numeric / text / timer helpers | D40, after this |
+| Timer and schedule helpers | [config.md](config.md) §7 |
 | Custom protocol services (`esphome.reboot`) | [protocols.md](protocols.md) open question 1 |
 | Protocols emitting bus events | addendum to protocols.md when MQTT needs it |
 | Unit conversion in `num()` | [entities.md](entities.md) open question 3; `num` is the stored number |
