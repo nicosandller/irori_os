@@ -1215,36 +1215,8 @@ async fn add_helper(
                         kind.table
                     ))
                 })?;
-            // An id no helper of this kind has, and whose entities nothing else is.
-            let base = irori_core::new_area_id(&name, &[]).to_string();
-            let mut problem = None;
-            let found = (1..=1000).find_map(|n| {
-                let id = if n == 1 {
-                    base.clone()
-                } else {
-                    format!("{base}_{n}")
-                };
-                if helpers.contains_key(&id) {
-                    return None;
-                }
-                match kind.check(
-                    &irori_types::ObjectId::try_from(id.as_str()).ok()?,
-                    &settings,
-                ) {
-                    Ok(entities) if entities.iter().any(|entity| taken.contains(entity)) => None,
-                    Ok(entities) => Some((id, entities)),
-                    // Wrong whatever it's called: say so rather than try a thousand ids.
-                    Err(why) => {
-                        problem.get_or_insert(why);
-                        Some((String::new(), Vec::new()))
-                    }
-                }
-            });
-            if let Some(why) = problem {
-                return Err(Refused(why));
-            }
             let (id, entities) =
-                found.ok_or_else(|| Refused(format!("no id is free for `{name}`")))?;
+                free_helper_id(kind, &name, &settings, helpers, &taken).map_err(Refused)?;
             helpers.insert(id.clone(), settings.clone());
             irori_helpers::check_settings(file).map_err(Refused)?;
             Ok((id, entities))
@@ -1263,6 +1235,38 @@ async fn add_helper(
             .into_response(),
         Err(e) => edit_failed(e),
     }
+}
+
+/// The id a new helper called `name` gets: one no helper of its kind has, and whose entities
+/// nothing else in the home is (`name`, then `name_2`, …). Making one and checking one both
+/// ask this, so a check says what Create will make.
+fn free_helper_id(
+    kind: &irori_helpers::HelperKind,
+    name: &Name,
+    settings: &serde_json::Value,
+    helpers: &serde_json::Map<String, serde_json::Value>,
+    taken: &[String],
+) -> Result<(String, Vec<String>), String> {
+    let base = irori_core::new_area_id(name, &[]).to_string();
+    for n in 1..=1000 {
+        let id = if n == 1 {
+            base.clone()
+        } else {
+            format!("{base}_{n}")
+        };
+        if helpers.contains_key(&id) {
+            continue;
+        }
+        let Ok(object) = irori_types::ObjectId::try_from(id.as_str()) else {
+            continue;
+        };
+        // Wrong whatever it's called: say so rather than try a thousand ids.
+        let entities = kind.check(&object, settings)?;
+        if !entities.iter().any(|entity| taken.contains(entity)) {
+            return Ok((id, entities));
+        }
+    }
+    Err(format!("no id is free for `{name}`"))
 }
 
 /// What a helper would be, without making it: the entities it would become, or what's wrong
@@ -1287,38 +1291,44 @@ async fn check_helper(
             );
         }
     };
-    let id = irori_core::new_area_id(&name, &[]).to_string();
-    let Ok(object_id) = irori_types::ObjectId::try_from(id.as_str()) else {
-        return refused(
-            StatusCode::BAD_REQUEST,
-            format!("`{name}` can't be made into an id"),
-        );
-    };
-    let entities = match kind.check(&object_id, &serde_json::Value::Object(settings.clone())) {
-        Ok(entities) => entities,
-        Err(why) => return refused(StatusCode::BAD_REQUEST, why),
-    };
-    // With the rest of the file, for what one helper alone can't show (a ring).
-    let mut file = state.0.config.extension_settings(&HELPERS).await;
-    if let Some(table) = file
-        .entry(kind.table)
-        .or_insert_with(|| serde_json::json!({}))
-        .as_object_mut()
-    {
-        table.insert(id.clone(), serde_json::Value::Object(settings));
-    }
-    if let Err(why) = irori_helpers::check_settings(&file) {
-        return refused(StatusCode::BAD_REQUEST, why);
-    }
-    // An entity something else already is: making it gives it the next free id.
     let taken: Vec<String> = state
         .0
         .core
         .entities()
         .iter()
         .map(|entity| entity.id.to_string())
-        .filter(|entity| entities.contains(entity))
         .collect();
+    let settings = serde_json::Value::Object(settings);
+    let mut file = state.0.config.extension_settings(&HELPERS).await;
+    let Some(helpers) = file
+        .entry(kind.table)
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+    else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            format!("`{}` in extensions/helpers.toml isn't a table", kind.table),
+        );
+    };
+    // The id Create would give it, and the plain one it would have liked, to say why not.
+    let (id, entities) = match free_helper_id(kind, &name, &settings, helpers, &taken) {
+        Ok(found) => found,
+        Err(why) => return refused(StatusCode::BAD_REQUEST, why),
+    };
+    let plain = irori_core::new_area_id(&name, &[]).to_string();
+    let taken: Vec<String> = if id == plain {
+        Vec::new()
+    } else {
+        irori_types::ObjectId::try_from(plain.as_str())
+            .ok()
+            .and_then(|object| kind.check(&object, &settings).ok())
+            .unwrap_or_default()
+    };
+    // With the rest of the file, for what one helper alone can't show (a ring).
+    helpers.insert(id.clone(), settings);
+    if let Err(why) = irori_helpers::check_settings(&file) {
+        return refused(StatusCode::BAD_REQUEST, why);
+    }
     Json(serde_json::json!({
         "kind": kind.table,
         "id": id,
@@ -4650,6 +4660,20 @@ mod tests {
             )
             .await?;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{checked}");
+        // A name already in use: the check says the id Create would give it, and why.
+        let (status, checked) = server
+            .json(
+                "POST",
+                "/api/helpers/numbers/check",
+                serde_json::json!({"name": "Evening brightness", "min": 0, "max": 10}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{checked}");
+        assert_eq!(checked["entity_id"], "number.evening_brightness_2");
+        assert_eq!(
+            checked["taken"],
+            serde_json::json!(["number.evening_brightness"])
+        );
         let (status, body) = server
             .json(
                 "POST",

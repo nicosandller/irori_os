@@ -768,7 +768,7 @@ fn setting(draft: Draft, field: Field) -> AnyView {
                     class="toggle"
                     role="switch"
                     aria-label=field.label
-                    aria-pressed=move || on().to_string()
+                    aria-checked=move || on().to_string()
                     on:click=move |_| draft.put(key, Some(json!(!on())))
                 >
                     <span class="knob"></span>
@@ -1829,6 +1829,28 @@ mod tests {
         assert_eq!(minutes("24:00"), Some(1440));
         assert_eq!(minutes("7:3x"), None);
         assert_eq!(clock_time(390), "06:30");
+    }
+
+    /// A group has a `kind` of its own; written out and read back, it must keep it.
+    #[test]
+    fn a_helper_written_as_json_reads_back_the_same() {
+        let draft = Draft {
+            kind: RwSignal::new(None),
+            value: RwSignal::new(Map::new()),
+        };
+        let groups = HelperKind::of_table("groups").expect("groups");
+        draft.pick(groups);
+        draft.put("name", Some(json!("Downstairs")));
+        draft.put("members", Some(json!(["light.a", "light.b"])));
+        let written = draft.code();
+        assert!(written.starts_with("{\n  \"helper\": \"groups\",\n  \"name\""), "{written}");
+        let before = draft.value.get_untracked();
+        draft.take_code(&written).expect("reads back");
+        assert_eq!(draft.value.get_untracked(), before);
+        assert_eq!(draft.value.get_untracked()["kind"], "light");
+        assert_eq!(draft.kind.get_untracked(), Some(groups));
+        assert!(draft.take_code("{\"helper\": \"nothing\"}").is_err());
+        assert!(draft.take_code("[1]").is_err());
     }
 
     #[test]

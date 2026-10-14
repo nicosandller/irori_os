@@ -25,7 +25,8 @@ pub fn Modal(
 ) -> impl IntoView {
     let label = title.clone();
     let keys = window_event_listener(ev::keydown, move |event: ev::KeyboardEvent| {
-        if event.key() == "Escape" {
+        // Something inside that took the Escape itself (a list closing) has had it.
+        if event.key() == "Escape" && !event.default_prevented() {
             on_close.run(());
         }
     });

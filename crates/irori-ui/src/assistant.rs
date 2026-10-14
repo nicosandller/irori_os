@@ -874,6 +874,14 @@ pub fn Chat(
                             }}
                         </p>
                     }.into_any()
+                } else if building && local() {
+                    view! {
+                        <p class="chat-empty">
+                            "Ask which kind of helper fits and what to set: the model on this \
+                             machine can say, from what's in your home. Filling the form in for \
+                             you needs a cloud model."
+                        </p>
+                    }.into_any()
                 } else if building {
                     view! {
                         <p class="chat-empty">
