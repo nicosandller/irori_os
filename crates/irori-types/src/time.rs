@@ -29,6 +29,17 @@ impl Timestamp {
     pub fn as_jiff(self) -> jiff::Timestamp {
         self.0
     }
+
+    /// The instant this many seconds after 1970 began (before, when negative). `None` when
+    /// that's further off than a timestamp reaches.
+    pub fn from_second(seconds: i64) -> Option<Self> {
+        jiff::Timestamp::from_second(seconds).ok().map(Self)
+    }
+
+    /// Whole seconds since 1970 began.
+    pub fn as_second(self) -> i64 {
+        self.0.as_second()
+    }
 }
 
 /// Why a string isn't a valid timestamp.

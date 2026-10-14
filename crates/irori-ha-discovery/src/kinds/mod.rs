@@ -16,6 +16,7 @@ pub mod fan;
 pub mod humidifier;
 pub mod light;
 pub mod lock;
+pub mod moment;
 pub mod number;
 pub mod opening;
 pub mod select;

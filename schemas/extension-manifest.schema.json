@@ -265,6 +265,21 @@
           "description": "A burglar alarm's panel: armed, disarmed, going off.",
           "type": "string",
           "const": "alarm_control_panel"
+        },
+        {
+          "description": "A calendar day someone sets, e.g. when the bins go out.",
+          "type": "string",
+          "const": "date"
+        },
+        {
+          "description": "A time of day someone sets, e.g. an alarm clock's.",
+          "type": "string",
+          "const": "time"
+        },
+        {
+          "description": "A moment someone sets: a day and a time, e.g. when a holiday ends.",
+          "type": "string",
+          "const": "datetime"
         }
       ]
     },

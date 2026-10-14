@@ -34,7 +34,8 @@ use crate::{Entity, EntityKind, EntityState};
 /// 16. Adds `media_player`.
 /// 17. Adds `update`.
 /// 18. Adds `alarm_control_panel`.
-pub const ENTITY_FORMAT: u32 = 18;
+/// 19. Adds `date`, `time` and `datetime`.
+pub const ENTITY_FORMAT: u32 = 19;
 
 pub(crate) fn first() -> u32 {
     1
@@ -66,6 +67,7 @@ impl EntityKind {
             Self::MediaPlayer => 16,
             Self::Update => 17,
             Self::AlarmControlPanel => 18,
+            Self::Date | Self::Time | Self::Datetime => 19,
         }
     }
 }

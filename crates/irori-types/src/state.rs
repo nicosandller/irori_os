@@ -16,6 +16,7 @@ use crate::kinds::humidifier::HumidifierState;
 use crate::kinds::light::LightState;
 use crate::kinds::lock::LockState;
 use crate::kinds::media_player::MediaPlayerState;
+use crate::kinds::moment::{DateState, DatetimeState, TimeState};
 use crate::kinds::number::NumberState;
 use crate::kinds::select::SelectState;
 use crate::kinds::sensor::SensorState;
@@ -158,6 +159,9 @@ pub enum State {
     MediaPlayer(MediaPlayerState),
     Update(UpdateState),
     AlarmControlPanel(AlarmState),
+    Date(DateState),
+    Time(TimeState),
+    Datetime(DatetimeState),
 }
 
 impl State {
@@ -183,7 +187,10 @@ impl State {
             | Self::Event(_)
             | Self::Lock(_)
             | Self::Siren(_)
-            | Self::AlarmControlPanel(_) => Ok(()),
+            | Self::AlarmControlPanel(_)
+            | Self::Date(_)
+            | Self::Time(_)
+            | Self::Datetime(_) => Ok(()),
         }
     }
 
@@ -208,6 +215,9 @@ impl State {
             Self::MediaPlayer(_) => EntityKind::MediaPlayer,
             Self::Update(_) => EntityKind::Update,
             Self::AlarmControlPanel(_) => EntityKind::AlarmControlPanel,
+            Self::Date(_) => EntityKind::Date,
+            Self::Time(_) => EntityKind::Time,
+            Self::Datetime(_) => EntityKind::Datetime,
         }
     }
 }

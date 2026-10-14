@@ -1432,6 +1432,72 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "date.set_value"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/DateSetValue"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "time.set_value"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/TimeSetValue"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "datetime.set_value"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/DatetimeSetValue"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
     }
   ],
   "required": [
@@ -1440,6 +1506,13 @@
     "context"
   ],
   "$defs": {
+    "CivilDate": {
+      "type": "string",
+      "examples": [
+        "2026-10-14"
+      ],
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"
+    },
     "ClimateFanMode": {
       "description": "Data for `climate.set_fan_mode`.",
       "type": "object",
@@ -1530,6 +1603,13 @@
         "swing_mode"
       ]
     },
+    "ClockTime": {
+      "type": "string",
+      "examples": [
+        "06:45:00"
+      ],
+      "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$"
+    },
     "Context": {
       "description": "Why something happened. Every state change and service call carries one, so any change can\nbe traced back to its cause (`docs/specs/entities.md` §6).",
       "type": "object",
@@ -1562,6 +1642,32 @@
       "description": "A ULID: 26 characters, uppercase Crockford base32.",
       "type": "string",
       "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "DateSetValue": {
+      "description": "Data for `date.set_value`. Home Assistant's field name.",
+      "type": "object",
+      "properties": {
+        "date": {
+          "$ref": "#/$defs/CivilDate"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "date"
+      ]
+    },
+    "DatetimeSetValue": {
+      "description": "Data for `datetime.set_value`.",
+      "type": "object",
+      "properties": {
+        "datetime": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "datetime"
+      ]
     },
     "ExtensionId": {
       "description": "Format of a slug (extension id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
@@ -2047,7 +2153,10 @@
         "alarm_control_panel.alarm_arm_vacation",
         "alarm_control_panel.alarm_arm_custom_bypass",
         "alarm_control_panel.alarm_disarm",
-        "alarm_control_panel.alarm_trigger"
+        "alarm_control_panel.alarm_trigger",
+        "date.set_value",
+        "time.set_value",
+        "datetime.set_value"
       ]
     },
     "SetHumidity": {
@@ -2147,6 +2256,25 @@
       "required": [
         "value"
       ]
+    },
+    "TimeSetValue": {
+      "description": "Data for `time.set_value`.",
+      "type": "object",
+      "properties": {
+        "time": {
+          "$ref": "#/$defs/ClockTime"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "time"
+      ]
+    },
+    "Timestamp": {
+      "description": "RFC 3339 timestamp with an offset, e.g. 2026-09-15T22:04:31.120Z. Uppercase T and Z, seconds 00-59 (no leap seconds), at most 9 fractional digits, offset -23:59 to +23:59. Serialized in UTC.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
     },
     "TokenId": {
       "description": "Format of a slug (token id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",

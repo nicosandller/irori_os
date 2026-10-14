@@ -309,6 +309,9 @@ manifest's `entity_kinds`.
 | `alarm_control_panel.alarm_arm_home`, `…alarm_arm_away`, `…alarm_arm_night`, `…alarm_arm_vacation`, `…alarm_arm_custom_bypass` | `code`, optional | Needs that mode among its `arm_modes`. The code is required when the panel has a `code_format` and `code_arm_required`; digits only when the format is `number` |
 | `alarm_control_panel.alarm_disarm` | `code`, optional | The code is required when the panel has a `code_format` and `code_disarm_required` |
 | `alarm_control_panel.alarm_trigger` | `code`, optional | Needs `trigger` |
+| `date.set_value` | `date`, a calendar day (`2026-10-14`) | Home Assistant's field names, here and below |
+| `time.set_value` | `time`, a time of day (`06:45:00`, or `06:45`) | |
+| `datetime.set_value` | `datetime`, a `Timestamp` | An ESPHome device counts seconds from 1970 to 2106, and refuses a moment outside that |
 | `valve.open`, `valve.close`, `valve.stop`, `valve.set_position` | as the cover's | As a cover's, without tilt. `valve.toggle` closes an open or opening valve |
 | `siren.turn_on` | `tone` (one of its `tones`), `volume_level` 0.0–1.0, `duration` 1–86400 s; all optional | Each needs the siren to say it can. `siren.toggle` resolves to `turn_on` or `turn_off` |
 | `siren.turn_off` | none | |

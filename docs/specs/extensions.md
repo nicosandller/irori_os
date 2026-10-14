@@ -139,6 +139,7 @@ which format it reads, and Irori converts down (`irori_types::format`):
 | 16 | `media_player` |
 | 17 | `update` |
 | 18 | `alarm_control_panel` |
+| 19 | `date`, `time`, `datetime` |
 
 A reader of an older format isn't sent entities of newer kinds at all (nor their states, history
 or changes), and is sent the others without the newer fields or values. Every change to what an

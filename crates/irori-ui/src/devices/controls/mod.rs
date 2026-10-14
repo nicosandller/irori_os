@@ -11,6 +11,7 @@ mod humidifier;
 mod light;
 mod lock;
 mod media_player;
+mod moment;
 mod number;
 mod opening;
 mod select;
@@ -65,6 +66,9 @@ pub(crate) fn control(
         Capabilities::Text(capabilities) => {
             text::text_control(entity, capabilities, value, offline, controls)
         }
+        Capabilities::Date(_) => moment::date_control(entity, value, offline, controls),
+        Capabilities::Time(_) => moment::time_control(entity, value, offline, controls),
+        Capabilities::Datetime(_) => moment::datetime_control(entity, value, offline, controls),
         Capabilities::Button(capabilities) => {
             button::button_control(entity, capabilities.device_class, offline, controls)
         }
@@ -188,7 +192,10 @@ pub(crate) fn kept(
         | Capabilities::Siren(_)
         | Capabilities::Climate(_)
         | Capabilities::WaterHeater(_)
-        | Capabilities::Humidifier(_) => None,
+        | Capabilities::Humidifier(_)
+        | Capabilities::Date(_)
+        | Capabilities::Time(_)
+        | Capabilities::Datetime(_) => None,
     }
 }
 

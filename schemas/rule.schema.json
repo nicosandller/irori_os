@@ -648,6 +648,18 @@
         {
           "maxLength": 84,
           "pattern": "^alarm_control_panel\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^date\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^time\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 73,
+          "pattern": "^datetime\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -799,6 +811,8 @@
         "cover.set_tilt",
         "cover.stop",
         "cover.toggle",
+        "date.set_value",
+        "datetime.set_value",
         "fan.oscillate",
         "fan.set_direction",
         "fan.set_percentage",
@@ -841,6 +855,7 @@
         "switch.turn_off",
         "switch.turn_on",
         "text.set_value",
+        "time.set_value",
         "update.check",
         "update.clear_skipped",
         "update.install",

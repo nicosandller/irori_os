@@ -72,6 +72,10 @@ pub use kinds::media_player::{
     MediaPlayerCapabilities, MediaPlayerClass, MediaPlayerState, MediaSeek, PlayMedia, Playback,
     VolumeMute, VolumeSet,
 };
+pub use kinds::moment::{
+    CivilDate, ClockTime, DateSetValue, DateState, DatetimeSetValue, DatetimeState,
+    MomentCapabilities, TimeSetValue, TimeState,
+};
 pub use kinds::number::{
     NumberCapabilities, NumberMode, NumberSetValue, NumberState, NumberStep, stepped,
 };

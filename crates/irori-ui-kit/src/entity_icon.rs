@@ -79,8 +79,10 @@ const PADLOCK: &str = concat!(
     r#"<rect x="5" y="11" width="14" height="9.5" rx="1.5"/>"#,
     r#"<path d="M8 11V8a4 4 0 0 1 8 0v3"/>"#,
 );
+/// A calendar page: a day or a moment someone sets.
+const CALENDAR: &str = r#"<rect x="4" y="5.5" width="16" height="14.5" rx="1.5"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/>"#;
 /// A shield: an alarm panel.
-const SHIELD: &str = r#"<path d="M12 3.500l7 2.500v5.500c0 4.300-2.900 7.500-7 9-4.100-1.500-7-4.700-7-9V6Z"/><path d="M9.500 12l1.800 1.800 3.200-3.600"/>"#;
+const SHIELD: &str = r#"<path d="M12 3.5l7 2.5v5.5c0 4.300-2.900 7.500-7 9-4.100-1.500-7-4.700-7-9V6Z"/><path d="M9.5 12l1.800 1.800 3.200-3.600"/>"#;
 const FAN: &str = concat!(
     r#"<path d="M12 12h.01"/>"#,
     r#"<path d="M12 10.5C11 7.5 12 4 14.5 3.5c2 .9 1.5 4.5-1 7.200"/>"#,
@@ -137,6 +139,8 @@ pub fn drawing(capabilities: &Capabilities) -> &'static str {
         },
         Capabilities::Lock(_) => PADLOCK,
         Capabilities::AlarmControlPanel(_) => SHIELD,
+        Capabilities::Date(_) | Capabilities::Datetime(_) => CALENDAR,
+        Capabilities::Time(_) => CLOCK,
         Capabilities::Fan(_) => FAN,
         Capabilities::Valve(_) => VALVE,
         Capabilities::Siren(_) => SIREN,

@@ -576,6 +576,24 @@ async fn list_entities(
                 e.name.clone(),
                 map::lock::describe(device, e),
             ),
+            EspHomeMessage::ListEntitiesDateResponse(e) => (
+                e.key,
+                "date",
+                e.name.clone(),
+                map::moment::describe_date(device, e),
+            ),
+            EspHomeMessage::ListEntitiesTimeResponse(e) => (
+                e.key,
+                "time",
+                e.name.clone(),
+                map::moment::describe_time(device, e),
+            ),
+            EspHomeMessage::ListEntitiesDateTimeResponse(e) => (
+                e.key,
+                "datetime",
+                e.name.clone(),
+                map::moment::describe_datetime(device, e),
+            ),
             EspHomeMessage::ListEntitiesAlarmControlPanelResponse(e) => (
                 e.key,
                 "alarm_control_panel",
@@ -737,6 +755,9 @@ fn report(
             (s.key, Some(map::light::state(s, known)))
         }
         EspHomeMessage::LockStateResponse(s) => (s.key, map::lock::state(s)),
+        EspHomeMessage::DateStateResponse(s) => (s.key, map::moment::date_state(s)),
+        EspHomeMessage::TimeStateResponse(s) => (s.key, map::moment::time_state(s)),
+        EspHomeMessage::DateTimeStateResponse(s) => (s.key, map::moment::datetime_state(s)),
         EspHomeMessage::AlarmControlPanelStateResponse(s) => {
             (s.key, map::alarm_control_panel::state(s))
         }
@@ -850,6 +871,18 @@ async fn command(
         EntityKind::Valve => write(client, map::valve::command(key, service)).await,
         EntityKind::Siren => write(client, map::siren::command(key, service)).await,
         EntityKind::Lock => write(client, map::lock::command(key, service)).await,
+        EntityKind::Date => match map::moment::date_command(key, service) {
+            Some(request) => write(client, request).await,
+            None => Err("that isn't a day it can be set to".to_owned()),
+        },
+        EntityKind::Time => match map::moment::time_command(key, service) {
+            Some(request) => write(client, request).await,
+            None => Err("that isn't a time it can be set to".to_owned()),
+        },
+        EntityKind::Datetime => match map::moment::datetime_command(key, service) {
+            Some(request) => write(client, request).await,
+            None => Err("that isn't a moment it can hold: it counts from 1970 to 2106".to_owned()),
+        },
         EntityKind::AlarmControlPanel => match map::alarm_control_panel::command(key, service) {
             Some(request) => write(client, request).await,
             None => Err(format!("`{}` isn't something a panel does", service.name())),

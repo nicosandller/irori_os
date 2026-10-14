@@ -1,0 +1,7 @@
+{
+  "unique_id": "a4:cf:12:34:56:80-datetime-holiday",
+  "name": "Holiday ends",
+  "capabilities": {
+    "kind": "datetime"
+  }
+}

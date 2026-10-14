@@ -515,6 +515,75 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^date\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "date"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^time\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "time"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^datetime\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "datetime"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -1406,6 +1475,48 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "description": "What a `date`, a `time` or a `datetime` can do: hold its value. Nothing to say yet.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "date"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "What a `date`, a `time` or a `datetime` can do: hold its value. Nothing to say yet.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "time"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "What a `date`, a `time` or a `datetime` can do: hold its value. Nothing to say yet.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "datetime"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
@@ -1560,6 +1671,18 @@
         {
           "maxLength": 84,
           "pattern": "^alarm_control_panel\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^date\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^time\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 73,
+          "pattern": "^datetime\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

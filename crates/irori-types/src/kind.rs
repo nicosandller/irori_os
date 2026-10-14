@@ -48,6 +48,12 @@ pub enum EntityKind {
     Update,
     /// A burglar alarm's panel: armed, disarmed, going off.
     AlarmControlPanel,
+    /// A calendar day someone sets, e.g. when the bins go out.
+    Date,
+    /// A time of day someone sets, e.g. an alarm clock's.
+    Time,
+    /// A moment someone sets: a day and a time, e.g. when a holiday ends.
+    Datetime,
 }
 
 impl EntityKind {
@@ -72,6 +78,9 @@ impl EntityKind {
         Self::MediaPlayer,
         Self::Update,
         Self::AlarmControlPanel,
+        Self::Date,
+        Self::Time,
+        Self::Datetime,
     ];
 
     /// The domain string used in entity ids and service names.
@@ -97,6 +106,9 @@ impl EntityKind {
             Self::MediaPlayer => "media_player",
             Self::Update => "update",
             Self::AlarmControlPanel => "alarm_control_panel",
+            Self::Date => "date",
+            Self::Time => "time",
+            Self::Datetime => "datetime",
         }
     }
 

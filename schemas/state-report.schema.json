@@ -86,6 +86,20 @@
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
+    "CivilDate": {
+      "type": "string",
+      "examples": [
+        "2026-10-14"
+      ],
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"
+    },
+    "ClockTime": {
+      "type": "string",
+      "examples": [
+        "06:45:00"
+      ],
+      "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$"
+    },
     "ColorMode": {
       "type": "string",
       "enum": [
@@ -920,8 +934,65 @@
             "kind",
             "state"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "date"
+            },
+            "value": {
+              "$ref": "#/$defs/CivilDate"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "time"
+            },
+            "value": {
+              "$ref": "#/$defs/ClockTime"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "datetime"
+            },
+            "value": {
+              "$ref": "#/$defs/Timestamp"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
         }
       ]
+    },
+    "Timestamp": {
+      "description": "RFC 3339 timestamp with an offset, e.g. 2026-09-15T22:04:31.120Z. Uppercase T and Z, seconds 00-59 (no leap seconds), at most 9 fractional digits, offset -23:59 to +23:59. Serialized in UTC.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
     },
     "UniqueId": {
       "description": "Stable id assigned by the protocol (e.g. a Zigbee IEEE address). Unique within the protocol.",

@@ -19,6 +19,7 @@ pub(crate) mod humidifier;
 pub(crate) mod light;
 pub(crate) mod lock;
 pub(crate) mod media_player;
+pub(crate) mod moment;
 pub(crate) mod number;
 pub(crate) mod opening;
 pub(crate) mod select;
@@ -213,7 +214,10 @@ impl EntityKind {
             | Self::Event
             | Self::MediaPlayer
             | Self::Update
-            | Self::AlarmControlPanel => return None,
+            | Self::AlarmControlPanel
+            | Self::Date
+            | Self::Time
+            | Self::Datetime => return None,
         })
     }
 }
@@ -239,7 +243,10 @@ impl Capabilities {
             | Self::Climate(_)
             | Self::WaterHeater(_)
             | Self::MediaPlayer(_)
-            | Self::AlarmControlPanel(_) => ValueShape::Text,
+            | Self::AlarmControlPanel(_)
+            | Self::Date(_)
+            | Self::Time(_)
+            | Self::Datetime(_) => ValueShape::Text,
             Self::Sensor(sensor) => match sensor.value_type {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
@@ -288,7 +295,10 @@ impl Capabilities {
             | Self::Event(_)
             | Self::Lock(_)
             | Self::Siren(_)
-            | Self::AlarmControlPanel(_) => Vec::new(),
+            | Self::AlarmControlPanel(_)
+            | Self::Date(_)
+            | Self::Time(_)
+            | Self::Datetime(_) => Vec::new(),
         }
     }
 
@@ -354,6 +364,8 @@ impl Capabilities {
             Self::Update(caps) => update::supports_service(caps, service),
             Self::AlarmControlPanel(caps) => alarm_control_panel::supports_service(caps, service),
             Self::Switch(_) | Self::Button(_) => Ok(()),
+            // Any day, time or moment that exists is one it can be set to.
+            Self::Date(_) | Self::Time(_) | Self::Datetime(_) => Ok(()),
             Self::Sensor(_) | Self::BinarySensor(_) | Self::Event(_) => Ok(()),
         }
     }
@@ -379,6 +391,9 @@ impl State {
             Self::Valve(state) => valve::primary(state),
             Self::Lock(state) => lock::primary(state),
             Self::AlarmControlPanel(state) => alarm_control_panel::primary(state),
+            Self::Date(state) => moment::date_primary(state),
+            Self::Time(state) => moment::time_primary(state),
+            Self::Datetime(state) => moment::datetime_primary(state),
             Self::Climate(state) => climate::primary(state),
             Self::WaterHeater(state) => water_heater::primary(state),
             Self::Sensor(state) => sensor::primary(state),
@@ -407,7 +422,10 @@ impl State {
             | Self::Event(_)
             | Self::Lock(_)
             | Self::Siren(_)
-            | Self::AlarmControlPanel(_) => None,
+            | Self::AlarmControlPanel(_)
+            | Self::Date(_)
+            | Self::Time(_)
+            | Self::Datetime(_) => None,
         }
     }
 
@@ -437,6 +455,9 @@ impl State {
             EntityKind::AlarmControlPanel => {
                 State::AlarmControlPanel(alarm_control_panel::with_primary(value)?)
             }
+            EntityKind::Date => State::Date(moment::date_with_primary(value)?),
+            EntityKind::Time => State::Time(moment::time_with_primary(value)?),
+            EntityKind::Datetime => State::Datetime(moment::datetime_with_primary(value)?),
             EntityKind::Siren => State::Siren(siren::with_primary(value)?),
             EntityKind::Fan => State::Fan(fan::with_primary(previous!(Fan), value)?),
             EntityKind::Cover => State::Cover(cover::with_primary(previous!(Cover), value)?),
@@ -480,6 +501,9 @@ impl Service {
             EntityKind::Valve => valve::service(name, data),
             EntityKind::Lock => lock::service(name, data),
             EntityKind::AlarmControlPanel => alarm_control_panel::service(name, data),
+            EntityKind::Date | EntityKind::Time | EntityKind::Datetime => {
+                moment::service(name, data)
+            }
             EntityKind::Fan => fan::service(name, data),
             EntityKind::Siren => siren::service(name, data),
             EntityKind::Climate => climate::service(name, data),
@@ -534,6 +558,7 @@ impl Service {
             EntityKind::Valve => valve::asks_for(self),
             EntityKind::Lock => lock::asks_for(self),
             EntityKind::AlarmControlPanel => alarm_control_panel::asks_for(self),
+            EntityKind::Date | EntityKind::Time | EntityKind::Datetime => moment::asks_for(self),
             EntityKind::Fan => fan::asks_for(self),
             EntityKind::Siren => siren::asks_for(self),
             EntityKind::Climate => climate::asks_for(self),
@@ -572,6 +597,7 @@ impl ServiceName {
             EntityKind::Valve => valve::data_of(self),
             EntityKind::Lock => lock::data_of(self),
             EntityKind::AlarmControlPanel => alarm_control_panel::data_of(self),
+            EntityKind::Date | EntityKind::Time | EntityKind::Datetime => moment::data_of(self),
             EntityKind::Fan => fan::data_of(self),
             EntityKind::Siren => siren::data_of(self),
             EntityKind::Climate => climate::data_of(self),

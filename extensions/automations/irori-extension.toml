@@ -6,13 +6,14 @@ irori = ">=1.4.0"
 # 1.4.0 has the `update` kind, and entity format 17 with it.
 description = "Build automations as flows on a canvas, watch them run, and see why one didn't."
 icon = "icon.svg"
+# Format 19 adds dates, times and datetimes, whose value is their ISO 8601 text.
 # Format 18 adds alarm panels, whose value is their state (`disarmed`, `armed_away`, `triggered`…).
 # Format 17 is the one that adds updates. An update's value is whether one is available, so a
 # state trigger's `to: true` fires when a new version comes out. Format 16 added media players,
 # whose value is their playback (`off`, `idle`, `playing`, `paused`, `buffering`, `standby`).
 # This format also includes every kind added before; the engine reads those by the same primary
 # value.
-entity_format = 18
+entity_format = 19
 
 [[contributes.automation]]
 run = { command = "bin/irori-ext-automations" }

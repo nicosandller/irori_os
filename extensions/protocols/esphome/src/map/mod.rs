@@ -16,6 +16,7 @@ pub mod event;
 pub mod fan;
 pub mod light;
 pub mod lock;
+pub mod moment;
 pub mod number;
 pub mod opening;
 pub mod select;
@@ -112,12 +113,9 @@ pub fn unmodeled(device: &UniqueId, message: &EspHomeMessage) -> Option<Unmodele
     let (platform, name) = match message {
         M::ListEntitiesCameraResponse(e) => ("camera", &e.name),
         M::ListEntitiesClimateResponse(e) => ("climate", &e.name),
-        M::ListEntitiesDateResponse(e) => ("date", &e.name),
-        M::ListEntitiesDateTimeResponse(e) => ("datetime", &e.name),
         M::ListEntitiesInfraredResponse(e) => ("infrared", &e.name),
         M::ListEntitiesMediaPlayerResponse(e) => ("media_player", &e.name),
         M::ListEntitiesRadioFrequencyResponse(e) => ("radio_frequency", &e.name),
-        M::ListEntitiesTimeResponse(e) => ("time", &e.name),
         M::ListEntitiesWaterHeaterResponse(e) => ("water_heater", &e.name),
         _ => return None,
     };

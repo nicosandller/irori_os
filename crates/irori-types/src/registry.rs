@@ -15,6 +15,7 @@ use crate::kinds::humidifier::HumidifierCapabilities;
 use crate::kinds::light::LightCapabilities;
 use crate::kinds::lock::LockCapabilities;
 use crate::kinds::media_player::MediaPlayerCapabilities;
+use crate::kinds::moment::MomentCapabilities;
 use crate::kinds::number::NumberCapabilities;
 use crate::kinds::select::SelectCapabilities;
 use crate::kinds::sensor::SensorCapabilities;
@@ -211,6 +212,9 @@ pub enum Capabilities {
     MediaPlayer(MediaPlayerCapabilities),
     Update(UpdateCapabilities),
     AlarmControlPanel(AlarmCapabilities),
+    Date(MomentCapabilities),
+    Time(MomentCapabilities),
+    Datetime(MomentCapabilities),
 }
 
 impl Capabilities {
@@ -236,6 +240,9 @@ impl Capabilities {
             Self::MediaPlayer(_) => EntityKind::MediaPlayer,
             Self::Update(_) => EntityKind::Update,
             Self::AlarmControlPanel(_) => EntityKind::AlarmControlPanel,
+            Self::Date(_) => EntityKind::Date,
+            Self::Time(_) => EntityKind::Time,
+            Self::Datetime(_) => EntityKind::Datetime,
         }
     }
 

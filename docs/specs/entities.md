@@ -127,9 +127,8 @@ motion sensor are three entities.
 
 **Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`,
 `event`, `cover`, `lock`, `fan`, `valve`, `siren`, `climate`, `water_heater`, `humidifier`,
-`media_player`, `update`, `alarm_control_panel`.
-**Next, in likely order:** `date`, `time`, `datetime`, `vacuum`, `lawn_mower`, `scene`,
-`device_tracker`. Home Assistant's `remote` isn't planned: neither ESPHome nor MQTT discovery
+`media_player`, `update`, `alarm_control_panel`, `date`, `time`, `datetime`.
+**Next, in likely order:** `vacuum`, `lawn_mower`, `scene`, `device_tracker`. Home Assistant's `remote` isn't planned: neither ESPHome nor MQTT discovery
 has one, so nothing could report it. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
@@ -173,6 +172,7 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | | `trigger` | bool | `false` | Can be set off on purpose |
 | | `code_format` | `number` \| `text` | absent | What its code looks like, when it takes one. Pages show a keypad for digits |
 | | `code_arm_required`, `code_disarm_required` | bool | `false` | Arming, or disarming, needs the code. Only with a `code_format` |
+| `date`, `time`, `datetime` | none | | | A day, a time of day, or a moment that someone sets. Nothing to say about one beyond its kind |
 | `valve` | `device_class` | `water` \| `gas` | absent | |
 | | `position`, `stop` | bool | `false` | Opens part of the way; can be stopped |
 | `siren` | `tones` | up to 256 distinct strings | `[]` | The tones it can sound |
@@ -307,6 +307,9 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | `cover` | `state` | `open` \| `opening` \| `closed` \| `closing` | yes | Its typed value, for rules (`text()`) |
 | | `position`, `tilt` | integer 0 (closed) – 100 (open) | no | Only when it said it has them |
 | `lock` | `state` | `locked` \| `unlocked` \| `locking` \| `unlocking` \| `jammed` \| `open` \| `opening` | yes | Its typed value, for rules |
+| `date` | `value` | a calendar day, `2026-10-14` | yes | Its typed value, as that text. A day that exists; no time zone, it's the day wherever the home is |
+| `time` | `value` | a time of day to the second, `06:45:00` (`06:45` is read as the same) | yes | Its typed value, as that text. No date and no zone |
+| `datetime` | `value` | `Timestamp` | yes | Its typed value, as its UTC text (`2026-10-14T06:45:00Z`). An instant: pages show and pick it on their own clock |
 | `alarm_control_panel` | `state` | `disarmed` \| `armed_home` \| `armed_away` \| `armed_night` \| `armed_vacation` \| `armed_custom_bypass` \| `pending` \| `arming` \| `disarming` \| `triggered` | yes | Its typed value, for rules (`text()`). Home Assistant's states: `arming` counts down before it's armed, `pending` before it sounds |
 | `valve` | `state` | `open` \| `opening` \| `closed` \| `closing` | yes | Its typed value, as a cover's |
 | | `position` | integer 0–100 | no | When it opens part of the way |
@@ -364,6 +367,10 @@ An entity has the fields its capabilities allow (a light that can't dim has no `
 readings nothing announces ahead of time, like a thermostat's `current_temperature`, are listed
 for every entity of the kind. Lists and objects (`rgb`) aren't fields. In code:
 `Capabilities::fields()` and `State::field()`, each kind answering in its own file.
+
+**Dates and times are text that sorts in time order.** Written the ISO 8601 way, an earlier
+one is also the lesser text, so rules compare them as they would any text:
+`text('time.wake_up') < '07:30:00'`, or a state trigger's `to: "2026-12-25"`.
 
 **An `event`'s every report is something happening.** Two `double` presses of a remote in a row
 are two changes: each moves `last_changed` and is a change for anything watching, even though the

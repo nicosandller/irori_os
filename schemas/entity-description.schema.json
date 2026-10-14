@@ -959,6 +959,48 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "description": "What a `date`, a `time` or a `datetime` can do: hold its value. Nothing to say yet.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "date"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "What a `date`, a `time` or a `datetime` can do: hold its value. Nothing to say yet.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "time"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "What a `date`, a `time` or a `datetime` can do: hold its value. Nothing to say yet.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "datetime"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },

@@ -20,6 +20,7 @@ use crate::kinds::humidifier::HumidifierMode;
 use crate::kinds::light::LightTurnOn;
 use crate::kinds::lock::LockCode;
 use crate::kinds::media_player::{MediaSeek, PlayMedia, VolumeMute, VolumeSet};
+use crate::kinds::moment::{DateSetValue, DatetimeSetValue, TimeSetValue};
 use crate::kinds::number::{NumberSetValue, NumberStep};
 use crate::kinds::opening::SetPosition;
 use crate::kinds::select::SelectOption;
@@ -457,6 +458,9 @@ pub enum Service {
     AlarmArmCustomBypass(LockCode),
     AlarmDisarm(LockCode),
     AlarmTrigger(LockCode),
+    DateSetValue(DateSetValue),
+    TimeSetValue(TimeSetValue),
+    DatetimeSetValue(DatetimeSetValue),
 }
 
 impl Service {
@@ -531,6 +535,9 @@ impl Service {
             Self::AlarmArmCustomBypass(_) => ServiceName::AlarmArmCustomBypass,
             Self::AlarmDisarm(_) => ServiceName::AlarmDisarm,
             Self::AlarmTrigger(_) => ServiceName::AlarmTrigger,
+            Self::DateSetValue(_) => ServiceName::DateSetValue,
+            Self::TimeSetValue(_) => ServiceName::TimeSetValue,
+            Self::DatetimeSetValue(_) => ServiceName::DatetimeSetValue,
         }
     }
 }
@@ -676,6 +683,12 @@ pub enum ServiceName {
     AlarmDisarm,
     #[serde(rename = "alarm_control_panel.alarm_trigger")]
     AlarmTrigger,
+    #[serde(rename = "date.set_value")]
+    DateSetValue,
+    #[serde(rename = "time.set_value")]
+    TimeSetValue,
+    #[serde(rename = "datetime.set_value")]
+    DatetimeSetValue,
 }
 
 impl ServiceName {
@@ -749,6 +762,9 @@ impl ServiceName {
         Self::AlarmArmCustomBypass,
         Self::AlarmDisarm,
         Self::AlarmTrigger,
+        Self::DateSetValue,
+        Self::TimeSetValue,
+        Self::DatetimeSetValue,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -822,6 +838,9 @@ impl ServiceName {
             Self::AlarmArmCustomBypass => "alarm_control_panel.alarm_arm_custom_bypass",
             Self::AlarmDisarm => "alarm_control_panel.alarm_disarm",
             Self::AlarmTrigger => "alarm_control_panel.alarm_trigger",
+            Self::DateSetValue => "date.set_value",
+            Self::TimeSetValue => "time.set_value",
+            Self::DatetimeSetValue => "datetime.set_value",
         }
     }
 
@@ -891,6 +910,9 @@ impl ServiceName {
             | Self::AlarmArmCustomBypass
             | Self::AlarmDisarm
             | Self::AlarmTrigger => EntityKind::AlarmControlPanel,
+            Self::DateSetValue => EntityKind::Date,
+            Self::TimeSetValue => EntityKind::Time,
+            Self::DatetimeSetValue => EntityKind::Datetime,
         }
     }
 }
@@ -990,6 +1012,9 @@ impl JsonSchema for ServiceCall {
         let set_position = generator.subschema_for::<SetPosition>();
         let set_tilt = generator.subschema_for::<SetTilt>();
         let lock_code = generator.subschema_for::<LockCode>();
+        let date_set = generator.subschema_for::<DateSetValue>();
+        let time_set = generator.subschema_for::<TimeSetValue>();
+        let datetime_set = generator.subschema_for::<DatetimeSetValue>();
         let fan_turn_on = generator.subschema_for::<FanTurnOn>();
         let fan_percentage = generator.subschema_for::<FanPercentage>();
         let fan_oscillate = generator.subschema_for::<FanOscillate>();
@@ -1035,6 +1060,9 @@ impl JsonSchema for ServiceCall {
                     | ServiceName::AlarmArmCustomBypass
                     | ServiceName::AlarmDisarm
                     | ServiceName::AlarmTrigger => lock_code.clone(),
+                    ServiceName::DateSetValue => date_set.clone(),
+                    ServiceName::TimeSetValue => time_set.clone(),
+                    ServiceName::DatetimeSetValue => datetime_set.clone(),
                     ServiceName::FanTurnOn => fan_turn_on.clone(),
                     ServiceName::FanSetPercentage => fan_percentage.clone(),
                     ServiceName::FanOscillate => fan_oscillate.clone(),
